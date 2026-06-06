@@ -112,6 +112,9 @@ pub struct VoiceStatus {
     pub muted: bool,
     #[serde(default)]
     pub peers: Vec<VoicePeer>,
+    /// True while the local agent brain is speaking a reply (P-011 indicator).
+    #[serde(default, rename = "agentSpeaking")]
+    pub agent_speaking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -424,6 +424,14 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
                 Span::raw("  "),
                 Span::styled(format!("{meter:<30}"), Theme::success()),
             ]));
+            // Agent brain speaking indicator (P-011) — the local agent has no
+            // peer entry of its own, so surface its turn here.
+            if s.status.as_ref().map(|st| st.agent_speaking).unwrap_or(false) {
+                lines.push(Line::from(vec![
+                    Span::styled("🤖", Theme::info()),
+                    Span::styled(" agent speaking…", Theme::info()),
+                ]));
+            }
             lines.push(Line::from(""));
             let peers = s
                 .status
@@ -567,6 +575,7 @@ mod tests {
             }),
             muted: false,
             peers,
+            agent_speaking: false,
         }
     }
 
@@ -797,5 +806,25 @@ mod tests {
         term.draw(|f| draw_voice(f, &s, f.area())).unwrap();
         let text2 = format!("{:?}", term.backend().buffer());
         assert!(text2.contains("input mode"));
+    }
+
+    #[test]
+    fn renders_agent_speaking_indicator() {
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        let mut st = status_in("standup", vec![]);
+        apply_event(&mut s, VoiceUiEvent::Stream(VoiceEvent::Status(st.clone())));
+        let backend = TestBackend::new(100, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        // Not speaking → no indicator.
+        term.draw(|f| draw_voice(f, &s, f.area())).unwrap();
+        assert!(!format!("{:?}", term.backend().buffer()).contains("agent speaking"));
+        // Speaking → indicator shows.
+        st.agent_speaking = true;
+        apply_event(&mut s, VoiceUiEvent::Stream(VoiceEvent::Status(st)));
+        term.draw(|f| draw_voice(f, &s, f.area())).unwrap();
+        assert!(format!("{:?}", term.backend().buffer()).contains("agent speaking"));
     }
 }

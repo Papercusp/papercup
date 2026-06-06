@@ -4148,6 +4148,7 @@ mod tests {
             }),
             muted: false,
             peers: vec![],
+            agent_speaking: false,
         }))));
         a
     }

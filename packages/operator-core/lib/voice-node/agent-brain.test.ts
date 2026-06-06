@@ -91,10 +91,13 @@ describe('voice agent brain (P-011)', () => {
   });
 
   it('accumulates rolling history across turns', async () => {
-    const { seams, converseCalls, fire } = makeHarness();
+    const { seams, converseCalls, saidTexts, fire } = makeHarness();
     enableVoiceAgentBrain(true, seams);
     fire('one');
-    await vi.waitFor(() => expect(converseCalls.length).toBe(1));
+    // Wait for the FIRST turn to fully wind down (spoke + busy cleared) before
+    // firing the second — else the serialize guard drops it.
+    await vi.waitFor(() => expect(saidTexts.length).toBe(1));
+    await new Promise((r) => setTimeout(r, 5));
     fire('two');
     await vi.waitFor(() => expect(converseCalls.length).toBe(2));
     expect(converseCalls[1]).toEqual([

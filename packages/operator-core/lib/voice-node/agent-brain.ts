@@ -30,6 +30,7 @@ import {
 import { parseOperatorTurn } from '../operator-converse-tags';
 import { activeWorkspaceId } from '../workspace-registry';
 import { enableVoiceAgent, onTranscript, voiceAgentSay, type VoiceTranscript } from './agent-peer';
+import { setVoiceAgentSpeaking } from './manager';
 
 export interface ConverseMessage {
   role: 'user' | 'assistant';
@@ -99,10 +100,12 @@ async function handleTranscript(t: VoiceTranscript, seams: BrainSeams): Promise<
       history.push({ role: 'assistant', content: say });
       trimHistory();
       speaking = true;
+      setVoiceAgentSpeaking(true); // broadcast to voice clients (pui indicator)
       try {
         await seams.say(say);
       } finally {
         speaking = false;
+        setVoiceAgentSpeaking(false);
       }
     }
   } catch (err) {

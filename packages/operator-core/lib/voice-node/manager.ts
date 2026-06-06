@@ -40,6 +40,8 @@ export interface VoiceStatus {
   muted: boolean;
   peers: VoicePeerState[];
   identity: { id: string; label: string };
+  /** True while the local agent brain is speaking a reply (P-011 indicator). */
+  agentSpeaking: boolean;
 }
 
 interface VoiceSwarmLike extends SwarmLike {
@@ -61,6 +63,7 @@ let swarm: VoiceSwarmLike | null = null;
 let node: VoiceNode | null = null;
 let handle: ChannelHandle | null = null;
 let channel: VoiceChannel | null = null;
+let agentSpeaking = false;
 
 const mixedCbs = new Set<(frame: Int16Array) => void>();
 const peerFrameCbs = new Set<(peerId: string, frame: Int16Array) => void>();
@@ -82,7 +85,19 @@ export function voiceStatus(): VoiceStatus {
     muted: handle?.muted ?? false,
     peers: handle?.peers() ?? [],
     identity,
+    agentSpeaking,
   };
+}
+
+/**
+ * The agent brain reports its speaking state here (P-011) so it rides the same
+ * status push to every voice client. Kept on the manager (not the brain) to
+ * avoid an import cycle — the brain imports the manager, never the reverse.
+ */
+export function setVoiceAgentSpeaking(speaking: boolean): void {
+  if (agentSpeaking === speaking) return;
+  agentSpeaking = speaking;
+  emitChanged();
 }
 
 function emitChanged(): void {
