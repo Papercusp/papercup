@@ -45,6 +45,8 @@ export function buildCtrl(msg: unknown): Uint8Array {
 }
 
 export const buildJoin = (channel: string): Uint8Array => buildCtrl({ op: 'join', channel });
+/** Join the deterministic per-harness video channel (D-003). */
+export const buildJoinVideo = (harness: string): Uint8Array => buildCtrl({ op: 'joinVideo', harness });
 export const buildLeave = (): Uint8Array => buildCtrl({ op: 'leave' });
 export const buildMute = (muted: boolean): Uint8Array => buildCtrl({ op: 'mute', muted });
 /** Opt this connection in/out of receiving peer VID frames. */

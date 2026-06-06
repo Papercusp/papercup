@@ -6,7 +6,7 @@
  * Hyperswarm topic peers rendezvous on. Live presence is NOT here — presence is
  * in-band on the peer connections (D-011); this is just the durable list.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 
 export interface VoiceChannel {
@@ -49,6 +49,45 @@ export async function removeVoiceChannel(idOrName: string): Promise<boolean> {
   if (next.length === channels.length) return false;
   await writeOperatorState<VoiceChannelsPayload>(TABLE, { channels: next });
   return true;
+}
+
+/**
+ * The deterministic 32-byte swarm topic for a shared harness's video channel
+ * (plan holepunch-video-shared-harnesses-2026-06-05 D-003). Both peers MUST
+ * derive the SAME topic without coordinating, so it is a pure hash of the shared
+ * harness key — NOT a random per-peer value like a named channel. v1 keys on the
+ * harness slug; when a globally-unique shared-harness id is available it should
+ * key on that to avoid same-named-but-unrelated harness collisions.
+ */
+export function harnessVideoTopicHex(harness: string): string {
+  return createHash('sha256').update(`papercusp-video-channel:${harness}`).digest('hex');
+}
+
+/**
+ * Ensure (idempotently) a registry channel for a shared harness's video channel,
+ * with the DETERMINISTIC topic above. Distinct from createVoiceChannel (random
+ * topic, human-named) — a harness video channel must rendezvous on the same
+ * topic across machines.
+ */
+export async function ensureVideoChannel(harness: string): Promise<VoiceChannel> {
+  const slug = harness.trim();
+  if (!slug) throw new Error('voice: harness required for video channel');
+  const id = `vid-${slug}`;
+  const channels = await listVoiceChannels();
+  const existing = channels.find((c) => c.id === id);
+  const topicHex = harnessVideoTopicHex(slug);
+  if (existing) {
+    // Heal a drifted topic to the deterministic one.
+    if (existing.topicHex === topicHex) return existing;
+    const healed = { ...existing, topicHex };
+    await writeOperatorState<VoiceChannelsPayload>(TABLE, {
+      channels: channels.map((c) => (c.id === id ? healed : c)),
+    });
+    return healed;
+  }
+  const channel: VoiceChannel = { id, name: `video:${slug}`, topicHex, createdAt: Date.now() };
+  await writeOperatorState<VoiceChannelsPayload>(TABLE, { channels: [...channels, channel] });
+  return channel;
 }
 
 export async function resolveVoiceChannel(idOrName: string): Promise<VoiceChannel | null> {

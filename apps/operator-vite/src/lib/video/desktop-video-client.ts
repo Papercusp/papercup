@@ -21,7 +21,7 @@ import {
   DEFAULT_DESKTOP_VOICE_WS_URL,
   buildCamFrame,
   buildCamera,
-  buildJoin,
+  buildJoinVideo,
   buildLeave,
   buildMute,
   buildVideoRecv,
@@ -54,6 +54,7 @@ export interface VoiceSessionStatus {
   channel: { id: string; name?: string } | null;
   muted: boolean;
   peers: VoicePeerStatus[];
+  identity?: { id: string; label: string };
   agentSpeaking?: boolean;
 }
 
@@ -72,8 +73,8 @@ export interface DesktopVideoSession {
 export interface ConnectDesktopVideoOpts {
   /** WS URL; defaults to the operator desktop voice bridge on :3076. */
   url?: string;
-  /** Channel id / topic to join. */
-  channel: string;
+  /** Shared-harness slug → the deterministic per-harness video channel (D-003). */
+  harness: string;
   /** Status pushes (peers/speaking/cameraOn/muted). */
   onStatus?: (status: VoiceSessionStatus) => void;
   /** A decoded tile frame for a peer (render to that peer's canvas). */
@@ -105,7 +106,7 @@ export function connectDesktopVideo(opts: ConnectDesktopVideoOpts): DesktopVideo
   ws.binaryType = 'arraybuffer';
 
   ws.addEventListener('open', () => {
-    safeSend(buildJoin(opts.channel));
+    safeSend(buildJoinVideo(opts.harness));
     safeSend(buildVideoRecv(true)); // opt into receiving peer video
   });
   ws.addEventListener('error', (e) => opts.onError?.(e));

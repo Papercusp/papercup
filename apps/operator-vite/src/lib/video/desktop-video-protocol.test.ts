@@ -6,6 +6,7 @@ import {
   buildCamFrame,
   buildCamera,
   buildJoin,
+  buildJoinVideo,
   buildVideoRecv,
   parseVidFrame,
 } from './desktop-video-protocol';
@@ -59,6 +60,7 @@ describe('CTRL builders', () => {
   it('produce CTRL frames carrying the expected ops', () => {
     for (const [wire, expected] of [
       [buildJoin('vc-1'), { op: 'join', channel: 'vc-1' }],
+      [buildJoinVideo('harnessX'), { op: 'joinVideo', harness: 'harnessX' }],
       [buildVideoRecv(true), { op: 'video', recv: true }],
       [buildCamera(false), { op: 'camera', on: false }],
     ] as const) {

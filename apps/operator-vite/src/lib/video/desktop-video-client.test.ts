@@ -77,7 +77,7 @@ function connect(extra?: Partial<Parameters<typeof connectDesktopVideo>[0]>) {
   const peerFrames: Array<{ peerId: string; ts: number }> = [];
   const statuses: VoiceSessionStatus[] = [];
   const session = connectDesktopVideo({
-    channel: 'vc-1',
+    harness: 'harnessX',
     wsFactory: () => ws,
     decoderFactory: dec.factory,
     onPeerFrame: (peerId, f) => peerFrames.push({ peerId, ts: f.timestamp }),
@@ -88,12 +88,12 @@ function connect(extra?: Partial<Parameters<typeof connectDesktopVideo>[0]>) {
 }
 
 describe('connectDesktopVideo', () => {
-  it('on open, joins the channel and opts into receiving video', () => {
+  it('on open, joins the harness video channel and opts into receiving video', () => {
     const { ws } = connect();
     ws.open();
     const frames = ws.decodeSent();
     expect(frames).toHaveLength(2);
-    expect(decodeCtrl(frames[0].payload)).toEqual({ op: 'join', channel: 'vc-1' });
+    expect(decodeCtrl(frames[0].payload)).toEqual({ op: 'joinVideo', harness: 'harnessX' });
     expect(decodeCtrl(frames[1].payload)).toEqual({ op: 'video', recv: true });
   });
 

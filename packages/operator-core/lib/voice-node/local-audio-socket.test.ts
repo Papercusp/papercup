@@ -14,6 +14,7 @@ const pushMicFrame = vi.fn();
 const pushVideoFrame = vi.fn();
 const setVideoCameraOn = vi.fn();
 const joinVoiceChannel = vi.fn(async (ch: string) => ({ channel: { id: ch }, muted: false, peers: [], identity: { id: 't', label: 't' } }));
+const joinHarnessVideoChannel = vi.fn(async (h: string) => ({ channel: { id: `vid-${h}` }, muted: false, peers: [], identity: { id: 't', label: 't' } }));
 const leaveVoiceChannel = vi.fn(async () => ({ channel: null, muted: false, peers: [], identity: { id: 't', label: 't' } }));
 const setVoiceMuted = vi.fn();
 
@@ -26,6 +27,7 @@ vi.mock('./registry', () => ({
 
 vi.mock('./manager', () => ({
   joinVoiceChannel: (ch: string) => joinVoiceChannel(ch),
+  joinHarnessVideoChannel: (h: string) => joinHarnessVideoChannel(h),
   leaveVoiceChannel: () => leaveVoiceChannel(),
   setVoiceMuted: (m: boolean) => setVoiceMuted(m),
   pushMicFrame: (f: Int16Array) => pushMicFrame(f),
@@ -208,6 +210,16 @@ describe('local voice socket', () => {
     for (const cb of peerVideoCbs) cb('p1', new Uint8Array([2]));
     await settle();
     expect(c.vids).toHaveLength(1); // unchanged — no new frame after opt-out
+    c.sock.destroy();
+  });
+
+  it('joins the deterministic harness video channel on {op:joinVideo}', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const c = client(socketPath);
+    await settle(40);
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'joinVideo', harness: 'papercup' }))));
+    await settle();
+    expect(joinHarnessVideoChannel).toHaveBeenCalledWith('papercup');
     c.sock.destroy();
   });
 

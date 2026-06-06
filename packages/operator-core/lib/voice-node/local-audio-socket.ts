@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { FrameDecoder, encodeFrame } from '@papercusp/p2p-voice';
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE } from './codec';
 import {
+  joinHarnessVideoChannel,
   joinVoiceChannel,
   leaveVoiceChannel,
   onMixedFrame,
@@ -81,7 +82,15 @@ function broadcastCtrl(msg: unknown): void {
 }
 
 async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
-  let msg: { op?: string; channel?: string; muted?: boolean; name?: string; recv?: boolean; on?: boolean };
+  let msg: {
+    op?: string;
+    channel?: string;
+    muted?: boolean;
+    name?: string;
+    recv?: boolean;
+    on?: boolean;
+    harness?: string;
+  };
   try {
     msg = JSON.parse(new TextDecoder().decode(raw));
   } catch {
@@ -92,6 +101,12 @@ async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
     switch (msg.op) {
       case 'join': {
         const status = await joinVoiceChannel(String(msg.channel ?? ''));
+        sendCtrl(sock, { ev: 'status', status });
+        break;
+      }
+      case 'joinVideo': {
+        // Join the deterministic per-harness video channel (D-003).
+        const status = await joinHarnessVideoChannel(String(msg.harness ?? ''));
         sendCtrl(sock, { ev: 'status', status });
         break;
       }

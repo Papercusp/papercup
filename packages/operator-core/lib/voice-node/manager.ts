@@ -32,7 +32,7 @@ import {
   type VoicePeerState,
 } from '@papercusp/p2p-voice';
 import { getOpusCodec, VOICE_FRAME_SAMPLES } from './codec';
-import { resolveVoiceChannel, type VoiceChannel } from './registry';
+import { ensureVideoChannel, resolveVoiceChannel, type VoiceChannel } from './registry';
 import { swarmConstructorOpts } from '../sync/hyperbee/swarm';
 
 export interface VoiceStatus {
@@ -129,6 +129,16 @@ export async function joinVoiceChannel(idOrName: string): Promise<VoiceStatus> {
   );
   emitChanged();
   return voiceStatus();
+}
+
+/**
+ * Join the deterministic video channel for a shared harness (D-003). Ensures the
+ * registry entry (deterministic topic) then joins it — both peers on the same
+ * harness rendezvous on the same topic. Used by the desktop video surface.
+ */
+export async function joinHarnessVideoChannel(harness: string): Promise<VoiceStatus> {
+  const ch = await ensureVideoChannel(harness);
+  return joinVoiceChannel(ch.id);
 }
 
 export async function leaveVoiceChannel(): Promise<VoiceStatus> {

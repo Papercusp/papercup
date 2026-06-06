@@ -26,6 +26,9 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.HARNESS_PHASES]: 'Harness phases',
   [FLAGS.DESIGN]: 'Design tab',
   [FLAGS.TESTING]: 'Testing surfaces',
+  [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
+  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
+  [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
@@ -36,6 +39,12 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
   [FLAGS.HARNESS_PHASES]: 'Multi-phase harness (staging / testing / production). Cut for V1 ship.',
   [FLAGS.DESIGN]: 'In-harness design tab + /design route. Cut for V1 ship.',
   [FLAGS.TESTING]: 'Testing-only surfaces: pi tab, + add plugin button. Cut for V1 ship.',
+  [FLAGS.INBOX_DURABLE_ESCALATIONS]:
+    'Mirror chat decision cards to durable coord escalations (answer live or from the inbox).',
+  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]:
+    'Master switch for auto-implementing captured improvements. Off = capture + triage only.',
+  [FLAGS.VIDEO_CHANNELS]:
+    'Desktop P2P video channel (participant-grid) for shared harnesses. Off until the live-camera E2E passes.',
 };
 
 type LoadState =
