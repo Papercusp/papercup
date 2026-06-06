@@ -12,6 +12,18 @@
  * imports (ESM evaluates this module once) are a no-op.
  */
 import { configureDeployment } from '@papercusp/deployment-driver';
-import { LatitudeDriver } from './latitude/latitude-driver';
+import { makeLatitudeDriver } from './latitude/latitude-driver';
+import { makeHetznerDriver } from './hetzner/hetzner-driver';
+import { loggingHeadlessPeerAdmission, makeHeadlessJoinHook } from './headless-peer';
 
-configureDeployment({ drivers: [LatitudeDriver] });
+/**
+ * The owner-vouched headless-peer admission (P-015). Default is the logging
+ * adapter until the substrate adapter is wired; deploy teardown revokes through
+ * this same instance, so admit + revoke stay symmetric.
+ */
+export const headlessAdmission = loggingHeadlessPeerAdmission((lvl, m) => console.log(`[${lvl}] ${m}`));
+
+/** Drivers admit an auto-provisioned frame as a headless peer on join (P-015). */
+const onJoin = makeHeadlessJoinHook(headlessAdmission);
+
+configureDeployment({ drivers: [makeLatitudeDriver({ onJoin }), makeHetznerDriver({ onJoin })] });

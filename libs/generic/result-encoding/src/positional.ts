@@ -192,17 +192,47 @@ export function projectWriteColumns(
 // ---------------------------------------------------------------------------
 
 /**
- * Encode a flat array as a headerless positional CSV body: a `[N]` count line
+ * Encode a flat array as a headerless positional CSV/TSV body: a `[N]` count line
  * (truncation guard) followed by one RFC-4180-quoted row per element, columns in
  * the projected order. The columns themselves are NOT emitted — they live in the
  * prompt. The host prefixes the `format: csv` marker.
  */
-export function encodePositionalRows(rows: ReadonlyArray<Record<string, unknown>>, columns: ColumnSpec[]): string {
+export function encodePositionalRows(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  columns: ColumnSpec[],
+  delimiter: ',' | '\t' = ',',
+): string {
   const lines: string[] = [`[${rows.length}]`];
   for (const row of rows) {
-    lines.push(columns.map((c) => quoteField(cellToString(row[c.name]), ',')).join(','));
+    lines.push(columns.map((c) => quoteField(cellToString(row[c.name]), delimiter)).join(delimiter));
   }
   return lines.join('\n');
+}
+
+/**
+ * The JSON-Schema a write-positional tool ADVERTISES in `tools/list` instead of
+ * its keyed args: a single `row` string. This is what makes the model emit a
+ * positional row at all — the per-column meaning lives in the prompt's "## Wire
+ * schemas" legend, and the `row` description names the column order as a
+ * belt-and-suspenders reminder. Keyed args never reach the wire for these tools.
+ */
+export function positionalRowSchema(columns: ColumnSpec[]): Record<string, unknown> {
+  const order = columns.map((c) => (c.optional ? `${c.name}?` : c.name)).join(', ');
+  const freeText = columns.length > 0 && columns[columns.length - 1].type === 'text';
+  const tail = freeText
+    ? ' The last column is free-text and may contain commas — do not quote it.'
+    : '';
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['row'],
+    properties: {
+      row: {
+        type: 'string',
+        description: `Comma-separated VALUES in column order: ${order}. Omit trailing optional columns.${tail}`,
+      },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

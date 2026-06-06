@@ -153,48 +153,9 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
       };
     },
 
-    async install(frame, config, ctx): Promise<void> {
-      const boot = ctx.bootstrap ?? {};
-      const exec = makeRemoteExec(frame, config);
-      // P-011: stage the per-frame Claude subscription (its own rate limits) first.
-      if (boot.credentialsLocalPath) {
-        log(ctx, 'info', `staging per-frame Claude credentials → ${REMOTE_CRED_PATH} (P-011)`);
-        await exec.copyFile(boot.credentialsLocalPath, REMOTE_CRED_PATH);
-      }
-      const { script } = buildFrameBootstrap({
-        harnessSlug: ctx.harnessSlug,
-        repoUrl: boot.repoUrl,
-        repoRef: boot.repoRef,
-        environment: {
-          setup: boot.setup ?? [],
-          install: boot.install ?? [],
-          build: boot.build ?? [],
-          test: [],
-          run: boot.run ?? [],
-          services: boot.services ?? [],
-          ports: boot.ports ?? [],
-          env: boot.env ?? {},
-        },
-        claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
-        embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
-        orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
-        env: boot.env,
-      });
-      log(ctx, 'info', `bootstrapping frame ${frame.id} (${script.length} bytes; own loop + own embedded-pg per D-006/D-007)`);
-      await exec.runScript(script);
-      log(ctx, 'info', `frame ${frame.id} bootstrapped`);
-    },
-
-    async join(frame, config, ctx): Promise<void> {
-      if (onJoin) {
-        await onJoin(frame, config, ctx);
-        return;
-      }
-      // The frame admits itself into the harness/Hive via its own boot announce
-      // (signed device pubkey → read-admission). Explicit headless-peer admission
-      // for an auto-provisioned frame is wired by P-015 (deps.onJoin).
-      log(ctx, 'info', `frame ${frame.id} joins as a headless peer via its boot announce (P-014/P-015)`);
-    },
+    // install + join are provider-agnostic — delegated to the shared frame-installer.
+    install: (frame, config, ctx) => installFrame(frame, config, ctx, installerDeps),
+    join: (frame, config, ctx) => joinFrame(frame, config, ctx, installerDeps),
 
     async teardown(frame, config, ctx): Promise<void> {
       const client = clientFor(config);

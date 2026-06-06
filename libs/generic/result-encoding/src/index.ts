@@ -43,8 +43,11 @@ export {
   projectReadColumns,
   projectWriteColumns,
   encodePositionalRows,
+  positionalRowSchema,
   reconstructArgs,
 } from './positional';
+
+export { advertisedArgsSchema } from './advertise';
 
 export {
   type PrePromptEntry,

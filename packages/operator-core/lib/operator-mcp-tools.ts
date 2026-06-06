@@ -45,6 +45,11 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // owning agent in their context (inbox-tiering-and-message-agent-2026-06-05).
   'mcp__agentmcp__inbox:triage',
   'mcp__agentmcp__coord:message-agent',
+  // Spawn admission — the brain decides worth-it (unify-agent-spawn-chokepoint
+  // P-005/P-006). `new_subagent:approve` is brain-gated (requireRoles); `request`
+  // is the agent-initiated side (surfaced here so the brain sees the request shape).
+  'mcp__agentmcp__new_subagent:request',
+  'mcp__agentmcp__new_subagent:approve',
   'mcp__agentmcp__messages:inbox',
   'mcp__agentmcp__messages:outbox',
   'mcp__agentmcp__messages:send',

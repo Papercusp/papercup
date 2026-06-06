@@ -21,7 +21,8 @@ import type {
   LogLevel,
 } from '@papercusp/deployment-driver';
 import { resolveDeploymentDriver } from '@papercusp/deployment-driver';
-import './configure'; // register cloud backends (LatitudeDriver)
+import { headlessAdmission } from './configure'; // registers cloud backends + the admission instance
+import { revokeFrameOnTeardown } from './headless-peer';
 
 export interface DeployDeps {
   resolveDriver: (config: DeploymentConfig) => DeploymentDriver;
@@ -32,6 +33,8 @@ export interface DeployDeps {
   persistFrame: (slug: string, workspaceId: string, frame: Frame) => Promise<void>;
   loadFrame: (slug: string, workspaceId: string) => Promise<Frame | undefined>;
   clearFrame: (slug: string, workspaceId: string) => Promise<void>;
+  /** Revoke a destroyed frame's headless-peer device pubkey (P-015). */
+  revokeFrame?: (frame: Frame, slug: string, workspaceId: string) => Promise<void>;
   log?: (level: LogLevel, msg: string) => void;
 }
 

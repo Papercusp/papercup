@@ -62,6 +62,7 @@ import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
 } from './tool-allowlist';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
 // lazily — without this import, MCP requests would arrive before any
@@ -379,9 +380,11 @@ function builtinInputSchema(tool: ReturnType<typeof getCatalog>[number]): Record
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const json = (z as any).toJSONSchema(tool.args) as Record<string, unknown>;
   delete (json as Record<string, unknown>).$schema;
+  // Registry write-positional tools advertise a single `row` string (P-008).
+  const advertised = advertisedArgsSchema(tool.name, json);
   // Objectify boolean sub-schemas (z.unknown() → `true`) so strict consumers
   // (Ollama's Go tool-schema parser) accept the surface. See tool-schema-sanitize.ts.
-  return sanitizeToolSchema(json);
+  return sanitizeToolSchema(advertised);
 }
 
 /* ─── Resolved tool-context helpers ──────────────────────────────────── */
@@ -657,9 +660,19 @@ const handler = createMcpHandler(
         // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
         return {
           tools: filtered.map((t) => {
-            const tt = t as { inputSchema?: unknown; outputSchema?: unknown };
+            const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
             const out: Record<string, unknown> = { ...t };
-            if (tt.inputSchema) out.inputSchema = sanitizeToolSchema(tt.inputSchema);
+            if (tt.inputSchema) {
+              // Registry write-positional tools advertise a single `row` string
+              // (token-efficient-agent-io P-008) so the model emits a positional
+              // row; every other tool advertises its real args schema. Applied
+              // before sanitize so the swapped schema is objectified too.
+              const advertised =
+                typeof tt.name === 'string'
+                  ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
+                  : (tt.inputSchema as Record<string, unknown>);
+              out.inputSchema = sanitizeToolSchema(advertised);
+            }
             // outputSchema (P-010) gets the same boolean-subschema objectification.
             if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema);
             return out;
