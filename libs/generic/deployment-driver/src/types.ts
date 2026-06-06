@@ -34,6 +34,19 @@ export type DeploymentPlacement = 'local' | 'remote';
 export type FrameKind = 'vm' | 'metal' | 'local';
 
 /**
+ * Frame desktop capability (opt-in): the frame stands up virtual X displays so
+ * its agents can drive GUIs (browsers, Electron/Tauri apps), one isolated
+ * display per concurrent agent. `true` takes the defaults; the object form
+ * tunes the pool. A desktop is a frame *capability*, not a new kind of frame.
+ */
+export interface DesktopConfig {
+  /** Number of virtual displays to stand up (one per concurrent GUI agent). */
+  displays?: number;
+  /** X geometry per display (e.g. `'1920x1080x24'`). */
+  geometry?: string;
+}
+
+/**
  * Deployment config — a **sibling input to the blueprint** at instantiation
  * (D-001: NOT a blueprint property, since the blueprint must stay placement-
  * agnostic + Cupboard-distributable). `target` selects the driver; the rest is
@@ -55,6 +68,8 @@ export interface DeploymentConfig {
    * resolves, never the secret itself, so configs are safe to persist/federate.
    */
   credentialRef?: string;
+  /** Opt-in frame desktop capability (virtual X displays for GUI agents). */
+  desktop?: boolean | DesktopConfig;
   /** Provider-specific extras a driver narrows + validates (e.g. Latitude project id). */
   provider?: Record<string, unknown>;
 }
