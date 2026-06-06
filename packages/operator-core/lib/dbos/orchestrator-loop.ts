@@ -55,6 +55,9 @@ import { join } from 'node:path';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import postgres from 'postgres';
 import { isLocalDeployment } from '@papercusp/deployment-driver';
+// Side-effect: register the cloud backends so the placement gate knows a
+// `{target:'latitude'}` harness is REMOTE (skipped here — its frame's own loop owns it).
+import '../deployment/configure';
 import type { ProjectEntry } from '../harness-registry';
 import {
   durableOwnedFeatureIdsPg,

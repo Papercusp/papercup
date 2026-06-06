@@ -87,6 +87,9 @@ export const commands = {
 	wslFinalizeReady: () => typedError<null, string>(__TAURI_INVOKE("wsl_finalize_ready")),
 	wslUninstall: () => typedError<null, string>(__TAURI_INVOKE("wsl_uninstall")),
 	consoleLaunch: (envelope: ConsoleEnvelope) => __TAURI_INVOKE<ConsoleLaunchResult>("console_launch", { envelope }),
+	nativeTerminalStatus: () => __TAURI_INVOKE<NativeTerminalStatus>("native_terminal_status"),
+	// Show/hide the native sibling terminal. Returns the new running state.
+	nativeTerminalToggle: () => typedError<boolean, string>(__TAURI_INVOKE("native_terminal_toggle")),
 	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
 	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
@@ -137,6 +140,12 @@ data: string } |
 { kind: "done"; result: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never } } | 
 // Dispatch or handler failed (role gate, quota, timeout, throw).
 { kind: "error"; code: string; message: string };
+
+export type NativeTerminalStatus = {
+	// One of glued-ghostty-x11 / new-window / embedded-* / disabled.
+	strategy: string,
+	running: boolean,
+};
 
 export type PtySpawnOpts = {
 	command: string,

@@ -14,6 +14,9 @@ import {
   registeredDeploymentTargets,
   type DeploymentConfig,
 } from '@papercusp/deployment-driver';
+// Side-effect: register the cloud backends (LatitudeDriver) so a non-local
+// target resolves at the harness:create boundary.
+import './configure';
 
 export const DeploymentConfigSchema = z.object({
   /** Selects the driver. `'local'` = run here (the default for every harness). */

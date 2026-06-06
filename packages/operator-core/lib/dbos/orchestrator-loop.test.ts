@@ -1,4 +1,4 @@
-import { describe, test, expect, vi, afterEach } from 'vitest';
+import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest';
 
 // Control the workspace registry for orchestratorWorkspaceIds (P-020). Only
 // readRegistry + activeWorkspaceId are consumed by orchestrator-loop here.
@@ -463,7 +463,9 @@ describe('harnessDispatchesLocally — deployment placement gate (cloud-deployme
     async teardown() {},
   };
 
-  afterEach(() => _resetDeploymentDriversForTests());
+  // Reset BEFORE each test: orchestrator-loop's module load registers LatitudeDriver
+  // (via ../deployment/configure), so start each test from a known local-only registry.
+  beforeEach(() => _resetDeploymentDriversForTests());
 
   test('null project (slug not in this workspace) → dispatches locally', () => {
     expect(harnessDispatchesLocally(null)).toBe(true);

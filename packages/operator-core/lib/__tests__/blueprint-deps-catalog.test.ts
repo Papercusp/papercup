@@ -144,6 +144,14 @@ const BLUEPRINT_IDS = readdirSync(BLUEPRINTS_ROOT).filter((id) =>
   existsSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml')),
 );
 
+// The ABSTRACT parent blueprints — they declare no `workItem` / `spine.decider` of
+// their own and are NEVER loaded standalone (only via an `extends` merge), so they
+// are exempt from the "declares deps" + "loads standalone" assertions. `base` is the
+// root; `single-agent` is the single-role run-to-done parent (unify-agent-spawn-
+// chokepoint P-014). Children of either ship their own deps — extends-merge REPLACES
+// arrays, so a parent block would be wiped by every child anyway.
+const ABSTRACT_PARENTS = new Set(['base', 'single-agent']);
+
 // ─── assertions ──────────────────────────────────────────────────────────────
 
 describe('blueprint dependencies vs the static tool catalog', () => {
@@ -154,14 +162,14 @@ describe('blueprint dependencies vs the static tool catalog', () => {
     expect(BLUEPRINT_IDS.length).toBeGreaterThanOrEqual(14);
   });
 
-  it('every built-in (except the abstract `base`) declares a dependencies block', () => {
-    // The end-state guard for official-blueprints-cupboard-publish P-002: 13
-    // built-ins declare concrete deps, `audit` may be explicit-empty, and only
-    // `base` (the abstract parent — extends-merge REPLACES arrays, so a base
-    // block would be wiped by every child anyway) goes without one. A NEW
-    // built-in must ship with its dependencies declared.
+  it('every built-in (except the abstract parents) declares a dependencies block', () => {
+    // The end-state guard for official-blueprints-cupboard-publish P-002: the
+    // concrete built-ins declare deps (`audit` may be explicit-empty); only the
+    // ABSTRACT parents (`base`, `single-agent` — extends-merge REPLACES arrays, so a
+    // parent block would be wiped by every child anyway) go without one. A NEW
+    // concrete built-in must ship with its dependencies declared.
     const undeclared = BLUEPRINT_IDS.filter((id) => {
-      if (id === 'base') return false;
+      if (ABSTRACT_PARENTS.has(id)) return false;
       const raw = parseYaml(readFileSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml'), 'utf8')) as
         | Record<string, unknown>
         | null;
@@ -187,9 +195,9 @@ describe('blueprint dependencies vs the static tool catalog', () => {
 
   for (const id of BLUEPRINT_IDS) {
     describe(`built-in "${id}"`, () => {
-      // `base` is the ABSTRACT parent (no spine of its own) — it can't pass a
-      // full schema-load standalone; fall back to its raw declared block. Any
-      // OTHER built-in failing to load is a broken blueprint: fail loud.
+      // The ABSTRACT parents (`base`, `single-agent`) have no `workItem` of their
+      // own — they can't pass a full schema-load standalone; fall back to the raw
+      // declared block. Any OTHER built-in failing to load is a broken blueprint.
       let deps: { tools?: string[]; packs?: string[]; plugins?: string[] } | undefined;
       let loadError: unknown;
       try {
@@ -202,8 +210,8 @@ describe('blueprint dependencies vs the static tool catalog', () => {
         deps = (raw?.dependencies ?? undefined) as typeof deps;
       }
 
-      it('loads through the extends-merge loader (base alone may be abstract)', () => {
-        if (id !== 'base') {
+      it('loads through the extends-merge loader (the abstract parents may not load standalone)', () => {
+        if (!ABSTRACT_PARENTS.has(id)) {
           expect(loadError, `built-in "${id}" failed to load: ${String(loadError)}`).toBeUndefined();
         }
       });
