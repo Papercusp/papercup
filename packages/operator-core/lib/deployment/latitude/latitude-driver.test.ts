@@ -231,6 +231,17 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
     expect(exec.scripts).toHaveLength(1);
   });
 
+  it('stages a long-lived OAuth token (P-011 token channel) and exports it in the bootstrap', async () => {
+    const exec = fakeExec();
+    const driver = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => exec });
+    await driver.install(frame, cfg, {
+      ...ctx,
+      bootstrap: { repoUrl: 'g', oauthTokenLocalPath: '/local/frame-claude/token' },
+    });
+    expect(exec.copies).toEqual([['/local/frame-claude/token', '/root/papercusp-claude-token']]);
+    expect(exec.scripts[0]).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
   it('join default is a no-op log; onJoin hook is honored when provided', async () => {
     const calls: string[] = [];
     const driver = makeLatitudeDriver({

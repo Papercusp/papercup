@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { DeploymentConfig, DeploymentDriver, Frame } from '@papercusp/deployment-driver';
 import { deployHarness, teardownHarness, type DeployDeps } from './deploy';
-import { resolveCredentialPath } from './bootstrap-input';
+import { resolveCredential } from './bootstrap-input';
 
 function fakeDriver(calls: string[]): DeploymentDriver {
   const frame: Frame = { id: 'sv_1', target: 'latitude', placement: 'remote', host: '1.2.3.4' };
@@ -115,11 +115,27 @@ describe('teardownHarness', () => {
   });
 });
 
-describe('resolveCredentialPath', () => {
-  it('handles file:, absolute, ~, and env-style refs', () => {
-    expect(resolveCredentialPath('file:/a/b.json')).toBe('/a/b.json');
-    expect(resolveCredentialPath('/abs/creds.json')).toBe('/abs/creds.json');
-    expect(resolveCredentialPath(undefined)).toBeUndefined();
-    expect(resolveCredentialPath('env:LATITUDE_API_KEY')).toBeUndefined(); // API key, not a creds file
+describe('resolveCredential', () => {
+  it('routes file:/absolute/~ refs to the credentials-bundle channel', () => {
+    expect(resolveCredential('file:/a/b.json')).toEqual({ credentialsLocalPath: '/a/b.json' });
+    expect(resolveCredential('/abs/creds.json')).toEqual({ credentialsLocalPath: '/abs/creds.json' });
+    expect(resolveCredential('~/c.json')).toEqual({
+      credentialsLocalPath: `${process.env.HOME}/c.json`,
+    });
+  });
+
+  it('routes token: refs to the long-lived OAuth token channel (claude setup-token)', () => {
+    expect(resolveCredential('token:/secrets/claude-token')).toEqual({
+      oauthTokenLocalPath: '/secrets/claude-token',
+    });
+    expect(resolveCredential('token:~/.papercusp/frame-claude/token')).toEqual({
+      oauthTokenLocalPath: `${process.env.HOME}/.papercusp/frame-claude/token`,
+    });
+  });
+
+  it('env-style / absent refs are the provider API key, not a frame credential', () => {
+    expect(resolveCredential(undefined)).toEqual({});
+    expect(resolveCredential('env:LATITUDE_API_KEY')).toEqual({});
+    expect(resolveCredential('LATITUDE_API_KEY')).toEqual({});
   });
 });

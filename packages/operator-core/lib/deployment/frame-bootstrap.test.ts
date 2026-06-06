@@ -40,6 +40,31 @@ describe('buildFrameBootstrap', () => {
     expect(steps).not.toContain('credentials');
   });
 
+  it('token channel: mounts the staged OAuth token and exports CLAUDE_CODE_OAUTH_TOKEN', () => {
+    const { script, steps } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      claudeTokenRemotePath: '/root/papercusp-claude-token',
+    });
+    expect(steps).toContain('credentials');
+    expect(script).toContain("install -m 0600 '/root/papercusp-claude-token' \"$HOME/.papercusp/claude-token\"");
+    expect(script).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.papercusp/claude-token")"');
+    // token-only → no credentials-bundle install
+    expect(script).not.toContain('.credentials.json');
+  });
+
+  it('both channels can coexist in one credentials step', () => {
+    const { script, steps } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      claudeCredentialsRemotePath: '/root/creds.json',
+      claudeTokenRemotePath: '/root/tok',
+    });
+    expect(steps.filter((s) => s === 'credentials')).toHaveLength(1);
+    expect(script).toContain('.credentials.json');
+    expect(script).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
   it('embeddedPg:false and orchestratorOnFrame:false drop those sections', () => {
     const { steps, script } = buildFrameBootstrap({
       harnessSlug: 'h',

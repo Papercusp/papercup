@@ -40,6 +40,10 @@ export interface FrameBootstrapOpts {
   orchestratorOnFrame?: boolean;
   /** P-011: path on the frame where the Claude credentials were staged before this runs. */
   claudeCredentialsRemotePath?: string;
+  /** P-011 token channel: path on the frame where a long-lived OAuth token
+   *  (`claude setup-token` output) was staged — installed to `~/.papercusp/claude-token`
+   *  and exported as `CLAUDE_CODE_OAUTH_TOKEN` for everything the script starts. */
+  claudeTokenRemotePath?: string;
   /** Install root on the frame (default `/opt/papercusp`). */
   installRoot?: string;
   /** Commands that install the papercusp RUNTIME on the frame (clone+build, or fetch a
@@ -94,6 +98,7 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
   const embeddedPg = opts.embeddedPg !== false;
   const orchestratorOnFrame = opts.orchestratorOnFrame !== false;
   const credPath = opts.claudeCredentialsRemotePath;
+  const tokenPath = opts.claudeTokenRemotePath;
   const envSpec = opts.environment;
   const mergedEnv = { ...(envSpec?.env ?? {}), ...(opts.env ?? {}) };
 
@@ -148,18 +153,36 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     ]);
   }
 
-  if (credPath) {
+  if (credPath || tokenPath) {
     // P-011: stage the per-frame Claude subscription so this frame has its OWN
-    // rate limits. The operator scp's the credentials to `credPath` BEFORE this
-    // runs; here we install them where both omp (via Meridian) + claude read.
-    add('credentials', 'mount Claude subscription (P-011)', [
-      'mkdir -p "$HOME/.claude" && chmod 700 "$HOME/.claude"',
-      `if [ -f ${shq(credPath)} ]; then`,
-      `  install -m 0600 ${shq(credPath)} "$HOME/.claude/.credentials.json"`,
-      'else',
-      `  echo "WARN: Claude credentials not staged at ${credPath} — agent runs will fail to auth" >&2`,
-      'fi',
-    ]);
+    // rate limits — via a credentials bundle (interactive-login channel), a
+    // long-lived OAuth token (`claude setup-token`; the automated channel), or both.
+    const lines: string[] = [];
+    if (credPath) {
+      // The operator scp's the credentials to `credPath` BEFORE this runs; here we
+      // install them where both omp (via Meridian) + claude read.
+      lines.push(
+        'mkdir -p "$HOME/.claude" && chmod 700 "$HOME/.claude"',
+        `if [ -f ${shq(credPath)} ]; then`,
+        `  install -m 0600 ${shq(credPath)} "$HOME/.claude/.credentials.json"`,
+        'else',
+        `  echo "WARN: Claude credentials not staged at ${credPath} — agent runs will fail to auth" >&2`,
+        'fi',
+      );
+    }
+    if (tokenPath) {
+      // Exported here (script-level) so every later section — services + the
+      // orchestrator loop and the agents it spawns — inherits it.
+      lines.push(
+        `if [ -f ${shq(tokenPath)} ]; then`,
+        `  mkdir -p "$HOME/.papercusp" && install -m 0600 ${shq(tokenPath)} "$HOME/.papercusp/claude-token"`,
+        '  export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.papercusp/claude-token")"',
+        'else',
+        `  echo "WARN: Claude OAuth token not staged at ${tokenPath} — agent runs will fail to auth" >&2`,
+        'fi',
+      );
+    }
+    add('credentials', 'mount Claude subscription (P-011)', lines);
   }
 
   if (embeddedPg) {

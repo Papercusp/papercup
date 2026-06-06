@@ -15,6 +15,8 @@ import { createSshRemoteExec, type RemoteExec } from './remote-exec';
 
 /** Where the per-frame Claude credentials are staged on the frame before bootstrap. */
 export const REMOTE_CRED_PATH = '/root/papercusp-claude-credentials.json';
+/** Where the per-frame long-lived OAuth token (`claude setup-token`) is staged. */
+export const REMOTE_TOKEN_PATH = '/root/papercusp-claude-token';
 
 export interface FrameInstallerDeps {
   /** Build the RemoteExec for a frame. Injected for tests; default = SSH. */
@@ -45,10 +47,15 @@ export async function installFrame(
   const exec = makeRemoteExec(frame, config);
   const log = (msg: string) => ctx.log?.('info', `[install] ${msg}`);
 
-  // P-011: stage the per-frame Claude subscription (its own rate limits) first.
+  // P-011: stage the per-frame Claude subscription (its own rate limits) first —
+  // either a credentials bundle, a long-lived OAuth token, or both.
   if (boot.credentialsLocalPath) {
     log(`staging per-frame Claude credentials → ${REMOTE_CRED_PATH}`);
     await exec.copyFile(boot.credentialsLocalPath, REMOTE_CRED_PATH);
+  }
+  if (boot.oauthTokenLocalPath) {
+    log(`staging per-frame Claude OAuth token → ${REMOTE_TOKEN_PATH}`);
+    await exec.copyFile(boot.oauthTokenLocalPath, REMOTE_TOKEN_PATH);
   }
   const { script } = buildFrameBootstrap({
     harnessSlug: ctx.harnessSlug,
@@ -65,6 +72,7 @@ export async function installFrame(
       env: boot.env ?? {},
     },
     claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
+    claudeTokenRemotePath: boot.oauthTokenLocalPath ? REMOTE_TOKEN_PATH : undefined,
     embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
     orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
     env: boot.env,
