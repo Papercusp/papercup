@@ -38,6 +38,10 @@ pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 #[derive(Debug, PartialEq)]
 pub enum Action {
     None,
+    /// A pui docs action (harness-docs-integration P-009): POST regenerate|verify
+    /// for the selected doc. The run loop fires it; the refetch loop refreshes the
+    /// badges on its next tick.
+    DocsAction { action: String, doc_id: String },
     Render,
     Quit,
     /// Open a native agent session in a new multiplexer pane.
@@ -786,6 +790,10 @@ pub struct App {
     pub doc_sel: usize,
     pub doc_content: String,
     pub doc_scroll: u16,
+    /// Merged-doc model (harness-docs-integration P-009): per-doc source + drift
+    /// status for the badges, + the active doc's source/status/overlay.
+    pub doc_entries: Vec<crate::models::DocEntry>,
+    pub doc_active: Option<crate::models::ActiveDocEntry>,
     /// Shared selected-doc path the poller fetches (None → endpoint's default).
     pub active_doc: Arc<Mutex<Option<String>>>,
     /// Testing tab: testing domains for the active harness.
@@ -1073,6 +1081,8 @@ impl App {
             doc_sel: 0,
             doc_content: String::new(),
             doc_scroll: 0,
+            doc_entries: Vec::new(),
+            doc_active: None,
             active_doc: Arc::new(Mutex::new(None)),
             testing: Vec::new(),
             testing_sel: 0,
@@ -1443,6 +1453,8 @@ impl App {
         self.doc_content.clear();
         self.doc_sel = 0;
         self.doc_scroll = 0;
+        self.doc_entries.clear();
+        self.doc_active = None;
         self.testing.clear();
         self.testing_sel = 0;
         self.testing_files.clear();
@@ -1643,6 +1655,8 @@ impl App {
     pub fn set_docs(&mut self, docs: DocsResponse) {
         self.docs_files = docs.files;
         self.doc_content = docs.content.unwrap_or_default();
+        self.doc_entries = docs.entries;
+        self.doc_active = docs.active_entry;
         // Until the user picks a doc, follow the server's chosen active path.
         let no_selection = self.active_doc.lock().map(|g| g.is_none()).unwrap_or(true);
         if no_selection {
@@ -3770,6 +3784,23 @@ impl App {
             KeyCode::PageUp if self.tab == Tab::Docs => {
                 self.doc_scroll = self.doc_scroll.saturating_sub(10);
                 Action::Render
+            }
+            // Refresh the selected doc's freshness (harness-docs-integration P-009):
+            // regenerate a stale generated/augmented doc, or re-verify a manual one.
+            // (Capital R — lowercase r/g are taken globally.)
+            KeyCode::Char('R') if self.tab == Tab::Docs => {
+                if let Some(doc) = self.docs_files.get(self.doc_sel).cloned() {
+                    let source = self
+                        .doc_entries
+                        .iter()
+                        .find(|e| e.doc_id == doc)
+                        .map(|e| e.source.as_str())
+                        .unwrap_or("manual");
+                    let action = if source == "manual" { "verify" } else { "regenerate" };
+                    Action::DocsAction { action: action.to_string(), doc_id: doc }
+                } else {
+                    Action::None
+                }
             }
             // Operator transcript scroll (chat_scroll = lines UP from the bottom).
             // PageUp is also the deliberate "page back into history" gesture, so it

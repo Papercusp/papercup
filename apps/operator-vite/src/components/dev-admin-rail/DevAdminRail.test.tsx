@@ -50,10 +50,11 @@ describe('DevAdminRail shell', () => {
     expect(screen.queryByTestId('dev-admin-rail')).toBeNull();
   });
 
-  it('clicking the handle opens the rail — writes ?devRail=true to the URL', () => {
+  it('clicking the handle opens the rail — writes ?devRail=true to the URL', async () => {
     const { lastQuery } = renderRail();
     fireEvent.click(screen.getByTestId('dev-admin-rail-handle'));
-    expect(lastQuery()).toContain('devRail=true');
+    // nuqs throttles URL writes — await the flush.
+    await waitFor(() => expect(lastQuery()).toContain('devRail=true'));
   });
 
   it('when open (?devRail=true) it shows the rail with all 7 section headers, flags active by default', async () => {
@@ -77,16 +78,18 @@ describe('DevAdminRail shell', () => {
     const { lastQuery } = renderRail('?devRail=true');
     await screen.findByTestId('panel-flags');
     fireEvent.click(screen.getByTestId('dev-rail-sec-fleet'));
-    expect(lastQuery()).toContain('devSec=fleet');
+    await waitFor(() => expect(lastQuery()).toContain('devSec=fleet'));
     expect(await screen.findByTestId('panel-fleet')).toBeTruthy();
     // Single-open accordion: the previously-active flags panel unmounts.
     await waitFor(() => expect(screen.queryByTestId('panel-flags')).toBeNull());
   });
 
-  it('clicking close collapses the rail — writes devRail back off', () => {
-    const { lastQuery } = renderRail('?devRail=true');
+  it('clicking close collapses the rail — clears devRail and shows the handle again', async () => {
+    renderRail('?devRail=true');
     fireEvent.click(screen.getByLabelText('Close dev admin rail'));
-    // parseAsBoolean.withDefault(false): setting false clears the param → no devRail=true.
-    expect(lastQuery()).not.toContain('devRail=true');
+    // setOpen(false) === the parseAsBoolean default → the rail collapses back to
+    // just the handle (and nuqs drops the now-default param).
+    await waitFor(() => expect(screen.getByTestId('dev-admin-rail-handle')).toBeTruthy());
+    expect(screen.queryByTestId('dev-admin-rail')).toBeNull();
   });
 });

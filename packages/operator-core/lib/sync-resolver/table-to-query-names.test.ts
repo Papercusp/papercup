@@ -82,11 +82,13 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   it('exposes a distinct, non-trivially-populated set of camelCase names through the bridge', () => {
     // Was a brittle exact count (56) that flapped red as query families landed
     // (issues/conversations/coord added 2026-06-04 → 63; delegates.byWorkspace
-    // removed by collapse-delegate-into-workitems-2026-06-04 → 62). The
+    // removed by collapse-delegate-into-workitems-2026-06-04 → 62; harnessHealth.byHarness
+    // removed by spec-md-ui-deprecation-cleanup P-007 → 61, matching the sibling
+    // floor in index.test.ts which was lowered to 61 at the same time). The
     // forward-defined + v2-consistency assertions above carry the real signal;
     // here we only assert the bridge is non-trivially populated + every name distinct.
     const names = allBridgedQueryNames();
-    expect(names.length).toBeGreaterThanOrEqual(62);
+    expect(names.length).toBeGreaterThanOrEqual(61);
     expect(new Set(names).size, 'bridged query names are distinct').toBe(names.length);
   });
 });

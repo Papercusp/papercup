@@ -283,6 +283,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
             Action::Render => {
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::DocsAction { action, doc_id } => {
+                // Fire the docs action (regenerate|verify) off the UI thread; the
+                // periodic refetch loop refreshes the badges on its next tick
+                // (harness-docs-integration P-009).
+                tokio::spawn(apply_docs_action(app.harness.clone(), action, doc_id, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::Launch(spec) => {
                 // Record the launch into the crew roster (P12b) before spawning.
                 app.record_launch(&spec);
@@ -765,6 +772,23 @@ async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSe
                 files: Vec::new(),
             });
         }
+    }
+}
+
+/// Fire a pui docs action (regenerate|verify) for the selected doc
+/// (harness-docs-integration P-009). Success is silent — the periodic refetch loop
+/// refreshes the source/freshness badges within a tick; failures surface as a
+/// status-bar toast so the keypress never silently no-ops.
+async fn apply_docs_action(harness: String, action: String, doc_id: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("docs {action}: {e}")));
+            return;
+        }
+    };
+    if let Err(e) = client.docs_action(&harness, &action, &doc_id).await {
+        let _ = tx.send(Event::Error(format!("docs {action}: {e}")));
     }
 }
 

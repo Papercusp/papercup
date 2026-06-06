@@ -1398,8 +1398,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // dev.coordPresence — live coordination agents (+ stale) and their declared
-  // intent: who's working on what right now.
+  // dev.coordPresence — LIVE coordination agents and their declared intent: who's
+  // working on what right now. Filters out stale rows server-side (heartbeat >10
+  // min — almost certainly ended): the roster can hold 150+ rows but only a
+  // handful are live, and shipping every stale row each refresh is exactly what
+  // overflowed coord:presence's token budget (233-row note in presence.ts).
   'dev.coordPresence': {
     argsSchema: z.object({
       workspace: z.string().optional(),
@@ -1407,7 +1410,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { workspace } = args as { workspace?: string };
       const { listPresence } = await import('../agent-tools/coordination/presence');
-      return (await listPresence({ workspaceId: workspace ?? null })) as unknown[];
+      const records = (await listPresence({ workspaceId: workspace ?? null })) as Array<{
+        stale?: boolean;
+      }>;
+      return records.filter((r) => !r.stale);
     },
   },
 
