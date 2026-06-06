@@ -325,10 +325,35 @@ automation-only.** Since the staging→main cutover
 **`staging`** (the integration firehose) — peers, dev servers, and paperclip
 all assume it. **`main` is the GREEN branch**: it only ever fast-forwards to
 a staging commit that passed the green-checkpoint suite, and nothing but
-that automation pushes it — never push or `branch -f` `main` yourself.
-Coordinate through the lock + coord systems, not tree isolation: `locks:*`
-guards files, `coord:*` announces intent. (Submodules are unchanged — each
-stays on its own default branch.)
+that automation pushes it — never push or `branch -f` `main` yourself (a
+pre-push hook blocks you anyway). Coordinate through the lock + coord
+systems, not tree isolation: `locks:*` guards files, `coord:*` announces
+intent. (Submodules are unchanged — each stays on its own default branch.)
+
+**Where to work — the directory map.** ALL repo work happens in exactly ONE
+place; the sibling `papercup-*` directories are pipeline artifacts, not
+workspaces:
+
+- ✅ **`~/papercupai-workspace/papercup`** — the canonical shared tree
+  (branch `staging`). Every edit goes here — superproject AND submodules
+  (`libs/papercusp`, `libs/generic/*`, … are edited in place inside it).
+  git-sync sweeps whatever is in this tree to origin every ~10 min.
+- 🚫 **`~/papercupai-workspace/papercup-release`** — the `:3070` deploy
+  artifact, pinned to green `main`. NEVER edit it: every deploy
+  `reset --hard`s + `git clean`s it and rebuilds its SPA dist, so your
+  change is clobbered and never reaches origin. If `:3070` lacks your fix,
+  the fix isn't deployed yet — work in the canonical tree and let the
+  pipeline carry it (or run `deploy-cli --execute`).
+- 🚫 **`~/papercupai-workspace/papercup-checkpoint`** — the
+  green-checkpoint's ISOLATED test tree. Never edit it and never leave
+  stray files in it (it is reset + cleaned every run; untracked debris
+  there once poisoned the green gate for the whole fleet — 2026-06-06).
+- 🚫 other `papercup-*` siblings (`papercup-backup`,
+  `papercup-design-migration`, …) — preserved special-purpose worktrees on
+  their own branches. Not for new work.
+
+Quick self-check before editing: `pwd` ends in `/papercup` (no suffix) and
+`git branch --show-current` says `staging`.
 
 **Two operators — `:3070` auto-serves green `main`, `:3170` is where your edits run.**
 The site + fleet MCP server **`:3070`** (`papercup-dev-api`) runs from the **release

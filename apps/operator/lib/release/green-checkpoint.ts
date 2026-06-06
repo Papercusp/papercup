@@ -137,6 +137,14 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       const [cmd, ...args] = cfg.greenCmd.split(' ');
       const env: NodeJS.ProcessEnv = { ...process.env };
       if (base) env.AFFECTED_BASE = base;
+      // Cap the suite's parallelism: the checkpoint shares the box with the live
+      // fleet (deploys, hive agents, builds), and uncapped vitest workers under
+      // that load produce timeout FLAKES that read as "not green" and stall the
+      // auto-serve pipeline (observed 2026-06-06: 1-of-8881 load-flake held
+      // `main` back; the same suite passed clean minutes later). Hourly +
+      // isolated means slower-but-stable is the right trade.
+      env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
+      env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
       const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
       return { green: r.code === 0, summary: (r.stdout + r.stderr).slice(-2000) };
     },
