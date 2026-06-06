@@ -724,6 +724,53 @@ mod tests {
     }
 
     #[test]
+    fn open_mic_key_toggles_mute_not_transmit() {
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))),
+        );
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Prefs(VoicePrefsView {
+                input_mode: "open-mic".into(),
+                ptt_key: "v".into(),
+                aec: true,
+                noise_suppression: true,
+                input_gain: 1.0,
+                output_volume: 1.0,
+            }),
+        );
+        // In open-mic the mic is always live, so the PTT key toggles MUTE rather
+        // than start/stop transmit — and a release is a no-op (no hold-to-talk).
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE),
+            Some(VoiceCmd::SetMuted(true))
+        );
+        assert_eq!(handle_release(&s, KeyCode::Char('v')), None);
+    }
+
+    #[test]
+    fn release_ignored_while_overlay_open() {
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))),
+        );
+        s.settings_open = true;
+        assert_eq!(handle_release(&s, KeyCode::Char('v')), None);
+        s.settings_open = false;
+        s.composing = true;
+        assert_eq!(handle_release(&s, KeyCode::Char('v')), None);
+    }
+
+    #[test]
     fn composer_collects_name() {
         let mut s = VoiceUiState {
             connected: true,
