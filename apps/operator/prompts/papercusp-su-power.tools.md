@@ -373,6 +373,8 @@ identical on every client.
   returns the live catalog with per-tool guidance — check it rather than
   trusting this file to be complete.
 
+<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
+
 ## Named workflows
 
 **"What's the state of X" (a project):** `harness:list` → `harness:status

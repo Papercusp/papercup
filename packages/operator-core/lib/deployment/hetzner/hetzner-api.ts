@@ -77,7 +77,7 @@ export function createHetznerApiClient(opts: {
       const res = await fetchImpl(`${baseUrl}/servers`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ start_after_create: true, image: 'ubuntu-22.04', ...attrs }),
+        body: JSON.stringify({ start_after_create: true, ...attrs, image: attrs.image || 'ubuntu-22.04' }),
       });
       const json = await res.json().catch(() => null);
       if (res.status !== 201 && res.status !== 200) throw new HetznerApiError('createServer', res.status, json);

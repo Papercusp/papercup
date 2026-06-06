@@ -48,6 +48,18 @@ export async function buildDeployBootstrapInput(
     }
   }
 
+  // P-008: deliver the harness's per-install instance config to the frame via env
+  // (the frame has no local config.json). Assembled from workspace PG (registry),
+  // falling back to the local config.json for an un-migrated harness.
+  let instanceConfigJson: string | undefined;
+  try {
+    const { assembleInstanceConfig } = await import('./instance-config');
+    const cfg = await assembleInstanceConfig(slug, workspaceId);
+    if (Object.keys(cfg).length > 0) instanceConfigJson = JSON.stringify(cfg);
+  } catch {
+    /* no instance config — the frame runs on blueprint-knob defaults */
+  }
+
   return {
     repoUrl,
     setup: env?.setup,
@@ -58,5 +70,6 @@ export async function buildDeployBootstrapInput(
     ports: env?.ports,
     env: env?.env,
     credentialsLocalPath: resolveCredentialPath(config.credentialRef),
+    instanceConfigJson,
   };
 }

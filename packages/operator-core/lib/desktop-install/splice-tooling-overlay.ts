@@ -17,6 +17,31 @@ export const CLIENT_TOOLING_OVERLAY_MARKER =
   '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
 
 /**
+ * Marker for the generated "## Wire schemas" legend (token-efficient-agent-io
+ * P-003) — the prompt-declared column schemas for the pre-prompt registry tools.
+ * Spliced by `renderSuPlaybook` from `renderWireSchemasSection()`. Same splice
+ * contract as the tooling overlay: an absent marker means the section is simply
+ * appended; an empty section removes the marker (never shipped literally).
+ */
+export const WIRE_SCHEMAS_MARKER = '<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->';
+
+/**
+ * Splice generated `content` into `base` at `marker`. Replaces ALL marker
+ * occurrences; with an absent marker the content is appended (when non-empty);
+ * an empty content with a present marker just removes it. Generalizes the
+ * tooling-overlay splice so multiple generated sections share one contract.
+ */
+export function spliceAtMarker(base: string, marker: string, content: string): string {
+  if (base.includes(marker)) {
+    return base.split(marker).join(content);
+  }
+  if (content) {
+    return base.replace(/\n+$/, '') + '\n\n' + content + '\n';
+  }
+  return base;
+}
+
+/**
  * @param base    base playbook (may contain the marker).
  * @param overlay client tooling overlay; pass '' if none (the marker is then
  *                removed, never shipped literally).

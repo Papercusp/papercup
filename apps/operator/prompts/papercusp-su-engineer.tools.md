@@ -606,6 +606,8 @@ identical on every client.
   `Accept: text/markdown`). For implementation *truth*, read the source —
   docs lag code by design (documenter writes after a feature passes).
 
+<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->
+
 ## Named workflows
 
 **"What's the state of X" (harness/workspace):** `papercusp:list_workspaces`

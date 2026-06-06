@@ -39,6 +39,12 @@ import {
   listAllProjectedTools,
   type ProjectedTool,
 } from '@papercusp/agent-mcp';
+import {
+  listPrePromptEntries,
+  projectReadColumns,
+  projectWriteColumns,
+  renderWireSchemas,
+} from '@papercusp/result-encoding';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -273,6 +279,35 @@ export function renderToolsCatalog(
   }
   if (rendered === 0) return '';
   return lines.join('\n').trimEnd();
+}
+
+/**
+ * Render the "## Wire schemas" prompt legend (token-efficient-agent-io P-003):
+ * the prompt-declared column schemas for every pre-prompt registry tool, derived
+ * from each tool's OWN registered schema (output `data` for read, `args` for
+ * write). Because the SAME `projectReadColumns`/`projectWriteColumns` drive the
+ * read serializer and the write shim, the legend can't desync from the wire (the
+ * anti-desync test asserts it). Returns '' when no registry tool has derivable
+ * columns, so the marker collapses to nothing.
+ */
+export function renderWireSchemasSection(): string {
+  const byMcpName = new Map<string, ProjectedTool>();
+  for (const t of listAllProjectedTools()) {
+    if (t.expose.mcp) byMcpName.set(t.expose.mcp.name, t);
+  }
+  return renderWireSchemas(listPrePromptEntries(), (entry) => {
+    const tool = byMcpName.get(entry.name);
+    if (!tool) return {};
+    const read =
+      entry.read !== 'off' && tool.outputJsonSchema
+        ? projectReadColumns(tool.outputJsonSchema)
+        : undefined;
+    const write =
+      entry.write === 'positional'
+        ? projectWriteColumns(tool.inputSchema as Record<string, unknown>, { freeTextName: entry.freeTextArg })
+        : undefined;
+    return { read, write };
+  });
 }
 
 function mergeRoleGuidance(

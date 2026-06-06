@@ -19,6 +19,11 @@
  * side-effect import below.
  */
 
+// Configure the pre-prompt registry (token-efficient-agent-io P-002) before any
+// tool dispatch — a pure side-effect that installs the curated list consulted by
+// the read serializer + write shim + prompt legend.
+import './pre-prompt-registry-config';
+
 import './operator/stats';
 import './operator/converse';
 import './operator/delegate';

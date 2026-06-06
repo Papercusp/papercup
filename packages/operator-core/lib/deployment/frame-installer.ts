@@ -68,6 +68,7 @@ export async function installFrame(
     embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
     orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
     env: boot.env,
+    instanceConfigJson: boot.instanceConfigJson, // P-008: frame's instance config via env
   });
   log(`bootstrapping frame ${frame.id} (${script.length} bytes; own loop + own embedded-pg per D-006/D-007)`);
   await exec.runScript(script);

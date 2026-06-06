@@ -72,4 +72,18 @@ describe('buildFrameBootstrap', () => {
     expect(script).toContain('backend is not omp');
     expect(script).toContain("AGENT_BACKEND='claude-code'");
   });
+
+  it('exports the instance config via HARNESS_CONFIG_JSON when provided (P-008)', () => {
+    const { script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      instanceConfigJson: '{"phase":"production","maxCostUsd":5}',
+    });
+    expect(script).toContain(`export HARNESS_CONFIG_JSON='{"phase":"production","maxCostUsd":5}'`);
+  });
+
+  it('omits HARNESS_CONFIG_JSON when no instance config', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv });
+    expect(script).not.toContain('HARNESS_CONFIG_JSON');
+  });
 });
