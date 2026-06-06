@@ -3145,6 +3145,57 @@ mod tests {
         assert!(text.contains("Plans"));
     }
 
+    /// Hive lexicon (pui-hive-lexicon-2026-06-06): with the-hive active the tab
+    /// strip shows the bee labels (Operator→Queen, Fleet→Swarm, Pots→Hives,
+    /// Cupboard→Comb); other tabs (Inbox/Plans/…) are unchanged.
+    #[test]
+    fn tab_strip_uses_the_hive_lexicon_when_active() {
+        use crate::models::{LexiconPackPayload, TermForms};
+        use std::collections::HashMap;
+        let mut terms = HashMap::new();
+        for (k, one, other) in [
+            ("operator", "Queen", "Queens"),
+            ("fleet", "Swarm", "Swarms"),
+            ("pot", "Hive", "Hives"),
+            ("cupboard", "Comb", "Combs"),
+        ] {
+            terms.insert(
+                k.to_string(),
+                TermForms { one: one.into(), other: other.into() },
+            );
+        }
+        let mut app = App::new();
+        app.lexicon = crate::lexicon::Lexicon::from_payload(&LexiconPackPayload {
+            pack_id: "the-hive".into(),
+            label: "The Hive".into(),
+            terms,
+        });
+        // Wide enough that the Tabs widget doesn't truncate the renamed tabs.
+        let text = render(&app, 200, 8);
+        assert!(text.contains("Queen"), "Operator→Queen");
+        assert!(text.contains("Swarm"), "Fleet→Swarm");
+        assert!(text.contains("Hives"), "Pots→Hives");
+        assert!(text.contains("Comb"), "Cupboard→Comb");
+        // A tab with no lexicon term keeps its classic title.
+        assert!(text.contains("Inbox"));
+        assert!(text.contains("Plans"));
+    }
+
+    /// Flag-off / unreachable operator: the tab strip shows today's classic
+    /// labels (the default empty lexicon falls back to CLASSIC).
+    #[test]
+    fn tab_strip_uses_classic_labels_by_default() {
+        let app = App::new(); // empty lexicon = classic fallback
+        let text = render(&app, 200, 8);
+        assert!(text.contains("Operator"));
+        assert!(text.contains("Fleet"));
+        assert!(text.contains("Pots"));
+        assert!(text.contains("Cupboard"));
+        // The bee labels must NOT appear with the flag off.
+        assert!(!text.contains("Queen"));
+        assert!(!text.contains("Swarm"));
+    }
+
     /// Brief 27 / P-010: buffer-level width safety for the Plans tab. Renders
     /// a plan list whose items cover every disposition glyph at 80 and 120
     /// cols; asserts no double-width symbol leaks into the frame (only

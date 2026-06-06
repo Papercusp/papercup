@@ -29,15 +29,17 @@ export interface FrameInstallerDeps {
   sshWait?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
 }
 
-/** Wait for the frame's sshd to accept connections — a provisioned server can
- *  report ready (IP assigned) before its OS has finished booting sshd. */
+/** Wait for the frame's sshd to accept connections. The provider's "ready" status
+ *  is POWER state, not OS readiness — observed live 2026-06-06 on Latitude metal:
+ *  `on` + IP within seconds, but the ubuntu reimage kept sshd "Connection refused"
+ *  for many minutes. Default window sized for bare-metal OS installs (~22 min). */
 export async function waitForSsh(
   exec: RemoteExec,
   log: (msg: string) => void,
   opts: FrameInstallerDeps['sshWait'] = {},
 ): Promise<void> {
-  const attempts = opts.attempts ?? 30;
-  const delayMs = opts.delayMs ?? 10_000;
+  const attempts = opts.attempts ?? 90;
+  const delayMs = opts.delayMs ?? 15_000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (let i = 1; ; i++) {
     try {

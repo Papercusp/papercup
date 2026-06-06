@@ -1209,11 +1209,16 @@ impl App {
     // ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ───
 
     /// The singular display label for a lexicon term key through the active pack
-    /// (classic fallback when unfetched/offline). Presentation only.
+    /// (classic fallback when unfetched/offline). Presentation only. The
+    /// requested `lex(term)` app-state helper (pui-hive-lexicon-2026-06-06);
+    /// `Tab::label` + the dock-KDL pane-name resolver are the live callsites
+    /// today, this is the general seam for routing any future label.
+    #[allow(dead_code)]
     pub fn lex(&self, term: &str) -> String {
         self.lexicon.lex(term)
     }
     /// The plural display label for a lexicon term key.
+    #[allow(dead_code)]
     pub fn lex_plural(&self, term: &str) -> String {
         self.lexicon.lex_plural(term)
     }
@@ -2652,6 +2657,12 @@ impl App {
                 let to_open =
                     crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host);
                 if to_open.is_empty() {
+                    // Swarm pane: publish the initial bee selection once the roster
+                    // lands so the bee-dossier pane has something to render before
+                    // the first cursor move (pui-bee-dossier-pane-2026-06-06).
+                    if self.tab == Tab::Fleet {
+                        return self.publish_swarm_selection();
+                    }
                     Action::Render
                 } else {
                     for p in &to_open {
@@ -4582,6 +4593,96 @@ mod tests {
         let mut b = App::new();
         b.set_roster(vec![roster_entry("codex")]);
         assert!(b.launch_spec().argv.contains(&"--agent=codex".to_string()));
+    }
+
+    // ── Swarm pane → bee-dossier selection relay (pui-bee-dossier-pane-2026-06-06) ──
+
+    fn bee_roster_entry(owner: &str, agent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: owner.into(),
+            label: format!("su · {owner}"),
+            liveness: "live".into(),
+            agent: Some(agent.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fleet_cursor_move_publishes_bee_selection() {
+        let mut a = App::new();
+        a.switch_to(Tab::Fleet);
+        a.set_roster(vec![
+            bee_roster_entry("su-aaa", "claude"),
+            bee_roster_entry("su-bbb", "codex"),
+        ]);
+        a.fleet.agent_sel = 0;
+        // j moves to the second bee and publishes IT.
+        match a.update(key('j', KeyModifiers::NONE)) {
+            Action::PublishBeeSelection { owner_id, name } => {
+                assert_eq!(owner_id.as_deref(), Some("su-bbb"));
+                assert_eq!(name.as_deref(), Some("codex"));
+            }
+            other => panic!("expected PublishBeeSelection, got {other:?}"),
+        }
+        // k moves back to the first bee and publishes it.
+        match a.update(key('k', KeyModifiers::NONE)) {
+            Action::PublishBeeSelection { owner_id, .. } => {
+                assert_eq!(owner_id.as_deref(), Some("su-aaa"));
+            }
+            other => panic!("expected PublishBeeSelection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cursor_move_off_fleet_does_not_publish_bee_selection() {
+        // A roster move on a non-Fleet tab is an ordinary Render, never a publish.
+        let mut a = App::new();
+        a.switch_to(Tab::Plans);
+        assert_eq!(a.update(key('j', KeyModifiers::NONE)), Action::Render);
+    }
+
+    #[test]
+    fn bee_selection_event_updates_state_and_clears_stale_dossier() {
+        let mut a = App::new();
+        a.update(Event::BeeSelection {
+            owner_id: Some("su-x".into()),
+            name: Some("forager".into()),
+        });
+        assert_eq!(a.bee.owner_id.as_deref(), Some("su-x"));
+        // A dossier for the selected bee lands; a new selection clears it.
+        a.update(Event::BeeDossier {
+            owner_id: "su-x".into(),
+            assignment: Some(crate::models::BeeAssignment::default()),
+            mail: None,
+        });
+        assert!(a.bee.assignment.is_some());
+        a.update(Event::BeeSelection {
+            owner_id: Some("su-y".into()),
+            name: None,
+        });
+        assert!(a.bee.assignment.is_none(), "stale dossier cleared on new selection");
+    }
+
+    #[test]
+    fn lexicon_pack_event_routes_tab_labels() {
+        use crate::models::{LexiconPackPayload, TermForms};
+        use std::collections::HashMap;
+        let mut a = App::new();
+        // Default = classic identity labels via the lexicon fallback.
+        assert_eq!(Tab::Fleet.label(&a.lexicon), "Fleet");
+        let mut terms = HashMap::new();
+        terms.insert(
+            "fleet".to_string(),
+            TermForms { one: "Swarm".into(), other: "Swarms".into() },
+        );
+        a.update(Event::LexiconPack(LexiconPackPayload {
+            pack_id: "the-hive".into(),
+            label: "The Hive".into(),
+            terms,
+        }));
+        assert_eq!(Tab::Fleet.label(&a.lexicon), "Swarm");
+        // title() (the stable identity) is unchanged — persistence/state safe.
+        assert_eq!(Tab::Fleet.title(), "Fleet");
     }
 
     // ── Enter-by-location routing (pui-workbench-usability D-001/D-002) ──

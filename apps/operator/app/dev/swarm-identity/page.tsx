@@ -18,11 +18,14 @@ type Direction = {
   note: string;
 };
 
-const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm inside it, and watch the world change.';
+const INTRO_MS = 14_500;
+const SWARM_TRANSITION_MS = 3_800;
+
+const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm, and watch the world change.';
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a Hive, start a swarm inside it, and watch the world change.',
+  'Create or Join a Hive, start a swarm, and watch the world change.',
 ] as const;
 
 const DIRECTIONS: Direction[] = [
@@ -79,16 +82,18 @@ const DIRECTIONS: Direction[] = [
 ];
 
 export default function SwarmIdentityPage() {
-  const [showIntro, setShowIntro] = useState(true);
+  const [introPhase, setIntroPhase] = useState<'lines' | 'swarm' | 'done'>('lines');
   const [introReplay] = useQueryState('intro', parseAsString.withDefault(''));
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    if (introReplay === '1') {
-      setShowIntro(true);
-    }
-    const timer = window.setTimeout(() => setShowIntro(false), 8200);
-    return () => window.clearTimeout(timer);
+    setIntroPhase('lines');
+    const swarmTimer = window.setTimeout(() => setIntroPhase('swarm'), INTRO_MS);
+    const doneTimer = window.setTimeout(() => setIntroPhase('done'), INTRO_MS + SWARM_TRANSITION_MS);
+    return () => {
+      window.clearTimeout(swarmTimer);
+      window.clearTimeout(doneTimer);
+    };
   }, [introReplay]);
 
   const [selected, setSelected] = useQueryState(
@@ -99,7 +104,7 @@ export default function SwarmIdentityPage() {
 
   return (
     <main className={styles.page}>
-      {showIntro ? (
+      {introPhase === 'lines' ? (
         <section className={styles.introSequence} aria-label={TAGLINE}>
           <div className={styles.introComb} aria-hidden="true" />
           <div className={styles.introLines} aria-hidden="true">
@@ -121,7 +126,18 @@ export default function SwarmIdentityPage() {
         </section>
       ) : null}
 
-      <div className={showIntro ? styles.contentReveal : styles.contentVisible}>
+      {introPhase === 'swarm' ? (
+        <section className={styles.swarmTakeover} aria-label="The swarm gathers">
+          <div className={styles.swarmVortex} aria-hidden="true">
+            {Array.from({ length: 26 }, (_, index) => (
+              <span key={index} style={{ '--bee-index': index } as CSSProperties} />
+            ))}
+          </div>
+          <p>The Hive is open.</p>
+        </section>
+      ) : null}
+
+      <div className={introPhase === 'done' ? styles.contentVisible : styles.contentReveal}>
         <section className={`${styles.hero} ${styles[active.id]}`}>
           <div className={styles.heroCopy}>
             <span className={styles.eyebrow}>theswarm.dev identity lab</span>
@@ -204,7 +220,7 @@ export default function SwarmIdentityPage() {
                 <div className={styles.browserBody}>
                   <span className={styles.miniEyebrow}>A new intelligence is forming</span>
                   <h3>Welcome to the End.</h3>
-                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm inside it, and watch the world change.</p>
+                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm, and watch the world change.</p>
                   <div className={styles.browserActions}>
                     <button type="button">Create a Hive</button>
                     <button type="button">Join a Hive</button>
