@@ -1,6 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
+import { useEffect } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import styles from './swarm-identity.module.css';
 
@@ -78,6 +79,10 @@ const DIRECTIONS: Direction[] = [
 ];
 
 export default function SwarmIdentityPage() {
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, []);
+
   const [selected, setSelected] = useQueryState(
     'direction',
     parseAsStringEnum<DirectionId>(DIRECTIONS.map((d) => d.id) as [DirectionId, ...DirectionId[]]).withDefault('blackcomb'),

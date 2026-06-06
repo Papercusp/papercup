@@ -20,11 +20,15 @@
 }
 
 .introSequence {
-  position: fixed;
+  position: sticky;
   z-index: 50;
-  inset: 0;
+  top: 0;
   display: grid;
   place-items: center;
+  width: calc(100% + 56px);
+  height: 100vh;
+  min-height: 540px;
+  margin: -28px -28px -100vh;
   overflow: hidden;
   background:
     radial-gradient(circle at 50% 46%, rgba(234, 179, 8, 0.18), transparent 18%),
@@ -78,7 +82,8 @@
   place-items: center;
   width: 100%;
   max-width: none;
-  min-height: 100svh;
+  height: 100%;
+  min-height: 100%;
   padding: clamp(20px, 5vw, 56px);
   opacity: 0;
   color: #fff7df;
