@@ -2545,10 +2545,24 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::Roster(r) => {
-                self.set_roster(r);
+            Event::Roster { active, pending } => {
+                self.set_roster(active);
                 self.last_error = None;
-                Action::Render
+                // Reactively open work-area panes for new LOCAL workbench launches
+                // (pui-reactive-session-panes D-006). The pure diff returns the
+                // panes to open; record their ids so a refresh in the mark-launched
+                // window can't re-open, and hand the specs to the run loop (I/O).
+                let to_open =
+                    crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host);
+                if to_open.is_empty() {
+                    Action::Render
+                } else {
+                    for p in &to_open {
+                        self.tracked_panes.insert(p.adv_session_id);
+                        self.record_launch(&p.spec); // crew roster (P12b), as a manual launch
+                    }
+                    Action::LaunchPanes(to_open)
+                }
             }
             Event::FleetRate(s) => {
                 self.fleet_rate = Some(s);

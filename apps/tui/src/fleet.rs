@@ -1079,8 +1079,8 @@ mod tests {
             }
             Err(e) => eprintln!("plans_typed ERR: {e}"),
         }
-        if let Ok(v) = c.roster_typed().await {
-            app.set_roster(v);
+        if let Ok((active, _pending)) = c.roster_typed().await {
+            app.set_roster(active);
         }
         if let Ok(v) = c.work_items_list().await {
             app.fleet.set_work_items(v);

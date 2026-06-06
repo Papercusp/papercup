@@ -45,7 +45,22 @@ describe('launchAgent', () => {
       model: 'opus',
       resume_session_id: 's-42',
       kickoff: { kind: 'new-plan' },
+      defer_spawn: false,
     });
+  });
+
+  it('deferSpawn → body carries defer_spawn:true and returns advSessionId (D-006)', async () => {
+    fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ status: 'ok', deferred: true, advSessionId: 77 }), {
+          status: 200,
+        }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const r = await launchAgent({ agent: 'claude', planSlug: 'my-plan', deferSpawn: true });
+    expect(r.ok).toBe(true);
+    expect(r.advSessionId).toBe(77);
+    expect(firstBody().defer_spawn).toBe(true);
   });
 
   it('claude → POST launch-su', async () => {

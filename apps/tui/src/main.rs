@@ -299,6 +299,26 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::LaunchPanes(panes) => {
+                // Reactive work-area panes for new LOCAL workbench launches
+                // (pui-reactive-session-panes D-006). For each: open the pane that
+                // RUNS the launch (companion when linked — its CommandPaneExited
+                // feeds pane-exit detection — else `zellij action new-pane`), then
+                // mark the pending row consumed so it drops out of the roster. The
+                // reducer already recorded each id in the tracked set + crew roster.
+                for p in panes {
+                    match &companion {
+                        Some(c) => c.open_pane(&p.spec),
+                        None => {
+                            if let Err(e) = Zellij.open_pane(&p.spec) {
+                                app.update(Event::Error(format!("launch pane: {e}")));
+                            }
+                        }
+                    }
+                    tokio::spawn(mark_session_launched(p.adv_session_id, tx.clone()));
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::IntentResult {
                 id,
                 result_json,
@@ -802,6 +822,19 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
 }
 
 /// Enter-by-location EXTERNAL-WINDOW route (pui-workbench-usability D-001):
+/// Mark a pending workbench launch CONSUMED after the pui opened its pane
+/// (pui-reactive-session-panes D-006) — POSTs `/api/adv/sessions/mark-launched`
+/// so the row drops out of the roster's `pending` tier. Best-effort + silent: the
+/// tracked-pane set already dedups within this run, so a failure only risks a
+/// re-pane after a restart (acceptable; no user-facing toast). `tx` is taken for a
+/// uniform signature but only used to keep the task tied to the run's lifetime.
+async fn mark_session_launched(adv_session_id: i64, tx: UnboundedSender<Event>) {
+    let _ = &tx; // best-effort; no toast on success/failure
+    if let Ok(client) = OperatorClient::from_discovery().await {
+        let _ = client.mark_session_launched(adv_session_id).await;
+    }
+}
+
 /// bring the selected agent's terminal window to the front via
 /// `/api/adv/sessions/focus` (wmctrl). Best-effort — a resolved window toasts
 /// success; an unresolvable one (no wmctrl/DISPLAY/window, or a remote host)

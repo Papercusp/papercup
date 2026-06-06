@@ -15,7 +15,7 @@
  * expensive git `-L`/`log` confirm runs only for docs the tick could have moved.
  */
 
-import picomatch from 'picomatch';
+import { minimatch } from 'minimatch';
 import { checkDocDrift, type DriftResult } from './drift';
 import type { GitRunner, FeatureCommitLookup, SubjectRef } from './subject-ref';
 import {
@@ -79,12 +79,12 @@ export function anchorMatchesChanged(anchorPaths: string[], changedPaths: string
     const a = anchor.replace(/\/+$/, '');
     if (!a) continue;
     const isGlob = /[*?[\]{}()!+@]/.test(a);
+    // A concrete dir/file anchor also matches files UNDER it (a/b → a/b/**).
     const patterns = isGlob ? [a] : [a, `${a}/**`];
-    const isMatch = picomatch(patterns, { dot: true });
     for (const changed of changedPaths) {
-      if (isMatch(changed)) return true;
-      // Also flag when the anchor is a concrete file UNDER a changed directory
-      // glob isn't needed; exact equality already covered above.
+      for (const pat of patterns) {
+        if (minimatch(changed, pat, { dot: true })) return true;
+      }
     }
   }
   return false;

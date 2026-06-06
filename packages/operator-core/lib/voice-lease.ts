@@ -1,24 +1,24 @@
 /**
- * Cross-surface voice lease — only one device "listens" at a time.
+ * Cross-surface voice lease — elects the single HOST + PLAYER of the ONE shared
+ * operator voice session (universal-voice-interface-2026-06-05, Model A / D-003).
  *
- * Problem: the existing `voice-leader.ts` is a BroadcastChannel
- * intra-browser election. It can't see a paired phone, so if a desktop
- * tab is leader AND the phone has voice mode on, the user gets stereo
- * responses to "hey operator …".
+ * Re-meaning (was: "only one device may listen at a time", mutual exclusion):
+ * the session is now hosted by the voice SERVICE (`OperatorVoiceSession`), and
+ * desktop + tui both attach to it as full clients over the voice-node bus —
+ * receiving the input transcript AND the response (audio + transcript + tags)
+ * and able to drive controls. The lease no longer gates *who is allowed voice*;
+ * it elects *who renders the response audio and captures the mic* (Model A: only
+ * the elected player plays, so the same audio never doubles/echoes). NON-HOLDERS
+ * ARE NEVER REFUSED — they stay receive+display+control clients. `force=1` takes
+ * over the host+player role (the user explicitly toggled "play here"); the host's
+ * `electPlayer` is the sole interpreter of this primitive (it does NOT steal the
+ * role on a plain, non-forcing start while another client hosts).
  *
- * Solution: a per-workspace lease stored in `harness_shared.voice_lease`
- * with a 12s heartbeat-based expiry (same cadence as voice-leader). Any
- * client that wants to listen claims the lease; when a new client claims
- * it, we emit `voiceLease.current` on the sync-invalidate channel so
- * existing listeners (desktop tabs subscribed via the SSE stream)
- * silently demote.
- *
- * Phone is the natural pre-empter: when the user taps the FAB on the
- * phone, they want the phone to listen — desktop yields. Same for the
- * inverse direction.
- *
- * The server is the source of truth. Browsers and phones both call
- * REST endpoints; no special protocol.
+ * Mechanics (unchanged): a per-workspace row in `harness_shared.voice_lease`
+ * with a 12s heartbeat-based expiry. A new/forced owner emits
+ * `voiceLease.current` on the sync-invalidate channel so other surfaces re-sync
+ * their elected-player flag (and the host re-elects when the player drops, so
+ * the session survives either UI closing). The server is the source of truth.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';

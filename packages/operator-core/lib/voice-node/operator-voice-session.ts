@@ -119,7 +119,10 @@ export class OperatorVoiceSession {
     // (P-011), else tear the session down — nobody to capture/play.
     const next = this.clients.values().next().value as AttachedClient | undefined;
     if (next && this.status !== 'off') {
-      void this.electPlayer(next.clientId, next.kind);
+      // The old player is gone; force-elect the next client (its force claim
+      // overwrites the departed owner's lease, so no orphan lease lingers).
+      this.playerId = null;
+      void this.electPlayer(next.clientId, next.kind, { force: true });
     } else {
       void this.teardown('all clients left');
     }
@@ -201,9 +204,21 @@ export class OperatorVoiceSession {
     kind: VoiceClientKind,
     opts: { startIfIdle?: boolean; force?: boolean } = {},
   ): Promise<void> {
-    // The lease elects the single host+speaker (D-003). A non-holder is never
-    // refused as a *client* — election just moves the player/capturer role.
-    const granted = await this.deps.claimLease(clientId, kind, opts.force ?? true);
+    // The lease elects the single host+player (D-003). A non-holder is never
+    // refused as a *client* — and a plain (non-forcing) `start` while another
+    // client is already hosting does NOT steal the player role: the caller just
+    // stays an attached receive+control client (Model A). Only `force-host`
+    // (force) or re-election after the player drops moves the role.
+    const force = opts.force ?? false;
+    const sessionLive = this.status !== 'off';
+    const hasOtherPlayer = this.playerId !== null && this.playerId !== clientId;
+    if (sessionLive && hasOtherPlayer && !force) {
+      this.broadcastState();
+      return;
+    }
+    // The session opener must win the role even past a stale/unexpired lease
+    // from a crashed surface, so it force-claims; a non-opening claim is gentle.
+    const granted = await this.deps.claimLease(clientId, kind, force || this.status === 'off');
     if (granted) this.playerId = clientId;
     if (opts.startIfIdle && this.status === 'off' && !this.starting) {
       await this.start();

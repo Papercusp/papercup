@@ -99,6 +99,7 @@ export default function PlanActions({
 }: Props) {
   const [open, setOpen] = useState<Dialog>(null);
   const [launchingAgent, setLaunchingAgent] = useState(false);
+  const [launchingWorkbench, setLaunchingWorkbench] = useState(false);
   const [startPending, setStartPending] = useState(false);
   const [approvePending, setApprovePending] = useState(false);
   const [demotePending, setDemotePending] = useState(false);
@@ -195,6 +196,39 @@ export default function PlanActions({
       }
     } finally {
       setLaunchingAgent(false);
+    }
+  };
+
+  // Launch a session INTO the pui workbench (pui-reactive-session-panes D-006):
+  // record a deferred "workbench launch" through the SAME backend path (no spawn,
+  // no bespoke open-pane message); the pui reactively opens a work-area pane that
+  // RUNS it. Works whether the pui is embedded in the desktop or standalone.
+  const onLaunchWorkbench = async () => {
+    if (launchingWorkbench) return;
+    setLaunchingWorkbench(true);
+    try {
+      const label = planTitle?.trim() || slug;
+      const result = await launchAgent({
+        slug: null,
+        planSlug: slug,
+        label,
+        agent: 'claude',
+        deferSpawn: true,
+      });
+      if (result.ok) {
+        toast.success(`Opening a workbench pane for ${slug}…`, { duration: 4000 });
+      } else if (result.installCmd) {
+        toast.error(
+          `${result.error ?? 'launch prerequisites are missing.'} Run: ${result.installCmd}`,
+          { duration: 12000 },
+        );
+      } else {
+        toast.error(`Workbench launch failed: ${result.error ?? 'unknown error'}`, {
+          duration: 10000,
+        });
+      }
+    } finally {
+      setLaunchingWorkbench(false);
     }
   };
 
@@ -314,6 +348,15 @@ export default function PlanActions({
         title={`Launch a power-user agent terminal tagged with ${slug}; appears in /adv/sessions`}
       >
         {launchingAgent ? 'Launching…' : 'Launch agent'}
+      </button>
+      <button
+        type="button"
+        className="pc-plan-actions__btn pc-plan-actions__btn--launch"
+        onClick={onLaunchWorkbench}
+        disabled={launchingWorkbench}
+        title={`Open a session for ${slug} as a pane in the pui workbench (no separate terminal)`}
+      >
+        {launchingWorkbench ? 'Opening…' : 'Launch in workbench'}
       </button>
 
       <SetNowDialog

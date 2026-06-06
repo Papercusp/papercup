@@ -164,6 +164,14 @@ import './docs/search';
 import './docs/resource-index';
 import './docs/resource-section';
 
+// Per-harness project docs — typed, drift-tracked (harness-docs-integration-2026-06-05)
+import './harness_docs/record';
+import './harness_docs/list';
+import './harness_docs/anchor';
+import './harness_docs/verify';
+import './harness_docs/set_overlay';
+import './harness_docs/regenerate';
+
 // SU-agent file-lock coordination — see su-agent-coordination-v3-2026-05-14.md
 import './locks/acquire';
 import './locks/release';

@@ -326,6 +326,18 @@ describe('OperatorVoiceSession — player handoff + survival (P-006/P-011)', () 
     expect(lastState(h.out)?.playerId).toBe('tui-2');
   });
 
+  it('a plain start from a second client does NOT steal the player (Model A attach-only)', async () => {
+    const h = makeHarness();
+    await startSession(h, 'desktop-1', 'desktop');
+    h.session.handleHello('tui-2', 'tui');
+    h.deps.claimLease.mockClear();
+
+    h.session.handleControl('tui-2', { op: 'start' });
+    await flush();
+    expect(h.deps.claimLease).not.toHaveBeenCalled();
+    expect(lastState(h.out)?.playerId).toBe('desktop-1');
+  });
+
   it('when the player disconnects and another client is attached, re-elects it (session survives)', async () => {
     const h = makeHarness();
     await startSession(h, 'desktop-1', 'desktop');

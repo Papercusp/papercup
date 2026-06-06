@@ -22,6 +22,16 @@ vi.mock('node:os', async () => {
   return { ...actual, homedir: () => '/home/x' };
 });
 
+// Deferred-launch (D-006) records via recordAdvSession instead of spawning — mock
+// it (vi.hoisted so the factory can reference the spy) so the defer_spawn path
+// doesn't need a real PG.
+const { recordAdvSessionMock } = vi.hoisted(() => ({
+  recordAdvSessionMock: vi.fn(async () => 99),
+}));
+vi.mock('../../adv-sessions', () => ({
+  recordAdvSession: recordAdvSessionMock,
+}));
+
 const CTX: RouteContext = {
   principal: null,
   input: undefined,
@@ -70,6 +80,34 @@ describe('launch-su', () => {
     await callPost({ agent: 'omp', harness_slug: 'papercup' });
     expect(lastOneliner()).toContain('--no-plan');
     expect(lastOneliner()).toContain('--agent=omp');
+  });
+
+  it('defer_spawn records a pending workbench launch (no spawn) and returns advSessionId', async () => {
+    const res = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      plan_slug: 'my-plan',
+      defer_spawn: true,
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.deferred).toBe(true);
+    expect(json.advSessionId).toBe(99);
+    // No terminal spawned — the pui pane is the single launcher (D-001).
+    expect(spawnMock).not.toHaveBeenCalled();
+    // The recorded row is a pane-worthy workbench launch carrying the psu argv.
+    expect(recordAdvSessionMock).toHaveBeenCalledTimes(1);
+    const opts = recordAdvSessionMock.mock.calls[0][0] as {
+      display?: string;
+      launchArgv?: string[];
+      agent?: string;
+    };
+    expect(opts.display).toBe('workbench');
+    expect(opts.agent).toBe('claude');
+    expect(opts.launchArgv).toEqual(
+      expect.arrayContaining(['--no-picker', '--agent=claude', '--harness=papercup', '--plan=my-plan']),
+    );
   });
 
   it('rejects an unknown agent (no spawn)', async () => {

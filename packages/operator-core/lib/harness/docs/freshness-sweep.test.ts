@@ -103,7 +103,7 @@ afterAll(() => {
 
 function rec(partial: Partial<HarnessDocRecord> & Pick<HarnessDocRecord, 'docId' | 'source'>): HarnessDocRecord {
   return {
-    workspaceId: 'ws', harnessSlug: 'h', source: 'manual', subjectRef: [], anchorPaths: [],
+    workspaceId: 'ws', harnessSlug: 'h', subjectRef: [], anchorPaths: [],
     generatedFromSha: null, lastVerifiedSha: null, lastVerifiedAt: null, overlay: null,
     status: 'fresh', statusDetail: null, statusCheckedAt: null, regenEnqueuedAt: null,
     reverifyFlaggedAt: null, title: null, createdAt: '', updatedAt: '', ...partial,

@@ -1347,6 +1347,69 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return Array.isArray(r?.reports) ? r.reports : [];
     },
   },
+
+  // ── dev.* — live-ops glances for the dev admin rail ──────────────────
+  //
+  // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so
+  // there's no TABLE_TO_QUERY_NAMES entry — they have no PG-trigger invalidation
+  // and refresh only on mount + the panel's manual `invalidate()` (like the
+  // `plans.*` reads above, which dispatch a tool rather than read a table).
+  // Single-snapshot reads return a 1-element array (client reads data[0]); list
+  // reads return the rows flat. DEV-only by construction — the rail that calls
+  // them is gated `import.meta.env.DEV` and absent from user builds.
+
+  // dev.serviceHealth — up/down + latency probe of the dev endpoints now.
+  'dev.serviceHealth': {
+    resolve: async () => {
+      const { probeAll } = await import('../service-health');
+      const services = await probeAll();
+      return [{ services }];
+    },
+  },
+
+  // dev.deployState — read-only release-gate snapshot: green :3070's ref vs
+  // `ready` vs `main`, how far behind, last deploy time (the #10 antidote).
+  'dev.deployState': {
+    resolve: async () => {
+      const { devDeployState } = await import('../dev-deploy-state');
+      return [await devDeployState()];
+    },
+  },
+
+  // dev.pgHealth — pool usage snapshot (total / active / idle + version).
+  'dev.pgHealth': {
+    resolve: async () => {
+      const { pgHealth } = await import('../dev-data');
+      return [await pgHealth()];
+    },
+  },
+
+  // dev.pgActiveQueries — currently-running queries, oldest first (slow /
+  // idle-in-transaction wedge detection).
+  'dev.pgActiveQueries': {
+    argsSchema: z.object({
+      limit: z.number().int().positive().max(200).default(50),
+    }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      const { pgActiveQueries } = await import('../dev-data');
+      const { queries } = await pgActiveQueries(limit);
+      return queries;
+    },
+  },
+
+  // dev.coordPresence — live coordination agents (+ stale) and their declared
+  // intent: who's working on what right now.
+  'dev.coordPresence': {
+    argsSchema: z.object({
+      workspace: z.string().optional(),
+    }),
+    resolve: async (args) => {
+      const { workspace } = args as { workspace?: string };
+      const { listPresence } = await import('../agent-tools/coordination/presence');
+      return (await listPresence({ workspaceId: workspace ?? null })) as unknown[];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────

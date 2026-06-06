@@ -17,6 +17,13 @@ import type { SuAgent } from './su-agents';
 export interface LaunchAgentOpts extends LaunchOpts {
   /** Which backend to launch. Defaults to 'omp' (preserves prior behavior). */
   agent?: SuAgent;
+  /**
+   * Deferred (pui-reactive-session-panes D-006): RECORD a pending "workbench
+   * launch" instead of spawning a terminal. The session materializes as a pane
+   * in the pui workbench (the single launcher), not a standalone terminal.
+   * Returns `advSessionId` of the recorded row.
+   */
+  deferSpawn?: boolean;
 }
 
 export interface LaunchAgentResult {
@@ -26,6 +33,8 @@ export interface LaunchAgentResult {
   error?: string;
   /** Suggested local command to repair the missing prerequisite. */
   installCmd?: string;
+  /** The recorded adv_sessions row id when `deferSpawn` was set (else absent). */
+  advSessionId?: number;
 }
 
 /** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
@@ -53,6 +62,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     model: opts.model ?? null,
     resume_session_id: opts.resumeSessionId ?? null,
     kickoff: opts.kickoff ?? null,
+    defer_spawn: opts.deferSpawn ?? false,
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {
@@ -63,7 +73,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         body,
       });
       const data = (await r.json().catch(() => null)) as
-        | { status?: string; code?: string; error?: string }
+        | { status?: string; code?: string; error?: string; advSessionId?: number }
         | null;
       if (!data) { lastError = `launch-su HTTP ${r.status} (no body)`; continue; }
       if (data.code === 'psu_not_installed') {
@@ -74,7 +84,9 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
           installCmd: 'bash apps/operator/scripts/install-standalone-mcp.sh',
         };
       }
-      if (r.ok && data.status === 'ok') return { ok: true };
+      if (r.ok && data.status === 'ok') {
+        return { ok: true, advSessionId: data.advSessionId };
+      }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
     } catch (e: unknown) {
       lastError = e instanceof Error ? e.message : String(e);

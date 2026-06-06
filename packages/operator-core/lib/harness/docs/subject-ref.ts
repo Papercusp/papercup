@@ -176,3 +176,15 @@ export async function resolveAnchorPaths(
     }
   }
 }
+
+/** Union the resolved anchor paths across many refs — the denormalised reverse index. */
+export async function resolveAllAnchorPaths(
+  refs: SubjectRef[],
+  opts: { runGit: GitRunner; repoRoot: string; resolveFeatureCommits?: FeatureCommitLookup },
+): Promise<string[]> {
+  const out = new Set<string>();
+  for (const ref of refs) {
+    for (const p of await resolveAnchorPaths(ref, opts)) out.add(p);
+  }
+  return [...out];
+}

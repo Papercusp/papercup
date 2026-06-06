@@ -342,6 +342,15 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // EI-18: previous tick's counters BEFORE this tick overwrites them.
   const prev = await readEscalationCounters(slug);
 
+  // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
+  // exact paths this tick moved. Best-effort — never gate the sync on it.
+  let prevHeadSha: string | null = null;
+  try {
+    prevHeadSha = await (await import('../docs/sweep-after-sync')).captureHeadSha(slug);
+  } catch {
+    /* best-effort */
+  }
+
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
   try {
@@ -365,6 +374,23 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
     await clearGitSyncEscalation(slug, [ESCALATION_KIND]);
+  }
+
+  // P-003/D-004: after a real sync, sweep this harness's docs for drift — flip
+  // status, enqueue documenter regenerations, flag manual re-verifies. Best-effort
+  // + lazily imported so it never wedges or slows git-sync.
+  if (outcome.status === 'synced') {
+    try {
+      const { runDocFreshnessSweepAfterSync } = await import('../docs/sweep-after-sync');
+      await runDocFreshnessSweepAfterSync({
+        harnessSlug: slug,
+        workspaceId,
+        prevSha: prevHeadSha ?? undefined,
+        headSha: outcome.headSha,
+      });
+    } catch {
+      /* best-effort — doc drift never gates git-sync */
+    }
   }
   // status === 'error' (no conflict): leave any open conflict escalation untouched;
   // errors aren't merge conflicts and shouldn't trigger/clear the resolver.

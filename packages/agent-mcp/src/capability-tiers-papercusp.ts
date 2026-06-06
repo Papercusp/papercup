@@ -57,6 +57,7 @@ const EXACT: Record<string, CapabilityTier> = {
   'comments:write': 'medium',
   'issues:write': 'medium',
   'work_items:write': 'medium',
+  'docs:write': 'medium',
   'messages:write': 'medium',
   'routines:write': 'medium',
   'proposals:write': 'medium',

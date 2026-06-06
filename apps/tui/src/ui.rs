@@ -3665,8 +3665,8 @@ mod tests {
         if let Ok(v) = c.plans_typed().await {
             app.set_plans(v);
         }
-        if let Ok(v) = c.roster_typed().await {
-            app.set_roster(v);
+        if let Ok((active, _pending)) = c.roster_typed().await {
+            app.set_roster(active);
         }
         if let Ok(v) = c.attention_typed().await {
             app.set_inbox(v);
@@ -3737,7 +3737,7 @@ mod tests {
         let client = crate::client::OperatorClient::from_discovery()
             .await
             .expect("connect via discovery");
-        let roster = client.roster_typed().await.expect("roster over IPC");
+        let (roster, _pending) = client.roster_typed().await.expect("roster over IPC");
         let n = roster.len();
         let mut app = App::new();
         app.set_roster(roster);

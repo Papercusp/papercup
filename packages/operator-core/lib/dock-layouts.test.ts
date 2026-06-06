@@ -13,11 +13,62 @@ import {
   defaultAdvHarnessesLayout,
   defaultDashboardLayout,
   defaultPiTerminalsLayout,
+  defaultWorkbenchLayout,
   isWellFormedLayout,
   seedForDockName,
   validateLayoutDoc,
   type LayoutDoc,
+  type PanelInstance,
 } from './dock-layouts';
+
+/** Collect every panel in a layout tree (depth-first). */
+function allPanels(doc: LayoutDoc): PanelInstance[] {
+  const out: PanelInstance[] = [];
+  const walk = (n: LayoutDoc['root']) => {
+    if (n.kind === 'tabs') out.push(...n.panels);
+    else for (const c of n.children) walk(c);
+  };
+  walk(doc.root);
+  return out;
+}
+
+describe('defaultWorkbenchLayout (desktop-workbench-shell P-001)', () => {
+  it('is a well-formed 3-pane layout', () => {
+    const doc = defaultWorkbenchLayout();
+    expect(isWellFormedLayout(doc)).toBe(true);
+    expect(doc.root.kind).toBe('group');
+    const root = doc.root as Extract<LayoutDoc['root'], { kind: 'group' }>;
+    expect(root.direction).toBe('row');
+    expect(root.children).toHaveLength(3);
+  });
+
+  it('has exactly the pui · app · voice panes (operator-chat pane retired, D-001)', () => {
+    const types = allPanels(defaultWorkbenchLayout()).map((p) => p.type);
+    expect(types).toEqual(['workbench:pui', 'workbench:app', 'workbench:voice']);
+    // The retired operator-chat pane must NOT be present.
+    expect(types).not.toContain('workbench:operator');
+    expect(types).not.toContain('data:chat');
+  });
+
+  it('bakes the app pane src to /adv and routes harnessSlug to pui + voice', () => {
+    const doc = defaultWorkbenchLayout('papercup');
+    const byType = (t: string) => allPanels(doc).find((p) => p.type === t)!;
+    expect(byType('workbench:app').params?.src).toBe('/adv');
+    expect(byType('workbench:pui').params?.harnessSlug).toBe('papercup');
+    expect(byType('workbench:voice').params?.harnessSlug).toBe('papercup');
+    // The /adv app pane self-manages its harness, so it carries no slug.
+    expect(byType('workbench:app').params?.harnessSlug).toBeUndefined();
+  });
+
+  it('seedForDockName routes "workbench" to the workbench seed, not the dashboard', () => {
+    const seeded = seedForDockName('workbench');
+    expect(allPanels(seeded).map((p) => p.type)).toContain('workbench:pui');
+    // A "workbench:<slug>" name bakes the slug.
+    const withSlug = seedForDockName('workbench:demo');
+    const pui = allPanels(withSlug).find((p) => p.type === 'workbench:pui')!;
+    expect(pui.params?.harnessSlug).toBe('demo');
+  });
+});
 
 describe('dock-layouts validation', () => {
   it('accepts a valid LayoutDoc', () => {
