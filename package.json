@@ -97,6 +97,7 @@
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
+    "lint:no-retired": "node scripts/check-no-retired-imports.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",

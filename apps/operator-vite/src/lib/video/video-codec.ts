@@ -34,9 +34,17 @@ export interface VideoEncodeConfig {
   bitrate: number;
 }
 
-/** Conservative default: 360p @ 15fps VP8 ~0.5 Mbps — the D-005 starting point. */
+/**
+ * Conservative default: 360p @ 15fps VP9 ~0.5 Mbps — the D-005 starting point.
+ *
+ * Codec = VP9 (`vp09.00.10.08`), NOT VP8/H.264: a live probe on the ship-target
+ * WebKitGTK 2.52 webview (plan D-012) found VP8 and H.264 *encode* fine but
+ * *fail to decode* (`EncodingError: Decode error`) — only VP9 round-trips
+ * cleanly (encode + decode both work). VP8/H.264 would have produced black peer
+ * tiles. The codec lives behind this seam, so a future platform can override it.
+ */
 export const DEFAULT_VIDEO_CONFIG: VideoEncodeConfig = {
-  codec: 'vp8',
+  codec: 'vp09.00.10.08',
   width: 640,
   height: 360,
   framerate: 15,
