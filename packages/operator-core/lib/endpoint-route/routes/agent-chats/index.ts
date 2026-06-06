@@ -12,7 +12,6 @@
  *
  * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
  */
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';

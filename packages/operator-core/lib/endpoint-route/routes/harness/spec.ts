@@ -39,7 +39,9 @@ const getSpec = defineTool({
       spec: pg.spec ?? null,
       agents: pg.agents ?? safeRead(join(project.path, 'AGENTS.md')),
       contract: pg.contract ?? null,
-      config: pg.config ?? safeRead(join(harnessDir(project), 'config.json')),
+      // config.json is deprecated (deprecate-harness-config-json-2026-06-06): serve
+      // only the PG copy; no fall-back read of the on-disk tombstone file.
+      config: pg.config ?? null,
       version: pg.version,
     });
   },

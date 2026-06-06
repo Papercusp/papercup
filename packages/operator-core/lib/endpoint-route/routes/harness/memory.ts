@@ -17,7 +17,9 @@
 import { readFileSync, statSync } from 'node:fs';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-core';
+import { resolvePhasedProject } from '../../../harness-core';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { phasePhaseLabel } from '../../../harness-phases';
 import {
   MEMORY_MAP,
@@ -43,24 +45,21 @@ const getMemory = defineTool({
     // Extras from config.json.memory.files[] — merge non-duplicate paths.
     const extras: MemoryFileMeta[] = [];
     try {
-      const raw = safeRead(join(harnessDir(project), 'config.json'));
-      if (raw) {
-        const cfg = JSON.parse(raw);
-        const cfgFiles = cfg?.memory?.files;
-        if (Array.isArray(cfgFiles)) {
-          for (const e of cfgFiles) {
-            if (typeof e?.path !== 'string') continue;
-            if (MEMORY_MAP.some((m) => m.path === e.path)) continue;
-            extras.push({
-              path: e.path,
-              purpose: String(e.purpose ?? ''),
-              writtenBy: Array.isArray(e.writtenBy) ? e.writtenBy : [],
-              readBy: Array.isArray(e.readBy) ? e.readBy : [],
-              tier: ['green', 'yellow', 'red'].includes(e.tier) ? e.tier : 'yellow',
-              language: ['markdown', 'json', 'jsonl', 'text'].includes(e.language) ? e.language : 'text',
-              optional: true,
-            });
-          }
+      const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      const cfgFiles = (cfg?.memory as Record<string, unknown> | undefined)?.files;
+      if (Array.isArray(cfgFiles)) {
+        for (const e of cfgFiles) {
+          if (typeof e?.path !== 'string') continue;
+          if (MEMORY_MAP.some((m) => m.path === e.path)) continue;
+          extras.push({
+            path: e.path,
+            purpose: String(e.purpose ?? ''),
+            writtenBy: Array.isArray(e.writtenBy) ? e.writtenBy : [],
+            readBy: Array.isArray(e.readBy) ? e.readBy : [],
+            tier: ['green', 'yellow', 'red'].includes(e.tier) ? e.tier : 'yellow',
+            language: ['markdown', 'json', 'jsonl', 'text'].includes(e.language) ? e.language : 'text',
+            optional: true,
+          });
         }
       }
     } catch {}

@@ -229,7 +229,7 @@ const getDiff = defineTool({
     const branch = `harness/${id}`;
     let base = 'main';
     try {
-      const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
+      const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
       if (cfg?.branchIsolation?.baseBranch) base = String(cfg.branchIsolation.baseBranch);
     } catch {}
 

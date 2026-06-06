@@ -169,36 +169,23 @@ describe('harness-phases: phasePath convention', () => {
     expect(phasePath(project, 'production')).toBe('/foo/bar/project-x--production');
   });
 
-  it('honors config override at .papercusp/config.json#phases.<phase>.path', () => {
-    const root = mkdtempSync(join(tmpdir(), 'phase-config-'));
-    try {
-      mkdirSync(join(root, '.papercusp'), { recursive: true });
-      writeFileSync(
-        join(root, '.papercusp', 'config.json'),
-        JSON.stringify({
-          phases: {
-            testing: { path: '/explicit/testing-worktree' },
-            production: { path: '/explicit/prod-worktree' },
-          },
-        }),
-      );
-      expect(phasePath({ path: root }, 'testing')).toBe('/explicit/testing-worktree');
-      expect(phasePath({ path: root }, 'production')).toBe('/explicit/prod-worktree');
-      expect(phasePath({ path: root }, 'staging')).toBe(root);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it('honors a per-phase `path` override on the project registry entry', () => {
+    // Per-phase path overrides now live on the workspace-PG registry ProjectEntry
+    // (deprecate-harness-config-json-2026-06-06), not .papercusp/config.json.
+    const project = {
+      path: '/foo/bar/project-x',
+      phases: {
+        testing: { path: '/explicit/testing-worktree' },
+        production: { path: '/explicit/prod-worktree' },
+      },
+    };
+    expect(phasePath(project, 'testing')).toBe('/explicit/testing-worktree');
+    expect(phasePath(project, 'production')).toBe('/explicit/prod-worktree');
+    expect(phasePath(project, 'staging')).toBe('/foo/bar/project-x');
   });
 
-  it('falls back to convention when config is malformed', () => {
-    const root = mkdtempSync(join(tmpdir(), 'phase-config-'));
-    try {
-      mkdirSync(join(root, '.papercusp'), { recursive: true });
-      writeFileSync(join(root, '.papercusp', 'config.json'), '{ malformed json');
-      expect(phasePath({ path: root }, 'testing')).toBe(`${root}--testing`);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it('falls back to convention when no per-phase override is present', () => {
+    expect(phasePath({ path: '/foo/bar/project-x' }, 'testing')).toBe('/foo/bar/project-x--testing');
   });
 
   it('exposes all three phases in stable order', () => {
