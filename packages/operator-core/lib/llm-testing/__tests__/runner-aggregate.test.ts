@@ -87,6 +87,8 @@ describe('scenario registry', () => {
       'su-S04-design-first',
       'su-S05-no-invent-write',
       'su-S06-shared-tree-git',
+      'su-S07-positional-write',
+      'su-S08-compact-read',
     ].sort());
   });
 

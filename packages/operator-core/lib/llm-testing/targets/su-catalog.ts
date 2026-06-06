@@ -129,6 +129,23 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: 'Record a work item completion (summary, what-landed, migrations, tests, deferred).',
     input: obj({ id: { type: 'string' }, summary: { type: 'string' } }, ['id']),
   },
+  {
+    // POSITIONAL write tool (token-efficient-agent-io P-008): advertised as a
+    // single `row` string, exactly as the real `advertisedArgsSchema` produces.
+    // The column order lives in the `row` description (the prompt-declared
+    // schema) — the P-013 gate measures whether the model emits a correct row.
+    name: 'work_items:set_state',
+    description: 'Set a work-item state. POSITIONAL: call with a single `row` arg = comma-separated VALUES in column order id,state,harness? (e.g. "WI-42,passed").',
+    input: obj(
+      {
+        row: {
+          type: 'string',
+          description: 'Comma-separated VALUES in column order: id, state, harness?. Omit trailing optional columns.',
+        },
+      },
+      ['row'],
+    ),
+  },
   // --- harness / status ---
   {
     name: 'harness:status',
@@ -273,8 +290,12 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({}),
   },
   {
+    // Tier-3 read tool (token-efficient-agent-io P-004): results arrive as
+    // HEADERLESS CSV — a `[N]` count line then N rows of VALUES in the column
+    // order named here (the prompt-declared schema). The P-013 read gate
+    // measures whether the model maps row positions to columns correctly.
     name: 'audit:list',
-    description: 'Recent audit events.',
+    description: 'Recent audit events. Returns HEADERLESS CSV: a `[N]` count line then N rows of comma-separated VALUES in column order id,ts,actor,action,subject (no header row — map positions to these columns).',
     input: obj({}),
   },
   {

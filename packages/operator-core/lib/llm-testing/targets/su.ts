@@ -110,7 +110,13 @@ function resolvePlaybookPath(): string {
 
 function loadPlaybook(): string {
   if (_playbookCache !== undefined) return _playbookCache;
-  const body = readFileSync(resolvePlaybookPath(), 'utf8');
+  // The raw source carries generated-section MARKERS (spliced by
+  // renderSuPlaybook at launch). This hermetic target reads the file directly,
+  // so strip any unspliced marker comment rather than leak it into the prompt.
+  // The pre-prompt column schemas the P-013 scenarios test are carried by the
+  // catalog tool schemas themselves (the `{row}` description / CSV-documented
+  // read tool), which is the faithful prompt-declared-columns surface here.
+  const body = readFileSync(resolvePlaybookPath(), 'utf8').replace(/<!-- PAPERCUSP-SU:[A-Z-]+ -->\n*/g, '');
   // A thin framing line so the model treats the playbook as ITS operating
   // system prompt (not a doc handed to it by the user). The playbook content
   // itself carries every behavioral rule under test.

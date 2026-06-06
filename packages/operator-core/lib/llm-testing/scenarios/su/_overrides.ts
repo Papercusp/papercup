@@ -45,3 +45,29 @@ export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
     return PASS_THROUGH;
   },
 };
+
+/**
+ * Returns a Tier-3 HEADERLESS CSV result for `audit:list` (token-efficient-agent-io
+ * P-013 read gate): a `format: csv` marker, a `[N]` count line, then N rows of
+ * VALUES in the prompt-declared column order id,ts,actor,action,subject. The
+ * read gate asserts the model maps row positions to columns — e.g. that the
+ * actor (col 3) of the row whose action (col 4) is `locks:acquire` is `bob`.
+ */
+export const AUDIT_CSV_RESULT: ToolDispatchOverride = {
+  override(name) {
+    if (canonical(name) === 'audit:list') {
+      return {
+        content: [
+          {
+            text:
+              'format: csv\n[3]\n' +
+              'au-1,1717,alice,plans:set-status,P-001\n' +
+              'au-2,1718,bob,locks:acquire,harness-fs-watcher.ts\n' +
+              'au-3,1719,carol,work_items:complete,WI-9',
+          },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};

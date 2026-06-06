@@ -77,6 +77,9 @@ import { SU_S03_PUSH_NOT_POLL } from './su/S03-push-not-poll';
 import { SU_S04_DESIGN_FIRST } from './su/S04-design-first';
 import { SU_S05_NO_INVENT_WRITE } from './su/S05-no-invent-write';
 import { SU_S06_SHARED_TREE_GIT } from './su/S06-shared-tree-git';
+// SU-S07/S08: token-efficient-agent-io P-013 — positional write emit + compact read gates
+import { SU_S07_POSITIONAL_WRITE } from './su/S07-positional-write';
+import { SU_S08_COMPACT_READ } from './su/S08-compact-read';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -144,6 +147,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S04_DESIGN_FIRST,
   SU_S05_NO_INVENT_WRITE,
   SU_S06_SHARED_TREE_GIT,
+  SU_S07_POSITIONAL_WRITE,
+  SU_S08_COMPACT_READ,
 ];
 
 export function getScenario(id: string): Scenario {
