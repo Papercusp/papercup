@@ -62,7 +62,8 @@
     "libs/generic/structured-concurrency",
     "libs/generic/debounce-coalesce",
     "libs/generic/p2p-voice",
-    "libs/generic/deployment-driver"
+    "libs/generic/deployment-driver",
+    "libs/generic/lexicon"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",

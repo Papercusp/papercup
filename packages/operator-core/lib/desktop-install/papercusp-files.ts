@@ -18,8 +18,9 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
-import { spliceToolingOverlay, spliceAtMarker, WIRE_SCHEMAS_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceAtMarker, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER } from './splice-tooling-overlay';
 import { renderWireSchemasSection } from '../prompt-assembly';
+import { renderCoordLegend } from '../coord-schema';
 
 export interface InstallPaths {
   /** ~/.papercusp/ — created if missing. */
@@ -151,7 +152,8 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
     throw e;
   }
   const overlay = await readAgentOverlay(baseSrc, 'omp');
-  const out = spliceAtMarker(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
+  let out = spliceAtMarker(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
+  out = spliceAtMarker(out, COORD_LEGEND_MARKER, renderCoordLegend());
   await fs.writeFile(dst, out, { mode: 0o644 });
   await fs.chmod(dst, 0o644);
   return true;
@@ -309,10 +311,11 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   const overlaySource = overlay
     ? path.join(path.dirname(baseSource), `papercusp-su.${input.agent}.md`)
     : '';
-  const text = spliceAtMarker(
+  const withWire = spliceAtMarker(
     spliceToolingOverlay(base, overlay),
     WIRE_SCHEMAS_MARKER,
     renderWireSchemasSection(),
   );
+  const text = spliceAtMarker(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   return { text, baseSource, overlaySource };
 }

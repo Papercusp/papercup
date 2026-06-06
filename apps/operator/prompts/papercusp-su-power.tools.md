@@ -340,6 +340,8 @@ so you see what's happening in your areas and others see what you discover:
 
 Tag topics on what you create, claim before fixing, and check your topic-feed.
 
+<!-- PAPERCUSP-SU:COORD-LEGEND -->
+
 ## Client-native task tracking and workflow tools
 
 Your task-tracking, subagent, and session-recovery tools are

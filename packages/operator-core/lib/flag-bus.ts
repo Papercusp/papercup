@@ -26,6 +26,11 @@ import {
   watchPosthogConfig,
 } from './posthog-config';
 
+// Boot the server-side lexicon brand-pack selector with the flag subsystem:
+// it subscribes to flag changes (emitFlagChange, below) to keep its cached
+// active pack fresh. Side-effect import — see ./lexicon/configure.
+import './lexicon/configure';
+
 export type FlagChangeEnvelope = {
   type: 'flag_changed';
   key: FlagKey | null;

@@ -731,6 +731,11 @@ pub struct App {
     pub should_quit: bool,
     pub status: String,
     pub tab: Tab,
+    /// Chat-only dock mode (native-terminal-desktop P-013): when set (the
+    /// `pui chat-pane` subcommand — the desktop-docked terminal's operator pane),
+    /// the renderer shows JUST the operator chat (no tab strip / HUD / work area)
+    /// and the run loop pins `tab` to Operator. All chat data wiring is unchanged.
+    pub chat_only: bool,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a),
@@ -1053,6 +1058,7 @@ impl App {
             // overview-dashboard-2026-06-05 D-001); the operator chat stays
             // always-on via the Overview's bottom strip + the `o` right dock.
             tab: Tab::Overview,
+            chat_only: false,
             plans: Vec::new(),
             plan_sel: 0,
             plan_item_states: None,

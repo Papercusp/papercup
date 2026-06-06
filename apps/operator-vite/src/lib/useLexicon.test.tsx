@@ -1,0 +1,75 @@
+// @vitest-environment jsdom
+//
+// useLexicon flag-gated resolution + reactivity (the-hive-lexicon P-003).
+
+import { act } from 'react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+
+import { FLAGS } from '@papercusp/flags';
+import {
+  type FlagPayload,
+  resolveWithDefaults,
+  setFlagPayload,
+} from '@papercusp/flags/client';
+
+import { useLexicon, useLexiconPackId } from './useLexicon';
+
+function setHive(on: boolean): void {
+  const payload: FlagPayload = {
+    flags: resolveWithDefaults({ [FLAGS.THE_HIVE]: on }),
+    evaluatedAt: 1,
+    source: 'override',
+  };
+  act(() => setFlagPayload(payload));
+}
+
+afterEach(() => {
+  cleanup();
+  setHive(false); // reset the module store between tests
+});
+
+function Probe() {
+  const t = useLexicon();
+  const pack = useLexiconPackId();
+  return (
+    <div>
+      <span data-testid="pack">{pack}</span>
+      <span data-testid="pot">{t('pot')}</span>
+      <span data-testid="pots">{t('pot', { plural: true })}</span>
+      <span data-testid="cupboard">{t('cupboard')}</span>
+      <span data-testid="operator-lower">{t('operator', { lower: true })}</span>
+    </div>
+  );
+}
+
+describe('useLexicon', () => {
+  it('resolves classic labels when the-hive is off', () => {
+    setHive(false);
+    render(<Probe />);
+    expect(screen.getByTestId('pack').textContent).toBe('classic');
+    expect(screen.getByTestId('pot').textContent).toBe('Pot');
+    expect(screen.getByTestId('pots').textContent).toBe('Pots');
+    expect(screen.getByTestId('cupboard').textContent).toBe('Cupboard');
+    expect(screen.getByTestId('operator-lower').textContent).toBe('operator');
+  });
+
+  it('resolves the bee lexicon when the-hive is on', () => {
+    setHive(true);
+    render(<Probe />);
+    expect(screen.getByTestId('pack').textContent).toBe('the-hive');
+    expect(screen.getByTestId('pot').textContent).toBe('Hive');
+    expect(screen.getByTestId('pots').textContent).toBe('Hives');
+    expect(screen.getByTestId('cupboard').textContent).toBe('Comb');
+    expect(screen.getByTestId('operator-lower').textContent).toBe('queen');
+  });
+
+  it('re-renders on a live flag flip (reactive, not render-time only)', () => {
+    setHive(false);
+    render(<Probe />);
+    expect(screen.getByTestId('pot').textContent).toBe('Pot');
+    setHive(true); // SSE-style live flip
+    expect(screen.getByTestId('pot').textContent).toBe('Hive');
+    expect(screen.getByTestId('pack').textContent).toBe('the-hive');
+  });
+});

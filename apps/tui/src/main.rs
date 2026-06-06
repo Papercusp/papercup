@@ -60,12 +60,23 @@ async fn main() -> Result<()> {
     //   pui           → the workbench from a plain terminal, but just the HUD when
     //                   already inside zellij (so the HUD pane can't recursively
     //                   nest another workbench — `$ZELLIJ` is set by zellij).
-    match std::env::args().nth(1).as_deref() {
+    let subcommand = std::env::args().nth(1);
+    match subcommand.as_deref() {
         Some("workbench") => return run_workbench(),
+        // The chat-only DOCK (operator chat | brain) — the desktop-docked native
+        // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
+        // its own 2-pane layout and hands off to zellij.
+        Some("chat") => return run_chat_dock(),
         Some("hud") => {}
+        // The operator-chat-only pane the chat dock's LEFT pane runs (P-013) —
+        // falls through to the normal run loop with chat_only set below.
+        Some("chat-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
+    // `pui chat-pane` renders JUST the operator chat (no tab strip / HUD / work
+    // area); the full chat data wiring in run() is unchanged.
+    let chat_only = subcommand.as_deref() == Some("chat-pane");
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -86,7 +97,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal).await;
+    let result = run(&mut terminal, chat_only).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -111,9 +122,35 @@ fn run_workbench() -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
-async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+/// Materialise the chat-only dock (operator chat | brain) and hand off to zellij
+/// — the surface the desktop-docked native terminal runs (native-terminal-desktop
+/// P-013 / D-011). The brain pane is a `psu` engineer-collaborator session:
+/// by default `psu --resume` (resume the saved brain from psu's recent-session
+/// picker — the brain is a persistent psu session resumed each launch). Override
+/// the whole brain command with PAPERCUSP_BRAIN_CMD (e.g. "psu --resume <id>" to
+/// pin a specific brain).
+fn run_chat_dock() -> Result<()> {
+    let brain_argv: Vec<String> = match std::env::var("PAPERCUSP_BRAIN_CMD") {
+        Ok(s) if !s.trim().is_empty() => s.split_whitespace().map(|x| x.to_string()).collect(),
+        _ => vec!["psu".to_string(), "--resume".to_string()],
+    };
+    let path = layout::materialize_chat_dock(&brain_argv)?;
+    let argv = layout::launch_argv(&path.to_string_lossy());
+    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
+    let status = std::process::Command::new(prog).args(rest).status()?;
+    std::process::exit(status.code().unwrap_or(0));
+}
+
+async fn run<B: Backend>(terminal: &mut Terminal<B>, chat_only: bool) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // Chat-only dock pane (P-013): render JUST the operator chat and pin the tab
+    // to Operator — the renderer short-circuits to the chat, and the run loop
+    // re-pins on each event (below) so a stray nav key can't strand the composer.
+    app.chat_only = chat_only;
+    if chat_only {
+        app.tab = app::Tab::Operator;
+    }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
     // dock-verbs target this pane. Absent outside zellij (the run loop then uses
@@ -193,6 +230,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
             ))
         );
         let action = app.update(ev);
+
+        // Chat-only dock pane (P-013): never leave the operator chat — re-pin the
+        // tab so a stray nav key can't switch to an unrendered HUD tab (which
+        // would also strand the composer, since `i` only composes on Operator).
+        if app.chat_only && app.tab != app::Tab::Operator {
+            app.tab = app::Tab::Operator;
+        }
 
         if voice_dropped {
             // Release the now-dead stream + mic so the next Connect re-establishes

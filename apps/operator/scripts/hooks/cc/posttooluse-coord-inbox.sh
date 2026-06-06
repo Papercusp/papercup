@@ -63,9 +63,8 @@ raw, operator_url, token, owner, cache_dir = sys.argv[1:6]
 # hook's restart retry) — a missed coord check is harmless; it lands on
 # the next tool call.
 HTTP_TIMEOUT = 4
-MAX_ENTRIES = 8        # cap injected lines so a backlog can't flood context
-SUMMARY_CAP = 200
-BODY_CAP = 200
+# Capping / formatting now live server-side in coord:inbox's `injection`
+# renderer (the hook is a dumb pipe), so no per-hook caps here.
 
 
 def now_iso():
@@ -173,55 +172,31 @@ entries = inner.get('entries')
 if not isinstance(entries, list) or not entries:
     noop()
 
-# Sort oldest→newest. Advance the cursor past EVERY entry (not just the
-# rendered ones) so a message is never injected twice, even if it's
-# hidden under the cap below.
-entries.sort(key=lambda e: e.get('ts') or '')
-max_ts = since_ts
-for e in entries:
-    ts = e.get('ts')
-    if isinstance(ts, str) and ts > max_ts:
-        max_ts = ts
-write_cursor(max_ts)
+# Advance the cursor past EVERY returned entry (not just the rendered ones) so a
+# message is never injected twice. `summary.newest_ts` is the server's max-ts
+# over the returned set; fall back to iterating entries if absent.
+summary = inner.get('summary') or {}
+newest = summary.get('newest_ts') if isinstance(summary, dict) else None
+if not (isinstance(newest, str) and newest):
+    newest = since_ts
+    for e in entries:
+        ts = e.get('ts')
+        if isinstance(ts, str) and ts > newest:
+            newest = ts
+write_cursor(newest)
 
-
-def clip(s, n):
-    s = ' '.join(str(s).split())
-    return s if len(s) <= n else s[: n - 1] + '…'
-
-
-# When capping, keep the NEWEST entries — those are what the agent most
-# needs to act on; older ones are summarized as a count. Shown entries
-# stay in chronological (oldest→newest) order so they read naturally.
-overflow = len(entries) - MAX_ENTRIES
-shown = entries[-MAX_ENTRIES:] if overflow > 0 else entries
-
-lines = []
-if overflow > 0:
-    lines.append(f'  • …and {overflow} older message'
-                 + ('s' if overflow != 1 else ''))
-for e in shown:
-    frm = e.get('from') or '?'
-    kind = e.get('kind') or 'message'
-    summary = e.get('summary') or e.get('body') or ''
-    label = f'{frm} ({kind})' if kind and kind != 'message' else str(frm)
-    text = clip(summary, SUMMARY_CAP) if summary else '(no summary)'
-    body = e.get('body')
-    extra = ''
-    if body and e.get('summary') and body != e.get('summary'):
-        extra = ' — ' + clip(body, BODY_CAP)
-    lines.append(f'  • {label}: {text}{extra}')
-
-n = len(entries)
-header = (f'[coord] {n} new coordination message'
-         + ('s' if n != 1 else '')
-         + ' since your last tool call:')
-note = ('Reply or hand off with coord:send; read the full thread with '
-        'coord:inbox / coord:thread. Ignore if not relevant to your task.')
+# DUMB PIPE (token-efficient-coord-injection D-003/P-008): the server renders the
+# positional `[coord+N]` block once (coord-schema.renderInjection); this hook just
+# echoes it into Claude's additionalContext + keeps the cursor. The glyph key +
+# footer live once in the psu prompt legend, not per-injection — so no formatting,
+# capping, or footer here.
+injection = inner.get('injection')
+if not isinstance(injection, str) or not injection.strip():
+    noop()
 
 json.dump({'hookSpecificOutput': {
     'hookEventName': 'PostToolUse',
-    'additionalContext': header + '\n' + '\n'.join(lines) + '\n' + note,
+    'additionalContext': injection,
 }}, sys.stdout)
 sys.exit(0)
 PYEOF

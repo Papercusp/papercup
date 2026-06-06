@@ -15,6 +15,22 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
+    // Chat-only dock mode (native-terminal-desktop P-013 / D-011): the
+    // desktop-docked native terminal's operator pane renders JUST the operator
+    // chat — no tab strip, no HUD, no work area. The full operator-chat state +
+    // data wiring are unchanged; only the rendering is reduced to draw_chat
+    // full-screen (the tab is pinned to Operator in main.rs, so it shows the FULL
+    // chat with no dock-focus marker). Help + the latest toast still overlay.
+    if app.chat_only {
+        draw_chat(f, app, f.area());
+        if app.show_help {
+            draw_help(f);
+        } else if let Some(t) = &app.toast {
+            draw_toast(f, t);
+        }
+        return;
+    }
+
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

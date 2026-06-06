@@ -188,27 +188,16 @@ export function formatTurnStartReminder(input: ReminderInput): string {
  * a count), wrapped in the same `<system-reminder type="coord">` envelope as
  * the turn-start reminder. Returns '' for an empty list (nothing injected).
  */
-export function formatInboxDelta(entries: InboxEntry[]): string {
-  if (entries.length === 0) return '';
-  const MAX = 8;
-  // Coalesce digest-mode notifies by subject before capping (D-006).
-  const collapsed = collapseDigestNotifies(entries);
-  const sorted = [...collapsed].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  const overflow = sorted.length - MAX;
-  const shown = overflow > 0 ? sorted.slice(-MAX) : sorted;
-  const n = sorted.length;
-  const lines = [`${n} new coordination message${n === 1 ? '' : 's'} since your last tool call:`];
-  if (overflow > 0) {
-    lines.push(`  • …and ${overflow} older message${overflow === 1 ? '' : 's'}`);
-  }
-  for (const e of shown) {
-    const kind = e.kind && e.kind !== 'message' ? ` (${e.kind})` : '';
-    const raw = (e.summary ?? '').replace(/\s+/g, ' ').trim() || '(no summary)';
-    const summary = raw.length > 200 ? `${raw.slice(0, 199)}…` : raw;
-    lines.push(`  • ${e.from}${kind}: ${summary}`);
-  }
-  lines.push('Reply / hand off with coord:send; full thread via coord:inbox / coord:thread. Ignore if not relevant to your task.');
-  return `<system-reminder type="coord">\n${lines.join('\n')}\n</system-reminder>`;
+export function formatInboxDelta(injection: string): string {
+  // DUMB PIPE (token-efficient-coord-injection D-003/P-009): the positional
+  // `[coord+N]` block — capping, digest + latest-per-peer intent collapse, the
+  // glyph key, and the relocated footer — all live SERVER-SIDE now, in
+  // coord:inbox's `injection` (coord-schema.renderInjection). This hook only
+  // wraps it in the OMP coord envelope + (in pollInboxDelta) keeps the cursor.
+  // One server-side edit re-tunes every client. Empty injection → no reminder.
+  const body = (injection ?? '').trim();
+  if (!body) return '';
+  return `<system-reminder type="coord">\n${body}\n</system-reminder>`;
 }
 
 /** Aggregate raw plan_event lines into one summary per plan_slug. */
@@ -736,14 +725,20 @@ export async function pollInboxDelta(): Promise<{ reminder: string }> {
   if (!since) return { reminder: '' };
   const inboxResult = await callMcpTool('coord:inbox', { since_ts: since });
   if (inboxResult === null) return { reminder: '' }; // transient failure — skip
-  const inbox = (inboxResult as { entries?: InboxEntry[] } | null)?.entries ?? [];
+  const r = inboxResult as
+    | { entries?: InboxEntry[]; injection?: string; summary?: { newest_ts?: string | null } }
+    | null;
+  const inbox = r?.entries ?? [];
   if (inbox.length === 0) return { reminder: '' };
-  const newMax = maxTs(inbox);
+  // Advance the cursor past every returned entry (server's max-ts, else compute).
+  const serverMax = typeof r?.summary?.newest_ts === 'string' ? r.summary.newest_ts : '';
+  const newMax = serverMax || maxTs(inbox);
   if (newMax.length > 0) {
     _midTurnCursor = newMax;
     _pendingWatermark = { ..._pendingWatermark, messages: newMax };
   }
-  return { reminder: formatInboxDelta(inbox) };
+  // Echo the server-rendered positional injection (dumb pipe).
+  return { reminder: formatInboxDelta(r?.injection ?? '') };
 }
 
 /**

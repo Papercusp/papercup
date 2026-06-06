@@ -149,6 +149,55 @@ pub fn launch_argv(layout_path: &str) -> Vec<String> {
     ]
 }
 
+/// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011):
+/// the surface the desktop-docked native terminal runs. Two panes side-by-side —
+/// the **operator chat** (a chat-only `pui chat-pane`) and the **brain** (a `psu`
+/// engineer-collaborator session) — and NOTHING else: no workbench HUD, no
+/// work-area agent panes, no swap presets. `brain_argv` is the brain pane's
+/// command (e.g. `["psu", "--resume"]`); its first element is the command, the
+/// rest are quoted args. Pure (no I/O) so it is unit-tested.
+pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
+    let (brain_cmd, brain_args) = brain_argv
+        .split_first()
+        .map(|(c, rest)| (c.as_str(), rest))
+        .unwrap_or(("psu", &[]));
+    let args_line = if brain_args.is_empty() {
+        String::new()
+    } else {
+        let quoted = brain_args
+            .iter()
+            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("\n            args {quoted}")
+    };
+    format!(
+        r#"// Papercusp chat dock — operator chat | brain (native-terminal-desktop
+// P-013 / D-011). The desktop-docked native terminal surface: TWO panes only,
+// NO workbench HUD and NO work-area agent panes. Left = the operator (ElevenLabs
+// voice) chat as a chat-only pui pane; right = the brain (a psu engineer
+// session, resumed at launch).
+layout {{
+    pane size=1 borderless=true {{
+        plugin location="zellij:tab-bar"
+    }}
+    pane split_direction="vertical" {{
+        pane name="operator" focus=true size="50%" {{
+            command "pui"
+            args "chat-pane"
+        }}
+        pane name="brain" size="50%" {{
+            command "{brain_cmd}"{args_line}
+        }}
+    }}
+    pane size=2 borderless=true {{
+        plugin location="zellij:status-bar"
+    }}
+}}
+"#
+    )
+}
+
 fn base_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".papercusp"))
 }
@@ -164,6 +213,21 @@ fn materialize_at(base: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(base)?;
     let path = base.join("pui-workbench.kdl");
     std::fs::write(&path, WORKBENCH_KDL)?;
+    Ok(path)
+}
+
+/// Write the chat-dock KDL (for `brain_argv`) to `~/.papercusp/pui-chat-dock.kdl`
+/// and return it. Launched the same way as the workbench (`launch_argv`). (P-013)
+pub fn materialize_chat_dock(brain_argv: &[String]) -> std::io::Result<PathBuf> {
+    let base = base_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
+    materialize_chat_dock_at(&base, brain_argv)
+}
+
+fn materialize_chat_dock_at(base: &Path, brain_argv: &[String]) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(base)?;
+    let path = base.join("pui-chat-dock.kdl");
+    std::fs::write(&path, chat_dock_kdl(brain_argv))?;
     Ok(path)
 }
 
@@ -258,5 +322,57 @@ mod tests {
         assert!(p.ends_with("pui-workbench.kdl"));
         let written = std::fs::read_to_string(&p).unwrap();
         assert_eq!(written, WORKBENCH_KDL);
+    }
+
+    // ── P-013 chat dock ──────────────────────────────────────────────────────
+
+    #[test]
+    fn chat_dock_has_just_operator_and_brain_panes() {
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()]);
+        // The two panes: operator chat (chat-only pui) | brain (psu --resume).
+        assert!(kdl.contains("name=\"operator\""));
+        assert!(kdl.contains("name=\"brain\""));
+        assert!(kdl.contains("command \"pui\""));
+        assert!(kdl.contains("args \"chat-pane\""));
+        assert!(kdl.contains("command \"psu\""));
+        assert!(kdl.contains("args \"--resume\""));
+        // Side-by-side.
+        assert!(kdl.contains("split_direction=\"vertical\""));
+        // And NOTHING of the workbench: no HUD, no work area, no swap presets.
+        assert!(!kdl.contains("args \"hud\""));
+        assert!(!kdl.contains("name=\"work\""));
+        assert!(!kdl.contains("swap_tiled_layout"));
+        // Exactly one pui + one psu command (the two panes).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+        assert_eq!(kdl.matches("command \"psu\"").count(), 1);
+    }
+
+    #[test]
+    fn chat_dock_fresh_brain_omits_args_line() {
+        // A bare `psu` brain (fresh, no resume) renders no `args` line.
+        let kdl = chat_dock_kdl(&["psu".to_string()]);
+        assert!(kdl.contains("command \"psu\""));
+        assert!(!kdl.contains("args \"--resume\""));
+    }
+
+    #[test]
+    fn chat_dock_brain_argv_threads_extra_args() {
+        let kdl = chat_dock_kdl(&[
+            "psu".to_string(),
+            "--resume".to_string(),
+            "abc-123".to_string(),
+        ]);
+        assert!(kdl.contains("args \"--resume\" \"abc-123\""));
+    }
+
+    #[test]
+    fn materialize_chat_dock_writes_the_kdl() {
+        let d = tempfile::tempdir().unwrap();
+        let p =
+            materialize_chat_dock_at(d.path(), &["psu".to_string(), "--resume".to_string()]).unwrap();
+        assert!(p.ends_with("pui-chat-dock.kdl"));
+        let written = std::fs::read_to_string(&p).unwrap();
+        assert!(written.contains("name=\"brain\""));
+        assert!(written.contains("args \"chat-pane\""));
     }
 }

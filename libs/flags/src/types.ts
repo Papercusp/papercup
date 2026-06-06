@@ -29,6 +29,12 @@ export const FLAGS = {
   // channel (the participant-grid VideoGrid). OFF by default — ships dark until
   // the live two-instance camera E2E (P-010) passes on the real Tauri webview.
   VIDEO_CHANNELS: "papercusp-video-channels",
+  // the-hive-lexicon-2026-06-06: selects the active brand pack for the
+  // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
+  // unchanged, D-001). OFF (default) = the `classic` Papercusp pack = V1 ship
+  // state; ON = the `the-hive` bee pack (Pot→Hive, Fleet→Swarm, Operator→Queen,
+  // …). Fully reversible presentation switch; @papercusp/lexicon resolves it.
+  THE_HIVE: "papercusp-the-hive",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -51,6 +57,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
   // OFF by default — desktop video ships dark behind the live-camera E2E (P-010).
   [FLAGS.VIDEO_CHANNELS]: false,
+  // OFF by default — classic Papercusp is the V1 ship state; flip on to adopt
+  // the bee lexicon (the-hive-lexicon-2026-06-06). Presentation only.
+  [FLAGS.THE_HIVE]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

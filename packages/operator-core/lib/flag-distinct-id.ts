@@ -13,3 +13,12 @@ const SYSTEM_ID = `papercusp-host-${os.hostname()}`;
 export function resolveDistinctId(_req: Request): string {
   return SYSTEM_ID;
 }
+
+/**
+ * The machine-stable distinctId, with no request in hand. Used by background /
+ * non-request server code that still needs to evaluate a (machine-global) flag
+ * — e.g. the lexicon brand-pack selector.
+ */
+export function systemDistinctId(): string {
+  return SYSTEM_ID;
+}

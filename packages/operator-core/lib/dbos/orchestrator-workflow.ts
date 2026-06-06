@@ -319,12 +319,28 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   return `pipeline-complete (last=${lastVerb})`;
 }
 
-export const featurePipelineWorkflow = DBOS.registerWorkflow(featurePipelineImpl, {
-  name: 'featurePipeline',
-  maxRecoveryAttempts: 10,
-});
+// Registering the workflow + queue is a module-load side effect against DBOS's
+// PROCESS-GLOBAL registry, which throws on a duplicate name. Under vi.resetModules()
+// (route tests that re-import the whole route graph per test — and the /invoke route
+// now reaches this module via the spawnInvokeOnce chokepoint) the module re-evaluates
+// while DBOS's registry persists, so a bare re-register throws "already registered".
+// Cache the handles on a globalThis symbol — which resetModules does NOT clear — so a
+// re-evaluation reuses the first registration. Production loads the module exactly
+// once, so this is a no-op there (the first call registers).
+const _dbosRegistryCache = globalThis as unknown as Record<symbol, unknown>;
+function _registerFeaturePipeline() {
+  return DBOS.registerWorkflow(featurePipelineImpl, {
+    name: 'featurePipeline',
+    maxRecoveryAttempts: 10,
+  });
+}
+export const featurePipelineWorkflow = (_dbosRegistryCache[
+  Symbol.for('papercusp.dbos.featurePipelineWorkflow')
+] ??= _registerFeaturePipeline()) as ReturnType<typeof _registerFeaturePipeline>;
 
-export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: 4 });
+export const pipelineQueue = (_dbosRegistryCache[
+  Symbol.for('papercusp.dbos.feature-pipeline-queue')
+] ??= new WorkflowQueue('feature-pipeline', { concurrency: 4 })) as WorkflowQueue;
 
 /**
  * Start (or resume) a feature's durable pipeline. The workflow ID is deterministic

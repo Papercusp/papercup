@@ -165,14 +165,17 @@ describe('POST /harness/:slug/launch (P-031)', () => {
 });
 
 describe('POST /harness/:slug/invoke (P-031)', () => {
-  it('dispatches spawn() with buildInvokeOnce argv + returns the captured output', async () => {
+  it('routes through the spawnInvokeOnce chokepoint → spawn() with buildInvokeOnce argv + returns the captured output', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
     expect(res.status).toBe(200);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    // The route now funnels through spawnInvokeOnce → runChild (unify-agent-spawn-chokepoint
+    // P-008), which spawns the buildInvokeOnce argv `detached: true` (its own process group,
+    // so the timeout/abort can group-kill the whole tree).
     expect(spawnMock).toHaveBeenCalledWith(
       'node',
       ['invoke-once.js', '--role', 'worker'],
-      { cwd: '/proj', env: { PAPERCUSP_TEST: '1' } },
+      { cwd: '/proj', env: { PAPERCUSP_TEST: '1' }, detached: true },
     );
     expect(await res.json()).toMatchObject({
       ok: true,
@@ -185,10 +188,16 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
   });
 
   it('reports ok:false when the child exits non-zero', async () => {
+    // The chokepoint emits a one-line diagnostic to stderr on a non-zero exit with empty
+    // stderr (orchestrator-runner.ts) — expected, so assert it explicitly rather than let
+    // vitest-fail-on-console trip on it.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     spawnMock.mockImplementation(() => makeFakeChild(1));
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
     expect(res.status).toBe(200); // the route succeeds; the *run* failed
     expect(await res.json()).toMatchObject({ ok: false, exitCode: 1 });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('[dbos-invoke] role=worker exited 1'));
+    errSpy.mockRestore();
   });
 
   it('returns 404 for an unknown project (no spawn)', async () => {

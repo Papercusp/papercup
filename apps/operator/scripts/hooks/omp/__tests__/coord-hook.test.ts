@@ -1228,45 +1228,28 @@ describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => 
   });
 });
 
-describe('formatInboxDelta (mid-turn coord delivery)', () => {
-  const mk = (ts: string, from: string, summary: string, kind = 'message'): InboxEntry => ({
-    ts,
-    msg_id: ts,
-    from,
-    kind,
-    summary,
+describe('formatInboxDelta (mid-turn coord delivery — DUMB PIPE, P-009)', () => {
+  // Formatting/capping/collapse now live server-side in coord:inbox's
+  // `injection` (coord-schema.renderInjection); this hook only wraps the
+  // server-rendered string in the OMP coord envelope.
+  it('returns "" for an empty/blank injection', () => {
+    expect(formatInboxDelta('')).toBe('');
+    expect(formatInboxDelta('   \n  ')).toBe('');
   });
 
-  it('returns "" for an empty list', () => {
-    expect(formatInboxDelta([])).toBe('');
-  });
-
-  it('wraps a single message in a coord system-reminder', () => {
-    const out = formatInboxDelta([mk('2026-06-01T00:00:00Z', 'peer-A', 'grabbed feature-claim.ts')]);
-    expect(out).toContain('<system-reminder type="coord">');
-    expect(out).toContain('1 new coordination message since your last tool call');
-    expect(out).toContain('peer-A: grabbed feature-claim.ts');
-    expect(out).not.toContain('older message');
-  });
-
-  it('pluralizes and annotates non-message kinds', () => {
-    const out = formatInboxDelta([
-      mk('2026-06-01T00:00:00Z', 'a', 'm1'),
-      mk('2026-06-01T00:00:01Z', 'b', 'please take over', 'handoff'),
-    ]);
-    expect(out).toContain('2 new coordination messages');
-    expect(out).toContain('b (handoff): please take over');
-  });
-
-  it('caps to the NEWEST 8 and counts the older ones', () => {
-    const entries = Array.from({ length: 11 }, (_, i) =>
-      mk(`2026-06-01T00:00:${String(i).padStart(2, '0')}Z`, `p${i}`, `msg ${i}`),
+  it('wraps the server-rendered positional injection verbatim in a coord system-reminder', () => {
+    const injection = '[coord+1]\n> peerA grabbed feature-claim.ts';
+    expect(formatInboxDelta(injection)).toBe(
+      `<system-reminder type="coord">\n${injection}\n</system-reminder>`,
     );
-    const out = formatInboxDelta(entries);
-    expect(out).toContain('11 new coordination messages');
-    expect(out).toContain('…and 3 older messages'); // 11 - 8
-    expect(out).toContain('p10: msg 10'); // newest shown
-    expect(out).not.toContain('p0: msg 0'); // oldest hidden
+  });
+
+  it('does not re-format, re-cap, or append a footer (the server owns all of that)', () => {
+    const injection = '[coord+9]\n…+1 older\n> a x\n^ b y';
+    const out = formatInboxDelta(injection);
+    expect(out).toContain('[coord+9]');
+    expect(out).not.toMatch(/coord:send/); // footer is in the prompt legend now
+    expect(out).not.toContain('new coordination message'); // no hook-side header
   });
 });
 
@@ -1316,6 +1299,9 @@ describe('pollInboxDelta (mid-turn coord delivery)', () => {
       entries: [
         { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'pausing operator soon' },
       ],
+      // The server pre-renders the injection (dumb-pipe contract, P-009).
+      injection: '[coord+1]\n- peerX pausing operator soon',
+      summary: { newest_ts: '2026-06-01T00:05:00Z' },
     });
     const first = await pollInboxDelta();
     expect(first.reminder).toContain('pausing operator soon');

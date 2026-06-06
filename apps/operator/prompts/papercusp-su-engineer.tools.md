@@ -572,6 +572,8 @@ areas and others see what you discover. The loop:
 topic-feed for your areas** — that discipline is what makes the substrate worth
 more than a message bus.
 
+<!-- PAPERCUSP-SU:COORD-LEGEND -->
+
 ## Client-native task tracking and workflow tools
 
 Your task-tracking, subagent, and session-recovery tools are

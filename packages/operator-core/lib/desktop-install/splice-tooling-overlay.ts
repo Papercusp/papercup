@@ -26,6 +26,14 @@ export const CLIENT_TOOLING_OVERLAY_MARKER =
 export const WIRE_SCHEMAS_MARKER = '<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->';
 
 /**
+ * Marker for the generated coord-injection legend (token-efficient-coord-injection
+ * P-007) — the positional `[coord+N]` grammar + glyph key + the relocated footer,
+ * declared ONCE per session. Spliced by `renderSuPlaybook` from
+ * `renderCoordLegend()`. Same splice contract as the others.
+ */
+export const COORD_LEGEND_MARKER = '<!-- PAPERCUSP-SU:COORD-LEGEND -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the
