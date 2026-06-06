@@ -41,11 +41,17 @@ interface RunResult {
   stderr: string;
 }
 
-function runScript(root: string, relScript: string, args: string[], timeoutMs: number): Promise<RunResult> {
+function runScript(
+  root: string,
+  relScript: string,
+  args: string[],
+  timeoutMs: number,
+  extraEnv: Record<string, string> = {},
+): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(tsxBin(root), [path.join(root, relScript), ...args], {
       cwd: root,
-      env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root },
+      env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
     });
     let stdout = '';
     let stderr = '';
@@ -160,7 +166,13 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
   // Deploy can take minutes (drain + node_modules sync + migrate + restart +
   // health probe). The routine engine's per-routine dedup stops a second trigger
   // racing this one; executeDeploy's own broadcast announces the outcome.
-  const r = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', ['--execute'], 20 * 60_000);
+  // PAPERCUSP_ALLOW_DEV_RESTART=1: the restart step is env-gated against ad-hoc
+  // runs restarting the shared host — this routine IS the owner-authorized
+  // auto-serve path (D-002), so it self-authorizes; without it every auto-deploy
+  // would fail post-swap and rollback-loop each tick.
+  const r = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', ['--execute'], 20 * 60_000, {
+    PAPERCUSP_ALLOW_DEV_RESTART: '1',
+  });
   const result = lastJsonObject(r.stdout);
   const ok = r.code === 0 && result?.ok === true;
   const rolledBack = result?.rolledBack === true;

@@ -7,7 +7,7 @@
  * the live DB out of band (Phase 3). Unlike boot-time apply (log-and-continue so
  * a broken peer migration never wedges the shared dev-api), the DEPLOY apply is
  * FAIL-LOUD: a failed migration aborts the deploy → rollback, because we're
- * deploying a vetted `ready` state and a failure means that state is not safe.
+ * deploying a vetted green-`main` state and a failure means that state is not safe.
  *
  * The migration-number COLLISION the plan calls out (two agents staging the same
  * NNN) is already prevented upstream by the atomic allocator (`db:next-migration`

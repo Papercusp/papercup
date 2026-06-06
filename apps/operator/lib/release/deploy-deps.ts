@@ -137,8 +137,12 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
         '--integration', cfg.integrationRoot,
         '--release', cfg.releaseRoot,
         '--node-modules', lockfileChanged ? 'force' : 'skip',
+        // operator-vite/dist is UNTRACKED — without this the swap serves a STALE
+        // SPA (server code moves, UI doesn't; bitten 2026-06-06: /admin/git was
+        // missing from the deployed SPA). Deploys build it; checkpoints skip it.
+        '--build-spa',
       ]);
-      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: ${lockfileChanged ? 'resynced' : 'unchanged'})`);
+      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: ${lockfileChanged ? 'resynced' : 'unchanged'}; SPA rebuilt)`);
     },
 
     async migrate() {

@@ -52,6 +52,10 @@ export default function VideoGrid({ harnessSlug, className }: VideoGridProps): J
   const captureRef = useRef<CameraCapture | null>(null);
   const selfCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const peerCanvasRefs = useRef(new Map<string, HTMLCanvasElement>());
+  /** Peers we've already keyframed for — a NEW peer needs the next frame to be a
+   *  keyframe or its KeyframeGate drops our deltas forever (found in the live
+   *  P-010 run: late joiners would never get a decodable stream). */
+  const keyframedPeersRef = useRef(new Set<string>());
 
   const codecOk = useMemo(() => webCodecsSupported(), []);
   // Video can't run → render audio-only avatars (D-005).
@@ -79,7 +83,19 @@ export default function VideoGrid({ harnessSlug, className }: VideoGridProps): J
     if (!harnessSlug) return;
     const session = connectDesktopVideo({
       harness: harnessSlug,
-      onStatus: (s) => setStatus(s),
+      onStatus: (s) => {
+        setStatus(s);
+        // A newly-joined peer must receive a keyframe before our deltas decode.
+        const known = keyframedPeersRef.current;
+        let hasNew = false;
+        for (const p of s.peers) {
+          if (!known.has(p.id)) {
+            known.add(p.id);
+            hasNew = true;
+          }
+        }
+        if (hasNew) captureRef.current?.encoder.requestKeyframe();
+      },
       onPeerFrame: (peerId, frame) => drawFrame(peerCanvasRefs.current.get(peerId) ?? null, frame),
       onError: (e) => console.warn('[video-grid] session error', e),
     });
@@ -89,6 +105,7 @@ export default function VideoGrid({ harnessSlug, className }: VideoGridProps): J
       captureRef.current = null;
       session.close();
       sessionRef.current = null;
+      keyframedPeersRef.current.clear();
       setStatus(EMPTY_STATUS);
     };
   }, [harnessSlug, drawFrame]);

@@ -188,3 +188,33 @@ describe('audit:list — limit default + cap', () => {
     expect(r.error?.message ?? '').toMatch(/invalid_args|limit|positive|greater/i);
   });
 });
+
+describe('audit:list — per-call workspace arg (EI-61)', () => {
+  // The `workspace` arg is consumed by the DISPATCH layer before the handler
+  // runs (effectiveDispatchWorkspace, EI-30 — tx synthesis + ALS pin). The
+  // tool declares it only so the advertised inputSchema
+  // (additionalProperties:false) lets unscoped superuser clients pass it.
+
+  it('advertises `workspace` in the inputSchema so clients can pass it', () => {
+    const tool = lookupByMcpName('audit:list')!;
+    const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+    expect(schema.properties).toHaveProperty('workspace');
+    expect(schema.required ?? []).not.toContain('workspace');
+  });
+
+  it('accepts a workspace arg without binding it into the SQL query', async () => {
+    await call({ workspace: 'papercusp-workspace' });
+    expect(lastValues).not.toContain('papercusp-workspace');
+  });
+
+  it('workspace arg does not change the projection', async () => {
+    const out = await call({ workspace: 'papercusp-workspace' }, [ROW()]);
+    expect(out[0]).toEqual({
+      id: 'audit-1',
+      ts: 1_780_000_000_000,
+      actor: 'agent:worker',
+      action: 'feature.update',
+      subject: 'F-42',
+    });
+  });
+});

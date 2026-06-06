@@ -13,8 +13,8 @@
  *   - "Green" is measured in an ISOLATED checkout of the CANDIDATE commit (the
  *     dedicated checkpoint worktree), NEVER the churning shared tree — otherwise
  *     a peer's in-flight edit pollutes test:affected.
- *   - It only ever FAST-FORWARDS `ready` (advanceReady refuses non-FF), and reads
- *     a FIXED candidate sha up front, so it can't race git-sync's commits.
+ *   - It only ever FAST-FORWARDS the green pin (advanceReady refuses non-FF), and
+ *     reads a FIXED candidate sha up front, so it can't race git-sync's commits.
  *
  * Effects are injected (CheckpointDeps) so the orchestration is unit-tested
  * without running the (heavy) suite; realCheckpointDeps wires the real ones.

@@ -3,13 +3,15 @@
  * (plan release-gate-ready-branch-2026-06-04, Phase 2).
  *
  *   tsx deploy-cli.ts                 # PLAN ONLY — gather + print (review mode)
- *   tsx deploy-cli.ts --execute       # deploy the green `ready` ref
+ *   tsx deploy-cli.ts --execute       # deploy the green `main` branch
  *   tsx deploy-cli.ts --deploy-commit <sha> --execute   # D-009 escape hatch (un-green, loud)
  *
- * The release-manager agent (D-011) runs plan-mode first to review the diff +
- * staged migrations, makes the go/no-go call, then runs --execute. A human can
- * do the same. The safe default deploys GREEN `ready`; deploying an un-green
- * commit requires --deploy-commit/--force and emits a loud audit broadcast.
+ * AUTO-SERVE (staging-branch-pipeline-2026-06-06): the `system:release-trigger`
+ * routine runs `--execute` itself when green `main` is ahead of the release
+ * checkout. A human (or the release-manager agent, for incidents) can do the
+ * same. The safe default deploys the GREEN pin (releaseRef = `main`); deploying
+ * an un-green commit requires --deploy-commit/--force and emits a loud audit
+ * broadcast.
  *
  * Flags: --target <ref> | --deploy-commit <sha> | --force | --no-drain
  *        | --no-rollback | --drain-sec <n> | --execute
@@ -107,7 +109,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
 
   // Safe default: refuse a non-green target unless explicitly forced (D-009).
   if (!plan.green && !force) {
-    err('\n[deploy] REFUSING: target is not the green `ready` ref.');
+    err(`\n[deploy] REFUSING: target is not the green \`${cfg.releaseRef}\` pin.`);
     err('         Override with --deploy-commit <sha> or --force (deploys an UN-GREEN state; loud + audited).');
     return 2;
   }
@@ -119,11 +121,11 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
 
   // D-009: a forced un-green deploy is loud + audited before it runs.
   if (!plan.green) {
-    err('\n🚨 FORCED UN-GREEN DEPLOY — deploying a commit that is NOT the green `ready` ref. This bypasses the quality gate.');
+    err(`\n🚨 FORCED UN-GREEN DEPLOY — deploying a commit that is NOT the green \`${cfg.releaseRef}\` pin. This bypasses the quality gate.`);
     await deps
       .broadcast(
-        `🚨 FORCED un-green deploy of ${plan.targetSha.slice(0, 8)} (NOT \`ready\`) — escape hatch (D-009), by release-deploy`,
-        `Target ${plan.targetSha} is not the green ready ref. Commits: ${plan.commits.length}. Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
+        `🚨 FORCED un-green deploy of ${plan.targetSha.slice(0, 8)} (NOT green \`${cfg.releaseRef}\`) — escape hatch (D-009), by release-deploy`,
+        `Target ${plan.targetSha} is not the green ${cfg.releaseRef} pin. Commits: ${plan.commits.length}. Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
       )
       .catch(() => {});
   }

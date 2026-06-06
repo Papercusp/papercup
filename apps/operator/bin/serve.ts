@@ -400,6 +400,12 @@ async function main(): Promise<void> {
 
   try {
     pg = await ensurePostgres();
+    // Explicit readiness marker. The desktop smoke harness
+    // (papercusp-desktop/bin/lib/federation-asserts.sh fed_wait_boot) greps
+    // 'ready on localhost:<port> db=papercusp' to learn the PG port — the
+    // standalone embedded-postgres-server bin used to print it; in-process
+    // ownership (SP1 C5) moved the line here.
+    if (pg) log(`embedded Postgres ready on localhost:${pg.port} db=papercusp`);
 
     // Import AFTER env is set: host-handler builds the Hono app at module load
     // (reading PAPERCUSP_SERVE_UI), and bootstrap/handler resolve the admin URL.

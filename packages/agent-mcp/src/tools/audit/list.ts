@@ -27,6 +27,17 @@ export default defineTool({
     action: z.string().optional(),
     sinceTs: z.number().int().optional(),
     limit: z.number().int().positive().max(500).default(100),
+    // EI-61: consumed by the dispatch layer BEFORE the handler runs
+    // (effectiveDispatchWorkspace, EI-30 — tx synthesis + ALS pin); the
+    // handler itself ignores it. Declared here so the advertised
+    // inputSchema (additionalProperties:false) lets unscoped superuser
+    // clients discover + pass it instead of dying on workspace_required.
+    workspace: z
+      .string()
+      .optional()
+      .describe(
+        'Per-call workspace scope for an UNSCOPED superuser session (workspaceId "*") — dispatches under this workspace. Ignored when the session is already workspace-scoped.',
+      ),
   }),
   // Output schema (token-efficient-tool-result-formats P-011): the default
   // `summary` shape is a flat array of scalar-only rows → unlocks CSV (the

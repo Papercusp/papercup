@@ -45,12 +45,15 @@ RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-/home/marsh-office/papercupai-workspace/
 REF="main"
 NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = always; skip = never
 
+BUILD_SPA="0"
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) REF="$2"; shift 2 ;;
     --node-modules) NODE_MODULES_MODE="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
+    --build-spa) BUILD_SPA="1"; shift ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -69,6 +72,12 @@ if [ -e "$RELEASE_ROOT/.git" ]; then
   git -C "$RELEASE_ROOT" checkout --detach "$TARGET_SHA" >/dev/null 2>&1 || \
     git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
   git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+  # UNTRACKED debris survives reset --hard and poisons every later run from
+  # this tree (2026-06-06: a stray test file made the green-checkpoint red
+  # forever). Clean it — node_modules excluded (the hardlink copies from step
+  # 3 are untracked by design); submodule SOURCE is re-extracted in step 2
+  # anyway, so losing it here is fine.
+  git -C "$RELEASE_ROOT" clean -fdq -e node_modules || true
 else
   log "creating release worktree at $RELEASE_ROOT"
   git -C "$INTEGRATION_ROOT" worktree add --detach "$RELEASE_ROOT" "$TARGET_SHA"
@@ -137,6 +146,20 @@ if need_node_modules; then
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"
+fi
+
+# 4. SPA dist (deploys only) -------------------------------------------------
+# operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
+# last built in this tree — found 25h STALE on 2026-06-06 (the /admin/git tab
+# was missing from the deployed SPA while the server code was current). The
+# DEPLOY passes --build-spa so what :3070 serves is always built from the
+# deployed sha; the green-checkpoint tree skips it (nothing serves its SPA).
+if [ "$BUILD_SPA" = "1" ]; then
+  log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
+  (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build 1>/dev/null) || {
+    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting" >&2
+    exit 1
+  }
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"

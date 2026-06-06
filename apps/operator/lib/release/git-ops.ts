@@ -6,9 +6,11 @@
  * rollback scripts share one tested implementation, and so they run standalone
  * even when the operator is down.
  *
- * Invariant: `ready` only ever FAST-FORWARDS along the integration branch — it
- * is never a merge and never moves backward. The release worktree is DETACHED
- * (never on the `ready` branch) so `git branch -f ready` is always free to move.
+ * Invariant: the green pin (`releaseRef` — the **`main` branch** since the
+ * staging→main cutover, `staging-branch-pipeline-2026-06-06`) only ever
+ * FAST-FORWARDS along the integration branch (`staging`) — never a merge,
+ * never backward. The release worktree is DETACHED and the integration tree
+ * lives on `staging`, so `git branch -f main` is always free to move.
  */
 
 import { execFile } from 'node:child_process';

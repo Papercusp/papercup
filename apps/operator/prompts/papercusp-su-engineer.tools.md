@@ -150,8 +150,12 @@ not a property of your session**:
 (e.g. `features:get { slug }`) and error if it's missing. Use
 `cross_harness:docs_*` / `cross_harness:plans_*` to read *another*
 harness from a scoped session. Workspace-global tools (`harness:list`,
-`search:*`, `memory:*`, `coord:*`, `locks:*`, `audit:*`, `flags:*`,
-`papercusp:list_workspaces`, …) work regardless of scope.
+`search:*`, `memory:*`, `coord:*`, `locks:*`, `flags:*`,
+`papercusp:list_workspaces`, …) work regardless of scope. A few
+built-ins need a workspace *transaction* (`audit:list` is the one
+you'll hit) — on an unscoped session they fail `workspace_required`
+until you pass a per-call `workspace: '<slug>'` arg (EI-30 dispatch
+scoping; same effect as `?workspace=X` on the MCP URL).
 
 Admin mode is unscoped, so most tools also take a **workspace** arg. When
 the user names a topic: `papercusp:list_workspaces` → `harness:list
