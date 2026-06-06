@@ -15,19 +15,30 @@
 import { mkdirSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { spawnInvokeOnceBackground } from './governed-background-spawn';
+import { loadHarnessKnobs } from '@papercusp/orchestrator';
 import { join } from 'node:path';
 import { harnessDir } from './harness-core';
 import { type ProjectEntry } from './harness-registry';
 import { harnessPackageDir } from './harness-paths';
 import { buildInvokeOnce } from './harness-invoke-once';
 
-/** Read scoper.outputMode from .papercusp/config.json (default: 'proposal'). */
+/**
+ * Resolve scoper.outputMode: config.json `scoper.outputMode` (instance override)
+ * wins, else the blueprint knob `scoper.outputMode` (cloud-deployment-layer P-006
+ * — the scoper config moved to a first-class knob), else 'proposal'.
+ */
 function readScoperOutputMode(stateDir: string): 'proposal' | 'plan' {
   try {
     const raw = readFileSync(join(stateDir, 'config.json'), 'utf8');
     const cfg = JSON.parse(raw) as Record<string, unknown>;
     const scoper = cfg.scoper as Record<string, unknown> | undefined;
-    return scoper?.outputMode === 'plan' ? 'plan' : 'proposal';
+    if (scoper?.outputMode === 'plan' || scoper?.outputMode === 'proposal') return scoper.outputMode;
+  } catch {
+    /* no config.json (or unreadable) — fall through to the blueprint knob */
+  }
+  try {
+    const knobScoper = loadHarnessKnobs(stateDir)?.scoper as { outputMode?: string } | undefined;
+    return knobScoper?.outputMode === 'plan' ? 'plan' : 'proposal';
   } catch {
     return 'proposal';
   }
