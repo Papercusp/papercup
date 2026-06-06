@@ -15,6 +15,10 @@
  *   0x03 MIX   (server→client)  one mixed 20ms PCM16-LE frame (1920 bytes), 50/s while in a channel
  *   0x04 CAM   (client→server)  one opaque encoded VIDEO frame ([1B flags][8B ts][chunk]) → fanned per-peer
  *   0x05 VID   (server→client)  one peer's video, [1B idLen][peerId utf8][video frame] — per-peer, NOT mixed
+ *   0x10–0x1F  OPV  (both ways)  operator-voice session bus (universal-voice-interface
+ *               -2026-06-05): the ONE shared EL/operator session. HELLO/MIC/CONTROL
+ *               inbound, INPUT_TRANSCRIPT + RESPONSE_x + SESSION_STATE outbound — decoded by
+ *               operator-voice-bus, routed to the host-owned OperatorVoiceSession.
  *
  * Video (plan holepunch-video-shared-harnesses-2026-06-05 D-007/D-008): the
  * operator NEVER decodes video — it relays opaque chunks. A client only receives
@@ -30,7 +34,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { FrameDecoder, encodeFrame } from '@papercusp/p2p-voice';
+import { FrameDecoder, encodeFrame, type VoiceFrame } from '@papercusp/p2p-voice';
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE } from './codec';
 import {
   joinHarnessVideoChannel,
@@ -46,6 +50,8 @@ import {
   voiceStatus,
 } from './manager';
 import { createVoiceChannel, listVoiceChannels } from './registry';
+import { decodeOpVoiceFrame, isOpVoiceFrameType } from './operator-voice-bus';
+import type { OperatorVoiceSession } from './operator-voice-session';
 
 const CTRL = 0x01;
 const MIC = 0x02;
@@ -62,6 +68,60 @@ const clients = new Set<Socket>();
 /** Sockets that opted into receiving peer video (VID frames) via {op:'video',recv:true}. */
 const videoClients = new Set<Socket>();
 const managerUnsubs: Array<() => void> = [];
+
+// ── Operator-voice session bus (universal-voice-interface-2026-06-05) ─────────
+// The ONE shared EL/operator session is hosted by `OperatorVoiceSession`,
+// injected at bootstrap. Clients carry operator-voice over THIS socket in the
+// 0x10–0x1F frame block: inbound HELLO/MIC/CONTROL route to the host, and the
+// host's outbound frames fan to every attached operator-voice client. Distinct
+// from the P2P channel path above — same pipe, separate frame block + client set.
+let opVoiceSession: OperatorVoiceSession | null = null;
+const opVoiceClients = new Set<Socket>();
+const opVoiceClientIds = new Map<Socket, string>();
+
+/** Inject the host-owned session (bootstrap); pass null to detach (tests/shutdown). */
+export function setOperatorVoiceSession(session: OperatorVoiceSession | null): void {
+  opVoiceSession = session;
+}
+
+/** Fan one already-framed operator-voice message to every attached opvoice client. */
+export function broadcastOpVoice(frame: Uint8Array): void {
+  for (const c of opVoiceClients) {
+    if (c.destroyed) continue;
+    try {
+      c.write(frame);
+    } catch {
+      /* client went away mid-write */
+    }
+  }
+}
+
+function handleOpVoiceFrame(sock: Socket, frame: VoiceFrame): void {
+  if (!opVoiceSession) return;
+  const msg = decodeOpVoiceFrame(frame);
+  if (!msg) return;
+  switch (msg.kind) {
+    case 'hello':
+      // Register the socket BEFORE handleHello so the host's state broadcast
+      // reaches this newly-attached client too.
+      opVoiceClients.add(sock);
+      opVoiceClientIds.set(sock, msg.clientId);
+      opVoiceSession.handleHello(msg.clientId, msg.clientKind);
+      break;
+    case 'mic': {
+      const id = opVoiceClientIds.get(sock);
+      if (id) opVoiceSession.handleMic(id, msg.pcm16le);
+      break;
+    }
+    case 'control': {
+      const id = opVoiceClientIds.get(sock);
+      if (id) opVoiceSession.handleControl(id, msg.control);
+      break;
+    }
+    default:
+      break; // host→client kinds never arrive inbound
+  }
+}
 
 function send(sock: Socket, type: number, payload: Uint8Array): void {
   if (sock.destroyed) return;
@@ -194,12 +254,20 @@ function handleClient(sock: Socket): void {
         // reassembled it by length prefix) — relay opaque, fanned to peers.
         // pushVideoFrame → encodeFrame copies synchronously, so the view is safe.
         pushVideoFrame(f.payload);
+      } else if (isOpVoiceFrameType(f.type)) {
+        // Operator-voice session frame (0x10–0x1F) → the host-owned session.
+        handleOpVoiceFrame(sock, f);
       }
     }
   });
   const drop = () => {
     clients.delete(sock);
     videoClients.delete(sock);
+    if (opVoiceClients.delete(sock)) {
+      const id = opVoiceClientIds.get(sock);
+      opVoiceClientIds.delete(sock);
+      if (id && opVoiceSession) opVoiceSession.handleClientGone(id);
+    }
   };
   sock.on('error', drop);
   sock.on('close', drop);
@@ -262,6 +330,8 @@ export function stopLocalVoiceSocket(): void {
   for (const c of clients) c.destroy();
   clients.clear();
   videoClients.clear();
+  opVoiceClients.clear();
+  opVoiceClientIds.clear();
   server?.close();
   server = null;
   if (socketPath) {

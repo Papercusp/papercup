@@ -42,6 +42,17 @@ export interface AdvSessionRow {
    *  correlate this row. null for omp (uses ompThreadId), codex (resumes via
    *  its per-session CODEX_HOME), and rows that predate native-id tracking. */
   sessionId: string | null;
+  /** Pane-worthiness hint (pui-reactive-session-panes D-002/D-006): 'workbench'
+   *  marks an INTERACTIVE launch the pui should reactively open a pane for;
+   *  null for normal already-spawned sessions + autonomous fleet:spawn rows. */
+  display: string | null;
+  /** The exact argv the pui pane runs for a pending workbench launch (a fresh
+   *  `psu …`). null for non-deferred rows. */
+  launchArgv: string[] | null;
+  /** When the pui consumed a pending workbench launch by opening its pane.
+   *  A PENDING launch is `display='workbench' AND launchedAt IS NULL AND
+   *  endedAt IS NULL`; once set the row drops out of the pending roster tier. */
+  launchedAt: string | null;
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
@@ -68,6 +79,11 @@ export interface RecordOpts {
   /** The agent's native session id (claude --session-id UUID) when psu forces
    *  it at launch. Recorded so resume-by-native-uuid can find this row. */
   sessionId?: string | null;
+  /** Pane-worthiness hint (D-002/D-006) — 'workbench' for a deferred-spawn
+   *  interactive launch the pui should pane; omit for normal sessions. */
+  display?: string | null;
+  /** The exact argv the pui pane runs (a fresh `psu …`) for a deferred launch. */
+  launchArgv?: string[] | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -94,6 +110,11 @@ function mapAdvSessionRow(r: {
   cwd: string | null;
   coord_owner_id: string | null;
   session_id: string | null;
+  // pui-reactive-session-panes (D-006): optional — only the pending-launch query
+  // SELECTs them; every other query omits them and they map to null.
+  display?: string | null;
+  launch_argv?: string[] | null;
+  launched_at?: string | Date | null;
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
@@ -113,6 +134,9 @@ function mapAdvSessionRow(r: {
     cwd: r.cwd,
     coordOwnerId: r.coord_owner_id ?? null,
     sessionId: r.session_id ?? null,
+    display: r.display ?? null,
+    launchArgv: r.launch_argv ?? null,
+    launchedAt: toIsoTimestamp(r.launched_at ?? null),
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
@@ -125,12 +149,13 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id)
+        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id, display, launch_argv)
       VALUES
         (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
          ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
-         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null})
+         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null},
+         ${opts.display ?? null}, ${opts.launchArgv ? JSON.stringify(opts.launchArgv) : null}::text::jsonb)
       RETURNING id
     `;
     return rows[0]?.id ?? null;
@@ -139,6 +164,61 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     return null;
   }
 }
+/**
+ * Pending "workbench launch" requests (pui-reactive-session-panes D-006): rows
+ * the desktop new-session RECORDED (display='workbench') but the pui has not yet
+ * consumed (launched_at IS NULL) and that have not ended. These are the deferred
+ * launches the pui reactively opens a work-area pane for. Workspace-scoped (the
+ * recording desktop + the pui that panes it share a box), most-recent first.
+ */
+export async function listPendingWorkbenchLaunches(
+  opts: { workspaceId?: string | null; limit?: number } = {},
+): Promise<AdvSessionRow[]> {
+  const limit = opts.limit ?? 50;
+  const ws = opts.workspaceId ?? null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             display, launch_argv, launched_at, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE display = 'workbench'
+         AND launched_at IS NULL
+         AND ended_at IS NULL
+         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    console.warn('[adv-sessions] listPendingWorkbenchLaunches failed:', (e as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Mark a pending workbench launch CONSUMED — the pui opened its pane (D-006).
+ * Idempotent (only stamps an unset launched_at), so a roster-refresh race can't
+ * double-consume. Returns true when this call did the stamping.
+ */
+export async function markAdvSessionLaunched(id: number): Promise<boolean> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET launched_at = now()
+       WHERE id = ${id}
+         AND launched_at IS NULL
+       RETURNING id
+    `;
+    return rows.length > 0;
+  } catch (e) {
+    console.warn('[adv-sessions] markAdvSessionLaunched failed:', (e as Error).message);
+    return false;
+  }
+}
+
 export async function setAdvSessionPid(id: number, pid: number | null): Promise<void> {
   try {
     const { sql } = getOrgPg();

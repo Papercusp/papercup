@@ -305,12 +305,30 @@ impl OperatorClient {
         }
     }
 
+    /// Mark a pending workbench launch CONSUMED — the pui opened its pane
+    /// (pui-reactive-session-panes D-006). Best-effort: the backend stamps
+    /// `launched_at` so the row drops out of the roster's `pending` tier
+    /// (idempotent). A failure is non-fatal (the tracked set still dedups within
+    /// this run); `Ok(false)` on any non-ok response.
+    pub async fn mark_session_launched(&self, adv_session_id: i64) -> Result<bool> {
+        let body = serde_json::json!({ "id": adv_session_id });
+        match self
+            .post_json("/api/adv/sessions/mark-launched", body)
+            .await
+        {
+            Ok(v) => Ok(v.get("status").and_then(|s| s.as_str()) == Some("ok")),
+            Err(_) => Ok(false),
+        }
+    }
+
     // --- typed ---
-    pub async fn roster_typed(&self) -> Result<Vec<RosterEntry>> {
+    /// The live roster: `(active, pending)`. `active` is the presence-primary
+    /// roster (rendered); `pending` is the recorded-but-not-running workbench-
+    /// launch tier the reducer diffs to reactively open panes (D-006).
+    pub async fn roster_typed(&self) -> Result<(Vec<RosterEntry>, Vec<RosterEntry>)> {
         let v = self.roster().await?;
-        Ok(serde_json::from_value::<RosterResponse>(v)
-            .context("decode roster")?
-            .active)
+        let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
+        Ok((resp.active, resp.pending))
     }
 
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {

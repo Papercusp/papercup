@@ -22,6 +22,7 @@ mod layout;
 mod models;
 mod mux;
 mod notify;
+mod session_panes;
 mod sse;
 mod theme;
 mod tutorial;
@@ -2458,8 +2459,8 @@ async fn refetch_all(
         }
     }
     match client.roster_typed().await {
-        Ok(r) => {
-            let _ = tx.send(Event::Roster(r));
+        Ok((active, pending)) => {
+            let _ = tx.send(Event::Roster { active, pending });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("roster: {e}")));

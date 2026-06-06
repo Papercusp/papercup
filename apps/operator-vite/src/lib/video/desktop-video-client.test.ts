@@ -11,7 +11,7 @@ class FakeWs implements WsLike {
   binaryType = '';
   sent: Uint8Array[] = [];
   closed = false;
-  private listeners: Record<string, Array<(ev?: unknown) => void>> = {};
+  private listeners: Record<string, Array<(ev: { data?: unknown }) => void>> = {};
   send(d: Uint8Array) {
     this.sent.push(d);
   }
@@ -19,10 +19,10 @@ class FakeWs implements WsLike {
     this.closed = true;
     this.readyState = 3;
   }
-  addEventListener(type: string, cb: (ev?: unknown) => void) {
+  addEventListener(type: 'open' | 'close' | 'error' | 'message', cb: (ev: { data?: unknown }) => void) {
     (this.listeners[type] ??= []).push(cb);
   }
-  private emit(type: string, ev?: unknown) {
+  private emit(type: string, ev: { data?: unknown } = {}) {
     for (const cb of this.listeners[type] ?? []) cb(ev);
   }
   open() {

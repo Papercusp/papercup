@@ -19,7 +19,10 @@ export const LIVE_MS = 60_000;
 /** Heartbeat older than this = "stale" (mirrors coordination's PRESENCE_STALE_MS). */
 export const STALE_MS = 600_000;
 
-export type Liveness = 'live' | 'idle' | 'stale';
+// 'pending' is NOT derived from a heartbeat — it is stamped on a roster entry
+// synthesized from a recorded-but-not-yet-running launch (pui-reactive-session-
+// panes D-006). deriveLiveness never returns it.
+export type Liveness = 'live' | 'idle' | 'stale' | 'pending';
 
 /**
  * Derive liveness from a heartbeat ISO timestamp + a clock (ms epoch). "idle"

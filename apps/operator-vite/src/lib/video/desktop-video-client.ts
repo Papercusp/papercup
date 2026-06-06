@@ -35,10 +35,7 @@ export interface WsLike {
   binaryType: string;
   send(data: Uint8Array): void;
   close(code?: number, reason?: string): void;
-  addEventListener(type: 'open', cb: () => void): void;
-  addEventListener(type: 'close', cb: () => void): void;
-  addEventListener(type: 'error', cb: (ev: unknown) => void): void;
-  addEventListener(type: 'message', cb: (ev: { data: unknown }) => void): void;
+  addEventListener(type: 'open' | 'close' | 'error' | 'message', cb: (ev: { data?: unknown }) => void): void;
 }
 
 const WS_OPEN = 1;

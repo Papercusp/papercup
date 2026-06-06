@@ -21,6 +21,7 @@ import { isSuAgent } from '../../../su-agents';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
+import { recordAdvSession } from '../../../adv-sessions';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
@@ -51,6 +52,10 @@ const launchSu = defineTool({
       model?: string | null;
       resume_session_id?: string | null;
       kickoff?: { kind?: string } | null;
+      // pui-reactive-session-panes D-006: record a pending workbench launch
+      // instead of spawning a terminal — the pui reactively opens the pane that
+      // RUNS it (the single launcher). The pane materializes via the roster.
+      defer_spawn?: boolean;
     } = {};
     try {
       const text = await req.text();
@@ -117,6 +122,27 @@ const launchSu = defineTool({
     if (model) psuArgs.push(`--model=${model}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
+
+    // Deferred (D-006): record a pending "workbench launch" instead of spawning a
+    // terminal. The pui reactively opens a work-area pane that RUNS `launch_argv`
+    // (the single launcher), then marks the row launched. No process starts here.
+    if (body.defer_spawn) {
+      const label = plan ? `${agent} · ${plan}` : agent;
+      const advSessionId = await recordAdvSession({
+        planSlug: plan,
+        agent,
+        mode: 'console',
+        cwd: null, // psu cds itself from --harness/--plan (parity with the terminal path)
+        label,
+        display: 'workbench',
+        launchArgv: psuArgs,
+      });
+      if (advSessionId == null) {
+        return json({ status: 'error', error: 'failed to record session' }, 500);
+      }
+      return json({ status: 'ok', deferred: true, advSessionId, agent, harnessSlug: harness, planSlug: plan });
+    }
+
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
 
     const spawned = spawnInTerminal({ oneliner, env: process.env });

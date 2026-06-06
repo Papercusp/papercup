@@ -446,6 +446,72 @@ export function defaultPiTerminalsLayout(): LayoutDoc {
   };
 }
 
+/**
+ * Top-level workbench seed (desktop-workbench-shell-2026-06-05) — three
+ * panes side by side: the embedded **pui** terminal, the **main /adv app**,
+ * and a **voice/video** comms pane. Per D-001 the standalone operator-chat
+ * pane is RETIRED (the operator chat lives inside the /adv app pane). The
+ * pui + voice panels carry the active `harnessSlug`, patched at runtime from
+ * the route's `?harness=` (the dock-preview pattern), so the static seed
+ * bakes an empty slug; the /adv app pane self-manages its own harness
+ * selector, so it carries no slug.
+ */
+export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'group',
+      id: 'root',
+      direction: 'row',
+      children: [
+        {
+          kind: 'tabs',
+          id: 'wb-pui',
+          size: 0.33,
+          activePanelId: 'p-wb-pui',
+          panels: [
+            {
+              id: 'p-wb-pui',
+              type: 'workbench:pui',
+              title: 'pui',
+              params: { harnessSlug },
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'wb-app',
+          size: 0.34,
+          activePanelId: 'p-wb-app',
+          panels: [
+            {
+              id: 'p-wb-app',
+              type: 'workbench:app',
+              title: 'App',
+              params: { src: '/adv' },
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'wb-voice',
+          size: 0.33,
+          activePanelId: 'p-wb-voice',
+          panels: [
+            {
+              id: 'p-wb-voice',
+              type: 'workbench:voice',
+              title: 'Voice / Video',
+              params: { harnessSlug },
+            },
+          ],
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
 // ───────── Validation ─────────
 
 export class LayoutValidationError extends Error {
@@ -608,6 +674,9 @@ export function seedForDockName(name: string): LayoutDoc {
   }
   if (name === 'adv-harnesses' || name.startsWith('adv-harnesses:')) {
     return defaultAdvHarnessesLayout(slugAfter('adv-harnesses:'));
+  }
+  if (name === 'workbench' || name.startsWith('workbench:')) {
+    return defaultWorkbenchLayout(slugAfter('workbench:'));
   }
   return defaultDashboardLayout(slugAfter('dashboard:'));
 }

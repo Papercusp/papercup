@@ -26,8 +26,14 @@ pub enum Event {
     Tick,
     /// Fresh plans list from the backend poller.
     Plans(Vec<PlanSummary>),
-    /// Fresh agent roster from the backend poller.
-    Roster(Vec<RosterEntry>),
+    /// Fresh agent roster from the backend poller. `active` is the presence-
+    /// primary roster (rendered); `pending` is the recorded-but-not-running
+    /// workbench-launch tier (pui-reactive-session-panes D-006) the reducer diffs
+    /// to reactively open work-area panes — never rendered in the roster.
+    Roster {
+        active: Vec<RosterEntry>,
+        pending: Vec<RosterEntry>,
+    },
     /// Fresh inbox (attention) items from the backend poller.
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).

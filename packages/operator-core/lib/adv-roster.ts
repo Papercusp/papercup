@@ -97,6 +97,12 @@ export interface RosterEntry {
   ompThreadId: string | null;
   cwd: string | null;
   launchStartedAt: string | null;
+  // ── reactive workbench-pane hints (pui-reactive-session-panes D-002/D-006) ──
+  /** 'workbench' on a PENDING launch the pui should reactively open a pane for;
+   *  null on a normal presence/launch row. The pui panes only these. */
+  display: string | null;
+  /** The argv the pui pane runs for a pending workbench launch; [] otherwise. */
+  launchArgv: string[];
 }
 
 /**
@@ -154,8 +160,58 @@ export function mergeRosterEntries(
       ompThreadId: adv?.ompThreadId ?? null,
       cwd: adv?.cwd ?? null,
       launchStartedAt: adv?.startedAt ?? null,
+      // A presence-backed entry is never a pending workbench launch — those are
+      // synthesized separately (pendingLaunchesToRosterEntries) into the roster's
+      // `pending` tier, never `active` (D-006).
+      display: null,
+      launchArgv: [],
     };
   });
+}
+
+/**
+ * Map pending workbench-launch adv_sessions rows (display='workbench', not yet
+ * consumed by the pui) into RosterEntry-shaped rows for the roster's `pending`
+ * tier (pui-reactive-session-panes D-006). These have no coord_presence (nothing
+ * runs yet), so the fields are synthesized: liveness 'pending', a synthetic owner
+ * id, host = the local box (the pui that panes them runs here). The pui reads ONLY
+ * `pending` to drive reactive panes — they never enter `active`.
+ */
+export function pendingLaunchesToRosterEntries(
+  rows: AdvSessionRow[],
+  localHost: string,
+): RosterEntry[] {
+  return rows.map((r) => ({
+    ownerId: `pending:adv:${r.id}`,
+    label: r.label ?? `${r.agent ?? 'session'}${r.planSlug ? ` · ${r.planSlug}` : ''}`,
+    source: r.agent ?? '',
+    intent: 'pending workbench launch',
+    currentFiles: [],
+    host: localHost,
+    pid: null,
+    startedAt: r.startedAt,
+    heartbeatAt: r.startedAt,
+    liveness: 'pending' as Liveness,
+    stale: false,
+    workspaceId: r.workspaceId,
+    userId: null,
+    revoked: false,
+    pidAlive: null,
+    claims: [],
+    hasLaunchRecord: true,
+    advSessionId: r.id,
+    currentPlanSlug: r.planSlug,
+    role: r.role,
+    feature: r.feature,
+    agent: r.agent,
+    mode: r.mode,
+    windowId: null,
+    ompThreadId: null,
+    cwd: r.cwd,
+    launchStartedAt: r.startedAt,
+    display: r.display,
+    launchArgv: r.launchArgv ?? [],
+  }));
 }
 
 /**

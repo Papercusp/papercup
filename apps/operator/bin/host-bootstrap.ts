@@ -150,8 +150,13 @@ export function runBootstrap(): void {
       const { startLocalVoiceSocket } = await import('@papercusp/operator-core/lib/voice-node/local-audio-socket');
       const { socketPath } = startLocalVoiceSocket();
       console.log(`[voice-node] local audio socket at ${socketPath}`);
+      // The ONE shared EL/operator voice session (universal-voice-interface-2026-06-05):
+      // hosted here and attached to the same socket bus, so desktop + tui both stream
+      // into one session and both receive the input + response (Model A).
+      const { startOperatorVoiceHost } = await import('@papercusp/operator-core/lib/voice-node/operator-voice-host');
+      startOperatorVoiceHost();
     } catch (err) {
-      console.error('[voice-node] failed to start local audio socket:', err);
+      console.error('[voice-node] failed to start local audio socket / operator voice host:', err);
     }
   })();
   // Desktop voice surface (P-015): bridge the local audio socket over a loopback

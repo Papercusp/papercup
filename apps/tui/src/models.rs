@@ -112,6 +112,16 @@ pub struct RosterEntry {
     /// Whether a joinable adv_sessions launch row exists (resume/focus eligible).
     #[serde(default)]
     pub has_launch_record: bool,
+    // ── reactive workbench-pane hints (pui-reactive-session-panes D-002/D-006) ──
+    /// Pane-worthiness hint: `Some("workbench")` on a PENDING launch the pui
+    /// should reactively open a work-area pane for; `None` on a normal entry.
+    /// The pui panes only `display == "workbench"` entries (the `pending` tier).
+    #[serde(default)]
+    pub display: Option<String>,
+    /// The argv the pui pane runs for a pending workbench launch (a fresh
+    /// `psu …`); empty for a normal entry.
+    #[serde(default)]
+    pub launch_argv: Vec<String>,
 }
 
 impl RosterEntry {
@@ -148,6 +158,11 @@ impl RosterEntry {
 pub struct RosterResponse {
     #[serde(default)]
     pub active: Vec<RosterEntry>,
+    /// Pending workbench launches (pui-reactive-session-panes D-006): recorded but
+    /// not-yet-running sessions, in a SEPARATE tier from `active`. The pui reads
+    /// these to reactively open work-area panes; they never render in the roster.
+    #[serde(default)]
+    pub pending: Vec<RosterEntry>,
 }
 
 /// One attention item from `/api/admin/plans/attention` (Inbox). Covers all

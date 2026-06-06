@@ -10,19 +10,26 @@
  * /api/admin/* pattern (no extra principal gate at the route layer).
  */
 
+import os from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   focusWindowId,
   getAdvSession,
   listAdvSessions,
   listEndedAdvSessions,
+  listPendingWorkbenchLaunches,
   listResumableSessions,
+  markAdvSessionLaunched,
   resolveWindowIdForPid,
   resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
 } from '../../../adv-sessions';
-import { mergeRosterWithAssignments, dedupeEndedAgainstActive } from '../../../adv-roster';
+import {
+  mergeRosterWithAssignments,
+  dedupeEndedAgainstActive,
+  pendingLaunchesToRosterEntries,
+} from '../../../adv-roster';
 import { readOmpConfig } from '../../../omp-config';
 import {
   findOmpSessionNear,
@@ -373,16 +380,53 @@ const roster = defineTool({
     const endedLimitRaw = Number(url.searchParams.get('endedLimit') ?? 50);
     const endedLimit = Number.isFinite(endedLimitRaw) && endedLimitRaw > 0 ? endedLimitRaw : 50;
 
-    const [{ active, orphanedClaims }, endedAll] = await Promise.all([
+    const [{ active, orphanedClaims }, endedAll, pendingRows] = await Promise.all([
       mergeRosterWithAssignments({ workspaceId }),
       listEndedAdvSessions({ workspaceId, limit: endedLimit }),
+      listPendingWorkbenchLaunches({ workspaceId }),
     ]);
     const ended = dedupeEndedAgainstActive(endedAll, active);
+    // Pending workbench launches (pui-reactive-session-panes D-006): recorded but
+    // not-yet-running sessions the pui reactively opens a pane for. Synthesized as
+    // RosterEntry-shaped rows (liveness 'pending', local host) in a SEPARATE tier
+    // so the human roster (`active`) is untouched; only the pui consumes `pending`.
+    const pending = pendingLaunchesToRosterEntries(pendingRows, os.hostname());
 
     // Each active entry carries `claims` from the canonical fleet_assignment
     // view; `orphanedClaims` is the claim-keyed remainder — active claims whose
     // holder is absent/stale from the roster (state-not-chat-fleet-state D-002).
-    return new Response(JSON.stringify({ active, ended, orphanedClaims }), {
+    return new Response(JSON.stringify({ active, ended, orphanedClaims, pending }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+/**
+ * POST /api/adv/sessions/mark-launched — the pui consumed a pending workbench
+ * launch by opening its pane (pui-reactive-session-panes D-006). Stamps
+ * launched_at so the row drops out of the `pending` roster tier (idempotent —
+ * a roster-refresh race can't double-consume). Body: `{ id: number }`.
+ */
+const markLaunched = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/mark-launched',
+  auth: 'public',
+  async handler(req) {
+    let body: { id?: number } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* ignore — validated below */ }
+    const id = typeof body.id === 'number' ? body.id : NaN;
+    if (!Number.isFinite(id) || id <= 0) {
+      return new Response(JSON.stringify({ status: 'error', error: 'id required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const stamped = await markAdvSessionLaunched(id);
+    return new Response(JSON.stringify({ status: 'ok', stamped }), {
       status: 200,
       headers: JSON_HEADERS,
     });
@@ -417,4 +461,4 @@ const agentDetail = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, resumable, roster, agentDetail];
+export default [list, focus, alive, state, search, resumable, roster, markLaunched, agentDetail];

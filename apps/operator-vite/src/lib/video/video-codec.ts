@@ -74,7 +74,7 @@ interface VideoDecoderLike {
 interface WebCodecsGlobals {
   VideoEncoder?: new (init: { output: (c: EncodedChunkLike) => void; error: (e: unknown) => void }) => VideoEncoderLike;
   VideoDecoder?: new (init: { output: (f: VideoFrameLike) => void; error: (e: unknown) => void }) => VideoDecoderLike;
-  EncodedVideoChunk?: new (init: { type: 'key' | 'delta'; timestamp: number; data: BufferSource }) => unknown;
+  EncodedVideoChunk?: new (init: { type: 'key' | 'delta'; timestamp: number; data: Uint8Array }) => unknown;
 }
 
 // ----------------------------------------------------- pure helpers (unit-tested)

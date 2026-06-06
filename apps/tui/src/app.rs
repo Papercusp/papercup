@@ -42,6 +42,13 @@ pub enum Action {
     Quit,
     /// Open a native agent session in a new multiplexer pane.
     Launch(PaneSpec),
+    /// Reactively open work-area panes for new LOCAL workbench launches
+    /// (pui-reactive-session-panes D-006). The run loop opens each `spec` via the
+    /// multiplexer (companion when linked, else `zellij action new-pane`) and POSTs
+    /// `/api/adv/sessions/mark-launched` for each `adv_session_id` so the pending
+    /// row drops out of the roster. The reducer already recorded the ids in the
+    /// tracked-pane set, so a refresh in the mark-launched window won't re-open.
+    LaunchPanes(Vec<crate::session_panes::SessionPane>),
     /// Result of an applied agent control intent (P12b / tui:dispatch) — the run
     /// loop POSTs it to `/api/tui/intents/:id/result`. `result_json` is the JSON
     /// payload (the state snapshot for get_state, or `{"ok":true}`); on failure
@@ -727,6 +734,16 @@ pub struct App {
     /// `plan == selected_plan().slug` so a stale fetch never paints the wrong plan.
     pub plan_item_states: Option<PlanItemStates>,
     pub roster: Vec<RosterEntry>,
+    /// adv_session ids the pui has already opened a reactive work-area pane for
+    /// this run (pui-reactive-session-panes D-003/D-006). Dedups against the
+    /// roster's `pending` tier so a refresh never re-opens a pane; keyed on the
+    /// STABLE advSessionId, never pid. Starts empty each run — a restart cannot
+    /// double-pane because live sessions are never in `pending` (P-010).
+    pub tracked_panes: crate::session_panes::TrackedPanes,
+    /// This machine's hostname (pui-reactive-session-panes P-009), resolved once
+    /// at startup the way the backend stamps a pending launch's `host`. Gates the
+    /// LOCAL predicate for reactive panes so only this box's launches are paned.
+    pub local_host: String,
     pub inbox: Vec<AttentionItem>,
     pub inbox_sel: usize,
     /// Overview tab (Brief 23): which of the four tiles the cursor is on —
@@ -1032,6 +1049,8 @@ impl App {
             plan_sel: 0,
             plan_item_states: None,
             roster: Vec::new(),
+            tracked_panes: crate::session_panes::TrackedPanes::new(),
+            local_host: crate::session_panes::local_host(),
             inbox: Vec::new(),
             inbox_sel: 0,
             overview_sel: 0,

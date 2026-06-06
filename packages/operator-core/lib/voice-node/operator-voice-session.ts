@@ -250,11 +250,13 @@ export class OperatorVoiceSession {
     this.socket = null;
     this.elConversationId = null;
     this.pttActive = false;
+    // No player on a torn-down session — null it BEFORE the terminal broadcast
+    // so the 'ended' state every client sees reports playerId=null, not a ghost.
+    this.playerId = null;
     this.setStatus(finalStatus, reason);
     if (wasPlayer) await this.deps.releaseLease(wasPlayer).catch(() => {});
-    this.playerId = null;
-    // Settle back to 'off' so a later start is clean; broadcast the terminal
-    // reason first (above) so clients can surface it.
+    // Settle back to 'off' so a later start is clean; the terminal reason was
+    // broadcast above so clients can surface it.
     this.status = 'off';
   }
 
