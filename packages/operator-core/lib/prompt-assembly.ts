@@ -61,6 +61,14 @@ import { renderFrictionTripwire } from './harness/improvements/friction-markers'
 // (the common dev-server case). Try the longer path first; fall back
 // to cwd-relative if the prompts dir is right next to cwd.
 function promptsDir(): string {
+  // Explicit override — the packaged desktop (SP1 C5: serve.mjs with
+  // cwd=sidecar/) sets PAPERCUSP_PROMPTS_DIR=<sidecar>/prompts, mirroring
+  // PAPERCUSP_SPA_DIST / PAPERCUSP_DOCS_ROOT. Without it the cwd heuristics
+  // below misfire there: sidecar/apps/operator/prompts EXISTS (it carries
+  // only the desktop-install playbook) and would win over sidecar/prompts,
+  // so persona loads would throw at boot.
+  const fromEnv = process.env.PAPERCUSP_PROMPTS_DIR;
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
   const fromRoot = join(process.cwd(), 'apps/operator/prompts');
   if (existsSync(fromRoot)) return fromRoot;
   const fromOperator = join(process.cwd(), 'prompts');
