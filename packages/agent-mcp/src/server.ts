@@ -414,14 +414,18 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     // MCP transport, so it defaults to compact; a client can override per call
     // via `_meta.format`. The envelope (nextCursor/degraded) rides in `_meta`.
     const r = result.response!;
-    const requested = (req.params._meta as { format?: string } | undefined)?.format;
+    const meta = req.params._meta as { format?: string; structured?: boolean } | undefined;
     const serialized = serializeToolResponse(
       r,
-      formatOptsFromCtx({ requestedFormat: requested, transport: 'mcp' }, lookupByMcpName(req.params.name)?.resultEligibility),
+      formatOptsFromCtx(
+        { requestedFormat: meta?.format, requestedStructured: meta?.structured === true, transport: 'mcp' },
+        lookupByMcpName(req.params.name)?.resultEligibility,
+      ),
     );
     return {
       content: serialized.content,
       ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
+      ...(serialized.structuredContent !== undefined ? { structuredContent: serialized.structuredContent } : {}),
     };
   });
 

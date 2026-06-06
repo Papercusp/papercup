@@ -432,6 +432,9 @@ async function buildMcpToolContext(
   // from `_meta.format` on the tools/call params or `?format=` on the MCP URL.
   // The result serializer reads it; absent ⇒ the MCP transport default (compact).
   requestedFormat?: string,
+  // Opt-in for lossless `structuredContent` alongside the compact text (P-010),
+  // from `_meta.structured` / `?structured=1`. OFF by default.
+  requestedStructured?: boolean,
 ): Promise<UnifiedToolContext> {
   // Superuser context: workspaceId/harnessSlug may be '*'. Skip path
   // resolution; per-tool fallbacks ("workspace= arg required") will fire.
@@ -515,6 +518,7 @@ async function buildMcpToolContext(
     }),
     profile: spawn.profile ?? 'engineer',
     requestedFormat,
+    requestedStructured,
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
@@ -653,10 +657,12 @@ const handler = createMcpHandler(
         // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
         return {
           tools: filtered.map((t) => {
-            const tt = t as { inputSchema?: unknown };
-            return tt.inputSchema
-              ? { ...t, inputSchema: sanitizeToolSchema(tt.inputSchema) }
-              : { ...t };
+            const tt = t as { inputSchema?: unknown; outputSchema?: unknown };
+            const out: Record<string, unknown> = { ...t };
+            if (tt.inputSchema) out.inputSchema = sanitizeToolSchema(tt.inputSchema);
+            // outputSchema (P-010) gets the same boolean-subschema objectification.
+            if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema);
+            return out;
           }),
         };
       },
@@ -682,6 +688,9 @@ const handler = createMcpHandler(
         // compact/json once at setup). Absent ⇒ the transport default (compact).
         const requestedFormat =
           req.params._meta?.format ?? urlFromExtra(extra)?.searchParams.get('format') ?? undefined;
+        const requestedStructured =
+          (req.params._meta as { structured?: boolean } | undefined)?.structured === true ||
+          urlFromExtra(extra)?.searchParams.get('structured') === '1';
         // mcp-handler passes the protocol's RequestHandlerExtra here,
         // which exposes a sendNotification function bound to the right
         // session. Use it to fire notifications/progress events.
@@ -761,7 +770,7 @@ const handler = createMcpHandler(
           const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
           const dispatchSpawnCtx =
             effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
-          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat);
+          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat, requestedStructured);
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected
@@ -846,6 +855,7 @@ const handler = createMcpHandler(
           return {
             content: serialized.content,
             ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
+            ...(serialized.structuredContent !== undefined ? { structuredContent: serialized.structuredContent } : {}),
           };
         }
 
