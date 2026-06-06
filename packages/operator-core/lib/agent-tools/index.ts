@@ -84,8 +84,9 @@ import './harness/pending_reviews';
 import './harness/health';
 import './harness/list_features';
 import './harness/membership';
-// Cloud deployment (cloud-deployment-layer-2026-06-06 P-012)
+// Cloud deployment (cloud-deployment-layer-2026-06-06 P-012/P-016)
 import './deploy/deploy';
+import './deploy/hive';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

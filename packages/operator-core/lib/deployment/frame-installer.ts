@@ -69,6 +69,7 @@ export async function installFrame(
     orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
     env: boot.env,
     instanceConfigJson: boot.instanceConfigJson, // P-008: frame's instance config via env
+    controlNode: boot.controlNode, // P-016: the Queen supervises across frames (unscoped)
   });
   log(`bootstrapping frame ${frame.id} (${script.length} bytes; own loop + own embedded-pg per D-006/D-007)`);
   await exec.runScript(script);

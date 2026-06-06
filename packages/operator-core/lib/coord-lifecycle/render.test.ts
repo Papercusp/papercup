@@ -120,7 +120,10 @@ describe('renderIntent', () => {
         agent: 'su-34ac2',
       }),
     );
-    expect(out.summary).toContain('▶ su-34ac2 now working on: building the emits desugar');
+    // Glyph-free + sender-free (P-003/P-010): the `>` + handle are added by the
+    // injection renderer; the stored summary carries only the content.
+    expect(out.summary).toBe('now working on: building the emits desugar');
+    expect(out.summary).not.toContain('su-34ac2');
     expect(out.body).toContain('libs/generic/tooldef/src/types.ts');
     expect(out.body).toContain('coord-lifecycle-automation-2026-06-04');
   });
@@ -135,23 +138,26 @@ describe('renderIntent', () => {
 describe('renderWindow', () => {
   const base = { scope: 'libs/papercusp/packages/locks/*', intent: 'CRDT primitives', agent: 'su-076bb' };
 
-  it('open → holding + hold-off instruction', () => {
+  it('open → holding + hold-off instruction (verb carries the phase, no glyph)', () => {
     const out = renderWindow(WindowRecordSchema.parse({ ...base, phase: 'open' }));
-    expect(out.summary).toContain('🔒 holding');
+    expect(out.summary).toContain('holding');
     expect(out.summary).toContain(base.scope);
+    expect(out.summary).not.toMatch(/🔒|su-076bb/); // no glyph, no sender re-embed
     expect(out.body).toMatch(/hold off|DONE/i);
   });
 
   it('done → released + scope-free', () => {
     const out = renderWindow(WindowRecordSchema.parse({ ...base, phase: 'done' }));
-    expect(out.summary).toContain('✅ released');
+    expect(out.summary).toContain('released');
     expect(out.summary).toContain('done');
+    expect(out.summary).not.toContain('✅');
     expect(out.body).toMatch(/free to edit/i);
   });
 
   it('draining → wrapping up', () => {
     const out = renderWindow(WindowRecordSchema.parse({ ...base, phase: 'draining' }));
-    expect(out.summary).toContain('⏳ draining');
+    expect(out.summary).toContain('draining');
+    expect(out.summary).not.toContain('⏳');
   });
 });
 
@@ -164,7 +170,8 @@ describe('renderHandoff (shared formatHandoff, D-008)', () => {
       nextStep: 'wire the rollup once snapshots flag flips on',
     });
     const { summary, body } = renderHandoff(rec);
-    expect(summary).toContain('↪ handoff → su-2bf2');
+    expect(summary).toContain('handoff → su-2bf2');
+    expect(summary).not.toContain('↪'); // glyph added by the injection renderer
     expect(summary).toContain('P4 ?pot=');
     expect(body).toContain('nuqs param');
     expect(body).toContain('Next step: wire the rollup');
@@ -172,7 +179,7 @@ describe('renderHandoff (shared formatHandoff, D-008)', () => {
 
   it('broadcast handoff (no `to`) omits the arrow target', () => {
     const out = renderHandoff(HandoffRecordSchema.parse({ item: 'X', context: 'ctx' }));
-    expect(out.summary).toContain('↪ handoff:');
+    expect(out.summary).toContain('handoff:');
     expect(out.summary).not.toContain('→');
   });
 });
@@ -186,7 +193,8 @@ describe('renderFinding', () => {
       workItemId: 'WI-042',
     });
     const { summary, body } = renderFinding(rec);
-    expect(summary).toContain('⚠ [medium]');
+    expect(summary).toContain('[medium]');
+    expect(summary).not.toContain('⚠'); // glyph added by the injection renderer
     expect(summary).toContain('migration 147 number collision');
     expect(summary).toContain('WI-042');
     expect(body).toContain('db:next-migration');

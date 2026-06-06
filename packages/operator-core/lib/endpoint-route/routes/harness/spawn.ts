@@ -20,7 +20,6 @@ import {
   rmSync,
 } from 'node:fs';
 import { unlink } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg, listUnconsumedEvents, consumeEvents } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -30,9 +29,8 @@ import {
   harnessDir,
 } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
-import { harnessPackageDir } from '../../../harness-paths';
-import { buildInvokeOnce } from '../../../harness-invoke-once';
 import { SUPERUSER_TOKEN_PATH } from '../../../superuser-token';
+import { spawnInvokeOnce } from '../../../dbos/orchestrator-runner';
 import { launchRun } from '../../../harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -234,57 +232,42 @@ const invoke = defineTool({
       catch { return undefined; }
     })();
 
-    // Single synchronous TS invoke via invoke-once (HARNESS_PHASE is read
-    // from config.json inside invoke-once, so no shell-side phase probe).
-    const { command, args, env: invokeEnv } = buildInvokeOnce({
-      projectDir: project.path,
-      stateDir: join(project.path, '.papercusp'),
-      harnessDir: harnessPackageDir(),
+    // Route the spawn through the ONE chokepoint (spawnInvokeOnce) — governor pacing
+    // + the unified ceiling + whole-group kill on timeout — instead of a private
+    // buildInvokeOnce + raw child_process.spawn (unify-agent-spawn-chokepoint P-008).
+    // The per-request timeoutMs is threaded through; the route keeps its
+    // actions-dispatch + structured response, now on the chokepoint's output.
+    const r = await spawnInvokeOnce(
+      project.path,
       role,
-      extras: extra,
-      extraEnv: suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : undefined,
-    });
-    return new Promise<Response>((resolve) => {
-      const child = spawn(command, args, {
-        cwd: project.path,
-        env: invokeEnv,
-      });
-      let stdout = '', stderr = '';
-      let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGTERM'); } catch { /* ignore */ } }, timeoutMs);
-      child.stdout?.on('data', (d) => { stdout += String(d); });
-      child.stderr?.on('data', (d) => { stderr += String(d); });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        const agentLines = stdout.split('\n').filter((l) => !/^\[20\d\d-\d\d-\d\dT/.test(l));
-        const agentOutput = agentLines.join('\n').trim();
-        const decisionLine = (agentOutput.split('\n')[0] ?? '').trim();
-
-        (async () => {
-          let actionsResult: { count: number; results: any[] } | null = null;
-          if (code === 0 && !timedOut) {
-            try {
-              actionsResult = await dispatchActionsBlockFromOutput(project.slug, project.path, agentOutput);
-            } catch (e) {
-              // eslint-disable-next-line no-console
-              console.warn(`[invoke ${project.slug}/${role}] actions dispatch failed:`, e);
-            }
-          }
-
-          resolve(Response.json({
-            ok: code === 0 && !timedOut,
-            slug: project.slug,
-            role,
-            decisionLine,
-            agentOutput,
-            stdout,
-            stderr,
-            exitCode: code,
-            timedOut,
-            actions: actionsResult,
-          }));
-        })();
-      });
+      extra,
+      suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {},
+      { timeoutMs },
+    );
+    const agentOutput = r.output; // spawnInvokeOnce already strips the [timestamp] log lines
+    const decisionLine = (agentOutput.split('\n')[0] ?? '').trim();
+    const timedOut = r.timedOut ?? false;
+    const ok = r.exitCode === 0 && !timedOut;
+    let actionsResult: { count: number; results: any[] } | null = null;
+    if (ok) {
+      try {
+        actionsResult = await dispatchActionsBlockFromOutput(project.slug, project.path, agentOutput);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[invoke ${project.slug}/${role}] actions dispatch failed:`, e);
+      }
+    }
+    return Response.json({
+      ok,
+      slug: project.slug,
+      role,
+      decisionLine,
+      agentOutput,
+      stdout: agentOutput,
+      stderr: r.stderr,
+      exitCode: r.exitCode,
+      timedOut,
+      actions: actionsResult,
     });
   },
 });

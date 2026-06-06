@@ -50,10 +50,13 @@ export async function buildDeployBootstrapInput(
 
   // P-008: deliver the harness's per-install instance config to the frame via env
   // (the frame has no local config.json). Assembled from workspace PG (registry),
-  // falling back to the local config.json for an un-migrated harness.
+  // falling back to the local config.json for an un-migrated harness. Migrate FIRST
+  // so a deployed harness's instance config is PG-canonical (and federates to the
+  // frame's own pg, D-007) rather than left in a file that never reaches the frame.
   let instanceConfigJson: string | undefined;
   try {
-    const { assembleInstanceConfig } = await import('./instance-config');
+    const { migrateConfigJsonToInstance, assembleInstanceConfig } = await import('./instance-config');
+    await migrateConfigJsonToInstance(slug, workspaceId).catch(() => undefined);
     const cfg = await assembleInstanceConfig(slug, workspaceId);
     if (Object.keys(cfg).length > 0) instanceConfigJson = JSON.stringify(cfg);
   } catch {

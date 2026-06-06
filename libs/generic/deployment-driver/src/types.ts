@@ -119,6 +119,9 @@ export interface FrameBootstrapInput {
    *  runtime via the `HARNESS_CONFIG_JSON` env-transport (the frame has no local
    *  config.json file). Host-assembled from workspace PG. */
   instanceConfigJson?: string;
+  /** This frame is a control node (the Queen) — supervises across frames rather
+   *  than running a single harness's execution. */
+  controlNode?: boolean;
 }
 
 /** Severity for the injected logger. */

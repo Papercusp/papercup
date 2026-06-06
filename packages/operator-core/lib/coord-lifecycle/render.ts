@@ -57,7 +57,6 @@ function clip(s: string, max = 180): string {
  */
 export function renderCompletion(rec: CompletionRecord): RenderedNotification {
   const status = (rec.status || 'done').toUpperCase();
-  const who = rec.agent ? ` (${rec.agent})` : '';
   // Compact trailers on the headline, the way agents write them.
   const trailers: string[] = [];
   if (rec.tests) trailers.push(rec.tests);
@@ -65,7 +64,9 @@ export function renderCompletion(rec: CompletionRecord): RenderedNotification {
     trailers.push(`migs ${rec.migrations.map((m) => m.split(/\s/)[0]).join('/')}`);
   }
   const trailer = trailers.length > 0 ? ` — ${trailers.join(', ')}` : '';
-  const summary = clip(`${rec.workItem} ${status}${who}: ${rec.summary}${trailer}`);
+  // No `(agent)` re-embed: the injection renderer shows the sender handle once
+  // (token-efficient-coord-injection D-005); the bullet/handle names it.
+  const summary = clip(`${rec.workItem} ${status}: ${rec.summary}${trailer}`);
 
   const body = block(
     rec.title ? `**${rec.title}**` : null,
@@ -86,15 +87,20 @@ export function renderCompletion(rec: CompletionRecord): RenderedNotification {
 
 /** CLAIM — "Taking <id>". */
 export function renderClaim(rec: ClaimRecord): RenderedNotification {
-  const who = rec.agent ? ` (${rec.agent})` : '';
-  const summary = clip(`Taking ${rec.workItem}${who}${rec.summary ? ` — ${rec.summary}` : ''}`);
+  const summary = clip(`Taking ${rec.workItem}${rec.summary ? ` — ${rec.summary}` : ''}`);
   return { summary };
 }
 
-/** INTENT — "now working on X" heads-up (from coord:declare-intent). */
+/**
+ * INTENT — "now working on X" heads-up (from coord:declare-intent).
+ *
+ * GLYPH-FREE + SENDER-FREE (token-efficient-coord-injection P-003/P-010): the
+ * line type's glyph (`>`) and the sender handle are applied ONCE by the
+ * injection renderer (`coord-schema.renderInjection`) from `COORD_LEGEND` — the
+ * stored summary carries only the content, so neither is double-emitted.
+ */
 export function renderIntent(rec: IntentRecord): RenderedNotification {
-  const who = rec.agent ? `${rec.agent} ` : '';
-  const summary = clip(`▶ ${who}now working on: ${rec.intent}`);
+  const summary = clip(`now working on: ${rec.intent}`);
   const body = block(
     rec.files && rec.files.length > 0 ? `Files in scope:\n${bullets(rec.files)}` : null,
     rec.planSlug ? `Plan: ${rec.planSlug}` : null,
@@ -102,23 +108,24 @@ export function renderIntent(rec: IntentRecord): RenderedNotification {
   return body.length > 0 ? { summary, body } : { summary };
 }
 
-/** WINDOW — open / draining / done broadcasts for a held scope. */
+/** WINDOW — open / draining / done broadcasts for a held scope. The verb
+ *  (holding / draining / released) carries the phase; the `#` glyph + handle are
+ *  added by the injection renderer (no inline glyph, no `(agent)`). */
 export function renderWindow(rec: WindowRecord): RenderedNotification {
-  const who = rec.agent ? ` (${rec.agent})` : '';
   switch (rec.phase) {
     case 'open':
       return {
-        summary: clip(`🔒 holding ${rec.scope}${who} — ${rec.intent}`),
+        summary: clip(`holding ${rec.scope} — ${rec.intent}`),
         body: `Holding ${rec.scope} for: ${rec.intent}. I'll post DONE for this window when I release it — hold off on edits in this scope until then.`,
       };
     case 'draining':
       return {
-        summary: clip(`⏳ draining ${rec.scope}${who} — wrapping up: ${rec.intent}`),
+        summary: clip(`draining ${rec.scope} — wrapping up: ${rec.intent}`),
         body: `Finishing up on ${rec.scope} (${rec.intent}). Almost done — the window closes shortly.`,
       };
     case 'done':
       return {
-        summary: clip(`✅ released ${rec.scope}${who} — ${rec.intent} done`),
+        summary: clip(`released ${rec.scope} — ${rec.intent} done`),
         body: `Released ${rec.scope}. ${rec.intent} is done — the scope is free to edit.`,
       };
   }
@@ -126,11 +133,12 @@ export function renderWindow(rec: WindowRecord): RenderedNotification {
 
 /**
  * HANDOFF (D-008) — the shared formatHandoff. Used by BOTH the coord
- * notification and the agent's-pane render so they never disagree.
+ * notification and the agent's-pane render so they never disagree. Glyph-free:
+ * the `<` glyph + handle come from the injection renderer.
  */
 export function renderHandoff(rec: HandoffRecord): RenderedNotification {
   const dest = rec.to ? ` → ${rec.to}` : '';
-  const summary = clip(`↪ handoff${dest}: ${rec.item}`);
+  const summary = clip(`handoff${dest}: ${rec.item}`);
   const body = block(
     rec.context,
     rec.nextStep ? `Next step: ${rec.nextStep}` : null,
@@ -138,11 +146,12 @@ export function renderHandoff(rec: HandoffRecord): RenderedNotification {
   return body.length > 0 ? { summary, body } : { summary };
 }
 
-/** FINDING / health — a discovered problem. */
+/** FINDING / health — a discovered problem. The `!` glyph is added by the
+ *  injection renderer (no inline `⚠`). */
 export function renderFinding(rec: FindingRecord): RenderedNotification {
   const sev = rec.severity ? `[${rec.severity}] ` : '';
   const ref = rec.workItemId ? ` (${rec.workItemId})` : '';
-  const summary = clip(`⚠ ${sev}${rec.title}${ref}`);
+  const summary = clip(`${sev}${rec.title}${ref}`);
   return rec.detail ? { summary, body: rec.detail } : { summary };
 }
 

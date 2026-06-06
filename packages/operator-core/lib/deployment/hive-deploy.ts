@@ -19,7 +19,8 @@
  * Lifecycle: deploy / pause (destroy-to-stop) / scale / teardown, + cost controls
  * (per-frame budget caps, idle reaper). Deps injected for unit-testability.
  */
-import type { DeploymentConfig, Frame, LogLevel } from '@papercusp/deployment-driver';
+import type { DeploymentConfig, DeploymentContext, Frame, LogLevel } from '@papercusp/deployment-driver';
+import { resolveDeploymentDriver } from '@papercusp/deployment-driver';
 
 export type QueenPlacement = 'local' | 'dedicated' | 'colocated';
 
@@ -237,4 +238,86 @@ export async function reapHiveFrames(
     await deps.teardownHarness(slug, workspaceId).catch(() => undefined);
   }
   return toReap;
+}
+
+// ── Real dependency wiring ───────────────────────────────────────────────────
+
+/** operator_state key holding the per-Hive Queen control-frame handles. */
+const HIVE_CONTROL_FRAMES_KEY = 'hive_control_frames';
+
+/**
+ * Wire the Hive deps to the real deploy orchestration + registry: members deploy
+ * via `deployHarness` (their `deployment` is set to the Swarm first); the dedicated
+ * Queen control frame is provisioned + bootstrapped as a control node (supervises
+ * across frames) and its handle persisted in operator_state so teardown finds it.
+ */
+export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => void): HiveDeployDeps {
+  const ctxFor = (hiveId: string, ws: string): DeploymentContext => ({
+    harnessSlug: `hive-queen-${hiveId}`,
+    workspaceId: ws,
+    log,
+  });
+
+  return {
+    log,
+    async setMemberDeployment(slug, workspaceId, deployment) {
+      const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+      const reg = await loadHarnessRegistry(workspaceId);
+      const p = reg.projects.find((x) => x.slug === slug);
+      if (p) {
+        p.deployment = deployment;
+        await saveHarnessRegistry(reg, workspaceId);
+      }
+    },
+    async deployHarness(slug, workspaceId) {
+      const { deployHarness, defaultDeployDeps } = await import('./deploy');
+      return deployHarness(slug, workspaceId, defaultDeployDeps(log));
+    },
+    async teardownHarness(slug, workspaceId) {
+      const { teardownHarness, defaultDeployDeps } = await import('./deploy');
+      return teardownHarness(slug, workspaceId, defaultDeployDeps(log));
+    },
+    async deployControlFrame(hiveId, workspaceId, deployment) {
+      const { resolveCredentialPath } = await import('./bootstrap-input');
+      const driver = resolveDeploymentDriver(deployment);
+      const ctx: DeploymentContext = {
+        ...ctxFor(hiveId, workspaceId),
+        bootstrap: { controlNode: true, credentialsLocalPath: resolveCredentialPath(deployment.credentialRef) },
+      };
+      const frame = await driver.provision(deployment, ctx);
+      await persistControlFrame(hiveId, workspaceId, frame);
+      await driver.install(frame, deployment, ctx);
+      await driver.join(frame, deployment, ctx);
+      return frame;
+    },
+    async teardownControlFrame(hiveId, workspaceId) {
+      const frame = await loadControlFrame(hiveId, workspaceId);
+      if (!frame) return { destroyed: false };
+      const config: DeploymentConfig = { target: frame.target };
+      const driver = resolveDeploymentDriver(config);
+      await driver.teardown(frame, config, ctxFor(hiveId, workspaceId));
+      await clearControlFrame(hiveId, workspaceId);
+      return { destroyed: true };
+    },
+  };
+}
+
+async function controlFramesMap(workspaceId: string): Promise<Record<string, Frame>> {
+  const { readOperatorState } = await import('../operator-state-pg');
+  return (await readOperatorState<Record<string, Frame>>(HIVE_CONTROL_FRAMES_KEY, workspaceId)) ?? {};
+}
+async function persistControlFrame(hiveId: string, workspaceId: string, frame: Frame): Promise<void> {
+  const { writeOperatorState } = await import('../operator-state-pg');
+  const map = await controlFramesMap(workspaceId);
+  map[hiveId] = frame;
+  await writeOperatorState(HIVE_CONTROL_FRAMES_KEY, map, workspaceId);
+}
+async function loadControlFrame(hiveId: string, workspaceId: string): Promise<Frame | undefined> {
+  return (await controlFramesMap(workspaceId))[hiveId];
+}
+async function clearControlFrame(hiveId: string, workspaceId: string): Promise<void> {
+  const { writeOperatorState } = await import('../operator-state-pg');
+  const map = await controlFramesMap(workspaceId);
+  delete map[hiveId];
+  await writeOperatorState(HIVE_CONTROL_FRAMES_KEY, map, workspaceId);
 }

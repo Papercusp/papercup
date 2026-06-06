@@ -51,6 +51,10 @@ export interface FrameBootstrapOpts {
    *  HARNESS_CONFIG_JSON so the frame's runtime reads it via the env-transport
    *  (P-008; the frame has no local config.json). */
   instanceConfigJson?: string;
+  /** Control node (the Queen — P-016/D-008 `dedicated` placement): run the operator
+   *  loop UNSCOPED (supervises across frames via coordination) rather than scoped to
+   *  one harness. */
+  controlNode?: boolean;
 }
 
 /** The bootstrap section ids, in run order — the observable contract. */
@@ -189,7 +193,9 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     add('orchestrator-loop', 'frame orchestrator loop (D-006)', [
       `cd ${shq(`${root}/runtime`)}`,
       'export PAPERCUSP_DBOS_ORCHESTRATOR=1',
-      `export PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=${shq(opts.harnessSlug)}`,
+      // Control node (Queen) supervises ACROSS frames → unscoped (`*`); an execution
+      // frame self-dispatches only the one harness it hosts (D-006).
+      `export PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=${shq(opts.controlNode ? '*' : opts.harnessSlug)}`,
       `export AGENT_BACKEND=${shq(backend === 'omp' ? 'omp' : backend === 'claude' ? 'claude-code' : 'codex')}`,
       // P-008: the frame reads its per-install instance config from env (no config.json file).
       ...(opts.instanceConfigJson ? [`export HARNESS_CONFIG_JSON=${shq(opts.instanceConfigJson)}`] : []),

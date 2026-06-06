@@ -15,11 +15,10 @@
  * ALLOWLIST — the legitimate sites that build + spawn the agent CLI directly:
  *   • packages/operator-core/lib/dbos/orchestrator-runner.ts — IS the chokepoint
  *     (`spawnInvokeOnce` → `runChild`); everything else funnels through it.
- *   • packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts — the
- *     `/invoke` HTTP route + the `loopbackFetch` sink. A KNOWN remaining bypass,
- *     tracked for routing through `spawnInvokeOnce` (it needs a per-call timeout on
- *     the chokepoint first to preserve its per-request `timeoutMs`). REMOVE from the
- *     allowlist once routed.
+ *
+ * (The `/invoke` HTTP route at endpoint-route/routes/harness/spawn.ts WAS the last
+ * remaining bypass; it now routes through `spawnInvokeOnce` with a per-call timeout
+ * — P-008 — so the only build+spawn site left is the chokepoint itself.)
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

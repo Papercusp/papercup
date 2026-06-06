@@ -46,6 +46,41 @@ export default defineTool({
         /* best-effort — the brain can still decide without the live number */
       }
     }
+
+    // P-009 pre-alloc: if the brain has granted this requester's STREAM a spawn
+    // budget (a fleet_governor credit pool keyed `spawn-budget:<owner>`, granted via
+    // `fleet:governor { op:'grant_n', scopeKey }`), consume one + AUTO-APPROVE here —
+    // per-spawn brain adjudication is OPTIONAL for a trusted stream with budget. Only
+    // when the budget is exhausted (or none was granted) does the request route to
+    // the brain. Decentralized initiative + the brain still sets the budget (D-002).
+    if (ctx.workspaceId) {
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { tryConsumeSpawnCredit, spawnBudgetScopeKey } = await import('../../fleet/governor');
+        const budgetScope = spawnBudgetScopeKey(identity.ownerId);
+        if (await tryConsumeSpawnCredit(getOrgPg().sql, { workspaceId: ctx.workspaceId, scopeKey: budgetScope })) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  approved: true,
+                  via: 'budget',
+                  budget_scope: budgetScope,
+                  next:
+                    `Pre-approved from your stream budget (no brain round-trip) — ` +
+                    `fleet:spawn { role: "${args.role}"${args.harness ? `, harness: "${args.harness}"` : ''}${args.feature ? `, feature: "${args.feature}"` : ''} }.`,
+                }),
+              },
+            ],
+          };
+        }
+      } catch {
+        /* best-effort — fall through to the brain-approval request */
+      }
+    }
+
     const rec = await openEscalation(identity, {
       severity: 'question',
       summary: `${identity.ownerLabel ?? identity.ownerId} requests a ${args.role} sub-agent${args.harness ? ` in ${args.harness}` : ''}`,
