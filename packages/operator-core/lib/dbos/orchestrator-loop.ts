@@ -54,6 +54,8 @@
 import { join } from 'node:path';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import postgres from 'postgres';
+import { isLocalDeployment } from '@papercusp/deployment-driver';
+import type { ProjectEntry } from '../harness-registry';
 import {
   durableOwnedFeatureIdsPg,
   readConfig,
@@ -512,6 +514,19 @@ async function raiseOrClearStuckSignal(slug: string, workspaceId: string, stuck:
 }
 
 /**
+ * P-004 (cloud-deployment-layer-2026-06-06): does the LOCAL orchestrator dispatch
+ * this harness, or does its execution plane run on a remote frame (so the frame's
+ * own co-located orchestrator loop owns dispatch — D-006)? Consults the deployment
+ * driver's placement. Pure + testable. A null project (slug not in this workspace)
+ * and every local harness → `true`, so the gate is a NO-OP for all existing
+ * harnesses (none carry a non-local deployment); only a harness pinned to a
+ * registered REMOTE driver returns `false`.
+ */
+export function harnessDispatchesLocally(project: Pick<ProjectEntry, 'deployment'> | null): boolean {
+  return project == null || isLocalDeployment(project.deployment);
+}
+
+/**
  * Dispatch for ONE harness: read eligible (non-owned) features, fill the free
  * slots up to the harness's own concurrency `cap`, and `ensureFeaturePipeline`
  * each. Used by both the periodic sweep and the on-completion refill seam (#1).
@@ -522,6 +537,15 @@ export async function dispatchOneHarness(
   workspaceId: string,
   adminUrl: string = getHarnessAdminUrl(),
 ): Promise<OrchestratorTickResult> {
+  // P-004: consult the deployment driver for placement BEFORE touching PG. A
+  // remote-frame harness is dispatched by THAT frame's own orchestrator loop, so
+  // the local orchestrator skips it here (the single choke point both the 30s
+  // tick and refillHarnessOnSettle funnel through). LocalDriver → local → no
+  // change for every existing harness.
+  const placementProject = await resolveProject(slug, workspaceId).catch(() => null);
+  if (!harnessDispatchesLocally(placementProject)) {
+    return { harness: slug, started: [] };
+  }
   const pg = postgres(adminUrl, {
     max: 1,
     connect_timeout: 5,

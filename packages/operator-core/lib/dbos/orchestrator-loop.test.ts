@@ -18,8 +18,15 @@ import {
   resolvePerHarnessCap,
   resolveDispatchPolicy,
   orchestratorWorkspaceIds,
+  harnessDispatchesLocally,
   type FrontierFeature,
 } from './orchestrator-loop';
+import {
+  registerDeploymentDriver,
+  _resetDeploymentDriversForTests,
+  type DeploymentDriver,
+  type Frame,
+} from '@papercusp/deployment-driver';
 
 /** Frontier-feature factory: defaults to an unblocked, no-plan, unordered feature. */
 const f = (
@@ -441,5 +448,43 @@ describe('computeFrontier — frontier dispatch (P-042)', () => {
       toStart: [],
       stuck: false,
     });
+  });
+});
+
+describe('harnessDispatchesLocally — deployment placement gate (cloud-deployment P-004)', () => {
+  const remoteDriver: DeploymentDriver = {
+    target: 'latitude',
+    placement: 'remote',
+    async provision(): Promise<Frame> {
+      return { id: 'lat-1', target: 'latitude', placement: 'remote' };
+    },
+    async install() {},
+    async join() {},
+    async teardown() {},
+  };
+
+  afterEach(() => _resetDeploymentDriversForTests());
+
+  test('null project (slug not in this workspace) → dispatches locally', () => {
+    expect(harnessDispatchesLocally(null)).toBe(true);
+  });
+
+  test('no deployment field (every existing harness) → dispatches locally', () => {
+    expect(harnessDispatchesLocally({})).toBe(true);
+    expect(harnessDispatchesLocally({ deployment: undefined })).toBe(true);
+  });
+
+  test('explicit local deployment → dispatches locally', () => {
+    expect(harnessDispatchesLocally({ deployment: { target: 'local' } })).toBe(true);
+  });
+
+  test('a registered remote driver → the local orchestrator skips it (frame owns dispatch)', () => {
+    registerDeploymentDriver(remoteDriver);
+    expect(harnessDispatchesLocally({ deployment: { target: 'latitude', region: 'NYC' } })).toBe(false);
+  });
+
+  test('a non-local target with NO registered driver → conservatively dispatches locally', () => {
+    // No driver wired up yet → never silently route work to a frame that isn't there.
+    expect(harnessDispatchesLocally({ deployment: { target: 'latitude' } })).toBe(true);
   });
 });
