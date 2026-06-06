@@ -86,6 +86,37 @@ export interface Frame {
   meta?: Record<string, unknown>;
 }
 
+/** A background service to supervise on the frame (generic: a name + command). */
+export interface FrameService {
+  name: string;
+  command: string;
+  port?: number;
+  healthcheck?: string;
+}
+
+/**
+ * Host-assembled bootstrap inputs for `install()` — deliberately GENERIC (shell
+ * commands + a repo + env + a credential file path), so the lib stays host-clean.
+ * The host (operator) maps its blueprint's environment spec + the harness repo +
+ * the resolved credential bundle onto this; the driver turns it into whatever the
+ * provider needs (an SSH-run bootstrap script, cloud-init user-data, …).
+ */
+export interface FrameBootstrapInput {
+  /** Git URL of the repo to clone on the frame (omit for a repo-less harness). */
+  repoUrl?: string;
+  repoRef?: string;
+  setup?: string[];
+  install?: string[];
+  build?: string[];
+  run?: string[];
+  services?: FrameService[];
+  ports?: number[];
+  /** NON-SECRET env to export for the run. */
+  env?: Record<string, string>;
+  /** Local path to the credential bundle to stage on the frame (e.g. a Claude sub). */
+  credentialsLocalPath?: string;
+}
+
 /** Severity for the injected logger. */
 export type LogLevel = 'info' | 'warn' | 'error';
 
@@ -103,6 +134,9 @@ export interface DeploymentContext {
   log?: (level: LogLevel, msg: string, extra?: Record<string, unknown>) => void;
   /** Abort signal for long-running provision/teardown. */
   signal?: AbortSignal;
+  /** Host-assembled bootstrap inputs for `install()` (repo + env-spec commands +
+   *  credential file). The host populates this; cloud drivers consume it. */
+  bootstrap?: FrameBootstrapInput;
 }
 
 /**

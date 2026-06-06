@@ -10,6 +10,8 @@ export type {
   FrameKind,
   DeploymentConfig,
   Frame,
+  FrameService,
+  FrameBootstrapInput,
   LogLevel,
   DeploymentContext,
   DeploymentDriver,

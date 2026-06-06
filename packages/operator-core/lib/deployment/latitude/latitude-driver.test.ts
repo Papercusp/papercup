@@ -107,19 +107,81 @@ describe('LatitudeDriver.provision', () => {
   });
 });
 
-describe('LatitudeDriver teardown / install / join', () => {
+describe('LatitudeDriver teardown', () => {
   it('teardown DESTROYS the server', async () => {
     const client = fakeClient([]);
     const driver = makeLatitudeDriver({ client });
     await driver.teardown({ id: 'sv_9', target: 'latitude', placement: 'remote' }, cfg, ctx);
     expect(client.deleted).toEqual(['sv_9']);
   });
+});
 
-  it('install + join throw an explicit P-010 pending error (not a silent no-op)', async () => {
-    const driver = makeLatitudeDriver({ client: fakeClient([]) });
-    const frame = { id: 'sv_1', target: 'latitude', placement: 'remote' as const };
-    await expect(driver.install(frame, cfg, ctx)).rejects.toThrow(/not implemented yet.*P-010/s);
-    await expect(driver.join(frame, cfg, ctx)).rejects.toThrow(/not implemented yet/);
+describe('LatitudeDriver.install (P-010/P-011)', () => {
+  const frame = { id: 'sv_1', target: 'latitude', placement: 'remote' as const, host: '1.2.3.4' };
+
+  function fakeExec() {
+    const scripts: string[] = [];
+    const copies: Array<[string, string]> = [];
+    return {
+      scripts,
+      copies,
+      async runScript(s: string) {
+        scripts.push(s);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+      async copyFile(local: string, remote: string) {
+        copies.push([local, remote]);
+      },
+    };
+  }
+
+  it('stages credentials then runs a bootstrap script with the env spec + frame sections', async () => {
+    const exec = fakeExec();
+    const driver = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => exec });
+    await driver.install(frame, cfg, {
+      ...ctx,
+      bootstrap: {
+        repoUrl: 'https://github.com/acme/repo.git',
+        install: ['npm ci'],
+        build: ['npm run build'],
+        credentialsLocalPath: '/local/claude-creds.json',
+      },
+    });
+    // P-011: credential staged before the script ran.
+    expect(exec.copies).toEqual([['/local/claude-creds.json', '/root/papercusp-claude-credentials.json']]);
+    expect(exec.scripts).toHaveLength(1);
+    const script = exec.scripts[0];
+    expect(script).toContain('Frame for harness: papercup');
+    expect(script).toContain('npm ci'); // env-install
+    expect(script).toContain('npm run build'); // env-build
+    expect(script).toContain('git clone'); // repo
+    expect(script).toContain('embedded-pg'); // D-007
+    expect(script).toContain('PAPERCUSP_DBOS_ORCHESTRATOR=1'); // D-006 own loop
+    expect(script).toContain('papercusp-claude-credentials.json'); // P-011 mount
+  });
+
+  it('skips credential staging when none provided', async () => {
+    const exec = fakeExec();
+    const driver = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => exec });
+    await driver.install(frame, cfg, { ...ctx, bootstrap: { repoUrl: 'g' } });
+    expect(exec.copies).toEqual([]);
+    expect(exec.scripts).toHaveLength(1);
+  });
+
+  it('join default is a no-op log; onJoin hook is honored when provided', async () => {
+    const calls: string[] = [];
+    const driver = makeLatitudeDriver({
+      client: fakeClient([]),
+      makeRemoteExec: () => fakeExec(),
+      onJoin: async () => {
+        calls.push('joined');
+      },
+    });
+    await driver.join(frame, cfg, ctx);
+    expect(calls).toEqual(['joined']);
+    // default (no onJoin) resolves without throwing
+    const plain = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => fakeExec() });
+    await expect(plain.join(frame, cfg, ctx)).resolves.toBeUndefined();
   });
 });
 

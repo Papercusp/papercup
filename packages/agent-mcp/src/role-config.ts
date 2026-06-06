@@ -71,6 +71,19 @@ export const AGENT_ROLES = [
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
 
 /**
+ * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
+ * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint
+ * P-006 / D-008). This is an RBAC role on `Principal.roles` (the fail-closed
+ * `requireRoles` dispatch axis), NOT an agent `ctx.role`: it is assigned by the HOST
+ * to the operator's OWN principal (the bearer-resolved `system:operator` + the
+ * loopback palette caller), and is never carried by a spawned agent's caller-asserted
+ * `?role=`. A tool gated `requireRoles: [BRAIN_PRINCIPAL_ROLE]` is therefore
+ * approvable ONLY by the brain (or a superuser, which bypasses RBAC) — making "only
+ * the brain decides spawns" enforced at the dispatch layer, not prompt convention.
+ */
+export const BRAIN_PRINCIPAL_ROLE = 'brain';
+
+/**
  * Register the built-in roles with the framework. Declaration merging adds
  * these keys to `@papercusp/tooldef`'s `RoleRegistry`, which the framework
  * reads (`keyof RoleRegistry`) to shape `AgentRole`. Derived from

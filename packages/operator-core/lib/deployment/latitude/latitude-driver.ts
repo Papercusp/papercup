@@ -22,6 +22,8 @@ import type {
   Frame,
 } from '@papercusp/deployment-driver';
 import { createLatitudeApiClient, type LatitudeApiClient, type LatitudeServerAttributes } from './latitude-api';
+import { buildFrameBootstrap } from '../frame-bootstrap';
+import { createSshRemoteExec, type RemoteExec } from '../remote-exec';
 
 /** Latitude statuses that mean the frame is up and usable. */
 const READY_STATUSES = new Set(['on', 'active', 'ready', 'running']);
@@ -40,6 +42,24 @@ export interface LatitudeDriverDeps {
   pollTimeoutMs?: number;
   /** Injected for tests so polling doesn't actually wait. */
   sleep?: (ms: number) => Promise<void>;
+  /** Build the RemoteExec for a frame (install/credential staging). Injected for tests. */
+  makeRemoteExec?: (frame: Frame, config: DeploymentConfig) => RemoteExec;
+  /** Optional join hook (P-014/P-015 admission). Default: a log no-op — the frame
+   *  federates via its own boot announce; explicit admission lands with P-015. */
+  onJoin?: (frame: Frame, config: DeploymentConfig, ctx: DeploymentContext) => Promise<void>;
+}
+
+/** Where the per-frame Claude credentials are staged on the frame before bootstrap. */
+const REMOTE_CRED_PATH = '/root/papercusp-claude-credentials.json';
+
+function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
+  const provider = (config.provider ?? {}) as Record<string, unknown>;
+  if (!frame.host) throw new Error('LatitudeDriver.install: frame has no host/IP to SSH to');
+  return createSshRemoteExec({
+    host: frame.host,
+    user: (provider.sshUser as string | undefined) ?? 'root',
+    identityFile: provider.sshIdentityFile as string | undefined,
+  });
 }
 
 function defaultResolveApiKey(config: DeploymentConfig): string | undefined {
@@ -85,19 +105,13 @@ export function toLatitudeAttributes(config: DeploymentConfig, ctx: DeploymentCo
   };
 }
 
-const PENDING_INSTALL = (verb: string) =>
-  new Error(
-    `LatitudeDriver.${verb} is not implemented yet (cloud-deployment-layer P-010/P-014). ` +
-      `Per ratified D-006/D-007 it must bootstrap the frame to run its OWN orchestrator loop + OWN ` +
-      `embedded-pg (federating via the peer-log) from the blueprint's environment spec, then admit it ` +
-      `as a headless peer. Blocked on a live frame to exercise.`,
-  );
-
 export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDriver {
   const resolveApiKey = deps.resolveApiKey ?? defaultResolveApiKey;
   const pollIntervalMs = deps.pollIntervalMs ?? 10_000;
   const pollTimeoutMs = deps.pollTimeoutMs ?? 15 * 60_000;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const makeRemoteExec = deps.makeRemoteExec ?? defaultMakeRemoteExec;
+  const onJoin = deps.onJoin;
 
   function clientFor(config: DeploymentConfig): LatitudeApiClient {
     if (deps.client) return deps.client;
@@ -155,12 +169,47 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
       };
     },
 
-    async install(_frame, _config, _ctx): Promise<void> {
-      throw PENDING_INSTALL('install');
+    async install(frame, config, ctx): Promise<void> {
+      const boot = ctx.bootstrap ?? {};
+      const exec = makeRemoteExec(frame, config);
+      // P-011: stage the per-frame Claude subscription (its own rate limits) first.
+      if (boot.credentialsLocalPath) {
+        log(ctx, 'info', `staging per-frame Claude credentials → ${REMOTE_CRED_PATH} (P-011)`);
+        await exec.copyFile(boot.credentialsLocalPath, REMOTE_CRED_PATH);
+      }
+      const { script } = buildFrameBootstrap({
+        harnessSlug: ctx.harnessSlug,
+        repoUrl: boot.repoUrl,
+        repoRef: boot.repoRef,
+        environment: {
+          setup: boot.setup ?? [],
+          install: boot.install ?? [],
+          build: boot.build ?? [],
+          test: [],
+          run: boot.run ?? [],
+          services: boot.services ?? [],
+          ports: boot.ports ?? [],
+          env: boot.env ?? {},
+        },
+        claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
+        embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
+        orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
+        env: boot.env,
+      });
+      log(ctx, 'info', `bootstrapping frame ${frame.id} (${script.length} bytes; own loop + own embedded-pg per D-006/D-007)`);
+      await exec.runScript(script);
+      log(ctx, 'info', `frame ${frame.id} bootstrapped`);
     },
 
-    async join(_frame, _config, _ctx): Promise<void> {
-      throw PENDING_INSTALL('join');
+    async join(frame, config, ctx): Promise<void> {
+      if (onJoin) {
+        await onJoin(frame, config, ctx);
+        return;
+      }
+      // The frame admits itself into the harness/Hive via its own boot announce
+      // (signed device pubkey → read-admission). Explicit headless-peer admission
+      // for an auto-provisioned frame is wired by P-015 (deps.onJoin).
+      log(ctx, 'info', `frame ${frame.id} joins as a headless peer via its boot announce (P-014/P-015)`);
     },
 
     async teardown(frame, config, ctx): Promise<void> {
