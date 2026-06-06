@@ -92,12 +92,14 @@ async function handleTranscript(t: VoiceTranscript, seams: BrainSeams): Promise<
   if (!brainEnabled || busy || !t.text.trim()) return;
   busy = true; // serialize: one turn in flight; drop transcripts meanwhile
   try {
-    history.push({ role: 'user', content: t.text });
-    trimHistory();
-    const say = await seams.converse([...history]);
+    const userMsg: ConverseMessage = { role: 'user', content: t.text };
+    const say = await seams.converse([...history, userMsg]);
     if (!brainEnabled) return; // disabled mid-turn
     if (say && say.trim()) {
-      history.push({ role: 'assistant', content: say });
+      // Commit the exchange as a user+assistant PAIR so history stays strictly
+      // alternating; a silent turn (no say) records neither side, so a dangling
+      // user turn can never accumulate and break the next turn's alternation.
+      history.push(userMsg, { role: 'assistant', content: say });
       trimHistory();
       speaking = true;
       setVoiceAgentSpeaking(true); // broadcast to voice clients (pui indicator)

@@ -107,6 +107,23 @@ describe('voice agent brain (P-011)', () => {
     ]);
   });
 
+  it('does not leave a dangling user turn when the brain stays silent', async () => {
+    const replies: (string | null)[] = [null, 'hi there'];
+    let i = 0;
+    const { seams, converseCalls, fire } = makeHarness({
+      converseReply: async () => replies[i++],
+    });
+    enableVoiceAgentBrain(true, seams);
+    fire('silent one'); // brain stays silent → records nothing
+    await vi.waitFor(() => expect(converseCalls.length).toBe(1));
+    await new Promise((r) => setTimeout(r, 5));
+    fire('real two');
+    await vi.waitFor(() => expect(converseCalls.length).toBe(2));
+    // The 2nd converse sees ONLY its own user turn — the silent 1st turn left
+    // no dangling user message in history (alternation preserved).
+    expect(converseCalls[1]).toEqual([{ role: 'user', content: 'real two' }]);
+  });
+
   it('reports speaking while the reply is being spoken', async () => {
     let releaseSay: () => void = () => {};
     const sayGate = new Promise<number>((r) => {

@@ -22,6 +22,7 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
 import { startMobileVoiceWs } from '@papercusp/operator-core/lib/device-voice-ws';
+import { startDesktopVoiceWs } from '@papercusp/operator-core/lib/voice-node/desktop-voice-ws';
 import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/device-push-credentials';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
@@ -153,6 +154,9 @@ export function runBootstrap(): void {
       console.error('[voice-node] failed to start local audio socket:', err);
     }
   })();
+  // Desktop voice surface (P-015): bridge the local audio socket over a loopback
+  // WS so the Tauri webview's getUserMedia path can reach the same voice-node.
+  startDesktopVoiceWs();
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /
   // smoke-fail / plan-review now push at the source via notifyAttention from
   // their /api/internal/*-event producers; needs-human≥high from set-status.

@@ -506,6 +506,9 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
                     VC::MicOff => {
                         voice_mic = None;
+                        // User explicitly stopped — don't let open-mic auto-start
+                        // immediately re-arm it (P-010 restart-fight guard).
+                        open_mic_started = true;
                         let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
                     }
                     VC::Create(name) => {

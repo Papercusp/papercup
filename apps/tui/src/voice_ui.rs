@@ -278,11 +278,18 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
             if !in_channel(s) {
                 return None;
             }
-            Some(if s.mic_on {
-                VoiceCmd::MicOff
+            if is_open_mic(s) {
+                // Open-mic: the mic is always live (VAD-gated), so the key
+                // toggles MUTE rather than starting/stopping transmit.
+                let muted = s.status.as_ref().map(|st| st.muted).unwrap_or(false);
+                Some(VoiceCmd::SetMuted(!muted))
             } else {
-                VoiceCmd::MicOn
-            })
+                Some(if s.mic_on {
+                    VoiceCmd::MicOff
+                } else {
+                    VoiceCmd::MicOn
+                })
+            }
         }
         _ => None,
     }
@@ -336,12 +343,25 @@ pub fn ptt_key_code(s: &VoiceUiState) -> KeyCode {
         .unwrap_or(KeyCode::Char('v'))
 }
 
+/// True when the voice input mode is open-mic (mic always live, VAD-gated)
+/// rather than push-to-talk. Defaults to PTT when prefs aren't loaded.
+fn is_open_mic(s: &VoiceUiState) -> bool {
+    s.prefs
+        .as_ref()
+        .map(|p| p.input_mode == "open-mic")
+        .unwrap_or(false)
+}
+
 /// Hold-to-talk: releasing the PTT key stops transmit. Only ever reached under
 /// the kitty keyboard protocol (which delivers key releases); plain terminals
 /// emit no release, so the press arm's toggle is the fallback. Idempotent — a
 /// `MicOff` when already off is a harmless no-op, so this never races the
-/// `MicState` round-trip from the press. P-009.
+/// `MicState` round-trip from the press. No-op while an overlay is open or in
+/// open-mic mode (the mic is always live there; the key toggles mute). P-009.
 pub fn handle_release(s: &VoiceUiState, code: KeyCode) -> Option<VoiceCmd> {
+    if s.composing || s.settings_open || is_open_mic(s) {
+        return None;
+    }
     (code == ptt_key_code(s) && in_channel(s)).then_some(VoiceCmd::MicOff)
 }
 
