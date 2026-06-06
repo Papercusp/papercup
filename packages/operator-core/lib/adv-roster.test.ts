@@ -3,6 +3,7 @@ import {
   deriveLiveness,
   scopePresenceToWorkspace,
   mergeRosterEntries,
+  pendingLaunchesToRosterEntries,
   dedupeEndedAgainstActive,
   shouldProbePid,
   LIVE_MS,
@@ -214,5 +215,34 @@ describe('shouldProbePid (zombie detection eligibility, P-008)', () => {
     const e = make({ heartbeatAt: iso(NOW - STALE_MS - 1) });
     expect(e.liveness).toBe('stale');
     expect(shouldProbePid(e, 'box1')).toBe(false);
+  });
+});
+
+describe('pendingLaunchesToRosterEntries (pui-reactive-session-panes D-006)', () => {
+  it('synthesizes a pending workbench RosterEntry the pui panes', () => {
+    const row = adv({
+      id: 42,
+      display: 'workbench',
+      launchArgv: ['psu', '--no-picker', '--agent=claude', '--plan=my-plan'],
+      label: 'claude · my-plan',
+      cwd: '/repo/papercup',
+    });
+    const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.ownerId).toBe('pending:adv:42');
+    expect(e.liveness).toBe('pending');
+    expect(e.host).toBe('box-1'); // local — the recording box
+    expect(e.display).toBe('workbench');
+    expect(e.launchArgv).toEqual(['psu', '--no-picker', '--agent=claude', '--plan=my-plan']);
+    expect(e.advSessionId).toBe(42);
+    expect(e.hasLaunchRecord).toBe(true);
+    expect(e.cwd).toBe('/repo/papercup');
+    expect(e.pid).toBeNull();
+  });
+
+  it('falls back to an agent·plan label and tolerates a null launchArgv', () => {
+    const row = adv({ id: 7, display: 'workbench', label: null, launchArgv: null, planSlug: 'p' });
+    const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.label).toBe('claude · p'); // agent · planSlug
+    expect(e.launchArgv).toEqual([]);
   });
 });

@@ -1,23 +1,38 @@
 'use client';
 
-// adv:docs — renders a harness's project `docs/` markdown INLINE (#7). The
-// legacy iframe to `/project-docs` broke after the operator-vite migration (that
-// Next.js page no longer has a server, so the SPA fallback served the operator
-// shell into the iframe). We now fetch the docs via /api/harness/:slug/project-
-// docs and render them with the shared MarkdownPreview — universal across every
-// harness, with a clean empty state when a harness has no docs/ dir.
+// adv:docs — renders a harness's project docs INLINE, now over the MERGED model
+// (harness-docs-integration-2026-06-05 P-008): generated · manual · augmented docs
+// coexist with source badges, drift freshness ("⚠ may be out of date" /
+// "not drift-tracked"), the human augmented overlay, and regenerate / re-verify
+// actions. Supersedes the FS-only /project-docs read.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 
-interface DocsResponse {
+type DocSource = 'generated' | 'manual' | 'augmented';
+type DocStatus = 'fresh' | 'stale' | 'review' | 'untracked' | 'unknown';
+
+interface MergedDocEntry {
+  docId: string;
+  source: DocSource;
+  status: DocStatus;
+  statusDetail: string | null;
+  subjectLabel: string;
+  hasOverlay: boolean;
+  title: string | null;
+  bodyMissing: boolean;
+  tracked: boolean;
+}
+
+interface MergedDocsResponse {
   ok: boolean;
   reason?: 'unknown_harness' | 'no_docs_dir' | 'empty';
-  projectPath?: string;
   files: string[];
+  entries: MergedDocEntry[];
   activePath: string | null;
   content: string | null;
+  activeEntry: (MergedDocEntry & { overlay: string | null }) | null;
 }
 
 function basenameNoExt(p: string): string {
@@ -38,25 +53,56 @@ function groupByDir(files: string[]): Array<{ dir: string; files: string[] }> {
     .map(([dir, fs]) => ({ dir, files: fs.sort() }));
 }
 
+const SOURCE_LABEL: Record<DocSource, string> = { generated: 'Generated', manual: 'Manual', augmented: 'Augmented' };
+const STATUS_LABEL: Record<DocStatus, string> = {
+  fresh: 'Up to date',
+  stale: '⚠ May be out of date',
+  review: '⚠ Needs re-verify',
+  untracked: 'Not drift-tracked',
+  unknown: 'Unknown',
+};
+
+function SourceBadge({ source }: { source: DocSource }) {
+  return <span className={`pc-doc-badge pc-doc-badge--src-${source}`}>{SOURCE_LABEL[source]}</span>;
+}
+function StatusBadge({ status, detail }: { status: DocStatus; detail?: string | null }) {
+  if (status === 'fresh') return null;
+  return (
+    <span className={`pc-doc-badge pc-doc-badge--st-${status}`} title={detail ?? undefined}>
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
+/** Tiny coloured dot in the nav for at-a-glance freshness. */
+function StatusDot({ status }: { status: DocStatus }) {
+  if (status === 'fresh') return null;
+  const cls =
+    status === 'stale' || status === 'review' ? 'is-warn' : status === 'unknown' ? 'is-unknown' : 'is-untracked';
+  return <span className={`pc-doc-dot ${cls}`} aria-hidden />;
+}
+
 export default function AdvDocsTab({ slug }: { slug: string }) {
-  // ?docpath= is the selected doc file — URL-backed (nuqs) so it deep-links and
-  // is agent-driveable, per the repo's nuqs rule.
+  // ?docpath= is the selected doc — URL-backed (nuqs) so it deep-links + is agent-driveable.
   const [docPath, setDocPath] = useQueryState('docpath', parseAsString);
-  const [data, setData] = useState<DocsResponse | null>(null);
+  const [data, setData] = useState<MergedDocsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) {
-      setData({ ok: true, files: [], activePath: null, content: null });
+      setData({ ok: true, files: [], entries: [], activePath: null, content: null, activeEntry: null });
       return;
     }
     let cancel = false;
     setData(null);
     setError(null);
-    const q = docPath ? `?path=${encodeURIComponent(docPath)}` : '';
-    fetch(`/api/harness/${encodeURIComponent(slug)}/project-docs${q}`, { cache: 'no-store' })
+    const params = new URLSearchParams();
+    if (docPath) params.set('path', docPath);
+    params.set('recompute', '1'); // git-accurate freshness for the doc being viewed
+    fetch(`/api/harness/${encodeURIComponent(slug)}/docs?${params.toString()}`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((j: DocsResponse) => {
+      .then((j: MergedDocsResponse) => {
         if (!cancel) setData(j);
       })
       .catch((e: unknown) => {
@@ -65,9 +111,31 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
     return () => {
       cancel = true;
     };
-  }, [slug, docPath]);
+  }, [slug, docPath, reloadKey]);
 
+  const entryById = useMemo(() => {
+    const m = new Map<string, MergedDocEntry>();
+    for (const e of data?.entries ?? []) m.set(e.docId, e);
+    return m;
+  }, [data?.entries]);
   const grouped = useMemo(() => groupByDir(data?.files ?? []), [data?.files]);
+
+  const runAction = useCallback(
+    async (action: 'regenerate' | 'verify', docId: string) => {
+      setBusy(action);
+      try {
+        await fetch(`/api/harness/${encodeURIComponent(slug)}/docs/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ docId }),
+        });
+      } finally {
+        setBusy(null);
+        setReloadKey((k) => k + 1);
+      }
+    },
+    [slug],
+  );
 
   if (error) return <div className="pc-adv-harness-panel__empty">Could not load docs: {error}</div>;
   if (!data) return <div className="pc-adv-harness-panel__empty">Loading docs…</div>;
@@ -83,6 +151,9 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
   }
 
   const activeRel = data.activePath;
+  const active = data.activeEntry;
+  const canRegen = active && (active.source === 'generated' || active.source === 'augmented') && active.status === 'stale';
+  const canVerify = active && active.source === 'manual' && (active.status === 'review' || active.status === 'untracked');
 
   return (
     <div className="pc-adv-docs">
@@ -91,24 +162,69 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
           <section key={g.dir} className="pc-adv-docs__navgroup">
             <div className="pc-adv-docs__navdir">{g.dir || '/'}</div>
             <ul>
-              {g.files.map((f) => (
-                <li key={f}>
-                  <button
-                    type="button"
-                    className={`pc-adv-docs__navlink${f === activeRel ? ' is-active' : ''}`}
-                    aria-current={f === activeRel ? 'page' : undefined}
-                    onClick={() => void setDocPath(f)}
-                  >
-                    {basenameNoExt(f)}
-                  </button>
-                </li>
-              ))}
+              {g.files.map((f) => {
+                const e = entryById.get(f);
+                return (
+                  <li key={f}>
+                    <button
+                      type="button"
+                      className={`pc-adv-docs__navlink${f === activeRel ? ' is-active' : ''}`}
+                      aria-current={f === activeRel ? 'page' : undefined}
+                      onClick={() => void setDocPath(f)}
+                    >
+                      {e && <StatusDot status={e.status} />}
+                      <span className="pc-adv-docs__navlabel">{basenameNoExt(f)}</span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         ))}
       </aside>
       <main className="pc-adv-docs__article">
-        {activeRel && <div className="pc-adv-docs__crumb">{activeRel}</div>}
+        {activeRel && (
+          <header className="pc-adv-docs__head">
+            <div className="pc-adv-docs__crumb">{activeRel}</div>
+            {active && (
+              <div className="pc-adv-docs__meta">
+                <SourceBadge source={active.source} />
+                <StatusBadge status={active.status} detail={active.statusDetail} />
+                {active.subjectLabel && (
+                  <span className="pc-adv-docs__subject" title="What this doc documents (drift anchor)">
+                    documents: <code>{active.subjectLabel}</code>
+                  </span>
+                )}
+                {canRegen && (
+                  <button
+                    type="button"
+                    className="pc-doc-action pc-doc-action--regen"
+                    disabled={busy !== null}
+                    onClick={() => void runAction('regenerate', active.docId)}
+                  >
+                    {busy === 'regenerate' ? 'Requesting…' : 'Regenerate'}
+                  </button>
+                )}
+                {canVerify && (
+                  <button
+                    type="button"
+                    className="pc-doc-action pc-doc-action--verify"
+                    disabled={busy !== null}
+                    onClick={() => void runAction('verify', active.docId)}
+                  >
+                    {busy === 'verify' ? 'Verifying…' : 'Re-verify'}
+                  </button>
+                )}
+              </div>
+            )}
+          </header>
+        )}
+        {active?.overlay && (
+          <div className="pc-adv-docs__overlay">
+            <div className="pc-adv-docs__overlay-label">Human note (augmented · survives regeneration)</div>
+            <MarkdownPreview value={active.overlay} />
+          </div>
+        )}
         <MarkdownPreview value={data.content ?? '*No file selected.*'} outline="left" />
       </main>
 
@@ -133,12 +249,13 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
         }
         .pc-adv-docs__nav ul { list-style: none; margin: 0; padding: 0; }
         .pc-adv-docs__navlink {
-          display: block; width: 100%; text-align: left;
+          display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
           padding: 6px 14px; margin: 0 8px; font-size: 13px; line-height: 1.25;
           border: 0; border-left: 2px solid transparent; border-radius: 6px;
           background: transparent; color: var(--fg-dim, #b9d4e8); cursor: pointer;
           transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
         }
+        .pc-adv-docs__navlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .pc-adv-docs__navlink:hover {
           color: var(--accent-cool, #d7f3ff);
           background: color-mix(in srgb, var(--accent-strong, #7dd3fc), transparent 92%);
@@ -148,16 +265,53 @@ export default function AdvDocsTab({ slug }: { slug: string }) {
           background: color-mix(in srgb, var(--accent, #38bdf8), transparent 90%);
           border-left-color: var(--accent, #38bdf8);
         }
+        .pc-doc-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; }
+        .pc-doc-dot.is-warn { background: #f59e0b; }
+        .pc-doc-dot.is-untracked { background: #64748b; }
+        .pc-doc-dot.is-unknown { background: #a78bfa; }
         .pc-adv-docs__article {
           overflow: auto; padding: 22px clamp(18px, 2.2vw, 30px) 40px; min-width: 0;
         }
+        .pc-adv-docs__head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
         .pc-adv-docs__crumb {
-          display: inline-flex; align-items: center; width: fit-content;
-          margin-bottom: 16px; padding: 2px 8px; border-radius: 999px;
+          display: inline-flex; align-items: center; width: fit-content; padding: 2px 8px; border-radius: 999px;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
           color: var(--fg-mute, #7f9bb4);
           border: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc), transparent 88%);
           background: color-mix(in srgb, var(--accent-strong, #7dd3fc), transparent 94.5%);
+        }
+        .pc-adv-docs__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .pc-adv-docs__subject {
+          font-size: 11px; color: var(--fg-mute, #7f9bb4);
+        }
+        .pc-adv-docs__subject code { font-size: 11px; color: var(--fg-dim, #b9d4e8); }
+        .pc-doc-badge {
+          display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+          font-size: 10.5px; font-weight: 700; letter-spacing: .03em; white-space: nowrap;
+          border: 1px solid transparent;
+        }
+        .pc-doc-badge--src-generated { color: #7dd3fc; background: rgba(56,189,248,.14); border-color: rgba(56,189,248,.38); }
+        .pc-doc-badge--src-manual { color: #cbd5e1; background: rgba(100,116,139,.16); border-color: rgba(100,116,139,.4); }
+        .pc-doc-badge--src-augmented { color: #c4b5fd; background: rgba(167,139,250,.16); border-color: rgba(167,139,250,.4); }
+        .pc-doc-badge--st-stale, .pc-doc-badge--st-review { color: #fbbf24; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.4); }
+        .pc-doc-badge--st-untracked { color: #94a3b8; background: rgba(100,116,139,.14); border-color: rgba(100,116,139,.34); }
+        .pc-doc-badge--st-unknown { color: #c4b5fd; background: rgba(167,139,250,.12); border-color: rgba(167,139,250,.32); }
+        .pc-doc-action {
+          display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; font-size: 11px; font-weight: 700;
+          letter-spacing: .03em; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+        }
+        .pc-doc-action:disabled { opacity: .55; cursor: default; }
+        .pc-doc-action--regen { color: #c4b5fd; background: rgba(167,139,250,.16); border-color: rgba(167,139,250,.4); }
+        .pc-doc-action--regen:hover:not(:disabled) { background: rgba(167,139,250,.28); color: #e7f7ff; }
+        .pc-doc-action--verify { color: #86efac; background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.4); }
+        .pc-doc-action--verify:hover:not(:disabled) { background: rgba(34,197,94,.28); color: #e7f7ff; }
+        .pc-adv-docs__overlay {
+          margin-bottom: 18px; padding: 10px 14px; border-radius: 8px;
+          border: 1px solid rgba(167,139,250,.32); background: rgba(167,139,250,.07);
+        }
+        .pc-adv-docs__overlay-label {
+          font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+          color: #c4b5fd; margin-bottom: 6px;
         }
         @media (max-width: 760px) {
           .pc-adv-docs { grid-template-columns: 1fr; }

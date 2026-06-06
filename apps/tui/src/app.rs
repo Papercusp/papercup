@@ -7291,4 +7291,74 @@ mod tests {
         b.apply_view_state(&vs);
         assert!(b.operator_dock_open);
     }
+
+    // ─── Reactive workbench panes (pui-reactive-session-panes D-006, P-008 wiring) ───
+
+    /// A pending workbench launch as the roster's `pending` tier delivers it,
+    /// stamped with `host` so the LOCAL predicate matches `a.local_host`.
+    fn pending_launch(a: &App, id: i64, agent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: format!("pending:adv:{id}"),
+            host: a.local_host.clone(),
+            liveness: "pending".into(),
+            agent: Some(agent.into()),
+            adv_session_id: Some(id),
+            has_launch_record: true,
+            display: Some("workbench".into()),
+            launch_argv: vec![
+                "psu".into(),
+                "--no-picker".into(),
+                format!("--agent={agent}"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn roster_pending_workbench_emits_launch_panes_and_tracks_it() {
+        let mut a = App::new();
+        let p = pending_launch(&a, 607, "claude");
+        let act = a.update(Event::Roster {
+            active: vec![],
+            pending: vec![p],
+        });
+        match act {
+            Action::LaunchPanes(panes) => {
+                assert_eq!(panes.len(), 1);
+                assert_eq!(panes[0].adv_session_id, 607);
+                assert_eq!(panes[0].spec.argv, vec!["psu", "--no-picker", "--agent=claude"]);
+            }
+            other => panic!("expected LaunchPanes, got {other:?}"),
+        }
+        assert!(a.tracked_panes.contains(&607));
+    }
+
+    #[test]
+    fn roster_refresh_does_not_reopen_a_tracked_pane() {
+        let mut a = App::new();
+        let p = pending_launch(&a, 607, "claude");
+        let _ = a.update(Event::Roster { active: vec![], pending: vec![p.clone()] });
+        // Same pending entry on the next refresh → dedup → just Render, no reopen.
+        let act = a.update(Event::Roster { active: vec![], pending: vec![p] });
+        assert_eq!(act, Action::Render);
+        assert_eq!(a.tracked_panes.len(), 1);
+    }
+
+    #[test]
+    fn roster_remote_pending_launch_is_not_paned() {
+        let mut a = App::new();
+        let mut p = pending_launch(&a, 607, "claude");
+        p.host = "some-other-host".into();
+        let act = a.update(Event::Roster { active: vec![], pending: vec![p] });
+        assert_eq!(act, Action::Render);
+        assert!(a.tracked_panes.is_empty());
+    }
+
+    #[test]
+    fn roster_with_no_pending_just_renders() {
+        let mut a = App::new();
+        let act = a.update(Event::Roster { active: vec![], pending: vec![] });
+        assert_eq!(act, Action::Render);
+        assert!(a.tracked_panes.is_empty());
+    }
 }

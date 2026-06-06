@@ -78,6 +78,7 @@ import usersViewer from './users/viewer';
 import harnessPrs from './harness/prs';
 import harnessPrReviewerSettings from './harness/pr-reviewer-settings';
 import harnessProjectDocs from './harness/project-docs';
+import harnessDocs from './harness/docs';
 import harnessSync from './harness/sync';
 import cupboard from './cupboard';
 import cupboardInstallPlugin from './cupboard-install-plugin';
@@ -515,6 +516,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessPrReviewerSettings as AnyRoute[]),
   ...flatten(harnessProjectDocs as AnyRoute[]),
+  ...flatten(harnessDocs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),
   ...flatten(cupboard as AnyRoute[]),
   ...flatten(cupboardInstallPlugin as AnyRoute),

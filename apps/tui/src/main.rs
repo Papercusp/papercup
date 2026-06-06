@@ -22,6 +22,7 @@ mod layout;
 mod models;
 mod mux;
 mod notify;
+mod operator_voice_bus;
 mod session_panes;
 mod sse;
 mod theme;

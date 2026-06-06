@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import Chromeless from '@/app/_components/Chromeless';
 import { SetupWizard } from '@/app/_components/SetupWizard/SetupWizard';
+import { SetupPreviewPane } from '../components/setup/SetupPreviewPane';
 
 /**
  * /setup — first-run wizard. Translated from `apps/operator/app/setup/page.tsx`.
@@ -22,7 +23,17 @@ function SetupPage() {
   return (
     <div className="pc-shell pc-setup-shell">
       <Chromeless />
-      <SetupWizard mode="first-run" />
+      {/* First-run: the wizard is the main mode; a read-only preview of the
+          real app (operator + chat, and the pui terminal) rides alongside so
+          the user sees what they're setting up. The shared SetupWizard is
+          unchanged — the preview is composed here, first-run only (settings
+          mode at /settings/setup-wizard renders the wizard without it). */}
+      <div className="pc-setup-firstrun">
+        <div className="pc-setup-firstrun__main">
+          <SetupWizard mode="first-run" />
+        </div>
+        <SetupPreviewPane />
+      </div>
     </div>
   );
 }

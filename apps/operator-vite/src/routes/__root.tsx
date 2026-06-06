@@ -1,5 +1,5 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
-import { Suspense } from 'react';
+import { lazy, Suspense } from 'react';
 import { Toaster } from 'sonner';
 // Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
@@ -84,6 +84,16 @@ import '@/app/harness/harness.css';
  *     `<style id="op-chat-width-reserve">`, since that reservation CSS is
  *     otherwise component-scoped and absent pre-paint.
  */
+// Dev-only admin rail (plan dev-admin-sidebar-2026-06-05). Gated on
+// `import.meta.env.DEV` HERE so the whole rail — and its lazily-imported panels —
+// is statically dead code in a production build: the ternary resolves to `null`,
+// the `lazy(() => import(...))` call is never emitted, and Rollup drops the chunk.
+// Result: the rail is ABSENT from user builds (D-001). The desktop dev shell runs
+// `vite build --mode development`, where DEV === true, so it shows there.
+const DevAdminRail = import.meta.env.DEV
+  ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
+  : null;
+
 export const Route = createRootRoute({
   component: RootComponent,
   notFoundComponent: NotFound,
@@ -162,6 +172,16 @@ function RootComponent() {
               <DesktopAttentionNotifier />
               <PerfObserverProvider />
               <RecorderHost />
+              {/* Dev-only admin rail — collapsible right cockpit (flags / run /
+                  health / deploy-state / db / fleet). Mounted inside NuqsAdapter
+                  (its open/section state is nuqs-backed) + RootSyncProvider (its
+                  glance panels use useSyncQuery). Absent from production builds —
+                  see the DevAdminRail lazy const above. */}
+              {DevAdminRail && (
+                <Suspense fallback={null}>
+                  <DevAdminRail />
+                </Suspense>
+              )}
               <DevReloadGate />
               <ChunkReloadPrompt />
             </NuqsAdapter>

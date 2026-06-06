@@ -271,6 +271,79 @@ mod tests {
     }
 
     #[test]
+    fn decodes_live_3170_roster_pending_tier_and_opens_a_pane() {
+        // The EXACT `/api/adv/roster` wire shape captured live from the staging
+        // operator (:3170, running this branch) after a defer_spawn record — guards
+        // the TS↔Rust serde contract for the new `pending`/`display`/`launchArgv`
+        // fields (the #1 integration risk a live e2e catches: a camelCase mismatch).
+        let json = r#"{
+          "active": [],
+          "ended": [],
+          "orphanedClaims": [],
+          "pending": [{
+            "ownerId": "pending:adv:608",
+            "label": "claude · pui-reactive-session-panes-2026-06-05",
+            "source": "claude",
+            "intent": "pending workbench launch",
+            "currentFiles": [],
+            "host": "main-server-Precision-7865-Tower",
+            "pid": null,
+            "startedAt": "2026-06-06T04:16:25.864Z",
+            "heartbeatAt": "2026-06-06T04:16:25.864Z",
+            "liveness": "pending",
+            "stale": false,
+            "workspaceId": "papercusp-workspace",
+            "userId": null,
+            "revoked": false,
+            "pidAlive": null,
+            "claims": [],
+            "hasLaunchRecord": true,
+            "advSessionId": 608,
+            "currentPlanSlug": "pui-reactive-session-panes-2026-06-05",
+            "role": null,
+            "feature": null,
+            "agent": "claude",
+            "mode": "console",
+            "windowId": null,
+            "ompThreadId": null,
+            "cwd": null,
+            "launchStartedAt": "2026-06-06T04:16:25.864Z",
+            "display": "workbench",
+            "launchArgv": [
+              "/home/marsh-office/.local/bin/psu",
+              "--no-picker",
+              "--agent=claude",
+              "--plan=pui-reactive-session-panes-2026-06-05"
+            ]
+          }]
+        }"#;
+        let resp: crate::models::RosterResponse =
+            serde_json::from_str(json).expect("decode live /adv/roster");
+        assert!(resp.active.is_empty());
+        assert_eq!(resp.pending.len(), 1);
+        let e = &resp.pending[0];
+        assert_eq!(e.display.as_deref(), Some("workbench"));
+        assert_eq!(e.adv_session_id, Some(608));
+        assert!(e.has_launch_record);
+        assert_eq!(e.liveness, "pending");
+        assert_eq!(e.launch_argv.len(), 4);
+
+        // The pure diff produces exactly the pane that RUNS this launch.
+        let out = panes_to_open(
+            &TrackedPanes::new(),
+            &resp.pending,
+            "main-server-Precision-7865-Tower",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].adv_session_id, 608);
+        assert_eq!(out[0].spec.argv, e.launch_argv);
+        assert_eq!(
+            out[0].spec.title.as_deref(),
+            Some("claude · pui-reactive-session-panes-2026-06-05"),
+        );
+    }
+
+    #[test]
     fn live_active_sessions_are_never_paned() {
         // pui-restart reconciliation (P-010): a live session has display=None and
         // lives in `active`, never the `pending` tier. Even if such a row were

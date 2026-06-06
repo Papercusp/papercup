@@ -1,4 +1,15 @@
-/*
+/**
+ * Dev admin rail styles, as a JS string (NOT a .css import).
+ *
+ * Why a string and not `import './x.css'`: Vite eagerly collects CSS imported by
+ * a module into the output stylesheet EVEN when that module is a dead
+ * dynamically-imported chunk (the rail is gated `import.meta.env.DEV`). A `.css`
+ * import therefore leaks the rail's class names into production builds. Carrying
+ * the CSS as a string that the component injects via `<style>` keeps it inside
+ * the JS module, so it tree-shakes away with the rest of the rail in prod —
+ * matching FeaturesAdmin's inline-`<style>` pattern. Source: P-009 / D-001.
+ */
+export const RAIL_CSS = `/*
  * Dev admin rail — chrome styles (plan dev-admin-sidebar-2026-06-05).
  *
  * A collapsible, dev-only right rail. Overlay (does NOT shift app layout) so it
@@ -383,3 +394,4 @@
 .pc-dev-embed .pc-ops-grid {
   grid-template-columns: 1fr;
 }
+`;

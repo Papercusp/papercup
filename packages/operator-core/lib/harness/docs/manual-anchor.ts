@@ -22,7 +22,7 @@ export function frontmatterDocuments(body: string): unknown {
   if (!m) return undefined;
   const fm = m[1];
   // documents: a single scalar, an inline [a, b], or a block list of "- item".
-  const line = /^documents:\s*(.*)$/m.exec(fm);
+  const line = /^documents:[ \t]*(.*)$/m.exec(fm);
   if (!line) return undefined;
   const rhs = line[1].trim();
   if (rhs && rhs !== '|' && rhs !== '>') {

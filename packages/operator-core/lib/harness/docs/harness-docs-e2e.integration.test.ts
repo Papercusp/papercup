@@ -1,0 +1,187 @@
+/**
+ * harness-docs-e2e.integration.test.ts — the whole server-side harness-docs flow
+ * end-to-end against REAL Postgres (mig 172) + a REAL fixture git repo, per
+ * harness-docs-integration-2026-06-05 (P-011 server half; validates P-004/5/6/7).
+ *
+ * generated provenance → merged read → git-sync drift sweep (stale/review +
+ * enqueue/flag) → augmented overlay surviving regeneration → manual anchor/verify
+ * → regenerate enqueue → unanchored "not drift-tracked".
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type postgres from 'postgres';
+import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
+const readMigration = (f: string) =>
+  readFileSync(resolve(SQL_DIR, f), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
+    .join('\n');
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repo: '' }));
+
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: async () => ({ projects: [{ slug: 'demo', path: h.repo }] }),
+}));
+vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: async () => ({}) }));
+
+const { recordGeneratedDoc } = await import('./provenance');
+const { buildMergedDocs } = await import('./merged-read');
+const { sweepHarnessDocs } = await import('./freshness-sweep');
+const { anchorManualDoc, verifyManualDoc } = await import('./manual-anchor');
+const { requestRegeneration } = await import('./regenerate');
+const { setDocOverlay, getDocRecord } = await import('./doc-record');
+const { runGit } = await import('./git-runner');
+
+let db: FreshPgDb;
+let repo: string;
+const shas: Record<string, string> = {};
+function git(args: string[]): string {
+  return execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+}
+
+beforeAll(async () => {
+  db = await createFreshPgDb('harness-docs-e2e');
+  await db.sql.unsafe(`
+    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+  `);
+  await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
+  h.sql = db.sql;
+
+  repo = mkdtempSync(join(tmpdir(), 'docs-e2e-'));
+  h.repo = repo;
+  git(['init', '-q']);
+  git(['config', 'user.email', 't@p.dev']);
+  git(['config', 'user.name', 'T']);
+  git(['config', 'commit.gpgsign', 'false']);
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  mkdirSync(join(repo, 'docs/features'), { recursive: true });
+  mkdirSync(join(repo, 'docs/guides'), { recursive: true });
+  writeFileSync(join(repo, 'src/feature1.ts'), 'export function f1() { return 1; }\n');
+  writeFileSync(join(repo, 'src/setup.ts'), 'export const setup = 1;\n');
+  writeFileSync(join(repo, 'docs/features/F-1.md'), '---\ntitle: Feature 1\n---\n# Feature 1\nGenerated body.\n');
+  writeFileSync(join(repo, 'docs/guides/setup.md'), '---\ntitle: Setup\ndocuments: src/setup.ts\n---\n# Setup guide\n');
+  writeFileSync(join(repo, 'docs/orphan.md'), '# Orphan\nUnanchored manual doc.\n');
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', 'c0']);
+  shas.c0 = git(['rev-parse', 'HEAD']);
+}, 60_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+  if (repo) rmSync(repo, { recursive: true, force: true });
+});
+
+const deps = () => ({ runGit, repoRoot: repo });
+
+describe('harness-docs full flow', () => {
+  it('records generated provenance from HEAD', async () => {
+    const res = await recordGeneratedDoc({
+      harnessSlug: 'demo',
+      docId: 'features/F-1.md',
+      documents: ['src/feature1.ts'],
+      title: 'Feature 1',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.generatedFromSha).toBe(shas.c0);
+    expect(res.record.source).toBe('generated');
+    expect(res.record.status).toBe('fresh');
+    expect(res.record.anchorPaths).toContain('src/feature1.ts');
+  });
+
+  it('merged read shows generated + untracked manual + unanchored', async () => {
+    const merged = await buildMergedDocs('demo', { activePath: 'features/F-1.md' });
+    expect(merged.ok).toBe(true);
+    expect(merged.files).toEqual(['features/F-1.md', 'guides/setup.md', 'orphan.md']);
+    const f1 = merged.entries.find((e) => e.docId === 'features/F-1.md')!;
+    expect(f1.source).toBe('generated');
+    expect(f1.status).toBe('fresh');
+    expect(f1.tracked).toBe(true);
+    const orphan = merged.entries.find((e) => e.docId === 'orphan.md')!;
+    expect(orphan.source).toBe('manual');
+    expect(orphan.status).toBe('untracked');
+    expect(orphan.tracked).toBe(false);
+    expect(merged.content).toContain('Generated body');
+  });
+
+  it('anchors + verifies a manual doc from its documents: frontmatter', async () => {
+    const res = await anchorManualDoc({ harnessSlug: 'demo', docId: 'guides/setup.md', verify: true });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.anchored).toBe(true);
+    expect(res.subjectRef).toEqual([{ kind: 'path', globs: ['src/setup.ts'] }]);
+    expect(res.record.status).toBe('fresh');
+    expect(res.record.lastVerifiedSha).toBe(shas.c0);
+  });
+
+  it('git-sync sweep flips stale (generated) + review (manual) and enqueues/flags', async () => {
+    // Change BOTH anchored sources, commit → c1.
+    writeFileSync(join(repo, 'src/feature1.ts'), 'export function f1() { return 2; }\n');
+    writeFileSync(join(repo, 'src/setup.ts'), 'export const setup = 2;\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'c1']);
+    shas.c1 = git(['rev-parse', 'HEAD']);
+
+    const regen: string[] = [];
+    const reverify: string[] = [];
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'demo',
+      ...deps(),
+      changedPaths: ['src/feature1.ts', 'src/setup.ts'],
+      onRegenNeeded: (d) => { regen.push(d.docId); },
+      onReverifyNeeded: (d) => { reverify.push(d.docId); },
+    });
+    expect(r.regenEnqueued).toContain('features/F-1.md');
+    expect(r.reverifyFlagged).toContain('guides/setup.md');
+    expect(regen).toContain('features/F-1.md');
+    expect(reverify).toContain('guides/setup.md');
+
+    const merged = await buildMergedDocs('demo');
+    expect(merged.entries.find((e) => e.docId === 'features/F-1.md')!.status).toBe('stale');
+    expect(merged.entries.find((e) => e.docId === 'guides/setup.md')!.status).toBe('review');
+  });
+
+  it('augmented overlay survives regeneration', async () => {
+    await setDocOverlay('demo', 'features/F-1.md', 'Why: ships the login fast-path.');
+    expect((await getDocRecord('demo', 'features/F-1.md'))!.source).toBe('augmented');
+
+    // Documenter regenerates from the NEW head (c1), omitting overlay.
+    const res = await recordGeneratedDoc({ harnessSlug: 'demo', docId: 'features/F-1.md', documents: ['src/feature1.ts'] });
+    expect(res.ok).toBe(true);
+    const merged = await buildMergedDocs('demo', { activePath: 'features/F-1.md' });
+    expect(merged.activeEntry!.source).toBe('augmented');
+    expect(merged.activeEntry!.overlay).toBe('Why: ships the login fast-path.');
+    expect(merged.activeEntry!.generatedFromSha).toBe(shas.c1);
+    expect(merged.activeEntry!.status).toBe('fresh'); // regenerated at c1 → fresh again
+  });
+
+  it('regenerate enqueues for a generated/augmented doc', async () => {
+    // Make it stale again then request regeneration.
+    writeFileSync(join(repo, 'src/feature1.ts'), 'export function f1() { return 3; }\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'c2']);
+    const res = await requestRegeneration('demo', 'features/F-1.md');
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.enqueued).toBe(true);
+  });
+
+  it('verify a manual doc re-baselines it to HEAD', async () => {
+    const head = git(['rev-parse', 'HEAD']);
+    const res = await verifyManualDoc('demo', 'guides/setup.md');
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.verifiedSha).toBe(head);
+    expect((await getDocRecord('demo', 'guides/setup.md'))!.status).toBe('fresh');
+  });
+});

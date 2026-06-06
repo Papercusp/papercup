@@ -25,7 +25,7 @@ pub const OPV_SESSION_STATE: u8 = 0x17;
 pub const OPV_TYPE_MIN: u8 = 0x10;
 pub const OPV_TYPE_MAX: u8 = 0x1f;
 
-const AUDIO_FMT_PCM: u8 = 0x00;
+// RESPONSE_AUDIO format byte: 0x00 = raw PCM16 LE, 0x01 = encoded (mp3/…).
 const AUDIO_FMT_ENCODED: u8 = 0x01;
 
 /// True for a type byte in the operator-voice block — lets the reader route.
@@ -58,18 +58,29 @@ fn encode_control(control: serde_json::Value) -> Vec<u8> {
 pub fn control_start() -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "start" }))
 }
+
+// The remaining control builders are the complete bus control surface (P-004:
+// any attached client may mute/PTT/set-mode/stop, or force-host to take over
+// playout). They're exercised by the codec tests; wiring them to pui
+// keybindings is a thin follow-on in the voice UI (voice_ui.rs), so they're
+// allow(dead_code) until that lands rather than dropped from the mirror.
+#[allow(dead_code)]
 pub fn control_stop() -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "stop" }))
 }
+#[allow(dead_code)]
 pub fn control_force_host() -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "force-host" }))
 }
+#[allow(dead_code)]
 pub fn control_mute(muted: bool) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "mute", "muted": muted }))
 }
+#[allow(dead_code)]
 pub fn control_ptt(down: bool) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "ptt", "down": down }))
 }
+#[allow(dead_code)]
 pub fn control_set_mode(mode: &str) -> Vec<u8> {
     encode_control(serde_json::json!({ "op": "set-mode", "mode": mode }))
 }
@@ -262,7 +273,7 @@ mod tests {
     #[test]
     fn decodes_response_audio_pcm_and_encoded() {
         // pcm: [0x00][rate BE: 16000][audio bytes]
-        let mut pcm = vec![AUDIO_FMT_PCM];
+        let mut pcm = vec![0x00u8];
         pcm.extend_from_slice(&16_000u32.to_be_bytes());
         pcm.extend_from_slice(&[1, 2, 3, 4]);
         let framed = encode_frame(OPV_RESPONSE_AUDIO, &pcm);

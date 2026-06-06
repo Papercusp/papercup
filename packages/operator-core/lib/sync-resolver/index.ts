@@ -1410,6 +1410,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await listPresence({ workspaceId: workspace ?? null })) as unknown[];
     },
   },
+
+  // dev.fleetGovernor — the fleet rate/cap snapshot: hard cap vs in-flight vs
+  // AIMD-effective concurrency (the second half of the fleet glance, P-008).
+  'dev.fleetGovernor': {
+    resolve: async () => {
+      const { buildFleetRateStatus } = await import('../fleet-rate-status');
+      return [await buildFleetRateStatus()];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
