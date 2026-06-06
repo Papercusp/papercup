@@ -26,6 +26,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import { resolveBearer } from './auth';
 import { sanitizeToolSchema } from './tool-schema-sanitize';
 import {

@@ -112,6 +112,10 @@ export async function teardownHarness(
   const ctx = ctxFor(slug, workspaceId, undefined, deps, opts.signal);
   deps.log?.('info', `[deploy] ${slug} tearing down frame ${frame.id} (DESTROY → ends billing)`);
   await driver.teardown(frame, config, ctx);
+  // P-015: revoke the destroyed frame's headless-peer device pubkey so a gone
+  // machine can never federate again. Best-effort — a revoke hiccup must not leave
+  // the frame recorded (it's already destroyed).
+  if (deps.revokeFrame) await deps.revokeFrame(frame, slug, workspaceId).catch(() => undefined);
   await deps.clearFrame(slug, workspaceId);
   deps.log?.('info', `[deploy] ${slug} frame ${frame.id} destroyed + de-registered`);
   return { destroyed: true };
@@ -129,6 +133,7 @@ export function defaultDeployDeps(
   return {
     resolveDriver: (config) => resolveDeploymentDriver(config),
     log,
+    revokeFrame: (frame, slug, workspaceId) => revokeFrameOnTeardown(frame, slug, workspaceId, headlessAdmission),
     async getDeploymentConfig(slug, workspaceId) {
       const { loadHarnessRegistry } = await import('../harness-registry');
       const reg = await loadHarnessRegistry(workspaceId);

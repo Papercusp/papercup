@@ -115,6 +115,10 @@ export interface FrameBootstrapInput {
   env?: Record<string, string>;
   /** Local path to the credential bundle to stage on the frame (e.g. a Claude sub). */
   credentialsLocalPath?: string;
+  /** The harness's per-install INSTANCE config as JSON — delivered to the frame's
+   *  runtime via the `HARNESS_CONFIG_JSON` env-transport (the frame has no local
+   *  config.json file). Host-assembled from workspace PG. */
+  instanceConfigJson?: string;
 }
 
 /** Severity for the injected logger. */

@@ -28,7 +28,8 @@
     "@papercusp/structured-concurrency": "*",
     "@papercusp/debounce-coalesce": "*",
     "@papercusp/p2p-voice": "*",
-    "@papercusp/deployment-driver": "*"
+    "@papercusp/deployment-driver": "*",
+    "@papercusp/result-encoding": "*"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

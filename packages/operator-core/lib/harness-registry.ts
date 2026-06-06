@@ -39,6 +39,19 @@ export interface ProjectEntry {
    * Absent ⇒ not deployed / running locally.
    */
   deploymentFrame?: Frame;
+  // ── Per-install INSTANCE config in workspace PG (cloud-deployment-layer P-008) ──
+  // The instance fields that used to live in `.papercusp/config.json`; here they're
+  // in workspace PG so they FEDERATE to a cloud frame (D-007) instead of being
+  // stuck in a local file. Absent ⇒ fall back to config.json (un-migrated).
+  /** Which prompt set the orchestrator pulls (staging/department/production). */
+  phase?: string;
+  /** Per-phase config (port / dbPath / …). */
+  phases?: Record<string, Record<string, unknown>>;
+  /** Department slug. */
+  dept?: string;
+  /** Per-instance overrides of blueprint knobs (maxCostUsd, parallelWorkers, …) —
+   *  the residue of config.json after phase/phases/dept are split out. */
+  configOverrides?: Record<string, unknown>;
 }
 
 export interface HarnessRegistry {

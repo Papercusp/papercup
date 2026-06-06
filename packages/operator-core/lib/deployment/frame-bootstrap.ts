@@ -47,6 +47,10 @@ export interface FrameBootstrapOpts {
   runtimeSetup?: string[];
   /** Extra NON-SECRET env exported for the run (merged over environment.env). */
   env?: Record<string, string>;
+  /** The harness's per-install instance config as JSON — exported as
+   *  HARNESS_CONFIG_JSON so the frame's runtime reads it via the env-transport
+   *  (P-008; the frame has no local config.json). */
+  instanceConfigJson?: string;
 }
 
 /** The bootstrap section ids, in run order — the observable contract. */
@@ -187,6 +191,8 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       'export PAPERCUSP_DBOS_ORCHESTRATOR=1',
       `export PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=${shq(opts.harnessSlug)}`,
       `export AGENT_BACKEND=${shq(backend === 'omp' ? 'omp' : backend === 'claude' ? 'claude-code' : 'codex')}`,
+      // P-008: the frame reads its per-install instance config from env (no config.json file).
+      ...(opts.instanceConfigJson ? [`export HARNESS_CONFIG_JSON=${shq(opts.instanceConfigJson)}`] : []),
       ...Object.entries(mergedEnv).map(([k, v]) => `export ${k}=${shq(v)}`),
       '( npm run dev:operator >/var/log/papercusp-operator.log 2>&1 & )',
       // shq() the whole literal so a slug with shell metacharacters can't break

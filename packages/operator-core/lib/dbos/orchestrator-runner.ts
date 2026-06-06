@@ -162,13 +162,31 @@ export async function spawnInvokeOnce(
    *  Omitted by the pipeline runner / finalizer, which never abort mid-run. */
   opts?: { signal?: AbortSignal },
 ): Promise<{ output: string; exitCode: number; stderr: string }> {
+  // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
+  // child via env-transport (workspace PG is canonical; config.json is the
+  // back-compat fallback). Gated on HARNESS_SLUG + PAPERCUSP_WORKSPACE_ID (set by
+  // buildPipelineExtraEnv on every pipeline spawn). Best-effort + behavior-
+  // preserving: for an un-migrated harness the assembled config IS that harness's
+  // config.json, and any failure falls through to the child reading the file.
+  let resolvedExtraEnv = extraEnv;
+  const cfgSlug = extraEnv.HARNESS_SLUG;
+  const cfgWs = extraEnv.PAPERCUSP_WORKSPACE_ID;
+  if (cfgSlug && cfgWs && !extraEnv.HARNESS_CONFIG_JSON) {
+    try {
+      const { instanceConfigEnv } = await import('../deployment/instance-config');
+      const instEnv = await instanceConfigEnv(cfgSlug, cfgWs);
+      if (instEnv.HARNESS_CONFIG_JSON) resolvedExtraEnv = { ...extraEnv, ...instEnv };
+    } catch {
+      /* fall back to the child reading .papercusp/config.json */
+    }
+  }
   const { command, args, env } = buildInvokeOnce({
     projectDir,
     stateDir: join(projectDir, '.papercusp'),
     harnessDir: harnessPackageDir(),
     role,
     extras,
-    extraEnv,
+    extraEnv: resolvedExtraEnv,
   });
 
   // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →
