@@ -2504,6 +2504,15 @@ impl App {
     pub fn update(&mut self, ev: Event) -> Action {
         match ev {
             Event::Key(key) => {
+                // Voice-tab hold-to-talk (P-009): swallow auto-repeat of the PTT
+                // key so a held key doesn't flap the transmit toggle (Press starts,
+                // Release stops). Other keys and other tabs autorepeat as before.
+                if self.tab == Tab::Voice
+                    && key.kind == crossterm::event::KeyEventKind::Repeat
+                    && crate::voice_ui::ptt_key_code(&self.voice_ui) == key.code
+                {
+                    return Action::None;
+                }
                 let action = self.on_key(key.code, key.modifiers);
                 // The selection or tab may have changed — republish which plan the
                 // poller should fetch plan-item-states for (P-005a).
@@ -2893,9 +2902,16 @@ impl App {
                 self.on_voice(msg);
                 Action::Render
             }
-            // A key RELEASE (kitty protocol only): releasing `v` while recording
-            // ends hold-to-talk. Everything else ignores releases.
+            // A key RELEASE (kitty protocol only). On the Voice tab it ends
+            // hold-to-talk transmit into the P2P channel (P-009); on the Operator
+            // tab/dock it stops the voice-mode PTT recording. Else ignored.
             Event::KeyRelease(key) => {
+                if self.tab == Tab::Voice {
+                    if let Some(cmd) = crate::voice_ui::handle_release(&self.voice_ui, key.code) {
+                        return Action::VoiceChan(cmd);
+                    }
+                    return Action::None;
+                }
                 if key.code == KeyCode::Char('v')
                     && self.voice_phase == VoicePhase::Recording
                     && self.voice_key_active()
@@ -4115,6 +4131,67 @@ mod tests {
         b.tab = Tab::Operator;
         let rel = Event::KeyRelease(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
         assert_eq!(b.update(rel), Action::None);
+    }
+
+    // ─── Voice TAB channel hold-to-talk (holepunch-voice-channels P-009) ───
+
+    fn voice_tab_in_channel() -> App {
+        use crate::voice_stream::{VoiceChannelInfo, VoiceEvent, VoiceStatus};
+        use crate::voice_ui::VoiceUiEvent as VE;
+        let mut a = App::new();
+        a.tab = Tab::Voice;
+        a.voice_ui.connected = true;
+        a.update(Event::VoiceUi(VE::Stream(VoiceEvent::Status(VoiceStatus {
+            channel: Some(VoiceChannelInfo {
+                id: "vc-1".into(),
+                name: "standup".into(),
+            }),
+            muted: false,
+            peers: vec![],
+        }))));
+        a
+    }
+
+    #[test]
+    fn voice_tab_hold_to_talk_press_then_release() {
+        use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
+        let mut a = voice_tab_in_channel();
+        // Press the PTT key → start transmit into the channel.
+        assert_eq!(
+            a.update(key('v', KeyModifiers::NONE)),
+            Action::VoiceChan(VC::MicOn)
+        );
+        a.update(Event::VoiceUi(VE::MicState(true)));
+        // Releasing the PTT key → stop transmit (kitty hold-to-talk).
+        let release = Event::KeyRelease(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(a.update(release), Action::VoiceChan(VC::MicOff));
+    }
+
+    #[test]
+    fn voice_tab_swallows_ptt_autorepeat_but_not_press() {
+        use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
+        let mut a = voice_tab_in_channel();
+        // Auto-repeat of the PTT key while held is swallowed — a held key must
+        // not flap the transmit toggle.
+        let repeat = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+            crossterm::event::KeyEventKind::Repeat,
+        ));
+        assert_eq!(a.update(repeat), Action::None);
+        // A genuine Press still toggles transmit (the guard is repeat-specific).
+        assert_eq!(
+            a.update(key('v', KeyModifiers::NONE)),
+            Action::VoiceChan(VC::MicOn)
+        );
+        a.update(Event::VoiceUi(VE::MicState(true)));
+        // And a repeat after transmit started is likewise swallowed (no MicOff).
+        let repeat2 = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('v'),
+            KeyModifiers::NONE,
+            crossterm::event::KeyEventKind::Repeat,
+        ));
+        assert_eq!(a.update(repeat2), Action::None);
     }
 
     #[test]

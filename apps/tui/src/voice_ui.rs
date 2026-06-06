@@ -260,17 +260,6 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
             let muted = s.status.as_ref().map(|st| st.muted).unwrap_or(false);
             in_channel(s).then_some(VoiceCmd::SetMuted(!muted))
         }
-        // PTT / transmit toggle (P-009; key matches the voiceInputMode=ptt default).
-        KeyCode::Char('v') => {
-            if !in_channel(s) {
-                return None;
-            }
-            Some(if s.mic_on {
-                VoiceCmd::MicOff
-            } else {
-                VoiceCmd::MicOn
-            })
-        }
         KeyCode::Char('r') => Some(VoiceCmd::Connect), // (re)connect + refresh
         KeyCode::Char('n') => {
             s.composing = true;
@@ -280,6 +269,20 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
             s.settings_open = true;
             s.settings_sel = 0;
             Some(VoiceCmd::PrefsGet)
+        }
+        // PTT / transmit toggle on the configured key (voicePttKey, default `v`).
+        // Press-to-toggle in plain terminals; under the kitty keyboard protocol
+        // the matching KeyRelease stops transmit (hold-to-talk — see
+        // app::update's KeyRelease arm). P-009.
+        c if c == ptt_key_code(s) => {
+            if !in_channel(s) {
+                return None;
+            }
+            Some(if s.mic_on {
+                VoiceCmd::MicOff
+            } else {
+                VoiceCmd::MicOn
+            })
         }
         _ => None,
     }
@@ -300,6 +303,9 @@ pub fn owns_key(s: &VoiceUiState, code: KeyCode) -> bool {
     if s.composing || s.settings_open {
         return true;
     }
+    if code == ptt_key_code(s) {
+        return true;
+    }
     matches!(
         code,
         KeyCode::Up
@@ -312,8 +318,31 @@ pub fn owns_key(s: &VoiceUiState, code: KeyCode) -> bool {
             | KeyCode::Char('n')
             | KeyCode::Char('r')
             | KeyCode::Char('s')
-            | KeyCode::Char('v')
     )
+}
+
+/// The configured push-to-talk key (`voicePttKey` pref; default `v`). A single
+/// character; an empty or multi-char pref falls back to `v`.
+pub fn ptt_key_code(s: &VoiceUiState) -> KeyCode {
+    s.prefs
+        .as_ref()
+        .and_then(|p| {
+            let mut chars = p.ptt_key.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Some(KeyCode::Char(c)),
+                _ => None,
+            }
+        })
+        .unwrap_or(KeyCode::Char('v'))
+}
+
+/// Hold-to-talk: releasing the PTT key stops transmit. Only ever reached under
+/// the kitty keyboard protocol (which delivers key releases); plain terminals
+/// emit no release, so the press arm's toggle is the fallback. Idempotent — a
+/// `MicOff` when already off is a harmless no-op, so this never races the
+/// `MicState` round-trip from the press. P-009.
+pub fn handle_release(s: &VoiceUiState, code: KeyCode) -> Option<VoiceCmd> {
+    (code == ptt_key_code(s) && in_channel(s)).then_some(VoiceCmd::MicOff)
 }
 
 // ---------------------------------------------------------------- render
@@ -603,6 +632,66 @@ mod tests {
             handle_key(&mut s, KeyCode::Char('l'), KeyModifiers::NONE),
             Some(VoiceCmd::Leave)
         );
+    }
+
+    #[test]
+    fn hold_to_talk_release_stops_transmit() {
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        // Not in a channel → a release is a no-op.
+        assert_eq!(handle_release(&s, KeyCode::Char('v')), None);
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))),
+        );
+        // Press starts transmit (also the press-to-toggle fallback path).
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE),
+            Some(VoiceCmd::MicOn)
+        );
+        apply_event(&mut s, VoiceUiEvent::MicState(true));
+        // Releasing the PTT key stops transmit (hold-to-talk under kitty).
+        assert_eq!(handle_release(&s, KeyCode::Char('v')), Some(VoiceCmd::MicOff));
+        // A non-PTT key release is ignored.
+        assert_eq!(handle_release(&s, KeyCode::Char('x')), None);
+    }
+
+    #[test]
+    fn ptt_key_is_configurable() {
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        // Default with no prefs loaded.
+        assert_eq!(ptt_key_code(&s), KeyCode::Char('v'));
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Prefs(VoicePrefsView {
+                input_mode: "ptt".into(),
+                ptt_key: "t".into(),
+                aec: true,
+                noise_suppression: true,
+                input_gain: 1.0,
+                output_volume: 1.0,
+            }),
+        );
+        assert_eq!(ptt_key_code(&s), KeyCode::Char('t'));
+        assert!(owns_key(&s, KeyCode::Char('t')));
+        // The old default key is no longer owned once a custom key is set.
+        assert!(!owns_key(&s, KeyCode::Char('v')));
+        // Pressing the configured key toggles transmit; releasing it stops.
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))),
+        );
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('t'), KeyModifiers::NONE),
+            Some(VoiceCmd::MicOn)
+        );
+        apply_event(&mut s, VoiceUiEvent::MicState(true));
+        assert_eq!(handle_release(&s, KeyCode::Char('t')), Some(VoiceCmd::MicOff));
     }
 
     #[test]
