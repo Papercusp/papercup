@@ -30,19 +30,82 @@ import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { recordSpawn, finishSpawn } from './spawn-tree';
+import {
+  heartbeatSpawns,
+  reclaimOrphanedSpawns,
+  SPAWN_HEARTBEAT_INTERVAL_MS,
+} from './spawn-reclaim';
+import { getCachedRateLimitConfig } from '../rate-limit-config';
 
-/** Same global running-spawn ceiling the legacy plugin enforced. */
-export const MAX_CONCURRENT_SPAWNS = 10;
+/**
+ * The deterministic SAFETY-FLOOR ceiling on concurrently-running spawns — the
+ * single fleet-wide number, NOT a per-path allocator (P-007). Folds the old
+ * hardcoded operator-spawn cap (`MAX_CONCURRENT_SPAWNS=10`) and the orchestrator
+ * dispatch cap into ONE configurable value: `operator:rate_limit_config`'s
+ * `maxSimultaneousAgents` (default 16, live-editable, clamped ≤ RATE_LIMIT_MAX_CEILING).
+ * The governor's global gate + the orchestrator dispatch ceiling + the await pump
+ * already read this same number, so every spawn path now draws from one ledger.
+ * This is the absolute hard backstop; the WORTH-IT allocation is the brain's call
+ * (P-005), informed by `getSpawnHeadroom`.
+ */
+export function spawnConcurrencyCeiling(): number {
+  return getCachedRateLimitConfig().maxSimultaneousAgents;
+}
+
+/**
+ * The live limit/headroom the brain consults before deciding whether a spawn is
+ * worth it (P-007): the unified ceiling, how many slots are in use right now, and
+ * the remaining headroom. Reclaims orphaned rows first so the count reflects live
+ * spawns only. This is the read the brain-as-allocator (P-005) is fed.
+ */
+export async function getSpawnHeadroom(workspaceId: string): Promise<{
+  ceiling: number;
+  running: number;
+  headroom: number;
+}> {
+  await reclaimOrphanedSpawns(getOrgPg().sql).catch(() => undefined);
+  const ceiling = spawnConcurrencyCeiling();
+  const running = await countRunning(workspaceId).catch(() => 0);
+  return { ceiling, running, headroom: Math.max(0, ceiling - running) };
+}
 
 /**
  * In-process abort handles for spawns THIS host launched, keyed by spawnId
  * (EI-40). `fleet:cancel` flips the durable rows + releases locks/claims; this
  * is the other half — actually SIGTERM/SIGKILL the running child so a cancelled
  * spawn stops making edits instead of running to INVOKE_TIMEOUT. Only this
- * host's live spawns are here; spawns on another operator process aren't (their
- * rows still flip, and the lease/timeout reclaims them — unchanged from before).
+ * host's live spawns are here; spawns on another operator process aren't — those
+ * are reclaimed by the P-011 heartbeat-staleness sweep (`reclaimOrphanedSpawns`):
+ * a host that dies stops heartbeating, and its 'running' rows are freed once
+ * stale so they stop poisoning the concurrency ceiling.
  */
 const localSpawnAborts = new Map<string, AbortController>();
+
+/**
+ * Heartbeat loop (P-011): while this host has live spawns, bump their
+ * `heartbeat_at` every SPAWN_HEARTBEAT_INTERVAL_MS so the reclaim sweep can tell
+ * a live spawn from one whose host died. Lazily started on the first spawn and
+ * self-stopping when the last local spawn finishes. `unref`'d so it never holds
+ * the process open.
+ */
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+function ensureSpawnHeartbeatLoop(): void {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
+    const ids = [...localSpawnAborts.keys()];
+    if (ids.length === 0) {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      return;
+    }
+    void heartbeatSpawns(getOrgPg().sql, ids).catch(() => {
+      /* best-effort — a missed beat at worst risks an early reclaim, which is
+         itself recoverable (an autonomous spawn re-runs; an interactive one is
+         the human's to relaunch). */
+    });
+  }, SPAWN_HEARTBEAT_INTERVAL_MS);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+}
 
 /**
  * Abort a locally-tracked running spawn (SIGTERM → SIGKILL). Returns true when a
@@ -212,10 +275,20 @@ export async function spawnAgentInHarness(
     return fail(`spawn rejected: harness "${slug}" project dir missing on disk: ${project.path}`);
   }
 
-  // Global concurrency ceiling (durable count, so it holds across restarts).
+  // Reclaim orphaned rows (a host that died mid-spawn left 'running' rows that
+  // never flip) BEFORE counting, so the ceiling reflects live spawns only and a
+  // dead host's rows can never wedge it (P-011). Best-effort; the periodic sweep
+  // is the backstop.
+  await reclaimOrphanedSpawns(getOrgPg().sql).catch(() => undefined);
+
+  // Global concurrency ceiling — the single deterministic safety floor (P-007),
+  // read live from rate_limit_config (maxSimultaneousAgents); durable count holds
+  // across restarts. This is the hard backstop, NOT the worth-it allocator (the
+  // brain decides worth-it, informed by getSpawnHeadroom).
+  const cap = spawnConcurrencyCeiling();
   const running = await countRunning(input.workspaceId).catch(() => 0);
-  if (running >= MAX_CONCURRENT_SPAWNS) {
-    return fail(`spawn rejected: ${running} spawns already running (cap ${MAX_CONCURRENT_SPAWNS}) — wait or fleet:cancel one`);
+  if (running >= cap) {
+    return fail(`spawn rejected: ${running} spawns already running (fleet ceiling ${cap} — maxSimultaneousAgents) — wait or fleet:cancel one`);
   }
 
   const spawnId = newSpawnId();
@@ -252,6 +325,7 @@ export async function spawnAgentInHarness(
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();
   localSpawnAborts.set(spawnId, abort);
+  ensureSpawnHeartbeatLoop();
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
   void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal })

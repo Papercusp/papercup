@@ -27,6 +27,7 @@
  */
 import type { Sql } from 'postgres';
 import type { DataCondition } from '@papercusp/rules';
+import { clampToFloor, withinFloor } from '@papercusp/debounce-coalesce';
 import { getOrgPg, upsertRoutine, setRoutineActive } from '@papercusp/db-org';
 import { computeNextFireAt } from '../harness/routines/cron';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
@@ -66,12 +67,16 @@ export function potWakeFloorSec(): number {
   return Number.isFinite(n) && n >= 5 ? n : 60;
 }
 
-/** Clamp a requested wake time to ≥ now + the floor. */
+/** Clamp a requested wake time to ≥ now + the floor. Delegates the floor math to the
+ *  shared `@papercusp/debounce-coalesce` core (the pot is no longer a special case —
+ *  unify-watch-primitive-2026-06-06 P-006/D-009). */
 export function clampWakeAt(requested: Date, now: Date = new Date()): { at: Date; clamped: boolean } {
-  const floorMs = potWakeFloorSec() * 1_000;
-  const min = now.getTime() + floorMs;
-  if (requested.getTime() < min) return { at: new Date(min), clamped: true };
-  return { at: requested, clamped: false };
+  const { at, clamped } = clampToFloor({
+    requestedAt: requested.getTime(),
+    minSleepMs: potWakeFloorSec() * 1_000,
+    now: now.getTime(),
+  });
+  return { at: new Date(at), clamped };
 }
 
 /**
@@ -205,9 +210,15 @@ export async function registerPotWakeRules(workspaceId?: string): Promise<number
 
 // ── the fire-side floor debounce ─────────────────────────────────────────────
 
-/** Whether a pot fire at `now` falls inside the floor window of the last one. */
+/** Whether a pot fire at `now` falls inside the floor window of the last one. Delegates
+ *  to the shared `@papercusp/debounce-coalesce` floor (P-006/D-009): the pot consumes the
+ *  SAME core every other wake-subscription now uses, rather than a bespoke comparison. */
 export function withinWakeFloor(state: PotWakeState, now: number = Date.now()): boolean {
-  return state.lastWakeAt != null && now - state.lastWakeAt < potWakeFloorSec() * 1_000;
+  return withinFloor({
+    lastWokenAt: state.lastWakeAt ?? null,
+    minSleepMs: potWakeFloorSec() * 1_000,
+    now,
+  });
 }
 
 /** Record a pot launch fire (the debounce input for the next one). */

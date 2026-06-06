@@ -116,11 +116,37 @@ export function formatInvokeStderr(role: string, exitCode: number, stderr: strin
 }
 
 /**
- * Spawn one headless `invoke-once` run for `role` with the given `extras`
- * (complete KEY=value list) inside `projectDir`. Shared by the role runner and
- * the finalizer (curator/documenter). Resolves to the agent's output + exit code
- * + captured stderr; never rejects. On a non-zero exit the child's stderr is
- * surfaced to the operator run log (P-005) so a throw-before-run isn't silent.
+ * spawnInvokeOnce — THE single agent-spawn chokepoint. Spawn one headless
+ * `invoke-once` run for `role` with the given `extras` (complete KEY=value list)
+ * inside `projectDir`. Shared by the pipeline role runner, the finalizer
+ * (curator/documenter), the operator nursery (`fleet:spawn`), and the coord-program
+ * fan-out. Resolves to the agent's output + exit code + captured stderr; never
+ * rejects. On a non-zero exit the child's stderr is surfaced to the operator run
+ * log so a throw-before-run isn't silent.
+ *
+ * ── What this chokepoint owns (unify-agent-spawn-chokepoint-2026-06-06) ──
+ *   • ADMISSION — "is this spawn worth it right now?" is the BRAIN's judgment
+ *     (the deterministic governor is only a floor), routed as a typed role-gated
+ *     new_subagent request; the requester awaits the grant (D-002/D-004/D-008).
+ *   • PACING / SAFETY FLOOR — the optional SHARED governor below (RB-012): a
+ *     concurrency permit + reactive 429-penalty so the whole operator stays under
+ *     the provider's rate limits, plus the single hard ceiling (rate_limit_config
+ *     `maxSimultaneousAgents`, D-002/P-007). Reactive physics, never the worth-it call.
+ *   • DELIVERY / DURABILITY — opt-in BY SPAWN CLASS (D-003): AUTONOMOUS spawns
+ *     (routine fires, launch-blueprints, `fleet:spawn`) are wrapped in a durable,
+ *     idempotency-keyed DBOS step so a crash re-runs them once (P-010); INTERACTIVE
+ *     `psu` is NOT made durable — a human is the durability, and auto-retrying their
+ *     session would be wrong — but it STILL passes admission + the safety floor.
+ *
+ * ── What this chokepoint does NOT own: model-turn retry (D-005) ──
+ *   The model-turn rate-limit retry (`runWithRetry`/`runAgentTurn`) is a SEPARATE
+ *   layer that wraps our IN-PROCESS `meridian` calls. It physically CANNOT reach
+ *   inside a spawned `claude`/`omp`/`codex` subprocess's turns — we only see the
+ *   process boundary. The CLI self-retries its own turns and the director owns
+ *   turn-retries; folding subprocess-turn retry in HERE would be our-retry ×
+ *   CLI-retry amplification. The chokepoint's "delivery" guarantee is whole-spawn
+ *   re-run on crash (DBOS), a DIFFERENT thing from in-turn retry. Do NOT add
+ *   per-turn retry to this function.
  */
 // Exported for unit testing (P-012): the subprocess spawn + timeout-kill +
 // stdout/stderr-capture path. Tests mock `buildInvokeOnce` to drive a fake

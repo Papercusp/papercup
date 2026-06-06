@@ -26,6 +26,7 @@
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/structured-concurrency": "*",
+    "@papercusp/debounce-coalesce": "*",
     "@papercusp/p2p-voice": "*",
     "@papercusp/deployment-driver": "*"
   },

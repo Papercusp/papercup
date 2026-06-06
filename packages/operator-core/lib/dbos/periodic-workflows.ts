@@ -123,6 +123,26 @@ const harnessStatusSweepWorkflow = DBOS.registerWorkflow(harnessStatusSweepTick,
 });
 DBOS.registerScheduled(harnessStatusSweepWorkflow, { name: 'harnessStatusSweep', crontab: '*/30 * * * * *' });
 
+// Every minute: reclaim orphaned spawn rows — 'running'/'restarting'
+// spawned_agents whose launching operator host died and stopped heartbeating, so
+// they stop counting forever against the global concurrency ceiling
+// (unify-agent-spawn-chokepoint P-011). Workspace-agnostic; the in-band
+// opportunistic reclaim in operator-spawn.ts is the correctness floor, this is
+// the idle backstop that also un-sticks fleet:tree.
+async function spawnReclaimSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { reclaimOrphanedSpawns } = await import('../fleet/spawn-reclaim');
+    const r = await reclaimOrphanedSpawns(getOrgPg().sql);
+    if (r.reclaimed > 0) {
+      console.warn(`[spawn-reclaim] freed ${r.reclaimed} orphaned spawn(s): ${r.spawnIds.join(', ')}`);
+    }
+  }, { name: 'spawn-reclaim-sweep' });
+}
+const spawnReclaimSweepWorkflow = DBOS.registerWorkflow(spawnReclaimSweepTick, {
+  name: 'spawnReclaimSweep', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(spawnReclaimSweepWorkflow, { name: 'spawnReclaimSweep', crontab: '0 * * * * *' });
+
 // Every 5min: backup orphan-snapshot sweep (consolidation P-002). REVIVES the
 // job — its only legacy start site was the dead instrumentation-node, so this
 // both ports it to DBOS and re-activates it (D-003).

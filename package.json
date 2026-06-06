@@ -59,6 +59,7 @@
     "libs/generic/papergrid/kv-persist-indexeddb",
     "libs/generic/locks-core",
     "libs/generic/structured-concurrency",
+    "libs/generic/debounce-coalesce",
     "libs/generic/p2p-voice",
     "libs/generic/deployment-driver"
   ],

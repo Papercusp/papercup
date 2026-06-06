@@ -18,12 +18,17 @@ import { DEFAULT_VIDEO_CONFIG, type VideoEncodeConfig } from './video-codec';
 /** Hard cap on simultaneously-rendered camera tiles (D-005). */
 export const VIDEO_TILE_CAP = 9;
 
-/** Quality ladder, best → worst. Index 0 is the DEFAULT_VIDEO_CONFIG (360p@15). */
+/**
+ * Quality ladder, best → worst. Index 0 is the DEFAULT_VIDEO_CONFIG (360p@15).
+ * Codec = VP9 throughout — VP8/H.264 fail to decode on the ship-target WebKitGTK
+ * (plan D-012); the codec stays behind the seam (DEFAULT_VIDEO_CONFIG.codec).
+ */
+const LADDER_CODEC = DEFAULT_VIDEO_CONFIG.codec;
 export const QUALITY_LEVELS: readonly VideoEncodeConfig[] = [
   DEFAULT_VIDEO_CONFIG, // 640x360 @15 ~500k
-  { codec: 'vp8', width: 426, height: 240, framerate: 12, bitrate: 300_000 },
-  { codec: 'vp8', width: 320, height: 180, framerate: 10, bitrate: 180_000 },
-  { codec: 'vp8', width: 256, height: 144, framerate: 8, bitrate: 100_000 },
+  { codec: LADDER_CODEC, width: 426, height: 240, framerate: 12, bitrate: 300_000 },
+  { codec: LADDER_CODEC, width: 320, height: 180, framerate: 10, bitrate: 180_000 },
+  { codec: LADDER_CODEC, width: 256, height: 144, framerate: 8, bitrate: 100_000 },
 ];
 
 const MAX_LEVEL = QUALITY_LEVELS.length - 1;

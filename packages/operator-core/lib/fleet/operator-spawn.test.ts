@@ -14,13 +14,21 @@ vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnce: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+vi.mock('../rate-limit-config', () => ({
+  getCachedRateLimitConfig: () => ({ maxSimultaneousAgents: 16, concurrencyFloor: 1 }),
+}));
+vi.mock('./spawn-reclaim', () => ({
+  heartbeatSpawns: vi.fn(async () => {}),
+  reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [] })),
+  SPAWN_HEARTBEAT_INTERVAL_MS: 60_000,
+}));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { recordSpawn, finishSpawn } from './spawn-tree';
-import { spawnAgentInHarness, abortLocalSpawn, MAX_CONCURRENT_SPAWNS } from './operator-spawn';
+import { spawnAgentInHarness, abortLocalSpawn, spawnConcurrencyCeiling } from './operator-spawn';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
@@ -215,10 +223,11 @@ describe('spawnAgentInHarness — role + cap validation', () => {
   });
 
   it('rejects when the workspace is at the running-spawn ceiling', async () => {
-    runningCount = MAX_CONCURRENT_SPAWNS;
+    const ceiling = spawnConcurrencyCeiling();
+    runningCount = ceiling;
     const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
     expect(res.ok).toBe(false);
-    expect(res.error).toContain(`cap ${MAX_CONCURRENT_SPAWNS}`);
+    expect(res.error).toContain(`ceiling ${ceiling}`);
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
   });
 });
