@@ -1,24 +1,29 @@
-# Release gating — a green `ready` branch the restart script deploys
+# Release gating — a green `main` branch, auto-served
 
-Implements plan **`release-gate-ready-branch-2026-06-04`**. Decouples *what the
-fleet runs* from *the churning working tree*: a green **`ready`** ref accumulates
-vetted commits, and a single **deploy chokepoint** moves it into a separate
-**release checkout** the operator runs from — at a clean time, reversibly.
+Implements plan **`release-gate-ready-branch-2026-06-04`**, re-shaped by
+**`staging-branch-pipeline-2026-06-06`** into the staging→main model. Decouples
+*what the fleet runs* from *the churning working tree*: agents work on the
+**`staging`** branch (the integration firehose); the **`main` branch is the
+green pin** — it only ever fast-forwards to a staging commit that passed the
+suite — and the deploy chokepoint **auto-serves** it from a separate
+**release checkout** the operator runs from.
 
 ```
-integration branch (main) ──git-sync (all WIP, every ~3 min)──►  churns continuously
-      │  green-checkpoint: fast-forward `ready` to the latest GREEN commit
+staging (integration) ──git-sync (all WIP, every ~10 min)──►  churns continuously
+      │  green-checkpoint (hourly): fast-forward `main` to the latest GREEN commit
       ▼
-   ready (green)  ──────────────────────────────────────────────►  the deployable state
-      │  THE DEPLOY (the only path that changes what-runs):
-      │    drain → snapshot → swap release checkout to ready → apply staged
+   main (green, FF-only, automation-writes-only) ───────────►  always a tested state
+      │  THE DEPLOY — AUTOMATIC (release-trigger, ≤15 min after main advances):
+      │    drain → snapshot → swap release checkout to main → apply staged
       │    migrations → restart → health + path-verify → broadcast   (rollback on failure)
       ▼
-   release checkout  ────────────────────────────────────────────►  what the operator runs
+   release checkout  ────────────────────────────────────────►  what the operator runs
    (/home/marsh-office/papercupai-workspace/papercup-release)
 ```
 
-A restart can **never** deploy raw churning HEAD by construction.
+A restart can **never** deploy raw churning HEAD by construction, and nothing
+but green-checkpoint may move `main` (never push or `branch -f` it by hand).
+Watch the whole pipeline at **`/admin/git`**.
 
 ## Why a separate checkout works (Phase 0)
 
@@ -43,40 +48,43 @@ The checkout is built by `bin/release/setup-release-checkout.sh`:
 | File | Role |
 |---|---|
 | `bin/release/setup-release-checkout.sh` | Build/sync the release (or checkpoint) checkout to a ref. |
-| `lib/release/git-ops.ts` | Git primitives — `ready` only ever **fast-forwards**. |
-| `lib/release/green-checkpoint.ts` | Phase 1: run the suite in an isolated checkout of the candidate; FF `ready` if green. |
+| `lib/release/git-ops.ts` | Git primitives — the green pin (`main`) only ever **fast-forwards**. |
+| `lib/release/green-checkpoint.ts` | Phase 1: run the suite in an isolated checkout of the candidate (`staging` HEAD); FF `main` if green. |
 | `lib/release/deploy.ts` + `deploy-deps.ts` + `deploy-cli.ts` | Phase 2: the chokepoint orchestration + real wiring + CLI. |
 | `lib/release/migrate.ts` | D-007: deploy-time migration apply, **fail-loud**. |
 | `lib/release/health-probe.ts` | D-011d: post-restart `/api/health` poll. |
 | `lib/release/verify-release-paths.ts` | Phase 0: assert runtime reads resolve under the release checkout. |
 | `lib/release/rollback.ts` | D-008: standalone revert (release ref + snapshot) + restart. |
-| `lib/release/seed-release-routines.ts` | Seed the green-checkpoint + release-trigger routines (INACTIVE). |
+| `lib/release/seed-release-routines.ts` | Seed the green-checkpoint + release-trigger routines (both ACTIVE — auto-serve). |
 | `packages/operator-core/lib/harness/routines/release-actions.ts` | The `system:green-checkpoint` + `system:release-trigger` handlers. |
 | `libs/papercusp/packages/harness/prompts/release-manager.md` | D-011: the Opus-4.8-xhigh release-manager agent's playbook. |
 
 ## Operating it
 
 ```bash
-# Review what would deploy (no side effects) — the release-manager reads this first:
+# Review what would deploy (no side effects):
 npx tsx apps/operator/lib/release/deploy-cli.ts
 
-# Deploy the green `ready` (needs PAPERCUSP_ALLOW_DEV_RESTART=1 for the real restart):
+# Deploy green `main` NOW (the auto-pipeline does this for you within ~15 min;
+# needs PAPERCUSP_ALLOW_DEV_RESTART=1 for the real restart):
 PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute
 
 # D-009 escape hatch — deploy a specific UN-GREEN commit (loud + audited):
 PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --deploy-commit <sha> --execute
 
-# Advance `ready` to the latest green integration commit:
+# Advance `main` to the latest green staging commit (the hourly routine does this too):
 npx tsx apps/operator/lib/release/green-checkpoint.ts
 
 # Roll back the last deploy:
 PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/rollback.ts --execute
 ```
 
-Agent-driven (D-011): the **release-manager** role (Claude Opus 4.8 @ `xhigh`, via
-`AGENT_MODELS["release-manager"]`) owns the go/no-go + migration-risk + post-deploy
-rollback judgment. Launch it interactively with `psu --role release-manager`, or let
-the `system:release-trigger` routine dispatch it.
+The routine deploys are **scripted** (auto-serve): `system:release-trigger` runs
+`deploy-cli --execute` itself; the green gate is the go/no-go. The
+**release-manager** role (Claude Opus 4.8 @ `xhigh`, via
+`AGENT_MODELS["release-manager"]`) remains for **interactive/incident** use —
+un-green escape-hatch deploys, rollback judgment, deploy forensics — via
+`psu --role release-manager`; the routine no longer dispatches it.
 
 ## Migration discipline (Phase 3)
 
@@ -94,8 +102,8 @@ The live operator **runs from the release checkout**: `papercup-dev-api.service`
 (`:3070`) has `WorkingDirectory=…/papercup-release/apps/operator` and
 `PAPERCUSP_INTEGRATION_ROOT=…/papercup` in its unit env. A second **staging
 operator** `papercup-staging-api.service` (`:3170`) runs from the integration
-tree (`main`, DBOS/routines disabled) so server-side edits can be tested live
-without touching the stable host:
+tree (the `staging` branch, DBOS/routines disabled) so server-side edits can be
+tested live without touching the stable host:
 
 - **Test a `lib/**` edit:** `systemctl --user restart papercup-staging-api.service`,
   probe `:3170`.
@@ -111,18 +119,18 @@ checkout — `PAPERCUSP_INTEGRATION_ROOT` is the declared seam. `release-config.
 mode — covers `plans:launch/resume` cwd + harness registration) and
 `console-launcher.ts`'s scripts-dir all honor it. Keep new spawn sites on that seam.
 
-## Routine posture: deploys stay deliberate (decided 2026-06-05)
+## Routine posture: AUTO-SERVE (decided 2026-06-06, supersedes "deploys stay deliberate")
 
 - **`green-checkpoint` — ACTIVE, hourly** (`0 15 * * * *`). It never deploys: it
-  fast-forwards `ready` when `main` is green and broadcasts 🟩/🟥 — a continuous
-  main-health signal plus a fresh `ready` for whenever a deliberate deploy happens.
-  (Re-cadenced from the original 10-min seed to respect the shared box.)
-- **`release-trigger` — INACTIVE.** This is the auto-deploy path (it dispatches the
-  release-manager to make a go/no-go call). The owner's posture is that **deploys
-  stay deliberate**: a human (or an explicitly-launched release-manager via
-  `psu --role release-manager`) runs `deploy-cli --execute`. Graduate it later with
-  `npx tsx apps/operator/lib/release/seed-release-routines.ts --active` once
-  auto-deploy trust is earned (D-010).
+  fast-forwards green **`main`** when `staging` is green and broadcasts 🟩/🟥 — a
+  continuous staging-health signal. (Hourly respects the shared box; tune the
+  cron in `seed-release-routines.ts` for fresher mains.)
+- **`release-trigger` — ACTIVE, every 15 min, SCRIPTED.** When green `main` is
+  ahead of the release checkout it runs `deploy-cli --execute` directly (drain →
+  snapshot → swap → migrate → restart → health-check, auto-rollback) and logs a
+  `deploy` row to `pipeline_events`. The green gate is the go/no-go; no
+  human/agent in the routine loop. Revert to deliberate deploys with
+  `npx tsx apps/operator/lib/release/seed-release-routines.ts --inactive`.
 
 `seed-release-routines.ts` encodes these per-routine defaults — running it with no
 flags (re)applies the decided posture.

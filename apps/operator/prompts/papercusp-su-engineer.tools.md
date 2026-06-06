@@ -315,24 +315,34 @@ still serializes concurrent edits to the same file, so nothing stomps your
 uncommitted work between ticks. To pause the routine: `UPDATE
 harness_shared.routines SET active=false WHERE name='git-sync'`.)
 
-**Stay on `main`; never `git worktree` or branch-switch.** Peers, dev
-servers, and paperclip all assume `main`. Coordinate through the lock +
-coord systems, not tree isolation: `locks:*` guards files, `coord:*`
-announces intent.
+**Stay on `staging`; never `git worktree` or branch-switch. `main` is
+automation-only.** Since the staging→main cutover
+(`staging-branch-pipeline-2026-06-06`), the shared tree is checked out on
+**`staging`** (the integration firehose) — peers, dev servers, and paperclip
+all assume it. **`main` is the GREEN branch**: it only ever fast-forwards to
+a staging commit that passed the green-checkpoint suite, and nothing but
+that automation pushes it — never push or `branch -f` `main` yourself.
+Coordinate through the lock + coord systems, not tree isolation: `locks:*`
+guards files, `coord:*` announces intent. (Submodules are unchanged — each
+stays on its own default branch.)
 
-**Two operators now — `:3070` is GREEN/stable, `:3170` is where your edits run.**
-The site + fleet MCP server **`:3070`** (`papercup-dev-api`) runs from the **green
-release checkout** (`papercup-release`), decoupled from `main` churn so a peer's
-broken commit can't break it. The cost: **restarting `:3070` does NOT pick up your
-`lib/**` edit** — it just restarts the same green snapshot. To **test a `lib/**`
-edit live**, use the **staging operator `:3170`** (`papercup-staging-api`, runs
-from `main`, no hot-reload): `systemctl --user restart papercup-staging-api.service`,
-then probe **`:3170`** (`curl :3170/…` or point a tool there). To promote your edit
-to the stable `:3070`, it goes through the **release gate** — green-checkpoint
-advances `ready` when `main` is green, then `npx tsx apps/operator/lib/release/deploy-cli.ts
---execute` refreshes `:3070` (a raw restart can never deploy churning HEAD by
-construction). Clearing a wedged process / freeing a port is still fine to just do.
-Full model: plan `release-gate-ready-branch-2026-06-04` + its `README.md`.
+**Two operators — `:3070` auto-serves green `main`, `:3170` is where your edits run.**
+The site + fleet MCP server **`:3070`** (`papercup-dev-api`) runs from the **release
+checkout** (`papercup-release`), pinned to the green **`main` branch** — decoupled
+from `staging` churn so a peer's broken commit can't break it. The cost:
+**restarting `:3070` does NOT pick up your `lib/**` edit** — it just restarts the
+same green snapshot. To **test a `lib/**` edit live**, use the **staging operator
+`:3170`** (`papercup-staging-api`, runs from the `staging` tree, no hot-reload):
+`systemctl --user restart papercup-staging-api.service`, then probe **`:3170`**
+(`curl :3170/…` or point a tool there). Promotion to `:3070` is AUTOMATIC
+(auto-serve): green-checkpoint (hourly) FFs `main` when `staging` is green, then
+release-trigger (≤15 min) runs the scripted deploy (drain → swap → migrate →
+restart → health-check, auto-rollback). A manual `npx tsx
+apps/operator/lib/release/deploy-cli.ts --execute` still deploys immediately
+(a raw restart can never deploy churning HEAD by construction). Clearing a
+wedged process / freeing a port is still fine to just do. Watch the whole
+pipeline at **`/admin/git`**. Full model: plans `release-gate-ready-branch-2026-06-04`
++ `staging-branch-pipeline-2026-06-06` + the release `README.md`.
 
 **Named resource locks — coordinate destructive shared actions.** Beyond
 file locks (which guard *files*), `locks:*` has **named resource locks** for

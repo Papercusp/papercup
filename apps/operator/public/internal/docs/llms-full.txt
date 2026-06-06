@@ -10647,80 +10647,98 @@ apps/operator/
 
 # Branding
 
-> Visual identity assets — wordmark, mascot, favicon — and where they're used.
+> Visual identity assets, token packs, icon exports, and flag-gated Hive usage.
 
-The Papercusp visual identity was refreshed on **2026-04-27**. The live wordmark now uses the **Glow · official sans** treatment: the Papercup mascot sits behind the centered `papercusp` text instead of appearing as a separate icon beside it.
+Papercusp currently has two visual identity layers:
 
-## Live asset
+* **Classic Papercusp** is the default product identity and remains the active skin when `papercusp-the-hive` is off.
+* **The Hive** is a flag-gated visual layer for the bee lexicon and swarm-intelligence direction. It changes presentation assets, theme tokens, favicon, and labeled nouns only; it does not rename code identifiers, database rows, tools, or the product itself.
 
-[Section titled “Live asset”](#live-asset)
+Product name decision
 
-> Chosen variant: **Glow · official sans** from the marketplace logo lab (`/logo-lab/`).
+The product name remains **Papercusp**. Hive wordmarks should read **Papercusp** or **Papercusp · The Hive**, not a standalone product rename.
 
-| Asset                 | Source file                                                                                                     | Visual                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Live wordmark**     | `libs/papercusp-marketplace/apps/marketplace-site/public/wordmark.svg` and `apps/papercusp/public/wordmark.svg` | Integrated mascot-behind-text mark with soft central glow and a cleaner product-facing sans wordmark |
-| **Standalone mascot** | `libs/papercusp-marketplace/apps/marketplace-site/public/mascot.svg`                                            | Cup mascot on its own; still useful for avatars / icon contexts                                      |
+## Classic Identity
 
-## Where the assets live (deployed)
+[Section titled “Classic Identity”](#classic-identity)
 
-[Section titled “Where the assets live (deployed)”](#where-the-assets-live-deployed)
+Classic assets stay in their existing locations and must not be overwritten by Hive work:
 
-| Path                                                                   | Purpose                                                              |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `libs/papercusp-marketplace/apps/marketplace-site/public/wordmark.svg` | papercuspai.com header, landing, footer, logo lab, marketplace pages |
-| `libs/papercusp-marketplace/apps/marketplace-site/public/mascot.svg`   | Standalone mascot asset for non-wordmark contexts                    |
-| `libs/papercusp-marketplace/apps/marketplace-site/public/favicon.svg`  | papercuspai.com browser tab icon                                     |
-| `apps/papercusp/public/wordmark.svg`                                   | substrate operator UI (`localhost:3055`) header + homepage hero      |
-| `apps/papercusp-spec/src/assets/wordmark.svg`                          | (Legacy) Starlight site nav — predecessor to this Fumadocs site      |
-| `apps/papercusp-spec/src/assets/mascot.svg`                            | (Legacy) Starlight site, available for embedding                     |
-| `apps/papercusp-spec/public/favicon.svg`                               | (Legacy) Starlight site’s browser tab icon                           |
+| Surface                     | Path                                                       |
+| --------------------------- | ---------------------------------------------------------- |
+| Operator logo component     | `apps/operator/app/_components/OperatorLogoMark.tsx`       |
+| Operator wordmark component | `apps/operator/app/_components/OperatorWordmarkLockup.tsx` |
+| Operator favicon/icon       | `apps/operator/app/icon.svg`                               |
+| Public wordmark             | `apps/operator/public/wordmark.svg`                        |
+| Desktop icon set            | `papercusp-desktop/src-tauri/icons/`                       |
 
-## Usage rules
+## The Hive Identity
 
-[Section titled “Usage rules”](#usage-rules)
+[Section titled “The Hive Identity”](#the-hive-identity)
 
-Primary treatment
+The Hive direction is engineered swarm intelligence: honey-amber signal color on charcoal, precise hex geometry, and a distinct Queen mark for the orchestrator.
 
-For Papercusp app surfaces, prefer a **single integrated wordmark asset**. The mascot should sit behind the centered wordmark text — not as a separate icon with a gap beside the wordmark.
+| Asset                   | Path                                                                                                      |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| Primary mark            | `apps/operator/public/brand/the-hive/primary-mark.svg`                                                    |
+| Primary monochrome mark | `apps/operator/public/brand/the-hive/primary-mark.mono.svg`                                               |
+| Queen mark              | `apps/operator/public/brand/the-hive/queen-mark.svg`                                                      |
+| Queen monochrome mark   | `apps/operator/public/brand/the-hive/queen-mark.mono.svg`                                                 |
+| Wordmark                | `apps/operator/public/brand/the-hive/wordmark.svg`                                                        |
+| Wordmark lockup         | `apps/operator/public/brand/the-hive/wordmark-lockup.svg`                                                 |
+| Favicon                 | `apps/operator/public/brand/the-hive/favicon.svg` and `favicon.png`                                       |
+| Comb motif              | `apps/operator/public/brand/the-hive/comb-motif.svg`                                                      |
+| Lexicon icons           | `apps/operator/public/brand/the-hive/icons/*.svg`                                                         |
+| Desktop icon pack       | `papercusp-desktop/src-tauri/icons/the-hive/` and `libs/papercusp/apps/desktop/src-tauri/icons/the-hive/` |
+| React mark components   | `apps/operator/app/_components/HiveVisualIdentity.tsx`                                                    |
 
-* **Integrated wordmark**: headers, landing heroes, footers, marketplace pages, docs nav if/when upgraded. This is now the default brand treatment.
-* **Mascot alone**: avatars, profile images, app-icon experiments, or illustration contexts where no text is needed.
-* **Logo lab**: nearby alternatives live at `http://localhost:3060/logo-lab/` for future review, but the live app should continue to point at the chosen official-sans version until another branding decision is made.
+## Runtime Behavior
 
-### Color palette (from the live asset)
+[Section titled “Runtime Behavior”](#runtime-behavior)
 
-[Section titled “Color palette (from the live asset)”](#color-palette-from-the-live-asset)
+The Hive skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 
-* Wordmark / cusp / mascot linework: `#f3eef9`
-* Glow center highlight: `#d4a373`
-* Mascot cup body tint: `#fff5e1` at low opacity
-* Background glow falloff: transparent radial fade from the same cream/tan core
+* Logo components switch from the classic cup marks to Hive marks via `useLexiconPackId()`.
+* `HiveThemeBridge` forces `data-theme="hive"`, sets the title to `Papercusp · The Hive`, and injects the Hive favicon while the flag is on.
+* When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title.
+* The Hive theme is generated from `design-tokens/hive.semantic.tokens.json` into `apps/operator/app/_semantic.hive.css`.
+* The Hive desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Hive pack.
 
-## Source of truth
+## Color Tokens
 
-[Section titled “Source of truth”](#source-of-truth)
+[Section titled “Color Tokens”](#color-tokens)
 
-The full set of logo concepts is browseable at `/home/marsh-office/Documents/papercusp-logos/` and the current live wordmark studies are browsable at `http://localhost:3060/logo-lab/` when the marketplace static server is running.
+The Hive token pack is dark-first and WCAG-oriented:
 
-The current live choice is **Glow · official sans**. Treat the logo-lab page as the review space and `wordmark.svg` as the production asset.
+| Token          |     Value | Use                  |
+| -------------- | --------: | -------------------- |
+| Background     | `#0B0E0B` | app shell base       |
+| Surface        | `#12150F` | cards and panels     |
+| Raised surface | `#1A1A12` | elevated chrome      |
+| Text           | `#FFF8E6` | primary foreground   |
+| Muted text     | `#B9A982` | secondary foreground |
+| Primary accent | `#F6B72F` | honey action color   |
+| Strong accent  | `#FFD166` | hover/highlight      |
+| Accent ink     | `#171107` | text on honey        |
 
-## How to update branding everywhere
+Semantic colors remain distinct from the primary honey accent: success green, danger rose, info blue, and warning honey.
 
-[Section titled “How to update branding everywhere”](#how-to-update-branding-everywhere)
+## Motif Rules
 
-If a future round changes the chosen wordmark, copy the new SVG to the active runtime paths above, then rebuild:
+[Section titled “Motif Rules”](#motif-rules)
 
-* **papercuspai.com**: `cd libs/papercusp-marketplace/apps/marketplace-site && npm run build` (then restart/redeploy the static host as needed)
-* **substrate UI**: update `apps/papercusp/public/wordmark.svg` and let the **Vite** dev server on `:3055` hot-reload (or restart it if required)
-* **spec docs**: update Starlight assets only if the legacy docs site still needs to mirror the newer branding
+Use hexagons as layout structure, not wallpaper. The comb motif works for background texture, dividers, empty states, and swarm/loading states when it is low-contrast and aligned to the UI grid.
 
-Don’t forget to also update:
+Do not use cartoon bees, playful yellow-on-white compositions, or random honeycomb decoration. The Hive should feel like an engineered distributed system.
 
-* Logo-lab `Current live wordmark` copy (so the comparison page stays truthful)
-* README banners in repos (if any)
-* Open Graph cards (currently default; not yet wired)
-* Social profile avatars / external brand surfaces if the decision also changes those
+## Preview And Exports
+
+[Section titled “Preview And Exports”](#preview-and-exports)
+
+* Preview the system at `/dev/operator-logo` in the operator app.
+* Editable SVG and raster export notes live in `apps/operator/public/brand/the-hive/README.md`.
+* Regenerate theme CSS with `npm run tokens` after editing token JSON.
+* Rebuild docs with `cd apps/operator-docs && npm run build` after changing this page so `apps/operator/public/internal/docs/` is refreshed.
 
 # Build system overview
 

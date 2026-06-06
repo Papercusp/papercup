@@ -10,7 +10,12 @@
  *
  * Plan default updated 2026-06-06: `c2-small-x86` no longer exists in the live
  * Latitude catalog (GET /plans); `m4-metal-small` is the cheapest in-stock small
- * metal plan at NYC (hourly billing).
+ * metal plan (hourly billing).
+ *
+ * Stock is VOLATILE — a site can be in stock one run and SERVERS_OUT_OF_STOCK
+ * (HTTP 422) the next (observed live: consuming NYC's last unit emptied it for
+ * the following run). On a 422 out-of-stock failure, pick another site from
+ * `GET /plans` → regions[].locations.in_stock and set LATITUDE_E2E_SITE.
  *
  * It ALWAYS tears the frame down (DESTROY) in a finally, so a failed run never
  * leaks billing. The full "run a coding feature on the frame + watch from the

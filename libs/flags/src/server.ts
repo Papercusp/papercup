@@ -84,14 +84,33 @@ export async function getFlag(
   }
 }
 
+/**
+ * Overlay `PAPERCUSP_FLAG_<KEY>` env overrides onto a full flag map — the
+ * all-flags counterpart of the env check in getFlag, with the same precedence
+ * (env beats test overrides / PostHog / defaults). Without this, the documented
+ * dev override flipped server-side single-flag checks but was invisible to the
+ * client bootstrap payload (`useFlag`), so UI gates never saw it.
+ */
+function applyEnvOverrides(flags: FlagValues): FlagValues {
+  let out = flags;
+  for (const key of ALL_FLAG_KEYS) {
+    const v = resolveEnvOverride(key);
+    if (v !== undefined) {
+      if (out === flags) out = { ...flags };
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
 export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   const overrides = resolveTestOverrides();
   if (overrides) {
-    return { flags: overrides, evaluatedAt: Date.now(), source: "override" };
+    return { flags: applyEnvOverrides(overrides), evaluatedAt: Date.now(), source: "override" };
   }
   if (!client) {
     return {
-      flags: { ...FLAG_DEFAULTS },
+      flags: applyEnvOverrides({ ...FLAG_DEFAULTS }),
       evaluatedAt: Date.now(),
       source: "defaults",
     };
@@ -107,7 +126,7 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
       }
     }),
   );
-  const flags: FlagValues = resolveWithDefaults(evaluated);
+  const flags: FlagValues = applyEnvOverrides(resolveWithDefaults(evaluated));
   return { flags, evaluatedAt: Date.now(), source: "posthog" };
 }
 

@@ -36,7 +36,7 @@ const productReview = defineTool({
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const { invocationId } = invokeScoperBackground(project, 'proposal');
+    const { invocationId } = await invokeScoperBackground(project, 'proposal');
     return Response.json({ ok: true, invocationId, mode: 'proposal' });
   },
 });
@@ -56,7 +56,7 @@ const replan = defineTool({
       // Non-destructive: scoper MODE=replan as a background invocation;
       // delta-merges new plan items into the existing queue.
       const invocationId = await recordUserAction(slug, 'replan', async () => {
-        const r = invokeScoperBackground(project, 'replan');
+        const r = await invokeScoperBackground(project, 'replan');
         return {
           summary: `Replan kicked off (invocation ${r.invocationId})`,
           invocationId: r.invocationId,
@@ -92,11 +92,21 @@ const replan = defineTool({
 
     const orchBin = orchestratorRunBin();
     const logPath = `/tmp/harness-replan-${project.slug}.log`;
+    // Instance config via the env-transport — the orchestrator never reads
+    // `.papercusp/config.json` (deprecate-harness-config-json-2026-06-06).
+    const instEnv = await (async (): Promise<Record<string, string>> => {
+      try {
+        const { instanceConfigEnv } = await import('../../../deployment/instance-config');
+        const { activeWorkspaceId } = await import('../../../workspace-registry');
+        return await instanceConfigEnv(project.slug, activeWorkspaceId());
+      } catch { return {}; }
+    })();
     return new Promise<Response>((resolve) => {
       execFile('bash', ['-c', `MAX_ITERATIONS=0 node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
         cwd: project.path,
         env: {
           ...process.env,
+          ...instEnv,
           AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
           CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
           HARNESS_DIR: harnessPackageDir(),
@@ -136,7 +146,7 @@ const cleanup = defineTool({
     const project = await resolveProject(slug);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const invocationId = await recordUserAction(slug, 'cleanup', async () => {
-      const r = invokeScoperBackground(project, 'cleanup');
+      const r = await invokeScoperBackground(project, 'cleanup');
       return {
         summary: `Cleanup kicked off (invocation ${r.invocationId})`,
         invocationId: r.invocationId,

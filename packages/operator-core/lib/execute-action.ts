@@ -689,6 +689,16 @@ async function doScaffoldHarness(
     WHERE slug = ${action.projectSlug}
   `;
 
+  // Entry-seam migration (deprecate-harness-config-json-2026-06-06): lift any
+  // instance config the init template scaffolded into `.papercusp/config.json`
+  // (phase / models / knob overrides) into the workspace-PG registry — the live
+  // config path never reads the file. Best-effort no-op when init didn't
+  // register the child in this registry yet or wrote no instance content.
+  try {
+    const { migrateConfigJsonToInstance } = await import('./deployment/instance-config');
+    await migrateConfigJsonToInstance(action.projectSlug, activeWorkspaceId());
+  } catch { /* never blocks the scaffold */ }
+
   return {
     ok: true,
     actionId: '',

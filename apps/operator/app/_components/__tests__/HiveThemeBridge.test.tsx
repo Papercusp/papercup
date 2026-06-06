@@ -20,10 +20,20 @@ function setHive(on: boolean): void {
 }
 
 beforeEach(() => {
+  const store = new Map<string, string>();
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear(),
+    },
+  });
   document.documentElement.removeAttribute('data-theme');
   document.head.querySelectorAll('link[rel="icon"]').forEach((link) => link.remove());
   document.title = 'Papercusp Operator';
-  window.localStorage.clear();
+  window.localStorage.removeItem(wsLocalKey(THEME_STORAGE_KEY));
   setHive(false);
 });
 

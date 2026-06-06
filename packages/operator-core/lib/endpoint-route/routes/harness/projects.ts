@@ -264,6 +264,20 @@ const create = defineTool({
     reg.projects.push({ slug, path });
     await saveHarnessRegistry(reg);
 
+    // Entry-seam migration (deprecate-harness-config-json-2026-06-06): a harness
+    // that ARRIVES with a legacy `.papercusp/config.json` (a gym substrate, an
+    // externally-scaffolded repo, a clone) gets its instance content (phase/phases/
+    // dept + knob overrides like parallelWorkers.workingStateCheck) lifted into the
+    // workspace-PG registry HERE — the live config path never reads the file.
+    // Best-effort: never blocks registration.
+    let migratedConfigFields: string[] = [];
+    try {
+      const { migrateConfigJsonToInstance } = await import('../../../deployment/instance-config');
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const r = await migrateConfigJsonToInstance(slug, activeWorkspaceId());
+      migratedConfigFields = r.fields;
+    } catch { /* ignore — registration succeeded; config lift is best-effort */ }
+
     let provisioning: { ok: true } | { ok: false; error: string };
     try {
       const { scaffoldHarnessSchema } = await import('../../../scaffold-harness-schema');
@@ -278,6 +292,7 @@ const create = defineTool({
       ok: true,
       project: { slug, path },
       provisioning,
+      ...(migratedConfigFields.length > 0 ? { migratedConfig: migratedConfigFields } : {}),
       ...(cloneInfo ? { clone: cloneInfo } : {}),
       ...(initInfo ? { init: initInfo } : {}),
     });

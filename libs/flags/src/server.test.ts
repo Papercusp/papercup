@@ -34,6 +34,25 @@ describe('flag backend in offline-only mode', () => {
     }
   });
 
+  it('PAPERCUSP_FLAG_<KEY> env override is reflected in getAllFlags (not just getFlag)', async () => {
+    const envKey = 'PAPERCUSP_FLAG_PAPERCUSP_VIDEO_CHANNELS';
+    process.env[envKey] = '1';
+    try {
+      expect(await getFlag(FLAGS.VIDEO_CHANNELS, 'x')).toBe(true);
+      const payload = await getAllFlags('any-distinct');
+      expect(payload.flags[FLAGS.VIDEO_CHANNELS]).toBe(true); // env beats defaults
+      expect(payload.flags[FLAGS.ORACLE]).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]); // others untouched
+      // env override also beats in-process test overrides (same precedence as getFlag)
+      const allOff = Object.fromEntries(ALL_FLAG_KEYS.map((k) => [k, false]));
+      setFlagOverridesForTest(allOff as Record<(typeof ALL_FLAG_KEYS)[number], boolean>);
+      const overridden = await getAllFlags('any-distinct');
+      expect(overridden.flags[FLAGS.VIDEO_CHANNELS]).toBe(true);
+    } finally {
+      delete process.env[envKey];
+      setFlagOverridesForTest(null);
+    }
+  });
+
   it('FLAG_DEFAULTS contains every FLAGS key (no drift)', () => {
     for (const key of Object.values(FLAGS)) {
       expect(FLAG_DEFAULTS).toHaveProperty(key);

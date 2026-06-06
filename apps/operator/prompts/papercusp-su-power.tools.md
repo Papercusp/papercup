@@ -170,31 +170,37 @@ blocks you. (`await-event-primitive-2026-06-05`.)
 
 **You don't commit or push — git-sync owns it.** A background **git-sync**
 routine commits the whole shared tree (yours *and* every peer's) and
-merges + pushes it to origin every few minutes — the superproject **and**
-every submodule. So **just leave your work in the tree**: no `git add`,
-`git commit`, or `git push`, ever; it lands on origin automatically. Don't
-stash, branch, or scope pathspecs to isolate "your" diff — the routine
-packages whatever's in the tree; auto-merge conflicts go to a
-`merge-resolver` agent, not you (the file-lock hook still serializes edits
-to the same file, so nothing stomps your uncommitted work between ticks).
-Stay on `main` — **don't `git worktree` or branch-switch**; coordinate
+merges + pushes it to **`origin/staging`** every few minutes — the
+superproject **and** every submodule (each to its own default branch). So
+**just leave your work in the tree**: no `git add`, `git commit`, or
+`git push`, ever; it lands on origin automatically. Don't stash, branch, or
+scope pathspecs to isolate "your" diff — the routine packages whatever's in
+the tree; auto-merge conflicts go to a `merge-resolver` agent, not you (the
+file-lock hook still serializes edits to the same file, so nothing stomps
+your uncommitted work between ticks). Stay on **`staging`** — **don't
+`git worktree` or branch-switch**, and **never push or move `main`**
+(it's the green branch, advanced only by green-checkpoint); coordinate
 through `locks:*` (files) and `coord:*` (intent), not tree isolation.
 
-**Two operators now — `:3070` is GREEN/stable, `:3170` is where your edits
-run.** The site + fleet MCP server **`:3070`** (`papercup-dev-api`) runs from
-the **green release checkout** (`papercup-release`), decoupled from `main`
-churn — so **restarting `:3070` does NOT pick up a `lib/**` edit**; it just
-restarts the same green snapshot. To test a server-side edit live, use the
-**staging operator `:3170`** (`papercup-staging-api`, runs from `main`, no
-hot-reload): `systemctl --user restart papercup-staging-api.service`, then
-probe `:3170`. Promoting an edit to the stable `:3070` goes through the
-**release gate** — green-checkpoint advances `ready` when `main` is green,
-then `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` refreshes
-`:3070` (a raw restart can never deploy churning HEAD by construction).
-Clearing a wedged process / freeing a port is still fine to just do — it
-comes back, peers expect churn, and the lock hook fails open. Re-probe where
-your write lands before trusting any result. Full model: plan
-`release-gate-ready-branch-2026-06-04` + `apps/operator/lib/release/README.md`.
+**Two operators — `:3070` auto-serves green `main`, `:3170` is where your
+edits run.** The site + fleet MCP server **`:3070`** (`papercup-dev-api`)
+runs from the **release checkout** (`papercup-release`), pinned to the green
+**`main` branch** — decoupled from `staging` churn — so **restarting `:3070`
+does NOT pick up a `lib/**` edit**; it just restarts the same green snapshot.
+To test a server-side edit live, use the **staging operator `:3170`**
+(`papercup-staging-api`, runs from the `staging` tree, no hot-reload):
+`systemctl --user restart papercup-staging-api.service`, then probe `:3170`.
+Promotion to `:3070` is AUTOMATIC (staging-branch-pipeline-2026-06-06):
+green-checkpoint (hourly) FFs `main` when `staging` is green; release-trigger
+(≤15 min) then auto-runs the scripted deploy (drain → swap → migrate →
+restart → health-check, auto-rollback). `npx tsx
+apps/operator/lib/release/deploy-cli.ts --execute` still deploys immediately
+(a raw restart can never deploy churning HEAD by construction). Clearing a
+wedged process / freeing a port is still fine to just do — it comes back,
+peers expect churn, and the lock hook fails open. Re-probe where your write
+lands before trusting any result. Watch the pipeline at **`/admin/git`**.
+Full model: plans `release-gate-ready-branch-2026-06-04` +
+`staging-branch-pipeline-2026-06-06` + `apps/operator/lib/release/README.md`.
 
 ## Engineering discipline
 

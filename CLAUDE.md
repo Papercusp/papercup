@@ -202,14 +202,24 @@ Work that gets quietly dropped is invisible to the user until much later, and it
 
 ---
 
-## Branch discipline: **the main directory always stays on `main`**
+## Branch discipline: **the shared tree always stays on `staging`; `main` is automation-only**
 
-The repo at `/home/marsh-office/papercupai-workspace/papercup` is the
-canonical checkout and **must always have `main` checked out**. Other
-agents (paperclip, the operator UI, Next.js dev/prod, the harness
-fleet) all assume this. Branch-switching there breaks them all.
+Since the staging→main cutover (`staging-branch-pipeline-2026-06-06`), the
+branch model is:
 
-**Work on `main` directly — do NOT use `git worktree` or feature
+- **`staging`** — the integration branch / agent firehose. The repo at
+  `/home/marsh-office/papercupai-workspace/papercup` is the canonical shared
+  checkout and **must always have `staging` checked out**. Other agents
+  (paperclip, the operator UI, dev servers, the harness fleet) all assume
+  this. Branch-switching there breaks them all.
+- **`main`** — the GREEN branch. It only ever **fast-forwards** to a
+  `staging` commit that passed the green-checkpoint suite (run in an
+  isolated checkout). **Nothing and no one pushes `main` directly** — not
+  you, not git-sync; only the green-checkpoint automation advances it. A
+  fresh clone of `origin/main` is always a tested state, and the live
+  `:3070` operator auto-serves it.
+
+**Work on `staging` directly — do NOT use `git worktree` or feature
 branches.** We deliberately run one shared tree rather than many
 diverging worktrees: it's simpler, and it spares everyone the
 merge-reconciliation tax later. The tradeoff is a messy history — your
@@ -224,14 +234,19 @@ systems**, not through tree isolation:
 - **`coord:*`** announces what you're working on (`coord:declare-intent`)
   so peers see you, and carries hand-offs / messages.
 
-Parallel agents on one `main`, serialized by locks + coord, is how
+Parallel agents on one `staging`, serialized by locks + coord, is how
 concurrent work stays collision-free here. You don't `git commit` or
 `git push` — a background **git-sync** routine owns both (see *Commit
 discipline* below); just leave your work in the tree.
 
+(Submodules are unchanged: each stays on its own default branch — git-sync
+pushes them as before. The staging→main gate applies to the superproject;
+`main` only advances to staging commits whose pinned submodule SHAs passed
+the suite, so green `main` still always resolves to a tested combination.)
+
 **Symptoms that you've forgotten this rule:**
-- `git status` shows `On branch <not-main>` in the main checkout —
-  switch back to `main` immediately and recover any in-flight work via
+- `git status` shows `On branch <not-staging>` in the shared checkout —
+  switch back to `staging` immediately and recover any in-flight work via
   `git stash`.
 - Paperclip starts editing files that look stale or wrong — it
   almost certainly thinks it's on a different branch than you.
@@ -241,18 +256,28 @@ discipline* below); just leave your work in the tree.
 ## Commit discipline: **git-sync owns commit + push — you do neither**
 
 A background **git-sync** routine commits the whole shared tree (every
-agent's work) and merges + pushes it to origin on a schedule — the
-superproject **and** every submodule. So **you no longer `git add` /
-`git commit` / `git push`**: just leave your work in the tree and it lands
-on origin automatically within a few minutes. The per-edit file-lock hook
-still serializes concurrent edits to the same file, so a peer can't stomp
-your uncommitted work between ticks. Don't stash, branch, or scope
-pathspecs to isolate "your" diff — there are no per-agent commits anymore;
-the routine packages whatever's in the tree. An auto-merge conflict it
-can't take is resolved by a `merge-resolver` agent, not you.
+agent's work) and merges + pushes it to **`origin/staging`** on a schedule —
+the superproject **and** every submodule (each submodule to its own default
+branch). So **you no longer `git add` / `git commit` / `git push`**: just
+leave your work in the tree and it lands on origin automatically within a
+few minutes. The per-edit file-lock hook still serializes concurrent edits
+to the same file, so a peer can't stomp your uncommitted work between
+ticks. Don't stash, branch, or scope pathspecs to isolate "your" diff —
+there are no per-agent commits anymore; the routine packages whatever's in
+the tree. An auto-merge conflict it can't take is resolved by a
+`merge-resolver` agent, not you.
+
+From `staging`, work reaches `main` automatically: **green-checkpoint**
+(hourly) runs the suite on staging HEAD in an isolated checkout and
+fast-forwards `main` when green; **release-trigger** (every 15 min) then
+auto-deploys green `main` to the live `:3070` operator (drain → swap →
+migrate → restart → health-check, auto-rollback). Your change being "in the
+tree" means it reaches `origin/main` + the live host as soon as the suite
+is green — and NOT before. The `/admin/git` tab shows the whole pipeline.
 
 Pause the routine only via `UPDATE harness_shared.routines SET active=false
-WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03`.
+WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03` +
+`staging-branch-pipeline-2026-06-06`.
 
 ## Running the operator: `npm run dev` from `papercusp-desktop/`
 
@@ -265,11 +290,11 @@ npm run dev
 
 If you need to iterate on a server-side handler or API route and you don't want to wait for the Tauri webview to repaint, you can still reload the desktop window (Ctrl+R in the Tauri shell) or hit endpoints directly at `127.0.0.1:3055` and `127.0.0.1:3070` *while the desktop is running*. Do not try to start `apps/operator` on its own — it isn't a separable webapp (and a `PreToolUse` hook blocks browsing its ports). Note: the old "first PG query fails because native PG was renamed `papercusp_legacy`" rationale is stale — native `papercusp` on `:5432` is live and is this dev box's substrate (see Database-topology).
 
-**Server-side code has no hot-reload — and on the standing dev box, a `:3070` restart does NOT pick up your edits (two-port model, since the 2026-06-05 release-gate cutover).** The **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch. How an edit goes live depends on which host:
+**Server-side code has no hot-reload — and on the standing dev box, a `:3070` restart does NOT pick up your edits (two-port model; staging→main auto-serve since `staging-branch-pipeline-2026-06-06`).** The **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch. How an edit goes live depends on which host:
 
-- **`:3070` (`papercup-dev-api`) is the GREEN/stable operator** — it runs from the separate **release checkout** (`papercupai-workspace/papercup-release`), pinned to the green `ready` ref. Restarting it just reboots the same green snapshot; **your `main` edits are invisible to it** until a release-gate deploy: green-checkpoint advances `ready` when `main` is green, then `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` (drain → swap → migrate → restart → health-check, auto-rollback on failure). See `apps/operator/lib/release/README.md`.
-- **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from `main` (the integration tree). To test a server-side edit live: `systemctl --user restart papercup-staging-api.service`, then probe `:3170`.
-- **The Tauri dev shell** spawns its own operator from the integration tree — reloading the desktop shell still picks up `main` edits in that context.
+- **`:3070` (`papercup-dev-api`) is the GREEN/stable operator** — it runs from the separate **release checkout** (`papercupai-workspace/papercup-release`), pinned to the green **`main` branch**. Restarting it just reboots the same green snapshot; **your `staging` edits are invisible to it** until the auto-serve pipeline carries them: green-checkpoint (hourly) FFs `main` when `staging` is green, then release-trigger (≤15 min later) auto-runs `deploy-cli --execute` (drain → swap → migrate → restart → health-check, auto-rollback on failure). A manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` still works for an immediate deploy. See `apps/operator/lib/release/README.md`.
+- **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from the integration tree (the `staging` branch). To test a server-side edit live: `systemctl --user restart papercup-staging-api.service`, then probe `:3170`.
+- **The Tauri dev shell** spawns its own operator from the integration tree — reloading the desktop shell still picks up `staging` edits in that context.
 
 (The `:3055` **Vite** dev server *does* hot-reload its own routes/components.) The tell that you're testing stale server code: a probe lands in the *old* place — e.g. during the coord FS→PG cutover a `coord:send` kept writing `coord/*.jsonl` instead of Postgres because the host hadn't reloaded. Probe where the write actually lands; if it's stale, restart the *right* host (or deploy) and re-probe before trusting any result.
 

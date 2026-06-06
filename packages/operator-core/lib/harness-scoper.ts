@@ -20,6 +20,8 @@ import { harnessDir } from './harness-core';
 import { type ProjectEntry } from './harness-registry';
 import { harnessPackageDir } from './harness-paths';
 import { buildInvokeOnce } from './harness-invoke-once';
+import { instanceConfigEnv } from './deployment/instance-config';
+import { activeWorkspaceId } from './workspace-registry';
 
 /**
  * Resolve scoper.outputMode from the blueprint knob `scoper.outputMode`
@@ -36,10 +38,10 @@ function readScoperOutputMode(stateDir: string): 'proposal' | 'plan' {
   }
 }
 
-export function invokeScoperBackground(
+export async function invokeScoperBackground(
   project: ProjectEntry,
   mode: 'proposal' | 'replan' | 'cleanup',
-): { invocationId: string } {
+): Promise<{ invocationId: string }> {
   const invocationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const stateDir = join(project.path, '.papercusp');
   const resultsDir = join(harnessDir(project), 'scoper-results');
@@ -48,6 +50,14 @@ export function invokeScoperBackground(
   // The scoper agent writes proposals here; invoke-once creates logDir +
   // the RESULT_PATH dir itself, but not the proposals dir.
   try { mkdirSync(join(stateDir, 'proposals'), { recursive: true }); } catch { /* ignore */ }
+  // Deliver the per-install instance config via the env-transport — the spawned
+  // orchestrator reads HARNESS_CONFIG_JSON only, never `.papercusp/config.json`
+  // (deprecate-harness-config-json-2026-06-06). Best-effort: a store miss just
+  // means blueprint defaults.
+  let instEnv: Record<string, string> = {};
+  try {
+    instEnv = await instanceConfigEnv(project.slug, activeWorkspaceId());
+  } catch { /* spawn proceeds with blueprint defaults */ }
   const { command, args, env } = buildInvokeOnce({
     projectDir: project.path,
     stateDir,
@@ -55,7 +65,7 @@ export function invokeScoperBackground(
     role: 'scoper',
     extras: [`MODE=${mode}`, `OUTPUT_MODE=${outputMode}`],
     resultPath, // invoke-once tees output here + appends __INVOCATION_DONE__
-    extraEnv: { SCOPER_INVOCATION_ID: invocationId, SCOPER_OUTPUT_MODE: outputMode },
+    extraEnv: { SCOPER_INVOCATION_ID: invocationId, SCOPER_OUTPUT_MODE: outputMode, ...instEnv },
   });
   // Fire-and-forget detached spawn, governed (RB-012): paced through the shared governor
   // when PAPERCUSP_AGENT_GOVERNOR=1 so a background scoper doesn't pile onto a pipeline

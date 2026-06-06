@@ -1,6 +1,6 @@
 {
   "alive": false,
-  "branch": null,
+  "branch": "testing",
   "cost_usd": 0,
   "exists_on_disk": false,
   "iteration": 0,
