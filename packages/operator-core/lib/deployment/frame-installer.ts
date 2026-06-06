@@ -38,7 +38,7 @@ export async function waitForSsh(
   log: (msg: string) => void,
   opts: FrameInstallerDeps['sshWait'] = {},
 ): Promise<void> {
-  const attempts = opts.attempts ?? 90;
+  const attempts = opts.attempts ?? 120; // observed live: sshd at minute ~15-22 on metal
   const delayMs = opts.delayMs ?? 15_000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (let i = 1; ; i++) {

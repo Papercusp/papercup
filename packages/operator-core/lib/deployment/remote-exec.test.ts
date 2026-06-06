@@ -44,6 +44,9 @@ describe('createSshRemoteExec', () => {
     expect(calls[0].args).toContain('-p');
     expect(calls[0].args).toContain('2222');
     expect(calls[0].args).toContain('BatchMode=yes');
+    // Only the explicit identity — a loaded ssh-agent otherwise exhausts the
+    // server's MaxAuthTries before the -i key is offered (hit live 2026-06-06).
+    expect(calls[0].args).toContain('IdentitiesOnly=yes');
     // Disposable frames on recycled IPs: never pin host keys in the user's
     // known_hosts (a stale pinned key fails every connection — hit live 2026-06-06).
     expect(calls[0].args).toContain('UserKnownHostsFile=/dev/null');

@@ -48,7 +48,13 @@ export type SpawnLike = (
 
 function sshBaseArgs(t: SshTarget): string[] {
   const args: string[] = [];
-  if (t.identityFile) args.push('-i', t.identityFile);
+  if (t.identityFile) {
+    // IdentitiesOnly: offer ONLY this key. Without it the local ssh-agent's whole
+    // keyring is tried first and a server's MaxAuthTries disconnects us before the
+    // -i key is ever offered ("Too many authentication failures" — hit live
+    // 2026-06-06 on a frame install from a dev box with a loaded agent).
+    args.push('-i', t.identityFile, '-o', 'IdentitiesOnly=yes');
+  }
   if (t.port) args.push('-p', String(t.port));
   args.push(
     '-o',
