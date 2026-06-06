@@ -256,7 +256,7 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on main). Conflicted: ${filesSummary}`,
+      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`staging\`, submodules = their own default). Conflicted: ${filesSummary}`,
       extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
       // A real multi-file merge by a higher-effort model needs more than the route's
       // 90s default; give it near the route's 300s ceiling (it waits on the git-sync

@@ -2,12 +2,14 @@
 # Release-checkout setup / sync — plan release-gate-ready-branch-2026-06-04, Phase 0.
 #
 # Stands up + maintains the SEPARATE release checkout the operator runs from,
-# pinned to a release ref (default `ready`). This is the deploy system's own
-# checkout — NOT an agent worktree (D-004), so it does not violate the
-# "agents stay on main" rule. Idempotent: safe to re-run on every deploy.
+# pinned to a release ref (default the green `main` branch — staging→main model,
+# staging-branch-pipeline-2026-06-06). This is the deploy system's own checkout
+# — NOT an agent worktree (D-004), so it does not violate the "agents stay on
+# the integration branch (`staging`)" rule. Idempotent: safe to re-run on every
+# deploy.
 #
 # What it guarantees about the release checkout at $PAPERCUSP_RELEASE_ROOT:
-#   1. a git worktree detached at the target commit (default: the `ready` ref) —
+#   1. a git worktree detached at the target commit (default: green `main`) —
 #      the superproject's tracked files, as real isolated files,
 #   2. submodule SOURCE extracted at each submodule's EXACT pinned sha via
 #      `git archive` from the integration tree's LOCAL object store. This is the
@@ -40,7 +42,7 @@ set -euo pipefail
 
 INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-/home/marsh-office/papercupai-workspace/papercup}"
 RELEASE_ROOT="${PAPERCUSP_RELEASE_ROOT:-/home/marsh-office/papercupai-workspace/papercup-release}"
-REF="ready"
+REF="main"
 NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = always; skip = never
 
 while [ $# -gt 0 ]; do

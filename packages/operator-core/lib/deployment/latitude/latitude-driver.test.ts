@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DeploymentConfig, DeploymentContext } from '@papercusp/deployment-driver';
 import { makeLatitudeDriver, toLatitudeAttributes, LatitudeDriver } from './latitude-driver';
-import type { LatitudeApiClient, LatitudeServer } from './latitude-api';
+import { LatitudeApiError, type LatitudeApiClient, type LatitudeServer } from './latitude-api';
 
 const ctx: DeploymentContext = { harnessSlug: 'papercup', workspaceId: 'ws' };
 const cfg: DeploymentConfig = { target: 'latitude', region: 'NYC', size: 'c2-small-x86', provider: { project: 'proj_1' } };
@@ -108,11 +108,74 @@ describe('LatitudeDriver.provision', () => {
 });
 
 describe('LatitudeDriver teardown', () => {
-  it('teardown DESTROYS the server', async () => {
-    const client = fakeClient([]);
-    const driver = makeLatitudeDriver({ client });
-    await driver.teardown({ id: 'sv_9', target: 'latitude', placement: 'remote' }, cfg, ctx);
+  const sleep = vi.fn(async () => {});
+  const gone404 = () => new LatitudeApiError('getServer', 404, null);
+  const frame9 = { id: 'sv_9', target: 'latitude', placement: 'remote' as const };
+
+  /** Scripted teardown client: each getServer call pops the next entry — a server
+   *  object, or an Error to throw (404 = gone). deleteServer errs are scriptable too. */
+  function teardownClient(
+    gets: Array<LatitudeServer | Error>,
+    deleteErrs: Array<Error | undefined> = [],
+  ): LatitudeApiClient & { deleted: string[] } {
+    const deleted: string[] = [];
+    let g = 0;
+    let d = 0;
+    return {
+      deleted,
+      async createServer(): Promise<LatitudeServer> {
+        throw new Error('unused in teardown tests');
+      },
+      async getServer() {
+        const next = gets[Math.min(g++, gets.length - 1)];
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      async deleteServer(id: string) {
+        deleted.push(id);
+        const err = deleteErrs[d++];
+        if (err) throw err;
+      },
+    };
+  }
+
+  it('DESTROYS the server and confirms it is gone (getServer 404)', async () => {
+    const client = teardownClient([gone404()]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await driver.teardown(frame9, cfg, ctx);
     expect(client.deleted).toEqual(['sv_9']);
+  });
+
+  it("re-issues DELETE when the first doesn't stick (observed live 2026-06-06: 204 against 'deploying', not applied)", async () => {
+    const client = teardownClient([srv({ status: 'deploying' }), gone404()]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await driver.teardown(frame9, cfg, ctx);
+    expect(client.deleted).toEqual(['sv_9', 'sv_9']);
+  });
+
+  it("status 'deleted' counts as gone", async () => {
+    const client = teardownClient([srv({ status: 'deleted' })]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await driver.teardown(frame9, cfg, ctx);
+    expect(client.deleted).toEqual(['sv_9']);
+  });
+
+  it('a 404 from DELETE itself means already gone (success)', async () => {
+    const client = teardownClient([gone404()], [new LatitudeApiError('deleteServer', 404, null)]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await expect(driver.teardown(frame9, cfg, ctx)).resolves.toBeUndefined();
+  });
+
+  it('throws loudly (naming billing) if the server never disappears before the teardown deadline', async () => {
+    const client = teardownClient([srv({ status: 'deploying' })]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1, teardownTimeoutMs: 0 });
+    await expect(driver.teardown(frame9, cfg, ctx)).rejects.toThrow(/BILLING/);
+  });
+
+  it('non-404 getServer errors propagate', async () => {
+    const client = teardownClient([new LatitudeApiError('getServer', 500, 'boom')]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await expect(driver.teardown(frame9, cfg, ctx)).rejects.toThrow(/500/);
   });
 });
 

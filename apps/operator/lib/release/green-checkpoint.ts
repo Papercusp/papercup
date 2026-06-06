@@ -1,10 +1,13 @@
 /**
  * The green-checkpoint job — plan release-gate-ready-branch-2026-06-04, Phase 1
- * (D-003). Fast-forwards `ready` to the newest integration commit that is GREEN,
- * so "deploy ready" always deploys a known-good, tests-passing state — with zero
- * manual curation. git-sync keeps committing ALL WIP to the integration branch
- * (unchanged); this advances the green pin behind it. The gap between HEAD and
- * `ready` IS the staging buffer.
+ * (D-003); staging→main model since staging-branch-pipeline-2026-06-06.
+ * Fast-forwards the green pin (`releaseRef`, now the **`main` branch**) to the
+ * newest integration commit that is GREEN, so `main` only ever holds known-good,
+ * tests-passing states — with zero manual curation. git-sync keeps committing
+ * ALL WIP to the integration branch (`staging`, unchanged); this advances the
+ * green `main` behind it. The gap between staging HEAD and `main` IS the
+ * untested buffer. Requires `main` NOT to be checked out in the integration
+ * tree (it lives on `staging`), so `git branch -f main` is free to move.
  *
  * Two correctness rules from the plan's Risks:
  *   - "Green" is measured in an ISOLATED checkout of the CANDIDATE commit (the
@@ -71,13 +74,13 @@ export async function runGreenCheckpoint(
     : null;
 
   if (candidate === lastReady) {
-    deps.log(`ready already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`);
+    deps.log(`${cfg.releaseRef} already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`);
     return { advanced: false, candidate, from: lastReady, green: null, reason: 'up-to-date' };
   }
 
-  // `ready` only ever fast-forwards — refuse a candidate that isn't a descendant.
+  // The green pin only ever fast-forwards — refuse a candidate that isn't a descendant.
   if (lastReady && !(await isAncestor(cfg.integrationRoot, lastReady, candidate))) {
-    deps.log(`candidate ${candidate.slice(0, 8)} is NOT a descendant of ready ${lastReady.slice(0, 8)} — refusing`);
+    deps.log(`candidate ${candidate.slice(0, 8)} is NOT a descendant of ${cfg.releaseRef} ${lastReady.slice(0, 8)} — refusing`);
     return { advanced: false, candidate, from: lastReady, green: null, reason: 'not-fast-forward' };
   }
 
@@ -85,10 +88,10 @@ export async function runGreenCheckpoint(
   await deps.setupTree(candidate);
   const { green, summary } = await deps.runGreen(cfg.checkpointRoot, lastReady);
   if (!green) {
-    deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ready stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
+    deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
     await deps
       .broadcast(
-        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`ready\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
+        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
         summary,
       )
       .catch(() => {});
@@ -99,10 +102,10 @@ export async function runGreenCheckpoint(
   if (adv.advanced && !opts.noPush) {
     await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   }
-  deps.log(`✅ ready advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
+  deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
   await deps
     .broadcast(
-      `🟩 green-checkpoint: \`ready\` advanced to ${candidate.slice(0, 8)} (green, deployable)`,
+      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)`,
       `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.`,
     )
     .catch(() => {});
@@ -113,7 +116,7 @@ export async function runGreenCheckpoint(
     .then(({ emitAwaitedEvent }) =>
       emitAwaitedEvent({
         key: 'release:green',
-        summary: `ready advanced to ${candidate.slice(0, 8)} (green, deployable)`,
+        summary: `${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`,
         payload: { sha: candidate, from: adv.from },
         source: 'green-checkpoint',
       }),

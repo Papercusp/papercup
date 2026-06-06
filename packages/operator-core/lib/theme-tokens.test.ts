@@ -13,7 +13,7 @@ describe('theme id helpers', () => {
   it('accepts built-ins and custom:<slug>, rejects junk', () => {
     expect(isValidThemeId('frost')).toBe(true);
     expect(isValidThemeId('black')).toBe(true);
-    expect(isValidThemeId('hive')).toBe(true);
+    expect(isValidThemeId('hive')).toBe(false);
     expect(isValidThemeId('custom:my-theme')).toBe(true);
     expect(isCustomThemeId('custom:my-theme')).toBe(true);
     expect(isValidThemeId('custom:')).toBe(false);

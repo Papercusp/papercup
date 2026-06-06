@@ -21,6 +21,8 @@ export default defineConfig({
     starlight({
       title: 'Papercusp Internal',
       description: 'Engineering reference for the Papercusp multi-agent coding harness.',
+      favicon: '/favicon.svg',
+      logo: { src: './src/assets/hive-docs-logo.svg', alt: 'Papercusp Internal' },
       pagefind: true,
       lastUpdated: true,
       customCss: ['./src/styles/blue-frost.css'],

@@ -38,12 +38,26 @@ describe('foldPipelineWindow', () => {
     const w = foldPipelineWindow(
       [
         { kind: 'git_sync', status: 'synced', n: '12' },
-        { kind: 'deploy', status: 'ok', n: 9 }, // not surfaced in the windowed summary
+        { kind: 'totally-unknown-kind', status: 'ok', n: 9 }, // ignored entirely
       ],
       0,
     );
     expect(w.gitSync.synced).toBe(12);
     expect(w.gitSync.total).toBe(12);
+    expect(w.deploy.total).toBe(0);
+  });
+
+  it('folds auto-serve deploy attempts (ok / rolled-back / failed / refused)', () => {
+    const w = foldPipelineWindow(
+      [
+        { kind: 'deploy', status: 'ok', n: 5 },
+        { kind: 'deploy', status: 'rolled-back', n: 1 },
+        { kind: 'deploy', status: 'failed', n: 1 },
+        { kind: 'deploy', status: 'refused', n: 2 },
+      ],
+      0,
+    );
+    expect(w.deploy).toEqual({ total: 9, ok: 5, rolledBack: 1, failed: 1, refused: 2 });
   });
 
   it('emptyWindow is all zeros', () => {

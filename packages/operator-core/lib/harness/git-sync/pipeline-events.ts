@@ -69,6 +69,8 @@ export interface PipelineWindowSummary {
     notFastForward: number;
     createFailed: number;
   };
+  /** Auto-serve deploys (staging-branch-pipeline-2026-06-06): one row per attempt. */
+  deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
 }
 
 export function emptyWindow(sinceMs: number): PipelineWindowSummary {
@@ -77,6 +79,7 @@ export function emptyWindow(sinceMs: number): PipelineWindowSummary {
     gitSync: { total: 0, synced: 0, nothing: 0, conflict: 0, error: 0 },
     mergeResolver: { total: 0, ok: 0, failed: 0, error: 0 },
     greenCheckpoint: { total: 0, advanced: 0, upToDate: 0, notGreen: 0, notFastForward: 0, createFailed: 0 },
+    deploy: { total: 0, ok: 0, rolledBack: 0, failed: 0, refused: 0 },
   };
 }
 
@@ -109,6 +112,12 @@ export function foldPipelineWindow(
       else if (r.status === 'not-green') out.greenCheckpoint.notGreen += n;
       else if (r.status === 'not-fast-forward') out.greenCheckpoint.notFastForward += n;
       else if (r.status === 'create-failed') out.greenCheckpoint.createFailed += n;
+    } else if (r.kind === 'deploy') {
+      out.deploy.total += n;
+      if (r.status === 'ok') out.deploy.ok += n;
+      else if (r.status === 'rolled-back') out.deploy.rolledBack += n;
+      else if (r.status === 'failed') out.deploy.failed += n;
+      else if (r.status === 'refused') out.deploy.refused += n;
     }
   }
   return out;

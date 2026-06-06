@@ -96,7 +96,7 @@
           try { const ws = new URL(window.location.href).searchParams.get('ws'); if (ws && ws.trim()) return ws; } catch (e) {}
           return 'default';
         };
-        const valid = (v) => typeof v === 'string' && (v === 'frost' || v === 'black' || v === 'hive' || (v.indexOf('custom:') === 0 && v.length > 7));
+        const valid = (v) => typeof v === 'string' && (v === 'frost' || v === 'black' || (v.indexOf('custom:') === 0 && v.length > 7));
         try {
           // PG is the source of truth: the host injects window.__PAPERCUSP_PREFS__
           // .theme_id from the user profile (see bin/host-spa.ts). Prefer it; the

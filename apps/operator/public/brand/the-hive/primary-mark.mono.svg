@@ -1,0 +1,10 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Papercusp The Hive primary mark monochrome">
+  <path d="M64 8 113 36v56l-49 28-49-28V36z" stroke="currentColor" stroke-width="3.2" stroke-linejoin="round"/>
+  <path d="M64 20 101 41v43l-37 22-37-22V41z" stroke="currentColor" stroke-opacity=".55" stroke-width="1.6"/>
+  <path d="M64 34 86 47v25L64 85 42 72V47z" stroke="currentColor" stroke-width="2"/>
+  <path d="M42 47 64 60l22-13M64 60v25" stroke="currentColor" stroke-opacity=".62" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M53 53c-10-10-23-9-29 1 9 4 20 3 29-1Z" stroke="currentColor" stroke-opacity=".70" stroke-width="1.5"/>
+  <path d="M75 53c10-10 23-9 29 1-9 4-20 3-29-1Z" stroke="currentColor" stroke-opacity=".70" stroke-width="1.5"/>
+  <path d="M64 39c7 5 11 13 11 24 0 15-5 26-11 26S53 78 53 63c0-11 4-19 11-24Z" stroke="currentColor" stroke-width="1.7"/>
+  <path d="M58 39c0-5 3-9 6-9s6 4 6 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg>

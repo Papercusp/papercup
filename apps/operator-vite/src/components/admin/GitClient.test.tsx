@@ -26,8 +26,8 @@ const snapshot = {
   resolver: { model: 'opus:xhigh', lastStatus: 'ok', lastAtMs: Date.now() - 7200000, lastExitCode: 0, lastHttpStatus: 200, lastTimedOut: false, lastScopes: ['libs/generic/sync'] },
   openConflict: { scopes: ['libs/generic/sync'], conflicts: [{ scope: 'libs/generic/sync', files: ['src/x.ts'] }], emittedAtMs: Date.now() - 60000 },
   windows: {
-    day: { sinceMs: 0, gitSync: { total: 100, synced: 60, nothing: 36, conflict: 3, error: 1 }, mergeResolver: { total: 3, ok: 2, failed: 1, error: 0 }, greenCheckpoint: { total: 24, advanced: 6, upToDate: 16, notGreen: 2, notFastForward: 0, createFailed: 0 } },
-    week: { sinceMs: 0, gitSync: { total: 700, synced: 400, nothing: 280, conflict: 15, error: 5 }, mergeResolver: { total: 15, ok: 13, failed: 2, error: 0 }, greenCheckpoint: { total: 160, advanced: 40, upToDate: 110, notGreen: 10, notFastForward: 0, createFailed: 0 } },
+    day: { sinceMs: 0, gitSync: { total: 100, synced: 60, nothing: 36, conflict: 3, error: 1 }, mergeResolver: { total: 3, ok: 2, failed: 1, error: 0 }, greenCheckpoint: { total: 24, advanced: 6, upToDate: 16, notGreen: 2, notFastForward: 0, createFailed: 0 }, deploy: { total: 6, ok: 5, rolledBack: 1, failed: 0, refused: 0 } },
+    week: { sinceMs: 0, gitSync: { total: 700, synced: 400, nothing: 280, conflict: 15, error: 5 }, mergeResolver: { total: 15, ok: 13, failed: 2, error: 0 }, greenCheckpoint: { total: 160, advanced: 40, upToDate: 110, notGreen: 10, notFastForward: 0, createFailed: 0 }, deploy: { total: 38, ok: 36, rolledBack: 1, failed: 1, refused: 0 } },
   },
   recent: [
     { id: '3', kind: 'git_sync', status: 'conflict', detail: { conflicts: [{ scope: 'libs/generic/sync' }] }, createdAtMs: Date.now() - 7200000 },

@@ -19,7 +19,12 @@ import type {
   DeploymentDriver,
   Frame,
 } from '@papercusp/deployment-driver';
-import { createLatitudeApiClient, type LatitudeApiClient, type LatitudeServerAttributes } from './latitude-api';
+import {
+  createLatitudeApiClient,
+  LatitudeApiError,
+  type LatitudeApiClient,
+  type LatitudeServerAttributes,
+} from './latitude-api';
 import { installFrame, joinFrame } from '../frame-installer';
 import type { RemoteExec } from '../remote-exec';
 
@@ -38,6 +43,8 @@ export interface LatitudeDriverDeps {
   baseUrl?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
+  /** How long teardown keeps re-issuing DELETE + confirming before giving up (default 5 min). */
+  teardownTimeoutMs?: number;
   /** Injected for tests so polling doesn't actually wait. */
   sleep?: (ms: number) => Promise<void>;
   /** Build the RemoteExec for a frame (install/credential staging). Injected for tests. */
@@ -74,7 +81,7 @@ export function toLatitudeAttributes(config: DeploymentConfig, ctx: DeploymentCo
   if (missing.length) {
     throw new Error(
       `LatitudeDriver.provision: deployment config is missing required field(s): ${missing.join(', ')}. ` +
-        `Provide e.g. { target:'latitude', region:'NYC', size:'c2-small-x86', provider:{ project:'<id>' } }.`,
+        `Provide e.g. { target:'latitude', region:'NYC', size:'m4-metal-small', provider:{ project:'<id>' } }.`,
     );
   }
   return {
@@ -94,6 +101,7 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
   const resolveApiKey = deps.resolveApiKey ?? defaultResolveApiKey;
   const pollIntervalMs = deps.pollIntervalMs ?? 10_000;
   const pollTimeoutMs = deps.pollTimeoutMs ?? 15 * 60_000;
+  const teardownTimeoutMs = deps.teardownTimeoutMs ?? 5 * 60_000;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const installerDeps = { makeRemoteExec: deps.makeRemoteExec, onJoin: deps.onJoin };
 
@@ -160,8 +168,41 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
     async teardown(frame, config, ctx): Promise<void> {
       const client = clientFor(config);
       log(ctx, 'info', `destroying server ${frame.id} (teardown = DESTROY → ends billing)`);
-      await client.deleteServer(frame.id);
-      log(ctx, 'info', `server ${frame.id} destroyed`);
+
+      // Latitude can ACCEPT a DELETE (204) against an in-flight deploy without
+      // applying it — observed live 2026-06-06: DELETE→204 while 'deploying',
+      // server persisted; a later DELETE took. A destroy that doesn't stick
+      // bills indefinitely, so confirm the server is actually GONE, re-issuing
+      // the DELETE each round until it is (or the teardown deadline passes).
+      const isGone = async (): Promise<boolean> => {
+        try {
+          const s = await client.getServer(frame.id);
+          return s.status === 'deleted';
+        } catch (e) {
+          if (e instanceof LatitudeApiError && (e.status === 404 || e.status === 410)) return true;
+          throw e;
+        }
+      };
+
+      const deadline = Date.now() + teardownTimeoutMs;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await client.deleteServer(frame.id);
+        } catch (e) {
+          // DELETE on an already-gone server 404s — that's success.
+          if (!(e instanceof LatitudeApiError && (e.status === 404 || e.status === 410))) throw e;
+        }
+        if (await isGone()) break;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `LatitudeDriver.teardown: server ${frame.id} still exists after ${attempt} DELETE attempt(s) ` +
+              `over ${Math.round(teardownTimeoutMs / 1000)}s — it may still be BILLING; destroy it manually.`,
+          );
+        }
+        log(ctx, 'warn', `server ${frame.id} still present after DELETE (attempt ${attempt}); re-confirming`);
+        await sleep(pollIntervalMs);
+      }
+      log(ctx, 'info', `server ${frame.id} destroyed (confirmed gone)`);
     },
   };
 }

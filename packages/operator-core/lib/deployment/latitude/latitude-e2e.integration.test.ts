@@ -5,8 +5,12 @@
  * machine and costs money. Set to run it:
  *   LATITUDE_API_KEY=<key>          # the account API key
  *   LATITUDE_E2E_PROJECT=<id|slug>  # the Latitude project to bill
- *   LATITUDE_E2E_SITE=NYC           # (optional) site code,   default NYC
- *   LATITUDE_E2E_PLAN=c2-small-x86  # (optional) plan slug,   default c2-small-x86
+ *   LATITUDE_E2E_SITE=NYC             # (optional) site code,   default NYC
+ *   LATITUDE_E2E_PLAN=m4-metal-small  # (optional) plan slug,   default m4-metal-small
+ *
+ * Plan default updated 2026-06-06: `c2-small-x86` no longer exists in the live
+ * Latitude catalog (GET /plans); `m4-metal-small` is the cheapest in-stock small
+ * metal plan at NYC (hourly billing).
  *
  * It ALWAYS tears the frame down (DESTROY) in a finally, so a failed run never
  * leaks billing. The full "run a coding feature on the frame + watch from the
@@ -30,7 +34,7 @@ const ctx: DeploymentContext = {
 const liveConfig = (): DeploymentConfig => ({
   target: 'latitude',
   region: process.env.LATITUDE_E2E_SITE ?? 'NYC',
-  size: process.env.LATITUDE_E2E_PLAN ?? 'c2-small-x86',
+  size: process.env.LATITUDE_E2E_PLAN ?? 'm4-metal-small',
   provider: { project: process.env.LATITUDE_E2E_PROJECT },
 });
 

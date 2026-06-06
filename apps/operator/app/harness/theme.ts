@@ -4,21 +4,21 @@
  */
 
 export const COLORS = {
-  bg: '#0b0e14',
-  surface: '#0f1420',
-  surfaceRaised: '#111827',
-  surfaceHover: '#1a2332',
-  border: '#1f2937',
-  borderStrong: '#374151',
-  borderSubtle: '#161b26',
+  bg: 'var(--hive-harness-bg, #0b0e14)',
+  surface: 'var(--hive-harness-surface, #0f1420)',
+  surfaceRaised: 'var(--hive-harness-surface-raised, #111827)',
+  surfaceHover: 'var(--hive-harness-surface-hover, #1a2332)',
+  border: 'var(--hive-harness-border, #1f2937)',
+  borderStrong: 'var(--hive-harness-border-strong, #374151)',
+  borderSubtle: 'var(--hive-harness-border-subtle, #161b26)',
 
-  text: '#e5e7eb',
-  textMuted: '#9ca3af',
-  textDim: '#6b7280',
-  textFaint: '#4b5563',
+  text: 'var(--hive-harness-text, #e5e7eb)',
+  textMuted: 'var(--hive-harness-text-muted, #9ca3af)',
+  textDim: 'var(--hive-harness-text-dim, #6b7280)',
+  textFaint: 'var(--hive-harness-text-faint, #4b5563)',
 
-  accent: '#5e6ad2',
-  accentHover: '#7178d8',
+  accent: 'var(--hive-harness-accent, #5e6ad2)',
+  accentHover: 'var(--hive-harness-accent-hover, #7178d8)',
 
   danger: '#7f1d1d',
   dangerBg: '#2a1315',

@@ -1,19 +1,20 @@
 /**
- * Seed the release-gating routines — plan release-gate-ready-branch-2026-06-04.
+ * Seed the release-gating routines — plan release-gate-ready-branch-2026-06-04;
+ * staging→main AUTO-SERVE posture since staging-branch-pipeline-2026-06-06.
  *
- *   - `green-checkpoint` (hourly): advance `ready` to the latest green commit.
- *     ACTIVE by default — it never deploys (FF of `ready` + a broadcast), keeps
- *     `ready` fresh for deliberate deploys, and gives the fleet a continuous
- *     main-is-green signal. Hourly (not every 10 min) respects the shared box.
- *   - `release-trigger` (every 15 min): dispatch the release-manager when `ready`
- *     is ahead of the running release checkout. INACTIVE by default — this IS the
- *     auto-deploy path, and the post-cutover posture (2026-06-05) is
- *     **deploys stay deliberate**: a human (or an explicitly-launched
- *     release-manager) runs `deploy-cli --execute`.
+ *   - `green-checkpoint` (hourly): advance the green pin — the **`main` branch**
+ *     — to the latest green `staging` commit (FF-only + a broadcast). ACTIVE by
+ *     default. Hourly (not every 10 min) respects the shared box; tune the cron
+ *     here if fresher mains are wanted.
+ *   - `release-trigger` (every 15 min): when green `main` is ahead of the
+ *     running release checkout, run the SCRIPTED `deploy-cli --execute` (drain →
+ *     swap → migrate → restart → health-check, auto-rollback). ACTIVE by default
+ *     — the auto-serve decision (D-002): the green gate IS the go/no-go; no
+ *     human/agent in the routine loop.
  *
  * The per-routine defaults above ARE the decided posture. `--active` forces both
- * on (graduating release-trigger once trust is earned, D-010); `--inactive`
- * forces both off. Idempotent (upsert).
+ * on; `--inactive` forces both off (reverting to deliberate deploys). Idempotent
+ * (upsert).
  *
  *   tsx seed-release-routines.ts             # seed the decided posture
  *   tsx seed-release-routines.ts --active    # force both ON
@@ -27,7 +28,8 @@ const SLUG = process.env.RELEASE_ROUTINE_SLUG ?? 'papercup';
 const ROUTINES = [
   // Hourly at :15 — offset from git-sync's every-10-min ticks.
   { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: '0 15 * * * *', activeDefault: true },
-  { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *', activeDefault: false },
+  // ACTIVE: auto-serve (staging-branch-pipeline-2026-06-06 D-002).
+  { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *', activeDefault: true },
 ] as const;
 
 async function main(): Promise<void> {
@@ -59,7 +61,7 @@ async function main(): Promise<void> {
   }
   console.log(
     `[seed-release-routines] seeded for "${SLUG}" (ws=${ws}): ${states.join(', ')}. ` +
-      'Defaults encode the deploys-stay-deliberate posture (green-checkpoint auto-advances `ready`; release-trigger is the owner-gated auto-deploy path).',
+      'Defaults encode the AUTO-SERVE posture (green-checkpoint FFs green `main` from `staging`; release-trigger auto-deploys it to the release checkout).',
   );
 }
 

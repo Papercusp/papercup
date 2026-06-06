@@ -10,7 +10,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
  *     git-sync sync/conflict/error counts, MERGE CONFLICTS, merge-resolver
  *     (opus:xhigh) success rate, green-checkpoint main-is-green rate
  *   - latest git-sync + resolver state, any OPEN merge conflict
- *   - the release-gate deploy gap (main vs `ready` green pin vs deployed :3070)
+ *   - the release-gate deploy gap (`staging` churn vs the green `main` pin vs deployed :3070)
  *   - a recent event timeline
  *
  * Reads the `dev.gitPipeline` sync query (a snapshot wrapped in a 1-element array
@@ -38,6 +38,7 @@ interface WindowSummary {
     notFastForward: number;
     createFailed: number;
   };
+  deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
 }
 interface PipelineEvent {
   id: string;
@@ -274,6 +275,12 @@ export default function GitClient() {
                 tone={w.greenCheckpoint.notGreen > 0 ? 'warn' : 'good'}
                 sub={`${w.greenCheckpoint.notGreen} not-green`}
               />
+              <Stat
+                label="auto-deploys"
+                value={w.deploy.total}
+                tone={w.deploy.failed + w.deploy.rolledBack > 0 ? 'warn' : 'neutral'}
+                sub={`${w.deploy.ok} ok · ${w.deploy.rolledBack} rolled back · ${w.deploy.failed} failed`}
+              />
             </div>
           </section>
 
@@ -334,7 +341,9 @@ export default function GitClient() {
                   {st.deploy.deployedBehindMain === 0 ? (
                     <Pill tone="good">:3070 current</Pill>
                   ) : (
-                    <Pill tone="warn">{st.deploy.deployedBehindMain ?? '?'} behind main</Pill>
+                    <Pill tone="warn">
+                      {st.deploy.deployedBehindMain ?? '?'} behind {st.deploy.integrationBranch}
+                    </Pill>
                   )}
                 </div>
                 <div className="pc-git__kv">
@@ -344,7 +353,9 @@ export default function GitClient() {
                   <span className="pc-git__v mono">{st.deploy.ready?.shortSha ?? '— unset'}</span>
                   <span className="pc-git__k">deployed :3070</span>
                   <span className="pc-git__v mono">{st.deploy.deployed?.shortSha ?? '—'}</span>
-                  <span className="pc-git__k">green pin vs main</span>
+                  <span className="pc-git__k">
+                    {st.deploy.releaseRef} vs {st.deploy.integrationBranch} (untested buffer)
+                  </span>
                   <span className="pc-git__v">
                     {st.deploy.readyBehindMain === 0 ? (
                       <Pill tone="good">caught up</Pill>
@@ -352,7 +363,7 @@ export default function GitClient() {
                       <Pill tone="warn">{st.deploy.readyBehindMain ?? '?'} behind</Pill>
                     )}
                   </span>
-                  <span className="pc-git__k">undeployed (ready→:3070)</span>
+                  <span className="pc-git__k">undeployed ({st.deploy.releaseRef}→:3070)</span>
                   <span className="pc-git__v">{st.deploy.deployedBehindReady ?? '—'}</span>
                 </div>
               </div>
@@ -407,6 +418,13 @@ function eventDetail(e: PipelineEvent): string {
     const parts: string[] = [];
     if (typeof d.candidate === 'string') parts.push(`@${d.candidate}`);
     if (d.green === false) parts.push('not green');
+    return parts.join(' ');
+  }
+  if (e.kind === 'deploy') {
+    const parts: string[] = [];
+    if (typeof d.targetSha === 'string') parts.push(`@${d.targetSha.slice(0, 8)}`);
+    if (typeof d.commits === 'number') parts.push(`${d.commits} commit(s)`);
+    if (typeof d.error === 'string' && d.error) parts.push(d.error.slice(0, 60));
     return parts.join(' ');
   }
   return '';

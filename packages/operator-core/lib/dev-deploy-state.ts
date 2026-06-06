@@ -92,11 +92,16 @@ function resolveConfig(): Pick<
   }
   const parent = path.dirname(integrationRoot);
   const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
+  // staging→main model (staging-branch-pipeline-2026-06-06): the integration
+  // branch (agent firehose) is `staging`; the green pin is the `main` BRANCH.
+  // Field names below predate the rename and read generically: `mainHead` = the
+  // integration branch (staging) HEAD; `ready` = the green pin (main); the
+  // behind-counts are measured against those. Mirrors release-config.ts.
   return {
     integrationRoot,
     releaseRoot,
-    releaseRef: process.env.PAPERCUSP_RELEASE_REF ?? 'ready',
-    integrationBranch: process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'main',
+    releaseRef: process.env.PAPERCUSP_RELEASE_REF ?? 'main',
+    integrationBranch: process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
   };
 }
 

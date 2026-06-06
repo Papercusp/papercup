@@ -14,7 +14,7 @@
 export interface LatitudeServerAttributes {
   /** Project id or slug (required). */
   project: string;
-  /** Plan slug — e.g. `c2-small-x86` (required). Determines VM vs bare metal. */
+  /** Plan slug — e.g. `m4-metal-small` (required). Determines VM vs bare metal. */
   plan: string;
   /** Site code — e.g. `ASH`, `NYC` (required). */
   site: string;

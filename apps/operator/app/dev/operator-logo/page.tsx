@@ -1,179 +1,225 @@
 'use client';
 
-import { useMemo } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
+import {
+  HIVE_BRAND_COLORS,
+  HiveCombMotif,
+  HiveNounIcon,
+  HivePrimaryMark,
+  HiveQueenMark,
+} from '../../_components/HiveVisualIdentity';
 import styles from './logo-lab.module.css';
 
-type CandidateId = 'sentinel' | 'iris' | 'plate';
+const NOUNS = [
+  ['hive', 'Hive', 'Deployable project group'],
+  ['swarm', 'Swarm', 'Live working agents'],
+  ['queen', 'Queen', 'Orchestrator / brain'],
+  ['bee', 'Bee', 'Agent or human member'],
+  ['cell', 'Cell', 'One unit of work'],
+  ['comb', 'Comb', 'Shared library'],
+  ['frame', 'Frame', 'Machine or region'],
+] as const;
 
-const CANDIDATES: Array<{
-  id: CandidateId;
-  name: string;
-  src: string;
-  summary: string;
-  bestFor: string;
-  notes: string[];
-}> = [
-  {
-    id: 'sentinel',
-    name: 'Sentinel Cup',
-    src: '/operator-logo/sentinel.svg',
-    summary: 'Closest to papercusp: the cup silhouette becomes a watchful control orb.',
-    bestFor: 'Best if you want Papercup to feel like the in-house sibling of papercusp itself.',
-    notes: [
-      'Strongest continuity with the existing mascot + wordmark language.',
-      'Reads well as a sidebar badge or avatar chip.',
-      'Feels friendly, but still futuristic enough for the operator shell.',
-    ],
-  },
-  {
-    id: 'iris',
-    name: 'Relay Iris',
-    src: '/operator-logo/iris.svg',
-    summary: 'More control-room / scanning-station. The cup is embedded inside a lens.',
-    bestFor: 'Best if Papercup should feel more tactical, observant, and command-driven.',
-    notes: [
-      'Most futuristic of the three.',
-      'Strong shape for dock bubbles, overlays, and HUD-like status pills.',
-      'Slightly less “papercup mascot” and more “operator subsystem”.',
-    ],
-  },
-  {
-    id: 'plate',
-    name: 'Command Plate',
-    src: '/operator-logo/plate.svg',
-    summary: 'A more app-icon / system-utility direction with a heavier chassis.',
-    bestFor: 'Best if you want Papercup to feel like a persistent product surface, not a character.',
-    notes: [
-      'Strongest desktop / app icon candidate.',
-      'Feels premium and structural on dark chrome.',
-      'Most serious; least mascot-like.',
-    ],
-  },
-];
+const SWATCHES = [
+  ['bg', 'Base', '#0B0E0B'],
+  ['surface', 'Surface', '#12150F'],
+  ['raised', 'Raised', '#1A1A12'],
+  ['text', 'Text', '#FFF8E6'],
+  ['muted', 'Muted', '#B9A982'],
+  ['honey', 'Honey', HIVE_BRAND_COLORS.honey],
+  ['honeyStrong', 'Honey strong', HIVE_BRAND_COLORS.honeyStrong],
+  ['good', 'Success', '#34D399'],
+  ['warn', 'Warning', '#F6B72F'],
+  ['bad', 'Danger', '#FB7185'],
+] as const;
+
+type PreviewMode = 'identity' | 'icons' | 'motif';
 
 export default function OperatorLogoLabPage() {
-  const [candidateId, setCandidateId] = useQueryState(
-    'candidate',
-    parseAsStringEnum<CandidateId>(['sentinel', 'iris', 'plate']).withDefault('sentinel'),
-  );
-
-  const active = useMemo(
-    () => CANDIDATES.find((candidate) => candidate.id === candidateId) ?? CANDIDATES[0],
-    [candidateId],
+  const [mode, setMode] = useQueryState(
+    'mode',
+    parseAsStringEnum<PreviewMode>(['identity', 'icons', 'motif']).withDefault('identity'),
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.hero}>
-        <div>
-          <div className={styles.eyebrow}>Papercup logo lab</div>
-          <h1 className={styles.title}>Three Papercup logo directions</h1>
-          <p className={styles.subtitle}>
-            These are intentionally aligned to the papercusp palette: dark metallic shell,
-            cyan control-light, and a cup/cusp reference so Operator still feels like part of
-            the same family.
+    <div className={styles.page} data-theme="hive">
+      <section className={styles.hero}>
+        <div className={styles.heroCopy}>
+          <div className={styles.eyebrow}>Papercusp visual identity</div>
+          <h1>The Hive system</h1>
+          <p>
+            A flag-gated visual layer for Papercusp: engineered hex geometry,
+            honey-amber signal color, and a Queen focal mark for the orchestrator.
           </p>
-        </div>
-        <div className={styles.heroMeta}>
-          <div>
-            <span className={styles.metaLabel}>Route</span>
-            <code>/dev/operator-logo</code>
+          <div className={styles.segmented} role="tablist" aria-label="Hive logo lab sections">
+            {(['identity', 'icons', 'motif'] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={mode === item}
+                className={mode === item ? styles.segmentActive : undefined}
+                onClick={() => setMode(item)}
+              >
+                {item}
+              </button>
+            ))}
           </div>
-          <div>
-            <span className={styles.metaLabel}>Selected</span>
-            <strong>{active.name}</strong>
-          </div>
         </div>
-      </div>
+        <div className={styles.heroMark} aria-label="Queen mark preview">
+          <HiveQueenMark decorative={false} />
+        </div>
+      </section>
 
-      <div className={styles.layout}>
-        <section className={styles.gallery}>
-          {CANDIDATES.map((candidate) => (
-            <button
-              key={candidate.id}
-              type="button"
-              onClick={() => setCandidateId(candidate.id)}
-              className={`${styles.card} ${candidate.id === active.id ? styles.cardActive : ''}`}
-            >
-              <div className={styles.cardPreview}>
-                <img src={candidate.src} alt={candidate.name} className={styles.cardLogo} />
-              </div>
-              <div className={styles.cardBody}>
-                <div className={styles.cardTopline}>
-                  <strong>{candidate.name}</strong>
-                  {candidate.id === active.id && <span className={styles.activePill}>Selected</span>}
-                </div>
-                <p>{candidate.summary}</p>
-              </div>
-            </button>
+      {mode === 'identity' ? <IdentityPanel /> : null}
+      {mode === 'icons' ? <IconsPanel /> : null}
+      {mode === 'motif' ? <MotifPanel /> : null}
+    </div>
+  );
+}
+
+function IdentityPanel() {
+  return (
+    <div className={styles.grid}>
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>Primary mark</span>
+          <code>primary-mark.svg</code>
+        </div>
+        <div className={styles.bigMark}><HivePrimaryMark /></div>
+        <p>Use for product-level Hive surfaces, empty states, release notes, and hero compositions.</p>
+      </section>
+
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>Queen mark</span>
+          <code>queen-mark.svg</code>
+        </div>
+        <div className={styles.bigMark}><HiveQueenMark /></div>
+        <p>Use for the operator/orchestrator avatar and app-icon contexts. This is the signature mark.</p>
+      </section>
+
+      <section className={`${styles.panel} ${styles.wide}`}>
+        <div className={styles.panelHeader}>
+          <span>Wordmark lockup</span>
+          <code>Papercusp · The Hive</code>
+        </div>
+        <div className={styles.wordmarkCard}>
+          <img src="/brand/the-hive/wordmark-lockup.svg" alt="Papercusp The Hive lockup" />
+        </div>
+      </section>
+
+      <section className={`${styles.panel} ${styles.wide}`}>
+        <div className={styles.panelHeader}>
+          <span>Color system</span>
+          <code>design-tokens/hive.semantic.tokens.json</code>
+        </div>
+        <div className={styles.swatches}>
+          {SWATCHES.map(([id, label, value]) => (
+            <div key={id} className={styles.swatch}>
+              <span className={styles.swatchChip} style={{ background: value }} />
+              <strong>{label}</strong>
+              <code>{value}</code>
+            </div>
           ))}
-        </section>
+        </div>
+      </section>
+    </div>
+  );
+}
 
-        <section className={styles.detailPanel}>
-          <div className={styles.detailHeader}>
-            <div className={styles.detailHeroLogoWrap}>
-              <img src={active.src} alt={active.name} className={styles.detailHeroLogo} />
+function IconsPanel() {
+  return (
+    <div className={styles.grid}>
+      <section className={`${styles.panel} ${styles.wide}`}>
+        <div className={styles.panelHeader}>
+          <span>Lexicon iconography</span>
+          <code>/brand/the-hive/icons/*.svg</code>
+        </div>
+        <div className={styles.nounGrid}>
+          {NOUNS.map(([kind, label, description]) => (
+            <div key={kind} className={styles.nounCard}>
+              <HiveNounIcon kind={kind} className={styles.nounIcon} />
+              <strong>{label}</strong>
+              <span>{description}</span>
             </div>
-            <div className={styles.detailCopy}>
-              <div className={styles.eyebrow}>Active concept</div>
-              <h2>{active.name}</h2>
-              <p>{active.summary}</p>
-              <p className={styles.bestFor}>{active.bestFor}</p>
-              <a href={active.src} target="_blank" rel="noreferrer" className={styles.downloadLink}>
-                Open SVG
-              </a>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>App icon</span>
+          <code>512 / 256 / 128 / 32</code>
+        </div>
+        <div className={styles.iconScale}>
+          {[128, 64, 32, 16].map((size) => (
+            <div key={size} className={styles.iconScaleItem}>
+              <img src="/brand/the-hive/favicon.svg" alt="" style={{ width: size, height: size }} />
+              <span>{size}px</span>
             </div>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>Monochrome</span>
+          <code>currentColor</code>
+        </div>
+        <div className={styles.monoRow}>
+          <HivePrimaryMark monochrome />
+          <HiveQueenMark monochrome />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MotifPanel() {
+  return (
+    <div className={styles.grid}>
+      <section className={`${styles.panel} ${styles.wide}`}>
+        <div className={styles.panelHeader}>
+          <span>Comb motif</span>
+          <code>backgrounds / dividers / loading</code>
+        </div>
+        <div className={styles.motifHero}>
+          <HiveCombMotif />
+          <div>
+            <strong>Geometry as system</strong>
+            <span>Keep the hex grid aligned to layout and low-contrast; it should feel structural, not decorative.</span>
           </div>
+        </div>
+      </section>
 
-          <div className={styles.contextGrid}>
-            <div className={styles.contextCard}>
-              <div className={styles.contextLabel}>Sidebar badge</div>
-              <div className={styles.badgeMock}>
-                <div className={styles.badgeIconWrap}>
-                  <img src={active.src} alt="" className={styles.badgeIcon} />
-                </div>
-                <div>
-                  <div className={styles.badgeTitle}>Papercup</div>
-                  <div className={styles.badgeHint}>Workspace assistant</div>
-                </div>
-              </div>
-            </div>
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>Swarm loading</span>
+          <code>waggle optional</code>
+        </div>
+        <div className={styles.swarmLoader} aria-label="Swarm loading state preview">
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        <p>Use staggered movement for live agent activity; avoid random jitter.</p>
+      </section>
 
-            <div className={styles.contextCard}>
-              <div className={styles.contextLabel}>Dock / floating icon</div>
-              <div className={styles.orbMock}>
-                <img src={active.src} alt="" className={styles.orbIcon} />
-              </div>
-            </div>
-
-            <div className={styles.contextCard}>
-              <div className={styles.contextLabel}>App icon / tile</div>
-              <div className={styles.tileMock}>
-                <img src={active.src} alt="" className={styles.tileIcon} />
-              </div>
-            </div>
-
-            <div className={styles.contextCard}>
-              <div className={styles.contextLabel}>Header chip</div>
-              <div className={styles.headerMock}>
-                <img src={active.src} alt="" className={styles.headerIcon} />
-                <span>Papercup</span>
-                <span className={styles.headerStatus}>active</span>
-              </div>
-            </div>
-          </div>
-
-          <div className={styles.notesPanel}>
-            <div className={styles.contextLabel}>Why this direction works</div>
-            <ul>
-              {active.notes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      </div>
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <span>Do / Don't</span>
+          <code>usage rules</code>
+        </div>
+        <div className={styles.rules}>
+          <strong>Do</strong>
+          <span>Use charcoal fields, honey signal, precise hex alignment.</span>
+          <strong>Don't</strong>
+          <span>Use cartoon bees, yellow-on-white, or decorative honeycomb wallpaper.</span>
+        </div>
+      </section>
     </div>
   );
 }

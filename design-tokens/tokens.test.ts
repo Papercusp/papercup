@@ -139,6 +139,42 @@ describe('design tokens — black theme variant ([data-theme="black"])', () => {
   });
 });
 
+describe('design tokens — Hive theme variant ([data-theme="hive"])', () => {
+  const hive = loadTokens('design-tokens/hive.semantic.tokens.json');
+  const hiveCss = loadCss('apps/operator/app/_semantic.hive.css');
+  const baseSemantic = loadTokens('design-tokens/desktop.semantic.tokens.json');
+  const baseMotion = loadTokens('design-tokens/desktop.motion.tokens.json');
+  const allowed = new Set(
+    [...Object.keys(baseSemantic), ...Object.keys(baseMotion)].map((k) =>
+      k.replace(/^motion-/, '').replace(/^shadow-/, '').replace(/^overlay-/, ''),
+    ),
+  );
+
+  test('every Hive token is emitted into _semantic.hive.css with a resolved value', () => {
+    expect(Object.keys(hive).length).toBeGreaterThan(0);
+    for (const key of Object.keys(hive)) {
+      const cssKey = key.replace(/^hive-/, '');
+      expect(hiveCss, `Hive token "${cssKey}" not emitted`).toHaveProperty(cssKey);
+      expect(hiveCss[cssKey]).not.toMatch(/^\{/);
+    }
+  });
+
+  test('the generated block is scoped to [data-theme="hive"], not :root', () => {
+    const css = readFileSync(join(REPO, 'apps/operator/app/_semantic.hive.css'), 'utf8');
+    expect(css).toContain('[data-theme="hive"]');
+    expect(css).not.toMatch(/:root\s*\{/);
+  });
+
+  test('THEME CONTRACT — Hive only overrides base semantic tokens (never primitives/invented names)', () => {
+    for (const cssKey of Object.keys(hiveCss)) {
+      expect(
+        allowed.has(cssKey),
+        `Hive overrides "--${cssKey}", which is not a base semantic token — themes may only override the high (semantic) layer`,
+      ).toBe(true);
+    }
+  });
+});
+
 describe('design tokens — frost is explicitly scopable ([data-theme="frost"])', () => {
   // Frost is the :root default; the scoped block lets a subtree render frost under
   // another active theme (preview swatches). It must carry the SAME color tokens

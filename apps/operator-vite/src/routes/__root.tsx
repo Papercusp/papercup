@@ -22,6 +22,7 @@ import GlobalFindInPage from '@/app/_components/GlobalFindInPage';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
+import { HiveThemeBridge } from '@/app/_components/HiveThemeBridge';
 import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
@@ -141,6 +142,7 @@ function RootComponent() {
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
                     <PostHogProvider>
+                      <HiveThemeBridge />
                       {/* Global chrome — header/navbar, left operator-chat
                           sidebar, Oracle dock. Renders before <main>,
                           mirroring the Next operator's layout.tsx.
@@ -199,5 +201,4 @@ function RootComponent() {
     </Tooltip.Provider>
   );
 }
-
 

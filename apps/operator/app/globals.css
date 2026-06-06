@@ -88,6 +88,25 @@
    */
 }
 
+[data-theme="hive"] {
+  /* Legacy harness dashboard tables still consume JS color constants. These
+   * vars let the Hive skin retune those inline styles without changing the
+   * classic Linear-indigo fallbacks in app/harness/theme.ts. */
+  --hive-harness-bg: var(--bg-deepest);
+  --hive-harness-surface: var(--bg);
+  --hive-harness-surface-raised: var(--bg-raised);
+  --hive-harness-surface-hover: var(--bg-3);
+  --hive-harness-border: var(--border);
+  --hive-harness-border-strong: var(--border-strong);
+  --hive-harness-border-subtle: color-mix(in srgb, var(--border), transparent 34%);
+  --hive-harness-text: var(--fg);
+  --hive-harness-text-muted: var(--fg-mute);
+  --hive-harness-text-dim: var(--fg-dim);
+  --hive-harness-text-faint: color-mix(in srgb, var(--fg-mute), transparent 46%);
+  --hive-harness-accent: var(--accent);
+  --hive-harness-accent-hover: var(--accent-strong);
+}
+
 /* ── Reusable Radix / shared motion primitives ────────────────────────
  * Apply by adding `data-anim="pop"` (or `slide-up`, `slide-down`,
  * `slide-right`, `fade`, `lift`) to any element whose primitive exposes
