@@ -10,14 +10,23 @@ import { execFileSync } from 'node:child_process';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import type { DeploymentConfig, FrameBootstrapInput } from '@papercusp/deployment-driver';
 
-/** Resolve a credentialRef to a local file path (or undefined for non-file refs). */
-export function resolveCredentialPath(ref: string | undefined): string | undefined {
-  if (!ref) return undefined;
-  if (ref.startsWith('file:')) return ref.slice(5);
-  if (ref.startsWith('/')) return ref;
-  if (ref.startsWith('~')) return ref.replace(/^~/, process.env.HOME ?? '~');
-  // `env:NAME` / bare names refer to the API key, not a per-frame credentials FILE.
-  return undefined;
+/** Resolve a credentialRef to the frame-credential channel it names:
+ *  - `token:<path>` — a long-lived OAuth token FILE (`claude setup-token` output),
+ *    staged on the frame + exported as `CLAUDE_CODE_OAUTH_TOKEN`. The automated
+ *    channel: one interactive mint (~1-year validity), no refresh-rotation races.
+ *  - `file:<path>` / absolute / `~` — a `.credentials.json` bundle installed to
+ *    the frame's `~/.claude/` (the interactive-login channel).
+ *  - `env:NAME` / bare names — the provider API key, not a frame credential → {}.
+ */
+export function resolveCredential(
+  ref: string | undefined,
+): Pick<FrameBootstrapInput, 'credentialsLocalPath' | 'oauthTokenLocalPath'> {
+  if (!ref) return {};
+  const expand = (p: string) => (p.startsWith('~') ? p.replace(/^~/, process.env.HOME ?? '~') : p);
+  if (ref.startsWith('token:')) return { oauthTokenLocalPath: expand(ref.slice(6)) };
+  if (ref.startsWith('file:')) return { credentialsLocalPath: expand(ref.slice(5)) };
+  if (ref.startsWith('/') || ref.startsWith('~')) return { credentialsLocalPath: expand(ref) };
+  return {};
 }
 
 export async function buildDeployBootstrapInput(
@@ -72,7 +81,7 @@ export async function buildDeployBootstrapInput(
     services: env?.services,
     ports: env?.ports,
     env: env?.env,
-    credentialsLocalPath: resolveCredentialPath(config.credentialRef),
+    ...resolveCredential(config.credentialRef),
     instanceConfigJson,
   };
 }

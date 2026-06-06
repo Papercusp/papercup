@@ -72,8 +72,15 @@ OVERLAY_CODEX="${PROMPTS_DIR}/papercusp-su.codex.md"
 # Splice a client overlay into the base playbook at the marker. Falls
 # back to appending if the marker is absent, or to base-only if the
 # overlay file is missing. One source of truth for the shared base.
+#
+# GENERATED-section markers (WIRE-SCHEMAS / COORD-LEGEND / WORKSPACE-MAP)
+# are rendered by the TS path (renderSuPlaybook) only — this shell path has
+# no renderer, so it STRIPS any remaining PAPERCUSP-SU:* markers rather than
+# shipping them literally. (The installer-written ~/.papercusp playbooks are
+# the vestigial fallback; psu launches render fresh via the TS path.)
 render_playbook() {
   python3 - "$1" "$2" "$3" <<'PYEOF'
+import re
 import sys
 base_path, overlay_path, dest_path = sys.argv[1], sys.argv[2], sys.argv[3]
 marker = "<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->"
@@ -85,6 +92,7 @@ try:
 except FileNotFoundError:
     overlay = ""
 out = base.replace(marker, overlay) if marker in base else base.rstrip("\n") + "\n\n" + overlay + "\n"
+out = re.sub(r"<!-- PAPERCUSP-SU:[A-Z-]+ -->\n?", "", out)
 with open(dest_path, "w") as f:
     f.write(out)
 PYEOF

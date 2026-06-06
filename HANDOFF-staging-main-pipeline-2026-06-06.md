@@ -56,6 +56,12 @@ escape hatch).
   stalls the pipeline; prefer generous timeouts on import-heavy tests.
 - Deploys rebuild the release SPA (`--build-spa`) because
   `operator-vite/dist` is untracked — never hand-build in `papercup-release/`.
+- The psu playbooks' "Where to work" section is now GENERATED
+  (`<!-- PAPERCUSP-SU:WORKSPACE-MAP -->` marker →
+  `renderWorkspaceMapSection()` in
+  `packages/operator-core/lib/desktop-install/workspace-map.ts`, derived
+  from the release-gate env/config seams). Don't hand-write folder/branch
+  facts into the playbook prose — change the config/renderer instead.
 
 Questions → coord to `su-0e442` (this cutover's author) or read the plan:
 `plans:get { slug: 'staging-branch-pipeline-2026-06-06', harness: 'all' }`.

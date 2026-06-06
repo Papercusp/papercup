@@ -34,6 +34,17 @@ export const WIRE_SCHEMAS_MARKER = '<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->';
 export const COORD_LEGEND_MARKER = '<!-- PAPERCUSP-SU:COORD-LEGEND -->';
 
 /**
+ * Marker for the generated "Where to work" workspace map
+ * (staging-branch-pipeline-2026-06-06) — the canonical working tree + its
+ * branch, and the do-not-touch pipeline-artifact siblings (release/checkpoint
+ * checkouts). Rendered by `renderWorkspaceMapSection()` from the SAME env
+ * seams as `release-config.ts`/`dev-deploy-state.ts`, so when branches or
+ * paths change (it happened 2026-06-06: main→staging) the prompt follows the
+ * config instead of drifting hand-written prose. Same splice contract.
+ */
+export const WORKSPACE_MAP_MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

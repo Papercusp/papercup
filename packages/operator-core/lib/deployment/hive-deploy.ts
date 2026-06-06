@@ -275,11 +275,11 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
       return teardownHarness(slug, workspaceId, defaultDeployDeps(log));
     },
     async deployControlFrame(hiveId, workspaceId, deployment) {
-      const { resolveCredentialPath } = await import('./bootstrap-input');
+      const { resolveCredential } = await import('./bootstrap-input');
       const driver = resolveDeploymentDriver(deployment);
       const ctx: DeploymentContext = {
         ...ctxFor(hiveId, workspaceId),
-        bootstrap: { controlNode: true, credentialsLocalPath: resolveCredentialPath(deployment.credentialRef) },
+        bootstrap: { controlNode: true, ...resolveCredential(deployment.credentialRef) },
       };
       const frame = await driver.provision(deployment, ctx);
       await persistControlFrame(hiveId, workspaceId, frame);

@@ -158,6 +158,23 @@ describe('installPapercuspFiles', () => {
     expect(playbook).toContain('## Tail');
   });
 
+  it('splices the GENERATED workspace map at its marker (staging-branch-pipeline-2026-06-06)', async () => {
+    const MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n${MARKER}\n\n## Tail\n`,
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+
+    expect(playbook).not.toContain(MARKER); // literal marker never ships
+    // Config-derived content (resolveWorkspaceMapConfig env/git seams):
+    expect(playbook).toContain('Where to work');
+    expect(playbook).toContain('automation-only');
+    expect(playbook).toContain('## Tail');
+  });
+
   it('resolveInstallPaths returns expected layout', () => {
     const p = resolveInstallPaths('/tmp/somehome');
     expect(p.papercuspDir).toBe('/tmp/somehome/.papercusp');

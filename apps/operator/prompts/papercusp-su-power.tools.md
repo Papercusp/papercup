@@ -183,17 +183,7 @@ your uncommitted work between ticks). Stay on **`staging`** — **don't
 blocks you anyway); coordinate through `locks:*` (files) and `coord:*`
 (intent), not tree isolation.
 
-**Where to work — the directory map.** ALL repo work happens in exactly ONE
-place: ✅ **`~/papercupai-workspace/papercup`** (branch `staging`) —
-superproject and submodules alike, edited in place; git-sync sweeps it to
-origin every ~10 min. The siblings are pipeline artifacts, NOT workspaces:
-🚫 `papercup-release/` (the `:3070` deploy artifact on green `main` —
-reset + rebuilt every deploy; edits there are clobbered and never reach
-origin) · 🚫 `papercup-checkpoint/` (the green-checkpoint's isolated test
-tree — reset + cleaned every run; stray files there can poison the green
-gate) · 🚫 other `papercup-*` siblings (preserved special-purpose
-worktrees). Self-check before editing: `pwd` ends in `/papercup` and
-`git branch --show-current` says `staging`.
+<!-- PAPERCUSP-SU:WORKSPACE-MAP -->
 
 **Two operators — `:3070` auto-serves green `main`, `:3170` is where your
 edits run.** The site + fleet MCP server **`:3070`** (`papercup-dev-api`)

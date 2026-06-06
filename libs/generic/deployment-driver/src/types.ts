@@ -115,6 +115,11 @@ export interface FrameBootstrapInput {
   env?: Record<string, string>;
   /** Local path to the credential bundle to stage on the frame (e.g. a Claude sub). */
   credentialsLocalPath?: string;
+  /** Local path to a long-lived OAuth token file (`claude setup-token` output) to
+   *  stage on the frame and export as `CLAUDE_CODE_OAUTH_TOKEN` — the headless
+   *  alternative to a `.credentials.json` bundle (no refresh-rotation races,
+   *  ~1-year validity, one interactive mint instead of per-expiry logins). */
+  oauthTokenLocalPath?: string;
   /** The harness's per-install INSTANCE config as JSON — delivered to the frame's
    *  runtime via the `HARNESS_CONFIG_JSON` env-transport (the frame has no local
    *  config.json file). Host-assembled from workspace PG. */

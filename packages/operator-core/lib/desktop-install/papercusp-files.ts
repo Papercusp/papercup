@@ -18,7 +18,8 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER } from './splice-tooling-overlay';
+import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
 
@@ -154,6 +155,7 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   const overlay = await readAgentOverlay(baseSrc, 'omp');
   let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
+  out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
   await fs.writeFile(dst, out, { mode: 0o644 });
   await fs.chmod(dst, 0o644);
   return true;
@@ -316,6 +318,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     WIRE_SCHEMAS_MARKER,
     renderWireSchemasSection(),
   );
-  const text = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
+  const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
+  const text = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
   return { text, baseSource, overlaySource };
 }
