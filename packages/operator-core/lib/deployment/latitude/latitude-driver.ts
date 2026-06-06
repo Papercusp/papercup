@@ -34,6 +34,13 @@ const READY_STATUSES = new Set(['on', 'active', 'ready', 'running']);
 /** Latitude statuses that mean provisioning failed (stop polling, throw). */
 const FAILED_STATUSES = new Set(['failed', 'error', 'deleted']);
 
+/** VM statuses (capitalized in the VM API — live-verified 2026-06-06). */
+const VM_READY = new Set(['Running']);
+const VM_FAILED = new Set(['Destroying', 'Failed', 'Error']);
+/** SSH lands on `ubuntu` on the default VM image (root login disabled). */
+const VM_DEFAULT_SSH_USER = 'ubuntu';
+const DEFAULT_VM_PLAN = 'vm.small';
+
 const DEFAULT_OS = 'ubuntu_22_04_x64_lts';
 
 export interface LatitudeDriverDeps {
@@ -127,6 +134,64 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
 
     async provision(config, ctx): Promise<Frame> {
       const client = clientFor(config);
+
+      // ── VM path (kind:'vm') — POST /virtual_machines. Live-verified 2026-06-06:
+      // Running in ~16s (vs a 15-25 min metal reimage), key injected for `ubuntu`,
+      // passwordless sudo. The default cloud target; metal is for KVM-needing work.
+      if (config.kind === 'vm') {
+        const provider = (config.provider ?? {}) as Record<string, unknown>;
+        const planRef = config.size?.trim() || (provider.plan as string | undefined)?.trim() || DEFAULT_VM_PLAN;
+        // Create wants the plan ID — a human name ('vm.small') 404s. Resolve names.
+        let planId = planRef;
+        if (!planRef.startsWith('plan_')) {
+          const plans = await client.listVmPlans();
+          const match = plans.find((p) => p.name === planRef);
+          if (!match) {
+            throw new Error(
+              `LatitudeDriver.provision: unknown VM plan '${planRef}'. Known: ${plans.map((p) => p.name).join(', ')}`,
+            );
+          }
+          planId = match.id;
+        }
+        const project = (provider.project as string | undefined)?.trim();
+        if (!project) throw new Error('LatitudeDriver.provision: deployment config is missing provider.project');
+        log(ctx, 'info', `creating VM (plan=${planRef}, project=${project})`);
+        const created = await client.createVm({
+          name: (provider.hostname as string | undefined) ?? `papercusp-${ctx.harnessSlug}`,
+          plan: planId,
+          project,
+          ssh_keys: provider.sshKeys as string[] | undefined,
+          operating_system: provider.operatingSystem as string | undefined,
+        });
+        log(ctx, 'info', `vm ${created.id} created (status=${created.status}); waiting for Running`);
+        const deadline = Date.now() + pollTimeoutMs;
+        let vm = await client.getVm(created.id); // never trust the create echo
+        while (!(VM_READY.has(vm.status) && vm.primary_ipv4)) {
+          if (VM_FAILED.has(vm.status)) {
+            throw new Error(`LatitudeDriver.provision: vm ${vm.id} entered status '${vm.status}'`);
+          }
+          if (ctx.signal?.aborted) throw new Error('LatitudeDriver.provision: aborted');
+          if (Date.now() >= deadline) {
+            throw new Error(
+              `LatitudeDriver.provision: vm ${vm.id} not Running after ${Math.round(pollTimeoutMs / 1000)}s ` +
+                `(last status '${vm.status}', ip=${vm.primary_ipv4 ?? 'none'})`,
+            );
+          }
+          await sleep(pollIntervalMs);
+          vm = await client.getVm(vm.id);
+        }
+        log(ctx, 'info', `vm ${vm.id} Running at ${vm.primary_ipv4} (ssh user: ${vm.sshUser ?? VM_DEFAULT_SSH_USER})`);
+        return {
+          id: vm.id,
+          target: 'latitude',
+          placement: 'remote',
+          host: vm.primary_ipv4,
+          kind: 'vm',
+          region: config.region,
+          meta: { planId, sshUser: vm.sshUser ?? VM_DEFAULT_SSH_USER },
+        };
+      }
+
       let attrs = toLatitudeAttributes(config, ctx);
       log(ctx, 'info', `creating server (plan=${attrs.plan}, site=${attrs.site}, os=${attrs.operating_system})`);
 
@@ -192,6 +257,41 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
 
     async teardown(frame, config, ctx): Promise<void> {
       const client = clientFor(config);
+
+      // ── VM teardown (id prefix is the reliable discriminator). Same confirm-gone
+      // discipline as metal; 'Destroying' is the in-flight state, 404 is gone.
+      if (frame.id.startsWith('vm_')) {
+        log(ctx, 'info', `destroying vm ${frame.id} (teardown = DESTROY → ends billing)`);
+        const isGone = async (): Promise<boolean> => {
+          try {
+            await client.getVm(frame.id);
+            return false;
+          } catch (e) {
+            if (e instanceof LatitudeApiError && (e.status === 404 || e.status === 410)) return true;
+            throw e;
+          }
+        };
+        const vmDeadline = Date.now() + teardownTimeoutMs;
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await client.deleteVm(frame.id);
+          } catch (e) {
+            if (!(e instanceof LatitudeApiError && (e.status === 404 || e.status === 410))) throw e;
+          }
+          if (await isGone()) break;
+          if (Date.now() >= vmDeadline) {
+            throw new Error(
+              `LatitudeDriver.teardown: vm ${frame.id} still exists after ${attempt} DELETE attempt(s) ` +
+                `over ${Math.round(teardownTimeoutMs / 1000)}s — it may still be BILLING; destroy it manually.`,
+            );
+          }
+          log(ctx, 'warn', `vm ${frame.id} still present after DELETE (attempt ${attempt}); re-confirming`);
+          await sleep(pollIntervalMs);
+        }
+        log(ctx, 'info', `vm ${frame.id} destroyed (confirmed gone)`);
+        return;
+      }
+
       log(ctx, 'info', `destroying server ${frame.id} (teardown = DESTROY → ends billing)`);
 
       // Latitude can ACCEPT a DELETE (204) against an in-flight deploy without

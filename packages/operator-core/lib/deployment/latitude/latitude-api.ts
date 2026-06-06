@@ -73,12 +73,48 @@ export function pickInStockSite(
   return preferred.find((s) => stock.includes(s)) ?? stock[0];
 }
 
+/** Attributes for `POST /virtual_machines` (live-verified 2026-06-06). NOTE: the
+ *  `plan` must be the plan ID (`plan_…`) — the human name (`vm.small`) 404s. */
+export interface LatitudeVmAttributes {
+  name: string;
+  /** Plan ID (`plan_…`). Resolve a human name via `listVmPlans()`. */
+  plan: string;
+  project: string;
+  ssh_keys?: string[];
+  /** OS slug; the API defaults to ubuntu-24-04 for CPU plans. */
+  operating_system?: string;
+}
+
+/** Normalized VM view. VM statuses are capitalized (`Running`, `Starting`, …) and
+ *  SSH lands on the `ubuntu` user (root login is disabled on the default image). */
+export interface LatitudeVm {
+  id: string;
+  /** `Scheduling` | `Scheduled` | `Starting` | `Configuring network` | `Running` | `Destroying`. */
+  status: string;
+  primary_ipv4?: string;
+  /** From the API's credentials object when present (observed null while starting). */
+  sshUser?: string;
+  raw?: unknown;
+}
+
+/** A VM plan (id + human name + live stock level). */
+export interface LatitudeVmPlan {
+  id: string;
+  name: string;
+  stockLevel?: string;
+}
+
 export interface LatitudeApiClient {
   createServer(attrs: LatitudeServerAttributes): Promise<LatitudeServer>;
   getServer(id: string): Promise<LatitudeServer>;
   deleteServer(id: string): Promise<void>;
   /** Live plan→stock catalog (for in-stock site selection before a create). */
   listPlans(): Promise<LatitudePlanStock[]>;
+  /** VM plans (id + name) — needed because create wants the plan ID, not the name. */
+  listVmPlans(): Promise<LatitudeVmPlan[]>;
+  createVm(attrs: LatitudeVmAttributes): Promise<LatitudeVm>;
+  getVm(id: string): Promise<LatitudeVm>;
+  deleteVm(id: string): Promise<void>;
 }
 
 type FetchLike = (url: string, init?: {
@@ -86,6 +122,20 @@ type FetchLike = (url: string, init?: {
   headers?: Record<string, string>;
   body?: string;
 }) => Promise<{ status: number; json(): Promise<unknown>; text(): Promise<string> }>;
+
+/** Flatten a JSON:API VM response (status capitalized; credentials may be null). */
+function parseVm(json: unknown): LatitudeVm {
+  const data = (json as { data?: Record<string, unknown> } | null)?.data ?? {};
+  const attrs = (data.attributes as Record<string, unknown> | undefined) ?? {};
+  const creds = attrs.credentials as { username?: string } | null | undefined;
+  return {
+    id: String(data.id ?? ''),
+    status: String(attrs.status ?? 'unknown'),
+    primary_ipv4: attrs.primary_ipv4 as string | undefined,
+    sshUser: creds?.username,
+    raw: data,
+  };
+}
 
 /** Flatten a JSON:API `{ data: { id, attributes } }` server response. */
 function parseServer(json: unknown): LatitudeServer {
@@ -155,6 +205,46 @@ export function createLatitudeApiClient(opts: {
           inStock: regions.flatMap((r) => r.locations?.in_stock ?? []),
         };
       });
+    },
+    async listVmPlans() {
+      const res = await fetchImpl(`${baseUrl}/plans/virtual_machines`, { headers });
+      const json = await res.json().catch(() => null);
+      if (res.status !== 200) throw new LatitudeApiError('listVmPlans', res.status, json);
+      const data = (json as { data?: Array<Record<string, unknown>> } | null)?.data ?? [];
+      return data.map((p) => {
+        const attrs = (p.attributes as Record<string, unknown> | undefined) ?? {};
+        return {
+          id: String(p.id ?? ''),
+          name: String(attrs.name ?? ''),
+          stockLevel: attrs.stock_level as string | undefined,
+        };
+      });
+    },
+    async createVm(attrs) {
+      const res = await fetchImpl(`${baseUrl}/virtual_machines`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ data: { type: 'virtual_machines', attributes: attrs } }),
+      });
+      const json = await res.json().catch(() => null);
+      if (res.status !== 201 && res.status !== 200) throw new LatitudeApiError('createVm', res.status, json);
+      return parseVm(json);
+    },
+    async getVm(id) {
+      const res = await fetchImpl(`${baseUrl}/virtual_machines/${encodeURIComponent(id)}`, { headers });
+      const json = await res.json().catch(() => null);
+      if (res.status !== 200) throw new LatitudeApiError('getVm', res.status, json);
+      return parseVm(json);
+    },
+    async deleteVm(id) {
+      const res = await fetchImpl(`${baseUrl}/virtual_machines/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (res.status !== 200 && res.status !== 204) {
+        const body = await res.text().catch(() => '');
+        throw new LatitudeApiError('deleteVm', res.status, body);
+      }
     },
   };
 }

@@ -13,12 +13,14 @@ import type { DeploymentConfig, DeploymentContext, Frame } from '@papercusp/depl
 import { buildFrameBootstrap } from './frame-bootstrap';
 import { createSshRemoteExec, type RemoteExec } from './remote-exec';
 
-/** Where the per-frame Claude credentials are staged on the frame before bootstrap. */
-export const REMOTE_CRED_PATH = '/root/papercusp-claude-credentials.json';
+/** Staging paths live in /tmp — the login user may be non-root (Latitude VMs land
+ *  on `ubuntu`; scp can't write /root). scp preserves the local file mode, so the
+ *  0600 token stays 0600; the sudo bootstrap then installs to root's home. */
+export const REMOTE_CRED_PATH = '/tmp/papercusp-claude-credentials.json';
 /** Where the per-frame long-lived OAuth token (`claude setup-token`) is staged. */
-export const REMOTE_TOKEN_PATH = '/root/papercusp-claude-token';
+export const REMOTE_TOKEN_PATH = '/tmp/papercusp-claude-token';
 /** Where the operator-packed runtime tarball is staged (private-repo delivery). */
-export const REMOTE_RUNTIME_TARBALL_PATH = '/root/papercusp-runtime.tgz';
+export const REMOTE_RUNTIME_TARBALL_PATH = '/tmp/papercusp-runtime.tgz';
 
 export interface FrameInstallerDeps {
   /** Build the RemoteExec for a frame. Injected for tests; default = SSH. */
@@ -60,10 +62,16 @@ export async function waitForSsh(
 export function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
   const provider = (config.provider ?? {}) as Record<string, unknown>;
   if (!frame.host) throw new Error('installFrame: frame has no host/IP to SSH to');
+  // The frame can carry its own ssh user (Latitude VMs land on `ubuntu` — root is
+  // disabled); an explicit provider.sshUser still overrides. Non-root logins run
+  // the bootstrap under sudo (passwordless on the default images).
+  const user =
+    (provider.sshUser as string | undefined) ?? (frame.meta?.sshUser as string | undefined) ?? 'root';
   return createSshRemoteExec({
     host: frame.host,
-    user: (provider.sshUser as string | undefined) ?? 'root',
+    user,
     identityFile: provider.sshIdentityFile as string | undefined,
+    sudo: user !== 'root',
   });
 }
 

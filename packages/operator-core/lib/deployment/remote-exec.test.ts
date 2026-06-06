@@ -57,6 +57,14 @@ describe('createSshRemoteExec', () => {
     expect(calls[0].stdin).toBe('echo hi');
   });
 
+  it('sudo target runs scripts under `sudo bash -s` (non-root logins, e.g. Latitude VMs)', async () => {
+    const { spawn, calls } = fakeSpawn();
+    const exec = createSshRemoteExec({ host: '1.2.3.4', user: 'ubuntu', sudo: true }, { spawn });
+    await exec.runScript('whoami');
+    expect(calls[0].args).toContain('sudo -H bash -s');
+    expect(calls[0].args).not.toContain('bash -s');
+  });
+
   it('copyFile uses scp with the host:remotePath target', async () => {
     const { spawn, calls } = fakeSpawn(0);
     const exec = createSshRemoteExec({ host: '5.6.7.8' }, { spawn });

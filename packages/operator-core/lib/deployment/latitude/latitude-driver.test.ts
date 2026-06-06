@@ -6,7 +6,23 @@ import {
   type LatitudeApiClient,
   type LatitudeServer,
   type LatitudeServerAttributes,
+  type LatitudeVm,
+  type LatitudeVmAttributes,
 } from './latitude-api';
+
+/** Shared no-op VM stubs for fakes that only exercise the metal surface. */
+const vmStubs = {
+  async listVmPlans() {
+    return [];
+  },
+  async createVm(): Promise<LatitudeVm> {
+    throw new Error('unused: VM surface not under test');
+  },
+  async getVm(): Promise<LatitudeVm> {
+    throw new Error('unused: VM surface not under test');
+  },
+  async deleteVm() {},
+};
 
 const ctx: DeploymentContext = { harnessSlug: 'papercup', workspaceId: 'ws' };
 const cfg: DeploymentConfig = { target: 'latitude', region: 'NYC', size: 'c2-small-x86', provider: { project: 'proj_1' } };
@@ -33,6 +49,7 @@ function fakeClient(script: LatitudeServer[]): LatitudeApiClient & { deleted: st
     async listPlans() {
       return [];
     },
+    ...vmStubs,
   };
 }
 
@@ -143,6 +160,7 @@ describe('LatitudeDriver.provision stock fallback', () => {
       async listPlans() {
         return opts.stock;
       },
+      ...vmStubs,
     };
   }
 
@@ -190,6 +208,98 @@ describe('LatitudeDriver.provision stock fallback', () => {
   });
 });
 
+describe('LatitudeDriver VM path (kind:vm)', () => {
+  const sleep = vi.fn(async () => {});
+  const vmCfg: DeploymentConfig = {
+    target: 'latitude',
+    kind: 'vm',
+    size: 'vm.small',
+    provider: { project: 'proj_1', sshKeys: ['ssh_k'] },
+  };
+  const vm = (over: Partial<LatitudeVm>): LatitudeVm => ({ id: 'vm_1', status: 'Starting', ...over });
+
+  /** Scripted VM client: createVm returns first entry, each getVm the next (or throws Errors). */
+  function vmClient(script: Array<LatitudeVm | Error>, plans = [{ id: 'plan_small', name: 'vm.small' }]) {
+    let i = 0;
+    const created: LatitudeVmAttributes[] = [];
+    const deleted: string[] = [];
+    const next = () => {
+      const s = script[Math.min(i++, script.length - 1)];
+      if (s instanceof Error) throw s;
+      return s;
+    };
+    const client: LatitudeApiClient & { created: LatitudeVmAttributes[]; deleted: string[] } = {
+      created,
+      deleted,
+      async createServer(): Promise<LatitudeServer> {
+        throw new Error('unused: metal surface not under test');
+      },
+      async getServer(): Promise<LatitudeServer> {
+        throw new Error('unused: metal surface not under test');
+      },
+      async deleteServer() {},
+      async listPlans() {
+        return [];
+      },
+      async listVmPlans() {
+        return plans;
+      },
+      async createVm(attrs) {
+        created.push(attrs);
+        return next();
+      },
+      async getVm() {
+        return next();
+      },
+      async deleteVm(id: string) {
+        deleted.push(id);
+      },
+    };
+    return client;
+  }
+
+  it('resolves the plan name to its ID, polls to Running, and reports the ubuntu ssh user', async () => {
+    const client = vmClient([
+      vm({ status: 'Starting' }), // create echo (ignored)
+      vm({ status: 'Starting' }), // poll 1
+      vm({ status: 'Running', primary_ipv4: '9.9.9.9' }), // poll 2
+    ]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    const frame = await driver.provision(vmCfg, ctx);
+    expect(client.created[0]).toMatchObject({ plan: 'plan_small', project: 'proj_1', ssh_keys: ['ssh_k'] });
+    expect(frame).toMatchObject({ id: 'vm_1', kind: 'vm', host: '9.9.9.9', placement: 'remote' });
+    expect(frame.meta).toMatchObject({ sshUser: 'ubuntu', planId: 'plan_small' });
+  });
+
+  it('passes a plan_ id through without a lookup and throws on unknown names', async () => {
+    const ok = vmClient([vm({ status: 'Running', primary_ipv4: '1.1.1.1' })]);
+    await makeLatitudeDriver({ client: ok, sleep, pollIntervalMs: 1 }).provision(
+      { ...vmCfg, size: 'plan_xyz' },
+      ctx,
+    );
+    expect(ok.created[0].plan).toBe('plan_xyz');
+
+    const bad = vmClient([vm({})], [{ id: 'plan_small', name: 'vm.small' }]);
+    await expect(
+      makeLatitudeDriver({ client: bad, sleep, pollIntervalMs: 1 }).provision({ ...vmCfg, size: 'vm.huge' }, ctx),
+    ).rejects.toThrow(/unknown VM plan 'vm.huge'/);
+  });
+
+  it('teardown of a vm_ frame DELETEs /virtual_machines and confirms gone (404)', async () => {
+    const client = vmClient([new LatitudeApiError('getVm', 404, null)]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await driver.teardown({ id: 'vm_9', target: 'latitude', placement: 'remote' }, vmCfg, ctx);
+    expect(client.deleted).toEqual(['vm_9']);
+  });
+
+  it('vm teardown re-issues DELETE while the vm persists, then confirms', async () => {
+    const client = vmClient([vm({ status: 'Destroying' }), new LatitudeApiError('getVm', 404, null)]);
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await driver.teardown({ id: 'vm_9', target: 'latitude', placement: 'remote' }, vmCfg, ctx);
+    expect(client.deleted).toEqual(['vm_9', 'vm_9']);
+  });
+});
+
 describe('LatitudeDriver teardown', () => {
   const sleep = vi.fn(async () => {});
   const gone404 = () => new LatitudeApiError('getServer', 404, null);
@@ -222,6 +332,7 @@ describe('LatitudeDriver teardown', () => {
       async listPlans() {
         return [];
       },
+      ...vmStubs,
     };
   }
 
@@ -297,7 +408,7 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
       },
     });
     // P-011: credential staged before the script ran.
-    expect(exec.copies).toEqual([['/local/claude-creds.json', '/root/papercusp-claude-credentials.json']]);
+    expect(exec.copies).toEqual([['/local/claude-creds.json', '/tmp/papercusp-claude-credentials.json']]);
     expect(exec.scripts).toHaveLength(2); // ssh-readiness probe + bootstrap
     expect(exec.scripts[0]).toBe('true');
     const script = exec.scripts.at(-1)!;
@@ -325,7 +436,7 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
       ...ctx,
       bootstrap: { runtimeTarballLocalPath: '/local/runtime.tgz' },
     });
-    expect(exec.copies).toEqual([['/local/runtime.tgz', '/root/papercusp-runtime.tgz']]);
+    expect(exec.copies).toEqual([['/local/runtime.tgz', '/tmp/papercusp-runtime.tgz']]);
     expect(exec.scripts.at(-1)).toContain('tar xzf');
     expect(exec.scripts.at(-1)).not.toContain('git clone');
   });
@@ -337,7 +448,7 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
       ...ctx,
       bootstrap: { repoUrl: 'g', oauthTokenLocalPath: '/local/frame-claude/token' },
     });
-    expect(exec.copies).toEqual([['/local/frame-claude/token', '/root/papercusp-claude-token']]);
+    expect(exec.copies).toEqual([['/local/frame-claude/token', '/tmp/papercusp-claude-token']]);
     expect(exec.scripts.at(-1)).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 

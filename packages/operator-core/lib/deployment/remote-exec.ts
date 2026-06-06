@@ -16,6 +16,9 @@ export interface SshTarget {
   /** Path to the private key (matching the ssh_keys injected at provision). */
   identityFile?: string;
   port?: number;
+  /** Run scripts under `sudo bash -s` — required when the login user isn't root
+   *  (e.g. Latitude VMs land on `ubuntu` with passwordless sudo; root is disabled). */
+  sudo?: boolean;
   /** Extra `ssh`/`scp` flags (e.g. StrictHostKeyChecking). */
   extraArgs?: string[];
 }
@@ -108,7 +111,9 @@ export function createSshRemoteExec(target: SshTarget, deps: { spawn?: SpawnLike
   return {
     async runScript(script) {
       // Pipe the script to a remote `bash -s` over stdin (no temp file on the frame).
-      return run('ssh', [...sshBaseArgs(target), hostSpec(target), 'bash -s'], script);
+      // -H pins HOME to root's so the bootstrap's $HOME refs are deterministic.
+      const shell = target.sudo ? 'sudo -H bash -s' : 'bash -s';
+      return run('ssh', [...sshBaseArgs(target), hostSpec(target), shell], script);
     },
     async copyFile(localPath, remotePath) {
       await run('scp', [...sshBaseArgs(target), localPath, `${hostSpec(target)}:${remotePath}`]);
