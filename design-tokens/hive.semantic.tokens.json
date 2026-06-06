@@ -1,0 +1,35 @@
+{
+  "_doc-hive": {
+    "$description": "The Hive theme — a semantic-layer override set. Emitted under [data-theme=\"hive\"] and selected by the papercusp-the-hive flag. Product stays Papercusp; this is a reversible honey-amber + charcoal skin."
+  },
+  "hive": {
+    "bg-deepest":      { "$value": "#050504", "$type": "color", "$description": "Deepest charcoal, nearly black with a warm cast" },
+    "bg-deeper":       { "$value": "#080806", "$type": "color" },
+    "bg-deep":         { "$value": "#0B0B08", "$type": "color" },
+    "bg":              { "$value": "#0B0E0B", "$type": "color", "$description": "Charcoal page background" },
+    "bg-1":            { "$value": "#11130E", "$type": "color" },
+    "bg-2":            { "$value": "rgba(255, 209, 102, 0.055)", "$type": "color", "$description": "Low honey glass tier" },
+    "bg-3":            { "$value": "rgba(255, 209, 102, 0.085)", "$type": "color" },
+    "bg-4":            { "$value": "rgba(255, 209, 102, 0.13)", "$type": "color" },
+    "bg-popover":      { "$value": "#171A13", "$type": "color", "$description": "Solid elevated charcoal/honey surface" },
+    "bg-raised":       { "$value": "#1B1D14", "$type": "color" },
+    "bg-raised-high":  { "$value": "#242313", "$type": "color" },
+    "fg":              { "$value": "#FFF8E6", "$type": "color" },
+    "fg-dim":          { "$value": "#E9D8A6", "$type": "color" },
+    "fg-mute":         { "$value": "#A99A73", "$type": "color" },
+    "border":          { "$value": "rgba(246, 183, 47, 0.18)", "$type": "color" },
+    "border-strong":   { "$value": "rgba(255, 209, 102, 0.38)", "$type": "color" },
+    "accent":          { "$value": "#F6B72F", "$type": "color", "$description": "Honey amber primary accent" },
+    "accent-strong":   { "$value": "#FFD166", "$type": "color", "$description": "Bright honey hover/focus accent" },
+    "accent-cool":     { "$value": "#FFF2C2", "$type": "color", "$description": "Cream highlight for glow and linework" },
+    "accent-soft":     { "$value": "#FFE49A", "$type": "color", "$description": "Soft honey tint" },
+    "accent-deep":     { "$value": "#B97812", "$type": "color", "$description": "Burnt honey active tint" },
+    "accent-deeper":   { "$value": "#6F4308", "$type": "color", "$description": "Deep amber shadow tint" },
+    "accent-ink":      { "$value": "#130D03", "$type": "color", "$description": "Text on honey fills" },
+    "good":            { "$value": "#4ADE80", "$type": "color" },
+    "warn":            { "$value": "#FFD166", "$type": "color" },
+    "bad":             { "$value": "#F87171", "$type": "color" },
+    "warn-bg":         { "$value": "rgba(255, 209, 102, 0.12)", "$type": "color" },
+    "warn-border":     { "$value": "rgba(255, 209, 102, 0.40)", "$type": "color" }
+  }
+}

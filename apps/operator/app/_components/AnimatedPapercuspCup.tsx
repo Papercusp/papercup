@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useLexiconPackId } from '@/lib/useLexicon';
+import { HivePrimaryMark } from './HiveVisualIdentity';
 
 const CUP_MOTIONS = ['spin', 'bob', 'tilt', 'orbit', 'pulse', 'scan'] as const;
 type CupMotion = (typeof CUP_MOTIONS)[number];
@@ -25,6 +27,7 @@ function pickMotion(lastMotion: CupMotion | null): CupMotion {
 }
 
 export function AnimatedPapercuspCup() {
+  const packId = useLexiconPackId();
   const [motion, setMotion] = useState<CupMotionState>('idle');
 
   useEffect(() => {
@@ -52,6 +55,15 @@ export function AnimatedPapercuspCup() {
       window.clearTimeout(resetTimer);
     };
   }, []);
+
+  if (packId === 'the-hive') {
+    return (
+      <HivePrimaryMark
+        className="pc-header-brand-logo pc-header-brand-logo--hive"
+        data-cup-motion={motion}
+      />
+    );
+  }
 
   return (
     <svg

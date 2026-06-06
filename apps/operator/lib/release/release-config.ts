@@ -63,9 +63,13 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
     integrationRoot,
     releaseRoot,
     checkpointRoot,
-    releaseRef: overrides.releaseRef ?? process.env.PAPERCUSP_RELEASE_REF ?? 'ready',
+    // staging→main model (staging-branch-pipeline-2026-06-06): the green pin is
+    // the `main` BRANCH (FF-advanced from green `staging`), not a separate `ready`
+    // ref. `integrationBranch` is the agent firehose `staging`. green-checkpoint
+    // reads these: candidate = integrationBranch HEAD; FF releaseRef when green.
+    releaseRef: overrides.releaseRef ?? process.env.PAPERCUSP_RELEASE_REF ?? 'main',
     integrationBranch:
-      overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'main',
+      overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
     systemdUnit:
       overrides.systemdUnit ?? process.env.PAPERCUSP_SYSTEMD_UNIT ?? 'papercup-dev-api.service',
     operatorHealthUrl:

@@ -132,6 +132,19 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
+  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — this test uses a
+  // minimal hand-rolled HFC DDL + the 131 issues table, so add the columns the unified
+  // FEATURE_COLS/ISSUE_COLS selects now include.
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS assignee_rank integer,
+      ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS assignee_rank integer,
+      ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+  `).simple();
 }, 90_000);
 
 afterAll(async () => {

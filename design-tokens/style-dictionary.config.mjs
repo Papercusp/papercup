@@ -34,7 +34,7 @@ StyleDictionary.registerTransform({
 // Theme namespaces — each is a top-level key holding a semantic-override set,
 // emitted to its own `[data-theme="<name>"]` block. Frost is NOT here: it is the
 // base `:root` layer (top-level semantic keys), not a variant.
-const THEME_NAMESPACES = ["black"];
+const THEME_NAMESPACES = ["black", "hive"];
 const isThemeToken = (t) => THEME_NAMESPACES.includes(t.path[0]);
 
 // Filter: primitives layer only (anything under `color.*`).
@@ -100,6 +100,21 @@ export default {
           format: "css/variables",
           options: { outputReferences: false, selector: '[data-theme="black"]' },
           filter: (t) => t.path[0] === "black",
+        },
+      ],
+    },
+    // The Hive theme — semantic-override set emitted under [data-theme="hive"].
+    // Runtime selects this block while FLAGS.THE_HIVE is true; it does not
+    // overwrite the user's saved classic theme preference.
+    "css-semantic-hive": {
+      transforms: themeTransforms,
+      buildPath: "apps/operator/app/",
+      files: [
+        {
+          destination: "_semantic.hive.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="hive"]' },
+          filter: (t) => t.path[0] === "hive",
         },
       ],
     },

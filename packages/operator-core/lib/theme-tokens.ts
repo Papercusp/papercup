@@ -26,7 +26,7 @@ export function isThemeToken(value: unknown): value is ThemeToken {
   return typeof value === 'string' && THEME_TOKEN_SET.has(value);
 }
 
-export const BUILTIN_THEME_IDS = ['frost', 'black'] as const;
+export const BUILTIN_THEME_IDS = ['frost', 'black', 'hive'] as const;
 export type BuiltinThemeId = (typeof BUILTIN_THEME_IDS)[number];
 
 /** Frost is the `:root` default — the base semantic layer in `_semantic.css`. */
@@ -41,6 +41,7 @@ export interface ThemeMeta {
 export const BUILTIN_THEMES: ThemeMeta[] = [
   { id: 'frost', label: 'Blue frost', builtin: true },
   { id: 'black', label: 'Black', builtin: true },
+  { id: 'hive', label: 'The Hive', builtin: true },
 ];
 
 export const CUSTOM_PREFIX = 'custom:';

@@ -16,6 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { listFleetAssignments, groupByAgent, orphanedClaims } from './assignments';
+import { reorderWorkItem } from '../work-items';
 import {
   onFleetAssignmentChange,
   _stopForTests,
@@ -160,6 +161,82 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     await seedPresence('su-talk', { planSlug: 'plan-z', intent: 'on plan-z (allegedly)' });
     const grouped = groupByAgent(await listFleetAssignments({ workspaceId: WS }));
     expect(grouped[0].declaredUnclaimed).toBe(true);
+  });
+});
+
+describe('per-assignee work-list: reorder + projection (local-hive P-020/P-021/D-008)', () => {
+  // Seed a bee holding a mix of feature + issue work-items, then exercise the
+  // reorder_work_item SQL fn (via the engine) + the fleet_assignment rank surfacing.
+  async function seedBeeQueue(): Promise<void> {
+    await seedPresence('su-bee', { intent: 'working its list' });
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, taken_by, taken_at, created_ts, ts, updated_ts)
+      VALUES
+        (${WS}, 'demo', 'FA-TEST-F1', 'feature one', 'todo', 'feature', 'su-bee', now(), 1, 1, 1),
+        (${WS}, 'demo', 'FA-TEST-F2', 'feature two', 'todo', 'feature', 'su-bee', now(), 2, 2, 2),
+        (${WS}, 'demo', 'FA-TEST-F3', 'feature three', 'todo', 'feature', 'su-bee', now(), 3, 3, 3)
+    `;
+    await admin`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, scope, title, kind, state, assignee, assigned_at)
+      VALUES (${WS}, 'FA-TEST-B1', 'harness:demo', 'a blocking bug', 'bug', 'open', 'su-bee', now())
+    `;
+  }
+
+  it('reorder places items at a rank (insert-at-rank, peers shift) across both families', async () => {
+    await seedBeeQueue();
+    // Bee self-sequences its initial list 0..3 (default writer 'bee').
+    await reorderWorkItem('FA-TEST-F1', 0);
+    await reorderWorkItem('FA-TEST-F2', 1);
+    await reorderWorkItem('FA-TEST-F3', 2);
+    const seeded = await reorderWorkItem('FA-TEST-B1', 3);
+    expect('error' in seeded).toBe(false);
+
+    // Queen injects the bug to head-of-line (writer 'queen' — the propose/dispose audit).
+    const moved = await reorderWorkItem('FA-TEST-B1', 0, { writer: 'queen' });
+    if ('error' in moved) throw new Error(moved.error);
+    expect(moved.rank).toBe(0);
+    expect(moved.writer).toBe('queen');
+    expect(moved.queue.map((q) => q.id)).toEqual([
+      'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
+    ]);
+  });
+
+  it('rejects ranking an unassigned item', async () => {
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, created_ts, ts, updated_ts)
+      VALUES (${WS}, 'demo', 'FA-TEST-UNASSIGNED', 'nobody owns me', 'todo', 'feature', 1, 1, 1)
+    `;
+    const res = await reorderWorkItem('FA-TEST-UNASSIGNED', 0);
+    expect('error' in res).toBe(true);
+    if ('error' in res) expect(res.error).toMatch(/unassigned/);
+  });
+
+  it('the projection surfaces doing/queued/load with rank_writer through the view', async () => {
+    await seedBeeQueue();
+    await reorderWorkItem('FA-TEST-F1', 0);
+    await reorderWorkItem('FA-TEST-F2', 1);
+    await reorderWorkItem('FA-TEST-F3', 2);
+    await reorderWorkItem('FA-TEST-B1', 0, { writer: 'queen' }); // Queen head-of-line
+
+    const rows = await listFleetAssignments({ workspaceId: WS, agent: 'su-bee' });
+    // every work-item row carries its rank + writer off the view
+    const wiRows = rows.filter((r) => r.source === 'work_item_claim');
+    expect(wiRows.length).toBe(4);
+    const head = wiRows.find((r) => r.assigneeRank === 0);
+    expect(head?.workItemId).toBe('FA-TEST-B1');
+    expect(head?.rankWriter).toBe('queen');
+
+    const grouped = groupByAgent(rows);
+    const bee = grouped.find((g) => g.agentId === 'su-bee')!;
+    expect(bee.load).toBe(4);
+    expect(bee.doing?.id).toBe('FA-TEST-B1'); // head-of-line
+    expect(bee.doing?.rankWriter).toBe('queen');
+    expect(bee.queued.map((q) => q.id)).toEqual([
+      'FA-TEST-B1', 'FA-TEST-F1', 'FA-TEST-F2', 'FA-TEST-F3',
+    ]);
   });
 });
 

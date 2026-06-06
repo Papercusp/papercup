@@ -102,6 +102,13 @@ beforeAll(async () => {
   // unify-work-items (142): adds the `kind` discriminator engineer_issues now carries.
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
+  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — ISSUE_COLS now
+  // selects them, so the engineer_issues table needs them.
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS assignee_rank integer,
+      ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz`);
   // Minimal features table so topics:feed can enrich a tagged feature.
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (

@@ -1,4 +1,7 @@
+'use client';
+
 import type { ReactNode } from 'react';
+import { useLexiconPackId } from '@/lib/useLexicon';
 
 type Props = {
   title?: string;
@@ -10,23 +13,27 @@ type Props = {
 };
 
 export function OperatorWordmarkLockup({
-  title = 'Papercup',
-  subtitle = 'mission console',
+  title,
+  subtitle,
   className,
   titleClassName,
   subtitleClassName,
   leading,
 }: Props) {
+  const packId = useLexiconPackId();
+  const resolvedTitle = title ?? (packId === 'the-hive' ? 'Papercusp' : 'Papercup');
+  const resolvedSubtitle = subtitle ?? (packId === 'the-hive' ? 'The Hive' : 'mission console');
+
   return (
     <span className={className ? `operator-wordmark ${className}` : 'operator-wordmark'}>
       {leading}
       <span className="operator-wordmark__copy">
         <span className={titleClassName ? `operator-wordmark__title ${titleClassName}` : 'operator-wordmark__title'}>
-          {title}
+          {resolvedTitle}
         </span>
-        {subtitle ? (
+        {resolvedSubtitle ? (
           <span className={subtitleClassName ? `operator-wordmark__subtitle ${subtitleClassName}` : 'operator-wordmark__subtitle'}>
-            {subtitle}
+            {resolvedSubtitle}
           </span>
         ) : null}
       </span>

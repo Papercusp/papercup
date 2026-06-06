@@ -19,6 +19,7 @@
  * under another active theme (preview swatches). One @import per built-in theme. */
 @import './_semantic.frost.css';
 @import './_semantic.black.css';
+@import './_semantic.hive.css';
 
 :root {
   color-scheme: dark;

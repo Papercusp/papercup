@@ -3,6 +3,8 @@ import {
   useId,
   type ComponentPropsWithoutRef,
 } from 'react';
+import { useLexiconPackId } from '@/lib/useLexicon';
+import { HiveQueenMark } from './HiveVisualIdentity';
 
 type Props = ComponentPropsWithoutRef<'svg'> & {
   decorative?: boolean;
@@ -13,7 +15,20 @@ export const OperatorLogoMark = forwardRef<SVGSVGElement, Props>(function Operat
   { className, decorative = true, variant = 'full', ...props },
   ref,
 ) {
+  const packId = useLexiconPackId();
   const base = useId().replace(/:/g, '');
+  if (packId === 'the-hive') {
+    return (
+      <HiveQueenMark
+        ref={ref}
+        className={className}
+        decorative={decorative}
+        data-hive-mark={variant}
+        {...props}
+      />
+    );
+  }
+
   const ids = {
     bg: `${base}-bg`,
     ring: `${base}-ring`,
