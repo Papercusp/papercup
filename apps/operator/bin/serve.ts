@@ -40,6 +40,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
@@ -185,6 +186,102 @@ interface PgHandle {
   stop: () => Promise<void>;
 }
 
+/** Best-effort command line of a live process, or null. Linux reads
+ * /proc/<pid>/cmdline; macOS falls back to `ps`. */
+function processCommandLine(pid: number): string | null {
+  try {
+    if (process.platform === 'linux') {
+      return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ');
+    }
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sweep an orphaned postgres process holding `dataDir` (left by a prior
+ * unclean exit) before we start a fresh one. Ported from the desktop
+ * embedder's Rust `sweep_orphan_postgres` (SP1 C5 — PG lifecycle ownership
+ * moved here, so the orphan problem moved with it).
+ *
+ * PG writes its own PID into `<dataDir>/postmaster.pid` on startup and
+ * removes it on clean shutdown. If the file exists and the PID is alive AND
+ * its command line names postgres + our exact data dir, it's a leftover from
+ * a prior session — kill it. If the PID is dead, unlink the stale lockfile so
+ * embedded-postgres doesn't reject the dir as already-running.
+ *
+ * Defensive about misidentifying live processes: only kill when the cmdline
+ * has `postgres`/`embedded-pg` in it AND references our data dir. Otherwise
+ * leave it alone and let the start surface its own error — better to fail
+ * loud than nuke an unrelated process.
+ */
+export async function sweepOrphanPostgres(
+  dataDir: string,
+  logFn: (m: string) => void = log,
+): Promise<void> {
+  const pidFile = join(dataDir, 'postmaster.pid');
+  let raw: string;
+  try {
+    raw = readFileSync(pidFile, 'utf8');
+  } catch {
+    return; // No lockfile, no orphan to worry about.
+  }
+  // postmaster.pid format: PID is line 1.
+  const pidStr = (raw.split('\n')[0] ?? '').trim();
+  const pid = Number(pidStr);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    logFn(`sweepOrphanPostgres: malformed pid '${pidStr}' in ${pidFile}`);
+    return;
+  }
+  if (!pidAlive(pid)) {
+    // Stale lockfile from a crashed prior session — embedded-postgres usually
+    // handles this itself, but unlink eagerly to be safe.
+    logFn(`sweepOrphanPostgres: stale postmaster.pid (pid=${pid} dead), unlinking`);
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      /* already gone */
+    }
+    return;
+  }
+  // Live: confirm it's actually a postgres pointed at OUR data dir before
+  // terminating.
+  const cmdline = processCommandLine(pid) ?? '';
+  const isPg = /postgres|embedded-pg/i.test(cmdline);
+  if (!isPg || !cmdline.includes(dataDir)) {
+    logFn(
+      `sweepOrphanPostgres: pid ${pid} is alive but does not look like our postgres ` +
+        `(cmdline=${JSON.stringify(cmdline.slice(0, 200))}) — leaving it alone`,
+    );
+    return;
+  }
+  logFn(`sweepOrphanPostgres: killing orphaned postgres pid=${pid} holding ${dataDir}`);
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    /* raced to death */
+  }
+  // Up to 5s for a graceful exit, then SIGKILL.
+  for (let i = 0; i < 50 && pidAlive(pid); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (pidAlive(pid)) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* raced */
+    }
+  }
+  try {
+    unlinkSync(pidFile);
+  } catch {
+    /* postgres removed it on clean exit */
+  }
+}
+
 /** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
 async function ensurePostgres(): Promise<PgHandle | null> {
   if (process.env.PAPERCUSP_USE_EMBEDDED_PG === '0') {
@@ -208,6 +305,11 @@ async function ensurePostgres(): Promise<PgHandle | null> {
 
   log(`starting embedded Postgres on :${port} (data=${dataDir})`);
   if (!existsSync(dbSqlDir)) log(`warning: migrations dir not found at ${dbSqlDir}`);
+
+  // Kill/clear any orphaned postgres from a prior unclean exit before the
+  // fresh start — otherwise the spawn fails with "lock file already exists"
+  // or silently serves stale data on another port.
+  await sweepOrphanPostgres(dataDir);
 
   const pg = (await startEmbeddedPostgresServer({
     port,

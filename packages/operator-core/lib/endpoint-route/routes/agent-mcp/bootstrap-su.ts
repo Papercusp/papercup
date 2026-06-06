@@ -126,6 +126,32 @@ const optionsForOptions = defineTool({
 });
 
 /**
+ * GET /api/agent-mcp/console/bootstrap-su/brain
+ *
+ * The canonical brain pin (native-terminal-desktop D-013): the native session
+ * uuid of THE persistent psu engineer session the desktop chat dock's brain
+ * pane resumes. `{ brainSessionId: string | null }` — null until a
+ * `brain: true` launch pins one. `psu --brain` resolves this to an exact
+ * picker-free resume (and falls back to a fresh re-pinning launch when null
+ * or no longer resumable).
+ */
+const brainGet = defineTool({
+  method: 'GET',
+  path: '/agent-mcp/console/bootstrap-su/brain',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    try {
+      const { getBrainSession } = await import('../../../brain-pin');
+      return jsonRes({ brainSessionId: await getBrainSession() });
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: `brain pin read failed: ${e?.message ?? e}` }, 500);
+    }
+  },
+});
+
+/**
  * GET /api/agent-mcp/console/bootstrap-su/options
  *
  * Picker data for the `psu` launcher (and the /adv "Launch SU" modal).
@@ -219,6 +245,12 @@ const post = defineTool({
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
+      /** Pin this launch as THE canonical brain session (the desktop chat
+       *  dock's right pane — native-terminal-desktop D-013). claude-only:
+       *  the pin is the forceable native session uuid, which only claude
+       *  has (`--session-id`). `psu --brain` reads it back for an exact
+       *  picker-free resume. */
+      brain?: boolean;
     } = {};
     try {
       const text = await req.text();
@@ -249,6 +281,17 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: `profile must be engineer|power (got ${profileRaw.slice(0, 24)})` }, 400);
     }
     const profile = profileRaw ?? 'engineer';
+
+    // D-013 brain pin: only claude has a forceable native session uuid (the
+    // pin's value), so a brain launch with another agent is a caller bug —
+    // fail loud rather than silently launching an unpinnable "brain".
+    const brain = body.brain === true;
+    if (brain && agent !== 'claude') {
+      return jsonRes(
+        { status: 'error', error: `brain launches must use agent=claude (the pin is the forced --session-id uuid; got ${agent})` },
+        400,
+      );
+    }
 
     // Resolve cwd + context env from the existing console envelope builder
     // (shell mode), scoped to the chosen workspace. We use its env + cwd;
@@ -342,6 +385,23 @@ const post = defineTool({
 
     const sessionKey = sessionId ?? `t-${randomUUID()}`;
 
+    // D-013: pin this launch as THE canonical brain. The uuid is minted above
+    // and forced via `--session-id`, so the pin lands BEFORE the session's
+    // first turn — `psu --brain` resumes exactly it from now on. Pin failure
+    // fails the launch (a silent unpinned "brain" would fork a new brain on
+    // every dock open — worse than a loud error).
+    if (brain) {
+      if (!nativeSessionId) {
+        return jsonRes({ status: 'error', error: 'brain launch minted no native session id' }, 500);
+      }
+      try {
+        const { setBrainSession } = await import('../../../brain-pin');
+        await setBrainSession(nativeSessionId);
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: `brain pin failed: ${e?.message ?? e}` }, 500);
+      }
+    }
+
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
     // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
     // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
@@ -412,4 +472,4 @@ const post = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet];
+export default [options, optionsForOptions, post, optionsGet, brainGet];

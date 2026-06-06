@@ -13,7 +13,12 @@ import { registeredAuthorityOpKinds } from '../../authority';
 import { PLAN_ITEM_CLAIM_OP_KINDS } from '../../plan-items/claims';
 
 describe('plan_items tool barrel boots cleanly', () => {
-  it('importing the barrel installs the swarm claim authority + claim op handlers without throwing', async () => {
+  // 60s timeout: the barrel import transitively transforms a large module graph;
+  // under a fully-parallel affected run on a loaded box (the green-checkpoint's
+  // isolated tree, peers deploying) the default 20s flaked while the import was
+  // merely SLOW, not hung (it passes in ~1.6s isolated). Hanging-at-boot — the
+  // thing this test guards — still fails at 60s.
+  it('importing the barrel installs the swarm claim authority + claim op handlers without throwing', { timeout: 60_000 }, async () => {
     // Default before the barrel loads: the pure single-peer local authority.
     expect(getClaimAuthority()).toBeInstanceOf(LocalClaimAuthority);
 

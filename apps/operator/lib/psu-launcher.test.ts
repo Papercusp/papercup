@@ -35,7 +35,17 @@ describe('psu-launcher arg parsing', () => {
       launchContext: null,
       profile: null,
       yes: false,
+      brain: false,
     });
+  });
+
+  it('parses --brain (D-013 canonical-brain resume; defaults false)', () => {
+    expect(parseArgs(['--brain']).brain).toBe(true);
+    expect(parseArgs([]).brain).toBe(false);
+    // Composable with a model override (the dock may pin a model).
+    const both = parseArgs(['--brain', '--model=opus']);
+    expect(both.brain).toBe(true);
+    expect(both.model).toBe('opus');
   });
 
   it('parses the scripting-escape flags', () => {
@@ -57,6 +67,7 @@ describe('psu-launcher arg parsing', () => {
       launchContext: null,
       profile: null,
       yes: false,
+      brain: false,
     });
   });
 

@@ -88,6 +88,14 @@ vi.mock('../../desktop-install/papercusp-files', () => ({
 vi.mock('../../superuser-token', () => ({
   readSuperuserToken: () => 'TESTBEARER',
 }));
+// D-013 brain pin: mock the PG-backed pointer so brain launches don't need a DB.
+const setBrainSessionMock = vi.fn(async (_id: string) => {});
+const getBrainSessionMock = vi.fn(async (): Promise<string | null> => null);
+vi.mock('../../brain-pin', () => ({
+  BRAIN_SESSION_KEY: 'brain_session_id',
+  setBrainSession: (...a: unknown[]) => setBrainSessionMock(...(a as [string])),
+  getBrainSession: () => getBrainSessionMock(),
+}));
 vi.mock('../../device-harnesses', () => ({
   listHarnessesFor: vi.fn(async () => [
     { slug: 'papercup', path: '/repo', harness_kind: null, has_state: true, status: 'active', iteration: 1, last_active_ts: null },
@@ -131,8 +139,16 @@ async function callPost(body: unknown): Promise<Response> {
 }
 
 async function callGet(query = ''): Promise<Response> {
-  const get = (await routesOf()).find((r) => r.method === 'GET')!;
+  const get = (await routesOf()).find((r) => r.method === 'GET' && (r as any).path?.endsWith('/options'))!;
   const req = new Request(`http://localhost:3070/api/agent-mcp/console/bootstrap-su/options${query}`, {
+    method: 'GET',
+  });
+  return get.handler(req, CTX);
+}
+
+async function callBrainGet(): Promise<Response> {
+  const get = (await routesOf()).find((r) => r.method === 'GET' && (r as any).path?.endsWith('/brain'))!;
+  const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-su/brain', {
     method: 'GET',
   });
   return get.handler(req, CTX);
@@ -241,6 +257,46 @@ describe('bootstrap-su', () => {
     const codex = await (await callPost({ agent: 'codex', harness_slug: null, plan_slug: null })).json();
     expect(codex.nativeSessionId).toBeNull();
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', sessionId: null }));
+  });
+
+  it('D-013: brain launch pins the minted native session id before returning', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, brain: true });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    // The pin IS the forced --session-id uuid — set server-side pre-exec.
+    expect(setBrainSessionMock).toHaveBeenCalledTimes(1);
+    expect(setBrainSessionMock).toHaveBeenCalledWith(json.nativeSessionId);
+    expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('D-013: brain launches reject non-claude agents (no forceable session id to pin)', async () => {
+    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null, brain: true });
+    expect(res.status).toBe(400);
+    expect(setBrainSessionMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('D-013: a failed pin fails the launch (no silent unpinned brain)', async () => {
+    setBrainSessionMock.mockRejectedValueOnce(new Error('pg down'));
+    const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, brain: true });
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/brain pin failed/);
+  });
+
+  it('D-013: non-brain launches never touch the pin', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null });
+    expect(res.status).toBe(200);
+    expect(setBrainSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('D-013: GET /brain returns the pin (null until one is set)', async () => {
+    const empty = await (await callBrainGet()).json();
+    expect(empty).toEqual({ brainSessionId: null });
+
+    getBrainSessionMock.mockResolvedValueOnce('11111111-2222-3333-4444-555555555555');
+    const pinned = await (await callBrainGet()).json();
+    expect(pinned).toEqual({ brainSessionId: '11111111-2222-3333-4444-555555555555' });
   });
 
   it('rejects an unknown agent kind', async () => {

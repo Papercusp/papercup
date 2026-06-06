@@ -27,7 +27,6 @@ import {
   refExists,
   isAncestor,
   advanceReady,
-  pushRef,
   type AdvanceResult,
 } from './git-ops';
 import type { ReleaseConfig } from './release-config';
@@ -142,7 +141,14 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       return { green: r.code === 0, summary: (r.stdout + r.stderr).slice(-2000) };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
-    push: (ref) => pushRef(cfg.integrationRoot, ref),
+    // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
+    // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
+    // pushes to main are blocked by that hook.
+    push: async (ref) => {
+      await runCmd('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
+        env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
+      });
+    },
     async broadcast(summary, body) {
       const { sendMessage } = await import('@papercusp/operator-core/lib/agent-tools/coordination/messages');
       await sendMessage(

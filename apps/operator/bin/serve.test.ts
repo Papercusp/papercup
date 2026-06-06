@@ -146,3 +146,48 @@ describe('cold-start lock (singleton guard)', () => {
     serve.releaseColdStartLock();
   });
 });
+
+describe('sweepOrphanPostgres', () => {
+  const dataDir = () => join(tmpHome, 'pg-data');
+  const pidFile = () => join(dataDir(), 'postmaster.pid');
+  const logs: string[] = [];
+  const logFn = (m: string) => logs.push(m);
+
+  afterEach(() => {
+    logs.length = 0;
+    rmSync(dataDir(), { recursive: true, force: true });
+  });
+
+  it('is a no-op when there is no postmaster.pid', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    await serve.sweepOrphanPostgres(dataDir(), logFn);
+    expect(logs).toEqual([]);
+  });
+
+  it('unlinks a stale postmaster.pid whose owner is dead', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(pidFile(), `${2 ** 30}\n/some/data/dir\n`);
+    await serve.sweepOrphanPostgres(dataDir(), logFn);
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeUndefined();
+    expect(logs.join('\n')).toMatch(/stale postmaster\.pid/);
+  });
+
+  it('leaves a malformed pid file alone (logs, does not unlink)', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(pidFile(), 'not-a-pid\n');
+    await serve.sweepOrphanPostgres(dataDir(), logFn);
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
+    expect(logs.join('\n')).toMatch(/malformed pid/);
+  });
+
+  it('does NOT kill a live process that is not our postgres', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    // Our own (vitest) pid: alive, but cmdline is node/vitest — not postgres
+    // pointed at dataDir. Must be left alone, file intact, and we must still
+    // be alive afterwards (trivially true if the test completes).
+    writeFileSync(pidFile(), `${process.pid}\n`);
+    await serve.sweepOrphanPostgres(dataDir(), logFn);
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
+    expect(logs.join('\n')).toMatch(/leaving it alone/);
+  });
+});

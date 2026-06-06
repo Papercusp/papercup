@@ -15,7 +15,7 @@
  * execFile is shell-less.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -57,7 +57,24 @@ export type PlanFileAtCommitResult =
   | { ok: false; code: PlanGitErrorCode; message?: string };
 
 function resolveRepoRoot(): string {
+  // Ask git for the toplevel — the docs/plans dir is NOT a reliable probe
+  // anymore: plans are PG-canonical and the committed `docs/plans/*.md` files
+  // were removed, so a FRESH checkout (e.g. the green-checkpoint's isolated
+  // tree) has no such directory and the old probe fell back to `cwd`
+  // (packages/operator-core), silently mis-rooting the pathspec → empty
+  // history. (Found by the staging→main pipeline bring-up, 2026-06-06: this
+  // was one of the two reds permanently blocking the green gate.)
   const cwd = process.cwd();
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+    if (top) return top;
+  } catch {
+    /* not a git checkout — fall back to the directory probe */
+  }
   if (existsSync(path.join(cwd, PLANS_DIR_REL))) return cwd;
   const up = path.resolve(cwd, '..', '..');
   if (existsSync(path.join(up, PLANS_DIR_REL))) return up;

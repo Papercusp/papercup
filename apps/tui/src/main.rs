@@ -124,16 +124,13 @@ fn run_workbench() -> Result<()> {
 
 /// Materialise the chat-only dock (operator chat | brain) and hand off to zellij
 /// — the surface the desktop-docked native terminal runs (native-terminal-desktop
-/// P-013 / D-011). The brain pane is a `psu` engineer-collaborator session:
-/// by default `psu --resume` (resume the saved brain from psu's recent-session
-/// picker — the brain is a persistent psu session resumed each launch). Override
-/// the whole brain command with PAPERCUSP_BRAIN_CMD (e.g. "psu --resume <id>" to
-/// pin a specific brain).
+/// P-013 / D-011). The brain pane is THE canonical brain: `psu --brain` resumes
+/// the pinned brain session exactly (D-013 auto-pin — psu launches + pins a
+/// fresh one when no pin exists). Override the whole brain command with
+/// PAPERCUSP_BRAIN_CMD (e.g. "psu --resume <id>" to drive a different session).
 fn run_chat_dock() -> Result<()> {
-    let brain_argv: Vec<String> = match std::env::var("PAPERCUSP_BRAIN_CMD") {
-        Ok(s) if !s.trim().is_empty() => s.split_whitespace().map(|x| x.to_string()).collect(),
-        _ => vec!["psu".to_string(), "--resume".to_string()],
-    };
+    let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
+    let brain_argv = layout::default_brain_argv(env.as_deref());
     let path = layout::materialize_chat_dock(&brain_argv)?;
     let argv = layout::launch_argv(&path.to_string_lossy());
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");

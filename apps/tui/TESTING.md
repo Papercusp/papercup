@@ -90,6 +90,22 @@ bus E2Es at `packages/operator-core/lib/voice-node/operator-voice-{multiclient,s
 PipeWire + `pactl`, so it's a local dev smoke, not CI. (Agent memory:
 `isolated-audio-e2e-null-sink`.)
 
+### Live real-EL E2E (`scripts/live-operator-voice-e2e.mjs`)
+
+The full P-011 leg — synthetic speech (espeak-ng) streamed at real-time pace into
+the RUNNING operator's voice host, through **real ElevenLabs** (STT → `ask_operator`
+brain → TTS), with two bus clients asserting the shared-session contract (both get
+input transcript + response transcript + response audio; exactly one elected player):
+
+```bash
+node scripts/live-operator-voice-e2e.mjs ["utterance"]   # exit 0 pass · 2 EL-unconfigured · 1 fail
+```
+
+Requires a running operator + espeak-ng + ffmpeg, AND ElevenLabs configured
+(`/settings/voice` → `fullAgentEngine=elevenlabs-conv` + agent ID; `/settings/api-keys`
+→ EL API key). Burns one short EL session — run deliberately, not in CI. Without EL
+config it exits 2 after proving the host's graceful error path.
+
 ## What's NOT covered (known gaps)
 
 - **Interactive TTY behaviour** — actual terminal rendering, raw-mode input, and

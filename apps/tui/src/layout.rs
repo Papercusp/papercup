@@ -154,7 +154,7 @@ pub fn launch_argv(layout_path: &str) -> Vec<String> {
 /// the **operator chat** (a chat-only `pui chat-pane`) and the **brain** (a `psu`
 /// engineer-collaborator session) — and NOTHING else: no workbench HUD, no
 /// work-area agent panes, no swap presets. `brain_argv` is the brain pane's
-/// command (e.g. `["psu", "--resume"]`); its first element is the command, the
+/// command (e.g. `["psu", "--brain"]`); its first element is the command, the
 /// rest are quoted args. Pure (no I/O) so it is unit-tested.
 pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
     let (brain_cmd, brain_args) = brain_argv
@@ -196,6 +196,19 @@ layout {{
 }}
 "#
     )
+}
+
+/// The chat dock's brain-pane command (native-terminal-desktop D-013): the
+/// canonical brain — `psu --brain` resumes THE pinned brain session exactly
+/// (no picker; psu launches + pins a fresh one when no pin exists or it no
+/// longer resolves). `env` is PAPERCUSP_BRAIN_CMD's value when set — a
+/// whitespace-split full-command override (e.g. "psu --resume <id>" to drive
+/// a different session, or "psu --resume" for the picker). Pure — unit-tested.
+pub fn default_brain_argv(env: Option<&str>) -> Vec<String> {
+    match env {
+        Some(s) if !s.trim().is_empty() => s.split_whitespace().map(|x| x.to_string()).collect(),
+        _ => vec!["psu".to_string(), "--brain".to_string()],
+    }
 }
 
 fn base_dir() -> Option<PathBuf> {
@@ -363,6 +376,23 @@ mod tests {
             "abc-123".to_string(),
         ]);
         assert!(kdl.contains("args \"--resume\" \"abc-123\""));
+    }
+
+    #[test]
+    fn brain_default_is_the_canonical_pinned_brain() {
+        // D-013 auto-pin: the dock's brain pane resumes THE pinned brain
+        // (`psu --brain`), not the recent-session picker.
+        assert_eq!(default_brain_argv(None), vec!["psu", "--brain"]);
+        assert_eq!(default_brain_argv(Some("")), vec!["psu", "--brain"]);
+        assert_eq!(default_brain_argv(Some("   ")), vec!["psu", "--brain"]);
+    }
+
+    #[test]
+    fn brain_env_override_is_whitespace_split() {
+        assert_eq!(
+            default_brain_argv(Some("psu --resume abc-123")),
+            vec!["psu", "--resume", "abc-123"]
+        );
     }
 
     #[test]

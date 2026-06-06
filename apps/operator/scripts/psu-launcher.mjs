@@ -43,9 +43,13 @@ const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 15_00
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false };
+  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false, brain: false };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
+    // THE brain (native-terminal-desktop D-013): resume the canonical pinned
+    // brain session exactly (no picker); when none is pinned (or it no longer
+    // resolves) launch a fresh claude SU session and pin it server-side.
+    else if (a === '--brain') out.brain = true;
     // `--resume` alone → pick from the recent-session list. `--resume=<id>`
     // (or a bare id after `--resume`) → resume THAT session directly, no
     // picker. The id is the /adv adv_sessions row id OR the agent's native
@@ -689,6 +693,54 @@ async function resumeFlow(args = {}) {
   launchResume(picked);
 }
 
+// `psu --brain` (native-terminal-desktop D-013): the desktop chat dock's
+// brain pane. Resume THE canonical pinned brain session exactly — no picker,
+// no prompt (the dock pane launches non-interactively) — falling back to a
+// fresh claude SU launch that the server pins as the new brain when no pin
+// exists or the pinned session no longer resolves. The pin is the native
+// session uuid in harness_shared.operator_settings (`brain_session_id`),
+// written by POST bootstrap-su `brain: true` BEFORE the session's first turn
+// (the uuid is server-minted and forced via claude --session-id).
+async function brainFlow(args = {}) {
+  let pin = null;
+  try {
+    pin = (await api('/api/agent-mcp/console/bootstrap-su/brain'))?.brainSessionId ?? null;
+  } catch (e) {
+    // Pin endpoint unavailable (an operator predating D-013, or a DB error).
+    // Do NOT fresh-launch here — a server that can't read the pin can't WRITE
+    // it either, so every dock open would fork a new unpinned "brain".
+    // Degrade to the pre-D-013 behavior: the recent-session resume picker.
+    console.error(`psu: brain pin unavailable (${e?.message ?? e}) — falling back to the resume picker.`);
+    await resumeFlow(args);
+    return;
+  }
+  if (pin) {
+    const data = await api('/api/adv/sessions/resumable');
+    const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
+    // The pin is the recorded NATIVE session id of a psu-tracked launch.
+    const tracked = sessions.find((s) => s.sessionId && s.sessionId === pin);
+    if (tracked) { launchResume(tracked); return; }
+    // Tracked row gone but the agent's own store still has the transcript
+    // (e.g. the adv row was pruned): it IS the brain psu launched — resume it
+    // without the untracked-confirm (the dock pane can't drive a prompt).
+    const untracked = findUntrackedSession(pin);
+    if (untracked) {
+      console.error(`psu: brain ${pin} lost its tracked row — resuming from the ${untracked.agent} session store.`);
+      launchResume(untracked);
+      return;
+    }
+    console.error(`psu: pinned brain ${pin} no longer resolves anywhere — launching a fresh brain (re-pinning).`);
+  }
+  // Fresh brain: claude (the pin needs claude's forceable --session-id),
+  // server-default workspace unless overridden, no plan. The server records
+  // the pin before we exec, so the NEXT `psu --brain` resumes exactly this.
+  await launchFreshSu(
+    { agent: 'claude', workspace: args.workspace || null, harness: args.harness || null, plan: null },
+    args,
+    { brain: true },
+  );
+}
+
 // `psu --role=<role>` (or picking a non-su role): an interactive,
 // role-scoped session — role persona + tools + feature context, human at
 // the keyboard. Goes through bootstrap-role + execs the raw backend with
@@ -751,6 +803,10 @@ export function agentInvalidForRole(agent) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.brain) {
+    await brainFlow(args);
+    return;
+  }
   if (args.resume) {
     await resumeFlow(args);
     return;
@@ -784,6 +840,16 @@ async function main() {
     selections = selectionsFromArgs(args);
   }
 
+  await launchFreshSu(selections, args);
+}
+
+/**
+ * POST bootstrap-su + exec the raw backend — the fresh-SU launch tail shared
+ * by the plain `psu` flow and `psu --brain`'s fresh-brain fallback. `brain`
+ * pins the minted native session id server-side as THE canonical brain
+ * (native-terminal-desktop D-013) before the session's first turn.
+ */
+async function launchFreshSu(selections, args, { brain = false } = {}) {
   const res = await api('/api/agent-mcp/console/bootstrap-su', {
     method: 'POST',
     body: JSON.stringify({
@@ -794,6 +860,7 @@ async function main() {
       // P-023: playbook profile (engineer|power), assembled per-launch.
       // Omitted → server defaults to engineer.
       ...(args.profile ? { profile: args.profile } : {}),
+      ...(brain ? { brain: true } : {}),
       // Our cwd — the server uses it for a no-harness launch (so the
       // agent's cwd-scoped session resume works from the user's terminal,
       // not the internal .papercusp dir). Ignored for harness launches.
@@ -805,7 +872,7 @@ async function main() {
   // our cwd (above) for a no-harness one. Agents scope resumable sessions
   // by cwd, so resume works from res.cwd.
   console.error(
-    `psu: ${res.agent} (su)  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}  ·  session ${res.sessionId ?? '?'}`,
+    `psu: ${res.agent} (su${brain ? ' · BRAIN pinned' : ''})  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  resume this session by running the agent's resume command from here`);
 
