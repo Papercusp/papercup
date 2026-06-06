@@ -57,13 +57,36 @@ export interface AwaitRow {
   firedAt: string | null;
   firedReason: string | null;
   cancelledAt: string | null;
+  /** Cardinality (unify-watch-primitive D-001): true = one-shot (fires once,
+   *  auto-consumes via fired_at — today's await); false = standing watch (a fire
+   *  queues a delivery WITHOUT consuming the row — the pot-style recurring wake). */
+  once: boolean;
+  /** Per-subscriber wake floor for this watch's wakes, in seconds. null/0 = no floor
+   *  (one-shot grants wake promptly); >0 throttles a recurring wake:true watch. */
+  minSleepSec: number | null;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';
 
 /** The wake channel that (eventually) carried a delivery — also the meter's
- *  per-wake attribution dimension (D-007). */
-export type WakeChannel = 'pty-inject' | 'resume' | 'resume-headless' | 'plan-run-resume' | 'inbox';
+ *  per-wake attribution dimension (D-007). `coalesced` = this delivery folded into
+ *  another wake for the same subscriber (no turn spent — unify-watch-primitive P-005). */
+export type WakeChannel =
+  | 'pty-inject'
+  | 'resume'
+  | 'resume-headless'
+  | 'plan-run-resume'
+  | 'inbox'
+  | 'coalesced';
+
+/** The wake channels that actually burn a turn (re-invoke the agent) — used to derive a
+ *  subscriber's `last_woken_at` for the floor. 'inbox'/'coalesced' do NOT burn a turn. */
+export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
+  'pty-inject',
+  'resume',
+  'resume-headless',
+  'plan-run-resume',
+];
 
 export interface DeliveryRow {
   id: number;
@@ -80,6 +103,13 @@ export interface DeliveryRow {
   nextAttemptAt: string;
   createdAt: string;
   deliveredAt: string | null;
+  /** Bypass the per-subscriber wake floor for this delivery (unify-watch-primitive P-005). */
+  urgent: boolean;
+  /** The floor (seconds) denormalized from the await, so the pump decides without a join.
+   *  null/0 = no floor. */
+  minSleepSec: number | null;
+  /** How many fires folded into this wake (1 = not coalesced). */
+  coalescedCount: number;
 }
 
 /** A delivery row joined with its await's wake handle + note (the pump's unit). */

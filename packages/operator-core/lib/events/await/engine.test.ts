@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
     insertDeliveries: vi.fn(async () => 0),
     claimDueDeliveries: vi.fn(async (): Promise<unknown[]> => []),
     markDeliveryDelivered: vi.fn(async () => {}),
+    markDeliveriesCoalesced: vi.fn(async () => {}),
+    lastWokenAtForSubscribers: vi.fn(async () => new Map<string, number>()),
     markDeliveryParked: vi.fn(async () => {}),
     markDeliveryDropped: vi.fn(async () => {}),
     markDeliveryFailed: vi.fn(async () => 'retrying' as const),
@@ -48,6 +50,8 @@ function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
     firedAt: new Date().toISOString(),
     firedReason: 'event',
     cancelledAt: null,
+    once: true,
+    minSleepSec: null,
     ...over,
   };
 }
@@ -68,6 +72,9 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
     nextAttemptAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     deliveredAt: null,
+    urgent: false,
+    minSleepSec: null,
+    coalescedCount: 1,
     wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
     note: null,
     ...over,
@@ -128,16 +135,50 @@ describe('emitAwaitedEvent', () => {
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
-  it('per-subscriber single-flight: the second claimed row for one agent defers', async () => {
+  it('per-subscriber coalesce: multiple due wakes for one agent fold into ONE wake', async () => {
+    // Two events fire for su-a → ONE coalesced wake (the newest is the headline; the older
+    // settles as coalesced, no second turn) — the unify-watch-primitive gap closing.
     h.store.claimDueDeliveries.mockResolvedValueOnce([
-      workRow({ id: 10, subscriberId: 'su-a' }),
-      workRow({ id: 11, subscriberId: 'su-a' }),
+      workRow({ id: 10, subscriberId: 'su-a', eventKey: 'k1', createdAt: new Date(1000).toISOString() }),
+      workRow({ id: 11, subscriberId: 'su-a', eventKey: 'k2', createdAt: new Date(2000).toISOString() }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    // ONE turn for both events (not two).
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    // The headline (newest, id 11) carries the union summary listing both keys.
+    const work = (h.executeWake.mock.calls[0] as unknown as [{ summary: string; coalescedCount: number }])[0];
+    expect(work.summary).toContain('k1');
+    expect(work.summary).toContain('k2');
+    // Headline delivered with coalescedCount=2; the sibling settles as coalesced (no turn).
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(11, 'resume', 2);
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([10], 11);
+    expect(h.store.markDeliveryDeferred).not.toHaveBeenCalled();
+    expect(stats.delivered).toBe(1);
+    expect(stats.coalesced).toBe(1);
+    expect(stats.deferred).toBe(0);
+  });
+
+  it('per-subscriber min_sleep floor: a wake inside the window defers until the floor allows it', async () => {
+    // su-a was woken 10s ago; a min_sleep=60 watch fires now → defer (within floor), no turn.
+    h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 10_000]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 20, subscriberId: 'su-a', minSleepSec: 60 }),
+    ]);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDeferred).toHaveBeenCalledWith(20, expect.any(Number));
+    expect(stats.deferred).toBe(1);
+    expect(stats.delivered).toBe(0);
+  });
+
+  it('urgent bypasses the floor: an urgent wake fires even inside the min_sleep window', async () => {
+    h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 1_000]]));
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 21, subscriberId: 'su-a', minSleepSec: 60, urgent: true }),
     ]);
     const stats = await pumpWakeDeliveries('ws-test');
     expect(h.executeWake).toHaveBeenCalledTimes(1);
-    expect(h.store.markDeliveryDeferred).toHaveBeenCalledWith(11, expect.any(Number));
     expect(stats.delivered).toBe(1);
-    expect(stats.deferred).toBe(1);
   });
 
   it('resume cap: past the per-tick cap, further wakes defer to the next tick', async () => {

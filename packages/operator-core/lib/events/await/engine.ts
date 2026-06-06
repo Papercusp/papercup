@@ -18,6 +18,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { decideWake } from '@papercusp/debounce-coalesce';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
@@ -28,6 +29,8 @@ import {
   fireAwaitsForKey,
   fireTimedOutAwaits,
   insertDeliveries,
+  lastWokenAtForSubscribers,
+  markDeliveriesCoalesced,
   markDeliveryDeferred,
   markDeliveryDelivered,
   markDeliveryDropped,
@@ -36,7 +39,7 @@ import {
   recoverStuckDeliveries,
 } from './store';
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
-import type { AwaitRow } from './types';
+import type { AwaitRow, DeliveryWork } from './types';
 
 const log = (msg: string) => console.warn(`[await-event] ${msg}`);
 
@@ -76,6 +79,9 @@ export interface EmitAwaitedEventOpts {
   to?: string[];
   /** Emitter attribution (ownerId or a system name). */
   source?: string;
+  /** Urgent: bypass the per-subscriber wake floor for the wake deliveries this emit
+   *  queues (a human message, an escalation, a hard deadline). */
+  urgent?: boolean;
   workspaceId?: string;
 }
 
@@ -99,7 +105,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
   // 2. Queue durable wake deliveries + kick the pump off the hot path.
   if (wakes.length > 0) {
-    await insertDeliveries({ awaits: wakes, payload: opts.payload, summary: opts.summary ?? null, workspaceId: ws });
+    await insertDeliveries({
+      awaits: wakes,
+      payload: opts.payload,
+      summary: opts.summary ?? null,
+      urgent: opts.urgent,
+      workspaceId: ws,
+    });
     setImmediate(() => {
       void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
     });
@@ -142,52 +154,123 @@ export interface PumpStats {
   dropped: number;
   failed: number;
   deferred: number;
+  /** Deliveries folded into another wake for the same subscriber (no turn spent). */
+  coalesced: number;
 }
 
 /**
- * Process due wake deliveries: claim (SKIP LOCKED) → execute the liveness
- * ladder → settle each row. Non-overlapping per host; per-subscriber
- * single-flight inside a tick; resume-spawns capped per tick (D-007).
+ * Fold a subscriber's due deliveries into ONE wake (unify-watch-primitive P-005): the
+ * newest is the headline; its summary/payload carry the union ("here are the N things
+ * that fired while you slept"). The siblings settle as `coalesced` (no extra turns).
+ */
+function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
+  const headline = group[group.length - 1];
+  if (group.length === 1) return headline;
+  const keys = group.map((d) => d.eventKey);
+  return {
+    ...headline,
+    summary:
+      `${group.length} events fired while you slept: ${keys.join(', ')}` +
+      (headline.summary ? ` — latest: ${headline.summary}` : ''),
+    payload: {
+      coalesced: true,
+      count: group.length,
+      events: group.map((d) => ({ event: d.eventKey, summary: d.summary, payload: d.payload, delivery_id: d.id })),
+      latest: { event: headline.eventKey, payload: headline.payload },
+    },
+    coalescedCount: group.length,
+  };
+}
+
+/**
+ * Process due wake deliveries: claim (SKIP LOCKED) → GROUP by subscriber → per-subscriber
+ * floor + coalesce (the unify-watch-primitive gap) → execute the liveness ladder → settle.
+ *
+ * Per subscriber, per tick: a `min_sleep` floor defers the whole group until the floor next
+ * allows a wake (`decideWake`); when it does wake, the group's due deliveries COALESCE into a
+ * single wake carrying their union — one turn for N events, not N turns. `urgent` deliveries
+ * bypass the floor. Resume-spawns are still capped per tick across subscribers (D-007).
  */
 export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWakeDeps = {}): Promise<PumpStats> {
-  const stats: PumpStats = { claimed: 0, delivered: 0, parked: 0, dropped: 0, failed: 0, deferred: 0 };
+  const stats: PumpStats = { claimed: 0, delivered: 0, parked: 0, dropped: 0, failed: 0, deferred: 0, coalesced: 0 };
   if (pumpInFlight) return stats;
   pumpInFlight = true;
   try {
     const ws = workspaceId ?? activeWorkspaceId();
-    const claimed = await claimDueDeliveries({ limit: 10, workspaceId: ws });
+    const claimed = await claimDueDeliveries({ limit: 25, workspaceId: ws });
     stats.claimed = claimed.length;
     if (claimed.length === 0) return stats;
 
-    const seenSubscriber = new Set<string>();
+    // Group claimed deliveries by subscriber — the coalesce + floor unit.
+    const bySubscriber = new Map<string, DeliveryWork[]>();
+    for (const d of claimed) {
+      const arr = bySubscriber.get(d.subscriberId);
+      if (arr) arr.push(d);
+      else bySubscriber.set(d.subscriberId, [d]);
+    }
+
+    // The per-subscriber floor anchor (last actual wake). Only queried when some delivery
+    // declares a floor — the common one-shot-grant case (min_sleep=0) needs no extra read.
+    const needFloor = claimed.some((d) => (d.minSleepSec ?? 0) > 0);
+    const lastWoken = needFloor
+      ? await lastWokenAtForSubscribers([...bySubscriber.keys()], ws)
+      : new Map<string, number>();
+
+    const now = Date.now();
     let resumes = 0;
 
-    for (const d of claimed) {
-      // Per-subscriber single-flight: one wake per agent per tick.
-      if (seenSubscriber.has(d.subscriberId)) {
-        await markDeliveryDeferred(d.id, DEFER_MS);
-        stats.deferred++;
-        continue;
-      }
-      // Resume cap: pace mass-unblocks (the rest re-admit next tick).
-      const needsSpawnLikely = d.wakeHandle != null; // conservative — count every executed wake against the cap
-      if (needsSpawnLikely && resumes >= maxResumesPerTick()) {
-        await markDeliveryDeferred(d.id, DEFER_MS);
-        stats.deferred++;
+    for (const [subscriberId, group] of bySubscriber) {
+      // Oldest→newest: the union is ordered and the headline is the latest fire.
+      group.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+      // Floor: the most eager (smallest declared) min_sleep in the group sets the cadence;
+      // urgent on any delivery bypasses it (decideWake handles both).
+      const minSleepMs =
+        1000 *
+        Math.min(...group.map((d) => (d.minSleepSec != null && d.minSleepSec > 0 ? d.minSleepSec : 0)));
+      const decision = decideWake({
+        lastWokenAt: lastWoken.get(subscriberId) ?? null,
+        pending: group.map((d) => ({ at: Date.parse(d.createdAt), payload: d, urgent: d.urgent })),
+        now,
+        cfg: { minSleepMs, leadingEdge: true },
+      });
+
+      if (!decision.wake) {
+        // Within the floor — defer the WHOLE group until the floor next allows a wake.
+        const deferMs = Math.max(1_000, (decision.dueAt ?? now + DEFER_MS) - now);
+        for (const d of group) {
+          await markDeliveryDeferred(d.id, deferMs);
+          stats.deferred++;
+        }
+        log(`floor: ${subscriberId} deferred ${group.length} wake(s) ${Math.round(deferMs / 1000)}s (min_sleep)`);
         continue;
       }
 
-      // D-007: a wake-resume is an agent spawn — pass it through the fleet
-      // governor's admission (role 'await-wake'; default-open until a bucket/
-      // credit is configured, then fleet-wide pacing applies). Fail-open: a
-      // governor-store hiccup must never strand a wake.
+      const headline = group[group.length - 1];
+      const siblings = group.slice(0, -1);
+      const needsSpawnLikely = headline.wakeHandle != null;
+
+      // Resume cap: pace mass-unblocks across subscribers (the rest re-admit next tick).
+      if (needsSpawnLikely && resumes >= maxResumesPerTick()) {
+        for (const d of group) {
+          await markDeliveryDeferred(d.id, DEFER_MS);
+          stats.deferred++;
+        }
+        continue;
+      }
+
+      // D-007: a wake-resume is an agent spawn — pass it through the fleet governor's
+      // admission (role 'await-wake'). One admit per COALESCED wake (N events, one spawn).
+      // Fail-open: a governor-store hiccup must never strand a wake.
       if (needsSpawnLikely) {
         try {
           const verdict = await admitSpawn(getOrgPg().sql, { workspaceId: ws, role: 'await-wake' });
           if (!verdict.admitted) {
-            await markDeliveryDeferred(d.id, DEFER_MS);
-            stats.deferred++;
-            log(`wake #${d.id} deferred by the fleet governor (${JSON.stringify(verdict)})`);
+            for (const d of group) {
+              await markDeliveryDeferred(d.id, DEFER_MS);
+              stats.deferred++;
+            }
+            log(`wake for ${subscriberId} deferred by the fleet governor (${JSON.stringify(verdict)})`);
             continue;
           }
         } catch {
@@ -195,52 +278,63 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         }
       }
 
-      seenSubscriber.add(d.subscriberId);
-      const outcome = await executeWake(d, deps);
+      const outcome = await executeWake(coalesceDeliveries(group), deps);
 
       if (outcome.kind === 'delivered') {
         if (outcome.channel === 'resume' || outcome.channel === 'resume-headless' || outcome.channel === 'plan-run-resume') resumes++;
-        await markDeliveryDelivered(d.id, outcome.channel);
+        await markDeliveryDelivered(headline.id, outcome.channel, group.length);
         stats.delivered++;
-        log(`wake #${d.id} delivered → ${d.subscriberId} via ${outcome.channel} (${d.eventKey})`);
+        if (siblings.length > 0) {
+          await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+          stats.coalesced += siblings.length;
+        }
+        log(`wake #${headline.id} delivered → ${subscriberId} via ${outcome.channel} (${group.length} event(s): ${group.map((d) => d.eventKey).join(', ')})`);
         continue;
       }
       if (outcome.kind === 'park') {
-        // One-time inbox nudge on the first park: the awake-but-uninjectable
-        // agent sees it mid-turn (PostToolUse hook) or on its next turn; the
-        // parked row converts to a resume when its process exits.
-        if (d.attempts <= 1) {
+        // One-time inbox nudge on the first park: the awake-but-uninjectable agent sees it
+        // mid-turn (PostToolUse hook) or on its next turn; the parked row converts to a
+        // resume when its process exits. Siblings re-coalesce with the headline next tick.
+        if (headline.attempts <= 1) {
           try {
-            await sendMessage(emitterIdentity('await-event', d.workspaceId), {
-              to: [d.subscriberId],
-              summary: `[await-event] ${d.eventKey} fired — wake parked (${outcome.reason})`,
-              body: `${d.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${d.id} } so you are not also resumed for it later.`.trim(),
+            await sendMessage(emitterIdentity('await-event', headline.workspaceId), {
+              to: [subscriberId],
+              summary: `[await-event] ${headline.eventKey} fired — wake parked (${outcome.reason})`,
+              body: `${headline.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${headline.id} } so you are not also resumed for it later.`.trim(),
               category: 'event',
-              extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },
+              extra: { auto: true, event_key: headline.eventKey, wake_delivery_id: headline.id },
             });
           } catch {
             /* nudge is best-effort; the parked row is the durable truth */
           }
         }
-        await markDeliveryParked(d.id, outcome.reason, PARK_RECHECK_MS);
+        await markDeliveryParked(headline.id, outcome.reason, PARK_RECHECK_MS);
         stats.parked++;
+        for (const d of siblings) await markDeliveryDeferred(d.id, PARK_RECHECK_MS);
         continue;
       }
       if (outcome.kind === 'drop') {
-        await markDeliveryDropped(d.id, outcome.reason);
+        await markDeliveryDropped(headline.id, outcome.reason);
         stats.dropped++;
-        log(`wake #${d.id} DROPPED (dead waiter) → ${d.subscriberId}: ${outcome.reason} (${d.eventKey})`);
+        // The waiter is dead → its other coalesced wakes are equally undeliverable. Drop them
+        // visibly rather than re-pumping a dead subscriber forever.
+        for (const d of siblings) {
+          await markDeliveryDropped(d.id, `subscriber dead (coalesced with #${headline.id})`);
+          stats.dropped++;
+        }
+        log(`wake #${headline.id} DROPPED (dead waiter) → ${subscriberId}: ${outcome.reason} (${headline.eventKey})`);
         continue;
       }
       const verdict = await markDeliveryFailed({
-        id: d.id,
+        id: headline.id,
         error: outcome.error,
-        attempts: d.attempts,
+        attempts: headline.attempts,
         maxAttempts: MAX_ATTEMPTS,
-        backoffMs: backoffMs(d.attempts),
+        backoffMs: backoffMs(headline.attempts),
       });
       stats.failed++;
-      if (verdict === 'dead') log(`wake #${d.id} DEAD after ${d.attempts} attempts → ${d.subscriberId}: ${outcome.error}`);
+      for (const d of siblings) await markDeliveryDeferred(d.id, DEFER_MS);
+      if (verdict === 'dead') log(`wake #${headline.id} DEAD after ${headline.attempts} attempts → ${subscriberId}: ${outcome.error}`);
     }
     return stats;
   } finally {

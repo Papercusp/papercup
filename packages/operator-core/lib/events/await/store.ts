@@ -18,6 +18,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { WAKE_TURN_CHANNELS } from './types';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -71,6 +72,8 @@ function mapAwait(r: any): AwaitRow {
     firedAt: r.fired_at ? new Date(r.fired_at).toISOString() : null,
     firedReason: r.fired_reason ?? null,
     cancelledAt: r.cancelled_at ? new Date(r.cancelled_at).toISOString() : null,
+    once: r.once ?? true,
+    minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
   };
 }
 
@@ -90,6 +93,9 @@ function mapDelivery(r: any): DeliveryRow {
     nextAttemptAt: new Date(r.next_attempt_at).toISOString(),
     createdAt: new Date(r.created_at).toISOString(),
     deliveredAt: r.delivered_at ? new Date(r.delivered_at).toISOString() : null,
+    urgent: r.urgent ?? false,
+    minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
+    coalescedCount: r.coalesced_count != null ? Number(r.coalesced_count) : 1,
   };
 }
 
@@ -110,13 +116,17 @@ export async function registerAwait(input: {
   timeoutBehavior?: TimeoutBehavior;
   /** Seconds until the await lapses; null = no deadline. */
   timeoutSec?: number | null;
+  /** Cardinality (unify-watch-primitive): false = standing watch. Default true (one-shot). */
+  once?: boolean;
+  /** Per-subscriber wake floor in seconds for this watch (null/0 = no floor). */
+  minSleepSec?: number | null;
   workspaceId?: string;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts)
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
@@ -125,7 +135,8 @@ export async function registerAwait(input: {
          // ISO text, not a raw Date — the live org postgres-js client throws on
          // Date binding (the repo's known quirk); PG casts text→timestamptz.
          input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
-       })
+       },
+       ${input.once ?? true}, ${input.minSleepSec ?? null})
     RETURNING *
   `;
   return mapAwait(rows[0]);
@@ -214,11 +225,15 @@ export async function fireAwaitsForKey(input: {
   return rows.map(mapAwait);
 }
 
-/** Queue wake deliveries for fired awaits (one row per recipient, D-004). */
+/** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the
+ *  per-watch floor (denormalized from each await) + the emit-time `urgent` bypass so the
+ *  pump can apply the floor + coalesce without re-joining (unify-watch-primitive P-005). */
 export async function insertDeliveries(input: {
   awaits: AwaitRow[];
   payload?: unknown;
   summary?: string | null;
+  /** Emit-time urgency: bypass the per-subscriber floor for these deliveries. */
+  urgent?: boolean;
   workspaceId?: string;
 }): Promise<number> {
   if (input.awaits.length === 0) return 0;
@@ -229,8 +244,9 @@ export async function insertDeliveries(input: {
   for (const a of input.awaits) {
     await sql`
       INSERT INTO harness_shared.event_wake_deliveries
-        (workspace_id, await_id, subscriber_id, event_key, payload, summary)
-      VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::jsonb, ${input.summary ?? null})
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec)
+      VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::jsonb,
+              ${input.summary ?? null}, ${input.urgent ?? false}, ${a.minSleepSec ?? null})
     `;
     n++;
   }
@@ -269,13 +285,63 @@ export async function claimDueDeliveries(input: {
   return rows.map(mapWork);
 }
 
-export async function markDeliveryDelivered(id: number, channel: WakeChannel): Promise<void> {
+export async function markDeliveryDelivered(
+  id: number,
+  channel: WakeChannel,
+  coalescedCount = 1,
+): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.event_wake_deliveries
-       SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL
+       SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
+           coalesced_count = ${coalescedCount}
      WHERE id = ${id}
   `;
+}
+
+/**
+ * Settle the deliveries that folded INTO another subscriber's wake (the coalesce siblings):
+ * delivered, channel='coalesced', no turn spent. unify-watch-primitive P-005/D-003.
+ */
+export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: number): Promise<void> {
+  if (ids.length === 0) return;
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           last_error = ${`coalesced into wake #${intoDeliveryId}`}
+     WHERE id = ANY(${ids})
+  `;
+}
+
+/**
+ * The most-recent ACTUAL wake (a turn-burning channel) per subscriber — the floor anchor
+ * the pump uses to decide whether a subscriber may be re-woken yet (P-005). 'inbox' and
+ * 'coalesced' deliveries are excluded (they spend no turn). Returns epoch ms per subscriber
+ * (absent = never woken). Bounded by the handful of subscribers due this tick.
+ */
+export async function lastWokenAtForSubscribers(
+  subscriberIds: string[],
+  workspaceId?: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (subscriberIds.length === 0) return out;
+  const { sql } = getOrgPg();
+  const ws = eventsWs(workspaceId);
+  const rows = await sql`
+    SELECT subscriber_id, max(delivered_at) AS last_woken_at
+      FROM harness_shared.event_wake_deliveries
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${subscriberIds})
+       AND status = 'delivered'
+       AND channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]})
+       AND delivered_at IS NOT NULL
+     GROUP BY subscriber_id
+  `;
+  for (const r of rows as any[]) {
+    if (r.last_woken_at) out.set(r.subscriber_id, new Date(r.last_woken_at).getTime());
+  }
+  return out;
 }
 
 export async function markDeliveryParked(id: number, reason: string, recheckMs: number): Promise<void> {

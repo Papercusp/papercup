@@ -9,6 +9,7 @@ import {
   clampToFloor,
   type Fire,
   type FloorConfig,
+  type FloorDecision,
 } from './index';
 
 const fire = (at: number, payload = `e@${at}`, urgent = false): Fire<string> => ({ at, payload, urgent });
@@ -69,7 +70,7 @@ describe('decideWake — the exact gap: at-most-once-per-min_sleep + burst → O
     // fires every 100ms for 2500ms = 26 fires (t=0..2500). Evaluate at each.
     for (let t = 0; t <= 2500; t += 100) {
       pending = [...pending, fire(t)];
-      const d = decideWake({ lastWokenAt, pending, now: t, cfg: c });
+      const d: FloorDecision<string> = decideWake({ lastWokenAt, pending, now: t, cfg: c });
       if (d.wake) {
         wakes.push(d.coalesced.fires.map((f) => f.at));
         lastWokenAt = d.state.lastWokenAt;
