@@ -38,6 +38,8 @@ const base: FleetAssignmentRow = {
   holderPlanSlug: null,
   orphaned: false,
   declaredPlanMatches: null,
+  assigneeRank: null,
+  rankWriter: null,
 };
 
 const presence = (over: Partial<FleetAssignmentRow>): FleetAssignmentRow => ({
@@ -157,6 +159,59 @@ describe('groupByAgent — claim-primary (D-002)', () => {
       presence({ agentId: 'su-live' }),
     ]);
     expect(groups.map((g) => g.agentId)).toEqual(['su-live', 'su-orphan', 'su-stale']);
+  });
+});
+
+// The work-item-claim row factory carrying a per-assignee rank (local-hive P-021).
+const workClaim = (over: Partial<FleetAssignmentRow>): FleetAssignmentRow => ({
+  ...base,
+  source: 'work_item_claim',
+  agentId: 'su-bee',
+  itemId: null,
+  workItemId: 'WI-?',
+  itemKind: 'feature',
+  detail: 'a work-item',
+  status: 'todo',
+  claimActive: true,
+  ...over,
+});
+
+describe('groupByAgent — the per-bee ordered work-list (local-hive P-021)', () => {
+  it('derives doing (head-of-line) + queued (rank order) + load from work-item claims', () => {
+    const groups = groupByAgent([
+      presence({ agentId: 'su-bee', detail: 'working' }),
+      workClaim({ workItemId: 'WI-3', detail: 'third', assigneeRank: 2, rankWriter: 'bee' }),
+      workClaim({ workItemId: 'WI-1', detail: 'first', assigneeRank: 0, rankWriter: 'queen' }),
+      workClaim({ workItemId: 'WI-2', detail: 'second', assigneeRank: 1, rankWriter: 'bee' }),
+    ]);
+    const g = groups.find((x) => x.agentId === 'su-bee')!;
+    expect(g.load).toBe(3);
+    expect(g.queued.map((q) => q.id)).toEqual(['WI-1', 'WI-2', 'WI-3']); // rank ASC
+    expect(g.doing?.id).toBe('WI-1'); // head-of-line = lowest rank
+    expect(g.doing?.rankWriter).toBe('queen'); // the Queen-overlaid head
+  });
+
+  it('sorts unranked work-items to the tail (NULLs last), stable by id', () => {
+    const groups = groupByAgent([
+      presence({ agentId: 'su-bee' }),
+      workClaim({ workItemId: 'WI-b', assigneeRank: null }),
+      workClaim({ workItemId: 'WI-a', assigneeRank: null }),
+      workClaim({ workItemId: 'WI-ranked', assigneeRank: 0 }),
+    ]);
+    const g = groups.find((x) => x.agentId === 'su-bee')!;
+    expect(g.queued.map((q) => q.id)).toEqual(['WI-ranked', 'WI-a', 'WI-b']);
+    expect(g.doing?.id).toBe('WI-ranked');
+  });
+
+  it('an agent with no work-items has doing=null, queued=[], load=0', () => {
+    const groups = groupByAgent([
+      presence({ agentId: 'su-idle' }),
+      planClaim({ agentId: 'su-idle' }), // a plan-item lease is NOT a work-item
+    ]);
+    const g = groups.find((x) => x.agentId === 'su-idle')!;
+    expect(g.doing).toBeNull();
+    expect(g.queued).toEqual([]);
+    expect(g.load).toBe(0);
   });
 });
 

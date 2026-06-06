@@ -214,6 +214,10 @@ import './coordination/tools/send';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"
 // action (inbox-tiering-and-message-agent-2026-06-05, D-004).
 import './coordination/tools/message-agent';
+// Idle end-of-turn wake scaffold — register a standing wake watch on your own
+// inbox-wake key so a later coord:send {wake:true} re-invokes you
+// (local-hive-orchestration-2026-06-06 P-041).
+import './coordination/tools/await-inbox';
 // Operator inbox-triage PASS — re-tier an attention item, audit the why
 // (inbox-tiering-and-message-agent-2026-06-05, D-006).
 import './inbox/triage';
@@ -291,6 +295,10 @@ import './work_items/set_state';
 import './work_items/complete';
 import './work_items/claim';
 import './work_items/release';
+// Per-assignee ordered work-list (local-hive-orchestration P-020 / D-004 / D-008):
+// reorder moves an item within its assignee's queue; writer (bee|queen) = the
+// propose/dispose audit, gated by the existing automation tier (work_items:write → medium).
+import './work_items/reorder';
 import './work_items/link';
 import './work_items/tag';
 import './work_items/subscribe';

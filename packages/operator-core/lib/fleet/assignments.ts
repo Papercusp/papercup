@@ -61,6 +61,11 @@ export interface FleetAssignmentRow {
   orphaned: boolean;
   /** Holder's self-declared plan matches the claim's plan (null when n/a). */
   declaredPlanMatches: boolean | null;
+  /** Per-assignee position in the holder's ordered work-list (local-hive P-021).
+   *  work-item rows only; null on plan-item/assignment/presence rows. */
+  assigneeRank: number | null;
+  /** Who set assigneeRank — 'bee' | 'queen' (the propose/dispose audit, D-008). */
+  rankWriter: string | null;
 }
 
 export interface ListFleetAssignmentsOpts {
@@ -124,6 +129,8 @@ export async function listFleetAssignments(
       holderPlanSlug: (r.holder_plan_slug as string | null) ?? null,
       orphaned: Boolean(r.orphaned),
       declaredPlanMatches: (r.declared_plan_matches as boolean | null) ?? null,
+      assigneeRank: r.assignee_rank == null ? null : Number(r.assignee_rank),
+      rankWriter: (r.rank_writer as string | null) ?? null,
     }),
   );
 }
@@ -144,6 +151,10 @@ export interface AgentClaim {
   expiresTs: string | null;
   active: boolean;
   orphaned: boolean;
+  /** Position in the holder's ordered work-list (work-item claims only; null otherwise). */
+  rank: number | null;
+  /** Who set the rank — 'bee' | 'queen' (D-008). */
+  rankWriter: string | null;
 }
 
 /** One agent with everything it holds — "what is X doing" in one object. */
@@ -164,6 +175,16 @@ export interface AgentAssignment {
   orphaned: boolean;
   /** Declared a plan but holds no claim/assignment on it — the D-002 smell. */
   declaredUnclaimed: boolean;
+  // ── the externalized per-bee ordered work-list (local-hive P-021) ──
+  /** Head-of-line: the lowest-rank work-item the agent holds (what it's doing / next).
+   *  null when it holds no work-items. The Queen reads this for evict judgment. */
+  doing: WorkListItem | null;
+  /** The agent's work-items in rank order (head-of-line first; unranked last). The
+   *  ordered plan the Queen reads for affinity. */
+  queued: WorkListItem[];
+  /** How many work-items the agent holds — the load signal for warm-inject vs a fresh
+   *  slot (P-052). Counts work-item claims only (not plan-item leases). */
+  load: number;
 }
 
 function toClaim(r: FleetAssignmentRow): AgentClaim {
@@ -184,7 +205,21 @@ function toClaim(r: FleetAssignmentRow): AgentClaim {
     expiresTs: r.claimExpiresTs,
     active: r.claimActive !== false,
     orphaned: r.orphaned,
+    rank: r.assigneeRank,
+    rankWriter: r.rankWriter,
   };
+}
+
+/** One ordered work-list item — the externalized TodoWrite entry (local-hive P-021). */
+export interface WorkListItem {
+  /** WI-/F-/EI- id. */
+  id: string;
+  itemKind: string | null;
+  title: string;
+  status: string | null;
+  rank: number | null;
+  /** Who placed it — 'bee' (self-authored) | 'queen' (overlay) | null (unranked). */
+  rankWriter: string | null;
 }
 
 /**
@@ -195,6 +230,8 @@ function toClaim(r: FleetAssignmentRow): AgentClaim {
  */
 export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
   const groups = new Map<string, AgentAssignment>();
+  // Per-agent ordered work-list, accumulated from work_item_claim rows (P-021).
+  const workLists = new Map<string, WorkListItem[]>();
   const ensure = (key: string): AgentAssignment => {
     let g = groups.get(key);
     if (!g) {
@@ -210,6 +247,9 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
         claims: [],
         orphaned: false,
         declaredUnclaimed: false,
+        doing: null,
+        queued: [],
+        load: 0,
       };
       groups.set(key, g);
     }
@@ -231,6 +271,19 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
       g.declaredPlanSlug = r.planSlug;
     } else {
       g.claims.push(toClaim(r));
+      // Accumulate the ordered work-list from work-item claims (P-021).
+      if (r.source === 'work_item_claim' && r.workItemId) {
+        const list = workLists.get(r.agentId) ?? [];
+        list.push({
+          id: r.workItemId,
+          itemKind: r.itemKind,
+          title: r.detail,
+          status: r.status,
+          rank: r.assigneeRank,
+          rankWriter: r.rankWriter,
+        });
+        workLists.set(r.agentId, list);
+      }
       if (r.orphaned) g.orphaned = true;
       // A claim joined to a presence row also proves the agent exists.
       if (r.holderPresent) {
@@ -258,10 +311,21 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
   }
 
   // The declared-but-unclaimed smell: a declared plan none of the claims back.
+  // + the P-021 ordered work-list: rank ASC (NULLs last), head-of-line = doing.
   for (const g of groups.values()) {
     g.declaredUnclaimed = Boolean(
       g.declaredPlanSlug && !g.claims.some((c) => c.planSlug === g.declaredPlanSlug),
     );
+    const list = workLists.get(g.agentId) ?? [];
+    list.sort((a, b) => {
+      const ar = a.rank ?? Number.POSITIVE_INFINITY;
+      const br = b.rank ?? Number.POSITIVE_INFINITY;
+      if (ar !== br) return ar - br;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; // stable tiebreak for unranked
+    });
+    g.queued = list;
+    g.doing = list[0] ?? null;
+    g.load = list.length;
   }
 
   // Live agents first, then orphan-holders, newest heartbeat first.

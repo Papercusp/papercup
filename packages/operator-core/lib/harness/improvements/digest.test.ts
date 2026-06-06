@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildDigest, dedupSignature, findLikelyDuplicates } from './digest';
+import {
+  buildDigest,
+  dedupSignature,
+  findLikelyDuplicates,
+  signatureRecurrence,
+  recallAlreadyDecided,
+} from './digest';
 import type { ImprovementCandidate } from './policy';
 
 const NOW = Date.parse('2026-06-04T12:00:00Z');
@@ -90,5 +96,102 @@ describe('buildDigest', () => {
     expect(d.autoEligible).toEqual([]);
     expect(d.humanQueue).toEqual([]);
     expect(d.likelyDuplicates).toEqual([]);
+    expect(d.recurringSignatures).toEqual([]);
+  });
+
+  it('surfaces recurring signatures (P-003) only when a signature recurred (count > 1)', () => {
+    const recurring: ImprovementCandidate[] = [
+      cand({ id: 'r1', title: 'lock contention stomped my edit', createdAt: daysAgo(8) }),
+      cand({ id: 'r2', title: 'my edit stomped by lock contention', createdAt: daysAgo(2) }), // same signature, reworded
+      cand({ id: 'u1', title: 'a one-off unique annoyance here', createdAt: daysAgo(1) }),
+    ];
+    const d = buildDigest(recurring, { nowMs: NOW });
+    expect(d.recurringSignatures).toHaveLength(1);
+    expect(d.recurringSignatures[0].count).toBe(2);
+    expect(d.recurringSignatures[0].ids.sort()).toEqual(['r1', 'r2']);
+    expect(d.headline).toMatch(/recurring signature/);
+  });
+});
+
+/**
+ * Recurrence-decay on the STABLE signature (P-003, D-003) — the keystone matcher
+ * is the same normalized-signature + Jaccard the dedup uses, NOT raw title text.
+ */
+describe('signatureRecurrence', () => {
+  it('groups re-worded re-encounters under one signature and measures decay from the freshest', () => {
+    const items: ImprovementCandidate[] = [
+      cand({ id: 'a', title: 'coord inbox overflows token budget', updatedAt: daysAgo(20) }),
+      cand({ id: 'b', title: 'token budget overflows coord inbox', updatedAt: daysAgo(3) }),
+    ];
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs).toHaveLength(1);
+    expect(recs[0].count).toBe(2);
+    // decay measured from the FRESHEST member (3 days), not the oldest.
+    expect(recs[0].decayDays).toBe(3);
+  });
+
+  it('splits open vs resolved so active friction reads differently from handled', () => {
+    const items: ImprovementCandidate[] = [
+      cand({ id: 'o', title: 'flaky thing keeps recurring', state: 'open', updatedAt: daysAgo(1) }),
+      cand({ id: 'r', title: 'recurring flaky thing keeps', state: 'resolved', updatedAt: daysAgo(40) }),
+    ];
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs[0].openCount).toBe(1);
+    expect(recs[0].resolvedCount).toBe(1);
+  });
+
+  it('sorts most-recurring first, then freshest', () => {
+    const items: ImprovementCandidate[] = [
+      cand({ id: 's1', title: 'rare friction alpha', updatedAt: daysAgo(1) }),
+      cand({ id: 'm1', title: 'common friction beta', updatedAt: daysAgo(10) }),
+      cand({ id: 'm2', title: 'beta common friction', updatedAt: daysAgo(2) }),
+      cand({ id: 'm3', title: 'friction common beta', updatedAt: daysAgo(5) }),
+    ];
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs[0].count).toBe(3); // the beta cluster
+    expect(recs[0].ids[0]).toBe('m2'); // freshest member first
+  });
+});
+
+/**
+ * "Already decided: <reason>" recall (P-003) — recognise a settled friction by its
+ * SIGNATURE before re-proposing it. Only resolved/closed prior items recall.
+ */
+describe('recallAlreadyDecided', () => {
+  it('recalls a prior RESOLVED item with a matching signature (re-worded) and its reason', () => {
+    const prior: ImprovementCandidate[] = [
+      cand({
+        id: 'EI-9',
+        title: 'inbox digest should paginate older deltas',
+        state: 'resolved',
+        decidedReason: 'shipped the +K-older elision instead',
+      }),
+    ];
+    const hits = recallAlreadyDecided('older deltas should paginate inbox digest', prior);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].id).toBe('EI-9');
+    expect(hits[0].matchKind).toBe('signature');
+    expect(hits[0].reason).toBe('already decided: shipped the +K-older elision instead');
+  });
+
+  it('does NOT recall an OPEN item (only already-decided friction recalls)', () => {
+    const prior: ImprovementCandidate[] = [
+      cand({ id: 'EI-10', title: 'same exact signature here now', state: 'open' }),
+    ];
+    expect(recallAlreadyDecided('same exact signature here now', prior)).toEqual([]);
+  });
+
+  it('does NOT recall an unrelated decided item', () => {
+    const prior: ImprovementCandidate[] = [
+      cand({ id: 'EI-11', title: 'completely unrelated subject matter', state: 'closed' }),
+    ];
+    expect(recallAlreadyDecided('presence list dumps stale rows fast', prior)).toEqual([]);
+  });
+
+  it('can exclude a given id (so a re-file does not recall itself)', () => {
+    const prior: ImprovementCandidate[] = [
+      cand({ id: 'self', title: 'a recurring decided friction', state: 'resolved' }),
+    ];
+    expect(recallAlreadyDecided('a recurring decided friction', prior, { excludeId: 'self' })).toEqual([]);
   });
 });

@@ -32,8 +32,8 @@ import {
   type IssueSource,
   type CreateIssueInput,
 } from '../../issues-engineer';
-import { IMPROVEMENT_TOPIC } from './read-items';
-import { titleSimilarity } from './digest';
+import { IMPROVEMENT_TOPIC, issueToCandidate } from './read-items';
+import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
@@ -83,6 +83,16 @@ export interface CaptureImprovementResult {
   issue?: EngineerIssue;
   topics?: string[];
   possibleDuplicates: PossibleDuplicate[];
+  /**
+   * "Already decided" recall (self-learning-central P-003): prior RESOLVED/closed
+   * items whose STABLE signature matches this capture — so the loop recognises a
+   * settled friction before re-proposing it. Distinct from `possibleDuplicates`
+   * (raw title-similarity over OPEN+resolved): this is signature-matched and
+   * decided-only, and carries the "already decided: <reason>" recall line when one
+   * was recorded. Surfaced even when the capture is created (force / genuinely
+   * distinct) — it's recall, not a gate.
+   */
+  alreadyDecided?: AlreadyDecidedRecall[];
   hint?: string;
 }
 
@@ -117,8 +127,22 @@ export async function captureImprovement(
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 5);
 
+  // "Already decided" recall (P-003): signature-match this capture against the
+  // PRIOR resolved/closed items so a settled friction is recognised before it
+  // re-enters the queue. Reads the stable signature (not raw title) via the shared
+  // matcher. Recall, not a gate — surfaced even when we create.
+  const alreadyDecided = recallAlreadyDecided(input.title, candidates.map(issueToCandidate), {
+    excludeId: undefined,
+  });
+
   if (input.checkDuplicatesOnly) {
-    return { ok: true, created: false, reason: 'check-only', possibleDuplicates };
+    return {
+      ok: true,
+      created: false,
+      reason: 'check-only',
+      possibleDuplicates,
+      ...(alreadyDecided.length ? { alreadyDecided } : {}),
+    };
   }
   const blockingDuplicates =
     input.dedupScope === 'open' ? possibleDuplicates.filter((d) => d.state === 'open') : possibleDuplicates;
@@ -128,6 +152,7 @@ export async function captureImprovement(
       created: false,
       reason: 'likely-duplicate',
       possibleDuplicates,
+      ...(alreadyDecided.length ? { alreadyDecided } : {}),
       hint: 'This looks already filed — comment on / claim the existing item, or re-run with force:true if it is genuinely distinct.',
     };
   }
@@ -150,5 +175,13 @@ export async function captureImprovement(
     source: input.source,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
-  return { ok: true, created: true, kind: input.kind, issue, topics, possibleDuplicates };
+  return {
+    ok: true,
+    created: true,
+    kind: input.kind,
+    issue,
+    topics,
+    possibleDuplicates,
+    ...(alreadyDecided.length ? { alreadyDecided } : {}),
+  };
 }

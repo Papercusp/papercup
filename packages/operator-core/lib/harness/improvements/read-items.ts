@@ -30,6 +30,10 @@ interface ImprovementPayload {
   paths?: unknown;
   implementAttempts?: unknown;
   needsHuman?: unknown;
+  /** One-line "already decided: <reason>" recall for the recurrence matcher
+   *  (self-learning P-003) — set when an item is resolved/closed with a durable
+   *  rationale worth recalling on the next same-signature capture. */
+  decidedReason?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -42,6 +46,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   const kind: WorkItemKind = p.improvementKind === 'feature' ? 'feature' : (issue.kind as WorkItemKind);
   const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === 'string') : undefined;
   const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
+  const decidedReason = typeof p.decidedReason === 'string' && p.decidedReason.trim() ? p.decidedReason : undefined;
   return {
     id: issue.id,
     kind,
@@ -53,9 +58,11 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     assignee: issue.assignee,
     assignedAt: issue.assignedAt,
     createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
     ...(paths?.length ? { paths } : {}),
     ...(attempts !== undefined ? { attempts } : {}),
     ...(p.needsHuman === true ? { needsHuman: true } : {}),
+    ...(decidedReason ? { decidedReason } : {}),
   };
 }
 

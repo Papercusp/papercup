@@ -125,3 +125,38 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(res.created).toBe(true);
   });
 });
+
+describe('captureImprovement — "already decided" recall (self-learning P-003)', () => {
+  it('surfaces a prior RESOLVED same-signature item as already-decided, with its reason', async () => {
+    const decided = existing({
+      id: 'EI-7',
+      title: 'presence list dumps stale rows',
+      state: 'resolved',
+      payload: { decidedReason: 'fixed by the TTL sweep in PR-x' },
+    });
+    // dedupScope:'open' so the resolved dup does not BLOCK the create — we want to
+    // assert the recall fires even on a created capture (it is recall, not a gate).
+    const d = deps({ found: [decided] });
+    const res = await captureImprovement(
+      { title: 'stale rows dumps presence list', kind: 'bug', dedupScope: 'open' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(res.alreadyDecided?.[0]).toMatchObject({
+      id: 'EI-7',
+      matchKind: 'signature',
+      reason: 'already decided: fixed by the TTL sweep in PR-x',
+    });
+  });
+
+  it('does NOT recall when the only prior same-signature item is OPEN', async () => {
+    const open = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'open' });
+    const d = deps({ found: [open] });
+    const res = await captureImprovement(
+      { title: 'stale rows dumps presence list', kind: 'bug', force: true },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(res.alreadyDecided).toBeUndefined();
+  });
+});

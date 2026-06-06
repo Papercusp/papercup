@@ -72,6 +72,12 @@ export interface EngineerIssue {
   foundDuring: string | null;
   linkedFeatureId: string | null;
   createdBy: string | null;
+  /** Position within the ASSIGNEE's ordered work-list (local-hive P-020). null = unranked. */
+  assigneeRank: number | null;
+  /** Who last set assigneeRank — 'bee' | 'queen' (the propose/dispose audit, D-008). */
+  rankWriter: 'bee' | 'queen' | null;
+  /** When assigneeRank was last written. */
+  rankUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +126,9 @@ interface IssueRowDb {
   found_during: string | null;
   linked_feature_id: string | null;
   created_by: string | null;
+  assignee_rank: number | null;
+  rank_writer: string | null;
+  rank_updated_at: unknown;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -147,13 +156,17 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     foundDuring: r.found_during,
     linkedFeatureId: r.linked_feature_id,
     createdBy: r.created_by,
+    assigneeRank: r.assignee_rank,
+    rankWriter: r.rank_writer === 'bee' || r.rank_writer === 'queen' ? r.rank_writer : null,
+    rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
   };
 }
 
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
-  assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by, created_at, updated_at`;
+  assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by,
+  assignee_rank, rank_writer, rank_updated_at, created_at, updated_at`;
 
 /** Allocate the next globally-unique EI-<n> id. */
 async function nextIssueId(): Promise<string> {

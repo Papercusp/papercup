@@ -312,6 +312,16 @@ so you see what's happening in your areas and others see what you discover:
   (broken → auto-implement-eligible) vs `change`/`feature` (human-reviewed).
   `improvements:digest` triages the backlog. (Managed-harness problems still use
   `issues:create` with that scope.)
+- **Friction trip-wire (self-learning loop).** This is the SUBJECTIVE sibling of
+  the watchdog: when you *feel* friction worth fixing — a workaround you just
+  wrote, a doc that misled you, an awkward tool, a retry / repeated tool-error, a
+  >3-attempt confusing failure (the "search the web after 3 loops" point), lock /
+  coord contention — file it once via `improvements:capture` and move on. Don't
+  reflect every turn; just trip on real friction. **Bar: capture only a GENUINE,
+  REPEATABLE improvement** (one the next agent would hit too), not a one-off or a
+  self-inflicted slip — sparseness keeps the queue clean. The watchdog already
+  covers objective signals (test/health/tool failures); you file only what it
+  cannot see.
 - **Inline-first; escalate only when warranted:** strategy is emergent — do
   discovered work inline by default; file an issue when out of scope; `issues:promote`
   an issue to a feature only when it warrants tracked pipeline work (a tool you

@@ -11,15 +11,16 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { sendMessage } from '../messages';
+import { wakeRecipients } from '../inbox-wake';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send a message to other coordination agents. `to` is a list of ownerIds; use ["*"] to broadcast, ["human"] to surface to the user. Returns the assigned msg_id.',
+    'Send a message to other coordination agents. `to` is a list of ownerIds; use ["*"] to broadcast, ["human"] to surface to the user. By default the message is INJECTED (lands in the recipient\'s inbox, seen on their next natural turn — cheap, no token cost). Pass `wake:true` to ALSO re-invoke a SLEEPING recipient now (deliver-and-wake) — targeted to exactly the addressees, never a broadcast. Returns the assigned msg_id.',
   guidance: {
-    when: 'Sharing context with another agent — "I just finished X, the next step is Y", or asking a question, or handing off a piece of work.',
-    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock.',
+    when: 'Sharing context with another agent — "I just finished X, the next step is Y", or asking a question, or handing off a piece of work. Use wake:true ONLY when the recipient is idle/asleep and must act now (a Queen placing work onto a sleeping bee); a running recipient already sees the inject mid-turn, so wake is wasted on it.',
+    notWhen: 'For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don\'t set wake:true for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in).',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -31,6 +32,12 @@ export default defineTool({
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z.string().optional(),
+    wake: z
+      .boolean()
+      .optional()
+      .describe(
+        'Default false (cheap inject). true = ALSO fire each addressee\'s inbox-wake key so a SLEEPING recipient is re-invoked now. Targeted to the addressees only — never a broadcast wake (\'*\'/\'human\' are skipped).',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -49,11 +56,27 @@ export default defineTool({
       related_msg_id: args.related_msg_id,
       ...(harnessSlug ? { harnessSlug } : {}),
     });
+
+    // Deliver-and-wake (P-040): the message already persisted to the inbox above
+    // (the durable default). When the sender opted in, ALSO fire each addressed
+    // recipient's OWN inbox-wake key so a SLEEPING addressee is re-invoked — one
+    // targeted emit per ownerId, NEVER a broadcast key (P-042). We wake the
+    // POST-expansion recipients (`env.to` — audience selectors already resolved),
+    // so a `@plan:`/`@topic:` send wakes exactly the resolved set, not '*'.
+    let wake: { targets: string[]; woken: number } | undefined;
+    if (args.wake) {
+      const fan = await wakeRecipients(env.to, {
+        summary: args.summary,
+        source: identity.ownerId,
+      });
+      wake = { targets: fan.targets, woken: fan.woken };
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, msg_id: env.msg_id, ts: env.ts }),
+          text: JSON.stringify({ ok: true, msg_id: env.msg_id, ts: env.ts, ...(wake ? { wake } : {}) }),
         },
       ],
     };

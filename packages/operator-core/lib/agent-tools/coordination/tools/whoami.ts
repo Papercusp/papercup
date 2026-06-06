@@ -11,11 +11,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
+import { inboxWakeKey } from '../inbox-wake';
 
 export default defineTool({
   name: 'coord:whoami',
   description:
-    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId. A debug aid for confirming how the coordination layer sees this agent.',
+    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
   guidance: {
     when: 'Debugging identity — "what ownerId am I?" before relying on lock or message behaviour.',
     notWhen: 'Routine work — identity is resolved automatically by every coord:* and locks:* call.',
@@ -28,7 +29,10 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify(identity) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ...identity, inbox_wake_key: inboxWakeKey(identity.ownerId) }),
+        },
       ],
     };
   },

@@ -526,6 +526,14 @@ areas and others see what you discover. The loop:
   improvement) vs **`feature`** (net-new — write a `plans:new` if it needs design).
   Browse/triage the backlog with **`improvements:digest`**. (This is for papercusp;
   a problem in a *managed harness* still goes to `issues:create` with that scope.)
+  This is the SUBJECTIVE sibling of the watchdog (`self-learning-central`): the
+  watchdog files objective signals (test/health/tool failures); you trip on what it
+  cannot see — what you *felt*. Markers that should make you reach for it: a
+  workaround you wrote, a misleading doc, an awkward tool, a retry / repeated
+  tool-error, a >3-attempt confusing failure (the "web-search after 3 loops" point),
+  lock / coord contention. **Bar: capture only a GENUINE, REPEATABLE improvement**
+  (one the next agent would hit too), not a one-off — don't reflect every turn, just
+  trip on real friction.
 
 - **Default to doing it inline; escalate only when it warrants it.** Strategy is
   emergent (`project-centric-harness-rethink`) — most discovered work you just do,

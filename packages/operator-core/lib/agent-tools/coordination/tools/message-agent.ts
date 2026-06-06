@@ -31,6 +31,7 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { openConversation } from '../conversations';
 import { sendMessage } from '../messages';
+import { wakeRecipients } from '../inbox-wake';
 
 function truncate(s: string, n = 100): string {
   const t = s.trim().replace(/\s+/g, ' ');
@@ -66,6 +67,10 @@ export default defineTool({
     item_ref: z.string().optional(),
     /** Topic slugs to tag the conversation with (work-item linkage). */
     topics: z.array(z.string().min(1)).max(8).optional(),
+    /** Deliver-and-wake (P-040): default false (the ping is a cheap inject the
+     *  owner sees mid-turn / next turn). true = ALSO re-invoke the owner now if
+     *  they are asleep. Targeted to the single addressee — never a broadcast. */
+    wake: z.boolean().optional(),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -123,6 +128,19 @@ export default defineTool({
       }
     }
 
+    // Deliver-and-wake (P-040): the ping above is the cheap inject default. When
+    // the sender opts in AND there is a single named owner, ALSO fire that owner's
+    // inbox-wake key so a sleeping owner is re-invoked now. One targeted emit —
+    // never a broadcast (P-042). wakeRecipients filters '*'/'human'/self-send.
+    let woke = false;
+    if (args.wake && args.to && args.to !== identity.ownerId) {
+      const fan = await wakeRecipients([args.to], {
+        summary: `💬 ${identity.ownerLabel ?? identity.ownerId} messaged you${workItemLabel ? ` re ${workItemLabel}` : ''}`,
+        source: identity.ownerId,
+      });
+      woke = fan.woken > 0;
+    }
+
     return {
       content: [
         {
@@ -134,6 +152,7 @@ export default defineTool({
             to: args.to ?? null,
             subscribedOwner,
             pinged,
+            woke,
           }),
         },
       ],

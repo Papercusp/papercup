@@ -105,8 +105,27 @@ export interface WorkItem {
   /** Parent work-item id (a chunk's parent, D-004). */
   parent: string | null;
   payload: unknown | null;
+  /**
+   * Position within this item's ASSIGNEE's ordered work-list (local-hive P-020/D-004).
+   * Lower = nearer head-of-line; null = unranked. Only meaningful relative to the other
+   * items the SAME assignee holds — two bees' lists are independent. The Queen places
+   * ranked work; the bee owns its sequencing (propose/dispose, D-008).
+   */
+  rank: number | null;
+  /** Who last set `rank` — the propose/dispose audit (D-008). 'bee' (the default,
+   *  bee-authored) | 'queen' (Queen overlay). null when unranked. */
+  rankWriter: RankWriter | null;
+  /** When `rank` was last written (tiebreak + audit). */
+  rankUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** The propose/dispose author of a work-item's rank (local-hive D-008). */
+export type RankWriter = 'bee' | 'queen';
+export const RANK_WRITERS: readonly RankWriter[] = ['bee', 'queen'];
+export function isRankWriter(v: unknown): v is RankWriter {
+  return v === 'bee' || v === 'queen';
 }
 
 // ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────
@@ -153,6 +172,9 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     severity: i.severity,
     parent: null,
     payload: i.payload ?? null,
+    rank: i.assigneeRank,
+    rankWriter: i.rankWriter,
+    rankUpdatedAt: i.rankUpdatedAt,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
@@ -168,6 +190,9 @@ interface FeatureRowDb {
   taken_by: string | null;
   parent_id: string | null;
   payload: unknown;
+  assignee_rank: number | null;
+  rank_writer: string | null;
+  rank_updated_at: unknown;
   created_ts: unknown;
   updated_ts: unknown;
 }
@@ -185,13 +210,16 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     severity: null,
     parent: r.parent_id,
     payload: r.payload ?? null,
+    rank: r.assignee_rank,
+    rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,
+    rankUpdatedAt: r.rank_updated_at == null ? null : tsIso(r.rank_updated_at),
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
 }
 
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
-  parent_id, payload, created_ts, updated_ts`;
+  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, created_ts, updated_ts`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -206,6 +234,12 @@ export interface ListWorkItemsFilter {
   parent?: string;
   /** Include child items (chunks) in the default list. Default false (D-004). */
   includeChildren?: boolean;
+  /**
+   * Order by per-assignee `rank` ascending (NULLs last) instead of updatedAt DESC
+   * (local-hive P-021). Only meaningful with an `assignee` filter — it returns that
+   * agent's ordered work-list (head-of-line first). Default false.
+   */
+  orderByRank?: boolean;
   limit?: number;
 }
 
@@ -235,7 +269,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
                ? sql`TRUE`
                : sql`(parent_id IS NULL OR parent_id = '')`
          }
-       ORDER BY updated_ts DESC NULLS LAST
+       ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
        LIMIT ${limit}`;
     out.push(...rows.map(featureRowToWorkItem));
   }
@@ -257,7 +291,17 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
     out.push(...issues.map(issueToWorkItem));
   }
 
-  out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  if (filter.orderByRank) {
+    // Head-of-line first: ranked items by rank ASC, then unranked by updatedAt DESC.
+    out.sort((a, b) => {
+      const ar = a.rank ?? Number.POSITIVE_INFINITY;
+      const br = b.rank ?? Number.POSITIVE_INFINITY;
+      if (ar !== br) return ar - br;
+      return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
+    });
+  } else {
+    out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  }
   return out.slice(0, limit);
 }
 
@@ -414,6 +458,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     severity: null,
     parent: input.parent ?? null,
     payload: input.payload ?? null,
+    rank: null,
+    rankWriter: null,
+    rankUpdatedAt: null,
     createdAt: tsIso(now),
     updatedAt: tsIso(now),
   };
@@ -610,6 +657,69 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+export interface ReorderWorkItemResult {
+  /** The item moved. */
+  id: string;
+  /** Its assignee — whose ordered queue this reorder operated on. */
+  assignee: string;
+  /** The rank the item now holds (0-based; clamped to the queue length). */
+  rank: number;
+  /** The propose/dispose author stamped on the move (D-008). */
+  writer: RankWriter;
+  /** The assignee's full ordered queue after the move (head-of-line first). */
+  queue: { id: string; rank: number; title: string }[];
+}
+
+/**
+ * The per-assignee work-list REORDER (local-hive P-020 / D-004): place one work-item at
+ * `target` rank within its assignee's ordered queue, shifting peers down (insert-at-rank
+ * — what the Queen's "inject at a rank" and a bee's "move this up" both need). Atomic via
+ * the `harness_shared.reorder_work_item` SQL fn (one transaction, renumbers densely, spans
+ * both base tables). `writer` ('bee'|'queen') stamps the propose/dispose audit (D-008);
+ * the Queen-vs-bee write balance is gated by the EXISTING automation tier at the tool
+ * layer (P-022), not here.
+ *
+ * The item must already be CLAIMED (have an assignee) — rank is meaningless on an
+ * unassigned item. Returns the new rank + the assignee's ordered queue, or null when the
+ * item doesn't exist / isn't assigned.
+ */
+export async function reorderWorkItem(
+  id: string,
+  target: number,
+  opts: { writer?: RankWriter; harness?: string } = {},
+): Promise<ReorderWorkItemResult | { error: string }> {
+  const writer: RankWriter = opts.writer ?? 'bee';
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (!wi.assignee) return { error: `work_item '${id}' is unassigned — claim it before ranking` };
+
+  const { sql } = getOrgPg();
+  // The work_items view carries workspace_id; resolve it for this item so the reorder is
+  // scoped to the right (workspace, assignee) queue.
+  const wsRows = await sql<{ workspace_id: string }[]>`
+    SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${id} LIMIT 1`;
+  const workspace = wsRows[0]?.workspace_id ?? activeWorkspaceId();
+
+  const rankRows = await sql<{ rank: number }[]>`
+    SELECT harness_shared.reorder_work_item(
+      ${workspace}, ${wi.assignee}, ${id}, ${Math.trunc(target)}, ${writer}
+    ) AS rank`;
+  const rank = Number(rankRows[0]?.rank ?? 0);
+
+  const queueRows = await sql<{ feature_id: string; assignee_rank: number; title: string | null }[]>`
+    SELECT feature_id, assignee_rank, title
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspace} AND taken_by = ${wi.assignee}
+     ORDER BY assignee_rank ASC NULLS LAST, updated_ts DESC`;
+  return {
+    id,
+    assignee: wi.assignee,
+    rank,
+    writer,
+    queue: queueRows.map((r) => ({ id: r.feature_id, rank: r.assignee_rank, title: r.title ?? '' })),
+  };
 }
 
 /** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */

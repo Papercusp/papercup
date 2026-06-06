@@ -55,6 +55,53 @@ export interface DupCluster {
   ids: string[];
 }
 
+/**
+ * Recurrence-decay over a STABLE friction signature (self-learning-central P-003,
+ * D-003). The keystone is the same normalized-signature + Jaccard matcher the
+ * dedup uses — NOT raw title text — so re-encountered friction collides even when
+ * the wording differs. For one signature we count how often it recurred and how
+ * long since it last did:
+ *
+ *   - `count` — how many captures share this signature (recurrence strength).
+ *   - `lastSeenMs` — the most recent capture/update of the signature.
+ *   - `decayDays` — days since `lastSeenMs`. The recurrence-decay OUTCOME signal
+ *     (D-003): a signature that stopped recurring is a WEAK *negative* — "the
+ *     friction may have stopped" — fine for the broad product/local class, too
+ *     weak alone for the process/prompt class (that class earns the gym's
+ *     positive A/B). This struct exposes the raw decay; the consumer applies the
+ *     class-specific weight.
+ *   - `openCount` / `resolvedCount` — split so a still-open recurring signature
+ *     (active friction) reads differently from a resolved one (probably handled).
+ */
+export interface SignatureRecurrence {
+  signature: string;
+  count: number;
+  openCount: number;
+  resolvedCount: number;
+  /** Member ids, newest-first. */
+  ids: string[];
+  lastSeenMs: number;
+  decayDays: number;
+}
+
+/**
+ * The "already decided: <reason>" recall (self-learning-central P-003). When a
+ * NEW friction is captured, the loop should recognise it if the SAME stable
+ * signature was already decided (resolved/closed) — so it doesn't re-propose a
+ * settled question. This is the recall hit for one candidate title.
+ */
+export interface AlreadyDecidedRecall {
+  /** The prior decided item that matches the signature. */
+  id: string;
+  title: string;
+  state: string;
+  /** Exact normalized-signature match, or a near-dup (Jaccard ≥ threshold). */
+  matchKind: 'signature' | 'near-dup';
+  similarity: number;
+  /** The recall line: "already decided: <reason>" when a durable reason was recorded. */
+  reason?: string;
+}
+
 export interface ImprovementDigest {
   generatedAt: string;
   total: number;
@@ -68,6 +115,13 @@ export interface ImprovementDigest {
   humanQueue: ScoredItem[];
   /** Groups of likely-duplicate candidates (open + resolved) for cheap merge. */
   likelyDuplicates: DupCluster[];
+  /**
+   * Recurring friction signatures (P-003) — every signature seen more than once,
+   * recurrence + decay attached. The Queen reads this to weight a *recurring*
+   * friction up and to spot one that has decayed (stopped recurring). Keyed on the
+   * stable signature, so re-worded re-encounters collide. Sorted recurrence desc.
+   */
+  recurringSignatures: SignatureRecurrence[];
   /** One-line summary for a coord broadcast / notification. */
   headline: string;
 }
@@ -153,6 +207,90 @@ export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupClu
   return clusters;
 }
 
+/** The most recent activity timestamp for a candidate (resolution time when
+ *  resolved/closed, else creation). The recurrence-decay clock. */
+function lastSeenMsOf(c: ImprovementCandidate): number {
+  const ts = c.updatedAt ?? c.createdAt;
+  const parsed = ts ? Date.parse(ts) : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Compute recurrence-decay per stable signature (P-003). Groups every candidate
+ * by `dedupSignature` (the same matcher the dedup + recall use), then for each
+ * signature reports recurrence strength + decay. Sorted by recurrence count desc,
+ * then freshest-first — the most-recurring, most-recent friction surfaces first.
+ */
+export function signatureRecurrence(
+  candidates: ImprovementCandidate[],
+  opts: { nowMs?: number } = {},
+): SignatureRecurrence[] {
+  const nowMs = opts.nowMs ?? Date.now();
+  const bySig = new Map<string, ImprovementCandidate[]>();
+  for (const c of candidates) {
+    const sig = dedupSignature(c.title);
+    if (!sig) continue;
+    const arr = bySig.get(sig) ?? [];
+    arr.push(c);
+    bySig.set(sig, arr);
+  }
+  const out: SignatureRecurrence[] = [];
+  for (const [signature, members] of bySig) {
+    const sorted = [...members].sort((a, b) => lastSeenMsOf(b) - lastSeenMsOf(a));
+    const lastSeenMs = sorted.length ? lastSeenMsOf(sorted[0]) : 0;
+    const openCount = members.filter((m) => (m.state ?? 'open') === 'open').length;
+    const resolvedCount = members.length - openCount;
+    out.push({
+      signature,
+      count: members.length,
+      openCount,
+      resolvedCount,
+      ids: sorted.map((m) => m.id),
+      lastSeenMs,
+      decayDays: lastSeenMs ? Math.round(((nowMs - lastSeenMs) / DAY_MS) * 10) / 10 : 0,
+    });
+  }
+  return out.sort((a, b) => b.count - a.count || b.lastSeenMs - a.lastSeenMs);
+}
+
+/**
+ * "Already decided" recall (P-003). Given a candidate title and the set of PRIOR
+ * candidates, surface decided (resolved/closed) items whose STABLE signature
+ * matches — exact normalized-signature first, then a near-dup Jaccard pass — so a
+ * new capture of a settled friction is recognised before it re-enters the queue.
+ * Returns the strongest matches first. Reads the signature, never raw title.
+ */
+export function recallAlreadyDecided(
+  title: string,
+  prior: ImprovementCandidate[],
+  opts: { minSimilarity?: number; excludeId?: string } = {},
+): AlreadyDecidedRecall[] {
+  const minSim = opts.minSimilarity ?? NEAR_DUP_JACCARD;
+  const sig = dedupSignature(title);
+  if (!sig) return [];
+  const tokens = tokenSet(title);
+  const hits: AlreadyDecidedRecall[] = [];
+  for (const c of prior) {
+    if (opts.excludeId && c.id === opts.excludeId) continue;
+    const state = c.state ?? 'open';
+    if (state === 'open') continue; // only ALREADY-DECIDED (resolved/closed) items recall
+    const candSig = dedupSignature(c.title);
+    if (!candSig) continue;
+    const exact = candSig === sig;
+    const sim = exact ? 1 : jaccard(tokens, tokenSet(c.title));
+    if (!exact && sim < minSim) continue;
+    hits.push({
+      id: c.id,
+      title: c.title,
+      state,
+      matchKind: exact ? 'signature' : 'near-dup',
+      similarity: Math.round(sim * 100) / 100,
+      ...(c.decidedReason ? { reason: `already decided: ${c.decidedReason}` } : {}),
+    });
+  }
+  return hits.sort((a, b) => b.similarity - a.similarity);
+}
+
 function inc(rec: Record<string, number>, key: string): void {
   rec[key] = (rec[key] ?? 0) + 1;
 }
@@ -220,11 +358,15 @@ export function buildDigest(
   humanQueue.sort(byScore);
 
   const likelyDuplicates = findLikelyDuplicates(candidates);
+  // Recurrence-decay on the stable signature (P-003) — only the signatures that
+  // actually recurred (count > 1) are interesting for triage.
+  const recurringSignatures = signatureRecurrence(candidates, { nowMs }).filter((s) => s.count > 1);
   const generatedAt = new Date(nowMs).toISOString();
   const headline =
     `papercusp-improvement digest: ${candidates.length} captured (${open} open) — ` +
     `${autoEligible.length} auto-eligible, ${humanQueue.length} need a human` +
-    (likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '');
+    (likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '') +
+    (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '');
 
   return {
     generatedAt,
@@ -236,6 +378,7 @@ export function buildDigest(
     autoEligible,
     humanQueue,
     likelyDuplicates,
+    recurringSignatures,
     headline,
   };
 }

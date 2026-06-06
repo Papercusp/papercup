@@ -46,6 +46,7 @@ import {
   renderWireSchemas,
 } from '@papercusp/result-encoding';
 import { renderCoordLegend } from './coord-schema';
+import { renderFrictionTripwire } from './harness/improvements/friction-markers';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -104,7 +105,13 @@ export type Role =
   | 'auditor';
 
 export interface AssembledSection {
-  name: 'persona' | 'tools-catalog' | 'tools-playbook' | 'runtime';
+  name:
+    | 'persona'
+    | 'tools-catalog'
+    | 'tools-playbook'
+    | 'coord-legend'
+    | 'friction-tripwire'
+    | 'runtime';
   chars: number;
 }
 
@@ -362,6 +369,19 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (coordLegend) {
     parts.push(coordLegend);
     sections.push({ name: 'coord-legend', chars: coordLegend.length });
+  }
+
+  // Friction trip-wire (self-learning-central P-001/A, D-006). The SUBJECTIVE
+  // sibling of the watchdog: a near-zero one-line clause in the SHARED base every
+  // role inherits, priming the model to file friction it *felt* (a workaround, a
+  // misleading doc, a >3-attempt confusing failure) via improvements:capture the
+  // moment it hits it — NOT a per-turn reflection pass. Sourced from the one
+  // friction-markers module so the base, the su playbook, and the
+  // completion-boundary reflect step can't desync.
+  const frictionTripwire = renderFrictionTripwire();
+  if (frictionTripwire) {
+    parts.push(frictionTripwire);
+    sections.push({ name: 'friction-tripwire', chars: frictionTripwire.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

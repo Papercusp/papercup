@@ -24,9 +24,9 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness joined in). Surfaces orphaned claims (live lease, dead holder = abandoned work) and declared-but-unclaimed intents.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). Surfaces orphaned claims (live lease, dead holder = abandoned work) and declared-but-unclaimed intents.',
   guidance: {
-    when: 'Answering "who\'s running / what is agent X doing / is anyone on plan P / is that work actually being worked". This is the state query — use it instead of scanning coord:inbox or replaying lifecycle messages.',
+    when: 'Answering "who\'s running / what is agent X doing / what is X\'s ordered work-list / how loaded is X / is anyone on plan P". This is the state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
       'You want to be notified of future changes (subscribe the fleet_assignment change-feed / your coord subscriptions) or you need full message history (coord:inbox).',
     chaining:
@@ -79,6 +79,8 @@ export default defineTool({
               claims: rows.filter((r) => r.source !== 'presence').length,
               orphaned_claims: orphans.length,
               declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
+              // P-021: total work-item load across live agents (the warm-inject signal).
+              work_item_load: agents.reduce((n, a) => n + a.load, 0),
             },
             // Abandoned work first — the reason this view is claim-primary.
             orphaned: orphans.map(summarizeOrphan),

@@ -28,16 +28,17 @@ import { objectSelector } from '../coordination/audience';
 import { getWorkItem, setWorkItemState, workItemObjectRef } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
+import { renderReflectStep } from '../../harness/improvements/friction-markers';
 
 export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Finish a work-item with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts the completion notification from the fields — you spend no tokens narrating. Optionally also transitions the item to a terminal `state`.',
+    'Finish a work-item with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts the completion notification from the fields — you spend no tokens narrating. Optionally also transitions the item to a terminal `state`. Returns a `reflect` step (the self-learning friction prompt) to act on once, now.',
   guidance: {
     when: 'You finished a work-item / plan-item / brief. Fill in the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it.',
     notWhen: 'For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.',
-    chaining: 'work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed.',
+    chaining: 'work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read the returned `reflect` step (self-learning loop): if any friction marker bit you during this unit of work, file it once via improvements:capture — else capture nothing.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -131,12 +132,32 @@ export default defineTool({
       planSlug: args.completion.planSlug,
     };
 
+    // Reflect-and-capture STEP at the completion boundary (self-learning-central
+    // P-001/B, D-006). Completing a unit of work is the densest, cheapest moment
+    // for the SUBJECTIVE friction feed-in: the agent has the full sub-arc in
+    // context. The step is lifecycle-invoked HERE (like improvements:resolve is
+    // invoked at the end of a dispatched fix) — once per unit of work, NOT a
+    // per-turn pass. The harness-pipeline markers (validator/reviewer) only render
+    // when this item ran the coding harness, so a harness-free completion never
+    // sees roles that don't exist outside one. The agent files anything genuine
+    // via improvements:capture; if nothing bit it, it captures nothing.
+    const harnessActive = Boolean(workItem?.harness);
+    const reflect = renderReflectStep({ harnessActive });
+
     return {
       content: [
         {
           type: 'text' as const,
           // `completion` is what the lifecycle emits-rule renders into coord:emit.
-          text: JSON.stringify({ ok: true, workItem, completion, ...(stateError ? { stateError } : {}) }),
+          // `reflect` is the completion-boundary friction-reflection prompt the
+          // agent acts on once, now, with the full sub-arc in context.
+          text: JSON.stringify({
+            ok: true,
+            workItem,
+            completion,
+            reflect,
+            ...(stateError ? { stateError } : {}),
+          }),
         },
       ],
     };

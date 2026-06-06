@@ -79,6 +79,24 @@ describe('work_items:complete', () => {
     expect(out.completion.workItem).toBe('F-12');
   });
 
+  it('returns the completion-boundary reflect step (self-learning P-001/B)', async () => {
+    getWorkItem.mockResolvedValue(item); // harness: 'papercup' → pipeline markers shown
+    const out = await call({ id: 'F-12', completion: { summary: 'done' } });
+    expect(typeof out.reflect).toBe('string');
+    expect(out.reflect).toMatch(/improvements:capture/);
+    // The universal markers are always present.
+    expect(out.reflect).toMatch(/workaround/);
+    // This item ran the coding harness → pipeline markers (validator/reviewer) appear.
+    expect(out.reflect).toMatch(/validator|reviewer/i);
+  });
+
+  it('reflect step omits the harness-pipeline markers for a harness-free unit of work', async () => {
+    getWorkItem.mockResolvedValue({ ...item, harness: null });
+    const out = await call({ id: 'F-12', completion: { summary: 'done' } });
+    expect(out.reflect).toMatch(/workaround/); // universal still shown
+    expect(out.reflect).not.toMatch(/validator|reviewer/i); // no pipeline roles
+  });
+
   it('a FAILED state write never loses the completion (EI-24): ok + completion + stateError', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue' });
     setWorkItemState.mockRejectedValue(
