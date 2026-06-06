@@ -90,7 +90,7 @@ export default function SwarmIdentityPage() {
         <div className={styles.introComb} aria-hidden="true" />
         <div className={styles.introLines} aria-hidden="true">
           {TAGLINE_SEQUENCE.map((line, index) => (
-            <span key={line} style={{ '--intro-index': index } as CSSProperties}>
+            <span key={line} data-line={index + 1} style={{ '--intro-index': index } as CSSProperties}>
               {line}
             </span>
           ))}

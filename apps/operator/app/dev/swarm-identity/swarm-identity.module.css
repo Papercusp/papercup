@@ -65,14 +65,18 @@
   position: relative;
   z-index: 2;
   display: grid;
-  width: min(1120px, 86vw);
-  min-height: 220px;
+  width: min(1120px, calc(100vw - 48px));
+  min-height: clamp(260px, 52vh, 520px);
+  padding: 0 24px;
   place-items: center;
   text-align: center;
 }
 
 .introLines span {
   position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(100%, 1120px);
   opacity: 0;
   color: #fff7df;
   font-size: clamp(34px, 7vw, 104px);
@@ -80,11 +84,20 @@
   line-height: 0.92;
   letter-spacing: -0.08em;
   text-transform: uppercase;
+  text-wrap: balance;
+  overflow-wrap: break-word;
   text-shadow:
     0 0 32px rgba(234, 179, 8, 0.18),
     0 22px 80px rgba(0, 0, 0, 0.88);
   animation: introLine 2600ms cubic-bezier(.16, 1, .3, 1) calc(var(--intro-index) * 2100ms) both;
   will-change: opacity, transform;
+}
+
+.introLines span[data-line="3"] {
+  max-width: min(1040px, calc(100vw - 64px));
+  font-size: clamp(24px, 5.5vw, 72px);
+  line-height: 1.02;
+  letter-spacing: -0.065em;
 }
 
 .introLines span:first-child {
@@ -730,17 +743,17 @@
 @keyframes introLine {
   0% {
     opacity: 0;
-    transform: translateY(26px) scale(0.96);
+    transform: translate3d(-50%, calc(-50% + 26px), 0) scale(0.96);
     letter-spacing: -0.13em;
   }
   18%,
   58% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(-50%, -50%, 0) scale(1);
   }
   100% {
     opacity: 0;
-    transform: translateY(-22px) scale(1.03);
+    transform: translate3d(-50%, calc(-50% - 22px), 0) scale(1.03);
   }
 }
 
@@ -817,6 +830,7 @@
   .introLines span {
     position: static;
     opacity: 1;
+    width: auto;
     animation: none;
   }
 

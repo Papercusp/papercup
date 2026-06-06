@@ -86,6 +86,19 @@ vi.mock('@papercusp/orchestrator', async () => {
     evaluateCostCap: () => ({ total: 0, cap: null, overCap: ctl.overCostCap, warned: false, shouldPause: false }),
   };
 });
+// The dispatch gate's config source moved from config.json (the mocked legacy
+// `readConfig` above) to the blueprint ⊕ PG instance overrides
+// (deprecate-harness-config-json-2026-06-06). Deliver the test cap through the
+// NEW seam too — otherwise the unmocked read finds no blueprint in the test DB,
+// the config is "silent", and the cap silently floors to 1 (this regressed the
+// suite 2026-06-05/06: cap=2 scenarios started exactly one feature).
+vi.mock('@papercusp/operator-core/lib/harness-effective-config', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/harness-effective-config')>('@papercusp/operator-core/lib/harness-effective-config');
+  return {
+    ...actual,
+    readEffectiveHarnessConfig: async () => ({ parallelWorkers: { max: ctl.cap } }),
+  };
+});
 // Neutralise the best-effort side-channels (own coverage; not the sweep glue).
 vi.mock('@papercusp/operator-core/lib/promote-issue', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/promote-issue')>('@papercusp/operator-core/lib/promote-issue');
