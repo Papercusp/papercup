@@ -26,6 +26,7 @@ import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 import { useLexicon } from '@/lib/useLexicon';
+import { useShortcutAction } from '@/lib/hotkeys';
 
 const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -222,6 +223,50 @@ export default function AdvShell({
   useEffect(() => {
     if (allMode && !WORKSPACE_TAB_IDS.has(activeTab)) void setActiveTab('overview');
   }, [allMode, activeTab, setActiveTab]);
+
+  // ── Discord-parity keyboard handlers (discord-shortcuts 2026-06-06) ──────
+  // Alt+↑/↓ cycles the visible tab strip (Discord's prev/next channel);
+  // Mod+Alt+←/→ cycles harnesses (Discord's server switcher); Mod+I jumps to
+  // Conversations and Mod+Shift+N opens the create dialog IN PLACE. The root
+  // GlobalAppShortcuts registers navigate-here fallbacks for the last two —
+  // the shortcut bus runs the most-recently-registered handler, so these
+  // win while /adv is mounted and the fallbacks cover every other route.
+  const navKeyOpts = { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] as const };
+  const cycleTab = (dir: 1 | -1) => {
+    const idx = visibleTabs.findIndex((tab) => tab.id === activeTab);
+    const next = visibleTabs[(idx + dir + visibleTabs.length) % visibleTabs.length];
+    if (next && next.id !== activeTab) void setActiveTab(next.id);
+  };
+  useShortcutAction('goto.prevTab', () => cycleTab(-1), navKeyOpts);
+  useShortcutAction('goto.nextTab', () => cycleTab(1), navKeyOpts);
+
+  const cycleHarness = async (dir: 1 | -1) => {
+    if (projects.length === 0) return;
+    const slugs = projects.map((p) => p.slug);
+    const idx = activeSlug ? slugs.indexOf(activeSlug) : -1;
+    const next =
+      idx === -1
+        ? dir === 1
+          ? slugs[0]
+          : slugs[slugs.length - 1]
+        : slugs[(idx + dir + slugs.length) % slugs.length];
+    if (!next || next === activeSlug) return;
+    // Mirror the selector's onChange exactly: exit all-mode FIRST and
+    // SEQUENTIALLY (a same-tick scope+slug pair collides in the nuqs
+    // adapter and the scope write is lost), then set + persist the pick.
+    if (allMode) await setScopeMode('expanded');
+    await setActiveSlug(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
+    }
+  };
+  useShortcutAction('harness.prev', () => void cycleHarness(-1), navKeyOpts);
+  useShortcutAction('harness.next', () => void cycleHarness(1), navKeyOpts);
+
+  // In-place versions of the root fallbacks (see GlobalAppShortcuts).
+  // 'conversations' is a workspace-level tab, so it's valid in both scopes.
+  useShortcutAction('goto.inbox', () => void setActiveTab('conversations'));
+  useShortcutAction('harness.create', () => void setCreateOpen(true));
 
   return (
     <div className="pc-advshell">

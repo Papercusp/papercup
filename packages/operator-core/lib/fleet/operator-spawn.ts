@@ -323,9 +323,23 @@ export async function spawnAgentInHarness(
     idempotencyKey: runId,
     workspaceId: input.workspaceId,
   });
-  // P-050: Thread the Queen brief through the invocation so the role launch spec
-  // can inject it into the role's prompt (assembleRolePrompt). The brief rides in
-  // extraEnv as QUEEN_BRIEF so the orchestrator runner's invoke() path picks it up.
+  // THE UMBILICAL (voice gap fix): thread the operator's durable `s-…` spawnId into
+  // the child's env so invoke()/spawn-mcp bakes it as the signed MCP URL's STABLE
+  // `client=` param. Without this the child minted a fresh random `spawnId` per boot
+  // AND carried no `client`, so the operator's resolveAgentIdentity() found no
+  // attributable coord identity and THREW on every coord:send / plans:set-status /
+  // improvements:capture — the child's file edits landed but it was MUTE on coord.
+  // The `s-…` id is the SAME owner recorded as `sessionOwner` on the spawned_agents
+  // row, so a bee's coord messages, its file-lock owner, and fleet:cancel's release
+  // target all line up. parentSpawnId carries lineage onto the child's MCP URL too.
+  extraEnv.PAPERCUSP_SPAWN_ID = spawnId;
+  if (input.parentSpawnId) extraEnv.PAPERCUSP_PARENT_SPAWN_ID = input.parentSpawnId;
+  // P-050/P-060: thread the Queen brief through the invocation so the invoke-once
+  // prompt path (invoke.ts → buildPrompt's `## Queen brief` section) injects it into
+  // the bee's prompt. The brief rides in extraEnv as QUEEN_BRIEF; the child reads
+  // process.env.QUEEN_BRIEF. (NOTE: the fleet:spawn child does NOT use
+  // assembleRolePrompt — it goes through invoke-once → buildPrompt; an earlier
+  // comment naming assembleRolePrompt was the mis-wiring the plan flagged.)
   if (input.brief) {
     extraEnv.QUEEN_BRIEF = input.brief;
   }

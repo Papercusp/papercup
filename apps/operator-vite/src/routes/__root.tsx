@@ -14,6 +14,9 @@ import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
 import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
 import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
+import GlobalShortcutsHelp from '@/app/_components/GlobalShortcutsHelp';
+import GlobalAppShortcuts from '@/app/_components/GlobalAppShortcuts';
+import GlobalVoiceShortcuts from '@/app/_components/GlobalVoiceShortcuts';
 // Side effect: register the browser voice controls into operator-core's
 // voice-control bridge so voice.* commands reach the UI voice engine without a
 // core→@/app back-edge (operator-core stays headless/UI-free).
@@ -138,6 +141,12 @@ function RootComponent() {
               <GlobalNavShortcuts />
               <GlobalCommandPalette />
               <GlobalFindInPage />
+              {/* Discord-parity shortcuts (discord-shortcuts 2026-06-06):
+                  Mod+/ cheat-sheet, Mod+, settings, Mod+I inbox,
+                  Mod+Shift+N create, Mod+Shift+M/D voice mute/deafen. */}
+              <GlobalShortcutsHelp />
+              <GlobalAppShortcuts />
+              <GlobalVoiceShortcuts />
               <RouteTransitionProvider>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>

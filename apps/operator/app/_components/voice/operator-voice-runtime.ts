@@ -35,6 +35,14 @@ export interface OperatorVoiceRuntime {
   control(op: VoiceControlOp): void;
   /** Whether this surface is the elected player (renders audio + captures mic). */
   isElected(): boolean;
+  /**
+   * Deafen is LOCAL-only (Discord-parity, discord-shortcuts 2026-06-06):
+   * this surface keeps receiving transcripts/state but silences its own
+   * playout. It does NOT touch the election or the host — undeafening
+   * resumes playout from the next response chunk.
+   */
+  setDeafened(deafened: boolean): void;
+  isDeafened(): boolean;
   /** Detach + release mic + audio. The host re-elects/teardowns; others survive. */
   stop(): Promise<void>;
 }
@@ -63,20 +71,38 @@ export async function startDesktopOperatorVoice(
   // ── playout: gapless scheduled PCM (only while elected) ────────────────────
   const playCtx = new AC();
   let nextStartAt = 0;
+  let deafened = false;
+  // Sources currently scheduled/playing — tracked so deafen (and the
+  // lose-player/barge-in reset) can cut audio NOW instead of letting the
+  // queued tail drain.
+  const liveNodes = new Set<AudioBufferSourceNode>();
+  function scheduleNode(buf: AudioBuffer): void {
+    const node = playCtx.createBufferSource();
+    node.buffer = buf;
+    node.connect(playCtx.destination);
+    liveNodes.add(node);
+    node.onended = () => liveNodes.delete(node);
+    const startAt = Math.max(playCtx.currentTime, nextStartAt);
+    node.start(startAt);
+    nextStartAt = startAt + buf.duration;
+  }
   function resetPlayout(): void {
     nextStartAt = 0;
+    for (const node of liveNodes) {
+      try {
+        node.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    liveNodes.clear();
   }
   function playPcm(bytes: Uint8Array, sampleRate: number): void {
     const f32 = pcm16leToFloat32(bytes);
     if (f32.length === 0) return;
     const buf = playCtx.createBuffer(1, f32.length, sampleRate || 16_000);
     buf.getChannelData(0).set(f32);
-    const node = playCtx.createBufferSource();
-    node.buffer = buf;
-    node.connect(playCtx.destination);
-    const startAt = Math.max(playCtx.currentTime, nextStartAt);
-    node.start(startAt);
-    nextStartAt = startAt + buf.duration;
+    scheduleNode(buf);
   }
   async function playEncoded(bytes: Uint8Array): Promise<void> {
     try {
@@ -84,12 +110,7 @@ export async function startDesktopOperatorVoice(
       // detaches it, and the type must be ArrayBuffer not ArrayBufferLike).
       const ab = new Uint8Array(bytes).buffer as ArrayBuffer;
       const buf = await playCtx.decodeAudioData(ab);
-      const node = playCtx.createBufferSource();
-      node.buffer = buf;
-      node.connect(playCtx.destination);
-      const startAt = Math.max(playCtx.currentTime, nextStartAt);
-      node.start(startAt);
-      nextStartAt = startAt + buf.duration;
+      scheduleNode(buf);
     } catch (e) {
       opts.onError?.(e);
     }
@@ -105,6 +126,7 @@ export async function startDesktopOperatorVoice(
     onResponseTag: opts.onResponseTag,
     onResponseAudio: (audio, format, sampleRate, elected) => {
       if (!elected) return; // single playout (Model A) — non-elected = display only
+      if (deafened) return; // local deafen — display only until undeafened
       if (format === 'encoded') void playEncoded(audio);
       else playPcm(audio, sampleRate);
     },
@@ -152,6 +174,13 @@ export async function startDesktopOperatorVoice(
   return {
     control: (op) => session.control(op),
     isElected: () => session.isElected(),
+    setDeafened: (d: boolean) => {
+      deafened = d;
+      // Drop anything already scheduled so deafen takes effect immediately
+      // rather than after the queued chunks drain.
+      if (d) resetPlayout();
+    },
+    isDeafened: () => deafened,
     async stop() {
       try {
         session.close();

@@ -65,7 +65,10 @@ export type IdentitySource =
   /** Superuser engineer whose id is a bare ?client= machine UUID. */
   | 'static-client'
   /** In-process caller identified by its bearer principal. */
-  | 'principal';
+  | 'principal'
+  /** Role-gated fleet:spawn child — ownerId is the operator's durable `s-…`
+   *  spawnId, baked as the signed MCP URL's `client=` param. */
+  | 'fleet-spawn';
 
 export interface AgentIdentity {
   /** Stable per-agent id. Power-user: auth_session_id ("pus-<uuid>"). */
@@ -175,8 +178,30 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     };
   }
 
+  // ── Role-gated fleet:spawn child (THE UMBILICAL) ────────────────────
+  // A fleet:spawn bee connects over a SIGNED (not superuser, not power-user,
+  // no bearer principal) MCP URL. fleet/operator-spawn now bakes the operator's
+  // durable `s-…` spawnId as the URL's `client=` param (HMAC-signed; in the
+  // allowlist), so parseRequestContext lands it in ctx.uiClientId. THAT is the
+  // child's stable coord owner — the same id recorded as the spawned_agents row's
+  // sessionOwner, so the bee's coord messages, file-lock owner, and fleet:cancel
+  // release target all line up. Before this branch the resolver threw here and
+  // every coord:send / plans:set-status / improvements:capture from a bee failed
+  // (the "MUTE bee" voice gap): file edits landed, but the child couldn't speak.
+  if (uiClientId) {
+    return {
+      ownerId: uiClientId,
+      ownerLabel: `bee · ${shortId(uiClientId)}`,
+      source: 'fleet-spawn',
+      workspaceId: ctx.workspaceId ?? null,
+      userId: ctx.userId ?? null,
+    };
+  }
+
   throw new Error(
     'resolveAgentIdentity: context carries no power-user / superuser / ' +
-      'principal identity — the caller cannot be attributed',
+      'principal / fleet-spawn identity — the caller cannot be attributed ' +
+      '(a fleet:spawn child must carry its `s-…` spawnId as the signed MCP ' +
+      'URL’s client= param — see fleet/operator-spawn.ts + spawn-mcp.ts)',
   );
 }

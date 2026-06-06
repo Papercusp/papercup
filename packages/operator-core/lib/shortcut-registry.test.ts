@@ -4,6 +4,7 @@
  * override store (load/save/delete-on-empty/reset-all) against a stubbed window.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parseCombo } from './shortcut-match';
 import {
   SHORTCUTS,
   getShortcutDef,
@@ -98,5 +99,59 @@ describe('override store', () => {
     expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({
       shortcut_overrides: { 'feature.x': 'mod+z' },
     });
+  });
+});
+
+describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
+  it('every shortcut id is unique', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('every defaultCombo parses to at least one alternate', () => {
+    for (const s of SHORTCUTS) {
+      const parsed = parseCombo(s.defaultCombo);
+      expect(parsed.alternates.length, `${s.id} combo "${s.defaultCombo}"`).toBeGreaterThan(0);
+    }
+  });
+
+  it('the Discord-parity bindings are registered with their combos', () => {
+    const expectCombo = (id: string, combo: string) =>
+      expect(getShortcutDef(id)?.defaultCombo, id).toBe(combo);
+    expectCombo('voice.toggleMute', 'mod+shift+m');
+    expectCombo('voice.toggleDeafen', 'mod+shift+d');
+    expectCombo('video.toggleCamera', 'mod+shift+v');
+    expectCombo('goto.prevTab', 'alt+ArrowUp');
+    expectCombo('goto.nextTab', 'alt+ArrowDown');
+    expectCombo('harness.prev', 'mod+alt+ArrowLeft');
+    expectCombo('harness.next', 'mod+alt+ArrowRight');
+    expectCombo('goto.inbox', 'mod+i');
+    expectCombo('harness.create', 'mod+shift+n');
+    expectCombo('settings.open', 'mod+comma');
+  });
+
+  it('mod+/ moved from the palette to the cheat-sheet (Discord help combo)', () => {
+    expect(getShortcutDef('palette.toggle')?.defaultCombo).toBe('mod+k, mod+p');
+    expect(getShortcutDef('shortcuts.show')?.defaultCombo).toBe('mod+slash, shift+slash');
+  });
+
+  it('no two shortcuts claim the same default alternate (combo collisions)', () => {
+    // Normalize each parsed alternate into a comparable signature; sequence
+    // steps join with '>'. Two registry entries sharing a signature would
+    // fight over the same keypress.
+    const seen = new Map<string, string>();
+    for (const s of SHORTCUTS) {
+      for (const alt of parseCombo(s.defaultCombo).alternates) {
+        const sig = alt.steps
+          .map(
+            (st) =>
+              `${st.mod ? 'mod+' : ''}${st.ctrl ? 'ctrl+' : ''}${st.meta ? 'meta+' : ''}${st.shift ? 'shift+' : ''}${st.alt ? 'alt+' : ''}${st.key}`,
+          )
+          .join('>');
+        const holder = seen.get(sig);
+        expect(holder, `combo "${sig}" claimed by both ${holder} and ${s.id}`).toBeUndefined();
+        seen.set(sig, s.id);
+      }
+    }
   });
 });

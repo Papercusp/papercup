@@ -1164,6 +1164,42 @@ function debugLog(event: string, detail?: unknown): void {
   }).catch(() => { /* best-effort */ });
 }
 
+// ── Shared-session control surface (discord-shortcuts 2026-06-06) ──────────
+// The active bus runtime, exposed module-level so global shortcut handlers
+// (Mod+Shift+M mute / Mod+Shift+D deafen — GlobalVoiceShortcuts) can drive
+// the ONE shared session without reaching into the closure below.
+// `operatorVoiceMuted` mirrors the host's authoritative session_state
+// broadcasts (with an optimistic flip on toggle so rapid presses behave).
+let operatorVoiceRuntime: OperatorVoiceRuntime | null = null;
+let operatorVoiceMuted = false;
+
+export function getOperatorVoiceRuntime(): OperatorVoiceRuntime | null {
+  return operatorVoiceRuntime;
+}
+
+/**
+ * Toggle the shared session's mic mute. Returns false when no bus session is
+ * active (caller may toast a hint). Mute is a BUS control — it applies once
+ * at the session host and the authoritative state echoes back to every
+ * attached surface (universal-voice-interface P-004).
+ */
+export function toggleOperatorVoiceMute(): boolean {
+  if (!operatorVoiceRuntime) return false;
+  operatorVoiceRuntime.control({ op: 'mute', muted: !operatorVoiceMuted });
+  operatorVoiceMuted = !operatorVoiceMuted; // host broadcast reconciles
+  return true;
+}
+
+/**
+ * Toggle LOCAL deafen — this surface keeps showing transcripts but silences
+ * its own playout. Returns false when no bus session is active.
+ */
+export function toggleOperatorVoiceDeafen(): boolean {
+  if (!operatorVoiceRuntime) return false;
+  operatorVoiceRuntime.setDeafened(!operatorVoiceRuntime.isDeafened());
+  return true;
+}
+
 async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
   debugLog('el-conv:start-attempt', { mode: state.mode });
   // Claim the mic so useMicLevel's analyzer doesn't also open getUserMedia —
@@ -1211,6 +1247,8 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         // Host persists the assistant turn once (P-010) — no desktop write.
       },
       onState: (s) => {
+        // Mirror the host's authoritative mute flag for the toggle shortcut.
+        operatorVoiceMuted = !!s.muted;
         switch (s.status) {
           case 'connecting':
             setState({ status: 'connecting' });
@@ -1228,6 +1266,7 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
             disposeObserver();
             void activeRuntime?.stop();
             activeRuntime = null;
+            operatorVoiceRuntime = null;
             realtimeSession = null;
             setState({ status: state.mode === 'off' ? 'off' : 'idle', micOwnedByFullAgent: false });
             if (s.reason) {
@@ -1244,11 +1283,13 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
       },
     });
     activeRuntime = runtime;
+    operatorVoiceRuntime = runtime;
     realtimeSession = {
       async stop() {
         disposeObserver();
         await activeRuntime?.stop();
         activeRuntime = null;
+        operatorVoiceRuntime = null;
       },
     };
     setState({ status: 'connecting', micOwnedByFullAgent: true });
@@ -1265,6 +1306,7 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
     disposeObserver();
     void activeRuntime?.stop();
     activeRuntime = null;
+    operatorVoiceRuntime = null;
     const errName = err?.name ?? '';
     const errMsg = err?.message ?? String(err);
     debugLog('el-conv:start-failed', { msg: errMsg });

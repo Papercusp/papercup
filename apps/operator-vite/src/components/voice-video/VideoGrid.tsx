@@ -29,6 +29,7 @@ import {
 import { webCodecsSupported, type VideoFrameLike } from '../../lib/video/video-codec';
 import { startCameraCapture, type CameraCapture } from '../../lib/video/camera-capture';
 import { buildGridModel, type GridModel, type GridTile } from './video-grid-state';
+import { useShortcutAction } from '@/lib/hotkeys';
 import './VideoGrid.css';
 
 export interface VideoGridProps {
@@ -44,6 +45,11 @@ export default function VideoGrid({ harnessSlug, className }: VideoGridProps): J
   const [cameraOn, setCameraOn] = useQueryState('vcam', parseAsBoolean.withDefault(false));
   const [screenOn, setScreenOn] = useQueryState('vscreen', parseAsBoolean.withDefault(false));
   const [muted, setMuted] = useQueryState('vmute', parseAsBoolean.withDefault(false));
+  // Discord-parity Mod+Shift+V camera toggle (discord-shortcuts 2026-06-06).
+  // Registered here (not a global mount) so the combo only acts while a
+  // video surface is actually on screen — VideoGrid itself is flag-gated
+  // behind VIDEO_CHANNELS by its hosts, so the binding inherits the gate.
+  useShortcutAction('video.toggleCamera', () => void setCameraOn(!cameraOn));
 
   const [status, setStatus] = useState<VoiceSessionStatus>(EMPTY_STATUS);
   const [cameraError, setCameraError] = useState<string | null>(null);
