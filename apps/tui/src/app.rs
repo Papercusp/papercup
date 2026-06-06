@@ -43,6 +43,10 @@ pub enum Action {
     /// badges on its next tick.
     DocsAction { action: String, doc_id: String },
     Render,
+    /// Publish the swarm pane's bee selection to the ephemeral relay
+    /// (pui-bee-dossier-pane-2026-06-06) so the bee-dossier pane can render it.
+    /// The run loop POSTs `fleet:selected_bee { select }`. `owner_id` None clears.
+    PublishBeeSelection { owner_id: Option<String>, name: Option<String> },
     Quit,
     /// Open a native agent session in a new multiplexer pane.
     Launch(PaneSpec),
@@ -651,6 +655,22 @@ impl Tab {
             Tab::Voice => "Voice",
         }
     }
+    /// The DISPLAY label for this tab through the active Hive lexicon
+    /// (pui-hive-lexicon-2026-06-06). Distinct from `title()`, which is the STABLE
+    /// identity string (persistence keys, `from_title`, agent-facing state) and
+    /// must never shift when the flag flips. Only the tabs whose title maps to a
+    /// lexicon term key change (Fleet→Swarm, Pots→Hive(s), Cupboard→Comb,
+    /// Operator→Queen); every other tab returns its `title()` verbatim.
+    pub fn label(self, lex: &crate::lexicon::Lexicon) -> String {
+        match self {
+            // "Pots" is the plural of the `pot` term.
+            Tab::Harnesses => lex.lex_plural("pot"),
+            Tab::Fleet => lex.lex("fleet"),
+            Tab::Cupboard => lex.lex("cupboard"),
+            Tab::Operator => lex.lex("operator"),
+            other => other.title().to_string(),
+        }
+    }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
     /// dispatch in `on_key` derives from it, g1). The ten ORIGINAL lead tabs
     /// keep the ten digits (1-9, 0); Overview (the landing tab, prepended)
@@ -938,6 +958,18 @@ pub struct App {
     /// ring, fleet work-items, per-agent todos, view mode + selection. All fleet
     /// logic lives in `fleet.rs`; the reducer/render only touch this field.
     pub fleet: FleetState,
+    /// Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06): the swarm-selected
+    /// bee's ranked work-list + coord inbox/outbox. Populated by `pui bee-pane`
+    /// polling the in-memory selection relay; all logic lives in `bee.rs`.
+    pub bee: crate::bee::BeeState,
+    /// `pui bee-pane` mode: render JUST the bee dossier full-screen (the 6th dock
+    /// pane), no tab strip / HUD / work area. Parallel to `pinned: Option<Tab>`
+    /// (the dossier is a NEW view, not a Tab — kept out of Tab::ALL).
+    pub pinned_bee: bool,
+    /// Hive lexicon (pui-hive-lexicon-2026-06-06): the active brand pack's
+    /// term→label map, fetched once at startup. Empty = classic fallback (today's
+    /// labels). `lex(term)` routes user-facing labels through it.
+    pub lexicon: crate::lexicon::Lexicon,
     /// Operator chat pane (tui-operator-surface-2026-06-04). The transcript
     /// (oldest first; the last entry is the in-flight streaming bubble while a
     /// turn runs), the composer buffer + focus flag, the bottom-anchored scroll
@@ -1152,6 +1184,9 @@ impl App {
             companion_version: None,
             relaunch_command: None,
             fleet: FleetState::default(),
+            bee: crate::bee::BeeState::default(),
+            pinned_bee: false,
+            lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_composing: false,
@@ -1169,6 +1204,18 @@ impl App {
             voice_level: 0.0,
             voice_error: None,
         }
+    }
+
+    // ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ───
+
+    /// The singular display label for a lexicon term key through the active pack
+    /// (classic fallback when unfetched/offline). Presentation only.
+    pub fn lex(&self, term: &str) -> String {
+        self.lexicon.lex(term)
+    }
+    /// The plural display label for a lexicon term key.
+    pub fn lex_plural(&self, term: &str) -> String {
+        self.lexicon.lex_plural(term)
     }
 
     // ─── Operator chat pane (tui-operator-surface-2026-06-04) ───
@@ -2062,6 +2109,35 @@ impl App {
         self.visible_plans().get(self.plan_sel).copied()
     }
 
+    /// The swarm pane's currently-selected bee (ownerId, agent-name) — the row
+    /// `fleet.agent_sel` lands on in the visible roster. None when the roster is
+    /// empty. Used to PUBLISH the selection to the bee-dossier relay (Feature 1).
+    fn selected_bee(&self) -> Option<(String, Option<String>)> {
+        self.visible_roster()
+            .get(self.fleet.agent_sel)
+            .map(|r| (r.owner_id.clone(), r.agent.clone()))
+    }
+
+    /// If the Fleet (swarm) tab is focused, publish the selected bee to the relay
+    /// so the bee-dossier pane renders it (pui-bee-dossier-pane-2026-06-06). The
+    /// run loop POSTs the result. Off the Fleet tab → `Action::Render` (no-op
+    /// publish). Called after a roster cursor move + on Fleet entry.
+    fn publish_swarm_selection(&self) -> Action {
+        if self.tab != Tab::Fleet {
+            return Action::Render;
+        }
+        match self.selected_bee() {
+            Some((owner_id, name)) => Action::PublishBeeSelection {
+                owner_id: Some(owner_id),
+                name,
+            },
+            None => Action::PublishBeeSelection {
+                owner_id: None,
+                name: None,
+            },
+        }
+    }
+
     /// Store merged plan-item assignment/claim/liveness for the selected plan (P-005a).
     pub fn set_plan_item_states(&mut self, s: PlanItemStates) {
         self.plan_item_states = Some(s);
@@ -2776,6 +2852,29 @@ impl App {
             Event::CuratedSignals(s) => {
                 self.fleet.set_curated_signals(s);
                 self.last_error = None;
+                Action::Render
+            }
+            Event::BeeSelection { owner_id, name } => {
+                // The relay poll observed a (possibly new) selection. The fetch is
+                // triggered by the poll task itself on change; here we only store
+                // the selection (clearing the stale dossier on a change).
+                self.bee.set_selection(owner_id, name);
+                Action::Render
+            }
+            Event::BeeDossier {
+                owner_id,
+                assignment,
+                mail,
+            } => {
+                // Stale-guard: only paint a dossier for the currently selected bee.
+                self.bee.set_dossier(&owner_id, assignment, mail);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::LexiconPack(payload) => {
+                // The active brand pack landed (startup fetch). Store the resolved
+                // term→label map; user-facing labels route through it from now on.
+                self.lexicon = crate::lexicon::Lexicon::from_payload(&payload);
                 Action::Render
             }
             Event::CupboardListings {
@@ -3840,6 +3939,11 @@ impl App {
                     self.publish_active_doc();
                 }
                 self.testing_domain_changed(prev_domain);
+                // Swarm pane: a roster cursor move publishes the new bee selection
+                // to the bee-dossier relay (pui-bee-dossier-pane-2026-06-06).
+                if self.tab == Tab::Fleet {
+                    return self.publish_swarm_selection();
+                }
                 Action::Render
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -3854,6 +3958,9 @@ impl App {
                     self.publish_active_doc();
                 }
                 self.testing_domain_changed(prev_domain);
+                if self.tab == Tab::Fleet {
+                    return self.publish_swarm_selection();
+                }
                 Action::Render
             }
             // Tab switching — the SINGLE keymap (g1): a char that maps to a tab's

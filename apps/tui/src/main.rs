@@ -9,6 +9,7 @@
 //! poll. P1 = the Create tab (Plans / Inbox / Sessions).
 
 mod app;
+mod bee;
 mod chat_tags;
 mod client;
 mod companion;
@@ -19,6 +20,7 @@ mod glyph;
 mod http;
 mod ipc;
 mod layout;
+mod lexicon;
 mod models;
 mod mux;
 mod notify;
@@ -66,14 +68,20 @@ async fn main() -> Result<()> {
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.
-        Some("chat") => return run_chat_dock(),
+        Some("chat") => return run_chat_dock().await,
         Some("hud") => {}
         // Single-pane dock modes (P-013 / D-011) — fall through to the normal
         // run loop with the tab pinned below: `chat-pane` is the dock's
         // operator chat, `voice-pane` the dock's voice channels, `apiary-pane`
         // the hive browser (the Cupboard's browse/join surface) and
-        // `swarm-pane` the fleet/swarm activity view.
-        Some("chat-pane") | Some("voice-pane") | Some("apiary-pane") | Some("swarm-pane") => {}
+        // `swarm-pane` the fleet/swarm activity view. `bee-pane` is the 6th
+        // dock pane (pui-bee-dossier-pane-2026-06-06) — a NEW view (not a Tab),
+        // pinned via `pinned_bee` below.
+        Some("chat-pane")
+        | Some("voice-pane")
+        | Some("apiary-pane")
+        | Some("swarm-pane")
+        | Some("bee-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -89,6 +97,9 @@ async fn main() -> Result<()> {
         Some("swarm-pane") => Some(app::Tab::Fleet),
         _ => None,
     };
+    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): NOT a Tab — a
+    // dedicated full-screen view driven by the swarm→bee selection relay.
+    let pinned_bee = subcommand.as_deref() == Some("bee-pane");
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -109,7 +120,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned).await;
+    let result = run(&mut terminal, pinned, pinned_bee).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -140,17 +151,31 @@ fn run_workbench() -> Result<()> {
 /// the pinned brain session exactly (D-013 auto-pin — psu launches + pins a
 /// fresh one when no pin exists). Override the whole brain command with
 /// PAPERCUSP_BRAIN_CMD (e.g. "psu --resume <id>" to drive a different session).
-fn run_chat_dock() -> Result<()> {
+async fn run_chat_dock() -> Result<()> {
     let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
     let brain_argv = layout::default_brain_argv(env.as_deref());
-    let path = layout::materialize_chat_dock(&brain_argv)?;
+    // Resolve the active Hive lexicon so the dock's pane DISPLAY names match the
+    // rebrand (operator→queen, swarm→swarm, bee→bee under the-hive); classic
+    // labels when the operator is unreachable (pui-hive-lexicon-2026-06-06).
+    let lex = match OperatorClient::from_discovery().await {
+        Ok(c) => match c.lexicon_active_pack().await {
+            Ok(pack) => lexicon::Lexicon::from_payload(&pack),
+            Err(_) => lexicon::Lexicon::default(),
+        },
+        Err(_) => lexicon::Lexicon::default(),
+    };
+    let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
     let argv = layout::launch_argv(&path.to_string_lossy());
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
     std::process::exit(status.code().unwrap_or(0));
 }
 
-async fn run<B: Backend>(terminal: &mut Terminal<B>, pinned: Option<app::Tab>) -> Result<()> {
+async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
+    pinned: Option<app::Tab>,
+    pinned_bee: bool,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
     // Pinned single-tab dock pane (P-013 / D-011): render JUST that tab's body —
@@ -160,6 +185,10 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, pinned: Option<app::Tab>) -
     if let Some(p) = pinned {
         app.tab = p;
     }
+    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): render JUST the bee
+    // dossier full-screen (the renderer short-circuits on this before the Tab
+    // pinning). Driven by the swarm→bee selection relay polled below.
+    app.pinned_bee = pinned_bee;
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
     // dock-verbs target this pane. Absent outside zellij (the run loop then uses
@@ -198,7 +227,24 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, pinned: Option<app::Tab>) -
     // arrive on `tx` like any other. NOT spawned in chat-only mode (the chat
     // dock, P-013): there is no work area to orchestrate there, and loading
     // the plugin surfaces an empty floating pane over the dock.
-    let companion = if pinned.is_some() { None } else { Companion::spawn(tx.clone()) };
+    let companion = if pinned.is_some() || pinned_bee {
+        None
+    } else {
+        Companion::spawn(tx.clone())
+    };
+
+    // Hive lexicon (pui-hive-lexicon-2026-06-06): fetch the ACTIVE resolved term
+    // pack once at startup so user-facing labels (tab titles, dock pane names)
+    // route through the SAME server-twin source as the desktop — flag flips
+    // respected. Fail-soft: an unreachable operator leaves the classic fallback.
+    tokio::spawn(lexicon_fetch(tx.clone()));
+
+    // Bee-dossier pane (pui-bee-dossier-pane-2026-06-06): poll the ephemeral
+    // selection relay (~1.5s, a cheap single GET — the documented v1 transport,
+    // NOT PG). On a selection CHANGE, fetch the dossier (assignment + mail).
+    if pinned_bee {
+        tokio::spawn(bee_selection_loop(tx.clone()));
+    }
 
     // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
     // audio handles — the long-lived playback `Player` and the in-flight mic
@@ -338,6 +384,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, pinned: Option<app::Tab>) -
 
         match action {
             Action::Render => {
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::PublishBeeSelection { owner_id, name } => {
+                // Swarm pane → bee-dossier relay (pui-bee-dossier-pane-2026-06-06):
+                // POST the selection off the UI thread (fire-and-forget; the bee
+                // pane polls the relay). Redraw immediately.
+                tokio::spawn(publish_bee_selection(owner_id, name, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::DocsAction { action, doc_id } => {
@@ -1898,6 +1951,90 @@ async fn chat_load_history(tx: UnboundedSender<Event>) {
         Err(e) => {
             let _ = tx.send(Event::Error(format!("operator chat: {e}")));
         }
+    }
+}
+
+/// Fetch the active Hive lexicon pack ONCE at startup (pui-hive-lexicon-2026-06-06)
+/// and emit `Event::LexiconPack`. Fail-soft: an unreachable operator / parse
+/// error leaves the classic fallback in place (no rebrand), silently — branding
+/// must never block the UI.
+async fn lexicon_fetch(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    if let Ok(pack) = client.lexicon_active_pack().await {
+        let _ = tx.send(Event::LexiconPack(pack));
+    }
+}
+
+/// The bee-dossier pane's selection poll (pui-bee-dossier-pane-2026-06-06): every
+/// ~1.5s read the ephemeral selected-bee relay (`fleet:selected_bee`). On a
+/// CHANGE, emit `Event::BeeSelection` and fetch that bee's dossier (assignment +
+/// coord mail). A cheap single GET per tick — the documented v1 transport (NOT
+/// PG); a future push rail could replace it. Reconnects on transport loss.
+async fn bee_selection_loop(tx: UnboundedSender<Event>) {
+    let mut current: Option<String> = None;
+    let mut ticker = tokio::time::interval(Duration::from_millis(1500));
+    loop {
+        ticker.tick().await;
+        let client = match OperatorClient::from_discovery().await {
+            Ok(c) => c,
+            Err(_) => continue, // operator not up yet — retry next tick
+        };
+        let sel = client.selected_bee_get().await.ok().flatten();
+        let owner = sel.as_ref().and_then(|s| s.owner_id.clone());
+        let name = sel.as_ref().and_then(|s| s.name.clone());
+        if owner != current {
+            current = owner.clone();
+            let _ = tx.send(Event::BeeSelection {
+                owner_id: owner.clone(),
+                name: name.clone(),
+            });
+            if let Some(owner_id) = owner {
+                // Fetch the new bee's dossier right away (don't wait for the next
+                // tick). Spawned so a slow fetch doesn't stall the poll cadence.
+                tokio::spawn(bee_dossier_fetch(owner_id, tx.clone()));
+            }
+        }
+    }
+}
+
+/// Fetch one bee's dossier — its ranked work-list (`fleet:assignments { agent }`)
+/// + coord inbox/outbox (`fleet:bee_mail`) — and emit `Event::BeeDossier`. Each
+/// half is best-effort: a failure of one still ships the other (the reducer
+/// stale-guards on `owner_id`). On a total transport failure nothing is sent (the
+/// pane keeps its "loading…" state; the next selection re-triggers).
+async fn bee_dossier_fetch(owner_id: String, tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    let assignment = client.bee_assignment(&owner_id).await.ok().flatten();
+    let mail = client.bee_mail(&owner_id, 50).await.ok();
+    let _ = tx.send(Event::BeeDossier {
+        owner_id,
+        assignment,
+        mail,
+    });
+}
+
+/// Publish the swarm pane's bee selection to the ephemeral relay
+/// (pui-bee-dossier-pane-2026-06-06): POST `fleet:selected_bee { select }`.
+/// Best-effort — a failed publish just means the bee pane keeps its last
+/// selection until the next cursor move; a transient error toasts so the
+/// keypress never silently no-ops on a persistent failure.
+async fn publish_bee_selection(
+    owner_id: Option<String>,
+    name: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    if let Err(e) = client
+        .selected_bee_set(owner_id.as_deref(), name.as_deref())
+        .await
+    {
+        let _ = tx.send(Event::Error(format!("select bee: {e}")));
     }
 }
 

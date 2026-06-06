@@ -22,6 +22,18 @@ pub fn draw(f: &mut Frame, app: &App) {
     // unchanged; only the rendering is reduced to that body full-screen (the
     // tab is re-pinned in main.rs, so chat shows the FULL chat with no
     // dock-focus marker). Help + the latest toast still overlay.
+    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): the 6th dock pane
+    // renders JUST the selected bee's dossier full-screen — a NEW view, not a Tab,
+    // so it short-circuits before the Tab pinning below. Help + toast still overlay.
+    if app.pinned_bee {
+        crate::bee::draw_bee(f, app, f.area());
+        if app.show_help {
+            draw_help(f);
+        } else if let Some(t) = &app.toast {
+            draw_toast(f, t);
+        }
+        return;
+    }
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
         if app.show_help {
@@ -169,6 +181,11 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             // The switch shortcut: digit (1-9, 0) for the first 10 tabs, a letter
             // for appended tabs — each tab owns its key via `Tab::switch_key`.
             let k = t.switch_key();
+            // The DISPLAY label routes through the active Hive lexicon
+            // (pui-hive-lexicon-2026-06-06) — Fleet→Swarm, Pots→Hives, Cupboard→
+            // Comb, Operator→Queen when the-hive is on; today's labels otherwise.
+            // `title()` (the stable identity) is unchanged for persistence/state.
+            let label = t.label(&app.lexicon);
             // Inbox badge = the Decisions count (inbox-tiering D-006) — the only
             // tier that demands the user. Falls back to the unseen-notification
             // count when nothing is in the Decisions tier.
@@ -184,12 +201,12 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
                     app.unseen_notifs
                 };
                 if badge > 0 {
-                    Line::from(format!(" {}:{} ({}) ", k, t.title(), badge))
+                    Line::from(format!(" {}:{} ({}) ", k, label, badge))
                 } else {
-                    Line::from(format!(" {}:{} ", k, t.title()))
+                    Line::from(format!(" {}:{} ", k, label))
                 }
             } else {
-                Line::from(format!(" {}:{} ", k, t.title()))
+                Line::from(format!(" {}:{} ", k, label))
             }
         })
         .collect();

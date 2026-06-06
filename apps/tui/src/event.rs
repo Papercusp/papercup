@@ -7,10 +7,11 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConvDetail, ConvSummary, CuratedSignal,
-    DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature,
-    HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
+    ConvDetail, ConvSummary, CuratedSignal, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
+    FleetRateStatus, HarnessFeature, HarnessIssue, HarnessRef, LexiconPackPayload, Notif,
+    OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution,
+    ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -112,6 +113,23 @@ pub enum Event {
     /// The curator's salience-ranked "what matters" signals (curation:feed) for
     /// the Fleet curated mode (P3 — wire curated view to the curator-operator).
     CuratedSignals(Vec<CuratedSignal>),
+    // --- Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ---
+    /// The selected bee changed on the ephemeral relay (the bee pane's poll). The
+    /// reducer updates `bee` + signals a dossier refetch when it actually changed.
+    BeeSelection {
+        owner_id: Option<String>,
+        name: Option<String>,
+    },
+    /// A fetched bee dossier (assignment + coord inbox/outbox). Carries the
+    /// owner_id so a stale fetch never paints the wrong bee (the standard guard).
+    BeeDossier {
+        owner_id: String,
+        assignment: Option<BeeAssignment>,
+        mail: Option<BeeMailPayload>,
+    },
+    /// The active Hive lexicon pack, fetched once at startup
+    /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
+    LexiconPack(LexiconPackPayload),
     /// Marketplace listings for the Cupboard tab (D-011) — the result of a
     /// `FetchCupboard` action. Carries the (kind, query) the fetch was for so a
     /// stale response never paints a newer filter's view. Action outcomes

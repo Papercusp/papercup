@@ -44,6 +44,11 @@ describe('createSshRemoteExec', () => {
     expect(calls[0].args).toContain('-p');
     expect(calls[0].args).toContain('2222');
     expect(calls[0].args).toContain('BatchMode=yes');
+    // Disposable frames on recycled IPs: never pin host keys in the user's
+    // known_hosts (a stale pinned key fails every connection — hit live 2026-06-06).
+    expect(calls[0].args).toContain('UserKnownHostsFile=/dev/null');
+    expect(calls[0].args).toContain('StrictHostKeyChecking=accept-new');
+    expect(calls[0].args).toContain('ConnectTimeout=10');
     expect(calls[0].args).toContain('ubuntu@1.2.3.4');
     expect(calls[0].args).toContain('bash -s');
     expect(calls[0].stdin).toBe('echo hi');

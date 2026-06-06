@@ -156,17 +156,48 @@ pub fn launch_argv(layout_path: &str) -> Vec<String> {
     ]
 }
 
-/// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011):
-/// the surface the desktop-docked native terminal runs. Five panes
-/// side-by-side — the **apiary** (the hive browser: the Cupboard's browse/join
-/// surface, `pui apiary-pane`), the **voice** channels (`pui voice-pane`), the
-/// **operator chat** (`pui chat-pane`), the **brain** (a `psu`
-/// engineer-collaborator session) and the **swarm** (fleet activity,
-/// `pui swarm-pane`) — and NOTHING else: no workbench HUD, no work-area agent
-/// panes, no swap presets. `brain_argv` is the brain pane's command (e.g.
-/// `["psu", "--brain"]`); its first element is the command, the rest are
-/// quoted args. Pure (no I/O) so it is unit-tested.
-pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
+/// Lowercase + kdl-safe a lexicon label for use as a zellij pane `name`
+/// (pui-hive-lexicon-2026-06-06). Keeps ASCII alphanumerics + dash; collapses
+/// any run of other chars (spaces, etc.) to a single dash; trims dashes. So
+/// "Hive Mind" → "hive-mind", "Queen" → "queen". Never returns empty (a wholly
+/// unsafe label falls back to `fallback`).
+fn kdl_pane_name(label: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut prev_dash = false;
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
+/// bee pane added pui-bee-dossier-pane-2026-06-06): the surface the desktop-docked
+/// native terminal runs. SIX panes side-by-side — the **apiary** (the hive
+/// browser: the Cupboard's browse/join surface, `pui apiary-pane`), the **voice**
+/// channels (`pui voice-pane`), the **operator chat** (`pui chat-pane`), the
+/// **brain** (a `psu` engineer-collaborator session), the **swarm** (fleet
+/// activity, `pui swarm-pane`) and the **bee** dossier (the swarm-selected bee's
+/// task list + coord inbox/outbox, `pui bee-pane`, RIGHT of swarm) — and NOTHING
+/// else: no workbench HUD, no work-area agent panes, no swap presets.
+///
+/// Pane DISPLAY names route through the active Hive lexicon (`lex`): the operator
+/// pane is the `operator` term (Queen), swarm is `fleet` (Swarm), bee is
+/// `contributor` (Bee). The pinned-pane ARGS (`chat-pane`, `swarm-pane`,
+/// `bee-pane`, …) are internal identifiers and never change. `brain_argv` is the
+/// brain pane's command; its first element is the command, the rest are quoted
+/// args. Pure (no I/O) so it is unit-tested.
+pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
     let (brain_cmd, brain_args) = brain_argv
         .split_first()
         .map(|(c, rest)| (c.as_str(), rest))
@@ -181,37 +212,48 @@ pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
             .join(" ");
         format!("\n            args {quoted}")
     };
+    // Lexicon-resolved, kdl-safe pane display names. Fixed names (apiary, voice,
+    // brain) have no lexicon term and stay verbatim.
+    let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
+    let swarm_name = kdl_pane_name(&lex.lex("fleet"), "swarm");
+    let bee_name = kdl_pane_name(&lex.lex("contributor"), "bee");
     format!(
-        r#"// Papercusp chat dock — apiary | voice | operator chat | brain | swarm
-// (native-terminal-desktop P-013 / D-011). The desktop-docked native terminal
-// surface: FIVE panes only, NO workbench HUD and NO work-area agent panes.
-// Left→right: the apiary (the hive browser — the Cupboard's browse/join
-// surface), the P2P voice channels, the operator (ElevenLabs voice) chat, the
-// brain (a psu engineer session, resumed at launch via the D-013 brain pin)
-// and the swarm (fleet activity).
+        r#"// Papercusp chat dock — apiary | voice | operator | brain | swarm | bee
+// (native-terminal-desktop P-013 / D-011; bee dossier pane added
+// pui-bee-dossier-pane-2026-06-06). The desktop-docked native terminal surface:
+// SIX panes only, NO workbench HUD and NO work-area agent panes. Left→right: the
+// apiary (the hive browser — the Cupboard's browse/join surface), the P2P voice
+// channels, the operator (ElevenLabs voice) chat, the brain (a psu engineer
+// session, resumed at launch via the D-013 brain pin), the swarm (fleet
+// activity) and the bee dossier (the swarm-selected bee's task list + coord
+// inbox/outbox). Pane display names route through the active Hive lexicon.
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     pane split_direction="vertical" {{
-        pane name="apiary" size="15%" {{
+        pane name="apiary" size="12%" {{
             command "pui"
             args "apiary-pane"
         }}
-        pane name="voice" size="18%" {{
+        pane name="voice" size="15%" {{
             command "pui"
             args "voice-pane"
         }}
-        pane name="operator" focus=true size="26%" {{
+        pane name="{operator_name}" focus=true size="22%" {{
             command "pui"
             args "chat-pane"
         }}
-        pane name="brain" size="26%" {{
+        pane name="brain" size="22%" {{
             command "{brain_cmd}"{args_line}
         }}
-        pane name="swarm" size="15%" {{
+        pane name="{swarm_name}" size="14%" {{
             command "pui"
             args "swarm-pane"
+        }}
+        pane name="{bee_name}" size="15%" {{
+            command "pui"
+            args "bee-pane"
         }}
     }}
     pane size=2 borderless=true {{
@@ -253,18 +295,26 @@ fn materialize_at(base: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Write the chat-dock KDL (for `brain_argv`) to `~/.papercusp/pui-chat-dock.kdl`
-/// and return it. Launched the same way as the workbench (`launch_argv`). (P-013)
-pub fn materialize_chat_dock(brain_argv: &[String]) -> std::io::Result<PathBuf> {
+/// Write the chat-dock KDL (for `brain_argv`, with pane names resolved through
+/// `lex`) to `~/.papercusp/pui-chat-dock.kdl` and return it. Launched the same
+/// way as the workbench (`launch_argv`). (P-013 / pui-hive-lexicon-2026-06-06)
+pub fn materialize_chat_dock(
+    brain_argv: &[String],
+    lex: &crate::lexicon::Lexicon,
+) -> std::io::Result<PathBuf> {
     let base = base_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    materialize_chat_dock_at(&base, brain_argv)
+    materialize_chat_dock_at(&base, brain_argv, lex)
 }
 
-fn materialize_chat_dock_at(base: &Path, brain_argv: &[String]) -> std::io::Result<PathBuf> {
+fn materialize_chat_dock_at(
+    base: &Path,
+    brain_argv: &[String],
+    lex: &crate::lexicon::Lexicon,
+) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(base)?;
     let path = base.join("pui-chat-dock.kdl");
-    std::fs::write(&path, chat_dock_kdl(brain_argv))?;
+    std::fs::write(&path, chat_dock_kdl(brain_argv, lex))?;
     Ok(path)
 }
 

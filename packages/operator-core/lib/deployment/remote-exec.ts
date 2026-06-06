@@ -50,7 +50,23 @@ function sshBaseArgs(t: SshTarget): string[] {
   const args: string[] = [];
   if (t.identityFile) args.push('-i', t.identityFile);
   if (t.port) args.push('-p', String(t.port));
-  args.push('-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new');
+  args.push(
+    '-o',
+    'BatchMode=yes',
+    // Frames are DISPOSABLE machines on RECYCLED provider IPs — pinning their host
+    // keys in the user's known_hosts is meaningless (a fresh OS per provision) and
+    // actively breaks installs: a recycled IP with an old pinned key fails every
+    // connection with "REMOTE HOST IDENTIFICATION HAS CHANGED" (hit live 2026-06-06,
+    // DAL frame). /dev/null + accept-new is the ephemeral-infra standard.
+    '-o',
+    'UserKnownHostsFile=/dev/null',
+    '-o',
+    'StrictHostKeyChecking=accept-new',
+    '-o',
+    'LogLevel=ERROR', // silence the per-connection "permanently added" warning
+    '-o',
+    'ConnectTimeout=10', // fail fast so the ssh-readiness probe paces itself
+  );
   if (t.extraArgs) args.push(...t.extraArgs);
   return args;
 }
