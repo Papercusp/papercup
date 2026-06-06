@@ -71,18 +71,24 @@ export function decodeAudio(payload: Uint8Array): { seq: number; data: Uint8Arra
 }
 
 /**
- * One encoded video chunk → a VIDEO frame. `data` is the opaque WebCodecs
- * EncodedVideoChunk bytes; the operator relays it verbatim (D-007) and only the
- * webview decoder interprets it. `meta.key` lets a fresh receiver skip deltas
- * until the first keyframe.
+ * The video-frame PAYLOAD only — `[1B flags][8B ts][chunk]`, WITHOUT a frame-type
+ * wrapper. This is the unit that travels end-to-end: the operator relays it
+ * opaquely (D-007), and each transport hop wraps it in its own type byte —
+ * FRAME_VIDEO on the swarm, CAM/VID on the local voice socket. `meta.key` lets a
+ * fresh receiver skip deltas until the first keyframe. Decode with decodeVideo.
  */
-export function encodeVideo(meta: VideoFrameMeta, data: Uint8Array): Uint8Array {
+export function encodeVideoPayload(meta: VideoFrameMeta, data: Uint8Array): Uint8Array {
   const payload = new Uint8Array(VIDEO_HEADER_BYTES + data.length);
   const view = new DataView(payload.buffer);
   payload[0] = meta.key ? VIDEO_FLAG_KEYFRAME : 0;
   view.setFloat64(1, meta.timestamp, false);
   payload.set(data, VIDEO_HEADER_BYTES);
-  return encodeFrame(FRAME_VIDEO, payload);
+  return payload;
+}
+
+/** One encoded video chunk → a complete FRAME_VIDEO swarm frame. */
+export function encodeVideo(meta: VideoFrameMeta, data: Uint8Array): Uint8Array {
+  return encodeFrame(FRAME_VIDEO, encodeVideoPayload(meta, data));
 }
 
 export function decodeVideo(payload: Uint8Array): VideoFrameMeta & { data: Uint8Array } {

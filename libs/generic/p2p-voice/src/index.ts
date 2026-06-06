@@ -21,6 +21,7 @@ export {
   encodeCtrl,
   encodeFrame,
   encodeVideo,
+  encodeVideoPayload,
   decodeAudio,
   decodeCtrl,
   decodeVideo,

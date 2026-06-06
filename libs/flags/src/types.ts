@@ -25,6 +25,10 @@ export const FLAGS = {
   // surface + the release-gate cutover have landed (the routine spawns the
   // implementer in a dedicated runner harness and lands via the release gate).
   IMPROVEMENT_AUTO_IMPLEMENT: "papercusp-improvement-auto-implement",
+  // holepunch-video-shared-harnesses-2026-06-05: gates the desktop P2P video
+  // channel (the participant-grid VideoGrid). OFF by default — ships dark until
+  // the live two-instance camera E2E (P-010) passes on the real Tauri webview.
+  VIDEO_CHANNELS: "papercusp-video-channels",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -45,6 +49,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
+  // OFF by default — desktop video ships dark behind the live-camera E2E (P-010).
+  [FLAGS.VIDEO_CHANNELS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
