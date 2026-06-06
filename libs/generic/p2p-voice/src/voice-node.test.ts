@@ -82,8 +82,8 @@ describe('voice-node two-party loopback', () => {
     await tickle();
 
     // hello handshake registered both directions
-    expect(chanA.peers()).toEqual([{ id: 'B', label: 'Bob', muted: false, speaking: false }]);
-    expect(chanB.peers()).toEqual([{ id: 'A', label: 'Alice', muted: false, speaking: false }]);
+    expect(chanA.peers()).toEqual([{ id: 'B', label: 'Bob', muted: false, speaking: false, cameraOn: false }]);
+    expect(chanB.peers()).toEqual([{ id: 'A', label: 'Alice', muted: false, speaking: false, cameraOn: false }]);
 
     const tapB = vi.fn();
     chanB.onPeerFrame(tapB);
@@ -165,6 +165,69 @@ describe('voice-node two-party loopback', () => {
     // rejoin works after leave
     node.joinChannel('cd'.repeat(32));
     await node.destroy();
+  });
+
+  it('fans video per-peer (opaque, no mix) and taps inbound video with sender id', async () => {
+    const { chanA, chanB, nodeA, nodeB } = connectedPair();
+    await tickle();
+
+    const videoB = vi.fn();
+    chanB.onPeerVideoFrame(videoB);
+    // A pushes two opaque video payloads (encodeVideo format isn't required —
+    // the core treats them as bytes; here just distinct buffers).
+    const k = new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0xaa, 0xbb]); // pretend keyframe
+    const d = new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0xcc]); // pretend delta
+    chanA.pushVideo(k);
+    chanA.pushVideo(d);
+    await tickle();
+
+    expect(videoB).toHaveBeenCalledTimes(2);
+    expect(videoB.mock.calls[0][0]).toBe('A');
+    expect([...(videoB.mock.calls[0][1] as Uint8Array)]).toEqual([...k]);
+    expect([...(videoB.mock.calls[1][1] as Uint8Array)]).toEqual([...d]);
+    // delivered payload is a copy — retaining it is safe
+    expect(videoB.mock.calls[0][1]).not.toBe(k);
+
+    await nodeA.destroy();
+    await nodeB.destroy();
+  });
+
+  it('propagates cameraOn via the in-band state frame', async () => {
+    const { chanA, chanB, nodeA, nodeB } = connectedPair();
+    await tickle();
+    expect(chanB.peers()[0].cameraOn).toBe(false);
+
+    chanA.setCameraOn(true);
+    await tickle();
+    expect(chanB.peers()[0].cameraOn).toBe(true);
+    // mute is independent and preserved across a camera toggle
+    expect(chanB.peers()[0].muted).toBe(false);
+
+    chanA.setCameraOn(false);
+    await tickle();
+    expect(chanB.peers()[0].cameraOn).toBe(false);
+
+    await nodeA.destroy();
+    await nodeB.destroy();
+  });
+
+  it('a peer joining with camera already on advertises cameraOn in its hello', async () => {
+    const swarmA = mockSwarm();
+    const swarmB = mockSwarm();
+    const nodeA = createVoiceNode({ swarm: swarmA, codec: testCodec, identity: { id: 'A', label: 'Alice' } });
+    const nodeB = createVoiceNode({ swarm: swarmB, codec: testCodec, identity: { id: 'B', label: 'Bob' } });
+    const chanA = nodeA.joinChannel(TOPIC);
+    const chanB = nodeB.joinChannel(TOPIC);
+    chanA.setCameraOn(true); // camera on BEFORE the connection is established
+    const [endA, endB] = duplexPair();
+    swarmA.emitConnection(endA);
+    swarmB.emitConnection(endB);
+    await tickle();
+
+    expect(chanB.peers()[0]).toMatchObject({ id: 'A', cameraOn: true });
+
+    await nodeA.destroy();
+    await nodeB.destroy();
   });
 
   it('three-party mix sums two speakers at the listener', async () => {

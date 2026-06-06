@@ -5,17 +5,37 @@
  * Types:
  *   0x01 CTRL  — UTF-8 JSON control message (hello / state)
  *   0x02 AUDIO — `[4B seq BE][codec payload…]`
+ *   0x04 VIDEO — `[1B flags][8B timestamp f64 BE][encoded chunk…]` (WebCodecs
+ *                keyframe/delta; opaque to the operator, decoded in the webview —
+ *                plan holepunch-video-shared-harnesses-2026-06-05 D-001/D-007)
  */
 
 export const FRAME_CTRL = 0x01;
 export const FRAME_AUDIO = 0x02;
+export const FRAME_VIDEO = 0x04;
 
-/** Refuse absurd frames — a voice frame is ~tens of bytes; control JSON is small. */
-export const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
+/**
+ * Refuse absurd frames. CTRL/AUDIO are tens of bytes, but a VIDEO keyframe
+ * (esp. a screen-share frame) can be hundreds of KB — one FrameDecoder per
+ * connection carries all three types, so the cap must fit the largest video
+ * frame. 4 MiB comfortably holds a 1080p screen-share keyframe.
+ */
+export const MAX_FRAME_BYTES = 4 << 20; // 4 MiB
 
 export interface VoiceFrame {
   type: number;
   payload: Uint8Array;
+}
+
+/** 1B flags + 8B f64 timestamp. */
+const VIDEO_HEADER_BYTES = 9;
+const VIDEO_FLAG_KEYFRAME = 0x01;
+
+export interface VideoFrameMeta {
+  /** True for an encoder keyframe (standalone-decodable); false for a delta. */
+  key: boolean;
+  /** Presentation timestamp in microseconds (WebCodecs EncodedVideoChunk.timestamp). */
+  timestamp: number;
 }
 
 export function encodeFrame(type: number, payload: Uint8Array): Uint8Array {
@@ -48,6 +68,33 @@ export function encodeAudio(seq: number, data: Uint8Array): Uint8Array {
 export function decodeAudio(payload: Uint8Array): { seq: number; data: Uint8Array } {
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   return { seq: view.getUint32(0, false), data: payload.subarray(4) };
+}
+
+/**
+ * One encoded video chunk → a VIDEO frame. `data` is the opaque WebCodecs
+ * EncodedVideoChunk bytes; the operator relays it verbatim (D-007) and only the
+ * webview decoder interprets it. `meta.key` lets a fresh receiver skip deltas
+ * until the first keyframe.
+ */
+export function encodeVideo(meta: VideoFrameMeta, data: Uint8Array): Uint8Array {
+  const payload = new Uint8Array(VIDEO_HEADER_BYTES + data.length);
+  const view = new DataView(payload.buffer);
+  payload[0] = meta.key ? VIDEO_FLAG_KEYFRAME : 0;
+  view.setFloat64(1, meta.timestamp, false);
+  payload.set(data, VIDEO_HEADER_BYTES);
+  return encodeFrame(FRAME_VIDEO, payload);
+}
+
+export function decodeVideo(payload: Uint8Array): VideoFrameMeta & { data: Uint8Array } {
+  if (payload.length < VIDEO_HEADER_BYTES) {
+    return { key: false, timestamp: 0, data: new Uint8Array(0) };
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  return {
+    key: (payload[0] & VIDEO_FLAG_KEYFRAME) !== 0,
+    timestamp: view.getFloat64(1, false),
+    data: payload.subarray(VIDEO_HEADER_BYTES),
+  };
 }
 
 /** Incremental decoder — feed arbitrary chunk boundaries, get whole frames out. */

@@ -16,15 +16,25 @@
  * Peer frames decode into small per-peer queues; a frameMs ticker pops one frame
  * per peer, mixes (saturating), and emits the mix for local playback. Every
  * decoded peer frame is also emitted raw (`onPeerFrame`) — the agent tap (D-007).
+ *
+ * Video path (plan holepunch-video-shared-harnesses-2026-06-05): a SECOND media
+ * stream on the SAME peer connection. Unlike audio, video is never mixed or
+ * decoded here — the WebCodecs codec lives in the webview (D-002/D-007). The host
+ * pushes opaque encoded chunks (`pushVideo`); the core fans them out per-peer as
+ * FRAME_VIDEO and re-emits every inbound peer video frame raw (`onPeerVideoFrame`,
+ * tagged with the sender peer id) for per-tile rendering. Camera on/off rides the
+ * in-band `state` control frame alongside mute.
  */
 import {
   FrameDecoder,
   FRAME_AUDIO,
   FRAME_CTRL,
+  FRAME_VIDEO,
   decodeAudio,
   decodeCtrl,
   encodeAudio,
   encodeCtrl,
+  encodeFrame,
 } from './framing';
 import { energy, mixInt16 } from './mixer';
 
@@ -65,6 +75,8 @@ export interface VoicePeerState {
   label: string;
   muted: boolean;
   speaking: boolean;
+  /** Whether this peer is currently sharing a camera (in-band `state` signal). */
+  cameraOn: boolean;
 }
 
 export interface VoiceNodeOptions {
@@ -89,10 +101,12 @@ interface HelloMsg {
   id: string;
   label: string;
   muted: boolean;
+  cameraOn: boolean;
 }
 interface StateMsg {
   kind: 'state';
   muted: boolean;
+  cameraOn: boolean;
 }
 type CtrlMsg = HelloMsg | StateMsg;
 
@@ -105,6 +119,7 @@ interface PeerConn {
   id?: string;
   label?: string;
   muted: boolean;
+  cameraOn: boolean;
   queue: Int16Array[];
   lastLoudAt: number;
   closed: boolean;
@@ -116,11 +131,26 @@ export interface ChannelHandle {
   pushMic(frame: Int16Array): void;
   setMuted(muted: boolean): void;
   readonly muted: boolean;
+  /**
+   * Fan one OPAQUE encoded video-frame payload (`[1B flags][8B ts][chunk]`, the
+   * @papercusp/p2p-voice encodeVideo format) out to every peer. The core never
+   * decodes it — the WebCodecs codec lives in the webview (D-002/D-007).
+   */
+  pushVideo(payload: Uint8Array): void;
+  /** Announce local camera on/off to peers (in-band `state` frame). */
+  setCameraOn(on: boolean): void;
+  readonly cameraOn: boolean;
   peers(): VoicePeerState[];
   /** The N-peer mix at frameMs cadence (excludes own mic) — local playback feed. */
   onMixedFrame(cb: (frame: Int16Array) => void): () => void;
   /** Every decoded peer frame, pre-mix — the agent/STT tap. */
   onPeerFrame(cb: (peerId: string, frame: Int16Array) => void): () => void;
+  /**
+   * Every inbound peer video frame, tagged with the sender peer id. The payload
+   * is the opaque encoded video-frame bytes (copied — safe to retain). Per-peer,
+   * never mixed: each peer renders to its own tile.
+   */
+  onPeerVideoFrame(cb: (peerId: string, payload: Uint8Array) => void): () => void;
   onPeersChanged(cb: (peers: VoicePeerState[]) => void): () => void;
   /** Resolves when the topic announce has flushed to the swarm. */
   announced(): Promise<void>;
@@ -154,10 +184,12 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
     discovery: SwarmDiscovery;
     conns: Set<PeerConn>;
     muted: boolean;
+    cameraOn: boolean;
     seq: number;
     ticker: ReturnType<typeof setInterval>;
     mixedCbs: Set<(frame: Int16Array) => void>;
     peerCbs: Set<(peerId: string, frame: Int16Array) => void>;
+    videoCbs: Set<(peerId: string, payload: Uint8Array) => void>;
     changedCbs: Set<(peers: VoicePeerState[]) => void>;
     lastSnapshot: string;
   } | null = null;
@@ -174,6 +206,7 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
         label: pc.label ?? pc.id,
         muted: pc.muted,
         speaking: now - pc.lastLoudAt < speakingHoldMs,
+        cameraOn: pc.cameraOn,
       });
     }
     out.sort((a, b) => a.id.localeCompare(b.id));
@@ -221,10 +254,12 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
       pc.id = msg.id;
       pc.label = msg.label;
       pc.muted = msg.muted;
+      pc.cameraOn = msg.cameraOn ?? false;
       fireChangedIfNeeded();
     } else if (msg.kind === 'state') {
       if (!pc.id) return;
       pc.muted = msg.muted;
+      if (typeof msg.cameraOn === 'boolean') pc.cameraOn = msg.cameraOn;
       fireChangedIfNeeded();
     }
   }
@@ -244,6 +279,14 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
     for (const cb of active.peerCbs) cb(pc.id, frame);
   }
 
+  function handleVideo(pc: PeerConn, payload: Uint8Array): void {
+    if (!active || !pc.id) return; // no video before a valid hello
+    if (active.videoCbs.size === 0) return;
+    // Copy: payload is a view into the decoder's buffer — make it safe to retain.
+    const copy = payload.slice();
+    for (const cb of active.videoCbs) cb(pc.id, copy);
+  }
+
   function attachConn(conn: DuplexLike): void {
     if (!active || destroyed) {
       try {
@@ -257,6 +300,7 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
       conn,
       decoder: new FrameDecoder(),
       muted: false,
+      cameraOn: false,
       queue: [],
       lastLoudAt: 0,
       closed: false,
@@ -283,6 +327,8 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
           }
         } else if (f.type === FRAME_AUDIO) {
           handleAudio(pc, f.payload);
+        } else if (f.type === FRAME_VIDEO) {
+          handleVideo(pc, f.payload);
         }
       }
     });
@@ -292,6 +338,7 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
       id: identity.id,
       label: identity.label,
       muted: active.muted,
+      cameraOn: active.cameraOn,
     };
     try {
       conn.write(encodeCtrl(hello));
@@ -328,19 +375,41 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
         discovery,
         conns: new Set<PeerConn>(),
         muted: false,
+        cameraOn: false,
         seq: 0,
         ticker: setInterval(tick, frameMs),
         mixedCbs: new Set<(frame: Int16Array) => void>(),
         peerCbs: new Set<(peerId: string, frame: Int16Array) => void>(),
+        videoCbs: new Set<(peerId: string, payload: Uint8Array) => void>(),
         changedCbs: new Set<(peers: VoicePeerState[]) => void>(),
         lastSnapshot: '[]',
       };
       active = state;
 
+      // Write one wire frame to every handshaken peer; drop a peer on write error.
+      const writeToPeers = (wire: Uint8Array): void => {
+        for (const pc of state.conns) {
+          if (!pc.id || pc.closed) continue;
+          try {
+            pc.conn.write(wire);
+          } catch {
+            dropConn(pc, false);
+          }
+        }
+      };
+      const broadcastState = (): void => {
+        writeToPeers(
+          encodeCtrl({ kind: 'state', muted: state.muted, cameraOn: state.cameraOn } satisfies StateMsg),
+        );
+      };
+
       const handle: ChannelHandle = {
         topicHex,
         get muted() {
           return state.muted;
+        },
+        get cameraOn() {
+          return state.cameraOn;
         },
         pushMic(frame: Int16Array): void {
           if (active !== state || state.muted) return;
@@ -350,28 +419,21 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
           } catch {
             return;
           }
-          const wire = encodeAudio(state.seq++, data);
-          for (const pc of state.conns) {
-            if (!pc.id || pc.closed) continue;
-            try {
-              pc.conn.write(wire);
-            } catch {
-              dropConn(pc, false);
-            }
-          }
+          writeToPeers(encodeAudio(state.seq++, data));
+        },
+        pushVideo(payload: Uint8Array): void {
+          if (active !== state) return;
+          writeToPeers(encodeFrame(FRAME_VIDEO, payload));
         },
         setMuted(muted: boolean): void {
           if (active !== state || state.muted === muted) return;
           state.muted = muted;
-          const wire = encodeCtrl({ kind: 'state', muted } satisfies StateMsg);
-          for (const pc of state.conns) {
-            if (!pc.id || pc.closed) continue;
-            try {
-              pc.conn.write(wire);
-            } catch {
-              dropConn(pc, false);
-            }
-          }
+          broadcastState();
+        },
+        setCameraOn(on: boolean): void {
+          if (active !== state || state.cameraOn === on) return;
+          state.cameraOn = on;
+          broadcastState();
         },
         peers: snapshotPeers,
         onMixedFrame(cb) {
@@ -381,6 +443,10 @@ export function createVoiceNode(opts: VoiceNodeOptions): VoiceNode {
         onPeerFrame(cb) {
           state.peerCbs.add(cb);
           return () => state.peerCbs.delete(cb);
+        },
+        onPeerVideoFrame(cb) {
+          state.videoCbs.add(cb);
+          return () => state.videoCbs.delete(cb);
         },
         onPeersChanged(cb) {
           state.changedCbs.add(cb);

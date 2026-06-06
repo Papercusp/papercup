@@ -9,9 +9,19 @@
  *   0x01 CTRL  (both ways, UTF-8 JSON)
  *     client→server: {op:'join', channel} | {op:'leave'} | {op:'mute', muted} | {op:'status'}
  *                  | {op:'channels'} | {op:'create', name}
+ *                  | {op:'video', recv} | {op:'camera', on}
  *     server→client: {ev:'status', status} | {ev:'channels', channels} | {ev:'error', message}
  *   0x02 MIC   (client→server)  raw PCM16-LE mono 48kHz — any chunking; server reframes
  *   0x03 MIX   (server→client)  one mixed 20ms PCM16-LE frame (1920 bytes), 50/s while in a channel
+ *   0x04 CAM   (client→server)  one opaque encoded VIDEO frame ([1B flags][8B ts][chunk]) → fanned per-peer
+ *   0x05 VID   (server→client)  one peer's video, [1B idLen][peerId utf8][video frame] — per-peer, NOT mixed
+ *
+ * Video (plan holepunch-video-shared-harnesses-2026-06-05 D-007/D-008): the
+ * operator NEVER decodes video — it relays opaque chunks. A client only receives
+ * VID after opting in via {op:'video',recv:true}, so the Rust pui (no video) and
+ * any audio-only client pay nothing. Camera on/off is announced via
+ * {op:'camera',on} → in-band swarm state. The WS bridge (desktop-voice-ws) is a
+ * type-agnostic byte-pipe, so CAM/VID flow through it unchanged.
  *
  * Discovery: `~/.papercusp/voice-ipc.json` → { socketPath, sampleRate, frameSamples }.
  * (A bootstrap discovery file — the sanctioned file-not-PG case.)
@@ -26,8 +36,11 @@ import {
   joinVoiceChannel,
   leaveVoiceChannel,
   onMixedFrame,
+  onPeerVideoFrame,
   onVoiceStatusChanged,
   pushMicFrame,
+  pushVideoFrame,
+  setVideoCameraOn,
   setVoiceMuted,
   voiceStatus,
 } from './manager';
@@ -36,6 +49,8 @@ import { createVoiceChannel, listVoiceChannels } from './registry';
 const CTRL = 0x01;
 const MIC = 0x02;
 const MIX = 0x03;
+const CAM = 0x04; // client→server: one opaque encoded video frame
+const VID = 0x05; // server→client: one peer's video, peerId-tagged
 
 const FRAME_BYTES = VOICE_FRAME_SAMPLES * 2;
 const te = new TextEncoder();
@@ -43,6 +58,8 @@ const te = new TextEncoder();
 let server: Server | null = null;
 let socketPath: string | null = null;
 const clients = new Set<Socket>();
+/** Sockets that opted into receiving peer video (VID frames) via {op:'video',recv:true}. */
+const videoClients = new Set<Socket>();
 const managerUnsubs: Array<() => void> = [];
 
 function send(sock: Socket, type: number, payload: Uint8Array): void {
@@ -64,7 +81,7 @@ function broadcastCtrl(msg: unknown): void {
 }
 
 async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
-  let msg: { op?: string; channel?: string; muted?: boolean; name?: string };
+  let msg: { op?: string; channel?: string; muted?: boolean; name?: string; recv?: boolean; on?: boolean };
   try {
     msg = JSON.parse(new TextDecoder().decode(raw));
   } catch {
@@ -95,6 +112,20 @@ async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
       case 'create': {
         await createVoiceChannel(String(msg.name ?? ''));
         sendCtrl(sock, { ev: 'channels', channels: await listVoiceChannels() });
+        break;
+      }
+      case 'video': {
+        // Opt this socket in/out of receiving peer video (D-008). Default opt-in
+        // when recv is omitted; an explicit false unsubscribes.
+        if (msg.recv === false) videoClients.delete(sock);
+        else videoClients.add(sock);
+        sendCtrl(sock, { ev: 'status', status: voiceStatus() });
+        break;
+      }
+      case 'camera': {
+        // Announce the local camera on/off state to channel peers (in-band).
+        setVideoCameraOn(Boolean(msg.on));
+        sendCtrl(sock, { ev: 'status', status: voiceStatus() });
         break;
       }
       case 'status':
@@ -143,11 +174,20 @@ function handleClient(sock: Socket): void {
           }
           micAcc = micAcc.subarray(off);
         }
+      } else if (f.type === CAM) {
+        // One whole encoded video frame per CAM frame (the FrameDecoder already
+        // reassembled it by length prefix) — relay opaque, fanned to peers.
+        // pushVideoFrame → encodeFrame copies synchronously, so the view is safe.
+        pushVideoFrame(f.payload);
       }
     }
   });
-  sock.on('error', () => clients.delete(sock));
-  sock.on('close', () => clients.delete(sock));
+  const drop = () => {
+    clients.delete(sock);
+    videoClients.delete(sock);
+  };
+  sock.on('error', drop);
+  sock.on('close', drop);
   sendCtrl(sock, { ev: 'status', status: voiceStatus() });
 }
 
@@ -179,6 +219,18 @@ export function startLocalVoiceSocket(): VoiceSocketInfo {
       const bytes = new Uint8Array(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
       for (const c of clients) send(c, MIX, bytes);
     }),
+    // Per-peer video → VID frames, ONLY to opted-in clients. NOT mixed: each peer
+    // gets its own tile, so we forward each peer's frame tagged with its id.
+    onPeerVideoFrame((peerId, payload) => {
+      if (videoClients.size === 0) return;
+      const idBytes = te.encode(peerId);
+      if (idBytes.length > 255) return; // peer ids are short host-hex; never hit
+      const vid = new Uint8Array(1 + idBytes.length + payload.length);
+      vid[0] = idBytes.length;
+      vid.set(idBytes, 1);
+      vid.set(payload, 1 + idBytes.length);
+      for (const c of videoClients) send(c, VID, vid);
+    }),
     onVoiceStatusChanged((status) => broadcastCtrl({ ev: 'status', status })),
   );
 
@@ -194,6 +246,7 @@ export function stopLocalVoiceSocket(): void {
   for (const un of managerUnsubs.splice(0)) un();
   for (const c of clients) c.destroy();
   clients.clear();
+  videoClients.clear();
   server?.close();
   server = null;
   if (socketPath) {

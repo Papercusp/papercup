@@ -9,7 +9,10 @@ import { FrameDecoder, encodeFrame } from '@papercusp/p2p-voice';
 import { VOICE_FRAME_SAMPLES } from './codec';
 
 const mixedCbs: Array<(f: Int16Array) => void> = [];
+const peerVideoCbs: Array<(peerId: string, payload: Uint8Array) => void> = [];
 const pushMicFrame = vi.fn();
+const pushVideoFrame = vi.fn();
+const setVideoCameraOn = vi.fn();
 const joinVoiceChannel = vi.fn(async (ch: string) => ({ channel: { id: ch }, muted: false, peers: [], identity: { id: 't', label: 't' } }));
 const leaveVoiceChannel = vi.fn(async () => ({ channel: null, muted: false, peers: [], identity: { id: 't', label: 't' } }));
 const setVoiceMuted = vi.fn();
@@ -26,9 +29,15 @@ vi.mock('./manager', () => ({
   leaveVoiceChannel: () => leaveVoiceChannel(),
   setVoiceMuted: (m: boolean) => setVoiceMuted(m),
   pushMicFrame: (f: Int16Array) => pushMicFrame(f),
+  pushVideoFrame: (p: Uint8Array) => pushVideoFrame(p),
+  setVideoCameraOn: (on: boolean) => setVideoCameraOn(on),
   voiceStatus: () => ({ channel: null, muted: false, peers: [], identity: { id: 't', label: 't' } }),
   onMixedFrame: (cb: (f: Int16Array) => void) => {
     mixedCbs.push(cb);
+    return () => {};
+  },
+  onPeerVideoFrame: (cb: (peerId: string, payload: Uint8Array) => void) => {
+    peerVideoCbs.push(cb);
     return () => {};
   },
   onVoiceStatusChanged: () => () => {},
@@ -39,6 +48,8 @@ import { startLocalVoiceSocket, stopLocalVoiceSocket } from './local-audio-socke
 const CTRL = 0x01;
 const MIC = 0x02;
 const MIX = 0x03;
+const CAM = 0x04;
+const VID = 0x05;
 const te = new TextEncoder();
 const td = new TextDecoder();
 
@@ -46,6 +57,7 @@ afterEach(() => {
   stopLocalVoiceSocket();
   vi.clearAllMocks();
   mixedCbs.length = 0;
+  peerVideoCbs.length = 0;
 });
 
 function client(path: string) {
@@ -53,13 +65,15 @@ function client(path: string) {
   const decoder = new FrameDecoder();
   const ctrl: unknown[] = [];
   const mixes: Uint8Array[] = [];
+  const vids: Uint8Array[] = [];
   sock.on('data', (chunk) => {
     for (const f of decoder.push(new Uint8Array(chunk))) {
       if (f.type === CTRL) ctrl.push(JSON.parse(td.decode(f.payload)));
       if (f.type === MIX) mixes.push(f.payload);
+      if (f.type === VID) vids.push(f.payload);
     }
   });
-  return { sock, ctrl, mixes };
+  return { sock, ctrl, mixes, vids };
 }
 
 const settle = (ms = 80) => new Promise((r) => setTimeout(r, ms));
@@ -137,5 +151,73 @@ describe('local voice socket', () => {
     }
     c1.sock.destroy();
     c2.sock.destroy();
+  });
+
+  it('relays CAM frames to the operator (pushVideoFrame) verbatim', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const c = client(socketPath);
+    await settle(40);
+
+    const payload = new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0xab, 0xcd]); // opaque video frame
+    c.sock.write(encodeFrame(CAM, payload));
+    await settle();
+
+    expect(pushVideoFrame).toHaveBeenCalledTimes(1);
+    expect([...(pushVideoFrame.mock.calls[0][0] as Uint8Array)]).toEqual([...payload]);
+    c.sock.destroy();
+  });
+
+  it('fans peer VID frames ONLY to opted-in clients, peerId-tagged', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const optedIn = client(socketPath);
+    const audioOnly = client(socketPath); // never sends {op:'video'}
+    await settle(40);
+
+    optedIn.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'video', recv: true }))));
+    await settle();
+
+    const payload = new Uint8Array([9, 9, 9, 9]);
+    for (const cb of peerVideoCbs) cb('peerXY', payload);
+    await settle();
+
+    // opted-in client gets exactly one VID frame: [idLen][peerId][payload]
+    expect(optedIn.vids).toHaveLength(1);
+    const vid = optedIn.vids[0];
+    const idLen = vid[0];
+    expect(td.decode(vid.subarray(1, 1 + idLen))).toBe('peerXY');
+    expect([...vid.subarray(1 + idLen)]).toEqual([...payload]);
+    // audio-only client (pui-equivalent) receives NOTHING
+    expect(audioOnly.vids).toHaveLength(0);
+
+    optedIn.sock.destroy();
+    audioOnly.sock.destroy();
+  });
+
+  it('stops fanning VID after a client opts out (recv:false)', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const c = client(socketPath);
+    await settle(40);
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'video', recv: true }))));
+    await settle();
+    for (const cb of peerVideoCbs) cb('p1', new Uint8Array([1]));
+    await settle();
+    expect(c.vids).toHaveLength(1);
+
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'video', recv: false }))));
+    await settle();
+    for (const cb of peerVideoCbs) cb('p1', new Uint8Array([2]));
+    await settle();
+    expect(c.vids).toHaveLength(1); // unchanged — no new frame after opt-out
+    c.sock.destroy();
+  });
+
+  it('forwards {op:camera,on} to the operator (setVideoCameraOn)', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const c = client(socketPath);
+    await settle(40);
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'camera', on: true }))));
+    await settle();
+    expect(setVideoCameraOn).toHaveBeenCalledWith(true);
+    c.sock.destroy();
   });
 });

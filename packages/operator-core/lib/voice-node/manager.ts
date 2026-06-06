@@ -67,6 +67,7 @@ let agentSpeaking = false;
 
 const mixedCbs = new Set<(frame: Int16Array) => void>();
 const peerFrameCbs = new Set<(peerId: string, frame: Int16Array) => void>();
+const peerVideoCbs = new Set<(peerId: string, payload: Uint8Array) => void>();
 const changedCbs = new Set<(status: VoiceStatus) => void>();
 const handleUnsubs: Array<() => void> = [];
 
@@ -121,6 +122,9 @@ export async function joinVoiceChannel(idOrName: string): Promise<VoiceStatus> {
     h.onPeerFrame((peerId, frame) => {
       for (const cb of peerFrameCbs) cb(peerId, frame);
     }),
+    h.onPeerVideoFrame((peerId, payload) => {
+      for (const cb of peerVideoCbs) cb(peerId, payload);
+    }),
     h.onPeersChanged(() => emitChanged()),
   );
   emitChanged();
@@ -144,8 +148,24 @@ export function pushMicFrame(frame: Int16Array): void {
   handle?.pushMic(frame);
 }
 
+/**
+ * Push one local encoded VIDEO frame (opaque `[1B flags][8B ts][chunk]` bytes
+ * from the webview's WebCodecs encoder) → fanned per-peer (plan
+ * holepunch-video-shared-harnesses-2026-06-05 P-003). The operator never decodes
+ * it; the codec lives in the webview (D-002/D-007).
+ */
+export function pushVideoFrame(payload: Uint8Array): void {
+  handle?.pushVideo(payload);
+}
+
 export function setVoiceMuted(muted: boolean): void {
   handle?.setMuted(muted);
+  emitChanged();
+}
+
+/** Announce the local camera on/off state to channel peers (in-band, D-008). */
+export function setVideoCameraOn(on: boolean): void {
+  handle?.setCameraOn(on);
   emitChanged();
 }
 
@@ -159,6 +179,16 @@ export function onMixedFrame(cb: (frame: Int16Array) => void): () => void {
 export function onPeerFrame(cb: (peerId: string, frame: Int16Array) => void): () => void {
   peerFrameCbs.add(cb);
   return () => peerFrameCbs.delete(cb);
+}
+
+/**
+ * Subscribe to per-peer inbound VIDEO frames (opaque encoded payload, tagged
+ * with the sender peer id). The local voice socket fans these to opted-in
+ * desktop clients as VID frames. Survives channel switches.
+ */
+export function onPeerVideoFrame(cb: (peerId: string, payload: Uint8Array) => void): () => void {
+  peerVideoCbs.add(cb);
+  return () => peerVideoCbs.delete(cb);
 }
 
 export function onVoiceStatusChanged(cb: (status: VoiceStatus) => void): () => void {
