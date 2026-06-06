@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({
-  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator'],
+  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'bee'],
 }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
 vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
@@ -220,6 +220,26 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(res.ok).toBe(true);
     const [, , extras] = vi.mocked(spawnInvokeOnce).mock.calls[0];
     expect(extras).toContain('CHUNK_ID=F-1.c2');
+  });
+
+  it('accepts the generic `bee` role WITHOUT a chunk (no pipeline guard — local-hive P-011)', async () => {
+    // The flip-to-real-path criterion: fleet:spawn { role:'bee' } must pass
+    // admission with no chunkId (unlike `worker`, which is chunk-coupled).
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeNull();
+    const [, role] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(role).toBe('bee');
+  });
+
+  it('passes the Queen brief through as `extras` for a placed bee', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee',
+      extras: ['BRIEF=watch for the migration race; this connects to bee-2'],
+    });
+    expect(res.ok).toBe(true);
+    const [, , extras] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(extras).toContain('BRIEF=watch for the migration race; this connects to bee-2');
   });
 
   it('rejects when the workspace is at the running-spawn ceiling', async () => {
