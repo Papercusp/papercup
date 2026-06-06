@@ -67,6 +67,24 @@ export default defineTool({
         isError: true,
       };
     }
+    if (out === 'requires_spawn_approve') {
+      // unify-agent-spawn-chokepoint P-005/P-006: a new_subagent spawn-approval
+      // request is brain-only — coord:resolve (open to all coord roles) may not
+      // decide it; route the brain to the gated tool.
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'requires_spawn_approve',
+              detail: `msg_id=${args.msg_id} is a new_subagent spawn request — only the brain may decide it, via new_subagent:approve`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     // inbox-cards-unification Phase D (P-035): if this escalation was linked to
     // a live ctx.askUser card (agent blocked waiting), unblock it too so an
     // inbox resolution resumes the agent. No-op when unlinked (flag-off) or the

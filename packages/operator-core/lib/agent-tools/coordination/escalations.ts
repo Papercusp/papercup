@@ -106,11 +106,20 @@ export async function getEscalation(
  */
 export async function resolveEscalation(
   input: ResolveInput,
-): Promise<EscalationRecord | 'not_found' | 'already_resolved'> {
+  opts: { allowSpawnRequest?: boolean } = {},
+): Promise<EscalationRecord | 'not_found' | 'already_resolved' | 'requires_spawn_approve'> {
   const { opens, resolves } = await loadEscalations();
   const open = opens.find((e) => e.msg_id === input.msg_id);
   if (!open) return 'not_found';
   if (indexResolves(resolves).has(input.msg_id)) return 'already_resolved';
+  // unify-agent-spawn-chokepoint P-005/P-006: a `new_subagent` spawn-approval request
+  // (it carries meta.spawnRequest) is resolvable ONLY via the brain-gated
+  // `new_subagent:approve` tool (which passes allowSpawnRequest), NOT the general
+  // `coord:resolve` (open to all coord roles). This is what makes "only the brain
+  // decides spawns" enforced at the tool layer, not prompt convention.
+  if ((open as Record<string, unknown>).spawnRequest === true && !opts.allowSpawnRequest) {
+    return 'requires_spawn_approve';
+  }
 
   const ev: EscalationResolvedEvent = {
     ts: new Date().toISOString(),

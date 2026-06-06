@@ -27,6 +27,7 @@ const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
 const zod_1 = require("zod");
 const db_org_1 = require("@papercusp/db-org");
 const auth_1 = require("./auth");
+const tool_schema_sanitize_1 = require("./tool-schema-sanitize");
 const tooldef_1 = require("@papercusp/tooldef");
 const tool_manifest_1 = require("./tool-manifest");
 const tooldef_2 = require("@papercusp/tooldef");
@@ -267,7 +268,9 @@ async function startServer(opts = {}) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const inputSchema = zod_1.z.toJSONSchema(t.args);
             delete inputSchema.$schema;
-            return { name: t.name, description: t.description, inputSchema };
+            // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
+            // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
+            return { name: t.name, description: t.description, inputSchema: (0, tool_schema_sanitize_1.sanitizeToolSchema)(inputSchema) };
         });
         // Pin to the tool manifest (if configured) for cache-stable parity with
         // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.
@@ -288,9 +291,17 @@ async function startServer(opts = {}) {
                 ],
             };
         }
+        // Format-aware serialization (token-efficient-tool-result-formats P-005) —
+        // the same single serializer the HTTP path uses. stdio is an agent-facing
+        // MCP transport, so it defaults to compact; a client can override per call
+        // via `_meta.format`. The envelope (nextCursor/degraded) rides in `_meta`.
         const r = result.response;
+        const meta = req.params._meta;
+        const serialized = (0, tooldef_1.serializeToolResponse)(r, (0, tooldef_1.formatOptsFromCtx)({ requestedFormat: meta?.format, requestedStructured: meta?.structured === true, transport: 'mcp' }, (0, tooldef_1.lookupByMcpName)(req.params.name)?.resultEligibility));
         return {
-            content: [{ type: 'text', text: JSON.stringify(r) }],
+            content: serialized.content,
+            ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
+            ...(serialized.structuredContent !== undefined ? { structuredContent: serialized.structuredContent } : {}),
         };
     });
     server.setRequestHandler(types_js_1.ListResourcesRequestSchema, async () => {

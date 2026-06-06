@@ -10,8 +10,8 @@ import { z } from 'zod';
 declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<{
     slug: z.ZodString;
     detail: z.ZodDefault<z.ZodEnum<{
-        summary: "summary";
         full: "full";
+        summary: "summary";
     }>>;
 }, z.core.$strip>>;
 export default _default;

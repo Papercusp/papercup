@@ -22,6 +22,20 @@ exports.invalidate = invalidate;
 exports._resetAuthCacheForTests = _resetAuthCacheForTests;
 const node_crypto_1 = require("node:crypto");
 const db_org_1 = require("@papercusp/db-org");
+const role_config_1 = require("./role-config");
+/**
+ * The RBAC `roles` a resolved principal carries (the fail-closed `requireRoles`
+ * dispatch axis). Derived from the principal's verified identity — NEVER
+ * caller-asserted. Today only the operator's own system principal is "the brain"
+ * (unify-agent-spawn-chokepoint P-006); a spawned worker/scoper/etc. carries none,
+ * so a `requireRoles:[BRAIN_PRINCIPAL_ROLE]` tool admits only the brain (+ superuser).
+ */
+function rolesForPrincipal(kind, slug) {
+    if (kind === 'system' && (slug === 'system:operator' || slug === 'operator')) {
+        return new Set([role_config_1.BRAIN_PRINCIPAL_ROLE]);
+    }
+    return undefined;
+}
 const CACHE = new Map();
 function cacheKey(workspaceId, slug) {
     return `${workspaceId}:${slug}`;
@@ -68,6 +82,7 @@ async function resolveBearer(bearer) {
     // Bearer-token-resolved principals are 'trusted' — the bearer hash was
     // verified against the row in PG. authMethod stays 'bearer-token'
     // for both 'system' (operator self / superuser shell) and 'pi' kinds.
+    const roles = rolesForPrincipal(kind, slug);
     const principal = {
         kind,
         slug,
@@ -75,6 +90,7 @@ async function resolveBearer(bearer) {
         capabilities,
         authMethod: 'bearer-token',
         trust: 'trusted',
+        ...(roles ? { roles } : {}),
     };
     CACHE.set(ck, principal);
     return principal;

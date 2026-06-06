@@ -50,7 +50,7 @@ exports.default = (0, tooldef_1.defineTool)({
             FROM harness_shared.harness_features_consolidated
            WHERE harness_slug = ${args.slug}
              AND _search @@ plainto_tsquery('english', ${args.query})
-             AND (${args.status}::text IS NULL OR status = ${args.status ?? null})
+             AND (${args.status ?? null}::text IS NULL OR status = ${args.status ?? null})
              AND (${tags.length === 0}::boolean OR tags ?| ${tags}::text[])
            ORDER BY rank DESC, updated_ts DESC NULLS LAST
            LIMIT ${args.limit}
@@ -64,7 +64,7 @@ exports.default = (0, tooldef_1.defineTool)({
                  0::float AS rank
             FROM harness_shared.harness_features_consolidated
            WHERE harness_slug = ${args.slug}
-             AND (${args.status}::text IS NULL OR status = ${args.status ?? null})
+             AND (${args.status ?? null}::text IS NULL OR status = ${args.status ?? null})
              AND (${tags.length === 0}::boolean OR tags ?| ${tags}::text[])
            ORDER BY updated_ts DESC NULLS LAST
            LIMIT ${args.limit}

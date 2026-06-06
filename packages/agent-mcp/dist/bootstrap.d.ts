@@ -18,7 +18,6 @@ import './tools/features/list_related';
 import './tools/features/tag_vocabulary';
 import './tools/goals/list';
 import './tools/goals/get';
-import './tools/issues/list';
 import './tools/messages/inbox';
 import './tools/messages/outbox';
 import './tools/audit/list';

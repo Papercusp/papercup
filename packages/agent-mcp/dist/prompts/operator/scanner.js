@@ -20,8 +20,8 @@ const tooldef_1 = require("@papercusp/tooldef");
 function findScannerMd() {
     const platform = (0, host_platform_1.getHostPlatform)();
     const candidates = [
-        (0, node_path_1.resolve)(__dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
-        (0, node_path_1.resolve)(__dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+        (0, node_path_1.resolve)(import.meta.dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+        (0, node_path_1.resolve)(import.meta.dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
         (0, node_path_1.resolve)(process.cwd(), 'libs/papercusp/packages/harness/prompts/scanner.md'),
     ];
     for (const path of candidates) {

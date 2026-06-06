@@ -6,11 +6,9 @@
  * - `provision` — `POST /servers` then poll `GET /servers/{id}` until the frame is
  *   reachable (status ready + an IPv4 assigned); returns a `Frame`.
  * - `teardown` — `DELETE /servers/{id}` (DESTROY, not stop — ends billing, P-012).
- * - `install` / `join` — P-010/P-014: bootstrap the runtime on the frame (per the
- *   ratified D-006/D-007: the frame runs its OWN orchestrator loop + its OWN
- *   embedded-pg federating via the peer-log) and admit it as a headless peer.
- *   These need a live frame to exercise, so they're explicit `pending` throws
- *   rather than silent no-ops (a remote frame with nothing installed is broken).
+ * - `install` / `join` — delegated to the PROVIDER-AGNOSTIC `frame-installer`
+ *   (shared with every driver): bootstrap the frame to run its OWN orchestrator
+ *   loop + OWN embedded-pg (D-006/D-007) then admit it as a headless peer.
  *
  * The API client + `sleep` are injectable so provision/teardown are fully
  * unit-testable with a mocked HTTP layer — no live Latitude account required.
@@ -22,8 +20,8 @@ import type {
   Frame,
 } from '@papercusp/deployment-driver';
 import { createLatitudeApiClient, type LatitudeApiClient, type LatitudeServerAttributes } from './latitude-api';
-import { buildFrameBootstrap } from '../frame-bootstrap';
-import { createSshRemoteExec, type RemoteExec } from '../remote-exec';
+import { installFrame, joinFrame } from '../frame-installer';
+import type { RemoteExec } from '../remote-exec';
 
 /** Latitude statuses that mean the frame is up and usable. */
 const READY_STATUSES = new Set(['on', 'active', 'ready', 'running']);
@@ -47,19 +45,6 @@ export interface LatitudeDriverDeps {
   /** Optional join hook (P-014/P-015 admission). Default: a log no-op — the frame
    *  federates via its own boot announce; explicit admission lands with P-015. */
   onJoin?: (frame: Frame, config: DeploymentConfig, ctx: DeploymentContext) => Promise<void>;
-}
-
-/** Where the per-frame Claude credentials are staged on the frame before bootstrap. */
-const REMOTE_CRED_PATH = '/root/papercusp-claude-credentials.json';
-
-function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
-  const provider = (config.provider ?? {}) as Record<string, unknown>;
-  if (!frame.host) throw new Error('LatitudeDriver.install: frame has no host/IP to SSH to');
-  return createSshRemoteExec({
-    host: frame.host,
-    user: (provider.sshUser as string | undefined) ?? 'root',
-    identityFile: provider.sshIdentityFile as string | undefined,
-  });
 }
 
 function defaultResolveApiKey(config: DeploymentConfig): string | undefined {
@@ -110,8 +95,7 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
   const pollIntervalMs = deps.pollIntervalMs ?? 10_000;
   const pollTimeoutMs = deps.pollTimeoutMs ?? 15 * 60_000;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const makeRemoteExec = deps.makeRemoteExec ?? defaultMakeRemoteExec;
-  const onJoin = deps.onJoin;
+  const installerDeps = { makeRemoteExec: deps.makeRemoteExec, onJoin: deps.onJoin };
 
   function clientFor(config: DeploymentConfig): LatitudeApiClient {
     if (deps.client) return deps.client;

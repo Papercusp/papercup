@@ -12,7 +12,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
 const db_org_1 = require("@papercusp/db-org");
 const tooldef_1 = require("@papercusp/tooldef");
-const SLUG_RE = /^[a-z0-9._-]+$/i;
+const _slug_requires_1 = require("./_slug-requires");
 const WRITE_ROLES = [
     'scoper',
     'architect',
@@ -24,7 +24,7 @@ const WRITE_ROLES = [
     'curator',
 ];
 function normalizeRelPath(rel) {
-    return rel.replace(/^\.harness\//, '');
+    return rel.replace(/^\.papercusp\//, '');
 }
 exports.default = (0, tooldef_1.defineTool)({
     name: 'artifacts:save',
@@ -44,18 +44,16 @@ exports.default = (0, tooldef_1.defineTool)({
         operator: { perRun: 200 },
     },
     args: zod_1.z.object({
-        slug: zod_1.z.string().min(1).regex(SLUG_RE).optional(),
+        slug: zod_1.z.string().min(1).regex(_slug_requires_1.SLUG_RE).optional(),
         rel_path: zod_1.z.string().min(1),
         content: zod_1.z.string(),
     }),
+    // Declarative preconditions (adopt-event-rules-engines requires:-half):
+    // the former in-handler slug guards, lifted — see ./_slug-requires.
+    requires: (0, _slug_requires_1.slugRequires)('artifacts:save'),
     async handler(args, ctx) {
-        const slug = args.slug ?? ctx.harnessSlug;
-        if (!slug) {
-            throw new Error('artifacts:save — `slug` required (no harnessSlug in spawn context)');
-        }
-        if (!SLUG_RE.test(slug)) {
-            throw new Error(`artifacts:save — invalid slug ${JSON.stringify(slug)}`);
-        }
+        // Present + SLUG_RE-valid by the preconditions above.
+        const slug = (args.slug ?? ctx.harnessSlug);
         const key = normalizeRelPath(args.rel_path);
         const { sql } = (0, db_org_1.getOrgPg)();
         const now = Date.now();

@@ -79,6 +79,8 @@ import './harness/pending_reviews';
 import './harness/health';
 import './harness/list_features';
 import './harness/membership';
+// Cloud deployment (cloud-deployment-layer-2026-06-06 P-012)
+import './deploy/deploy';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';
@@ -220,6 +222,9 @@ import './coordination/tools/escalations';
 import './coordination/tools/resolve';
 import './coordination/tools/handoff';
 import './coordination/tools/handoffs';
+// Spawn admission — the brain decides worth-it (unify-agent-spawn-chokepoint P-005/P-006)
+import './spawn/request';
+import './spawn/approve';
 // Coordination substrate — topics (subscribe→inject taxonomy, D-004)
 import './coordination/tools/topics-list';
 import './coordination/tools/topics-create';

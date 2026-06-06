@@ -29,6 +29,18 @@ export default defineTool({
     targetRole: z.string().optional(),
     limit: z.number().int().positive().max(200).default(50),
   }),
+  // Output schema (token-efficient-tool-result-formats P-013) — flat scalar
+  // array → unlocks CSV + outputSchema advertisement.
+  result: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.string(),
+      targetRole: z.string().nullable(),
+      dueAt: z.union([z.string(), z.number()]).nullable(),
+      createdAt: z.union([z.string(), z.number()]).nullable(),
+      consumed: z.boolean(),
+    }),
+  ),
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);
     const preds = [

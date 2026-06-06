@@ -30,6 +30,7 @@ The hard part isn't writing the MCP wrapper. The hard part is pulling a function
 - **Uniform observability.** Every invocation lands in `harness_shared.tool_invocations` with role, window key, status, duration, output size — regardless of transport. You can answer "which agents called which tools when" without per-route instrumentation.
 - **Uniform gating.** Role allowlist, capability check, and per-window quota all enforce in the same dispatcher. Adding a new sensitive tool means setting `roles: ["operator"]` + `rolesQuota: { operator: { perRun: 5 } }` and you're done.
 - **Stream-or-not, no rewrite.** A function that calls `ctx.progress(pct, msg)` automatically gets MCP `notifications/progress` events on the MCP transport and SSE events on the HTTP transport. No transport-specific wiring.
+- **Token-efficient by default.** A function returns structured `data`; the dispatcher serializes it in the most compact format the data's shape allows (TOON for arrays, lossless JSON otherwise) — agents read ≈ −20–35% fewer tokens on list results with no change to how they call. Declaring `result: <schema>` unlocks CSV + MCP `outputSchema` advertisement. See [Transports → Result formats](/internal/docs/endpoint-system/transports).
 
 ## What this is not
 

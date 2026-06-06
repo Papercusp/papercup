@@ -14,7 +14,7 @@
  * become async functions of their own.
  */
 
-import type { DeploymentConfig } from '@papercusp/deployment-driver';
+import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
 import { getOrgPg } from '@papercusp/db-org';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -32,6 +32,13 @@ export interface ProjectEntry {
    * harness), so the launch path runs locally exactly as before.
    */
   deployment?: DeploymentConfig;
+  /**
+   * The currently-provisioned cloud frame handle, when this harness is deployed
+   * (cloud-deployment-layer P-012). Persisted so teardown can DESTROY the right
+   * machine across operator restarts (a frame outlives the process that made it).
+   * Absent ⇒ not deployed / running locally.
+   */
+  deploymentFrame?: Frame;
 }
 
 export interface HarnessRegistry {

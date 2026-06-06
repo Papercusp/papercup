@@ -15,8 +15,8 @@ declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<
     slug: z.ZodString;
     feature_id: z.ZodOptional<z.ZodString>;
     detail: z.ZodDefault<z.ZodEnum<{
-        summary: "summary";
         full: "full";
+        summary: "summary";
     }>>;
     status: z.ZodDefault<z.ZodEnum<{
         pending: "pending";

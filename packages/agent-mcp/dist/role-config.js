@@ -12,11 +12,11 @@
  * `AGENT_ROLES` is the single runtime source of truth for the built-in role
  * ids; the type-level augmentation is *derived* from it (no hand-kept second
  * list to drift). The ordering is: the seven pipeline roles, the two chat
- * roles (operator/oracle), then the cross-cutting expert roles that show up
+ * roles (operator/oracle), then the cross-cutting roles that show up
  * in tool `roles:` allowlists.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AGENT_ROLES = void 0;
+exports.BRAIN_PRINCIPAL_ROLE = exports.AGENT_ROLES = void 0;
 /**
  * The built-in Papercusp agent roles, as they appear in tool `roles:`
  * allowlists, `rolesQuota` keys, and `byRole` guidance overrides. The set is
@@ -36,14 +36,12 @@ exports.AGENT_ROLES = [
     // Chat-surface roles.
     'operator',
     'oracle',
-    // Coordinator + cross-cutting expert roles (built-in, fire on plan events).
+    // Coordinator + cross-cutting roles (built-in, fire on plan events).
     'orchestrator',
     // Promotes a plan's `## Promote` policy into the harness, all waves up front
     // (launched by a human/agent). promote-policy-and-waves-2026-05-30; the
     // wave-advance sweep that used to drive it per-wave is retired (P-044).
     'promote',
-    'expert',
-    'feedback',
     'security-reviewer',
     'infra-reviewer',
     // 'summarizer' + 'project_manager' — CUT (dbos-system-completion P-015).
@@ -57,4 +55,28 @@ exports.AGENT_ROLES = [
     // read-only adversarial judgment role; screens remote-authored features before
     // they reach the orchestrator pick loop. No execution capability.
     'auditor',
+    // git-sync merge-conflict resolver (git-sync-auto-commit P-011). Spawned by the
+    // `system:git-sync` action when an auto-merge with origin/main conflicts: it
+    // redoes the merge fresh on `main`, resolves, commits, leaves the tree clean, and
+    // does NOT push (the next git-sync tick pushes). Not feature-scoped.
+    'merge-resolver',
+    // Release manager (release-gate-ready-branch-2026-06-04 D-011). The judgment
+    // half of the deploy chokepoint — Claude Opus 4.8 @ xhigh effort, because the
+    // blast radius is the whole running fleet. Spawned by the `system:release-trigger`
+    // action (or launched interactively); reviews the gathered deploy plan + staged
+    // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
+    // reads health and decides rollback. The script is the hands; this is the brain.
+    'release-manager',
 ];
+/**
+ * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
+ * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint
+ * P-006 / D-008). This is an RBAC role on `Principal.roles` (the fail-closed
+ * `requireRoles` dispatch axis), NOT an agent `ctx.role`: it is assigned by the HOST
+ * to the operator's OWN principal (the bearer-resolved `system:operator` + the
+ * loopback palette caller), and is never carried by a spawned agent's caller-asserted
+ * `?role=`. A tool gated `requireRoles: [BRAIN_PRINCIPAL_ROLE]` is therefore
+ * approvable ONLY by the brain (or a superuser, which bypasses RBAC) — making "only
+ * the brain decides spawns" enforced at the dispatch layer, not prompt convention.
+ */
+exports.BRAIN_PRINCIPAL_ROLE = 'brain';

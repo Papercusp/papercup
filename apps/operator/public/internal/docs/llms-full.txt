@@ -903,6 +903,61 @@ i.e. the file backend’s *session-start reach* is bounded at roughly **\~115–
 
 * [`mem0-unavailable-outage-or-swallowed-bug`](/internal/docs/agent-insights/mem0-unavailable-outage-or-swallowed-bug/) — the mem0 side’s swallowed-failure trap (same benchmark arc).
 
+# Parsing tagged compact tool results (TOON / CSV)
+
+> Tool results are no longer always JSON — the MCP transport delivers compact TOON by default, prefixed with a `format: <fmt>` marker. How to read each format, where the pagination cursor + row count went, and how to force JSON when you need it.
+
+## What changed
+
+[Section titled “What changed”](#what-changed)
+
+Tool results you read over MCP are **no longer always JSON**. To save tokens, the server picks a compact format from each tool’s output shape and serializes `ToolResponse.data` into `content[0].text` accordingly. You don’t request this — it’s delivered. Plan: `token-efficient-tool-result-formats-2026-06-06`.
+
+Every compact payload **self-identifies** with a marker on its first line, so you never have to guess:
+
+```plaintext
+format: toon
+[3]{id,state,title}:
+  WI-001,todo,Wire the encoder
+  WI-002,passed,Add the schema
+  WI-003,wip,Backfill list tools
+```
+
+* **No marker → it’s JSON** (the assumed default; unmarked so bytes are unchanged).
+* **`format: toon`** → TOON. The `[N]{cols}:` header names the row count `N` and the columns; each following indented line is one row, comma-separated, in column order. Nested values indent YAML-style. It is a lossless JSON superset — read a cell as the JSON value it represents (`null` is `null`, `42` is a number, a quoted `"…"` is a string with escapes).
+* **`format: csv`** / **`format: tsv`** → a header row then comma/tab-separated rows, RFC 4180 quoted (a field with a delimiter/quote/newline is `"…"`, embedded quotes doubled). CSV is **lossy** — every cell is a string; there are no types or nulls. Only flat tools opt into it.
+
+## Where the envelope went
+
+[Section titled “Where the envelope went”](#where-the-envelope-went)
+
+Compact tabular formats can’t hold a pagination cursor inside the table, so the **envelope rides in `_meta`**, not the body:
+
+* `_meta.format` — the format that was actually served.
+* `_meta.nextCursor` — the pagination cursor (was `ToolResponse.nextCursor`).
+* `_meta.degraded` / `_meta.degradedReasons` — partial-result flags.
+* `_meta.formatFallback: true` — the server downgraded from the requested/ideal format (e.g. you asked for CSV on a nested shape, or TOON couldn’t represent the data losslessly). The payload in `content[0].text` is still correct; just note it isn’t what was nominally requested.
+
+**The row count is in the TOON header** (`[N]{…}`), not a `count` field — list tools dropped their `{ ok, count, items }` wrapper; `data` is the array directly.
+
+## Forcing JSON (or another format)
+
+[Section titled “Forcing JSON (or another format)”](#forcing-json-or-another-format)
+
+The format is a **client-process knob**, never something you put in tool *args*. If you (or a programmatic consumer) need lossless JSON for round-tripping or exact parsing:
+
+* **MCP** — pass `_meta.format: "json"` on the `tools/call`, or add `?format=json` to the MCP connection URL. `?format=csv` / `compact` also work.
+* **HTTP** — `?format=json` (or `Accept: application/json`) on the request.
+* **structuredContent** — `?structured=1` (or `_meta.structured: true`) also attaches the lossless structured JSON as `structuredContent` alongside the compact text, for clients that render it separately. Off by default.
+
+## The lossless guarantee (why a list sometimes comes back as JSON)
+
+[Section titled “The lossless guarantee (why a list sometimes comes back as JSON)”](#the-lossless-guarantee-why-a-list-sometimes-comes-back-as-json)
+
+`@toon-format/toon` is lossless in the common case but has round-trip bugs on pathological keys and on certain string values containing structural characters (backticks, colons, `→`) in its nested-list form. The encoder **verifies the round-trip** (encode → decode → compare) and falls back to JSON whenever it doesn’t hold — so you are **never handed a compact payload that doesn’t decode back to the original**. Practical consequence: a list whose rows carry rich markdown text or nested blobs (e.g. `work_items:list` with non-null `payload`) may arrive as JSON with `_meta.formatFallback: true`. That’s the safety net working, not a bug. Flat/uniform list tools (e.g. `audit:list`) reliably arrive as TOON.
+
+Implementation: `libs/generic/result-encoding` (encoder + eligibility) and `libs/generic/tooldef/src/serialize-result.ts` (the single serializer every transport calls). Contract reference: [Transports → Result formats](/internal/docs/endpoint-system/transports).
+
 # Split a budget conditionally on which pools are actually active
 
 > When fanning out a `limit` across N optional pools (user / workspace / N harnesses), the per-pool slice must depend on which pools are non-empty THIS call — not a fixed compile-time ratio.
@@ -19252,6 +19307,7 @@ The hard part isn’t writing the MCP wrapper. The hard part is pulling a functi
 * **Uniform observability.** Every invocation lands in `harness_shared.tool_invocations` with role, window key, status, duration, output size — regardless of transport. You can answer “which agents called which tools when” without per-route instrumentation.
 * **Uniform gating.** Role allowlist, capability check, and per-window quota all enforce in the same dispatcher. Adding a new sensitive tool means setting `roles: ["operator"]` + `rolesQuota: { operator: { perRun: 5 } }` and you’re done.
 * **Stream-or-not, no rewrite.** A function that calls `ctx.progress(pct, msg)` automatically gets MCP `notifications/progress` events on the MCP transport and SSE events on the HTTP transport. No transport-specific wiring.
+* **Token-efficient by default.** A function returns structured `data`; the dispatcher serializes it in the most compact format the data’s shape allows (TOON for arrays, lossless JSON otherwise) — agents read ≈ −20–35% fewer tokens on list results with no change to how they call. Declaring `result: <schema>` unlocks CSV + MCP `outputSchema` advertisement. See [Transports → Result formats](/internal/docs/endpoint-system/transports).
 
 ## What this is not
 
@@ -20965,6 +21021,28 @@ The user’s click `POST`s to `/api/operator/conversations/:id/card-response`; t
 The wire-level event name `'card'` is reserved at `registerProjectedTool` (`libs/generic/tooldef/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
 
 Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `libs/generic/tooldef/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
+
+## Result formats — token-efficient serialization
+
+[Section titled “Result formats — token-efficient serialization”](#result-formats--token-efficient-serialization)
+
+A `ToolResponse.data` is no longer always `JSON.stringify`’d into `content[0].text`. The result serializer (`libs/generic/tooldef/src/serialize-result.ts`, the single source of truth for every transport) picks a **token-efficient format** server-side and labels it. Plan: `token-efficient-tool-result-formats-2026-06-06`.
+
+**Format selection (delivered, not requested).** The model never names a format — efficiency is a deterministic server-side choice:
+
+* **Server default** — the MCP transport (the agent-facing surface, where the LLM reads `content[0].text`) defaults to **compact**; every other transport (HTTP catch-all, in-process, IPC) defaults to lossless **JSON**. “Compact” resolves to the best format the data’s shape can be safely rendered in: **TOON** for arrays, JSON for single objects. TOON is a JSON-lossless superset that renders uniform arrays as CSV-style rows — ≈ −20–35% tokens on real list payloads.
+* **Eligibility** — when a tool declares an output schema (`defineTool({ result: z.array(...) })`), `@papercusp/result-encoding`’s `analyzeSchema` computes the capability set once at registration: a flat array of scalar-only objects → `{json,toon,csv,tsv,md}`; an array with nested/heterogeneous rows → `{json,toon}`; a non-array → `{json}`. No schema → the TOON runtime auto-encoder still gives a compact path.
+* **Negotiation override** — set by the *client process*, not the model. HTTP: `?format=` or `Accept` (`application/toon`, `text/csv`, `application/json`). MCP: `_meta.format` on the `tools/call` params, or `?format=` on the connection URL. The requested format is intersected with the tool’s capability set; an unsupported request falls back to the best representable format and labels the downgrade (`_meta.formatFallback`).
+
+**The response contract.** Every compact payload self-identifies so the model never parses an unlabeled one:
+
+* `content[0].text` carries the rendering prefixed with a `format: <fmt>` marker (JSON, the assumed default, is left unmarked). TOON additionally carries its own self-describing `[N]{cols}:` header — which is also where the **row count** lives (so list tools drop any `{ ok, count }` wrapper).
+* `_meta.format` records the format machine-readably; `_meta.nextCursor` / `_meta.degraded` / `_meta.degradedReasons` carry the pagination/degraded **envelope** — routed OUT of the tabular body so compact formats are safe for paginated list tools.
+* `structuredContent` (opt-in via `?structured=1` / `_meta.structured`) carries the lossless structured JSON for UI/programmatic consumers — gated OFF by default so the model never pays for both the compact text AND the JSON.
+
+**Lossless guarantee.** `@toon-format/toon` is lossless in the common case but has round-trip edge cases (pathological keys; certain string values with structural characters in its nested form). The encoder VERIFIES the round-trip (`encodeToonChecked`: encode → decode → deep-compare) and falls back to JSON whenever it doesn’t hold — the model is never handed a compact payload that doesn’t decode back to the input. See the agent-insight [Parsing tagged compact tool results](/internal/docs/agent-insights/compact-tool-result-formats).
+
+MCP `tools/list` advertises a tool’s `outputSchema` (spec-aligned) and a Papercusp `resultFormats` extension (its capability set) so a client knows what it may negotiate.
 
 ## The three context types
 
@@ -25687,35 +25765,36 @@ The **agent-insights** are the fleet’s procedural runbook — one short page p
 
 A **blueprint** is a harness’s declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (13 concrete + 1 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (13 concrete + 2 abstract).
 
 ## Built-in blueprints
 
 [Section titled “Built-in blueprints”](#built-in-blueprints)
 
-| Blueprint          | Extends | Work item              | Decider            | Dispatch                  | Roles | Description                                                                                                                                                                                                                                                                                 |
-| ------------------ | ------- | ---------------------- | ------------------ | ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audit`            | base    | audit-task (`AUD`)     | auditor            | inherited                 | 1     | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it.                                                                   |
-| `coding`           | base    | feature (`F`)          | director           | concurrency 4, plan-order | 11    | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).                                                                                    |
-| `deliberate`       | base    | decision (`DLIB`)      | —                  | inherited                 | 0     | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split.                                                                                                                                            |
-| `deploy`           | base    | deploy-run (`DEP`)     | release-manager    | inherited                 | 1     | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet.                                             |
-| `gym`              | base    | gym-task (`G`)         | gym-director       | inherited                 | 6     | A meta-harness that optimizes another harness’s blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric.                                             |
-| `implement`        | base    | improvement (`IMP`)    | worker             | inherited                 | 1     | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.                                                                                                 |
-| `merge-resolution` | base    | merge-conflict (`MRG`) | merge-resolver     | inherited                 | 1     | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.                                                                                                                                 |
-| `migration`        | base    | migration-task (`M`)   | migration-director | concurrency 4             | 4     | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change.                                    |
-| `pot`              | base    | pot-wake (`POT`)       | operator           | inherited                 | 1     | The Pot operator — the user’s single judgment surface over the fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the blackboard, creates/supervises harnesses from blueprints, curates what the user sees, and declares its next wake before sleeping. |
-| `research`         | base    | research-task (`R`)    | research-director  | concurrency 1             | 4     | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less.                                                                                                                                        |
-| `review`           | base    | review-task (`RV`)     | review-director    | inherited                 | 4     | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report.                                               |
-| `scan`             | base    | scan-run (`SCAN`)      | scanner            | inherited                 | 1     | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog.                                                                 |
-| `vote`             | base    | decision (`VOTE`)      | —                  | inherited                 | 2     | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human.                                                                                                |
+| Blueprint          | Extends      | Work item              | Decider            | Dispatch                  | Roles | Description                                                                                                                                                                                                                                                                                 |
+| ------------------ | ------------ | ---------------------- | ------------------ | ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit`            | base         | audit-task (`AUD`)     | auditor            | inherited                 | 1     | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it.                                                                   |
+| `coding`           | base         | feature (`F`)          | director           | concurrency 4, plan-order | 11    | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).                                                                                    |
+| `deliberate`       | base         | decision (`DLIB`)      | —                  | inherited                 | 0     | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split.                                                                                                                                            |
+| `deploy`           | single-agent | deploy-run (`DEP`)     | release-manager    | inherited                 | 1     | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet.                                             |
+| `gym`              | base         | gym-task (`G`)         | gym-director       | inherited                 | 6     | A meta-harness that optimizes another harness’s blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric.                                             |
+| `implement`        | single-agent | improvement (`IMP`)    | worker             | inherited                 | 1     | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.                                                                                                 |
+| `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver     | inherited                 | 1     | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.                                                                                                                                 |
+| `migration`        | base         | migration-task (`M`)   | migration-director | concurrency 4             | 4     | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change.                                    |
+| `pot`              | base         | pot-wake (`POT`)       | operator           | inherited                 | 1     | The Pot operator — the user’s single judgment surface over the fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the blackboard, creates/supervises harnesses from blueprints, curates what the user sees, and declares its next wake before sleeping. |
+| `research`         | base         | research-task (`R`)    | research-director  | concurrency 1             | 4     | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less.                                                                                                                                        |
+| `review`           | base         | review-task (`RV`)     | review-director    | inherited                 | 4     | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report.                                               |
+| `scan`             | single-agent | scan-run (`SCAN`)      | scanner            | inherited                 | 1     | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog.                                                                 |
+| `vote`             | base         | decision (`VOTE`)      | —                  | inherited                 | 2     | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human.                                                                                                |
 
 ### Abstract (not directly runnable)
 
 [Section titled “Abstract (not directly runnable)”](#abstract-not-directly-runnable)
 
-| Blueprint | Description                                                                                                |
-| --------- | ---------------------------------------------------------------------------------------------------------- |
-| `base`    | Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints. |
+| Blueprint      | Description                                                                                                                                                                                                                                                                      |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base`         | Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints.                                                                                                                                                                       |
+| `single-agent` | Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy. |
 
 ## Details
 
@@ -25773,11 +25852,10 @@ Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vot
 
 The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet.
 
-* **Extends:** `base`
+* **Extends:** `single-agent`
 * **Version:** 0.1.0
 * **Work item:** `deploy-run` (id prefix `DEP`)
 * **Spine decider:** `release-manager` (maxTurns 20)
-* **Planner:** inline
 * **Roles (1):** `release-manager`
 
 ### `gym`
@@ -25800,11 +25878,10 @@ A meta-harness that optimizes another harness’s blueprint: a gym-director driv
 
 Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.
 
-* **Extends:** `base`
+* **Extends:** `single-agent`
 * **Version:** 0.1.0
 * **Work item:** `improvement` (id prefix `IMP`)
-* **Spine decider:** `worker` (maxTurns 40)
-* **Planner:** inline
+* **Spine decider:** `worker`
 * **Roles (1):** `worker`
 
 ### `merge-resolution`
@@ -25813,11 +25890,10 @@ Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with 
 
 Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.
 
-* **Extends:** `base`
+* **Extends:** `single-agent`
 * **Version:** 0.1.0
 * **Work item:** `merge-conflict` (id prefix `MRG`)
 * **Spine decider:** `merge-resolver` (maxTurns 20)
-* **Planner:** inline
 * **Roles (1):** `merge-resolver`
 
 ### `migration`
@@ -25880,12 +25956,21 @@ A review/audit harness: a review-director drives one dimension-reviewer per revi
 
 Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change|improvement) into the self-improvement triage backlog.
 
-* **Extends:** `base`
+* **Extends:** `single-agent`
 * **Version:** 0.1.0
 * **Work item:** `scan-run` (id prefix `SCAN`)
 * **Spine decider:** `scanner` (maxTurns 30)
-* **Planner:** inline
 * **Roles (1):** `scanner`
+
+### `single-agent`
+
+[Section titled “single-agent”](#single-agent)
+
+Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy.
+
+* **Extends:** `base`
+* **Version:** 0.1.0
+* **Planner:** inline
 
 ### `vote`
 

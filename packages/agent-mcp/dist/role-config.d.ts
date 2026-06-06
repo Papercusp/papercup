@@ -11,7 +11,7 @@
  * `AGENT_ROLES` is the single runtime source of truth for the built-in role
  * ids; the type-level augmentation is *derived* from it (no hand-kept second
  * list to drift). The ordering is: the seven pipeline roles, the two chat
- * roles (operator/oracle), then the cross-cutting expert roles that show up
+ * roles (operator/oracle), then the cross-cutting roles that show up
  * in tool `roles:` allowlists.
  */
 /**
@@ -20,9 +20,21 @@
  * open — plugins contribute additional roles at runtime (namespaced
  * `<plugin>:<role>`), which stay typed as bare `string`.
  */
-export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "orchestrator", "promote", "expert", "feedback", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor"];
+export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "orchestrator", "promote", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor", "merge-resolver", "release-manager"];
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
+/**
+ * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
+ * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint
+ * P-006 / D-008). This is an RBAC role on `Principal.roles` (the fail-closed
+ * `requireRoles` dispatch axis), NOT an agent `ctx.role`: it is assigned by the HOST
+ * to the operator's OWN principal (the bearer-resolved `system:operator` + the
+ * loopback palette caller), and is never carried by a spawned agent's caller-asserted
+ * `?role=`. A tool gated `requireRoles: [BRAIN_PRINCIPAL_ROLE]` is therefore
+ * approvable ONLY by the brain (or a superuser, which bypasses RBAC) — making "only
+ * the brain decides spawns" enforced at the dispatch layer, not prompt convention.
+ */
+export declare const BRAIN_PRINCIPAL_ROLE = "brain";
 /**
  * Register the built-in roles with the framework. Declaration merging adds
  * these keys to `@papercusp/tooldef`'s `RoleRegistry`, which the framework

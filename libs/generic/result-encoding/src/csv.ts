@@ -39,7 +39,8 @@ function collectColumns(rows: Row[]): string[] {
   return cols;
 }
 
-function cellToString(v: unknown): string {
+/** Stringify a cell value the way CSV/positional encoders do (objects → JSON, null/undefined → ''). */
+export function cellToString(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
@@ -49,7 +50,8 @@ function needsQuote(s: string, delimiter: string): boolean {
   return s.includes(delimiter) || s.includes('"') || s.includes('\n') || s.includes('\r');
 }
 
-function quoteField(s: string, delimiter: string): string {
+/** RFC-4180 quote a single field for the given delimiter (doubles embedded quotes). Shared with the positional encoder. */
+export function quoteField(s: string, delimiter: string): string {
   return needsQuote(s, delimiter) ? `"${s.replaceAll('"', '""')}"` : s;
 }
 
@@ -77,7 +79,7 @@ export function encodeMarkdownTable(rows: unknown): string {
 }
 
 /** RFC 4180 row parser — respects quoted fields containing the delimiter / CR / LF / `""`. */
-function parseRows(text: string, delimiter: string): string[][] {
+export function parseRows(text: string, delimiter: string): string[][] {
   if (text === '') return [];
   const rows: string[][] = [];
   let field = '';

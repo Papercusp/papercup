@@ -7,7 +7,7 @@
  * form per-harness text. Role-gated; agents may read across harnesses
  * by passing an explicit `slug`.
  *
- * The `rel_path` may be passed with or without a leading `.harness/`;
+ * The `rel_path` may be passed with or without a leading `.papercusp/`;
  * it's normalised to the bare relative-to-harness-dir form for lookup.
  */
 import { z } from 'zod';

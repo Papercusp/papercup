@@ -34,4 +34,28 @@ export {
   bestCompactFormat,
 } from './eligibility';
 
-export { encodeDelimited, decodeDelimited, encodeMarkdownTable } from './csv';
+export { encodeDelimited, decodeDelimited, encodeMarkdownTable, cellToString, quoteField, parseRows } from './csv';
+
+export {
+  type ColumnType,
+  type ColumnSpec,
+  type ReconstructResult,
+  projectReadColumns,
+  projectWriteColumns,
+  encodePositionalRows,
+  reconstructArgs,
+} from './positional';
+
+export {
+  type PrePromptEntry,
+  type ReadEncoding,
+  type WriteEncoding,
+  configurePrePromptRegistry,
+  clearPrePromptRegistry,
+  getPrePromptEntry,
+  listPrePromptEntries,
+  readPrePromptFormat,
+  isWritePositional,
+} from './registry';
+
+export { type ToolColumnSource, type ColumnsLookup, renderWireSchemas } from './legend';

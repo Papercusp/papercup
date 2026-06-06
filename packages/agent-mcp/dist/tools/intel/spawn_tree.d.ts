@@ -16,9 +16,9 @@ declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<
     sinceMs: z.ZodOptional<z.ZodNumber>;
     limit: z.ZodDefault<z.ZodNumber>;
     status: z.ZodOptional<z.ZodEnum<{
+        ok: "ok";
         error: "error";
         timeout: "timeout";
-        ok: "ok";
         "quota-exceeded": "quota-exceeded";
         "role-not-allowed": "role-not-allowed";
     }>>;

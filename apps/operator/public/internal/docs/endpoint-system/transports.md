@@ -268,6 +268,26 @@ The wire-level event name `'card'` is reserved at `registerProjectedTool` (`libs
 
 Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `libs/generic/tooldef/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
 
+## Result formats — token-efficient serialization
+
+A `ToolResponse.data` is no longer always `JSON.stringify`'d into `content[0].text`. The result serializer (`libs/generic/tooldef/src/serialize-result.ts`, the single source of truth for every transport) picks a **token-efficient format** server-side and labels it. Plan: `token-efficient-tool-result-formats-2026-06-06`.
+
+**Format selection (delivered, not requested).** The model never names a format — efficiency is a deterministic server-side choice:
+
+* **Server default** — the MCP transport (the agent-facing surface, where the LLM reads `content[0].text`) defaults to **compact**; every other transport (HTTP catch-all, in-process, IPC) defaults to lossless **JSON**. "Compact" resolves to the best format the data's shape can be safely rendered in: **TOON** for arrays, JSON for single objects. TOON is a JSON-lossless superset that renders uniform arrays as CSV-style rows — ≈ −20–35% tokens on real list payloads.
+* **Eligibility** — when a tool declares an output schema (`defineTool({ result: z.array(...) })`), `@papercusp/result-encoding`'s `analyzeSchema` computes the capability set once at registration: a flat array of scalar-only objects → `{json,toon,csv,tsv,md}`; an array with nested/heterogeneous rows → `{json,toon}`; a non-array → `{json}`. No schema → the TOON runtime auto-encoder still gives a compact path.
+* **Negotiation override** — set by the *client process*, not the model. HTTP: `?format=` or `Accept` (`application/toon`, `text/csv`, `application/json`). MCP: `_meta.format` on the `tools/call` params, or `?format=` on the connection URL. The requested format is intersected with the tool's capability set; an unsupported request falls back to the best representable format and labels the downgrade (`_meta.formatFallback`).
+
+**The response contract.** Every compact payload self-identifies so the model never parses an unlabeled one:
+
+* `content[0].text` carries the rendering prefixed with a `format: <fmt>` marker (JSON, the assumed default, is left unmarked). TOON additionally carries its own self-describing `[N]{cols}:` header — which is also where the **row count** lives (so list tools drop any `{ ok, count }` wrapper).
+* `_meta.format` records the format machine-readably; `_meta.nextCursor` / `_meta.degraded` / `_meta.degradedReasons` carry the pagination/degraded **envelope** — routed OUT of the tabular body so compact formats are safe for paginated list tools.
+* `structuredContent` (opt-in via `?structured=1` / `_meta.structured`) carries the lossless structured JSON for UI/programmatic consumers — gated OFF by default so the model never pays for both the compact text AND the JSON.
+
+**Lossless guarantee.** `@toon-format/toon` is lossless in the common case but has round-trip edge cases (pathological keys; certain string values with structural characters in its nested form). The encoder VERIFIES the round-trip (`encodeToonChecked`: encode → decode → deep-compare) and falls back to JSON whenever it doesn't hold — the model is never handed a compact payload that doesn't decode back to the input. See the agent-insight [Parsing tagged compact tool results](/internal/docs/agent-insights/compact-tool-result-formats).
+
+MCP `tools/list` advertises a tool's `outputSchema` (spec-aligned) and a Papercusp `resultFormats` extension (its capability set) so a client knows what it may negotiate.
+
 ## The three context types
 
 The codebase has three context types floating around — same field set, different supersets. Knowing which is which helps when tracing types through the dispatcher and transport adapters.

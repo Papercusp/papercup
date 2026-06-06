@@ -32,6 +32,16 @@ export default defineTool({
     limit: z.number().int().positive().max(200).default(50),
     cursor: z.string().optional(),
   }),
+  // Output schema (token-efficient-tool-result-formats P-013) — flat scalar
+  // array (default `summary` shape) → unlocks CSV + outputSchema advertisement.
+  result: z.array(
+    z.object({
+      harnessSlug: z.string().nullable(),
+      id: z.string(),
+      title: z.string(),
+      status: z.string().nullable(),
+    }),
+  ),
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);
     const preds = [

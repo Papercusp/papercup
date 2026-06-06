@@ -21,7 +21,8 @@ require("./tools/features/list_related");
 require("./tools/features/tag_vocabulary");
 require("./tools/goals/list");
 require("./tools/goals/get");
-require("./tools/issues/list");
+// issues:* redefined operator-side (apps/operator/lib/agent-tools/issues/*) —
+// engineer-issues-2026-06-03 D-003. The per-harness stub here was retired.
 require("./tools/messages/inbox");
 require("./tools/messages/outbox");
 require("./tools/audit/list");

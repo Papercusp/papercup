@@ -48,6 +48,17 @@ export default defineTool({
         'Per-call workspace scope (superuser only). An unscoped superuser session (workspaceId "*") MUST pass this — the dispatch layer opens the workspace tx from it (EI-30). Scoped sessions ignore it (power-user callers have it clamped to their token workspace).',
       ),
   }),
+  // Output schema (token-efficient-tool-result-formats P-013). Both modes are
+  // flat scalar arrays → unlock CSV + MCP outputSchema advertisement. Declared
+  // as the default `summary` shape; `full` adds more scalar columns the runtime
+  // flatness check still serves as CSV.
+  result: z.array(
+    z.object({
+      slug: z.string(),
+      status: z.string().nullable(),
+      source: z.enum(['registry', 'project']),
+    }),
+  ),
   async handler(args, ctx) {
     const tx = ctx.tx as SqlLike;
     const ws = ctx.principal?.workspaceId ?? '';
