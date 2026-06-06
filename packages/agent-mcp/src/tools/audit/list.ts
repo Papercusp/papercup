@@ -28,6 +28,21 @@ export default defineTool({
     sinceTs: z.number().int().optional(),
     limit: z.number().int().positive().max(500).default(100),
   }),
+  // Output schema (token-efficient-tool-result-formats P-011): the default
+  // `summary` shape is a flat array of scalar-only rows → unlocks CSV (the
+  // densest format) and the MCP `outputSchema` advertisement. `detail: 'full'`
+  // additionally returns a nested `details` per row; the serializer's runtime
+  // flatness check downgrades those to TOON gracefully, so declaring the
+  // summary shape is correct + lossless for both modes.
+  result: z.array(
+    z.object({
+      id: z.string(),
+      ts: z.number(),
+      actor: z.string(),
+      action: z.string(),
+      subject: z.string(),
+    }),
+  ),
   async handler(args, ctx) {
     const rows: Array<{ id: string; ts: number; actor: string; action: string; subject: string; details: unknown }> = await ctx.tx`
       SELECT id, ts, actor, action, subject, details

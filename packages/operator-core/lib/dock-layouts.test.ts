@@ -32,29 +32,42 @@ function allPanels(doc: LayoutDoc): PanelInstance[] {
   return out;
 }
 
-describe('defaultWorkbenchLayout (desktop-workbench-shell P-001)', () => {
-  it('is a well-formed 3-pane layout', () => {
+describe('defaultWorkbenchLayout (native-terminal-desktop-2026-06-06 — terminal is a native sibling, not a pane)', () => {
+  it('is a well-formed 2-pane layout', () => {
     const doc = defaultWorkbenchLayout();
     expect(isWellFormedLayout(doc)).toBe(true);
     expect(doc.root.kind).toBe('group');
     const root = doc.root as Extract<LayoutDoc['root'], { kind: 'group' }>;
     expect(root.direction).toBe('row');
-    expect(root.children).toHaveLength(3);
+    expect(root.children).toHaveLength(2);
   });
 
-  it('has exactly the pui · app · voice panes (operator-chat pane retired, D-001)', () => {
+  it('has exactly the app · voice GUI panes (pui/terminal retired to a native sibling window, D-002/D-008)', () => {
     const types = allPanels(defaultWorkbenchLayout()).map((p) => p.type);
-    expect(types).toEqual(['workbench:pui', 'workbench:app', 'workbench:voice']);
+    expect(types).toEqual(['workbench:app', 'workbench:voice']);
     // The retired operator-chat pane must NOT be present.
     expect(types).not.toContain('workbench:operator');
     expect(types).not.toContain('data:chat');
   });
 
-  it('bakes the app pane src to /adv and routes harnessSlug to pui + voice', () => {
+  // GUARD (native-terminal-desktop P-009): the desktop terminal is a NATIVE
+  // sibling window, never a webview pane. No xterm.js / iframe-/pi terminal pane
+  // may be reintroduced into the workbench seed.
+  it('GUARD: seeds NO terminal pane (no xterm.js terminal as a dockview pane)', () => {
+    const banned = ['workbench:pui', 'data:pi', 'workbench:terminal', 'data:terminal'];
+    for (const slug of ['', 'papercup', 'workbench', 'workbench:demo']) {
+      const doc = slug.startsWith('workbench') ? seedForDockName(slug) : defaultWorkbenchLayout(slug);
+      const types = allPanels(doc).map((p) => p.type);
+      for (const b of banned) {
+        expect(types, `seed "${slug}" must not contain ${b}`).not.toContain(b);
+      }
+    }
+  });
+
+  it('bakes the app pane src to /adv and routes harnessSlug to voice', () => {
     const doc = defaultWorkbenchLayout('papercup');
     const byType = (t: string) => allPanels(doc).find((p) => p.type === t)!;
     expect(byType('workbench:app').params?.src).toBe('/adv');
-    expect(byType('workbench:pui').params?.harnessSlug).toBe('papercup');
     expect(byType('workbench:voice').params?.harnessSlug).toBe('papercup');
     // The /adv app pane self-manages its harness, so it carries no slug.
     expect(byType('workbench:app').params?.harnessSlug).toBeUndefined();
@@ -62,11 +75,11 @@ describe('defaultWorkbenchLayout (desktop-workbench-shell P-001)', () => {
 
   it('seedForDockName routes "workbench" to the workbench seed, not the dashboard', () => {
     const seeded = seedForDockName('workbench');
-    expect(allPanels(seeded).map((p) => p.type)).toContain('workbench:pui');
-    // A "workbench:<slug>" name bakes the slug.
+    expect(allPanels(seeded).map((p) => p.type)).toContain('workbench:app');
+    // A "workbench:<slug>" name bakes the slug into the voice pane.
     const withSlug = seedForDockName('workbench:demo');
-    const pui = allPanels(withSlug).find((p) => p.type === 'workbench:pui')!;
-    expect(pui.params?.harnessSlug).toBe('demo');
+    const voice = allPanels(withSlug).find((p) => p.type === 'workbench:voice')!;
+    expect(voice.params?.harnessSlug).toBe('demo');
   });
 });
 

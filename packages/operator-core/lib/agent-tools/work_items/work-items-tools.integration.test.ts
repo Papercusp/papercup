@@ -115,6 +115,12 @@ async function call(tool: { handler: (a: never, c: never) => Promise<unknown> },
   return JSON.parse(res.content[0]!.text) as Record<string, unknown>;
 }
 
+/** Invoke work_items:list (which returns the WorkItem array as `{ data }`, P-011). */
+async function listData(args: Record<string, unknown>): Promise<Array<{ id: string; kind: string }>> {
+  const res = (await listTool.handler(args as never, CTX)) as { data: Array<{ id: string; kind: string }> };
+  return res.data;
+}
+
 let db: FreshPgDb;
 
 beforeAll(async () => {
@@ -181,18 +187,20 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const chunk = await call(createTool, { kind: 'chunk', title: 'sub-unit', harness: 'papercup', parent: parentId });
     const chunkId = (chunk.workItem as Record<string, unknown>).id as string;
 
-    const top = await call(listTool, { harness: 'papercup' });
-    expect(top.ok).toBe(true);
-    const topIds = (top.items as Array<{ id: string }>).map((w) => w.id);
+    // work_items:list now returns the WorkItem array directly as `{ data }`
+    // (token-efficient-tool-result-formats P-011 — the `{ ok, count, items }`
+    // wrapper is gone; the row count rides in TOON's `[N]{…}` header).
+    const top = (await listData({ harness: 'papercup' }));
+    const topIds = top.map((w) => w.id);
     expect(topIds).toContain(parentId);
     expect(topIds).not.toContain(chunkId); // chunk hidden from the default list (D-004)
 
-    const children = await call(listTool, { harness: 'papercup', parent: parentId });
-    expect((children.items as Array<{ id: string }>).map((w) => w.id)).toEqual([chunkId]);
+    const children = await listData({ harness: 'papercup', parent: parentId });
+    expect(children.map((w) => w.id)).toEqual([chunkId]);
 
-    const onlyBugs = await call(listTool, { harness: 'papercup', kind: 'bug' });
-    expect((onlyBugs.items as Array<{ kind: string }>).every((w) => w.kind === 'bug')).toBe(true);
-    expect(onlyBugs.count).toBe(1);
+    const onlyBugs = await listData({ harness: 'papercup', kind: 'bug' });
+    expect(onlyBugs.every((w) => w.kind === 'bug')).toBe(true);
+    expect(onlyBugs.length).toBe(1);
   });
 
   it('claim → set_state(close) → release walks the lifecycle envelopes (issue + feature)', async () => {

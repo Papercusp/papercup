@@ -7,18 +7,21 @@ import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVo
 import { onDockApiBind, listPanels, setPanelParams } from '@/app/harness/dock/dock-actions';
 
 /**
- * /workbench — the top-level 3-pane desktop workbench
- * (plan `desktop-workbench-shell-2026-06-05`, P-001).
+ * /workbench — the top-level desktop workbench
+ * (plan `desktop-workbench-shell-2026-06-05`, P-001;
+ *  pui pane retired by `native-terminal-desktop-2026-06-06` D-002/D-008).
  *
- * Three panes (left→right): the embedded **pui** terminal, the **main /adv
- * app**, and a **voice/video** comms pane. The standalone operator-chat pane
- * is retired (D-001) — the operator chat lives inside the /adv app pane.
+ * Two GUI panes (left→right): the **main /adv app** and a **voice/video**
+ * comms pane. The standalone operator-chat pane is retired (D-001) — the
+ * operator chat lives inside the /adv app pane. The **pui/terminal is no
+ * longer a pane**: a webview can't host a native terminal, so it runs as a
+ * native sibling window glued to the GUI (launched by the Tauri shell).
  *
  * A separate URL from `/adv`, so it doesn't replace the current shell until
  * verified (the plan's isolation guard). The active harness is `?harness=`
- * (nuqs, agent-driveable + deep-linkable); it's patched into the pui + voice
- * panels at runtime (the dock-preview pattern), since the static seed bakes
- * an empty slug. The /adv app pane self-manages its own harness selector.
+ * (nuqs, agent-driveable + deep-linkable); it's patched into the voice panel
+ * at runtime (the dock-preview pattern), since the static seed bakes an empty
+ * slug. The /adv app pane self-manages its own harness selector.
  */
 export const Route = createFileRoute('/workbench')({
   component: WorkbenchPage,
@@ -64,7 +67,7 @@ function WorkbenchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Patch the active harness into the pui + voice panels whenever it changes.
+  // Patch the active harness into the voice panel whenever it changes.
   // Mirrors dock-preview: the seed bakes an empty slug, the route fills it in
   // once the dock API is bound (and again on each harness change).
   useEffect(() => {
@@ -73,7 +76,7 @@ function WorkbenchPage() {
       const patch = () => {
         try {
           for (const p of listPanels()) {
-            if (p.type === 'workbench:pui' || p.type === 'workbench:voice') {
+            if (p.type === 'workbench:voice') {
               if (p.params?.harnessSlug !== harness) {
                 setPanelParams(p.id, { ...p.params, harnessSlug: harness });
               }
@@ -104,7 +107,7 @@ function WorkbenchPage() {
         }}
       >
         <strong>Workbench</strong>
-        <span style={{ color: 'var(--fg-mute, #888)' }}>pui · app · voice/video</span>
+        <span style={{ color: 'var(--fg-mute, #888)' }}>app · voice/video · terminal (native sibling)</span>
         <div style={{ flex: 1 }} />
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ color: 'var(--fg-mute, #888)' }}>Harness</span>

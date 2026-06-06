@@ -20,12 +20,16 @@
     "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "*",
     "@papercusp/host-platform": "file:../../libs/host-platform",
+    "@papercusp/result-encoding": "*",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-http": "*",
     "@papercusp/sse": "file:../../libs/generic/sse",
     "postgres": "*",
     "zod": "*",
     "zod-to-json-schema": "*"
+  },
+  "devDependencies": {
+    "js-tiktoken": "*"
   },
   "peerDependencies": {
     "@papercusp/db-org": "*"

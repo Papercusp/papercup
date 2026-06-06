@@ -61,11 +61,16 @@ function EmptyPaneNote({ lines }: { lines: string[] }) {
 }
 
 /**
- * pui pane — embeds the `/pi` terminals dock for the active harness. Keyed
- * by slug so switching harness reloads the embedded pui (different harness =
- * different terminals). Drag-reparenting reloads the iframe (the pui's own
- * state isn't portal-preserved yet); a follow-on can route this through the
- * iframe-host portal (D-003) if terminal-state survival becomes important.
+ * pui pane — embeds the `/pi` terminals dock for the active harness.
+ *
+ * ⚠ RETIRED as the desktop terminal (native-terminal-desktop-2026-06-06,
+ * D-002/D-008, superseding desktop-workbench-shell D-003). A webview can only
+ * host a *web* terminal (iframe/xterm.js), never a NATIVE one — so the desktop
+ * terminal is now a native sibling window glued to the GUI (the Tauri shell's
+ * `native_terminal.rs`), NOT a dockview pane. This component is no longer
+ * seeded into `defaultWorkbenchLayout` (a guard test enforces that), and is
+ * kept only per the NO_TS_DELETION rule + for any standalone `/pi` consumer.
+ * Do not re-add `workbench:pui` to the workbench seed.
  */
 export function WorkbenchPuiPanel({ params }: PanelComponentProps) {
   const harnessSlug = typeof params.harnessSlug === 'string' ? params.harnessSlug : '';

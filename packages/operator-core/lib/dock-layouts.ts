@@ -457,6 +457,12 @@ export function defaultPiTerminalsLayout(): LayoutDoc {
  * selector, so it carries no slug.
  */
 export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
+  // The pui/terminal is NO LONGER a dockview pane (native-terminal-desktop-2026-06-06
+  // D-002/D-008, superseding desktop-workbench-shell D-003). A webview can't host
+  // a NATIVE terminal, so the terminal workbench (`pui workbench` = zellij + the
+  // ratatui pui) runs as a native SIBLING window glued to the GUI, launched by the
+  // Tauri shell (src-tauri/src/native_terminal.rs) — not embedded here. This dock
+  // keeps only the GUI surfaces: the main /adv app + the voice/video pane.
   return {
     schemaVersion: 1,
     root: {
@@ -466,22 +472,8 @@ export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
       children: [
         {
           kind: 'tabs',
-          id: 'wb-pui',
-          size: 0.33,
-          activePanelId: 'p-wb-pui',
-          panels: [
-            {
-              id: 'p-wb-pui',
-              type: 'workbench:pui',
-              title: 'pui',
-              params: { harnessSlug },
-            },
-          ],
-        },
-        {
-          kind: 'tabs',
           id: 'wb-app',
-          size: 0.34,
+          size: 0.6,
           activePanelId: 'p-wb-app',
           panels: [
             {
@@ -495,7 +487,7 @@ export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
         {
           kind: 'tabs',
           id: 'wb-voice',
-          size: 0.33,
+          size: 0.4,
           activePanelId: 'p-wb-voice',
           panels: [
             {
