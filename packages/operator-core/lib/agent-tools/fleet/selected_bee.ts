@@ -51,8 +51,19 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    const actor = resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? actor.workspaceId ?? null;
+    // This is an ephemeral loopback UI relay (read + write of a transient
+    // selection), NOT an attributable coordination write — so it must NOT hard-
+    // require a coord identity the way coord:send does. Resolve the workspace
+    // SOFTLY: use the caller's workspace when attributable, else the default
+    // slot. (`resolveAgentIdentity` throws for a bare loopback caller — the pui
+    // IPC path — so it's wrapped, not awaited as a precondition.)
+    let actorWorkspace: string | null = null;
+    try {
+      actorWorkspace = resolveAgentIdentity(ctx).workspaceId ?? null;
+    } catch {
+      actorWorkspace = null;
+    }
+    const workspaceId = args.workspace ?? actorWorkspace;
 
     if (args.select !== undefined) {
       const entry = setSelectedBee(

@@ -54,8 +54,17 @@ export default defineTool({
       .describe('Include lapsed (expired, unreclaimed) plan-item leases. Default false.'),
   }),
   async handler(args, ctx) {
-    const actor = resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? actor.workspaceId ?? null;
+    // A READ — identity is used only to default the optional workspace filter
+    // (null = all workspaces). Resolve it SOFTLY so a bare loopback caller (the
+    // pui bee-dossier pane, the IPC sys:http bridge) can read the state without
+    // an attributable coord identity — this is not a coordination write.
+    let actorWorkspace: string | null = null;
+    try {
+      actorWorkspace = resolveAgentIdentity(ctx).workspaceId ?? null;
+    } catch {
+      actorWorkspace = null;
+    }
+    const workspaceId = args.workspace ?? actorWorkspace;
     const rows = await listFleetAssignments({
       workspaceId,
       agent: args.agent,

@@ -152,9 +152,12 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
       }
       log(ctx, 'info', `server ${created.id} created (status=${created.status}); waiting for it to come up`);
 
-      // Poll until ready (IP assigned + status ready), or fail/timeout.
+      // Poll until ready (IP assigned + status ready), or fail/timeout. NEVER trust
+      // the create echo's status — observed live 2026-06-06: the echo claimed 'on'
+      // while a fresh GET 30s later said 'deploying' for ~7 min (the OS reimage),
+      // then 'on' for real. Readiness comes only from fresh getServer polls.
       const deadline = Date.now() + pollTimeoutMs;
-      let server = created;
+      let server = await client.getServer(created.id);
       while (!(READY_STATUSES.has(server.status) && server.primary_ipv4)) {
         if (FAILED_STATUSES.has(server.status)) {
           throw new Error(`LatitudeDriver.provision: server ${server.id} entered status '${server.status}'`);
