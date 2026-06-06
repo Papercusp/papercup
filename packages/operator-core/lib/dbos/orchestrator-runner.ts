@@ -160,8 +160,8 @@ export async function spawnInvokeOnce(
    *  after a grace period). Lets a caller (e.g. fleet:cancel via the operator
    *  spawn engine, EI-40) actually STOP the running agent, not just flip its row.
    *  Omitted by the pipeline runner / finalizer, which never abort mid-run. */
-  opts?: { signal?: AbortSignal },
-): Promise<{ output: string; exitCode: number; stderr: string }> {
+  opts?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
   // child via env-transport (workspace PG is canonical; config.json is the
   // back-compat fallback). Gated on HARNESS_SLUG + PAPERCUSP_WORKSPACE_ID (set by
@@ -204,7 +204,7 @@ export async function spawnInvokeOnce(
       return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
     }
     try {
-      const inner = await runChild(command, args, projectDir, env, role, opts?.signal);
+      const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
       // Classify the outcome; on a detected account-wide stop (429/overload/usage-cap), pause the
       // SHARED governor so the operator's other agent spawns back off too. No retry here — the
       // director owns that. A usage_limit carries its reset, so the fleet parks until reset (D-001).
@@ -215,7 +215,7 @@ export async function spawnInvokeOnce(
       release();
     }
   }
-  return runChild(command, args, projectDir, env, role, opts?.signal);
+  return runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
 }
 
 /** SIGKILL grace after the SIGTERM on abort/timeout — gives the child a moment
@@ -230,13 +230,15 @@ function runChild(
   env: NodeJS.ProcessEnv,
   role: string,
   signal?: AbortSignal,
-): Promise<{ output: string; exitCode: number; stderr: string }> {
+  timeoutMs?: number,
+): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.
     if (signal?.aborted) {
       resolve({ output: '', exitCode: 1, stderr: 'aborted before start' });
       return;
     }
+    let timedOut = false;
     // `detached: true` puts the child in its OWN process group so we can reap the
     // WHOLE tree on abort/timeout, not just the immediate child. In dev the spawn is
     // `node <tsx-cli> invoke-once.ts`, and the tsx CLI forks a worker (invoke-once,
@@ -257,8 +259,9 @@ function runChild(
       try { child.kill(sigName); } catch { /* ignore */ }
     };
     const timer = setTimeout(() => {
+      timedOut = true;
       killTree('SIGTERM');
-    }, INVOKE_TIMEOUT_MS);
+    }, timeoutMs ?? INVOKE_TIMEOUT_MS);
     // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM the
     // tree now, SIGKILL it after a grace period if it ignores the term.
     const onAbort = () => {
@@ -295,7 +298,7 @@ function runChild(
             : '';
         console.error(`[dbos-invoke] role=${role} exited ${exitCode} with empty stderr (stdout ${stdout.length} chars)${dbg}`);
       }
-      resolve({ output: extractAgentOutput(stdout), exitCode, stderr });
+      resolve({ output: extractAgentOutput(stdout), exitCode, stderr, timedOut });
     });
     child.on('error', (err) => {
       cleanup();
