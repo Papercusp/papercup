@@ -50,6 +50,18 @@ export function spliceAtMarker(base: string, marker: string, content: string): s
 }
 
 /**
+ * Splice a GENERATED section ONLY where its marker is present — never append.
+ * Unlike `spliceToolingOverlay` (whose append-on-absent is a legacy fallback), a
+ * generated section (wire-schemas, coord-legend) belongs strictly at its marker:
+ * a base playbook that doesn't carry the marker (a minimal/test base, a future
+ * profile that opts out) must NOT get the section dumped at its end. Absent
+ * marker → returned unchanged.
+ */
+export function spliceGeneratedSection(base: string, marker: string, content: string): string {
+  return base.includes(marker) ? base.split(marker).join(content) : base;
+}
+
+/**
  * @param base    base playbook (may contain the marker).
  * @param overlay client tooling overlay; pass '' if none (the marker is then
  *                removed, never shipped literally).

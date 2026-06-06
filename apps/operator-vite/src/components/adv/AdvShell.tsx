@@ -25,7 +25,7 @@ import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
-import { useLexicon } from '../../lib/useLexicon';
+import { useLexicon } from '@/lib/useLexicon';
 
 const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];

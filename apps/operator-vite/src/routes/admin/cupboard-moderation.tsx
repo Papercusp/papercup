@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import AdminShell from '../../components/admin/AdminShell';
 import CupboardModerationClient from '@/app/admin/cupboard-moderation/CupboardModerationClient';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * /admin/cupboard-moderation — operator moderation surface for the Cupboard
@@ -16,8 +17,9 @@ export const Route = createFileRoute('/admin/cupboard-moderation')({
 });
 
 function CupboardModerationPage() {
+  const t = useLexicon();
   return (
-    <AdminShell title="Cupboard">
+    <AdminShell title={t('cupboard')}>
       <CupboardModerationClient />
     </AdminShell>
   );

@@ -83,12 +83,13 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     // Was a brittle exact count (56) that flapped red as query families landed
     // (issues/conversations/coord added 2026-06-04 → 63; delegates.byWorkspace
     // removed by collapse-delegate-into-workitems-2026-06-04 → 62; harnessHealth.byHarness
-    // removed by spec-md-ui-deprecation-cleanup P-007 → 61, matching the sibling
-    // floor in index.test.ts which was lowered to 61 at the same time). The
-    // forward-defined + v2-consistency assertions above carry the real signal;
-    // here we only assert the bridge is non-trivially populated + every name distinct.
+    // removed by spec-md-ui-deprecation-cleanup P-007 → 61; operatorScans + operatorLastScan
+    // removed by archive-legacy-orchestrator-deadcode P-009 (their tables were dropped by
+    // migration 167) → 59). The forward-defined + v2-consistency assertions above carry the
+    // real signal; this is only a non-triviality floor (set below the current count so a
+    // routine add/remove doesn't flap it red — the exact-set assertions catch real drift).
     const names = allBridgedQueryNames();
-    expect(names.length).toBeGreaterThanOrEqual(61);
+    expect(names.length).toBeGreaterThanOrEqual(55);
     expect(new Set(names).size, 'bridged query names are distinct').toBe(names.length);
   });
 });

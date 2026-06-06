@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 //
 // useLexicon flag-gated resolution + reactivity (the-hive-lexicon P-003).
+// The hook lives at apps/operator/lib/useLexicon (reachable via @/lib from both
+// operator-vite and apps/operator/app); tested here for the jsdom+RTL harness.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
@@ -8,7 +10,7 @@ import { act, cleanup, render, screen } from '@testing-library/react';
 import { FLAGS, type FlagPayload, resolveWithDefaults } from '@papercusp/flags';
 import { setFlagPayload } from '@papercusp/flags/client';
 
-import { useLexicon, useLexiconPackId } from './useLexicon';
+import { useLexicon, useLexiconPackId } from '@/lib/useLexicon';
 
 function setHive(on: boolean): void {
   const payload: FlagPayload = {

@@ -2,10 +2,25 @@ import { describe, it, expect } from 'vitest';
 import {
   spliceToolingOverlay,
   spliceAtMarker,
+  spliceGeneratedSection,
   CLIENT_TOOLING_OVERLAY_MARKER,
   WIRE_SCHEMAS_MARKER,
   COORD_LEGEND_MARKER,
 } from './splice-tooling-overlay';
+
+describe('spliceGeneratedSection — marker-present-only (never append)', () => {
+  it('splices at a present marker', () => {
+    const base = `# Doc\n\n${COORD_LEGEND_MARKER}\n\n## Next`;
+    expect(spliceGeneratedSection(base, COORD_LEGEND_MARKER, 'LEGEND')).toBe('# Doc\n\nLEGEND\n\n## Next');
+  });
+  it('a base WITHOUT the marker is returned UNCHANGED (no append) — the install-fixture regression', () => {
+    expect(spliceGeneratedSection('# Playbook v1\n', COORD_LEGEND_MARKER, 'NON-EMPTY LEGEND')).toBe('# Playbook v1\n');
+  });
+  it('empty content at a present marker just removes it', () => {
+    const base = `a\n${WIRE_SCHEMAS_MARKER}\nb`;
+    expect(spliceGeneratedSection(base, WIRE_SCHEMAS_MARKER, '')).toBe('a\n\nb');
+  });
+});
 
 describe('spliceAtMarker — generated-section splice contract', () => {
   it('replaces the marker with the content', () => {

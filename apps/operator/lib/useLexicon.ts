@@ -1,32 +1,33 @@
+'use client';
+
 /**
  * `useLexicon()` — the client half of the flag-gated lexicon layer
  * (the-hive-lexicon-2026-06-06 P-003).
  *
  * Returns a term resolver bound to the active brand pack, selected by the
- * `the-hive` feature flag. Reactive: it subscribes to the flag store, so a
- * live flag flip (admin toggle → SSE) re-renders the consuming component with
- * the new labels. (Plain `useFlag` only reads at render time and would NOT
- * re-render on a flip — so the lexicon must subscribe itself.)
+ * `the-hive` feature flag. Built on the reactive `useFlag` (./flag-hooks), so a
+ * live flag flip (admin toggle → SSE) re-renders consuming components with the
+ * new labels.
  *
- * The lib stays brand-neutral; this hook is the operator-vite glue that maps
- * the flag → a `BrandPackId`. Internal identifiers never change (D-001).
+ * Lives in apps/operator/lib (not operator-vite) so BOTH the operator-vite
+ * components and the apps/operator/app page implementations they render can
+ * import it via `@/lib/useLexicon`. The lib (@papercusp/lexicon) stays
+ * brand-neutral; this hook is the host glue that maps the flag → a BrandPackId.
+ * Internal identifiers never change — presentation only (D-001).
  */
-import { useMemo, useSyncExternalStore } from 'react';
+import { useMemo } from 'react';
 
 import { FLAGS } from '@papercusp/flags';
-import { getFlagSnapshot, subscribe } from '@papercusp/flags/client';
 import { type BoundLexicon, type BrandPackId, lexiconFor } from '@papercusp/lexicon';
 
-function readPackId(): BrandPackId {
-  return getFlagSnapshot().flags[FLAGS.THE_HIVE] ? 'the-hive' : 'classic';
-}
+import { useFlag } from './flag-hooks';
 
 /**
  * The active brand pack id, reactive to live flag changes. Prefer
  * {@link useLexicon} unless you need the raw id (e.g. to branch on it).
  */
 export function useLexiconPackId(): BrandPackId {
-  return useSyncExternalStore(subscribe, readPackId, readPackId);
+  return useFlag(FLAGS.THE_HIVE) ? 'the-hive' : 'classic';
 }
 
 /**

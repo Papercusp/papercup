@@ -26,6 +26,7 @@ import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { useLexicon } from '@/lib/useLexicon';
 import { isChromeShellNavActive } from './chrome-shell-nav';
 // The operator chat is the app's primary surface and must appear on first
 // paint, not pop in seconds later. Import it eagerly so it ships in the main
@@ -98,6 +99,7 @@ export default function ChromeShell() {
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const oracleFlag = useFlag(FLAGS.ORACLE);
   const testingFlag = useFlag(FLAGS.TESTING);
+  const t = useLexicon();
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = isChromeShellNavActive(pathname, href);
@@ -208,7 +210,7 @@ export default function ChromeShell() {
             const p = navLinkProps('/dev');
             return <RouteLink href="/dev" {...p} className={`${p.className} is-dev`}>DEV</RouteLink>;
           })()}
-          <RouteLink href="/cupboard" {...navLinkProps('/cupboard')}>Cupboard</RouteLink>
+          <RouteLink href="/cupboard" {...navLinkProps('/cupboard')}>{t('cupboard')}</RouteLink>
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           {oracleFlag ? <TutorialButton /> : null}
           <UpdateChip />

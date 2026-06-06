@@ -454,19 +454,14 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
     const exists = existsSync(harnessDir);
     let mtimeMs = 0;
     try { mtimeMs = statSync(harnessDir).mtimeMs; } catch {}
-    // Best-effort runtime fields: read from config.json if present.
-    let branch: string | null = null;
-    let port: number | null = null;
-    let publicUrl: string | null = null;
-    try {
-      const cfgPath = join(harnessDir, 'config.json');
-      if (existsSync(cfgPath)) {
-        const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8')) as Record<string, unknown>;
-        if (typeof cfg.branch === 'string') branch = cfg.branch;
-        if (typeof cfg.port === 'number') port = cfg.port;
-        if (typeof cfg.publicUrl === 'string') publicUrl = cfg.publicUrl;
-      }
-    } catch {}
+    // Best-effort per-phase fields from the workspace-PG instance config
+    // (ProjectEntry.phases), not config.json (deprecate-harness-config-json-2026-06-06).
+    // branch is derived (null for staging ⇒ read live from git HEAD by the
+    // /phases route; the phase label otherwise), matching the phases route.
+    const phaseInst = project.phases?.[phase];
+    const branch: string | null = phase === 'staging' ? null : phase;
+    const port: number | null = typeof phaseInst?.port === 'number' ? (phaseInst.port as number) : null;
+    const publicUrl: string | null = typeof phaseInst?.publicUrl === 'string' ? (phaseInst.publicUrl as string) : null;
     await db
       .insert(hph)
       .values({

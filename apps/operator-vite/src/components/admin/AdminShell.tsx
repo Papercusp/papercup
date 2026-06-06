@@ -1,5 +1,7 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import * as Tabs from '@radix-ui/react-tabs';
+import type { TermKey } from '@papercusp/lexicon';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * Admin section shell — translated from
@@ -16,15 +18,17 @@ import * as Tabs from '@radix-ui/react-tabs';
  * stays on next/* so the live operator continues to work during the
  * migration window. After Phase H this file becomes canonical.
  */
-const TABS = [
+// `term` (optional) routes a tab label through the brand lexicon; tabs without
+// one render their static label verbatim.
+const TABS: ReadonlyArray<{ href: string; label: string; term?: TermKey }> = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
   { href: '/admin/testing', label: 'Testing' },
   { href: '/admin/dogfood-substrate', label: 'Substrate' },
   { href: '/admin/dbos', label: 'DBOS' },
   { href: '/admin/coordination', label: 'Coordination' },
-  { href: '/admin/cupboard-moderation', label: 'Cupboard' },
-] as const;
+  { href: '/admin/cupboard-moderation', label: 'Cupboard', term: 'cupboard' },
+];
 
 export default function AdminShell({
   title = 'Admin',
@@ -33,6 +37,7 @@ export default function AdminShell({
   title?: string;
   children: React.ReactNode;
 }) {
+  const lex = useLexicon();
   const pathname = useRouterState({ select: (s) => s.location.pathname }) || '/admin/run';
   const activeTab = TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
 
@@ -45,9 +50,9 @@ export default function AdminShell({
         </div>
         <Tabs.Root value={activeTab.href} className="pc-adminshell__tabs">
           <Tabs.List className="pc-adminshell__tablist" aria-label="Admin sections">
-            {TABS.map((t) => (
-              <Tabs.Trigger key={t.href} value={t.href} asChild className="pc-adminshell__tab">
-                <Link to={t.href}>{t.label}</Link>
+            {TABS.map((tab) => (
+              <Tabs.Trigger key={tab.href} value={tab.href} asChild className="pc-adminshell__tab">
+                <Link to={tab.href}>{tab.term ? lex(tab.term) : tab.label}</Link>
               </Tabs.Trigger>
             ))}
           </Tabs.List>

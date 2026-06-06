@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import type { AdvTabId } from './AdvShell';
-import { useLexicon } from '../../lib/useLexicon';
+import { useLexicon } from '@/lib/useLexicon';
 import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';

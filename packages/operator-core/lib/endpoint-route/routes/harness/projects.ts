@@ -48,8 +48,9 @@ const lite = defineTool({
     const reg = await loadHarnessRegistry();
     // P-012: surface `parent_slug` + `harness_kind` so the AdvShell
     // selector can render a tree (P-014) without paying the full
-    // /projects round-trip. parent_slug comes from each project's
-    // .papercusp/config.json — same read the heavy /projects route does.
+    // /projects round-trip. parent_slug is a scaffold-time harness contract
+    // artifact in .papercusp/config.json (NOT a migrated HarnessConfig field —
+    // deprecate-harness-config-json-2026-06-06 D-005); the file persists for it.
     const projects = await Promise.all(reg.projects.map(async (p) => {
       const hDir = harnessDir(p);
       const cfgPath = join(p.path, '.papercusp', 'config.json');

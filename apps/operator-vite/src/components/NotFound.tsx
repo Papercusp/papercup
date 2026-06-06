@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { Link } from '@tanstack/react-router';
+import { useLexicon } from '@/lib/useLexicon';
 
 /**
  * 404 page — translated from `apps/operator/app/not-found.tsx`. Mounted as
@@ -39,6 +40,7 @@ const chipStyle: CSSProperties = {
 };
 
 export default function NotFound() {
+  const t = useLexicon();
   return (
     <div
       className="pc-shell"
@@ -184,7 +186,7 @@ export default function NotFound() {
                 Return to Mission Control
               </Link>
               <Link to="/cupboard" className="pc-button ghost">
-                Browse the Cupboard
+                Browse the {t('cupboard')}
               </Link>
               <Link to="/support" className="pc-button ghost">
                 Ask for help
