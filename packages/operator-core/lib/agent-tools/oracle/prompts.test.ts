@@ -5,59 +5,55 @@
  * Verifies the memory block lands when buildMemoryContextBlock returns
  * a non-null string, AND that graceful degradation works (empty hits,
  * client throw → unchanged prompt).
+ *
+ * MOCK SHAPE (2026-06-06 de-flake): the old per-test `vi.resetModules()` +
+ * `vi.doMock` + fresh `import('./prompts')` re-paid the heavy cold-ESM
+ * import of prompts.ts's dependency graph (agent-mcp, memory/injection,
+ * system-principal, agents-list) on EVERY test — under box load each
+ * re-import could exceed the test timeout, making all five tests flake
+ * together at exactly the ceiling (seen 2026-06-05/06 gating
+ * test:affected). Now the deps are mocked ONCE with hoisted `vi.mock` +
+ * swappable mock fns, the module graph loads once, and per-test behavior
+ * is set via `mockResolvedValue`/`mockRejectedValue`.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// The first test in this file pays the cold-ESM-import cost of
-// oracle/prompts.ts's dependency graph (agent-mcp, memory/injection,
-// system-principal, agents-list). vi.resetModules() in beforeEach means
-// every test re-imports fresh, so that cost recurs per-test and can
-// exceed the 5s vitest default. Bump the ceiling. See the 2026-05-20
-// SSE-migration audit (flaky-timeout finding).
-vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+const buildMemoryContextBlockMock = vi.fn<(opts: unknown) => Promise<string | null>>();
+
+vi.mock('../../operator-state-pg', () => ({
+  readOperatorState: vi.fn(async (key: string) => {
+    if (key === 'operator_oracle_prompt') return { content: 'You are the Oracle.' };
+    if (key === 'operator_oracle_memory') return { content: '' };
+    return null;
+  }),
+  writeOperatorState: vi.fn(),
+}));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => 'default',
+}));
+vi.mock('../../system-principal', () => ({
+  readSystemPrincipal: vi.fn(async () => null),
+}));
+vi.mock('../../agents-list', () => ({
+  listAgentsAcrossWorkspace: vi.fn(async () => []),
+}));
+vi.mock('../../memory/injection', () => ({
+  buildMemoryContextBlock: (opts: unknown) => buildMemoryContextBlockMock(opts),
+}));
+
+import { composeOraclePrompt } from './prompts';
 
 beforeEach(() => {
-  vi.resetModules();
+  buildMemoryContextBlockMock.mockReset();
+  buildMemoryContextBlockMock.mockResolvedValue(null);
 });
-
-afterEach(() => {
-  vi.doUnmock('../../memory/injection');
-  vi.doUnmock('../../operator-state-pg');
-  vi.doUnmock('../../workspace-registry');
-  vi.doUnmock('../../system-principal');
-  vi.doUnmock('../../agents-list');
-});
-
-function mockBaseDeps() {
-  vi.doMock('../../operator-state-pg', () => ({
-    readOperatorState: vi.fn(async (key: string) => {
-      if (key === 'operator_oracle_prompt') return { content: 'You are the Oracle.' };
-      if (key === 'operator_oracle_memory') return { content: '' };
-      return null;
-    }),
-    writeOperatorState: vi.fn(),
-  }));
-  vi.doMock('../../workspace-registry', () => ({
-    activeWorkspaceId: () => 'default',
-  }));
-  vi.doMock('../../system-principal', () => ({
-    readSystemPrincipal: vi.fn(async () => null),
-  }));
-  vi.doMock('../../agents-list', () => ({
-    listAgentsAcrossWorkspace: vi.fn(async () => []),
-  }));
-}
 
 describe('composeOraclePrompt — memory injection', () => {
   it('includes the memory heading + body when buildMemoryContextBlock returns a block', async () => {
-    mockBaseDeps();
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: vi.fn(async () =>
-        '## Oracle memory (relevant entries)\n\n- [preference] User prefers dark mode\n- [preference [shared]] Operator favors terse replies',
-      ),
-    }));
-    const { composeOraclePrompt } = await import('./prompts');
+    buildMemoryContextBlockMock.mockResolvedValue(
+      '## Oracle memory (relevant entries)\n\n- [preference] User prefers dark mode\n- [preference [shared]] Operator favors terse replies',
+    );
     const { promptText } = await composeOraclePrompt(
       [{ role: 'user', content: 'switch to light mode?' }],
       { currentPath: '/', tutorialMode: false, userId: 'user-abc' },
@@ -68,11 +64,6 @@ describe('composeOraclePrompt — memory injection', () => {
   });
 
   it('omits the memory section when buildMemoryContextBlock returns null', async () => {
-    mockBaseDeps();
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: vi.fn(async () => null),
-    }));
-    const { composeOraclePrompt } = await import('./prompts');
     const { promptText } = await composeOraclePrompt(
       [{ role: 'user', content: 'hi' }],
       { currentPath: '/', tutorialMode: false, userId: 'user-abc' },
@@ -84,13 +75,7 @@ describe('composeOraclePrompt — memory injection', () => {
   });
 
   it('degrades silently when buildMemoryContextBlock throws', async () => {
-    mockBaseDeps();
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: vi.fn(async () => {
-        throw new Error('mem0 connection refused');
-      }),
-    }));
-    const { composeOraclePrompt } = await import('./prompts');
+    buildMemoryContextBlockMock.mockRejectedValue(new Error('mem0 connection refused'));
     // Must not throw — the .catch(() => null) wrapper absorbs the error.
     const { promptText } = await composeOraclePrompt(
       [{ role: 'user', content: 'hi' }],
@@ -100,17 +85,11 @@ describe('composeOraclePrompt — memory injection', () => {
   });
 
   it('passes the userId through to buildMemoryContextBlock', async () => {
-    mockBaseDeps();
-    const buildSpy = vi.fn(async () => null);
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: buildSpy,
-    }));
-    const { composeOraclePrompt } = await import('./prompts');
     await composeOraclePrompt(
       [{ role: 'user', content: 'q' }],
       { currentPath: '/', tutorialMode: false, userId: 'user-xyz' },
     );
-    expect(buildSpy).toHaveBeenCalledWith(
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-xyz',
         workspaceId: 'default',
@@ -121,17 +100,11 @@ describe('composeOraclePrompt — memory injection', () => {
   });
 
   it('passes userId=null when caller omits userId (workspace-shared only)', async () => {
-    mockBaseDeps();
-    const buildSpy = vi.fn(async () => null);
-    vi.doMock('../../memory/injection', () => ({
-      buildMemoryContextBlock: buildSpy,
-    }));
-    const { composeOraclePrompt } = await import('./prompts');
     await composeOraclePrompt(
       [{ role: 'user', content: 'q' }],
       { currentPath: '/', tutorialMode: false },
     );
-    expect(buildSpy).toHaveBeenCalledWith(
+    expect(buildMemoryContextBlockMock).toHaveBeenCalledWith(
       expect.objectContaining({ userId: null }),
     );
   });

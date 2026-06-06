@@ -5,7 +5,7 @@
  * machine and costs money. Set to run it:
  *   LATITUDE_API_KEY=<key>          # the account API key
  *   LATITUDE_E2E_PROJECT=<id|slug>  # the Latitude project to bill
- *   LATITUDE_E2E_SITE=NYC             # (optional) site code,   default NYC
+ *   LATITUDE_E2E_SITE=NYC             # (optional) site pin; default AUTO-PICKED from live stock
  *   LATITUDE_E2E_PLAN=m4-metal-small  # (optional) plan slug,   default m4-metal-small
  *
  * Plan default updated 2026-06-06: `c2-small-x86` no longer exists in the live
@@ -14,8 +14,8 @@
  *
  * Stock is VOLATILE — a site can be in stock one run and SERVERS_OUT_OF_STOCK
  * (HTTP 422) the next (observed live: consuming NYC's last unit emptied it for
- * the following run). On a 422 out-of-stock failure, pick another site from
- * `GET /plans` → regions[].locations.in_stock and set LATITUDE_E2E_SITE.
+ * the following run). So when LATITUDE_E2E_SITE is unset, the test queries
+ * `GET /plans` fresh and picks an in-stock site (US-preferred) via pickInStockSite.
  *
  * It ALWAYS tears the frame down (DESTROY) in a finally, so a failed run never
  * leaks billing. The full "run a coding feature on the frame + watch from the
@@ -26,6 +26,7 @@
 import { describe, it, expect } from 'vitest';
 import type { DeploymentConfig, DeploymentContext } from '@papercusp/deployment-driver';
 import { LatitudeDriver } from './latitude-driver';
+import { createLatitudeApiClient, pickInStockSite } from './latitude-api';
 
 const haveCreds = !!process.env.LATITUDE_API_KEY && !!process.env.LATITUDE_E2E_PROJECT;
 const TWENTY_MIN = 20 * 60_000;
@@ -36,10 +37,22 @@ const ctx: DeploymentContext = {
   log: (lvl, msg) => console.log(`[latitude-e2e ${lvl}] ${msg}`),
 };
 
-const liveConfig = (): DeploymentConfig => ({
+const E2E_PLAN = process.env.LATITUDE_E2E_PLAN ?? 'm4-metal-small';
+
+/** Site pin from env, else auto-pick from LIVE stock (volatile — fresh per run). */
+async function resolveSite(): Promise<string> {
+  if (process.env.LATITUDE_E2E_SITE) return process.env.LATITUDE_E2E_SITE;
+  const client = createLatitudeApiClient({ apiKey: process.env.LATITUDE_API_KEY! });
+  const site = pickInStockSite(await client.listPlans(), E2E_PLAN, ['ASH', 'NYC', 'DAL', 'CHI']);
+  if (!site) throw new Error(`latitude-e2e: no site has live stock for plan '${E2E_PLAN}' — pick another plan`);
+  console.log(`[latitude-e2e] auto-picked in-stock site ${site} for ${E2E_PLAN}`);
+  return site;
+}
+
+const liveConfig = async (): Promise<DeploymentConfig> => ({
   target: 'latitude',
-  region: process.env.LATITUDE_E2E_SITE ?? 'NYC',
-  size: process.env.LATITUDE_E2E_PLAN ?? 'm4-metal-small',
+  region: await resolveSite(),
+  size: E2E_PLAN,
   provider: { project: process.env.LATITUDE_E2E_PROJECT },
 });
 
@@ -47,7 +60,7 @@ describe.skipIf(!haveCreds)('LatitudeDriver live E2E (needs LATITUDE_API_KEY + L
   it(
     'provisions a real frame then DESTROYS it (round-trip; teardown ends billing)',
     async () => {
-      const config = liveConfig();
+      const config = await liveConfig();
       let frame: Awaited<ReturnType<typeof LatitudeDriver.provision>> | undefined;
       try {
         frame = await LatitudeDriver.provision(config, ctx);

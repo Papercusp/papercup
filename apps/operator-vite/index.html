@@ -169,61 +169,20 @@
       })();
     </script>
     <!--
-      Operator-chat sidebar width reservation (pre-paint).
-
-      The steady-state copy of these rules lives in OperatorChatSidebar's
-      inlined <style> (OP_CHAT_SIDEBAR_CSS). In the Next operator that
-      component is server-rendered, so the rule exists at first paint; here
-      operator-vite is a client-rendered SPA, so it would not exist until
-      React mounts the sidebar. Inlining the reservation rules in <head>
-      (loaded before paint in both dev and the built desktop bundle) plus
-      the body-start bootstrap script below reserves the sidebar column
-      before React mounts, so the page paints already shifted instead of
-      full-width-then-jumping. Values mirror operator-chat-layout.ts
-      (default/min 360px, collapsed 56px) and the component's own copy.
+      Operator-chat sidebar width reservation: REMOVED (native-terminal-desktop
+      D-011 / P-016 / D-017). The web operator chat is OFF by default behind
+      the TESTING flag (the desktop chat is the terminal-native pui dock), and
+      flags are unknowable pre-paint — the old unconditional body-start
+      bootstrap kept adding `has-op-chat` + `--op-chat-w` with the sidebar
+      never mounting, leaving a permanent blank left column. The sidebar now
+      reserves its own space when it actually mounts (OperatorChatSidebar
+      sets the class/var + carries the padding rules in OP_CHAT_SIDEBAR_CSS);
+      the one-frame layout shift on first paint only ever affects
+      TESTING-flag sessions. Guarded by
+      src/lib/index-html-no-op-chat-reservation.test.ts — do not re-add.
     -->
-    <style id="op-chat-width-reserve">
-      body.has-op-chat { padding-left: var(--op-chat-w, 360px); }
-      body.has-op-chat .pc-header {
-        left: var(--op-chat-w, 360px);
-        width: calc(100vw - var(--op-chat-w, 360px));
-      }
-    </style>
   </head>
   <body>
-    <!--
-      Set --op-chat-w + the body classes the reservation CSS above gates on,
-      synchronously before React. Mirrors apps/operator/app/layout.tsx's
-      operatorChatBootstrapScript. A classic (non-module) script at <body>
-      start runs before the deferred module entry below, and document.body
-      already exists. Reads the same workspace-scoped width key the sidebar
-      writes (pc:ws:<id>:papercusp.operatorChat.width) so a drag-resized
-      width is honored on first paint, not only the default.
-    -->
-    <script>
-      (() => {
-        try {
-          var path = location.pathname || '';
-          var chromeless = ['/pi', '/project-docs', '/el-min'];
-          if (chromeless.some(function (p) { return path === p || path.indexOf(p + '/') === 0; })) return;
-          var params = new URLSearchParams(location.search || '');
-          var open = params.get('chat') !== 'false';
-          var ws = window.__PAPERCUSP_WS__ || 'default';
-          var stored = window.localStorage.getItem('pc:ws:' + ws + ':papercusp.operatorChat.width');
-          var w = open ? 360 : 56;
-          if (open && stored) {
-            var n = Number(stored);
-            if (Number.isFinite(n) && n >= 360) {
-              var ceiling = Math.max(360, Math.floor(window.innerWidth * 0.75));
-              w = Math.min(n, ceiling);
-            }
-          }
-          document.documentElement.style.setProperty('--op-chat-w', w + 'px');
-          document.body.classList.add('has-op-chat');
-          document.body.classList.toggle('op-chat-collapsed', !open);
-        } catch (_) { /* best effort — never block boot on the reservation */ }
-      })();
-    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

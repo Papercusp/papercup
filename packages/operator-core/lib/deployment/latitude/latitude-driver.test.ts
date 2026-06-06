@@ -25,6 +25,9 @@ function fakeClient(script: LatitudeServer[]): LatitudeApiClient & { deleted: st
     async deleteServer(id) {
       deleted.push(id);
     },
+    async listPlans() {
+      return [];
+    },
   };
 }
 
@@ -135,6 +138,9 @@ describe('LatitudeDriver teardown', () => {
         deleted.push(id);
         const err = deleteErrs[d++];
         if (err) throw err;
+      },
+      async listPlans() {
+        return [];
       },
     };
   }

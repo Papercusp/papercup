@@ -1,5 +1,6 @@
 'use client';
 
+import type { CSSProperties } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import styles from './swarm-identity.module.css';
 
@@ -17,6 +18,11 @@ type Direction = {
 };
 
 const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a swarm and watch the world change.';
+const TAGLINE_SEQUENCE = [
+  'Welcome to the End.',
+  'Be part of the new beginning.',
+  'Create or Join a swarm and watch the world change.',
+] as const;
 
 const DIRECTIONS: Direction[] = [
   {
@@ -80,144 +86,166 @@ export default function SwarmIdentityPage() {
 
   return (
     <main className={styles.page}>
-      <section className={`${styles.hero} ${styles[active.id]}`}>
-        <div className={styles.heroCopy}>
-          <span className={styles.eyebrow}>theswarm.dev identity lab</span>
-          <h1>The Swarm</h1>
-          <p>{TAGLINE}</p>
-          <div className={styles.lexicon}>
-            <span><strong>Queen</strong> brain</span>
-            <span><strong>{active.operator}</strong> operator</span>
-            <span><strong>Keepers</strong> humans</span>
-            <span><strong>Bees</strong> agents</span>
-          </div>
+      <section className={styles.introSequence} aria-label={TAGLINE}>
+        <div className={styles.introComb} aria-hidden="true" />
+        <div className={styles.introLines} aria-hidden="true">
+          {TAGLINE_SEQUENCE.map((line, index) => (
+            <span key={line} style={{ '--intro-index': index } as CSSProperties}>
+              {line}
+            </span>
+          ))}
         </div>
-        <HeroLogo direction={active.id} />
-      </section>
-
-      <section className={styles.switcher} aria-label="Swarm identity directions">
-        {DIRECTIONS.map((direction) => (
-          <button
-            key={direction.id}
-            type="button"
-            className={direction.id === active.id ? styles.activeButton : undefined}
-            onClick={() => setSelected(direction.id)}
-          >
-            <span>{direction.name}</span>
-            <small>{direction.stance}</small>
-          </button>
-        ))}
-      </section>
-
-      <section className={`${styles.optionDetail} ${styles[active.id]}`}>
-        <div className={styles.optionHeader}>
-          <div>
-            <span className={styles.eyebrow}>Selected direction</span>
-            <h2>{active.name}</h2>
-            <p>{active.mood}</p>
-          </div>
-          <div className={styles.palette} aria-label={`${active.name} palette`}>
-            {active.colors.map((color) => (
-              <span key={color} style={{ background: color }} title={color} />
-            ))}
-          </div>
-        </div>
-
-        <div className={styles.detailGrid}>
-          <article className={styles.logoCard}>
-            <div className={styles.cardHeader}>
-              <span>Primary mark</span>
-              <code>SVG / app icon candidate</code>
-            </div>
-            <HeroLogo direction={active.id} compact />
-          </article>
-
-          <article className={styles.wordmarkCard}>
-            <div className={styles.cardHeader}>
-              <span>Wordmark</span>
-              <code>theswarm.dev</code>
-            </div>
-            <div className={styles.wordmark}>
-              <LogoGlyph direction={active.id} />
-              <div>
-                <strong>The Swarm</strong>
-                <span>{active.stance}</span>
-              </div>
-            </div>
-            <p>{active.note}</p>
-          </article>
-
-          <article className={styles.websiteCard}>
-            <div className={styles.cardHeader}>
-              <span>Website hero treatment</span>
-              <code>landing page</code>
-            </div>
-            <div className={styles.browserMock}>
-              <div className={styles.browserTop}>
-                <span />
-                <span />
-                <span />
-                <code>https://theswarm.dev</code>
-              </div>
-              <div className={styles.browserBody}>
-                <span className={styles.miniEyebrow}>A new intelligence is forming</span>
-                <h3>Welcome to the End.</h3>
-                <p>Be part of the new beginning. Create or Join a swarm and watch the world change.</p>
-                <div className={styles.browserActions}>
-                  <button type="button">Create a swarm</button>
-                  <button type="button">Join a swarm</button>
-                </div>
-              </div>
-            </div>
-          </article>
-
-          <article className={styles.appCard}>
-            <div className={styles.cardHeader}>
-              <span>App chrome treatment</span>
-              <code>desktop shell</code>
-            </div>
-            <div className={styles.appMock}>
-              <aside>
-                <div className={styles.appBrand}><LogoGlyph direction={active.id} /> The Swarm</div>
-                <span>Hive</span>
-                <span>Swarm</span>
-                <span>{active.operator}</span>
-                <span>Comb</span>
-              </aside>
-              <div className={styles.appPanel}>
-                <div className={styles.statusLine}>
-                  <strong>{active.queen}</strong>
-                  <span>thinking</span>
-                </div>
-                <div className={styles.hexRows}>
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <p>{active.operator} is online. The Queen wakes when judgment is required.</p>
-              </div>
-            </div>
-          </article>
+        <div className={styles.introSwarm} aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
         </div>
       </section>
 
-      <section className={styles.compareGrid}>
-        {DIRECTIONS.map((direction) => (
-          <article key={direction.id} className={`${styles.compareCard} ${styles[direction.id]}`}>
-            <LogoGlyph direction={direction.id} />
-            <h3>{direction.name}</h3>
-            <p>{direction.note}</p>
-            <div className={styles.palette}>
-              {direction.colors.map((color) => (
+      <div className={styles.contentReveal}>
+        <section className={`${styles.hero} ${styles[active.id]}`}>
+          <div className={styles.heroCopy}>
+            <span className={styles.eyebrow}>theswarm.dev identity lab</span>
+            <h1>The Swarm</h1>
+            <p>{TAGLINE}</p>
+            <div className={styles.lexicon}>
+              <span><strong>Queen</strong> brain</span>
+              <span><strong>{active.operator}</strong> operator</span>
+              <span><strong>Keepers</strong> humans</span>
+              <span><strong>Bees</strong> agents</span>
+            </div>
+          </div>
+          <HeroLogo direction={active.id} />
+        </section>
+
+        <section className={styles.switcher} aria-label="Swarm identity directions">
+          {DIRECTIONS.map((direction) => (
+            <button
+              key={direction.id}
+              type="button"
+              className={direction.id === active.id ? styles.activeButton : undefined}
+              onClick={() => setSelected(direction.id)}
+            >
+              <span>{direction.name}</span>
+              <small>{direction.stance}</small>
+            </button>
+          ))}
+        </section>
+
+        <section className={`${styles.optionDetail} ${styles[active.id]}`}>
+          <div className={styles.optionHeader}>
+            <div>
+              <span className={styles.eyebrow}>Selected direction</span>
+              <h2>{active.name}</h2>
+              <p>{active.mood}</p>
+            </div>
+            <div className={styles.palette} aria-label={`${active.name} palette`}>
+              {active.colors.map((color) => (
                 <span key={color} style={{ background: color }} title={color} />
               ))}
             </div>
-          </article>
-        ))}
-      </section>
+          </div>
+
+          <div className={styles.detailGrid}>
+            <article className={styles.logoCard}>
+              <div className={styles.cardHeader}>
+                <span>Primary mark</span>
+                <code>SVG / app icon candidate</code>
+              </div>
+              <HeroLogo direction={active.id} compact />
+            </article>
+
+            <article className={styles.wordmarkCard}>
+              <div className={styles.cardHeader}>
+                <span>Wordmark</span>
+                <code>theswarm.dev</code>
+              </div>
+              <div className={styles.wordmark}>
+                <LogoGlyph direction={active.id} />
+                <div>
+                  <strong>The Swarm</strong>
+                  <span>{active.stance}</span>
+                </div>
+              </div>
+              <p>{active.note}</p>
+            </article>
+
+            <article className={styles.websiteCard}>
+              <div className={styles.cardHeader}>
+                <span>Website hero treatment</span>
+                <code>landing page</code>
+              </div>
+              <div className={styles.browserMock}>
+                <div className={styles.browserTop}>
+                  <span />
+                  <span />
+                  <span />
+                  <code>https://theswarm.dev</code>
+                </div>
+                <div className={styles.browserBody}>
+                  <span className={styles.miniEyebrow}>A new intelligence is forming</span>
+                  <h3>Welcome to the End.</h3>
+                  <p>Be part of the new beginning. Create or Join a swarm and watch the world change.</p>
+                  <div className={styles.browserActions}>
+                    <button type="button">Create a swarm</button>
+                    <button type="button">Join a swarm</button>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article className={styles.appCard}>
+              <div className={styles.cardHeader}>
+                <span>App chrome treatment</span>
+                <code>desktop shell</code>
+              </div>
+              <div className={styles.appMock}>
+                <aside>
+                  <div className={styles.appBrand}><LogoGlyph direction={active.id} /> The Swarm</div>
+                  <span>Hive</span>
+                  <span>Swarm</span>
+                  <span>{active.operator}</span>
+                  <span>Comb</span>
+                </aside>
+                <div className={styles.appPanel}>
+                  <div className={styles.statusLine}>
+                    <strong>{active.queen}</strong>
+                    <span>thinking</span>
+                  </div>
+                  <div className={styles.hexRows}>
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <p>{active.operator} is online. The Queen wakes when judgment is required.</p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section className={styles.compareGrid}>
+          {DIRECTIONS.map((direction) => (
+            <article key={direction.id} className={`${styles.compareCard} ${styles[direction.id]}`}>
+              <LogoGlyph direction={direction.id} />
+              <h3>{direction.name}</h3>
+              <p>{direction.note}</p>
+              <div className={styles.palette}>
+                {direction.colors.map((color) => (
+                  <span key={color} style={{ background: color }} title={color} />
+                ))}
+              </div>
+            </article>
+          ))}
+        </section>
+      </div>
     </main>
   );
 }

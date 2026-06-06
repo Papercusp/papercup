@@ -9,12 +9,126 @@
   --threat: #7a1c1c;
   min-height: 100vh;
   padding: 28px;
+  overflow-x: hidden;
   background:
-    radial-gradient(circle at 20% -10%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 24%),
-    radial-gradient(circle at 78% 4%, color-mix(in srgb, var(--threat) 36%, transparent), transparent 28%),
+    radial-gradient(circle at 20% -10%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 24%),
+    radial-gradient(circle at 78% 4%, color-mix(in srgb, var(--threat) 28%, transparent), transparent 28%),
+    radial-gradient(circle at 50% 120%, rgba(0, 0, 0, 0.82), transparent 42%),
     linear-gradient(180deg, #050505 0%, #080806 54%, #030303 100%);
   color: var(--text);
   font-family: "IBM Plex Mono", "Space Grotesk", ui-monospace, monospace;
+}
+
+.introSequence {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(234, 179, 8, 0.18), transparent 18%),
+    radial-gradient(circle at 50% 46%, rgba(0, 0, 0, 0.0) 0 19%, rgba(0, 0, 0, 0.92) 40%),
+    linear-gradient(180deg, #000 0%, #070704 48%, #000 100%);
+  animation: introExit 1100ms cubic-bezier(.16, 1, .3, 1) 7200ms forwards;
+  pointer-events: none;
+}
+
+.introSequence::before,
+.introSequence::after {
+  position: absolute;
+  inset: -20%;
+  content: "";
+  opacity: 0.32;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.introSequence::before {
+  background:
+    radial-gradient(circle at 20% 30%, rgba(234, 179, 8, 0.22) 0 1px, transparent 2px),
+    radial-gradient(circle at 76% 52%, rgba(253, 230, 138, 0.20) 0 1px, transparent 2px),
+    radial-gradient(circle at 38% 72%, rgba(234, 179, 8, 0.18) 0 1px, transparent 2px);
+  background-size: 92px 92px, 118px 118px, 76px 76px;
+  animation: swarmDrift 6400ms linear forwards;
+}
+
+.introSequence::after {
+  background: conic-gradient(from 180deg at 50% 50%, transparent 0 32deg, rgba(234, 179, 8, 0.14) 34deg 35deg, transparent 36deg 64deg);
+  animation: hiveIris 7800ms cubic-bezier(.19, 1, .22, 1) forwards;
+}
+
+.introComb {
+  position: absolute;
+  inset: -12%;
+  opacity: 0;
+  background:
+    linear-gradient(30deg, transparent 0 34px, rgba(234, 179, 8, 0.13) 35px 36px, transparent 37px 70px),
+    linear-gradient(150deg, transparent 0 34px, rgba(234, 179, 8, 0.10) 35px 36px, transparent 37px 70px),
+    linear-gradient(90deg, transparent 0 40px, rgba(253, 230, 138, 0.08) 41px 42px, transparent 43px 82px);
+  background-size: 84px 72px;
+  animation: combArrive 2300ms ease 5000ms forwards;
+}
+
+.introLines {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: min(1120px, 86vw);
+  min-height: 220px;
+  place-items: center;
+  text-align: center;
+}
+
+.introLines span {
+  position: absolute;
+  opacity: 0;
+  color: #fff7df;
+  font-size: clamp(34px, 7vw, 104px);
+  font-weight: 950;
+  line-height: 0.92;
+  letter-spacing: -0.08em;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 32px rgba(234, 179, 8, 0.18),
+    0 22px 80px rgba(0, 0, 0, 0.88);
+  animation: introLine 2600ms cubic-bezier(.16, 1, .3, 1) calc(var(--intro-index) * 2100ms) both;
+}
+
+.introLines span:first-child {
+  color: #fde68a;
+}
+
+.introSwarm {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.introSwarm span {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #eab308;
+  box-shadow: 0 0 22px rgba(234, 179, 8, 0.9);
+  opacity: 0;
+  animation: swarmCross 6200ms ease-in-out forwards;
+}
+
+.introSwarm span:nth-child(1) { left: 7%; top: 23%; animation-delay: 500ms; }
+.introSwarm span:nth-child(2) { left: 14%; top: 72%; animation-delay: 900ms; }
+.introSwarm span:nth-child(3) { left: 28%; top: 14%; animation-delay: 1300ms; }
+.introSwarm span:nth-child(4) { left: 72%; top: 78%; animation-delay: 1700ms; }
+.introSwarm span:nth-child(5) { left: 88%; top: 24%; animation-delay: 2100ms; }
+.introSwarm span:nth-child(6) { left: 51%; top: 88%; animation-delay: 2500ms; }
+.introSwarm span:nth-child(7) { left: 64%; top: 10%; animation-delay: 2900ms; }
+
+.contentReveal {
+  opacity: 0;
+  transform: translateY(34px) scale(0.985);
+  filter: blur(14px);
+  animation: pageReveal 1500ms cubic-bezier(.16, 1, .3, 1) 7600ms forwards;
 }
 
 .crown {
@@ -68,7 +182,8 @@
   border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 34px;
   background:
-    linear-gradient(120deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 38%),
+    radial-gradient(circle at 76% 38%, rgba(0, 0, 0, 0.58), transparent 32%),
+    linear-gradient(120deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 38%),
     repeating-linear-gradient(60deg, color-mix(in srgb, var(--accent) 8%, transparent) 0 1px, transparent 1px 48px),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, black), #050505);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 34px 80px rgba(0, 0, 0, 0.46);
@@ -108,6 +223,7 @@
   line-height: 0.78;
   letter-spacing: -0.095em;
   text-transform: uppercase;
+  text-shadow: 0 26px 80px rgba(0, 0, 0, 0.82);
 }
 
 .hero p {
@@ -391,7 +507,8 @@
   min-height: 310px;
   padding: 34px;
   background:
-    radial-gradient(circle at 72% 32%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 28%),
+    radial-gradient(circle at 72% 32%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 28%),
+    radial-gradient(circle at 55% 42%, rgba(0, 0, 0, 0.66), transparent 38%),
     repeating-linear-gradient(120deg, color-mix(in srgb, var(--accent) 7%, transparent) 0 1px, transparent 1px 38px),
     #050505;
 }
@@ -615,6 +732,141 @@
 @keyframes rotateOrbit {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes introLine {
+  0% {
+    opacity: 0;
+    transform: translateY(26px) scale(0.96);
+    filter: blur(18px);
+    letter-spacing: -0.13em;
+  }
+  18%,
+  58% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-22px) scale(1.03);
+    filter: blur(12px);
+  }
+}
+
+@keyframes introExit {
+  0% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 0;
+    clip-path: inset(46% 0 46% 0);
+    filter: blur(28px);
+    visibility: hidden;
+  }
+}
+
+@keyframes pageReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(34px) scale(0.985);
+    filter: blur(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes swarmDrift {
+  0% {
+    transform: translate3d(-4%, 3%, 0) rotate(0deg) scale(1.08);
+    opacity: 0;
+  }
+  18%,
+  82% {
+    opacity: 0.34;
+  }
+  100% {
+    transform: translate3d(5%, -4%, 0) rotate(8deg) scale(1.16);
+    opacity: 0;
+  }
+}
+
+@keyframes hiveIris {
+  0% {
+    opacity: 0;
+    transform: scale(0.6) rotate(-18deg);
+  }
+  68% {
+    opacity: 0.2;
+    transform: scale(1.05) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35) rotate(18deg);
+  }
+}
+
+@keyframes combArrive {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  100% {
+    opacity: 0.22;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes swarmCross {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.4);
+  }
+  18% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(18vw, -16vh, 0) scale(1.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .introSequence {
+    position: static;
+    min-height: 44vh;
+    animation: none;
+  }
+
+  .introLines span {
+    position: static;
+    opacity: 1;
+    animation: none;
+  }
+
+  .introLines {
+    gap: 18px;
+  }
+
+  .introSwarm,
+  .introComb,
+  .introSequence::before,
+  .introSequence::after,
+  .orbit {
+    display: none;
+  }
+
+  .contentReveal {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    animation: none;
   }
 }
 

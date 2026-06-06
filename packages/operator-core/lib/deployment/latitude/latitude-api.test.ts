@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createLatitudeApiClient, LatitudeApiError } from './latitude-api';
+import { createLatitudeApiClient, LatitudeApiError, pickInStockSite } from './latitude-api';
 
 type Resp = { status: number; body: unknown };
 function fetchMock(resp: Resp | ((url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => Resp)) {
@@ -67,5 +67,55 @@ describe('createLatitudeApiClient', () => {
     const client = createLatitudeApiClient({ apiKey: 'K', baseUrl: 'https://example.test/', fetchImpl: fetchImpl as never });
     await client.createServer({ project: 'p', plan: 'x', site: 's', operating_system: 'o' });
     expect(fetchImpl.mock.calls[0][0]).toBe('https://example.test/servers');
+  });
+
+  it('listPlans flattens regions[].locations.in_stock per plan slug', async () => {
+    const fetchImpl = fetchMock({
+      status: 200,
+      body: {
+        data: [
+          {
+            attributes: {
+              slug: 'm4-metal-small',
+              regions: [
+                { name: 'United States', locations: { available: ['NYC', 'DAL'], in_stock: ['DAL'] } },
+                { name: 'Germany', locations: { available: ['FRA'], in_stock: ['FRA'] } },
+                { name: 'UK', locations: { available: ['LON'], in_stock: [] } },
+              ],
+            },
+          },
+          { attributes: { slug: 'no-regions' } },
+        ],
+      },
+    });
+    const client = createLatitudeApiClient({ apiKey: 'K', fetchImpl: fetchImpl as never });
+    const plans = await client.listPlans();
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://api.latitude.sh/plans');
+    expect(plans).toEqual([
+      { slug: 'm4-metal-small', inStock: ['DAL', 'FRA'] },
+      { slug: 'no-regions', inStock: [] },
+    ]);
+  });
+});
+
+describe('pickInStockSite', () => {
+  const plans = [
+    { slug: 'm4-metal-small', inStock: ['DAL', 'FRA', 'ASH'] },
+    { slug: 'f4-metal-small', inStock: ['SAO2'] },
+    { slug: 'dry-plan', inStock: [] },
+  ];
+
+  it('honors preference order among in-stock sites', () => {
+    expect(pickInStockSite(plans, 'm4-metal-small', ['ASH', 'NYC', 'DAL'])).toBe('ASH');
+  });
+
+  it('falls back to the first in-stock site when no preferred site has stock', () => {
+    expect(pickInStockSite(plans, 'm4-metal-small', ['NYC', 'CHI'])).toBe('DAL');
+    expect(pickInStockSite(plans, 'f4-metal-small')).toBe('SAO2');
+  });
+
+  it('returns undefined for a dry or unknown plan', () => {
+    expect(pickInStockSite(plans, 'dry-plan')).toBeUndefined();
+    expect(pickInStockSite(plans, 'nope')).toBeUndefined();
   });
 });

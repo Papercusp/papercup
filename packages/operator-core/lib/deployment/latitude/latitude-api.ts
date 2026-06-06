@@ -54,10 +54,31 @@ export class LatitudeApiError extends Error {
   }
 }
 
+/** A plan's live stock view (flattened from `GET /plans` regions[].locations). */
+export interface LatitudePlanStock {
+  slug: string;
+  /** Site codes with live stock, in catalog order. VOLATILE — re-query per provision. */
+  inStock: string[];
+}
+
+/** Pick a site with live stock for a plan — preferred sites first, else first in stock.
+ *  Stock is volatile (observed live 2026-06-06: consuming a site's last unit 422'd the
+ *  next create with SERVERS_OUT_OF_STOCK), so pick from a fresh listPlans() result. */
+export function pickInStockSite(
+  plans: LatitudePlanStock[],
+  planSlug: string,
+  preferred: string[] = [],
+): string | undefined {
+  const stock = plans.find((p) => p.slug === planSlug)?.inStock ?? [];
+  return preferred.find((s) => stock.includes(s)) ?? stock[0];
+}
+
 export interface LatitudeApiClient {
   createServer(attrs: LatitudeServerAttributes): Promise<LatitudeServer>;
   getServer(id: string): Promise<LatitudeServer>;
   deleteServer(id: string): Promise<void>;
+  /** Live plan→stock catalog (for in-stock site selection before a create). */
+  listPlans(): Promise<LatitudePlanStock[]>;
 }
 
 type FetchLike = (url: string, init?: {
@@ -119,6 +140,21 @@ export function createLatitudeApiClient(opts: {
         const body = await res.text().catch(() => '');
         throw new LatitudeApiError('deleteServer', res.status, body);
       }
+    },
+    async listPlans() {
+      const res = await fetchImpl(`${baseUrl}/plans`, { headers });
+      const json = await res.json().catch(() => null);
+      if (res.status !== 200) throw new LatitudeApiError('listPlans', res.status, json);
+      const data = (json as { data?: Array<Record<string, unknown>> } | null)?.data ?? [];
+      return data.map((p) => {
+        const attrs = (p.attributes as Record<string, unknown> | undefined) ?? {};
+        const regions =
+          (attrs.regions as Array<{ locations?: { in_stock?: string[] } }> | undefined) ?? [];
+        return {
+          slug: String(attrs.slug ?? ''),
+          inStock: regions.flatMap((r) => r.locations?.in_stock ?? []),
+        };
+      });
     },
   };
 }
