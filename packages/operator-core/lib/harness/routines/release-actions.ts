@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTarget } from '../../blueprint/launch-blueprint';
+import { appendPipelineEvent } from '../git-sync/pipeline-events';
 
 /** The integration tree (where green-checkpoint/deploy operate). Explicit env so
  *  it stays correct even after the operator itself runs from the release checkout. */
@@ -68,7 +69,7 @@ function runScript(root: string, relScript: string, args: string[], timeoutMs: n
  * commit. Idempotent (FF-only, no-op when already green). Bounded so a stuck
  * suite can't wedge the routines tick.
  */
-registerSystemAction('green-checkpoint', async (_ctx: SystemActionCtx) => {
+registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const root = integrationRoot();
   const r = await runScript(root, 'apps/operator/lib/release/green-checkpoint.ts', [], 25 * 60_000);
   if (r.code !== 0) {
@@ -76,6 +77,39 @@ registerSystemAction('green-checkpoint', async (_ctx: SystemActionCtx) => {
   } else {
     console.log(`[green-checkpoint] ${(r.stdout || '').trim().slice(-200)}`);
   }
+
+  // Pipeline history (mig 177): log the checkpoint outcome for the /admin Git tab.
+  // The CLI prints the CheckpointResult as JSON ({ advanced, candidate, from,
+  // green, reason }); `reason` IS our status vocabulary. On a crash before that
+  // print (non-zero exit, no parseable JSON), record an 'error' row instead.
+  let status = 'error';
+  const detail: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1)) as {
+      reason?: string;
+      green?: boolean | null;
+      candidate?: string;
+      from?: string | null;
+    };
+    if (parsed?.reason) {
+      status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
+      detail.green = parsed.green ?? null;
+      if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
+      if (parsed.from) detail.from = parsed.from.slice(0, 12);
+    } else {
+      detail.stderr = (r.stderr || r.stdout).slice(-300);
+    }
+  } catch {
+    detail.code = r.code;
+    detail.stderr = (r.stderr || r.stdout).slice(-300);
+  }
+  await appendPipelineEvent({
+    workspaceId: ctx.workspaceId,
+    installSlug: ctx.installSlug,
+    kind: 'green_checkpoint',
+    status,
+    detail,
+  });
 });
 
 /**

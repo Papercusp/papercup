@@ -35,6 +35,7 @@ import {
   dbosRoutinesActive,
   dbosCurationActive,
   dbosReactionsActive,
+  dbosPlanRenderActive,
 } from './dbos-flags';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
@@ -170,6 +171,15 @@ export async function startDbos(): Promise<void> {
     // reaction in-process exactly as today.
     const { wireDurableReactions } = await import('./event-reaction-workflow');
     wireDurableReactions();
+  }
+  if (dbosPlanRenderActive()) {
+    // plan-markdown-auto-render P-006 (opt-in; PAPERCUSP_DBOS_PLAN_RENDER=1): the
+    // scheduled `planMarkdownRender` workflow mirrors PG-canonical plans to on-disk
+    // markdown under apps/operator/docs/plans/ (incremental + coalesced +
+    // settle-guarded, read-only projection). Registered before launch so the
+    // scheduler binds it. Opt-in because it writes the tracked tree (git-sync
+    // commits the mirror) — see dbosPlanRenderActive.
+    await import('./plan-markdown-render-workflow');
   }
 
   await DBOS.launch();

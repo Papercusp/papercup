@@ -24,6 +24,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
+import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized } from './run-git-sync';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
@@ -243,6 +244,11 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
   await recordResolverDispatch(slug, { at: dispatchedAt, status: 'dispatched', scopes });
 
+  // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
+  // Git tab can show resolver success rate. Best-effort, like recordResolverDispatch.
+  const logResolverSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
+    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'merge_resolver', status, detail: { scopes, ...extra } });
+
   // (2) async result recording. The /invoke route reads `extra` (forwarded to
   // invoke-once) — `kickoff` is for human readability only (the route ignores it);
   // the merge-resolver also reads the open escalation, which now lists every scope.
@@ -267,19 +273,24 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
+        const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
         await recordResolverDispatch(slug, {
           at: dispatchedAt,
-          status: res.ok && j?.ok !== false ? 'ok' : 'failed',
+          status: settled,
           httpStatus: res.status, exitCode, timedOut, detail,
         });
+        await logResolverSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
-        await recordResolverDispatch(slug, { at: dispatchedAt, status: res.ok ? 'ok' : 'failed', httpStatus: res.status });
+        const settled = res.ok ? 'ok' : 'failed';
+        await recordResolverDispatch(slug, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await logResolverSettle(settled, { httpStatus: res.status });
       }
     })
     .catch(async (e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[git-sync] merge-resolver dispatch failed (${slug}): ${msg}`);
       await recordResolverDispatch(slug, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await logResolverSettle('error', { error: msg.slice(0, 300) });
     });
 }
 
@@ -361,6 +372,27 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
 
   const errTicks = outcome.status === 'error' ? prev.errTicks + 1 : 0;
   await recordOutcome(slug, outcome, errTicks);
+
+  // Pipeline history (mig 177): log every tick so the /admin Git tab can show
+  // sync/conflict/error rates over time (routines.metadata only keeps the LAST).
+  await appendPipelineEvent({
+    workspaceId,
+    installSlug: slug,
+    kind: 'git_sync',
+    status: outcome.status,
+    detail: {
+      pushed: 'pushed' in outcome ? outcome.pushed : [],
+      merged: 'merged' in outcome ? outcome.merged : [],
+      conflicts:
+        outcome.status === 'conflict'
+          ? outcome.conflicts.map((c) => ({ scope: c.scope, files: c.conflictedFiles }))
+          : [],
+      errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
+      oversized: outcome.oversized.length,
+      consecutiveErrorTicks: errTicks,
+      ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),
+    },
+  });
 
   if (outcome.status === 'conflict') {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch

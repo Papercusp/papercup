@@ -33,6 +33,14 @@ export const NO_PLAN = '<no-plan>';
 
 const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070';
 
+/**
+ * Per-request timeout (ms). `fetch` has no default timeout, so a wedged or
+ * CPU-saturated operator used to make `psu` hang FOREVER on its first picker
+ * call (`bootstrap-su/options`) with no output. A bounded timeout fails fast
+ * with an actionable message instead. Override with PAPERCUSP_PSU_TIMEOUT_MS.
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 15_000;
+
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
   const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false };
@@ -352,6 +360,8 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(OPERATOR_URL + path, {
       ...opts,
+      // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
+      signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
         'content-type': 'application/json',
         ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -359,6 +369,13 @@ async function api(path, opts = {}) {
       },
     });
   } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error(
+        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}). ` +
+          `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
+          `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
+      );
+    }
     throw new Error(
       `could not reach the operator at ${OPERATOR_URL} (${e?.message || e}). ` +
         `Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL.`,

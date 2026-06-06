@@ -116,3 +116,18 @@ export function dbosCurationActive(env: DbosEnv = process.env): boolean {
 export function dbosReactionsActive(env: DbosEnv = process.env): boolean {
   return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_REACTIONS === '1';
 }
+
+/**
+ * The plan-markdown auto-render projection (plan-markdown-auto-render-2026-06-06)
+ * — a scheduled `planMarkdownRender` workflow that mirrors PG-canonical plans to
+ * on-disk markdown under `apps/operator/docs/plans/` (incremental, coalesced,
+ * settle-guarded). A fresh capability that WRITES into the tracked tree (git-sync
+ * then commits the mirror), so **opt-in** (enable with PAPERCUSP_DBOS_PLAN_RENDER=1)
+ * until an owner arms it — mirroring how routines/curation/reactions started
+ * opt-in. Still gated by the master orchestrator switch (PAPERCUSP_DBOS_ORCHESTRATOR=0
+ * also turns it off). Opt-in is the safe default on a shared box: a host restart
+ * won't suddenly start committing ~260 plan files + ongoing churn unsupervised.
+ */
+export function dbosPlanRenderActive(env: DbosEnv = process.env): boolean {
+  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_PLAN_RENDER === '1';
+}

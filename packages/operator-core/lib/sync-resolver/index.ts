@@ -1336,6 +1336,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // dev.gitPipeline — the whole git-sync → green-checkpoint → release pipeline
+  // for the /admin Git tab: routine schedule/active, latest git-sync + resolver
+  // state, any OPEN merge conflict, windowed history counts (mig 177 pipeline_events),
+  // a recent timeline, and the deploy gap. Snapshot wrapped in a 1-element array.
+  'dev.gitPipeline': {
+    resolve: async () => {
+      const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
+      return [await gitPipelineSnapshot()];
+    },
+  },
+
   // dev.pgHealth — pool usage snapshot (total / active / idle + version).
   'dev.pgHealth': {
     resolve: async () => {
