@@ -11,6 +11,16 @@
  *
  * Listeners (mixed frames / peer events) are held HERE and survive channel
  * switches — the local audio socket and the agent peer subscribe once.
+ *
+ * Encryption (P-013): the operator↔operator media path is end-to-end encrypted
+ * by construction. `ensureNode` injects ONLY the real Hyperswarm (below), and
+ * every Hyperswarm connection is a `NoiseSecretStream` (X25519 Noise handshake
+ * over HyperDHT) — there is no plaintext-transport code path in production; the
+ * identity/plaintext `SwarmLike` exists solely as a test stub. So every CTRL +
+ * AUDIO frame written to a peer `conn` rides the Noise stream. This was measured
+ * empirically by the P-001 spike (`libs/holepunch-spike/voice/RESULTS.md`:
+ * "Noise-encrypted UDX stream"). The local operator↔client leg is a same-host
+ * unix socket (`local-audio-socket`, loopback — never network-exposed).
  */
 import { hostname, userInfo } from 'node:os';
 import { randomBytes } from 'node:crypto';

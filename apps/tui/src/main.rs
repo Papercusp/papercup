@@ -178,7 +178,25 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     while let Some(ev) = rx.recv().await {
         let is_key = matches!(ev, Event::Key(_));
         let is_tick = matches!(ev, Event::Tick);
+        // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
+        // before the reducer consumes the event so we can free the run-loop-owned
+        // handles below.
+        let voice_dropped = matches!(
+            &ev,
+            Event::VoiceUi(crate::voice_ui::VoiceUiEvent::Stream(
+                voice_stream::VoiceEvent::Disconnected
+            ))
+        );
         let action = app.update(ev);
+
+        if voice_dropped {
+            // Release the now-dead stream + mic so the next Connect re-establishes
+            // a fresh socket. The reducer already flipped the Voice tab to
+            // disconnected + surfaced the drop; clearing these run-loop handles is
+            // what actually re-enables reconnection (Connect gates on is_none()).
+            voice_chan = None;
+            voice_mic = None;
+        }
 
         // Pump the live mic meter while recording: read the capture level on each
         // idle Tick and repaint so the meter animates (no per-frame event spam —

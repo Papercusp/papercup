@@ -89,6 +89,31 @@ const DEFAULT_ORG_ID = 'default';
 const RECONCILE_INTERVAL_MS = 60_000;
 const DEBOUNCE_MS = 200;
 
+/**
+ * Paths chokidar must never walk or poll.
+ *
+ * The dispatch only needs *structured* files — summary.md, `*.json` reviews,
+ * `*.md` proposals, the per-branch action metadata. It does NOT need the
+ * high-volume append-only run logs under `action-runs/<branch>/…`: those grow
+ * continuously, so chokidar's `awaitWriteFinish` (50 ms poll) would `lstat`
+ * every one of them forever and they never stabilise. Across a busy fleet ×
+ * 15–19 harnesses that pegged the operator host's event loop at ~100% — every
+ * `/api/*` route then starved past the 30 s route watchdog (the
+ * `psu: route exceeded 30s` outage, 2026-06-05). The branch-actions mirror
+ * recomputes from `listActions` (the structured files), so dropping log-only
+ * events loses no signal. `node_modules` / `.git` / `embedded-pg-data*` are
+ * defensive guards so a broad watched root can never trigger a recursive walk
+ * into a huge tree.
+ */
+const WATCHER_IGNORED_RE =
+  /(?:^|\/)(?:node_modules|\.git|embedded-pg-data[^/]*)(?:\/|$)|\.(?:swp|swo|tmp|log)$/;
+
+/** True when chokidar should ignore `p` (never emit events for / recurse into
+ *  it). Exported for unit testing. */
+export function isWatcherIgnored(p: string): boolean {
+  return WATCHER_IGNORED_RE.test(p);
+}
+
 interface WatcherState {
   watcher: FSWatcher;
   /**
@@ -1503,10 +1528,11 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     // multi-events/sec invalidation storm on the dashboard.
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-    // Only ignore actual swap/temp files. The previous /\/\.\w/ regex
-    // matched '.h' in '.papercusp' and silently dropped every event under
-    // the watched dirs.
-    ignored: (p) => /\.(swp|swo|tmp)$/.test(p),
+    // Ignore swap/temp files AND high-volume `*.log` appends + bulky trees —
+    // see WATCHER_IGNORED_RE. (The previous /\/\.\w/ regex matched '.h' in
+    // '.papercusp' and silently dropped every event under the watched dirs;
+    // this one is anchored to path segments + extensions so it can't.)
+    ignored: isWatcherIgnored,
   });
 
   // Top-level watcher (depth: 0) catches checkpoint-*.md / *.granted
@@ -1518,7 +1544,7 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     ignoreInitial: true,  // see above
     depth: 0,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-    ignored: (p) => /\.(swp|swo|tmp)$/.test(p),
+    ignored: isWatcherIgnored,
   });
 
   // Watch ~/.papercusp/harnesses/<slug>/enabled-plugins.json. depth:1
@@ -1530,7 +1556,7 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     ignoreInitial: true,
     depth: 1,
     awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
-    ignored: (p) => /\.(swp|swo|tmp)$/.test(p),
+    ignored: isWatcherIgnored,
   });
 
   const state: WatcherState = {

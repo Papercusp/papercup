@@ -1,16 +1,22 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { enableVoiceAgent, voiceAgentEnabled, voiceAgentSay } from '../../voice-node/agent-peer';
+import {
+  enableVoiceAgentBrain,
+  voiceAgentBrainEnabled,
+  voiceAgentSpeaking,
+} from '../../voice-node/agent-brain';
 
 export default defineTool({
   name: 'voice:agent',
   profile: 'engineer',
-  description: 'Voice agent peer: enable/disable channel listening (STT), or speak text into the active channel (TTS).',
+  description:
+    'Voice agent peer: toggle channel listening (STT) or the converse BRAIN (auto-reply), report status, or speak text (TTS) into the active channel.',
   capability: 'operator:write',
   guidance: {
-    when: `Toggle the agent's ears in the active voice channel ({op:'enable'|'disable'}) or speak into it ({op:'say', text}).`,
-    notWhen: `Joining/leaving the channel itself is \`voice:join\`/\`voice:leave\`; this controls only the agent's listen/speak behaviors on top.`,
-    chaining: `voice:join → voice:agent {op:'enable'} → transcripts flow to subscribers → voice:agent {op:'say', text:'…'} to respond.`,
+    when: `Toggle the agent's ears ({op:'enable'|'disable'}), its auto-reply brain ({op:'brain', on}), read {op:'status'}, or speak into the channel ({op:'say', text}).`,
+    notWhen: `Joining/leaving the channel itself is \`voice:join\`/\`voice:leave\`; this controls only the agent's listen/think/speak behaviors on top.`,
+    chaining: `voice:join → voice:agent {op:'brain', on:true} (ears + auto-reply: peer speech → operator-converse → spoken reply). For manual control use {op:'enable'} then {op:'say', text:'…'}.`,
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect'],
@@ -18,6 +24,7 @@ export default defineTool({
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('enable') }),
     z.object({ op: z.literal('disable') }),
+    z.object({ op: z.literal('brain'), on: z.boolean() }),
     z.object({ op: z.literal('status') }),
     z.object({ op: z.literal('say'), text: z.string().min(1).max(4000) }),
   ]),
@@ -27,7 +34,23 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ ok: frames > 0, frames }) }] };
     }
     if (args.op === 'enable') enableVoiceAgent(true);
-    if (args.op === 'disable') enableVoiceAgent(false);
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, enabled: voiceAgentEnabled() }) }] };
+    if (args.op === 'disable') {
+      enableVoiceAgentBrain(false); // brain needs the ears — drop it too
+      enableVoiceAgent(false);
+    }
+    if (args.op === 'brain') enableVoiceAgentBrain(args.on);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            enabled: voiceAgentEnabled(),
+            brain: voiceAgentBrainEnabled(),
+            speaking: voiceAgentSpeaking(),
+          }),
+        },
+      ],
+    };
   },
 });

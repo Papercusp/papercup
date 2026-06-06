@@ -13,12 +13,11 @@
  * here instead of in production.
  */
 import { describe, it, expect } from 'vitest';
+import { isWatcherIgnored } from './harness-fs-watcher';
 
-// The actual `ignored` predicate is private to the module. Re-implement
-// it here as a literal copy of the production string so any drift breaks
-// the test on rebuild. If the source changes, this test must be updated
-// in lockstep — that's the point.
-const ignored = (p: string): boolean => /\.(swp|swo|tmp)$/.test(p);
+// The real production predicate (exported for exactly this). No re-implement
+// → no drift: a change to WATCHER_IGNORED_RE is tested directly.
+const ignored = isWatcherIgnored;
 
 describe('harness-fs-watcher: ignored predicate', () => {
   it('does NOT ignore files inside .papercusp/', () => {
@@ -45,7 +44,32 @@ describe('harness-fs-watcher: ignored predicate', () => {
     // The original regex over-matched anything starting with `.<word>`.
     // Hidden files outside our swap-suffix list should still pass.
     expect(ignored('/foo/.papercusp/.something')).toBe(false);
-    expect(ignored('/foo/.gitignore')).toBe(false);
+    expect(ignored('/foo/.gitignore')).toBe(false); // `.git` segment, not `.gitignore`
+  });
+
+  // 2026-06-05 outage: chokidar `awaitWriteFinish` lstat-polled the
+  // high-volume append-only run logs under action-runs/ every 50ms, never
+  // stabilising → operator event loop pegged → every route timed out
+  // (`psu: route exceeded 30s`). The mirror recomputes from structured files,
+  // so log-only events are noise — ignore them.
+  it('IGNORES high-volume *.log run logs (the event-loop-pegging files)', () => {
+    expect(ignored('/h/.papercusp/action-runs/staging/run-42/run.log')).toBe(true);
+    expect(ignored('/h/.papercusp/action-runs/testing/r1/smoke-startup.log')).toBe(true);
+    expect(ignored('/h/.papercusp/logs/hooks/x.log')).toBe(true);
+  });
+
+  it('still dispatches structured action metadata (NOT ignored)', () => {
+    // The branch-actions mirror needs these; only the logs are noise.
+    expect(ignored('/h/.papercusp/action-runs/staging/run-42/result.json')).toBe(false);
+    expect(ignored('/h/.papercusp/actions/staging/deploy.sh')).toBe(false);
+    expect(ignored('/h/.papercusp/summary.md')).toBe(false);
+  });
+
+  it('defensively ignores bulky / irrelevant trees (never recurse into them)', () => {
+    expect(ignored('/h/node_modules/x/index.js')).toBe(true);
+    expect(ignored('/h/.git/objects/ab/cdef')).toBe(true);
+    expect(ignored('/ws/.papercusp/embedded-pg-data.broken-123/PG_VERSION')).toBe(true);
+    expect(ignored('/ws/.papercusp/embedded-pg-data/base/1/123')).toBe(true);
   });
 });
 

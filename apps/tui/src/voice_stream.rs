@@ -527,6 +527,78 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// P-013 reconnect-on-drop: a dropped operator socket surfaces a
+    /// `Disconnected` event (which the run loop turns into clearing its
+    /// `voice_chan`), and a fresh `connect_to` afterwards works cleanly — there
+    /// is no lingering per-process state that would block reconnection.
+    #[test]
+    fn disconnect_emits_event_then_reconnect_works() {
+        use std::time::Duration;
+        let dir = std::env::temp_dir().join(format!("pui-voice-recon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("voice.sock");
+        let _ = std::fs::remove_file(&path);
+
+        // First operator: accept once, hold briefly, then close the connection.
+        let listener = UnixListener::bind(&path).unwrap();
+        let srv1 = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            drop(sock); // close → the client read_loop sees EOF → Disconnected
+        });
+        let (vs1, events1, _mix1) = VoiceStream::connect_to(&path).unwrap();
+        // The drop surfaces as a Disconnected event.
+        loop {
+            match events1.recv_timeout(Duration::from_secs(3)).unwrap() {
+                VoiceEvent::Disconnected => break,
+                _ => continue,
+            }
+        }
+        srv1.join().unwrap();
+        drop(vs1); // emulate the run loop releasing voice_chan on Disconnected
+
+        // Reconnect: fresh listener on the same path, fresh VoiceStream.
+        let _ = std::fs::remove_file(&path);
+        let listener2 = UnixListener::bind(&path).unwrap();
+        let srv2 = std::thread::spawn(move || {
+            let (mut sock, _) = listener2.accept().unwrap();
+            let mut writer = sock.try_clone().unwrap();
+            let mut parser = FrameParser::default();
+            let mut buf = [0u8; 4096];
+            'outer: loop {
+                let n = match sock.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                for (ty, payload) in parser.push(&buf[..n]) {
+                    if ty == CTRL {
+                        let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                        if v["op"] == "join" {
+                            let status = serde_json::json!({
+                                "ev": "status",
+                                "status": {
+                                    "channel": { "id": "vc-1", "name": v["channel"] },
+                                    "muted": false,
+                                    "peers": [],
+                                }
+                            });
+                            writer
+                                .write_all(&encode_frame(CTRL, status.to_string().as_bytes()))
+                                .unwrap();
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        });
+        let (vs2, events2, _mix2) = VoiceStream::connect_to(&path).unwrap();
+        vs2.join("standup").unwrap();
+        let ev = events2.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(matches!(ev, VoiceEvent::Status(_)), "reconnected + got status");
+        srv2.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn push_pcm_resamples_foreign_rates_into_exact_frames() {
         // 44.1k stereo in → 48k mono frames out; verify via a mock socket pair.
