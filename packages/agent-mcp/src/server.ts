@@ -28,7 +28,15 @@ import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolveBearer } from './auth';
 import { sanitizeToolSchema } from './tool-schema-sanitize';
-import { getCatalog, lookup, standardValidate, formatIssues } from '@papercusp/tooldef';
+import {
+  getCatalog,
+  lookup,
+  lookupByMcpName,
+  standardValidate,
+  formatIssues,
+  serializeToolResponse,
+  formatOptsFromCtx,
+} from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
   getResourceCatalog,
@@ -401,9 +409,19 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
         ],
       };
     }
+    // Format-aware serialization (token-efficient-tool-result-formats P-005) —
+    // the same single serializer the HTTP path uses. stdio is an agent-facing
+    // MCP transport, so it defaults to compact; a client can override per call
+    // via `_meta.format`. The envelope (nextCursor/degraded) rides in `_meta`.
     const r = result.response!;
+    const requested = (req.params._meta as { format?: string } | undefined)?.format;
+    const serialized = serializeToolResponse(
+      r,
+      formatOptsFromCtx({ requestedFormat: requested, transport: 'mcp' }, lookupByMcpName(req.params.name)?.resultEligibility),
+    );
     return {
-      content: [{ type: 'text', text: JSON.stringify(r) }],
+      content: serialized.content,
+      ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
     };
   });
 

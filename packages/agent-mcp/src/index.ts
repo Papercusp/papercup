@@ -40,6 +40,12 @@ export {
 } from './server';
 export { getCatalog, lookup } from '@papercusp/tooldef';
 export {
+  serializeToolResponse,
+  formatOptsFromCtx,
+  type SerializeFormatOpts,
+  type SerializedToolResult,
+} from '@papercusp/tooldef';
+export {
   applyToolManifest,
   reloadToolManifest,
   hasToolManifest,

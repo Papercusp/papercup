@@ -70,13 +70,27 @@ export function headersFromExtra(extra: unknown): Headers {
 export interface McpToolCallResult {
   content: ReadonlyArray<{ type: 'text'; text: string } | Record<string, unknown>>;
   isError?: boolean;
+  /**
+   * Structured metadata returned alongside content (not shown to the model).
+   * Carries the result's `format` tag + the pagination/degraded envelope routed
+   * out of the body (token-efficient-tool-result-formats P-006). Threaded from
+   * the dispatcher's `ToolResult._meta`.
+   */
+  _meta?: Record<string, unknown>;
+  /**
+   * Lossless structured JSON of the result `data`, per the tool's MCP
+   * `outputSchema` (P-010). Present only when the tool opted in (a client asked
+   * for it) — gated so the model never pays for both the compact text AND the
+   * full JSON at once.
+   */
+  structuredContent?: unknown;
 }
 
 /**
  * Dispatch a projected tool through the engine and map the outcome to an MCP
- * `tools/call` result: success → `{ content }`; failure → `{ isError: true,
- * content: [{ type:'text', text:'<code>: <message>' }] }`. The host has already
- * resolved `ctx` (auth, harness paths, …) and supplies `deps`.
+ * `tools/call` result: success → `{ content, _meta?, structuredContent? }`;
+ * failure → `{ isError: true, content: [{ type:'text', text:'<code>: <message>' }] }`.
+ * The host has already resolved `ctx` (auth, harness paths, …) and supplies `deps`.
  */
 export async function dispatchProjectedToolToMcp(
   tool: ProjectedTool,
@@ -92,5 +106,9 @@ export async function dispatchProjectedToolToMcp(
       content: [{ type: 'text', text: `${r.error?.code}: ${r.error?.message}` }],
     };
   }
-  return { content: r.result!.content };
+  const out: McpToolCallResult = { content: r.result!.content };
+  const meta = r.result!._meta;
+  if (meta && Object.keys(meta).length > 0) out._meta = meta;
+  if (r.result!.structuredContent !== undefined) out.structuredContent = r.result!.structuredContent;
+  return out;
 }

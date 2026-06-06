@@ -39,6 +39,8 @@ import {
   applyToolManifest,
   papercuspGateBypass,
   sanitizeToolSchema,
+  serializeToolResponse,
+  formatOptsFromCtx,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
@@ -426,6 +428,10 @@ async function buildMcpToolContext(
   // encrypted plugin_configs (then env); first-party tools ('agent-mcp') and
   // tool-less probes get the env-only resolver.
   pluginName?: string,
+  // Client-negotiated result format (token-efficient-tool-result-formats P-009),
+  // from `_meta.format` on the tools/call params or `?format=` on the MCP URL.
+  // The result serializer reads it; absent ⇒ the MCP transport default (compact).
+  requestedFormat?: string,
 ): Promise<UnifiedToolContext> {
   // Superuser context: workspaceId/harnessSlug may be '*'. Skip path
   // resolution; per-tool fallbacks ("workspace= arg required") will fire.
@@ -508,6 +514,7 @@ async function buildMcpToolContext(
       isPowerUser: spawn.isPowerUser ?? false,
     }),
     profile: spawn.profile ?? 'engineer',
+    requestedFormat,
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
@@ -662,7 +669,7 @@ const handler = createMcpHandler(
           params: {
             name: string;
             arguments?: Record<string, unknown>;
-            _meta?: { progressToken?: string | number };
+            _meta?: { progressToken?: string | number; format?: string };
           };
         },
         extra: unknown,
@@ -670,6 +677,11 @@ const handler = createMcpHandler(
         const toolName = req.params.name;
         const args = req.params.arguments ?? {};
         const progressToken = req.params._meta?.progressToken;
+        // Result-format negotiation (P-009): per-call `_meta.format` wins over a
+        // connection-level `?format=` on the MCP URL (how a client declares
+        // compact/json once at setup). Absent ⇒ the transport default (compact).
+        const requestedFormat =
+          req.params._meta?.format ?? urlFromExtra(extra)?.searchParams.get('format') ?? undefined;
         // mcp-handler passes the protocol's RequestHandlerExtra here,
         // which exposes a sendNotification function bound to the right
         // session. Use it to fire notifications/progress events.
@@ -749,7 +761,7 @@ const handler = createMcpHandler(
           const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
           const dispatchSpawnCtx =
             effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
-          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName);
+          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat);
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected
@@ -770,6 +782,10 @@ const handler = createMcpHandler(
             dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, ctx, PROJECTED_DEPS) as Promise<{
               content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
               isError?: boolean;
+              // Format tag + envelope (P-006) and lossless structuredContent (P-010)
+              // — forwarded to the MCP SDK's tools/call result so clients see them.
+              _meta?: Record<string, unknown>;
+              structuredContent?: unknown;
             }>;
           // Establish the request-scoped workspace ALS for the duration of the
           // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
@@ -820,15 +836,17 @@ const handler = createMcpHandler(
               content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
             };
           }
-          const content: Array<Record<string, unknown>> = [
-            { type: 'text' as const, text: JSON.stringify(r.response?.data ?? r.response) },
-          ];
-          if (Array.isArray(r.response?.uiResources)) {
-            for (const ui of r.response.uiResources) {
-              content.push(ui as unknown as Record<string, unknown>);
-            }
-          }
-          return { content };
+          // Format-aware serialization (P-005) — parity with the projected path.
+          // This bearer-only legacy branch is still an MCP (agent) transport, so
+          // it defaults to compact; honor `_meta.format`/`?format=` overrides.
+          const serialized = serializeToolResponse(
+            r.response!,
+            formatOptsFromCtx({ requestedFormat, transport: 'mcp' }, lookupByMcpName(toolName)?.resultEligibility),
+          );
+          return {
+            content: serialized.content,
+            ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
+          };
         }
 
         // Projected tool exists but caller didn't supply a spawn ctx —
