@@ -115,28 +115,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // operatorScans.byWorkspace — operator scan history.
-  //   zql.operatorScans.where(workspaceId).orderBy('startedAt', 'desc').limit(limit)
-  'operatorScans.byWorkspace': {
-    argsSchema: z.object({
-      workspaceId: z.string(),
-      limit: z.number().int().positive().max(500).default(50),
-    }),
-    resolve: async (args) => {
-      const { workspaceId, limit } = args as { workspaceId: string; limit: number };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
-      const t = generated.operatorScansInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.workspaceId, workspaceId))
-        .orderBy(desc(t.startedAt))
-        .limit(limit)) as unknown[];
-    },
-  },
-
   // operatorBudget.byWorkspace — single-row-per-workspace budget state.
   //   zql.operatorBudget.where(workspaceId).limit(1)
   // Per the ZQL comment: limit(1) instead of .one() — feedback_zero_one_shape_mismatch.
@@ -147,24 +125,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.operatorBudgetInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.workspaceId, workspaceId))
-        .limit(1)) as unknown[];
-    },
-  },
-
-  // operatorLastScan.byWorkspace — single-row-per-workspace last-scan snapshot.
-  //   zql.operatorLastScan.where(workspaceId).limit(1)
-  'operatorLastScan.byWorkspace': {
-    argsSchema: z.object({ workspaceId: z.string() }),
-    resolve: async (args) => {
-      const { workspaceId } = args as { workspaceId: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { eq } = await import('drizzle-orm');
-      const t = generated.operatorLastScanInHarnessShared;
       const { db } = getOrgPg();
       return (await db
         .select()

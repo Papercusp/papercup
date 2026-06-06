@@ -83,9 +83,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
 
   // ── Per-workspace tables ──────────────────────────────────────────
   'harness_shared.toast_log': ['toastLog.recent'],
-  'harness_shared.operator_scans': ['operatorScans.byWorkspace'],
   'harness_shared.operator_budget': ['operatorBudget.byWorkspace'],
-  'harness_shared.operator_last_scan': ['operatorLastScan.byWorkspace'],
   'harness_shared.audit_log': ['auditLog.operatorDecisions'],
   'harness_shared.user_actions': ['userActions.byHarness', 'userActions.byKind'],
   'harness_shared.plugin_configs': ['pluginConfigs.byHarness'],

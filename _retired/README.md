@@ -17,3 +17,9 @@ convention.
 - `papercup/` — `@papercup/web`, the former papercupai.com public site. Retired
   2026-05-30. Restore: see `papercup/RESTORE.md` (git tag
   `papercup-web-retired-2026-05-30`).
+- `orchestrator-run-loop/apps-operator-test/` — the 4 superproject-side integration
+  tests for the legacy orchestrator PG modules, retired alongside the modules
+  themselves (which live in the **papercusp submodule** at
+  `libs/papercusp/_retired/orchestrator-run-loop/`). Retired 2026-06-06
+  (`archive-legacy-orchestrator-deadcode`). Restore:
+  `orchestrator-run-loop/RESTORE.md`.

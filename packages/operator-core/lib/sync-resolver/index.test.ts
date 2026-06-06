@@ -22,9 +22,7 @@ describe('sync-resolver v2 registry', () => {
       const names = knownQueryNamesV2();
       for (const expected of [
         'auditLog.operatorDecisions',
-        'operatorScans.byWorkspace',
         'operatorBudget.byWorkspace',
-        'operatorLastScan.byWorkspace',
         'userActions.byKind',
       ]) {
         expect(names).toContain(expected);
@@ -183,17 +181,6 @@ describe('sync-resolver v2 registry', () => {
     it('auditLog.operatorDecisions rejects missing workspaceId', async () => {
       const { resolveNamedQueryV2: r } = await import('./index');
       await expect(r('auditLog.operatorDecisions', { limit: 5 })).rejects.toThrow();
-    });
-
-    it('operatorScans.byWorkspace defaults limit to 50', async () => {
-      // We cannot actually run the SQL without PG, but we CAN inspect
-      // that the schema accepts the workspaceId-only shape — zod will
-      // throw if it doesn't.
-      const { argsSchema } = (await import('./index')) as never;
-      // No public accessor for the schema; instead, verify the request
-      // shape via knownQueryNamesV2 presence + structural check.
-      const names = knownQueryNamesV2();
-      expect(names).toContain('operatorScans.byWorkspace');
     });
 
     it('userActions.byKind rejects missing kind', async () => {
