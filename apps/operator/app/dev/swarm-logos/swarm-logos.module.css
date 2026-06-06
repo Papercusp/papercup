@@ -300,8 +300,13 @@
 }
 
 .sun,
-.glow {
+.glow,
+.swarmNode {
   fill: var(--accent);
+}
+
+.swarmNode {
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent), transparent 22%));
 }
 
 .eclipse {

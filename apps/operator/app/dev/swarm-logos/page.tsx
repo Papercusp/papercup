@@ -14,6 +14,14 @@ type LogoOption = {
 
 const OPTIONS: LogoOption[] = [
   {
+    id: 'swarm-cloud',
+    name: 'Swarm Cloud',
+    mood: 'Many bees moving as one system around a dark Hive core.',
+    bestFor: 'Primary app logo if the product name is The Swarm.',
+    verdict: 'Most directly represents the product name: collective motion, not a single bee.',
+    Glyph: SwarmCloudGlyph,
+  },
+  {
     id: 'black-comb',
     name: 'Black Comb',
     mood: 'Industrial honeycomb, precise and dev-tool serious.',
@@ -72,8 +80,8 @@ export default function SwarmLogosPage() {
           <h1>Bee Marks For The End</h1>
           <p>
             Logo directions for replacing the cup-themed Papercusp marks with an ominous
-            bee/hive system. Pick one primary app mark, one Queen mark, and optionally one
-            operator mark.
+            bee/hive system. The app is The Swarm: people create or join a Hive, and many
+            swarms can operate inside that Hive.
           </p>
         </div>
         <div className={styles.heroMark} aria-hidden="true">
@@ -84,7 +92,7 @@ export default function SwarmLogosPage() {
       <section className={styles.systemStrip} aria-label="Recommended usage system">
         <article>
           <span>Primary</span>
-          <strong>Black Comb or Hive Eye</strong>
+          <strong>Swarm Cloud or Hive Eye</strong>
           <p>Best for app icon, favicon, sidebar brand, and cup-logo replacement.</p>
         </article>
         <article>
@@ -95,7 +103,7 @@ export default function SwarmLogosPage() {
         <article>
           <span>Operator</span>
           <strong>Sentinel Bee</strong>
-          <p>Best for the always-on watcher that wakes the Queen when needed.</p>
+          <p>Best for the always-on watcher inside a Hive that wakes the Queen when needed.</p>
         </article>
       </section>
 
@@ -147,6 +155,24 @@ function MarkShell({ children, ...props }: SVGProps<SVGSVGElement>) {
       <path className={styles.hexShell} d="M80 8 142 44v72l-62 36-62-36V44z" />
       {children}
     </svg>
+  );
+}
+
+function SwarmCloudGlyph(props: SVGProps<SVGSVGElement>) {
+  return (
+    <MarkShell aria-label="Swarm Cloud logo" {...props}>
+      <path className={styles.strokeSoft} d="M40 84c20-42 61-52 86-24M35 102c31 27 72 28 98-5M54 45c-2 36 17 65 55 82" />
+      <path className={styles.cell} d="M80 58 101 70v24l-21 12-21-12V70z" />
+      <circle className={styles.eclipse} cx="80" cy="82" r="13" />
+      <circle className={styles.swarmNode} cx="42" cy="82" r="6" />
+      <circle className={styles.swarmNode} cx="55" cy="52" r="5" />
+      <circle className={styles.swarmNode} cx="92" cy="38" r="5" />
+      <circle className={styles.swarmNode} cx="121" cy="61" r="6" />
+      <circle className={styles.swarmNode} cx="127" cy="101" r="5" />
+      <circle className={styles.swarmNode} cx="94" cy="126" r="6" />
+      <circle className={styles.swarmNode} cx="54" cy="116" r="5" />
+      <path className={styles.threatStroke} d="M80 27v19M132 82h-18M80 134v-18M28 82h18" />
+    </MarkShell>
   );
 }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import styles from './swarm-identity.module.css';
 
@@ -18,11 +18,11 @@ type Direction = {
   note: string;
 };
 
-const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a hive, start a swarm, and watch the world change.';
+const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm inside it, and watch the world change.';
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a hive, start a swarm, and watch the world change.',
+  'Create or Join a Hive, start a swarm inside it, and watch the world change.',
 ] as const;
 
 const DIRECTIONS: Direction[] = [
@@ -79,8 +79,12 @@ const DIRECTIONS: Direction[] = [
 ];
 
 export default function SwarmIdentityPage() {
+  const [showIntro, setShowIntro] = useState(true);
+
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    const timer = window.setTimeout(() => setShowIntro(false), 8200);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const [selected, setSelected] = useQueryState(
@@ -91,27 +95,29 @@ export default function SwarmIdentityPage() {
 
   return (
     <main className={styles.page}>
-      <section className={styles.introSequence} aria-label={TAGLINE}>
-        <div className={styles.introComb} aria-hidden="true" />
-        <div className={styles.introLines} aria-hidden="true">
-          {TAGLINE_SEQUENCE.map((line, index) => (
-            <span key={line} data-line={index + 1} style={{ '--intro-index': index } as CSSProperties}>
-              {line}
-            </span>
-          ))}
-        </div>
-        <div className={styles.introSwarm} aria-hidden="true">
-          <span />
-          <span />
-          <span />
-          <span />
-          <span />
-          <span />
-          <span />
-        </div>
-      </section>
+      {showIntro ? (
+        <section className={styles.introSequence} aria-label={TAGLINE}>
+          <div className={styles.introComb} aria-hidden="true" />
+          <div className={styles.introLines} aria-hidden="true">
+            {TAGLINE_SEQUENCE.map((line, index) => (
+              <span key={line} data-line={index + 1} style={{ '--intro-index': index } as CSSProperties}>
+                {line}
+              </span>
+            ))}
+          </div>
+          <div className={styles.introSwarm} aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        </section>
+      ) : null}
 
-      <div className={styles.contentReveal}>
+      <div className={showIntro ? styles.contentReveal : styles.contentVisible}>
         <section className={`${styles.hero} ${styles[active.id]}`}>
           <div className={styles.heroCopy}>
             <span className={styles.eyebrow}>theswarm.dev identity lab</span>
@@ -194,10 +200,10 @@ export default function SwarmIdentityPage() {
                 <div className={styles.browserBody}>
                   <span className={styles.miniEyebrow}>A new intelligence is forming</span>
                   <h3>Welcome to the End.</h3>
-                  <p>Be part of the new beginning. Create or Join a hive, start a swarm, and watch the world change.</p>
+                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm inside it, and watch the world change.</p>
                   <div className={styles.browserActions}>
-                    <button type="button">Create a swarm</button>
-                    <button type="button">Join a swarm</button>
+                    <button type="button">Create a Hive</button>
+                    <button type="button">Join a Hive</button>
                   </div>
                 </div>
               </div>
@@ -218,9 +224,9 @@ export default function SwarmIdentityPage() {
                 </aside>
                 <div className={styles.appPanel}>
                   <div className={styles.statusLine}>
-                    <strong>{active.queen}</strong>
-                    <span>thinking</span>
-                  </div>
+                  <strong>{active.queen}</strong>
+                  <span>thinking</span>
+                </div>
                   <div className={styles.hexRows}>
                     <span />
                     <span />
@@ -229,7 +235,7 @@ export default function SwarmIdentityPage() {
                     <span />
                     <span />
                   </div>
-                  <p>{active.operator} is online. The Queen wakes when judgment is required.</p>
+                  <p>{active.operator} is online. A Hive can run many swarms; the Queen wakes when judgment is required.</p>
                 </div>
               </div>
             </article>

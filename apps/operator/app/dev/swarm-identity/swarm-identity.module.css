@@ -20,15 +20,15 @@
 }
 
 .introSequence {
-  position: sticky;
+  position: relative;
   z-index: 50;
-  top: 0;
   display: grid;
   place-items: center;
-  width: calc(100% + 56px);
-  height: 100vh;
-  min-height: 540px;
-  margin: -28px -28px -100vh;
+  height: min(620px, calc(100svh - 32px));
+  min-height: 360px;
+  margin: 0 0 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 34px;
   overflow: hidden;
   background:
     radial-gradient(circle at 50% 46%, rgba(234, 179, 8, 0.18), transparent 18%),
@@ -141,7 +141,13 @@
 .contentReveal {
   opacity: 0;
   transform: translateY(34px) scale(0.985);
-  animation: pageReveal 1500ms cubic-bezier(.16, 1, .3, 1) 7600ms forwards;
+  will-change: opacity, transform;
+}
+
+.contentVisible {
+  opacity: 0;
+  transform: translateY(34px) scale(0.985);
+  animation: pageReveal 1500ms cubic-bezier(.16, 1, .3, 1) forwards;
   will-change: opacity, transform;
 }
 
