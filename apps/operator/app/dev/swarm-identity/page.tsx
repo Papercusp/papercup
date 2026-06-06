@@ -6,6 +6,7 @@ import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import styles from './swarm-identity.module.css';
 
 type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'sentinel' | 'eclipse';
+type SwarmMarkId = 'vortex' | 'omen' | 'sigil' | 'front' | 'crownField' | 'blackSun';
 
 type Direction = {
   id: DirectionId;
@@ -16,6 +17,12 @@ type Direction = {
   operator: string;
   queen: string;
   note: string;
+};
+
+type SwarmMark = {
+  id: SwarmMarkId;
+  name: string;
+  read: string;
 };
 
 const INTRO_MS = 14_500;
@@ -79,6 +86,15 @@ const DIRECTIONS: Direction[] = [
     queen: 'Queen',
     note: 'Best for the website hero if we want maximum ominous energy.',
   },
+];
+
+const SWARM_MARKS: SwarmMark[] = [
+  { id: 'vortex', name: 'Swarm Vortex', read: 'A moving colony collapsing into one will.' },
+  { id: 'omen', name: 'Omen Cloud', read: 'The swarm as a dark shape on the horizon.' },
+  { id: 'sigil', name: 'Swarm Sigil', read: 'A technical S formed from worker-bee vectors.' },
+  { id: 'front', name: 'The Front', read: 'Many bees advancing as a single system.' },
+  { id: 'crownField', name: 'Crown Field', read: 'The Queen is implied by swarm formation, not a mascot.' },
+  { id: 'blackSun', name: 'Black Sun Swarm', read: 'The colony eclipses the old world.' },
 ];
 
 export default function SwarmIdentityPage() {
@@ -262,6 +278,25 @@ export default function SwarmIdentityPage() {
           </div>
         </section>
 
+        <section className={styles.swarmLogoWall} aria-label="Swarm logo candidates">
+          <div className={styles.swarmLogoHeader}>
+            <span className={styles.eyebrow}>Swarm-forward marks</span>
+            <h2>Logos that read as a swarm first</h2>
+            <p>These avoid the single cute bee problem. The mark is the collective: many workers forming one ominous intelligence.</p>
+          </div>
+          <div className={styles.swarmLogoGrid}>
+            {SWARM_MARKS.map((mark) => (
+              <article key={mark.id} className={styles.swarmLogoCard}>
+                <div className={styles.swarmLogoGlyph}>
+                  <SwarmMarkGlyph mark={mark.id} />
+                </div>
+                <h3>{mark.name}</h3>
+                <p>{mark.read}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
         <section className={styles.compareGrid}>
           {DIRECTIONS.map((direction) => (
             <article key={direction.id} className={`${styles.compareCard} ${styles[direction.id]}`}>
@@ -281,6 +316,26 @@ export default function SwarmIdentityPage() {
   );
 }
 
+function SwarmMarkGlyph({ mark }: { mark: SwarmMarkId }) {
+  if (mark === 'omen') return <OmenCloudGlyph />;
+  if (mark === 'sigil') return <SwarmSigilGlyph />;
+  if (mark === 'front') return <SwarmFrontGlyph />;
+  if (mark === 'crownField') return <CrownFieldGlyph />;
+  if (mark === 'blackSun') return <BlackSunSwarmGlyph />;
+  return <SwarmVortexGlyph />;
+}
+
+function SwarmBee({ x, y, scale = 1, rotate = 0, hot = false }: { x: number; y: number; scale?: number; rotate?: number; hot?: boolean }) {
+  return (
+    <g className={hot ? styles.swarmBeeHot : styles.swarmBee} transform={`translate(${x} ${y}) rotate(${rotate}) scale(${scale})`}>
+      <path d="M0-6C4-10 9-8 10-3 6-2 3-3 0-6Z" />
+      <path d="M0 6C4 10 9 8 10 3 6 2 3 3 0 6Z" />
+      <ellipse cx="-2" cy="0" rx="4" ry="7" />
+      <path d="M-6-3h8M-6 3h8" />
+    </g>
+  );
+}
+
 function HeroLogo({ direction, compact = false }: { direction: DirectionId; compact?: boolean }) {
   return (
     <div className={compact ? styles.logoStageCompact : styles.logoStage} aria-label={`${direction} logo preview`}>
@@ -290,12 +345,115 @@ function HeroLogo({ direction, compact = false }: { direction: DirectionId; comp
   );
 }
 
+function SwarmVortexGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Swarm vortex logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <path className={styles.swarmOrbitStroke} d="M36 100c14 37 57 53 92 31 36-22 38-76 5-100" />
+      <path className={styles.swarmOrbitStroke} d="M139 83c-9-34-45-54-80-40-34 14-48 54-31 86" />
+      <SwarmBee x={94} y={38} scale={0.78} rotate={16} hot />
+      <SwarmBee x={122} y={52} scale={0.68} rotate={46} />
+      <SwarmBee x={139} y={82} scale={0.58} rotate={84} hot />
+      <SwarmBee x={128} y={118} scale={0.72} rotate={138} />
+      <SwarmBee x={92} y={139} scale={0.86} rotate={192} hot />
+      <SwarmBee x={54} y={122} scale={0.66} rotate={238} />
+      <SwarmBee x={39} y={84} scale={0.7} rotate={288} hot />
+      <SwarmBee x={62} y={50} scale={0.54} rotate={326} />
+      <circle className={styles.swarmCore} cx="90" cy="90" r="17" />
+    </svg>
+  );
+}
+
+function OmenCloudGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Omen cloud swarm logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <path className={styles.omenMass} d="M31 94c11-35 37-54 70-52 30 2 48 19 55 51-16 22-37 33-64 33-26 0-46-11-61-32Z" />
+      <SwarmBee x={50} y={88} scale={0.54} rotate={-17} />
+      <SwarmBee x={70} y={64} scale={0.6} rotate={22} hot />
+      <SwarmBee x={92} y={80} scale={0.5} rotate={-32} />
+      <SwarmBee x={116} y={59} scale={0.56} rotate={36} />
+      <SwarmBee x={132} y={92} scale={0.62} rotate={-8} hot />
+      <SwarmBee x={104} y={113} scale={0.58} rotate={26} />
+      <SwarmBee x={74} y={108} scale={0.5} rotate={-24} />
+      <path className={styles.swarmHorizon} d="M44 137h92" />
+    </svg>
+  );
+}
+
+function SwarmSigilGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Swarm sigil S logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <path className={styles.sigilGuide} d="M123 45c-34-18-72-4-72 22 0 35 80 14 80 49 0 27-42 37-78 15" />
+      <SwarmBee x={119} y={48} scale={0.56} rotate={-62} hot />
+      <SwarmBee x={89} y={43} scale={0.52} rotate={-84} />
+      <SwarmBee x={61} y={58} scale={0.58} rotate={-122} />
+      <SwarmBee x={64} y={82} scale={0.5} rotate={-202} hot />
+      <SwarmBee x={94} y={91} scale={0.54} rotate={-252} />
+      <SwarmBee x={125} y={104} scale={0.6} rotate={-214} hot />
+      <SwarmBee x={111} y={132} scale={0.52} rotate={-134} />
+      <SwarmBee x={76} y={137} scale={0.56} rotate={-88} hot />
+      <SwarmBee x={53} y={124} scale={0.48} rotate={-54} />
+    </svg>
+  );
+}
+
+function SwarmFrontGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Advancing swarm front logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <path className={styles.frontWedge} d="M30 117 150 51 132 123 92 105 52 137z" />
+      <SwarmBee x={52} y={117} scale={0.48} rotate={62} />
+      <SwarmBee x={72} y={104} scale={0.54} rotate={61} hot />
+      <SwarmBee x={93} y={92} scale={0.62} rotate={61} />
+      <SwarmBee x={114} y={80} scale={0.7} rotate={61} hot />
+      <SwarmBee x={136} y={67} scale={0.56} rotate={61} />
+      <SwarmBee x={102} y={116} scale={0.48} rotate={31} />
+      <SwarmBee x={64} y={135} scale={0.42} rotate={35} hot />
+    </svg>
+  );
+}
+
+function CrownFieldGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Crown field swarm logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <path className={styles.crownFieldLine} d="m47 85 18-28 25 25 25-25 18 28" />
+      <SwarmBee x={48} y={102} scale={0.46} rotate={-24} />
+      <SwarmBee x={65} y={71} scale={0.52} rotate={14} hot />
+      <SwarmBee x={90} y={82} scale={0.62} rotate={0} hot />
+      <SwarmBee x={115} y={71} scale={0.52} rotate={-14} hot />
+      <SwarmBee x={132} y={102} scale={0.46} rotate={24} />
+      <SwarmBee x={75} y={119} scale={0.5} rotate={-28} />
+      <SwarmBee x={105} y={119} scale={0.5} rotate={28} />
+    </svg>
+  );
+}
+
+function BlackSunSwarmGlyph() {
+  return (
+    <svg viewBox="0 0 180 180" role="img" aria-label="Black sun swarm logo">
+      <path className={styles.swarmHexShell} d="M90 9 160 49v82l-70 40-70-40V49z" />
+      <circle className={styles.blackSunRing} cx="90" cy="88" r="48" />
+      <circle className={styles.blackSunVoid} cx="100" cy="78" r="42" />
+      <SwarmBee x={48} y={60} scale={0.44} rotate={22} />
+      <SwarmBee x={67} y={37} scale={0.5} rotate={48} hot />
+      <SwarmBee x={113} y={40} scale={0.46} rotate={92} />
+      <SwarmBee x={137} y={71} scale={0.54} rotate={130} hot />
+      <SwarmBee x={128} y={118} scale={0.48} rotate={188} />
+      <SwarmBee x={86} y={138} scale={0.56} rotate={230} hot />
+      <SwarmBee x={44} y={105} scale={0.5} rotate={288} />
+    </svg>
+  );
+}
+
 function LogoGlyph({ direction }: { direction: DirectionId }) {
-  if (direction === 'signal') return <SignalGlyph />;
-  if (direction === 'sentinel') return <SentinelGlyph />;
-  if (direction === 'eclipse') return <EclipseGlyph />;
-  if (direction === 'crown') return <CrownGlyph />;
-  return <BlackCombGlyph />;
+  if (direction === 'signal') return <SwarmSigilGlyph />;
+  if (direction === 'sentinel') return <SwarmFrontGlyph />;
+  if (direction === 'eclipse') return <BlackSunSwarmGlyph />;
+  if (direction === 'crown') return <CrownFieldGlyph />;
+  return <SwarmVortexGlyph />;
 }
 
 function CrownGlyph() {

@@ -134,6 +134,16 @@ interface WatcherState {
    */
   enabledPluginsWatcher: FSWatcher;
   projects: ProjectEntry[];
+  /**
+   * Paths currently subscribed on `watcher` / `topWatcher`. Tracked
+   * explicitly (rather than re-derived from `projects`) because the
+   * derivation is existence-filtered: a dir that existed at subscribe
+   * time but was deleted since would vanish from a re-derivation on
+   * BOTH sides of the reconcile diff, never get unwatched, and leave
+   * chokidar watching its (possibly /tmp-sized) parent.
+   */
+  watchedPathSet: Set<string>;
+  topWatchedPathSet: Set<string>;
   reconcileTimer: ReturnType<typeof setInterval>;
   debouncers: Map<string, ReturnType<typeof setTimeout>>;
   stopped: boolean;
@@ -150,10 +160,24 @@ function harnessDirsForProject(p: ProjectEntry): Array<{ phase: Phase; harnessDi
   });
 }
 
-/** Watch paths chokidar should subscribe to for a given project. */
-function watchedPaths(p: ProjectEntry): string[] {
+/**
+ * Watch paths chokidar should subscribe to for a given project.
+ *
+ * EXISTENCE-ANCHORED: every returned path must have an existing anchor
+ * dir *inside* the project. chokidar watches the nearest existing
+ * ancestor of a missing path to detect its creation — for a registry
+ * entry whose project dir is gone (e.g. a cleaned-up /tmp e2e project)
+ * that ancestor is /tmp or $HOME, giant high-churn dirs whose every
+ * event triggers a full lstat-per-entry rescan. Two operators watching
+ * /tmp (11k entries) burned ~1.6 cores each and saturated their event
+ * loops (2026-06-06 incident). Paths whose anchor appears later are
+ * picked up by the 60s reconcile re-derivation in reconcileAll().
+ */
+export function watchedPaths(p: ProjectEntry): string[] {
   const out: string[] = [];
+  if (!existsSync(p.path)) return out; // dead project — never watch outside it
   for (const { harnessDir } of harnessDirsForProject(p)) {
+    if (!existsSync(harnessDir)) continue; // anchor missing — reconcile adds it later
     out.push(
       join(harnessDir, 'summary.md'),
       join(harnessDir, 'pending-reviews'),
@@ -187,14 +211,27 @@ function watchedPaths(p: ProjectEntry): string[] {
   // Per-department: inbox/outbox/notes/decisions live in the dept's .papercusp/.
   if (p.harness_kind === 'department' && p.department_slug) {
     const harnessDir = join(p.path, '.papercusp');
-    out.push(
-      join(harnessDir, 'inbox-view.jsonl'),
-      join(harnessDir, 'outbox-view.jsonl'),
-      join(harnessDir, 'director-notes.md'),
-      join(harnessDir, 'decision-log.md'),
-    );
+    if (existsSync(harnessDir)) {
+      out.push(
+        join(harnessDir, 'inbox-view.jsonl'),
+        join(harnessDir, 'outbox-view.jsonl'),
+        join(harnessDir, 'director-notes.md'),
+        join(harnessDir, 'decision-log.md'),
+      );
+    }
   }
   return out;
+}
+
+/**
+ * harnessDirs the depth-0 topWatcher should subscribe to. Same
+ * existence anchor as watchedPaths() — a missing harnessDir would make
+ * chokidar watch its ancestors (project root, /tmp, $HOME).
+ */
+export function topWatchPaths(p: ProjectEntry): string[] {
+  return harnessDirsForProject(p)
+    .map(({ harnessDir }) => harnessDir)
+    .filter((d) => existsSync(d));
 }
 
 function debounce(state: WatcherState, key: string, fn: () => Promise<void>): void {
