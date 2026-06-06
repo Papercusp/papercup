@@ -12,7 +12,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getEncoding } from 'js-tiktoken';
-import { encode, type ResultFormat } from '@papercusp/result-encoding';
+import {
+  encode,
+  encodePositionalRows,
+  type ColumnSpec,
+  type ResultFormat,
+} from '@papercusp/result-encoding';
 
 const enc = getEncoding('o200k_base');
 const tok = (s: string): number => enc.encode(s).length;
@@ -129,5 +134,68 @@ describe('result-format token benchmark', () => {
     // exactly why the eligibility analyzer keeps non-arrays on JSON by default.
     // We only assert TOON isn't pathologically worse; we do NOT auto-pick it.
     expect(r.toon).toBeLessThan(r.json * 1.1);
+  });
+});
+
+/* ─── Tier-3 prompt-declared columns (token-efficient-agent-io P-015) ───── */
+
+describe('Tier-3 token benchmark — read (headerless CSV) + write (positional row)', () => {
+  const AUDIT_COLS: ColumnSpec[] = [
+    { name: 'id', type: 'id', optional: false, nullable: false },
+    { name: 'ts', type: 'number', optional: false, nullable: false },
+    { name: 'actor', type: 'string', optional: false, nullable: false },
+    { name: 'action', type: 'string', optional: false, nullable: false },
+    { name: 'subject', type: 'string', optional: false, nullable: false },
+  ];
+
+  it('READ: Tier-3 headerless CSV vs header-CSV vs TOON vs JSON (audit:list, 50 rows)', () => {
+    const data = auditRows(50) as Array<Record<string, unknown>>;
+    const jsonTok = tok(serialized(data, 'json'));
+    const toonTok = tok(serialized(data, 'toon'));
+    const headerCsvTok = tok(serialized(data, 'csv'));
+    // Tier-3: marker + [N] + headerless rows. Columns live in the prompt.
+    const tier3Body = encodePositionalRows(data, AUDIT_COLS);
+    const tier3Tok = tok(`format: csv\n${tier3Body}`);
+    const pct = (t: number): string => `${(100 * (1 - t / jsonTok)).toFixed(1)}%`;
+    // eslint-disable-next-line no-console
+    console.log(
+      `\n── audit:list READ (50 rows) — json ${jsonTok} | toon ${toonTok} (${pct(toonTok)}) | ` +
+        `header-csv ${headerCsvTok} (${pct(headerCsvTok)}) | TIER-3 ${tier3Tok} (${pct(tier3Tok)})`,
+    );
+    // Tier-3 beats JSON by ~30% on these high-entropy rows (the structural win
+    // shrinks as value entropy rises — same floor the existing audit:list guard
+    // uses) and is no worse than header-CSV: it drops the header row, paying only
+    // the small [N] line; that per-call header saving is what the once-per-session
+    // prompt column declaration buys back. It also edges out TOON.
+    expect(tier3Tok).toBeLessThan(jsonTok * 0.72);
+    expect(tier3Tok).toBeLessThanOrEqual(headerCsvTok);
+    expect(tier3Tok).toBeLessThan(toonTok);
+  });
+
+  it('WRITE: positional row vs keyed JSON args (the output-token win, ~4-5× input cost)', () => {
+    // What the model EMITS as tool args, keyed vs positional. Output tokens are
+    // the expensive side, so trimming the emitted args is the higher-value win.
+    const cases: Array<{ label: string; keyed: Record<string, unknown>; row: string }> = [
+      { label: 'work_items:set_state', keyed: { id: 'WI-42', state: 'passed', harness: 'papercup' }, row: 'WI-42,passed,papercup' },
+      { label: 'work_items:set_state (no harness)', keyed: { id: 'WI-42', state: 'passed' }, row: 'WI-42,passed' },
+      { label: 'work_items:claim', keyed: { id: 'WI-128', assignee: 'su-ab533', harness: 'papercup' }, row: 'WI-128,su-ab533,papercup' },
+    ];
+    let totKeyed = 0;
+    let totPos = 0;
+    for (const c of cases) {
+      const keyedTok = tok(JSON.stringify(c.keyed));
+      const posTok = tok(JSON.stringify({ row: c.row }));
+      totKeyed += keyedTok;
+      totPos += posTok;
+      // eslint-disable-next-line no-console
+      console.log(
+        `   ${c.label.padEnd(34)} keyed ${String(keyedTok).padStart(3)} → positional ${String(posTok).padStart(3)} tok ` +
+          `(-${(100 * (1 - posTok / keyedTok)).toFixed(0)}%)`,
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.log(`   TOTAL emitted args: keyed ${totKeyed} → positional ${totPos} tok (-${(100 * (1 - totPos / totKeyed)).toFixed(0)}%)`);
+    // The positional form must save real output tokens on every such call.
+    expect(totPos).toBeLessThan(totKeyed * 0.8);
   });
 });

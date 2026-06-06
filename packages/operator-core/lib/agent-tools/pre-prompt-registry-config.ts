@@ -51,13 +51,17 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // check downgrades it to TOON. Clean + lossless both ways.
   { name: 'audit:list', read: 'csv', note: 'flat audit rows; ~hot on investigation' },
 
-  // ── Write (positional-CSV args) ───────────────────────────────────────────
-  // Both are all-scalar, arrayless, free-text-free → the guard is arity-only but
-  // the fields are short ids/enums, hard to misalign destructively. Low traffic,
-  // so a low-blast-radius place to land the positional path; the LLM-scenario
-  // gate (P-013) measures emit-correctness before these are considered "default".
-  { name: 'work_items:set_state', read: 'off', write: 'positional', note: 'id,state,harness?' },
-  { name: 'work_items:claim', read: 'off', write: 'positional', note: 'id,assignee?,harness?' },
+  // ── Write (positional-CSV args) — candidates, GATED OFF pending P-013 ──────
+  // Both are all-scalar, arrayless, free-text-free positional fits. They are NOT
+  // yet flipped to `write:'positional'` on the live fleet: their misalignment
+  // guard is ARITY-ONLY (neither `state` nor the ids carry an enum/regex the
+  // guard can sanity-check), so a swapped row could write wrong-but-valid data
+  // (D-007). The plan gates this on the P-013 LLM-scenario emit-correctness
+  // measurement (P-016) — flip `write` to `'positional'` here once it passes on
+  // a non-contended run. The mechanism + guard + scenarios are built and tested
+  // (positional-integration.test.ts, su S07/S08); only the live default waits.
+  { name: 'work_items:set_state', read: 'off', write: 'off', note: '→positional after P-013 (cols id,state,harness?)' },
+  { name: 'work_items:claim', read: 'off', write: 'off', note: '→positional after P-013 (cols id,assignee?,harness?)' },
 ];
 
 configurePrePromptRegistry(PRE_PROMPT_REGISTRY);
