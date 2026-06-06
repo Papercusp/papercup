@@ -233,7 +233,12 @@ export default function ChromeShell() {
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      <OperatorChatSidebar />
+      {/* native-terminal-desktop D-011 / P-016: the desktop chat is now the
+          TERMINAL-NATIVE pui chat panes (the docked native terminal), so this
+          web operator chat is OFF by default and kept behind the TESTING flag
+          for testing only. NB: the shared operator:converse / operator
+          conversations backend is NOT gated — the pui operator chat uses it too. */}
+      {testingFlag && <OperatorChatSidebar />}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );

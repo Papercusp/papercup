@@ -86,4 +86,14 @@ describe('buildFrameBootstrap', () => {
     const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv });
     expect(script).not.toContain('HARNESS_CONFIG_JSON');
   });
+
+  it('a control node (Queen) runs the loop UNSCOPED (P-016)', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'queen-h1', environment: baseEnv, controlNode: true });
+    expect(script).toContain("PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES='*'");
+  });
+
+  it('an execution frame scopes the loop to its one harness', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'papercup', environment: baseEnv });
+    expect(script).toContain("PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES='papercup'");
+  });
 });

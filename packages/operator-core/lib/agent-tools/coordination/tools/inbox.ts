@@ -12,6 +12,7 @@ import { resolveAgentIdentity } from '../identity';
 import { readInbox } from '../messages';
 import { heartbeatPresence } from '../presence';
 import { COORD_ROLES } from '../roles';
+import { renderInjection, type CoordLineSource } from '../../../coord-schema';
 
 const COORD_KINDS = [
   'message',
@@ -94,11 +95,18 @@ export default defineTool({
       newest_ts: entries.length ? entries[entries.length - 1]?.ts ?? null : null,
     };
 
+    // Server-side injection render (token-efficient-coord-injection P-005): the
+    // ready-to-inject positional `[coord+N]` block, computed ONCE here from the
+    // single-source `coord-schema` so the cc + omp hooks are dumb pipes (they
+    // echo `injection` + advance the cursor from `summary.newest_ts`). The
+    // cursor/summary metadata stays OUT of the injection body, alongside it.
+    const injection = renderInjection(entries as unknown as CoordLineSource[]);
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ owner_id: identity.ownerId, summary, entries }),
+          text: JSON.stringify({ owner_id: identity.ownerId, summary, entries, injection }),
         },
       ],
     };

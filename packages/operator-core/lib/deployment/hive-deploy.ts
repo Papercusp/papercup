@@ -242,9 +242,6 @@ export async function reapHiveFrames(
 
 // ── Real dependency wiring ───────────────────────────────────────────────────
 
-/** operator_state key holding the per-Hive Queen control-frame handles. */
-const HIVE_CONTROL_FRAMES_KEY = 'hive_control_frames';
-
 /**
  * Wire the Hive deps to the real deploy orchestration + registry: members deploy
  * via `deployHarness` (their `deployment` is set to the Swarm first); the dedicated
@@ -302,22 +299,24 @@ export function defaultHiveDeployDeps(log?: (level: LogLevel, msg: string) => vo
   };
 }
 
-async function controlFramesMap(workspaceId: string): Promise<Record<string, Frame>> {
-  const { readOperatorState } = await import('../operator-state-pg');
-  return (await readOperatorState<Record<string, Frame>>(HIVE_CONTROL_FRAMES_KEY, workspaceId)) ?? {};
+// Queen control-frame handles persist in the existing `harness_registry` blob
+// (workspace PG) under `hiveControlFrames` — no new table/migration, alongside the
+// per-harness `deploymentFrame` handles.
+async function loadControlFrame(hiveId: string, workspaceId: string): Promise<Frame | undefined> {
+  const { loadHarnessRegistry } = await import('../harness-registry');
+  return (await loadHarnessRegistry(workspaceId)).hiveControlFrames?.[hiveId];
 }
 async function persistControlFrame(hiveId: string, workspaceId: string, frame: Frame): Promise<void> {
-  const { writeOperatorState } = await import('../operator-state-pg');
-  const map = await controlFramesMap(workspaceId);
-  map[hiveId] = frame;
-  await writeOperatorState(HIVE_CONTROL_FRAMES_KEY, map, workspaceId);
-}
-async function loadControlFrame(hiveId: string, workspaceId: string): Promise<Frame | undefined> {
-  return (await controlFramesMap(workspaceId))[hiveId];
+  const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+  const reg = await loadHarnessRegistry(workspaceId);
+  reg.hiveControlFrames = { ...(reg.hiveControlFrames ?? {}), [hiveId]: frame };
+  await saveHarnessRegistry(reg, workspaceId);
 }
 async function clearControlFrame(hiveId: string, workspaceId: string): Promise<void> {
-  const { writeOperatorState } = await import('../operator-state-pg');
-  const map = await controlFramesMap(workspaceId);
-  delete map[hiveId];
-  await writeOperatorState(HIVE_CONTROL_FRAMES_KEY, map, workspaceId);
+  const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+  const reg = await loadHarnessRegistry(workspaceId);
+  if (reg.hiveControlFrames) {
+    delete reg.hiveControlFrames[hiveId];
+    await saveHarnessRegistry(reg, workspaceId);
+  }
 }

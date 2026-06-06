@@ -12,6 +12,10 @@
  *
  *   node scripts/check-no-raw-agent-spawn.mjs
  *
+ * The bypass-detection predicate (`isRawAgentSpawnBypass`) is exported + unit-tested
+ * (packages/operator-core/lib/dbos/no-raw-spawn-guard.test.ts) so the "fails on a new
+ * raw spawn" property (P-016) is durably verified, not only green-on-clean-tree.
+ *
  * ALLOWLIST — the legitimate sites that build + spawn the agent CLI directly:
  *   • packages/operator-core/lib/dbos/orchestrator-runner.ts — IS the chokepoint
  *     (`spawnInvokeOnce` → `runChild`); everything else funnels through it.
@@ -22,23 +26,16 @@
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-const ALLOWLIST = new Set([
+export const ALLOWLIST = new Set([
   'packages/operator-core/lib/dbos/orchestrator-runner.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts',
 ]);
 
-const tracked = execSync('git ls-files', {
-  cwd: ROOT,
-  encoding: 'utf8',
-  maxBuffer: 256 * 1024 * 1024,
-})
-  .split('\n')
-  .filter(Boolean);
-
-const isExcluded = (f) =>
+export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
   f.includes('/node_modules/') ||
@@ -46,33 +43,60 @@ const isExcluded = (f) =>
   f.endsWith('.test.ts') ||
   !/\.ts$/.test(f);
 
-const offenders = [];
-for (const f of tracked) {
-  if (ALLOWLIST.has(f) || isExcluded(f)) continue;
-  let text;
-  try {
-    text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
-  } catch {
-    continue;
-  }
-  if (!text.includes('buildInvokeOnce')) continue;
-  // The tell of a raw agent-CLI spawn: it builds the invoke-once command itself
-  // (buildInvokeOnce) AND spawns a child process directly from node:child_process.
+/**
+ * The tell of a raw agent-CLI spawn bypass: the file builds the invoke-once command
+ * itself (`buildInvokeOnce`) AND spawns a child process directly from
+ * node:child_process. Pure (text → boolean) so it's unit-testable.
+ */
+export function isRawAgentSpawnBypass(text) {
+  if (!text.includes('buildInvokeOnce')) return false;
   const buildsAgentCmd = /\bbuildInvokeOnce\b/.test(text);
   const rawSpawns =
     /from\s+['"]node:child_process['"]/.test(text) && /\bspawn(Sync)?\s*\(/.test(text);
-  if (buildsAgentCmd && rawSpawns) offenders.push(f);
+  return buildsAgentCmd && rawSpawns;
 }
 
-if (offenders.length === 0) {
-  console.log('✓ no new raw agent-CLI spawns — every agent spawn goes through spawnInvokeOnce (the chokepoint).');
-  process.exit(0);
+/** Scan the tracked tree for bypass offenders (excludes allowlist + _retired + tests). */
+export function findOffenders() {
+  const tracked = execSync('git ls-files', {
+    cwd: ROOT,
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+  })
+    .split('\n')
+    .filter(Boolean);
+
+  const offenders = [];
+  for (const f of tracked) {
+    if (ALLOWLIST.has(f) || isExcluded(f)) continue;
+    let text;
+    try {
+      text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
+    } catch {
+      continue;
+    }
+    if (isRawAgentSpawnBypass(text)) offenders.push(f);
+  }
+  return offenders;
 }
 
-console.error('✗ NEW raw agent-CLI spawn(s) bypassing the spawnInvokeOnce chokepoint:');
-console.error('  Call `spawnInvokeOnce(projectDir, role, extras, extraEnv)` instead of');
-console.error('  `buildInvokeOnce(...)` + `child_process.spawn(...)` — the chokepoint applies admission');
-console.error('  + governor pacing + (class-gated) durability uniformly.\n');
-for (const o of offenders) console.error('    ' + o);
-console.error(`\n  ${offenders.length} bypass(es). See plan unify-agent-spawn-chokepoint-2026-06-06 (P-008 / D-001).`);
-process.exit(1);
+function main() {
+  const offenders = findOffenders();
+  if (offenders.length === 0) {
+    console.log('✓ no new raw agent-CLI spawns — every agent spawn goes through spawnInvokeOnce (the chokepoint).');
+    process.exit(0);
+  }
+  console.error('✗ NEW raw agent-CLI spawn(s) bypassing the spawnInvokeOnce chokepoint:');
+  console.error('  Call `spawnInvokeOnce(projectDir, role, extras, extraEnv)` instead of');
+  console.error('  `buildInvokeOnce(...)` + `child_process.spawn(...)` — the chokepoint applies admission');
+  console.error('  + governor pacing + (class-gated) durability uniformly.\n');
+  for (const o of offenders) console.error('    ' + o);
+  console.error(`\n  ${offenders.length} bypass(es). See plan unify-agent-spawn-chokepoint-2026-06-06 (P-008 / D-001).`);
+  process.exit(1);
+}
+
+// Run the scan only when invoked as a CLI — importing the module (for the unit test)
+// must NOT exec git / exit the process.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

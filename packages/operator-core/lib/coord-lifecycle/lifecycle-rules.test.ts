@@ -47,7 +47,9 @@ describe('lifecycle:claim (on work_items:claim)', () => {
     expect(a?.fire).toBe('coord:emit');
     expect(a?.args.category).toBe('claim');
     expect(String(a?.args.summary)).toContain('Taking Build X');
-    expect(String(a?.args.summary)).toContain('su-z');
+    // No agent re-embed in the prose (P-010) — the injection renderer shows the
+    // sender handle once. `from` still carries the agent for routing.
+    expect(String(a?.args.summary)).not.toContain('su-z');
     // Scoped to the work-item's watchers (coord-emit-subscription-scoping) — NOT ['*'].
     expect(a?.args.to).toEqual([objectSelector(workItemObjectRef({ family: 'feature', harness: 'demo', id: 'F-1' }))]);
     expect(a?.args.to).not.toContain('*');

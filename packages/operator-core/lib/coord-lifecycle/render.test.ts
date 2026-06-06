@@ -50,11 +50,11 @@ describe('renderCompletion', () => {
     coordNotes: '@su-584a8: migration 147 collided — coordinate the ledger.',
   });
 
-  it('headline carries id, STATUS, agent, summary, tests, migs', () => {
+  it('headline carries id, STATUS, summary, tests, migs (no agent re-embed — P-010)', () => {
     const { summary } = renderCompletion(full);
     expect(summary).toContain('fleet-as-supervised-blackboard-2026-06-04');
     expect(summary).toContain('BUILT+TESTED');
-    expect(summary).toContain('su-d3187');
+    expect(summary).not.toContain('su-d3187'); // sender shown once by the injection handle
     expect(summary).toContain('all 5 phases/8 decisions');
     expect(summary).toContain('67 green tests');
     expect(summary).toContain('migs 146/147/148');
@@ -97,7 +97,7 @@ describe('renderCompletion', () => {
 });
 
 describe('renderClaim', () => {
-  it('renders "Taking <id>" with optional scope + agent', () => {
+  it('renders "Taking <id>" with optional scope (no agent re-embed — P-010)', () => {
     const rec = ClaimRecordSchema.parse({
       workItem: 'BRIEF-test-coverage',
       summary: 'NEW test files only, no source edits',
@@ -105,7 +105,7 @@ describe('renderClaim', () => {
     });
     const { summary } = renderClaim(rec);
     expect(summary).toContain('Taking BRIEF-test-coverage');
-    expect(summary).toContain('su-d6be1');
+    expect(summary).not.toContain('su-d6be1'); // sender shown once by the injection handle
     expect(summary).toContain('NEW test files only');
   });
 });

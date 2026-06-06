@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@papercusp/test-config": "*",
+    "js-tiktoken": "*",
     "vitest": "^4.1.4"
   }
 }

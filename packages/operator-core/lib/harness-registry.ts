@@ -56,6 +56,10 @@ export interface ProjectEntry {
 
 export interface HarnessRegistry {
   projects: ProjectEntry[];
+  /** Per-Hive Queen control-frame handles (cloud-deployment-layer P-016) — kept in
+   *  the registry blob (workspace PG) alongside per-harness deployment frames, so
+   *  teardown can DESTROY the Queen across restarts. Keyed by hiveId. */
+  hiveControlFrames?: Record<string, Frame>;
 }
 
 export interface SaveRegistryOptions {
@@ -71,7 +75,10 @@ export interface SaveRegistryOptions {
 
 export async function loadHarnessRegistry(workspaceId?: string): Promise<HarnessRegistry> {
   const raw = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
-  return { projects: raw?.projects ?? [] };
+  return {
+    projects: raw?.projects ?? [],
+    ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),
+  };
 }
 
 /**
@@ -128,7 +135,11 @@ export async function saveHarnessRegistry(
     );
   }
 
-  await writeOperatorState('harness_registry', { projects: next }, workspaceId);
+  await writeOperatorState(
+    'harness_registry',
+    { projects: next, ...(reg.hiveControlFrames ? { hiveControlFrames: reg.hiveControlFrames } : {}) },
+    workspaceId,
+  );
   if (next.length !== prevCount) {
     await auditRegistryWrite(ws, prevCount, next.length);
   }
