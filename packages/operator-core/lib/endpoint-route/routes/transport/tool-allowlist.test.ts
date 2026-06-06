@@ -12,7 +12,6 @@ import { describe, it, expect } from 'vitest';
 import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
-  ALWAYS_LOAD_META,
 } from './tool-allowlist';
 
 // A stand-in for the agent-mcp `tools/list` projections: the real
@@ -79,14 +78,5 @@ describe('filterListingsByAllowlist', () => {
     const frozen = Object.freeze([...SURFACE]);
     expect(() => filterListingsByAllowlist(frozen, parseToolsAllowlist('harness:list'))).not.toThrow();
     expect(() => filterListingsByAllowlist(frozen, null)).not.toThrow();
-  });
-});
-
-describe('ALWAYS_LOAD_META', () => {
-  it('is the Claude Code non-deferral marker stamped on a filtered surface', () => {
-    // The handler spreads this onto each tool's `_meta` ONLY when `?tools=`
-    // is present, so the small operator surface loads directly instead of
-    // being deferred behind ToolSearch.
-    expect(ALWAYS_LOAD_META).toEqual({ 'anthropic/alwaysLoad': true });
   });
 });

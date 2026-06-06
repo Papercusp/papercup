@@ -148,6 +148,12 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(tools.split(',')).toEqual(['tasks:read', 'chat:ask_choice']);
   });
 
+  it('spawns with disableToolSearch so the shrunk surface loads non-deferred (P-009)', async () => {
+    await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { disableToolSearch?: boolean };
+    expect(call.disableToolSearch).toBe(true);
+  });
+
   it('&tools= drops chat:ask_choice on surface="tui" (mirrors allowedTools)', async () => {
     await handler(
       { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },
