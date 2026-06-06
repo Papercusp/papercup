@@ -15,6 +15,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-core';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -65,8 +67,9 @@ const getLanes = defineTool({
     }
     let max = 1;
     try {
-      const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
-      if (cfg?.parallelWorkers?.max && typeof cfg.parallelWorkers.max === 'number') max = cfg.parallelWorkers.max;
+      const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      const pw = cfg?.parallelWorkers as Record<string, unknown> | undefined;
+      if (typeof pw?.max === 'number' && pw.max > 0) max = pw.max;
     } catch {}
     return Response.json({ lanes, max });
   },

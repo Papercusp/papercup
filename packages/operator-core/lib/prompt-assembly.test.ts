@@ -284,3 +284,14 @@ describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', ()
     expect(renderWireSchemasSection()).toBe('');
   });
 });
+
+describe('assembleRolePrompt — coord-injection legend (token-efficient-coord-injection P-013)', () => {
+  it('includes the ## Coord injection protocol legend so role agents can read injected [coord+N] blocks', async () => {
+    mockTools.length = 0; // catalog optional; we only assert the coord-legend section
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Coord injection protocol');
+    expect(out.text).toContain('<glyph> <handle> <text>');
+    expect(out.sections.some((s) => s.name === 'coord-legend')).toBe(true);
+  });
+});

@@ -43,15 +43,16 @@ function dbForSlug(slug: string) {
   return getLegacyClient(slug);
 }
 
-/** Per-harness chat cost cap from `.papercusp/config.json`. */
+/** Per-harness chat cost cap from the effective harness config (blueprint ⊕
+ *  workspace-PG instance — `deprecate-harness-config-json-2026-06-06`). */
 async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; aggregateUsd?: number }> {
   try {
     const { loadHarnessRegistry } = require('../../../harness-registry') as typeof import('../../../harness-registry');
+    const { activeWorkspaceId } = require('../../../workspace-registry') as typeof import('../../../workspace-registry');
+    const { readEffectiveHarnessConfig } = require('../../../harness-effective-config') as typeof import('../../../harness-effective-config');
     const projectDir = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return {};
-    const cfgPath = join(projectDir, '.papercusp', 'config.json');
-    if (!existsSync(cfgPath)) return {};
-    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const cfg = await readEffectiveHarnessConfig(slug, activeWorkspaceId(), projectDir);
     const out: { perChatUsd?: number; aggregateUsd?: number } = {};
     if (typeof cfg.maxChatCostUsd === 'number' && cfg.maxChatCostUsd > 0) out.perChatUsd = cfg.maxChatCostUsd;
     if (typeof cfg.maxAggregateChatCostUsd === 'number' && cfg.maxAggregateChatCostUsd > 0) {
@@ -67,11 +68,11 @@ async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; agg
 async function readChatLockPolicy(slug: string): Promise<boolean> {
   try {
     const { loadHarnessRegistry } = require('../../../harness-registry') as typeof import('../../../harness-registry');
+    const { activeWorkspaceId } = require('../../../workspace-registry') as typeof import('../../../workspace-registry');
+    const { readEffectiveHarnessConfig } = require('../../../harness-effective-config') as typeof import('../../../harness-effective-config');
     const projectDir = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return false;
-    const cfgPath = join(projectDir, '.papercusp', 'config.json');
-    if (!existsSync(cfgPath)) return false;
-    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const cfg = await readEffectiveHarnessConfig(slug, activeWorkspaceId(), projectDir);
     const parallelChat = cfg.parallelChat as Record<string, unknown> | undefined;
     return parallelChat?.respectFeatureLocks === true;
   } catch {

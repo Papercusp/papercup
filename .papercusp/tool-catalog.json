@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 322,
+  "count": 330,
   "tools": [
     {
       "name": "actions:recent",
@@ -2048,6 +2048,146 @@
       }
     },
     {
+      "name": "deploy:harness",
+      "http": {
+        "path": "/api/agent-tools/deploy/harness",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Deploy a harness's execution plane to its configured cloud frame: provision the machine, bootstrap the runtime (own loop + own embedded-pg), join it as a federated peer. The harness must have been created with a non-local `deployment` (e.g. {target:'latitude'}). Returns {ok, frame}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.",
+        "notWhen": "A local harness (no cloud deployment). Tearing one down — deploy:teardown. Checking status — deploy:status.",
+        "chaining": "harness:create { …, deployment:{target:\"latitude\",…} } → deploy:harness { slug } → deploy:status / deploy:teardown."
+      }
+    },
+    {
+      "name": "deploy:hive",
+      "http": {
+        "path": "/api/agent-tools/deploy/hive",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Deploy a Hive (grouping of harnesses) to a Swarm (cloud fleet): place the Queen (local|dedicated|colocated) and deploy each member harness's execution to a frame. Per-member failures are reported, not fatal. Returns {ok, result}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.",
+        "notWhen": "A single harness — deploy:harness. Tearing one down — deploy:teardown_hive.",
+        "chaining": "deploy:hive { hiveId, members, swarm } → deploy:teardown_hive when done."
+      }
+    },
+    {
+      "name": "deploy:status",
+      "http": {
+        "path": "/api/agent-tools/deploy/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Report a harness's deployment: its `deployment` config + the live frame handle (id/host/region) if deployed. Returns {ok, deployment, frame|null}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Checking where a harness runs (local vs which cloud frame) and the frame's reachable host."
+      }
+    },
+    {
+      "name": "deploy:teardown",
+      "http": {
+        "path": "/api/agent-tools/deploy/teardown",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Tear down a harness's cloud frame — DESTROY (not stop) to end billing. No-op if nothing is deployed. Returns {ok, destroyed}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.",
+        "notWhen": "Pausing temporarily — there is no stop; destroy + redeploy is the model (frames are cattle)."
+      }
+    },
+    {
+      "name": "deploy:teardown_hive",
+      "http": {
+        "path": "/api/agent-tools/deploy/teardown_hive",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Tear down a Hive — DESTROY every member execution frame + the Queen control frame (ends all billing). Pass the same hiveId + members + queen placement used to deploy. Returns {ok, destroyed, failed}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model."
+      }
+    },
+    {
       "name": "dev:activity",
       "http": {
         "path": "/api/agent-tools/dev/activity",
@@ -3475,6 +3615,34 @@
       }
     },
     {
+      "name": "harness:migrate-config-json",
+      "http": {
+        "path": "/api/agent-tools/harness/migrate-config-json",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "One-time backfill (deprecate-harness-config-json-2026-06-06): lift every harness's legacy `.papercusp/config.json` INSTANCE content (phase/phases/dept + per-instance knob overrides) into the workspace-PG registry, so the file is no longer read as a config source. Idempotent — already-migrated / file-less harnesses are skipped; scaffold contract artifacts (harness_token/parent_slug/slug) are left in the file. Returns {ok, scanned, migratedCount, results:[{slug,fields}]}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
+        "notWhen": "Routine operation — this is a one-time backfill. New harnesses persist instance config to PG directly; nothing reads config.json on the live path."
+      }
+    },
+    {
       "name": "harness:pending_reviews",
       "http": {
         "path": "/api/agent-tools/harness/pending_reviews",
@@ -4816,6 +4984,44 @@
         "when": "Forward a note/directive to another agent. Harness-level: operator → \"tell the worker to retry\". Feature-scoped: pass `to_feature_id` (+ `from_feature_id`) to post on one feature's pipeline thread. Always paraphrase + confirm out loud first; sends are durable.",
         "notWhen": "For dispatching WORK use a `<spawn>` tag — messages are notes, spawns are work. For replying in the user's chat, just speak. To read replies use `messages:inbox` (feature-scoped via `feature_id`).",
         "chaining": "Read replies with `messages:inbox`; soft-hide a handled message with `messages:dismiss`."
+      }
+    },
+    {
+      "name": "new_subagent:approve",
+      "http": {
+        "path": "/api/agent-tools/new_subagent/approve",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "BRAIN-ONLY: approve or deny a pending new_subagent spawn request. Resolves it + wakes the requester (which spawns on approve). Enforced at the dispatch layer — only the brain (operator principal) or a superuser may call it.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "guidance": {
+        "when": "You are the brain and a new_subagent:request is pending; you have judged whether the spawn is worth it given open work + the live spawn headroom.",
+        "notWhen": "You are a pipeline/worker agent — you cannot approve spawns (the gate denies you). To ASK for a spawn, use new_subagent:request."
+      }
+    },
+    {
+      "name": "new_subagent:request",
+      "http": {
+        "path": "/api/agent-tools/new_subagent/request",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Request the brain spin up a new sub-agent. Routes a typed, brain-only-approvable request; you then events:await the grant and spawn on approval. The BRAIN decides whether it is worth it (informed by the live spawn headroom + open work) — this is judgment, not a rules budget.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "guidance": {
+        "when": "You want to spawn a sub-agent (a helper/specialist) as an autonomous initiative beyond your own role — a spawn worth a brain decision.",
+        "notWhen": "You ARE the brain/operator (you allocate directly) OR this is already-decided pipeline work (the pipeline admits its own role progression) OR a human-initiated psu session (no request needed).",
+        "chaining": "new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice=\"approve\", fleet:spawn { role, harness, feature }."
       }
     },
     {
@@ -8322,7 +8528,7 @@
           "POST"
         ]
       },
-      "description": "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state.",
+      "description": "List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly.",
       "capabilities": [
         "work_items:read"
       ],

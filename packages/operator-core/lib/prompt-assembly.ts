@@ -45,6 +45,7 @@ import {
   projectWriteColumns,
   renderWireSchemas,
 } from '@papercusp/result-encoding';
+import { renderCoordLegend } from './coord-schema';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -349,6 +350,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (playbook) {
     parts.push(playbook);
     sections.push({ name: 'tools-playbook', chars: playbook.length });
+  }
+
+  // Coord-injection legend (token-efficient-coord-injection P-013). Role
+  // sessions DO receive coord injection — the global Claude PostToolUse coord
+  // hook fires on their `PAPERCUSP_SID` (set by bootstrap-role) — so they get the
+  // positional `[coord+N]` blocks and need the SAME legend the psu playbook
+  // carries to read them. Sourced from the one `COORD_LEGEND` (so it can't
+  // desync from the renderer). Clients that don't inject just never see a block.
+  const coordLegend = renderCoordLegend();
+  if (coordLegend) {
+    parts.push(coordLegend);
+    sections.push({ name: 'coord-legend', chars: coordLegend.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

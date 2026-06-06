@@ -726,6 +726,36 @@ else
   echo "! psu launcher not found at $PSU_LAUNCHER; skipping psu install"
 fi
 
+# 4h. Install the `ptool` command — an interactive CLI for invoking any
+# `defineTool` endpoint from the terminal. Pick a service → an endpoint →
+# ptool prompts for each argument (from the tool's inputSchema) and calls it
+# over the same superuser MCP surface psu uses (/api/mcp?superuser=1 +
+# ~/.papercusp/superuser-token). Thin shim over the Node launcher in the repo
+# (which resolves @inquirer/prompts + the MCP SDK from the operator's
+# node_modules). Scripting escape:
+#   ptool <group:verb> --json '<args>'   |   ptool --list [filter]
+PTOOL_LAUNCHER="${SCRIPT_DIR}/ptool.mjs"
+PTOOL_BIN_DIR="${HOME}/.local/bin"
+PTOOL_PATH="${PTOOL_BIN_DIR}/ptool"
+if [ -f "$PTOOL_LAUNCHER" ]; then
+  mkdir -p "$PTOOL_BIN_DIR"
+  cat > "$PTOOL_PATH" <<WRAPEOF
+#!/usr/bin/env bash
+# papercusp defineTool CLI (managed by install-standalone-mcp.sh).
+# Pick a service + endpoint, prompts for args, calls it over the superuser
+# MCP surface. Scripting: ptool <group:verb> --json '<args>'; ptool --list.
+exec node "${PTOOL_LAUNCHER}" "\$@"
+WRAPEOF
+  chmod 755 "$PTOOL_PATH"
+  echo "✓ Installed $PTOOL_PATH (defineTool CLI)"
+  case ":${PATH}:" in
+    *":${PTOOL_BIN_DIR}:"*) : ;;
+    *) echo "! $PTOOL_BIN_DIR is not on PATH — add it or invoke $PTOOL_PATH by full path" ;;
+  esac
+else
+  echo "! ptool launcher not found at $PTOOL_LAUNCHER; skipping ptool install"
+fi
+
 # 5. Verify the endpoint accepts the token.
 echo
 echo "→ Verifying loopback access at ${OPERATOR_URL}/api/mcp?superuser=1"

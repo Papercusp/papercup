@@ -67,6 +67,31 @@ export const deployTeardownTool = defineTool({
   },
 });
 
+export const migrateConfigJsonTool = defineTool({
+  name: 'harness:migrate-config-json',
+  description:
+    "One-time backfill (deprecate-harness-config-json-2026-06-06): lift every harness's legacy `.papercusp/config.json` INSTANCE content (phase/phases/dept + per-instance knob overrides) into the workspace-PG registry, so the file is no longer read as a config source. Idempotent — already-migrated / file-less harnesses are skipped; scaffold contract artifacts (harness_token/parent_slug/slug) are left in the file. Returns {ok, scanned, migratedCount, results:[{slug,fields}]}.",
+  guidance: {
+    when: 'Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).',
+    notWhen: 'Routine operation — this is a one-time backfill. New harnesses persist instance config to PG directly; nothing reads config.json on the live path.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({ workspace: wsArg }),
+  async handler(args) {
+    const { migrateAllConfigJson } = await import('../../deployment/instance-config');
+    const ws = args.workspace ?? activeWorkspaceId();
+    try {
+      const results = await migrateAllConfigJson(ws);
+      const migrated = results.filter((r) => r.migrated);
+      return ok({ workspace: ws, scanned: results.length, migratedCount: migrated.length, results: migrated });
+    } catch (e) {
+      return fail({ error: (e instanceof Error ? e.message : String(e)).slice(0, 400) });
+    }
+  },
+});
+
 export const deployStatusTool = defineTool({
   name: 'deploy:status',
   description:

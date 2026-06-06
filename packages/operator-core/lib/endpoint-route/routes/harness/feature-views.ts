@@ -24,6 +24,8 @@ import {
   formatLineageForPrompt,
 } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir } from '../../../harness-core';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
 

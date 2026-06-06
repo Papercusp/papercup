@@ -71,7 +71,11 @@ self-correct a schema mismatch (no inline header), so this is load-bearing.
   re-add formatting/capping/footers client-side — that's the divergence this
   replaced (the cc + omp footers had already drifted apart).
 * **The footer lives once, in the prompt legend** — not per injection.
-* **Scope is psu sessions** (the hooks gate on `PAPERCUSP_SID`). The role-prompt
-  path (`assembleRolePrompt`) would need the legend too IF role agents ever
-  receive coord injection — they don't today, so adding it would only bloat role
-  prompts (tracked as the plan's P-013 follow-up, deliberately not done).
+* **The legend is in BOTH prompt pipelines** (`renderSuPlaybook` for psu +
+  `assembleRolePrompt` for role agents). Don't assume coord injection is
+  psu-only: the coord hook lives in the GLOBAL `~/.claude/settings.json` and
+  `bootstrap-role` sets `PAPERCUSP_SID`, so **Claude role agents receive
+  injection too** — they need the legend to read the positional format (the
+  pre-positional prose was self-describing; this format isn't). Codex role homes
+  omit the coord hook (the hook is added only for the SU `coordSid`), so codex
+  roles don't inject — but the legend is harmless accurate guidance for them.
