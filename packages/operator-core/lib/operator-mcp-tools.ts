@@ -30,7 +30,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // Scan findings live in the self-improvement backlog (unify-agent-launches
   // D-005) — improvements:digest is the operator's "what did the scanner
   // find?" read surface, replacing the retired scans_list/scans_get.
+  // improvements:triage is the Queen's type-routing tool (self-learning P-020).
   'mcp__agentmcp__improvements:digest',
+  'mcp__agentmcp__improvements:triage',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

@@ -20,6 +20,7 @@ import {
   type WorkItemKind,
   DEFAULT_RISK_TIER_POLICY,
 } from './policy';
+import { classifyIdeaType } from './triage';
 
 const SEVERITY_WEIGHT: Record<ImprovementSeverity, number> = {
   critical: 40,
@@ -47,6 +48,8 @@ export interface ScoredItem {
   ageDays: number;
   /** Why this tier — from the policy decision. */
   tierReason: string;
+  /** Idea type (product vs process, self-learning P-020). */
+  ideaType?: 'product' | 'process';
 }
 
 export interface DupCluster {
@@ -333,6 +336,7 @@ export function buildDigest(
 
     const decision = decisions[c.id];
     const ageDays = c.createdAt ? Math.max(0, (nowMs - Date.parse(c.createdAt)) / DAY_MS) : 0;
+    const { type: ideaType } = classifyIdeaType({ scope: c.scope, title: c.title } as ScoredItem);
     const scored: ScoredItem = {
       id: c.id,
       kind: c.kind,
@@ -347,6 +351,7 @@ export function buildDigest(
       score: scoreOf(c, decision.tier, ageDays),
       ageDays: Math.round(ageDays * 10) / 10,
       tierReason: decision.reasons[decision.reasons.length - 1] ?? '',
+      ideaType,
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

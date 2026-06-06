@@ -263,6 +263,7 @@ import './coordination/tools/conversations-promote';
 // resolve closes the loop (a verified fix leaves the queue).
 import './improvements/capture';
 import './improvements/digest';
+import './improvements/triage';
 import './improvements/resolve';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
@@ -324,6 +325,9 @@ import './fleet/spawn';
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';
+// fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
+// Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.
+import './fleet/drain';
 
 // Coordination ops as blueprint primitives — the dual-surface decision tools
 // (coordination-ops-as-blueprint-primitives-2026-06-04 D-001). coord:vote /

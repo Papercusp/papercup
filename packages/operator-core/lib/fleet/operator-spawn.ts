@@ -323,6 +323,12 @@ export async function spawnAgentInHarness(
     idempotencyKey: runId,
     workspaceId: input.workspaceId,
   });
+  // P-050: Thread the Queen brief through the invocation so the role launch spec
+  // can inject it into the role's prompt (assembleRolePrompt). The brief rides in
+  // extraEnv as QUEEN_BRIEF so the orchestrator runner's invoke() path picks it up.
+  if (input.brief) {
+    extraEnv.QUEEN_BRIEF = input.brief;
+  }
 
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();
