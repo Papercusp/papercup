@@ -1,0 +1,133 @@
+/**
+ * @papercusp/deployment-driver — the provider-agnostic deployment abstraction.
+ *
+ * `cloud-deployment-layer-2026-06-06` P-001 / D-002.
+ *
+ * "Deploying" a harness means moving its **execution plane** onto a **frame** (a
+ * machine the driver controls) that joins the harness/Hive as a headless
+ * federated peer. The abstraction is a `DeploymentDriver` with four verbs —
+ * `provision` / `install` / `join` / `teardown` — over a `Frame` handle. `local`
+ * is the trivial built-in driver (the machine is already here, so every verb is a
+ * no-op); every cloud backend (`latitude`, `fly`, `hetzner`, …) implements the
+ * SAME interface and registers via the `configure*()` seam, so "swap a Latitude
+ * config in and it runs on Latitude" is one code path, different driver.
+ *
+ * This lib is generic + host-clean: it names no provider except `local`, depends
+ * on nothing, and validates no provider-specific config (each driver narrows +
+ * validates its own `provider` block). The papercusp-coupled pieces — the cloud
+ * driver implementations and the harness/orchestrator wiring — live host-side and
+ * plug in through `registerDeploymentDriver`.
+ */
+
+/**
+ * Where a harness's execution plane runs. An OPEN discriminator: `'local'` is the
+ * built-in; cloud backends register their own target strings (`'latitude'`,
+ * `'fly'`, …). Kept a bare string (not a closed union) precisely so the lib stays
+ * provider-agnostic — adding a backend never edits this type.
+ */
+export type DeploymentTarget = string;
+
+/** Does a driver run the execution plane on THIS machine, or on a remote frame? */
+export type DeploymentPlacement = 'local' | 'remote';
+
+/** A frame's machine kind. `vm` (default for cloud) | `metal` (bare metal) | `local`. */
+export type FrameKind = 'vm' | 'metal' | 'local';
+
+/**
+ * Deployment config — a **sibling input to the blueprint** at instantiation
+ * (D-001: NOT a blueprint property, since the blueprint must stay placement-
+ * agnostic + Cupboard-distributable). `target` selects the driver; the rest is
+ * the common envelope. Provider-specific fields go under `provider`, which the
+ * selected driver narrows + validates.
+ */
+export interface DeploymentConfig {
+  /** Selects the driver. `'local'` = run here (the default). */
+  target: DeploymentTarget;
+  /** Provider region (e.g. `'NYC'`, `'sao-paulo'`). Driver-specific vocabulary. */
+  region?: string;
+  /** Provider instance size / plan slug. Driver-specific. */
+  size?: string;
+  /** VM (default) vs bare metal, where the provider offers both. */
+  kind?: FrameKind;
+  /**
+   * Opaque reference to the credential bundle to mount on the frame (e.g. a
+   * Claude subscription with its own rate limits — P-011). A REFERENCE the host
+   * resolves, never the secret itself, so configs are safe to persist/federate.
+   */
+  credentialRef?: string;
+  /** Provider-specific extras a driver narrows + validates (e.g. Latitude project id). */
+  provider?: Record<string, unknown>;
+}
+
+/** The canonical local config — the well-defined no-op deployment (P-002). */
+export const LOCAL_DEPLOYMENT: DeploymentConfig = { target: 'local' };
+
+/**
+ * A handle to a provisioned execution frame — the machine a driver controls.
+ * Returned by `provision` and threaded through `install` / `join` / `teardown`.
+ * Persisted host-side so teardown can find what to destroy across process
+ * restarts (the frame outlives the operator process that created it).
+ */
+export interface Frame {
+  /** Stable id within the provider (e.g. the Latitude server id). `'local'` for LocalDriver. */
+  id: string;
+  /** The driver target that owns this frame. */
+  target: DeploymentTarget;
+  /** Local (this machine) vs remote (a provisioned box). */
+  placement: DeploymentPlacement;
+  /** Reachable host / IP once provisioned, if any. */
+  host?: string;
+  kind?: FrameKind;
+  region?: string;
+  /**
+   * Provider-specific opaque state the driver round-trips (terraform output, SSH
+   * key id, billing handle, …). The lib never reads it; only the owning driver does.
+   */
+  meta?: Record<string, unknown>;
+}
+
+/** Severity for the injected logger. */
+export type LogLevel = 'info' | 'warn' | 'error';
+
+/**
+ * Per-call context the host supplies to a driver: which harness/workspace the
+ * frame serves, an optional structured logger, and an abort signal for
+ * long-running provisions/teardowns. Host-clean — no papercusp types leak in.
+ */
+export interface DeploymentContext {
+  /** Harness slug the frame serves. */
+  harnessSlug: string;
+  /** Workspace id the harness belongs to. */
+  workspaceId: string;
+  /** Structured logger (host-injected). No-op if omitted. */
+  log?: (level: LogLevel, msg: string, extra?: Record<string, unknown>) => void;
+  /** Abort signal for long-running provision/teardown. */
+  signal?: AbortSignal;
+}
+
+/**
+ * The provider-agnostic deployment contract (D-002). `LocalDriver` is the trivial
+ * no-op; every cloud backend implements the same four verbs over a `Frame`.
+ *
+ * Lifecycle: `provision` (acquire the machine) → `install` (bootstrap the
+ * papercusp runtime on it) → `join` (admit it as a federated peer) → run →
+ * `teardown` (DESTROY for cloud, to end billing). The verbs are idempotent where
+ * feasible so a retried deploy/teardown converges.
+ */
+export interface DeploymentDriver {
+  /** The target discriminator this driver handles (e.g. `'local'`, `'latitude'`). */
+  readonly target: DeploymentTarget;
+  /** Does this driver run the execution plane here (`'local'`) or on a remote frame? */
+  readonly placement: DeploymentPlacement;
+  /** Acquire/realize a frame. Local: a no-op returning the local frame handle. */
+  provision(config: DeploymentConfig, ctx: DeploymentContext): Promise<Frame>;
+  /** Bootstrap the papercusp runtime on the frame. Local: no-op (already installed). */
+  install(frame: Frame, config: DeploymentConfig, ctx: DeploymentContext): Promise<void>;
+  /** Join the frame to the harness/Hive as a federated peer. Local: no-op (already a peer). */
+  join(frame: Frame, config: DeploymentConfig, ctx: DeploymentContext): Promise<void>;
+  /**
+   * Tear down the frame. For cloud this DESTROYS the machine (not stop) to end
+   * billing (P-012/P-017). Local: no-op (the machine stays — it is the user's).
+   */
+  teardown(frame: Frame, config: DeploymentConfig, ctx: DeploymentContext): Promise<void>;
+}

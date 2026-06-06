@@ -26,7 +26,8 @@
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/structured-concurrency": "*",
-    "@papercusp/p2p-voice": "*"
+    "@papercusp/p2p-voice": "*",
+    "@papercusp/deployment-driver": "*"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

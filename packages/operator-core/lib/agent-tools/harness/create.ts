@@ -21,6 +21,7 @@ import { validateBlueprintDependencies } from '@papercusp/blueprint-distribution
 import { COORD_ROLES } from '../coordination/roles';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
+import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/config-schema';
 
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
@@ -50,6 +51,7 @@ export default defineTool({
       folderName: z.string().min(1).optional().describe('New folder name (with parentDir)'),
       blueprintId: z.string().min(1).optional().describe('A blueprint to extend — resolved local → installed → built-in (e.g. coding/base/research or a Cupboard-installed id)'),
       blueprint: z.record(z.string(), z.unknown()).optional().describe('An inline blueprint object (alternative to blueprintId)'),
+      deployment: DeploymentConfigSchema.optional().describe('Where this harness\'s execution plane runs — a sibling to the blueprint (cloud-deployment-layer D-001). Omit ⇒ {target:"local"}. e.g. {target:"latitude",region:"NYC",kind:"vm"}.'),
     })
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
       message: 'pass `path`, or both `parentDir` and `folderName`',
@@ -81,6 +83,18 @@ export default defineTool({
       return fail({ error: `unknown blueprint "${args.blueprintId}" — not in the local, installed, or built-in tiers` });
     }
     const requiresRepo = validation.blueprint!.knobs.requiresRepo !== false;
+
+    // 1a. Validate the deployment config (cloud-deployment-layer P-003). Deployment
+    //     is a SIBLING input to the blueprint (D-001), not a blueprint property —
+    //     it describes where THIS install's execution plane runs. Defaults to
+    //     {target:'local'} so existing harnesses are unaffected. Fail-fast on a
+    //     non-local target with no registered driver (a cloud backend registers
+    //     its driver via configureDeployment at operator bootstrap).
+    const deploymentResult = parseDeploymentConfig(args.deployment);
+    if (!deploymentResult.ok) {
+      return fail({ error: deploymentResult.error, registeredTargets: deploymentResult.registeredTargets });
+    }
+    const deployment = deploymentResult.config;
 
     // 1b. Import-time dependency validation (harness-blueprint-distribution
     //     E2 — P-003/P-004; revive-cupboard-distribution D-003;
@@ -160,8 +174,13 @@ export default defineTool({
       }
     }
 
-    // 3. Register the harness + provision its PG schema.
-    reg.projects.push({ slug: args.slug, path });
+    // 3. Register the harness + provision its PG schema. The deployment config is
+    //    persisted on the registry entry (workspace PG) — local omits it.
+    reg.projects.push({
+      slug: args.slug,
+      path,
+      ...(deployment.target !== 'local' ? { deployment } : {}),
+    });
     await saveHarnessRegistry(reg);
     let provisioning: { ok: true } | { ok: false; error: string };
     try {
@@ -203,6 +222,7 @@ export default defineTool({
             gitInitialized,
             blueprintFile: bpFile,
             blueprint: { id: validation.blueprint!.id, version: validation.blueprint!.version },
+            deployment,
             warnings: validation.validation!.warnings,
             provisioning,
             scheduledRoutines,

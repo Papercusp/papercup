@@ -20,6 +20,7 @@ import { stripWakeWordAndPrefix } from '@papercusp/operator-core/lib/wake-word';
 import { getBrowserWorkspaceId, wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { createOperatorVoiceTagObserver } from '@papercusp/operator-core/lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '@papercusp/operator-core/lib/operator-conversation-client';
+import { startDesktopOperatorVoice, type OperatorVoiceRuntime } from './operator-voice-runtime';
 // Statically imported — neither sibling imports voice-mode, so there is no
 // cycle. (Were CJS require()s, which are undefined in the Vite browser bundle.)
 import { loadVoicePrefsClient } from './voice-prefs-client';
@@ -1165,211 +1166,120 @@ function debugLog(event: string, detail?: unknown): void {
 
 async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
   debugLog('el-conv:start-attempt', { mode: state.mode });
-  // Claim the mic NOW — before useMicLevel's effect spins up its own
-  // getUserMedia. Two concurrent getUserMedia consumers on Chrome can
-  // leave EL's WebRTC track empty, breaking ICE media negotiation.
+  // Claim the mic so useMicLevel's analyzer doesn't also open getUserMedia —
+  // the runtime captures it for the shared session below.
   setState({ micOwnedByFullAgent: true });
-  let stage: 'bootstrap' | 'connect' | 'runtime' = 'bootstrap';
+  // Universal voice (universal-voice-interface-2026-06-05, P-008): the desktop
+  // no longer starts its OWN ElevenLabs WebRTC session. It attaches to the ONE
+  // shared EL/operator session hosted by the voice service, over the
+  // desktop-voice-ws bus. The host mints the EL URL, runs the brain, persists
+  // the turns once (P-010), and streams input + response to every attached
+  // client; only the lease-elected client plays audio + captures the mic
+  // (Model A). voice-mode here is a thin client of that session.
+  let activeRuntime: OperatorVoiceRuntime | null = null;
+  // The agent's turn may carry <set_mode>/<sleep> tags that flip the navbar
+  // toggle — the same dispatcher the text path uses. <say> is NOT re-rendered
+  // (the host's TTS already spoke it).
+  const tagObserver = createOperatorVoiceTagObserver();
+  const disposeObserver = () => {
+    try {
+      tagObserver.flush();
+      tagObserver.dispose();
+    } catch {
+      /* ignore */
+    }
+  };
   try {
-    const bootR = await fetch('/api/agent-mcp/operator-elevenlabs-bootstrap', { signal: AbortSignal.timeout(15000) });
-    if (!bootR.ok) {
-      const body = await bootR.json().catch(() => ({}));
-      const hint = body?.hint ?? '';
-      void emitVoiceToast(
-        'error',
-        `ElevenLabs: ${body?.error ?? `HTTP ${bootR.status}`}. ${hint}`,
-      );
-      setState({
-        status: state.mode === 'off' ? 'off' : 'idle',
-        micOwnedByFullAgent: false,
-      });
-      return false;
-    }
-    const { conversationToken, agentId } = (await bootR.json()) as {
-      conversationToken: string; agentId: string;
-    };
-    if (!conversationToken || !agentId) {
-      void emitVoiceToast('error', 'ElevenLabs bootstrap returned no token. Check agent ID.');
-      setState({
-        status: state.mode === 'off' ? 'off' : 'idle',
-        micOwnedByFullAgent: false,
-      });
-      return false;
-    }
-    stage = 'connect';
-    // Diagnostic: ?elPure=1 in URL bypasses our wrapper entirely and
-    // runs the *exact same code path as the standalone bare-test page*
-    // inside the operator app's React tree. If this works inside the
-    // operator → our wrapper has a bug; if it doesn't → React-tree
-    // environment is interfering with EL's mic publish independently
-    // of any wrapping we do.
-    const isPureMode = typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('elPure') === '1';
-    if (isPureMode) {
-      console.log('[voice] PURE MODE — using bare-test page code path');
-      try {
-        const mod = await import('@elevenlabs/client');
-        // 20s deadline so we surface "still connecting" diagnostics
-        // instead of hanging silently when the SDK never resolves.
-        const t0 = Date.now();
-        const deadline = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`startSession deadline 20s exceeded`)), 20000),
-        );
-        const startPromise = mod.Conversation.startSession({
-          conversationToken,
-          connectionType: 'webrtc',
-          textOnly: false,
-          clientTools: {},
-          onConnect: ({ conversationId }: any) => {
-            debugLog('el-pure:onConnect', { conversationId });
-            void emitVoiceToast('info', `EL pure connected: ${conversationId.slice(0, 12)}…`);
-            setState({ status: 'listening' });
-          },
-          onDisconnect: (d: any) => debugLog('el-pure:onDisconnect', d),
-          onMessage: ({ message, source }: any) => {
-            debugLog('el-pure:message', { source, message: String(message).slice(0, 120) });
-            if (source === 'user') setState({ lastTranscript: message });
-          },
-          onError: (m: string) => {
-            debugLog('el-pure:error', { m });
-            void emitVoiceToast('error', `EL pure error: ${m}`);
-          },
-          onModeChange: (m: any) => debugLog('el-pure:mode', m),
-          onStatusChange: (s: any) => debugLog('el-pure:status', s),
-        });
-        const conv = await Promise.race([startPromise, deadline]) as any;
-        debugLog('el-pure:start-resolved', { ms: Date.now() - t0 });
-        realtimeSession = { async stop() { await conv.endSession(); } };
-        return true;
-      } catch (err: any) {
-        debugLog('el-pure:start-failed', { msg: err?.message ?? String(err) });
-        void emitVoiceToast('error', `EL pure failed: ${err?.message ?? String(err)}`);
-        setState({
-          status: state.mode === 'off' ? 'off' : 'idle',
-          micOwnedByFullAgent: false,
-        });
-        return false;
-      }
-    }
-    const { startElevenLabsConv } = await import('@papercusp/operator-core/lib/voice-engines/elevenlabs-conv');
     const tabId = getOrAssignTabId();
-    // Voice-side bridge to the operator-converse tag dispatcher. When
-    // the agent emits a turn that contains <set_mode>/<sleep> tags
-    // (active-mode replies), this observer parses + dispatches the side
-    // effects via the same sessionStorage hooks the text path uses, so
-    // the navbar toggle stays in sync regardless of which surface the
-    // operator flipped from. <say> content is NOT re-rendered — TTS
-    // already speaks it via the agent itself.
-    const tagObserver = createOperatorVoiceTagObserver();
-    const handle = await startElevenLabsConv({
-      agentId,
-      conversationToken,
-      workspace: getBrowserWorkspaceId(),
-      tabId,
-      onTranscript: (text) => {
+    const runtime = await startDesktopOperatorVoice({
+      clientId: tabId,
+      label: 'Desktop',
+      onInputTranscript: (text, final) => {
         setState({ lastTranscript: text });
+        if (!final) return;
         debugLog('el-conv:user-transcript', { text });
         pulseUserSpoken();
         if (text && text.trim().length > 1) onUtteranceFinal(text);
-        const elConvId = handle?.getConversationId?.() ?? null;
-        void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt', elConvId });
         emitOperatorUserTurn(text);
         nudgeFullAgentIdle();
+        // The HOST persists this user turn once to the shared operator
+        // conversation (P-010) — the desktop no longer double-writes it.
       },
-      onAssistantText: (text) => {
+      onResponseTranscript: (text) => {
         debugLog('el-conv:agent-text', { text: String(text).slice(0, 200) });
         tagObserver.push(text);
-        const elConvId = handle?.getConversationId?.() ?? null;
-        void persistOperatorVoiceTurn({ role: 'assistant', text, source: 'voice_tts', elConvId });
-        // Intentionally NOT calling nudgeFullAgentIdle() here. Idle =
-        // USER idle; resetting on agent transcripts too lets a chatty
-        // agent keep the session alive indefinitely. EL audit fix #2.
+        // Host persists the assistant turn once (P-010) — no desktop write.
       },
-      onConnect: () => {
-        debugLog('el-conv:connected', { ts: Date.now() });
-        elConnectedAt = Date.now();
-        armIdleTimer();
-        armSessionMaxTimer();
-        // Hindsight inbox: deliver any async-delegate completions that
-        // arrived while no session was live. Done after a small delay so
-        // the SDK is past the "first turn" handshake before we shove a
-        // contextual update in.
-        setTimeout(() => { void drainHindsightOnConnect(); }, 1500);
-      },
-      onDisconnect: () => {
-        const aliveMs = elConnectedAt > 0 ? Date.now() - elConnectedAt : 0;
-        debugLog('el-conv:disconnected', { ts: Date.now(), aliveMs });
-        elConnectedAt = 0;
-        // Force-flush + dispose the tag observer so any in-buffer
-        // partial utterance still gets parsed for tag side effects
-        // before we tear down.
-        try { tagObserver.flush(); tagObserver.dispose(); } catch { /* ignore */ }
-        // Tear down our reference so the next mic event spawns a fresh
-        // session instead of pushing into the dead handle. Reset the UI
-        // status so the voice button doesn't lie about being live.
-        realtimeSession = null;
-        setState({
-          status: state.mode === 'off' ? 'off' : 'idle',
-          micOwnedByFullAgent: false,
-        });
-        // Surface a user-visible toast — the prior code silently swallowed
-        // disconnects, leading to "voice connects then disconnects with no
-        // error message" reports. Differentiate the common cases.
-        if (aliveMs >= 5_000 && aliveMs < 30_000) {
-          void emitVoiceToast(
-            'warn',
-            `ElevenLabs disconnected after ${Math.round(aliveMs / 1000)}s. Click the voice button to reconnect.`,
-          );
-        } else if (aliveMs >= 30_000) {
-          void emitVoiceToast(
-            'info',
-            `ElevenLabs session ended (${Math.round(aliveMs / 1000)}s). Click the voice button to start another.`,
-          );
+      onState: (s) => {
+        switch (s.status) {
+          case 'connecting':
+            setState({ status: 'connecting' });
+            return;
+          case 'idle':
+          case 'listening':
+          case 'speaking':
+            setState({ status: s.status, micOwnedByFullAgent: true });
+            return;
+          case 'off':
+            // pre-start / settling echo — not terminal, ignore.
+            return;
+          case 'ended':
+          case 'error': {
+            disposeObserver();
+            void activeRuntime?.stop();
+            activeRuntime = null;
+            realtimeSession = null;
+            setState({ status: state.mode === 'off' ? 'off' : 'idle', micOwnedByFullAgent: false });
+            if (s.reason) {
+              void emitVoiceToast(s.status === 'error' ? 'error' : 'info', `Voice: ${s.reason}`);
+            }
+            return;
+          }
         }
-        // <5s disconnects are handled by the negotiation-error path in
-        // elevenlabs-conv.ts and surface as runtime errors via onError.
       },
       onError: (err) => {
-        const msg = err?.message ?? String(err);
-        debugLog('el-conv:error', { msg });
-        void emitVoiceToast('error', `ElevenLabs runtime error: ${msg}`);
+        const m = (err as { message?: string })?.message ?? String(err);
+        debugLog('el-conv:error', { m });
+        void emitVoiceToast('error', `Voice runtime error: ${m}`);
       },
     });
-    debugLog('el-conv:start-session-resolved');
+    activeRuntime = runtime;
     realtimeSession = {
-      async stop() { await handle.endSession(); },
-      sendSystem: (text: string) => handle.sendSystem(text),
+      async stop() {
+        disposeObserver();
+        await activeRuntime?.stop();
+        activeRuntime = null;
+      },
     };
-    setState({ status: 'listening', micOwnedByFullAgent: true });
-    void emitVoiceToast('info', 'ElevenLabs connected — speak to talk to the operator.');
+    setState({ status: 'connecting', micOwnedByFullAgent: true });
+    armIdleTimer();
+    armSessionMaxTimer();
+    // Hindsight inbox: deliver async-delegate completions that arrived while no
+    // session was live, once the session is up.
+    setTimeout(() => {
+      void drainHindsightOnConnect();
+    }, 1500);
+    void emitVoiceToast('info', 'Voice connected — talking to the shared operator session.');
     return true;
   } catch (err: any) {
+    disposeObserver();
+    void activeRuntime?.stop();
+    activeRuntime = null;
     const errName = err?.name ?? '';
     const errMsg = err?.message ?? String(err);
-    const msg = errName ? `${errName}: ${errMsg}` : errMsg;
-    debugLog('el-conv:start-failed', { stage, msg });
-    // Suppress the toast for fetch-cancellation / network-teardown
-    // errors — voice auto-restores on every page load and the in-flight
-    // bootstrap fetch from the previous mount gets cancelled. Whisper
-    // fallback still happens via return false; debugLog already records
-    // the detail. Real failures (5xx, missing key, etc.) still toast.
+    debugLog('el-conv:start-failed', { msg: errMsg });
+    // Suppress the toast for fetch-cancellation / network-teardown errors —
+    // voice auto-restores on every page load and an in-flight connect from the
+    // previous mount gets cancelled. Whisper fallback still happens via the
+    // return false; debugLog records the detail. Real failures still toast.
     const isTransient =
       errName === 'AbortError' ||
       errName === 'TimeoutError' ||
       /aborted|abort\b|Load failed|Fetch is aborted|signal timed out|signaling failed/i.test(errMsg);
     if (!isTransient) {
-      void emitVoiceToast(
-        'error',
-        `ElevenLabs failed at ${stage}: ${msg}. Falling back to Whisper.`,
-      );
+      void emitVoiceToast('error', `Voice failed to attach: ${errMsg}. Falling back to Whisper.`);
     }
-    // Release the mic + drop the connecting indicator. Without resetting
-    // status, the wake-hint stays "Connecting…" forever after a bootstrap
-    // failure (Failed to fetch / 429 cooldown / etc.).
-    setState({
-      status: state.mode === 'off' ? 'off' : 'idle',
-      micOwnedByFullAgent: false,
-    });
+    setState({ status: state.mode === 'off' ? 'off' : 'idle', micOwnedByFullAgent: false });
     return false;
   }
 }

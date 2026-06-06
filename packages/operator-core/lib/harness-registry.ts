@@ -14,6 +14,7 @@
  * become async functions of their own.
  */
 
+import type { DeploymentConfig } from '@papercusp/deployment-driver';
 import { getOrgPg } from '@papercusp/db-org';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -24,6 +25,13 @@ export interface ProjectEntry {
   harness_kind?: string;
   /** Department slug for harness_kind='department' projects (e.g. "business"). */
   department_slug?: string;
+  /**
+   * Where this harness's execution plane runs (`cloud-deployment-layer-2026-06-06`
+   * P-003). A sibling to the blueprint (D-001), supplied at instantiation and
+   * persisted here in workspace PG. Absent ⇒ `{ target: 'local' }` (every existing
+   * harness), so the launch path runs locally exactly as before.
+   */
+  deployment?: DeploymentConfig;
 }
 
 export interface HarnessRegistry {
