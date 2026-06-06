@@ -1,0 +1,15 @@
+{
+  "alive": false,
+  "branch": null,
+  "cost_usd": 0,
+  "exists_on_disk": false,
+  "iteration": 0,
+  "mtime_ms": 0,
+  "passed_count": 0,
+  "phase": "testing",
+  "phase_path": "/home/marsh-office/papercupai-workspace/papercup--testing",
+  "port": null,
+  "promotion_in_flight": false,
+  "public_url": null,
+  "total_count": 0
+}

@@ -8,11 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 
 describe('dev.* glance resolvers', () => {
-  it('registers all six dev.* query names', () => {
+  it('registers all dev.* query names', () => {
     const names = knownQueryNamesV2();
     for (const n of [
       'dev.serviceHealth',
       'dev.deployState',
+      'dev.gitPipeline',
       'dev.pgHealth',
       'dev.pgActiveQueries',
       'dev.coordPresence',
@@ -48,6 +49,16 @@ describe('dev.* glance resolvers', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toBe(snap);
       vi.doUnmock('../dev-deploy-state');
+    });
+
+    it('dev.gitPipeline wraps gitPipelineSnapshot() as a 1-element snapshot', async () => {
+      const snap = { slug: 'papercup', gitSync: { lastStatus: 'synced' }, windows: { day: {}, week: {} }, recent: [] };
+      vi.doMock('../git-pipeline-stats', () => ({ gitPipelineSnapshot: vi.fn(async () => snap) }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const rows = (await r('dev.gitPipeline', {})) as unknown[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toBe(snap);
+      vi.doUnmock('../git-pipeline-stats');
     });
 
     it('dev.pgHealth wraps pgHealth() as a 1-element snapshot', async () => {

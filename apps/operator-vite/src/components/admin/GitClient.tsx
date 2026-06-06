@@ -1,0 +1,480 @@
+import { useSyncQuery } from '@papercusp/sync';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
+
+/**
+ * /admin/git — the git-sync → green-checkpoint → release pipeline console.
+ *
+ * Surfaces the whole automated pipeline in one view:
+ *   - the three routines (git-sync / green-checkpoint / release-trigger) + schedule
+ *   - windowed stats (24h / 7d) from the pipeline_events history (mig 177):
+ *     git-sync sync/conflict/error counts, MERGE CONFLICTS, merge-resolver
+ *     (opus:xhigh) success rate, green-checkpoint main-is-green rate
+ *   - latest git-sync + resolver state, any OPEN merge conflict
+ *   - the release-gate deploy gap (main vs `ready` green pin vs deployed :3070)
+ *   - a recent event timeline
+ *
+ * Reads the `dev.gitPipeline` sync query (a snapshot wrapped in a 1-element array
+ * → data[0]). The window toggle lives in the URL (nuqs) so it's deep-linkable +
+ * agent-driveable.
+ */
+
+// ── server snapshot shape (mirrors git-pipeline-stats.ts) ──
+interface RoutineInfo {
+  name: string;
+  active: boolean;
+  cron: string | null;
+  lastFiredAtMs: number | null;
+  nextFireAtMs: number | null;
+}
+interface WindowSummary {
+  sinceMs: number;
+  gitSync: { total: number; synced: number; nothing: number; conflict: number; error: number };
+  mergeResolver: { total: number; ok: number; failed: number; error: number };
+  greenCheckpoint: {
+    total: number;
+    advanced: number;
+    upToDate: number;
+    notGreen: number;
+    notFastForward: number;
+    createFailed: number;
+  };
+}
+interface PipelineEvent {
+  id: string;
+  kind: 'git_sync' | 'merge_resolver' | 'green_checkpoint' | 'deploy';
+  status: string;
+  detail: Record<string, unknown>;
+  createdAtMs: number;
+}
+interface CommitRef {
+  shortSha: string;
+  committedAtMs: number;
+  subject: string;
+}
+interface DeployState {
+  integrationBranch: string;
+  releaseRef: string;
+  mainHead: CommitRef | null;
+  ready: CommitRef | null;
+  deployed: CommitRef | null;
+  deployedAtMs: number | null;
+  deployedBehindMain: number | null;
+  readyBehindMain: number | null;
+  deployedBehindReady: number | null;
+  errors: string[];
+}
+interface GitPipelineSnapshot {
+  slug: string;
+  generatedAtMs: number;
+  routines: { gitSync: RoutineInfo | null; greenCheckpoint: RoutineInfo | null; releaseTrigger: RoutineInfo | null };
+  gitSync: {
+    lastStatus: string | null;
+    lastSyncedAtMs: number | null;
+    consecutiveErrorTicks: number;
+    headSha: string | null;
+    lastPushed: string[];
+    lastMerged: string[];
+    lastConflicts: string[];
+    lastErrors: string[];
+  };
+  resolver: {
+    model: string;
+    lastStatus: string | null;
+    lastAtMs: number | null;
+    lastExitCode: number | null;
+    lastHttpStatus: number | null;
+    lastTimedOut: boolean | null;
+    lastScopes: string[];
+  };
+  openConflict: { scopes: string[]; conflicts: { scope: string; files: string[] }[]; emittedAtMs: number | null } | null;
+  windows: { day: WindowSummary; week: WindowSummary };
+  recent: PipelineEvent[];
+  deploy: DeployState;
+}
+
+// ── helpers ──
+function fmtRel(ts: number | null | undefined): string {
+  if (ts == null) return '—';
+  const d = Date.now() - ts;
+  if (d < 0) {
+    const a = -d;
+    if (a < 60_000) return `in ${Math.round(a / 1000)}s`;
+    if (a < 3_600_000) return `in ${Math.round(a / 60_000)}m`;
+    return `in ${Math.round(a / 3_600_000)}h`;
+  }
+  if (d < 60_000) return `${Math.round(d / 1000)}s ago`;
+  if (d < 3_600_000) return `${Math.round(d / 60_000)}m ago`;
+  if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h ago`;
+  return `${Math.round(d / 86_400_000)}d ago`;
+}
+function pct(n: number, d: number): string {
+  if (d <= 0) return '—';
+  return `${Math.round((n / d) * 100)}%`;
+}
+type Tone = 'good' | 'warn' | 'bad' | 'neutral';
+function statusTone(s: string | null): Tone {
+  switch (s) {
+    case 'synced':
+    case 'ok':
+    case 'advanced':
+      return 'good';
+    case 'conflict':
+    case 'not-green':
+    case 'failed':
+      return 'warn';
+    case 'error':
+    case 'create-failed':
+      return 'bad';
+    default:
+      return 'neutral';
+  }
+}
+const KIND_LABEL: Record<PipelineEvent['kind'], string> = {
+  git_sync: 'git-sync',
+  merge_resolver: 'resolver',
+  green_checkpoint: 'green-check',
+  deploy: 'deploy',
+};
+
+function Dot({ on }: { on: boolean }) {
+  return <span className={`pc-git__dot ${on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
+}
+function Pill({ tone = 'neutral', children }: { tone?: Tone; children: React.ReactNode }) {
+  return <span className={`pc-git__pill is-${tone}`}>{children}</span>;
+}
+function Stat({ label, value, tone, sub }: { label: string; value: React.ReactNode; tone?: Tone; sub?: string }) {
+  return (
+    <div className={`pc-git__stat ${tone ? `is-${tone}` : ''}`}>
+      <div className="pc-git__stat-v">{value}</div>
+      <div className="pc-git__stat-l">{label}</div>
+      {sub && <div className="pc-git__stat-s">{sub}</div>}
+    </div>
+  );
+}
+function RoutineCard({ r, label }: { r: RoutineInfo | null; label: string }) {
+  return (
+    <div className="pc-git__routine">
+      <div className="pc-git__routine-head">
+        <Dot on={!!r?.active} />
+        <span className="pc-git__routine-name">{label}</span>
+        <Pill tone={r?.active ? 'good' : 'neutral'}>{r?.active ? 'active' : 'inactive'}</Pill>
+      </div>
+      <div className="pc-git__kv">
+        <span className="pc-git__k">cron</span>
+        <span className="pc-git__v">{r?.cron ?? '—'}</span>
+        <span className="pc-git__k">last fired</span>
+        <span className="pc-git__v">{fmtRel(r?.lastFiredAtMs)}</span>
+        <span className="pc-git__k">next</span>
+        <span className="pc-git__v">{fmtRel(r?.nextFireAtMs)}</span>
+      </div>
+    </div>
+  );
+}
+
+export default function GitClient() {
+  const [win, setWin] = useQueryState('window', parseAsStringEnum(['24h', '7d']).withDefault('24h'));
+  const sync = useSyncQuery<GitPipelineSnapshot>({ queryName: 'dev.gitPipeline', staleTime: 30_000 });
+  const st = sync.data?.[0];
+  const w = st ? (win === '7d' ? st.windows.week : st.windows.day) : null;
+
+  return (
+    <div className="pc-git">
+      <div className="pc-git__bar">
+        <div className="pc-git__bar-l">
+          <strong>Pipeline</strong>
+          <span className="pc-git__muted">git-sync → green-checkpoint → release · {st?.slug ?? '…'}</span>
+        </div>
+        <div className="pc-git__bar-r">
+          <div className="pc-git__seg" role="tablist" aria-label="Stats window">
+            {(['24h', '7d'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={win === k}
+                className={`pc-git__seg-btn ${win === k ? 'is-active' : ''}`}
+                onClick={() => void setWin(k)}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="pc-git__refresh" onClick={() => sync.invalidate()} disabled={sync.fetching}>
+            {sync.fetching ? '…' : '↻'}
+          </button>
+        </div>
+      </div>
+
+      {sync.loading && !st && <div className="pc-git__empty">Loading pipeline…</div>}
+      {sync.error && <div className="pc-git__err">{String(sync.error.message || sync.error)}</div>}
+
+      {st && w && (
+        <div className="pc-git__body">
+          {/* OPEN CONFLICT banner — the thing that needs a human's eyes */}
+          {st.openConflict && (
+            <div className="pc-git__banner">
+              <strong>⚠ Open merge conflict</strong> in {st.openConflict.scopes.join(', ') || '—'} — merge-resolver (
+              {st.resolver.model}) dispatched {fmtRel(st.openConflict.emittedAtMs)}.
+              <div className="pc-git__banner-files">
+                {st.openConflict.conflicts.map((c) => (
+                  <div key={c.scope}>
+                    <code>{c.scope}</code>: {c.files.join(', ') || '(files not enumerated)'}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ROUTINES */}
+          <section className="pc-git__sec">
+            <h3 className="pc-git__h">Routines</h3>
+            <div className="pc-git__routines">
+              <RoutineCard r={st.routines.gitSync} label="git-sync" />
+              <RoutineCard r={st.routines.greenCheckpoint} label="green-checkpoint" />
+              <RoutineCard r={st.routines.releaseTrigger} label="release-trigger (auto-deploy)" />
+            </div>
+          </section>
+
+          {/* STATS (windowed) */}
+          <section className="pc-git__sec">
+            <h3 className="pc-git__h">
+              Stats <span className="pc-git__muted">· last {win}</span>
+            </h3>
+            <div className="pc-git__stats">
+              <Stat label="git-sync ticks" value={w.gitSync.total} sub={`${w.gitSync.synced} synced · ${w.gitSync.nothing} no-op`} />
+              <Stat
+                label="merge conflicts"
+                value={w.gitSync.conflict}
+                tone={w.gitSync.conflict > 0 ? 'warn' : 'good'}
+                sub={`${pct(w.gitSync.conflict, w.gitSync.total)} of ticks`}
+              />
+              <Stat
+                label="git-sync errors"
+                value={w.gitSync.error}
+                tone={w.gitSync.error > 0 ? 'bad' : 'good'}
+                sub="push/fetch failures"
+              />
+              <Stat
+                label="resolver runs"
+                value={w.mergeResolver.total}
+                tone={w.mergeResolver.failed + w.mergeResolver.error > 0 ? 'warn' : 'neutral'}
+                sub={`${w.mergeResolver.ok} ok · ${pct(w.mergeResolver.ok, w.mergeResolver.total)} success`}
+              />
+              <Stat
+                label="green-checkpoints"
+                value={w.greenCheckpoint.total}
+                sub={`${w.greenCheckpoint.advanced} advanced · ${w.greenCheckpoint.upToDate} up-to-date`}
+              />
+              <Stat
+                label="main-green rate"
+                value={pct(
+                  w.greenCheckpoint.advanced + w.greenCheckpoint.upToDate,
+                  w.greenCheckpoint.advanced + w.greenCheckpoint.upToDate + w.greenCheckpoint.notGreen,
+                )}
+                tone={w.greenCheckpoint.notGreen > 0 ? 'warn' : 'good'}
+                sub={`${w.greenCheckpoint.notGreen} not-green`}
+              />
+            </div>
+          </section>
+
+          {/* CURRENT STATE */}
+          <section className="pc-git__sec">
+            <h3 className="pc-git__h">Current state</h3>
+            <div className="pc-git__cards">
+              <div className="pc-git__card">
+                <div className="pc-git__card-h">
+                  git-sync <Pill tone={statusTone(st.gitSync.lastStatus)}>{st.gitSync.lastStatus ?? '—'}</Pill>
+                </div>
+                <div className="pc-git__kv">
+                  <span className="pc-git__k">last sync</span>
+                  <span className="pc-git__v">{fmtRel(st.gitSync.lastSyncedAtMs)}</span>
+                  <span className="pc-git__k">HEAD</span>
+                  <span className="pc-git__v mono">{st.gitSync.headSha?.slice(0, 8) ?? '—'}</span>
+                  <span className="pc-git__k">error streak</span>
+                  <span className="pc-git__v">
+                    {st.gitSync.consecutiveErrorTicks > 0 ? (
+                      <Pill tone="bad">{st.gitSync.consecutiveErrorTicks} ticks</Pill>
+                    ) : (
+                      '0'
+                    )}
+                  </span>
+                  <span className="pc-git__k">last pushed</span>
+                  <span className="pc-git__v">{st.gitSync.lastPushed.join(', ') || '—'}</span>
+                </div>
+              </div>
+
+              <div className="pc-git__card">
+                <div className="pc-git__card-h">
+                  merge-resolver <span className="pc-git__muted mono">{st.resolver.model}</span>
+                </div>
+                <div className="pc-git__kv">
+                  <span className="pc-git__k">last run</span>
+                  <span className="pc-git__v">
+                    {st.resolver.lastStatus ? (
+                      <Pill tone={statusTone(st.resolver.lastStatus)}>{st.resolver.lastStatus}</Pill>
+                    ) : (
+                      'never'
+                    )}
+                  </span>
+                  <span className="pc-git__k">when</span>
+                  <span className="pc-git__v">{fmtRel(st.resolver.lastAtMs)}</span>
+                  <span className="pc-git__k">exit / http</span>
+                  <span className="pc-git__v mono">
+                    {st.resolver.lastExitCode ?? '—'} / {st.resolver.lastHttpStatus ?? '—'}
+                    {st.resolver.lastTimedOut ? ' · timed-out' : ''}
+                  </span>
+                  <span className="pc-git__k">scopes</span>
+                  <span className="pc-git__v">{st.resolver.lastScopes.join(', ') || '—'}</span>
+                </div>
+              </div>
+
+              <div className="pc-git__card">
+                <div className="pc-git__card-h">
+                  deploy gate
+                  {st.deploy.deployedBehindMain === 0 ? (
+                    <Pill tone="good">:3070 current</Pill>
+                  ) : (
+                    <Pill tone="warn">{st.deploy.deployedBehindMain ?? '?'} behind main</Pill>
+                  )}
+                </div>
+                <div className="pc-git__kv">
+                  <span className="pc-git__k">{st.deploy.integrationBranch} HEAD</span>
+                  <span className="pc-git__v mono">{st.deploy.mainHead?.shortSha ?? '—'}</span>
+                  <span className="pc-git__k">{st.deploy.releaseRef} (green pin)</span>
+                  <span className="pc-git__v mono">{st.deploy.ready?.shortSha ?? '— unset'}</span>
+                  <span className="pc-git__k">deployed :3070</span>
+                  <span className="pc-git__v mono">{st.deploy.deployed?.shortSha ?? '—'}</span>
+                  <span className="pc-git__k">green pin vs main</span>
+                  <span className="pc-git__v">
+                    {st.deploy.readyBehindMain === 0 ? (
+                      <Pill tone="good">caught up</Pill>
+                    ) : (
+                      <Pill tone="warn">{st.deploy.readyBehindMain ?? '?'} behind</Pill>
+                    )}
+                  </span>
+                  <span className="pc-git__k">undeployed (ready→:3070)</span>
+                  <span className="pc-git__v">{st.deploy.deployedBehindReady ?? '—'}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* TIMELINE */}
+          <section className="pc-git__sec">
+            <h3 className="pc-git__h">Recent events</h3>
+            {st.recent.length === 0 ? (
+              <div className="pc-git__empty">
+                No pipeline events logged yet — they accrue from the next git-sync / green-checkpoint tick.
+              </div>
+            ) : (
+              <div className="pc-git__timeline">
+                {st.recent.map((e) => (
+                  <div key={e.id} className="pc-git__event">
+                    <span className={`pc-git__chip is-${statusTone(e.status)}`}>{KIND_LABEL[e.kind]}</span>
+                    <span className="pc-git__event-status">{e.status}</span>
+                    <span className="pc-git__event-detail">{eventDetail(e)}</span>
+                    <span className="pc-git__event-time">{fmtRel(e.createdAtMs)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {st.deploy.errors.length > 0 && <div className="pc-git__err">{st.deploy.errors.join(' · ')}</div>}
+        </div>
+      )}
+
+      <style>{gitCss}</style>
+    </div>
+  );
+}
+
+/** One-line human summary of an event's detail jsonb. */
+function eventDetail(e: PipelineEvent): string {
+  const d = e.detail || {};
+  if (e.kind === 'git_sync') {
+    const conflicts = Array.isArray(d.conflicts) ? (d.conflicts as Array<{ scope: string }>) : [];
+    const pushed = Array.isArray(d.pushed) ? (d.pushed as string[]) : [];
+    if (conflicts.length) return `conflict in ${conflicts.map((c) => c.scope).join(', ')}`;
+    if (pushed.length) return `pushed ${pushed.join(', ')}`;
+    return '';
+  }
+  if (e.kind === 'merge_resolver') {
+    const scopes = Array.isArray(d.scopes) ? (d.scopes as string[]) : [];
+    return scopes.length ? scopes.join(', ') : '';
+  }
+  if (e.kind === 'green_checkpoint') {
+    const parts: string[] = [];
+    if (typeof d.candidate === 'string') parts.push(`@${d.candidate}`);
+    if (d.green === false) parts.push('not green');
+    return parts.join(' ');
+  }
+  return '';
+}
+
+const gitCss = `
+  .pc-git { color: #e7f3fb; padding: 14px 18px 28px; }
+  .pc-git__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+  .pc-git__bar-l { display: flex; align-items: baseline; gap: 10px; }
+  .pc-git__bar-l strong { font-size: 15px; letter-spacing: -0.01em; }
+  .pc-git__muted { color: rgba(186, 230, 253, 0.55); font-size: 12px; }
+  .pc-git__bar-r { display: flex; align-items: center; gap: 8px; }
+  .pc-git__seg { display: inline-flex; border: 1px solid rgba(125, 211, 252, 0.18); border-radius: 8px; overflow: hidden; }
+  .pc-git__seg-btn { background: transparent; color: rgba(214, 236, 248, 0.7); border: 0; padding: 5px 12px; font-size: 12px; font-weight: 650; cursor: pointer; }
+  .pc-git__seg-btn.is-active { background: rgba(103, 232, 249, 0.16); color: #f4fbff; }
+  .pc-git__refresh { background: rgba(255,255,255,0.03); border: 1px solid rgba(125, 211, 252, 0.18); color: #cfeefb; width: 30px; height: 28px; border-radius: 8px; cursor: pointer; }
+  .pc-git__refresh:disabled { opacity: 0.5; cursor: default; }
+
+  .pc-git__body { display: grid; gap: 18px; }
+  .pc-git__sec { display: grid; gap: 10px; }
+  .pc-git__h { margin: 0; font-size: 12px; font-weight: 740; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(186, 230, 253, 0.62); }
+
+  .pc-git__banner { border: 1px solid rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #fde68a; }
+  .pc-git__banner-files { margin-top: 6px; font-size: 12px; color: rgba(253, 230, 138, 0.85); display: grid; gap: 2px; }
+  .pc-git__banner code, .pc-git code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .pc-git__routines { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .pc-git__routine { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__routine-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .pc-git__routine-name { font-weight: 680; font-size: 13px; flex: 1; }
+
+  .pc-git__stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .pc-git__stat { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__stat.is-warn { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.06); }
+  .pc-git__stat.is-bad { border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.07); }
+  .pc-git__stat.is-good { border-color: rgba(52, 211, 153, 0.32); }
+  .pc-git__stat-v { font-size: 26px; font-weight: 760; line-height: 1; letter-spacing: -0.02em; }
+  .pc-git__stat-l { margin-top: 6px; font-size: 12px; color: rgba(214, 236, 248, 0.78); font-weight: 600; }
+  .pc-git__stat-s { margin-top: 2px; font-size: 11px; color: rgba(186, 230, 253, 0.5); }
+
+  .pc-git__cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+  .pc-git__card { border: 1px solid rgba(125, 211, 252, 0.14); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.015); }
+  .pc-git__card-h { display: flex; align-items: center; gap: 8px; font-weight: 680; font-size: 13px; margin-bottom: 8px; }
+
+  .pc-git__kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+  .pc-git__k { color: rgba(186, 230, 253, 0.55); }
+  .pc-git__v { color: #e7f3fb; text-align: right; }
+  .pc-git__v.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .pc-git__dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .pc-git__dot.is-on { background: #34d399; box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16); }
+  .pc-git__dot.is-off { background: rgba(148, 163, 184, 0.5); }
+
+  .pc-git__pill { font-size: 11px; font-weight: 640; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(125, 211, 252, 0.2); color: rgba(214, 236, 248, 0.8); }
+  .pc-git__pill.is-good { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.1); }
+  .pc-git__pill.is-warn { color: #fcd34d; border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.1); }
+  .pc-git__pill.is-bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.1); }
+
+  .pc-git__timeline { display: grid; gap: 4px; }
+  .pc-git__event { display: grid; grid-template-columns: 88px 90px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid rgba(125, 211, 252, 0.1); border-radius: 8px; background: rgba(255,255,255,0.012); font-size: 12px; }
+  .pc-git__chip { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; padding: 2px 6px; border-radius: 6px; text-align: center; background: rgba(125, 211, 252, 0.12); color: #bae6fd; }
+  .pc-git__chip.is-good { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+  .pc-git__chip.is-warn { background: rgba(251, 191, 36, 0.14); color: #fcd34d; }
+  .pc-git__chip.is-bad { background: rgba(248, 113, 113, 0.16); color: #fca5a5; }
+  .pc-git__event-status { font-weight: 620; }
+  .pc-git__event-detail { color: rgba(186, 230, 253, 0.62); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .pc-git__event-time { color: rgba(186, 230, 253, 0.5); white-space: nowrap; }
+
+  .pc-git__empty { color: rgba(186, 230, 253, 0.55); font-size: 13px; padding: 12px 0; }
+  .pc-git__err { color: #fca5a5; font-size: 12px; border: 1px solid rgba(248, 113, 113, 0.35); border-radius: 8px; padding: 8px 10px; }
+`;

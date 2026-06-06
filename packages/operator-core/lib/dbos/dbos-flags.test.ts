@@ -5,6 +5,7 @@ import {
   dbosProvisionActive,
   dbosBackupActive,
   dbosCurationActive,
+  dbosPlanRenderActive,
 } from './dbos-flags';
 
 type Env = Record<string, string | undefined>;
@@ -68,4 +69,15 @@ describe('dbosCurationActive — curator-operator P0, opt-in, off until =1', () 
     expect(dbosCurationActive({ PAPERCUSP_DBOS_CURATION: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
   test('CURATION=0 → inactive', () =>
     expect(dbosCurationActive({ PAPERCUSP_DBOS_CURATION: '0' })).toBe(false));
+});
+
+describe('dbosPlanRenderActive — plan-markdown auto-render, opt-in, off until =1', () => {
+  test('unset → inactive (fresh capability that writes the tracked tree)', () =>
+    expect(dbosPlanRenderActive({})).toBe(false));
+  test('PLAN_RENDER=1 → active', () =>
+    expect(dbosPlanRenderActive({ PAPERCUSP_DBOS_PLAN_RENDER: '1' })).toBe(true));
+  test('PLAN_RENDER=1 but ORCHESTRATOR=0 → off (master revert wins)', () =>
+    expect(dbosPlanRenderActive({ PAPERCUSP_DBOS_PLAN_RENDER: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+  test('PLAN_RENDER=0 → inactive', () =>
+    expect(dbosPlanRenderActive({ PAPERCUSP_DBOS_PLAN_RENDER: '0' })).toBe(false));
 });

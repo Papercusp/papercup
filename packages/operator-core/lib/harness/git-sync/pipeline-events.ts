@@ -12,10 +12,18 @@
  * Writes are BEST-EFFORT: a stats-log failure must never affect the pipeline
  * itself, so `appendPipelineEvent` swallows + warns rather than throwing into the
  * git-sync / green-checkpoint handlers that call it.
+ *
+ * Each fn takes an optional `sql` (the emitUsageEvent seam) — defaults to the
+ * operator's org client, injected to a testcontainer client in integration tests.
  */
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
 export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'green_checkpoint' | 'deploy';
+
+function db(sql?: Sql): Sql {
+  return sql ?? (getOrgPg().sql as unknown as Sql);
+}
 
 export interface AppendPipelineEvent {
   workspaceId: string;
@@ -36,10 +44,9 @@ export interface PipelineEventRow {
 }
 
 /** Append one pipeline event. Best-effort — never throws (warns on failure). */
-export async function appendPipelineEvent(ev: AppendPipelineEvent): Promise<void> {
+export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): Promise<void> {
   try {
-    const { sql } = getOrgPg();
-    await sql`
+    await db(sql)`
       INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, detail)
       VALUES (${ev.workspaceId || '*'}, ${ev.installSlug}, ${ev.kind}, ${ev.status},
               ${JSON.stringify(ev.detail ?? {})}::jsonb)
@@ -64,7 +71,7 @@ export interface PipelineWindowSummary {
   };
 }
 
-function emptyWindow(sinceMs: number): PipelineWindowSummary {
+export function emptyWindow(sinceMs: number): PipelineWindowSummary {
   return {
     sinceMs,
     gitSync: { total: 0, synced: 0, nothing: 0, conflict: 0, error: 0 },
@@ -74,55 +81,69 @@ function emptyWindow(sinceMs: number): PipelineWindowSummary {
 }
 
 /**
- * Count events for `slug` over the trailing `windowSeconds`, grouped into the
- * per-kind summary the Git tab renders. One grouped query; folds (kind,status)
- * rows into the typed shape. Unknown statuses still count toward `total`.
+ * Fold raw `(kind,status,count)` group rows into the typed window summary. Pure —
+ * unit-tested without a DB. Unknown statuses still count toward each kind's total.
  */
-export async function summarizePipelineWindow(slug: string, windowSeconds: number): Promise<PipelineWindowSummary> {
-  const sinceMs = Date.now() - windowSeconds * 1000;
+export function foldPipelineWindow(
+  rows: Array<{ kind: string; status: string; n: number | string }>,
+  sinceMs: number,
+): PipelineWindowSummary {
   const out = emptyWindow(sinceMs);
+  for (const r of rows) {
+    const n = Number(r.n) || 0;
+    if (r.kind === 'git_sync') {
+      out.gitSync.total += n;
+      if (r.status === 'synced') out.gitSync.synced += n;
+      else if (r.status === 'nothing') out.gitSync.nothing += n;
+      else if (r.status === 'conflict') out.gitSync.conflict += n;
+      else if (r.status === 'error') out.gitSync.error += n;
+    } else if (r.kind === 'merge_resolver') {
+      out.mergeResolver.total += n;
+      if (r.status === 'ok') out.mergeResolver.ok += n;
+      else if (r.status === 'failed') out.mergeResolver.failed += n;
+      else if (r.status === 'error') out.mergeResolver.error += n;
+    } else if (r.kind === 'green_checkpoint') {
+      out.greenCheckpoint.total += n;
+      if (r.status === 'advanced') out.greenCheckpoint.advanced += n;
+      else if (r.status === 'up-to-date') out.greenCheckpoint.upToDate += n;
+      else if (r.status === 'not-green') out.greenCheckpoint.notGreen += n;
+      else if (r.status === 'not-fast-forward') out.greenCheckpoint.notFastForward += n;
+      else if (r.status === 'create-failed') out.greenCheckpoint.createFailed += n;
+    }
+  }
+  return out;
+}
+
+/**
+ * Count events for `slug` over the trailing `windowSeconds`, grouped into the
+ * per-kind summary the Git tab renders. One grouped query; `foldPipelineWindow`
+ * does the typing.
+ */
+export async function summarizePipelineWindow(
+  slug: string,
+  windowSeconds: number,
+  sql?: Sql,
+): Promise<PipelineWindowSummary> {
+  const sinceMs = Date.now() - windowSeconds * 1000;
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ kind: string; status: string; n: number }[]>`
+    const rows = await db(sql)<{ kind: string; status: string; n: number }[]>`
       SELECT kind, status, count(*)::int AS n
         FROM harness_shared.pipeline_events
        WHERE install_slug = ${slug}
          AND created_at >= now() - make_interval(secs => ${windowSeconds})
        GROUP BY kind, status
     `;
-    for (const r of rows) {
-      const n = Number(r.n) || 0;
-      if (r.kind === 'git_sync') {
-        out.gitSync.total += n;
-        if (r.status === 'synced') out.gitSync.synced += n;
-        else if (r.status === 'nothing') out.gitSync.nothing += n;
-        else if (r.status === 'conflict') out.gitSync.conflict += n;
-        else if (r.status === 'error') out.gitSync.error += n;
-      } else if (r.kind === 'merge_resolver') {
-        out.mergeResolver.total += n;
-        if (r.status === 'ok') out.mergeResolver.ok += n;
-        else if (r.status === 'failed') out.mergeResolver.failed += n;
-        else if (r.status === 'error') out.mergeResolver.error += n;
-      } else if (r.kind === 'green_checkpoint') {
-        out.greenCheckpoint.total += n;
-        if (r.status === 'advanced') out.greenCheckpoint.advanced += n;
-        else if (r.status === 'up-to-date') out.greenCheckpoint.upToDate += n;
-        else if (r.status === 'not-green') out.greenCheckpoint.notGreen += n;
-        else if (r.status === 'not-fast-forward') out.greenCheckpoint.notFastForward += n;
-        else if (r.status === 'create-failed') out.greenCheckpoint.createFailed += n;
-      }
-    }
+    return foldPipelineWindow(rows, sinceMs);
   } catch (e) {
     console.warn(`[pipeline-events] summarize failed: ${e instanceof Error ? e.message : e}`);
+    return emptyWindow(sinceMs);
   }
-  return out;
 }
 
 /** Most-recent events for `slug` (newest first) — the Git tab's timeline. */
-export async function recentPipelineEvents(slug: string, limit = 25): Promise<PipelineEventRow[]> {
+export async function recentPipelineEvents(slug: string, limit = 25, sql?: Sql): Promise<PipelineEventRow[]> {
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }[]>`
+    const rows = await db(sql)<{ id: string; kind: string; status: string; detail: unknown; created_at: Date }[]>`
       SELECT id::text, kind, status, detail, created_at
         FROM harness_shared.pipeline_events
        WHERE install_slug = ${slug}
@@ -133,11 +154,26 @@ export async function recentPipelineEvents(slug: string, limit = 25): Promise<Pi
       id: r.id,
       kind: r.kind as PipelineEventKind,
       status: r.status,
-      detail: (r.detail ?? {}) as Record<string, unknown>,
+      detail: normalizeDetail(r.detail),
       createdAtMs: r.created_at instanceof Date ? r.created_at.getTime() : new Date(r.created_at).getTime(),
     }));
   } catch (e) {
     console.warn(`[pipeline-events] recent failed: ${e instanceof Error ? e.message : e}`);
     return [];
   }
+}
+
+/** jsonb comes back as an object under the operator client but can arrive as a
+ *  string under some client configs (double-encode) — tolerate both. */
+function normalizeDetail(v: unknown): Record<string, unknown> {
+  if (v && typeof v === 'object') return v as Record<string, unknown>;
+  if (typeof v === 'string') {
+    try {
+      const p = JSON.parse(v);
+      return p && typeof p === 'object' ? (p as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 }

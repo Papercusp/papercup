@@ -71,6 +71,25 @@ should run. The `#[ignore]`d live smokes require the operator running (an
 - `ui::live_toast_log_fetch` — `recent_toasts` over the real wire.
 - `ui::live_presence_sidebar_render` — renders the real roster into the sidebar.
 
+## Audio device smokes (`voice.rs`, isolated null-sink — no running operator)
+
+The `#[ignore]`d hardware smokes in `src/voice.rs` exercise the REAL cpal capture +
+rodio playback path (not faked): `smoke_record_yields_16k_wav`, `smoke_play_tone`,
+and `smoke_loopback_tone_roundtrip` (plays a 440 Hz tone and captures it back,
+asserting the tone survived). They need an audio device, so run them through a
+PipeWire **null-sink** that isolates them — zero audible sound, the Brio mic / HDMI
+out defaults untouched:
+
+```bash
+scripts/audio-loopback-smoke.sh   # loads a null-sink, runs the 3 smokes, unloads it
+```
+
+This is the device-level complement to the deterministic, no-hardware **synthetic-voice**
+bus E2Es at `packages/operator-core/lib/voice-node/operator-voice-{multiclient,synthetic-audio}.test.ts`
+(synthetic voice through the real socket + `OperatorVoiceSession`, fake EL). It needs
+PipeWire + `pactl`, so it's a local dev smoke, not CI. (Agent memory:
+`isolated-audio-e2e-null-sink`.)
+
 ## What's NOT covered (known gaps)
 
 - **Interactive TTY behaviour** — actual terminal rendering, raw-mode input, and

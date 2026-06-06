@@ -89,7 +89,7 @@ export interface GitPipelineSnapshot {
 }
 
 /** The configured merge-resolver model spec (`AGENT_MODELS` → committed floor). */
-function resolverModel(): string {
+export function resolverModel(): string {
   try {
     const raw = process.env.AGENT_MODELS;
     if (raw) {
@@ -127,7 +127,7 @@ interface RoutineRow {
   next_fire_at: Date | string | null;
 }
 
-function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
+export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
   if (!r) return null;
   return {
     name: r.name,
