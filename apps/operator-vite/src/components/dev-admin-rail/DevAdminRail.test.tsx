@@ -1,16 +1,25 @@
 // @vitest-environment jsdom
 //
 // Dev admin rail shell — P-001 (collapsible, nuqs-backed open + active-section)
-// and P-009 (open/section state round-trips via the URL). The 7 lazily-imported
-// section panels are stubbed so this test covers the SHELL: the collapsed handle,
-// open/close, the single-open accordion, and that every interaction writes the
-// nuqs URL params (?devRail / ?devSec). Panel data behavior is tested separately
-// at the resolver level (dev-glances.test.ts) — here we only assert the right
-// panel MOUNTS for the active section.
+// and P-009 (open/section state round-trips via the URL). The rail is DOCKED
+// (like the op-chat sidebar): the aside is always mounted, collapsing to a thin
+// expand-rail rather than disappearing. The 7 lazily-imported section panels are
+// stubbed so this test covers the SHELL: the collapsed expand-rail, open/close,
+// the single-open accordion, that the accordion is unmounted while collapsed, and
+// that every interaction writes the nuqs URL params (?devRail / ?devSec). Panel
+// data behavior is tested separately at the resolver level (dev-glances.test.ts).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+
+// The rail reads the route (to skip iframe-target/chromeless routes) and a
+// workspace-scoped localStorage key for its width. Stub both so the shell test
+// needs no router context and stays isolated from operator-core.
+vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => '/adv' }));
+vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
+  wsLocalKey: (k: string) => `test:${k}`,
+}));
 
 // Stub the 7 lazy panels with trivial markers so we don't pull in FeaturesAdmin /
 // AdminOps / useSyncQuery (their own surfaces are tested elsewhere).
@@ -44,22 +53,26 @@ function renderRail(searchParams = '') {
 }
 
 describe('DevAdminRail shell', () => {
-  it('renders only the collapsed handle by default (rail closed)', () => {
+  it('is docked-but-collapsed by default: the rail mounts, the expand-rail shows, and the accordion is unmounted', () => {
     renderRail();
+    const rail = screen.getByTestId('dev-admin-rail');
+    expect(rail.getAttribute('data-collapsed')).toBe('true');
     expect(screen.getByTestId('dev-admin-rail-handle')).toBeTruthy();
-    expect(screen.queryByTestId('dev-admin-rail')).toBeNull();
+    // Accordion (and its panels) are not rendered while collapsed.
+    expect(screen.queryByTestId('dev-rail-sec-flags')).toBeNull();
   });
 
-  it('clicking the handle opens the rail — writes ?devRail=true to the URL', async () => {
+  it('clicking the expand-rail opens it — writes ?devRail=true to the URL', async () => {
     const { lastQuery } = renderRail();
     fireEvent.click(screen.getByTestId('dev-admin-rail-handle'));
     // nuqs throttles URL writes — await the flush.
     await waitFor(() => expect(lastQuery()).toContain('devRail=true'));
   });
 
-  it('when open (?devRail=true) it shows the rail with all 7 section headers, flags active by default', async () => {
+  it('when open (?devRail=true) it shows the rail expanded with all 7 section headers, flags active by default', async () => {
     renderRail('?devRail=true');
-    expect(screen.getByTestId('dev-admin-rail')).toBeTruthy();
+    const rail = screen.getByTestId('dev-admin-rail');
+    expect(rail.getAttribute('data-collapsed')).toBe('false');
     for (const sec of ['flags', 'run', 'notifications', 'health', 'deploy', 'db', 'fleet']) {
       expect(screen.getByTestId(`dev-rail-sec-${sec}`)).toBeTruthy();
     }
@@ -84,12 +97,15 @@ describe('DevAdminRail shell', () => {
     await waitFor(() => expect(screen.queryByTestId('panel-flags')).toBeNull());
   });
 
-  it('clicking close collapses the rail — clears devRail and shows the handle again', async () => {
+  it('clicking close collapses the rail — clears devRail and re-shows the expand-rail', async () => {
     renderRail('?devRail=true');
     fireEvent.click(screen.getByLabelText('Close dev admin rail'));
     // setOpen(false) === the parseAsBoolean default → the rail collapses back to
-    // just the handle (and nuqs drops the now-default param).
-    await waitFor(() => expect(screen.getByTestId('dev-admin-rail-handle')).toBeTruthy());
-    expect(screen.queryByTestId('dev-admin-rail')).toBeNull();
+    // the expand-rail (and nuqs drops the now-default param); the accordion unmounts.
+    await waitFor(() =>
+      expect(screen.getByTestId('dev-admin-rail').getAttribute('data-collapsed')).toBe('true'),
+    );
+    expect(screen.getByTestId('dev-admin-rail-handle')).toBeTruthy();
+    expect(screen.queryByTestId('dev-rail-sec-flags')).toBeNull();
   });
 });

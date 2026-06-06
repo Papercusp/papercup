@@ -71,10 +71,19 @@ the projection, that test fails.
 - **Write positional fits a bounded shape only** (D-006): scalars/enums/ids + **at
   most one trailing free-text field** (server splits on the first N−1 commas, so
   its embedded commas/newlines are safe — no model-side escaping), **no
-  array/object args**, not optional-heavy. `projectWriteColumns` returns
-  `undefined` for anything else, and the tool stays typed-JSON. Tools like
-  `coord:send` (`to[]`), `coord:handoff` (arrays), and `plans:set-status` (a
-  non-last free-text `note`) are correctly rejected.
+  array/object args**, and **optionals must be a contiguous TRAILING block** — a
+  required column after an optional would let the model omit the optional and
+  silently shift every later value into the wrong column, so such a tool is
+  rejected. `projectWriteColumns` returns `undefined` for anything that doesn't
+  fit, and the tool stays typed-JSON. Tools like `coord:send` (`to[]`),
+  `coord:handoff` (arrays), and `plans:set-status` (a non-last free-text `note`)
+  are correctly rejected. A Zod `.default()` column counts as optional (the model
+  may omit it; Zod fills the default).
+- **Reconstruct normalizes edge whitespace + an empty result still self-presents.**
+  Each positional field is `.trim()`'d so the natural `WI-42, passed` spacing
+  isn't rejected by the enum/id guard (internal commas/newlines in a free-text
+  field are untouched). An empty Tier-3 read result renders as `[0]` (not a TOON
+  fallback), so the model always sees the declared format.
 - **The misalignment guard is real but only as strong as the columns** (D-007).
   Zod checks shape, not alignment — a shifted row whose summary lands in a `tests`
   column still type-checks. `reconstructArgs` rejects on bad arity + per-column

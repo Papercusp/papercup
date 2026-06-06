@@ -135,10 +135,19 @@ is <strong>not</strong> Tier-3-enabled, while <code dir="auto">audit:list</code>
 <li><strong>Write positional fits a bounded shape only</strong> (D-006): scalars/enums/ids + <strong>at
 most one trailing free-text field</strong> (server splits on the first N−1 commas, so
 its embedded commas/newlines are safe — no model-side escaping), <strong>no
-array/object args</strong>, not optional-heavy. <code dir="auto">projectWriteColumns</code> returns
-<code dir="auto">undefined</code> for anything else, and the tool stays typed-JSON. Tools like
-<code dir="auto">coord:send</code> (<code dir="auto">to[]</code>), <code dir="auto">coord:handoff</code> (arrays), and <code dir="auto">plans:set-status</code> (a
-non-last free-text <code dir="auto">note</code>) are correctly rejected.</li>
+array/object args</strong>, and <strong>optionals must be a contiguous TRAILING block</strong> — a
+required column after an optional would let the model omit the optional and
+silently shift every later value into the wrong column, so such a tool is
+rejected. <code dir="auto">projectWriteColumns</code> returns <code dir="auto">undefined</code> for anything that doesn’t
+fit, and the tool stays typed-JSON. Tools like <code dir="auto">coord:send</code> (<code dir="auto">to[]</code>),
+<code dir="auto">coord:handoff</code> (arrays), and <code dir="auto">plans:set-status</code> (a non-last free-text <code dir="auto">note</code>)
+are correctly rejected. A Zod <code dir="auto">.default()</code> column counts as optional (the model
+may omit it; Zod fills the default).</li>
+<li><strong>Reconstruct normalizes edge whitespace + an empty result still self-presents.</strong>
+Each positional field is <code dir="auto">.trim()</code>’d so the natural <code dir="auto">WI-42, passed</code> spacing
+isn’t rejected by the enum/id guard (internal commas/newlines in a free-text
+field are untouched). An empty Tier-3 read result renders as <code dir="auto">[0]</code> (not a TOON
+fallback), so the model always sees the declared format.</li>
 <li><strong>The misalignment guard is real but only as strong as the columns</strong> (D-007).
 Zod checks shape, not alignment — a shifted row whose summary lands in a <code dir="auto">tests</code>
 column still type-checks. <code dir="auto">reconstructArgs</code> rejects on bad arity + per-column

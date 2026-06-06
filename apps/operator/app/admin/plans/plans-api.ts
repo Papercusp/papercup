@@ -317,7 +317,15 @@ export function fetchPlanList(params?: {
 }
 
 export function fetchPlan(slug: string, signal?: AbortSignal) {
-  return getJson<PlanGetResult>('get', { slug }, signal);
+  // mode:'full' is REQUIRED here. `plans:get` defaults to mode:'sections',
+  // which returns frontmatter + items + a section INDEX but NOT the prose/raw
+  // markdown body (the default protects agent payloads from a 90KB blob —
+  // plans-pg-canonical-migration-2026-06-03). The UI consumers of usePlan
+  // (PlanDetail's Vditor editor, PlanItemPreview) and rejectDraftPlan all read
+  // `data.raw`/`data.prose` to render/round-trip the whole plan, so without
+  // mode:'full' the editor renders BLANK. These are user-driven, one-plan-at-
+  // a-time fetches, so the full body is the right payload.
+  return getJson<PlanGetResult>('get', { slug, mode: 'full' }, signal);
 }
 
 export function fetchPlanItems(params?: {

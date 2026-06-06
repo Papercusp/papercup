@@ -12,10 +12,13 @@
 export const RAIL_CSS = `/*
  * Dev admin rail — chrome styles (plan dev-admin-sidebar-2026-06-05).
  *
- * A collapsible, dev-only right rail. Overlay (does NOT shift app layout) so it
- * can sit over any route without fighting the left op-chat sidebar. Tokens mirror
- * the proven FeaturesAdmin palette (var(--bg-*), var(--accent-*)) so it reads as
- * part of the app's dark glassy theme. Everything is prefixed pcdar.
+ * A collapsible, dev-only right rail. DOCKED like the left op-chat sidebar: it
+ * reserves layout space (body.has-dev-rail padding-right + the --dev-rail-w var)
+ * so the app shifts left instead of the rail floating over content, and it stays
+ * present as a thin expand-rail when collapsed (never a disappearing tab). The
+ * width is drag-resizable from the left edge. Tokens mirror the proven
+ * FeaturesAdmin palette (var(--bg-*), var(--accent-*)) so it reads as part of the
+ * app's dark glassy theme. Everything is prefixed pcdar.
  */
 
 .pcdar {
@@ -23,11 +26,10 @@ export const RAIL_CSS = `/*
   top: 0;
   right: 0;
   bottom: 0;
-  width: 384px;
-  max-width: 92vw;
-  z-index: 1000000; /* above app content, below sonner toasts (2147483646) */
+  z-index: 1300; /* same layer as the op-chat sidebar; below sonner toasts */
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%),
@@ -35,51 +37,118 @@ export const RAIL_CSS = `/*
   );
   border-left: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 78%);
   box-shadow: -18px 0 48px rgba(0, 0, 0, 0.42);
-  transform: translateX(0);
-  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.pcdar.is-closed {
-  transform: translateX(100%);
-  box-shadow: none;
+  /* width is set inline (collapsed rail vs expanded panel, drag-resizable) */
 }
 
-/* Collapsed handle — a thin tab clinging to the right edge that re-opens it. */
-.pcdar__handle {
-  position: fixed;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  z-index: 1000000;
+/* Expanded shell — header + accordion. Hidden when collapsed (and its panels
+   are unmounted in the TSX) so an inactive panel's SSE/queries never run. */
+.pcdar__expanded-shell {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
+  flex-direction: column;
+}
+.pcdar[data-collapsed="true"] .pcdar__expanded-shell {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Collapsed: a thin full-height rail with a vertical "Dev" affordance that
+   re-expands it — mirrors the op-chat sidebar's collapsed expand-rail, so the
+   rail is always docked and never disappears. */
+.pcdar__expand-rail {
+  position: relative;
+  z-index: 3;
+  display: none;
+  width: 100%;
+  height: 100%;
+  padding: 12px 6px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
   align-items: center;
-  gap: 6px;
-  padding: 12px 6px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 70%);
-  border-right: none;
-  border-radius: 10px 0 0 10px;
-  background: color-mix(in srgb, var(--bg-raised, #0e1c30), transparent 4%);
-  color: rgba(203, 238, 255, 0.86);
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 12px;
+  cursor: pointer;
+}
+.pcdar[data-collapsed="true"] .pcdar__expand-rail {
+  display: flex;
+}
+.pcdar__expand-orb {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 76%);
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.16), transparent 24%),
+    color-mix(in srgb, var(--accent, #57d7ff), transparent 88%);
+  color: var(--accent-strong, #7dd3fc);
+}
+.pcdar__expand-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-transform: uppercase;
   font-size: 10px;
   font-weight: 760;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  writing-mode: vertical-rl;
-  cursor: pointer;
-  box-shadow: -8px 0 22px rgba(0, 0, 0, 0.3);
-  transition: background 120ms, border-color 120ms, color 120ms;
+  letter-spacing: 0.2em;
+  color: rgba(207, 238, 255, 0.86);
 }
-.pcdar__handle:hover {
-  background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 0%);
+.pcdar__expand-chevron {
+  width: 16px;
+  height: 16px;
+  color: rgba(148, 224, 255, 0.86);
+}
+.pcdar__expand-rail:hover {
+  background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%);
+}
+.pcdar__expand-rail:hover .pcdar__expand-orb {
   border-color: rgba(103, 232, 249, 0.5);
   color: #eff8ff;
 }
-.pcdar__handle-dot {
-  writing-mode: horizontal-tb;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent, #57d7ff);
-  box-shadow: 0 0 8px var(--accent, #57d7ff);
+.pcdar__expand-rail:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 18%);
+  outline-offset: -3px;
+}
+
+/* Drag-to-resize handle on the LEFT edge (the rail is docked on the right). */
+.pcdar__resize-handle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 4;
+  touch-action: none;
+}
+.pcdar__resize-handle:hover {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 78%),
+    transparent
+  );
+}
+.pcdar[data-collapsed="true"] .pcdar__resize-handle {
+  display: none;
+}
+
+/* Body reservation — the app shifts left by the rail's width so it docks
+   (pushes content) instead of floating over it, mirroring the op-chat
+   sidebar's left padding. This header-width rule is injected after the
+   op-chat one, so on equal specificity it wins when both sidebars are
+   present; each var defaults to 0px so the two sides compose independently. */
+body.has-dev-rail {
+  padding-right: var(--dev-rail-w, 48px);
+}
+body.has-dev-rail .pc-header {
+  width: calc(100vw - var(--op-chat-w, 0px) - var(--dev-rail-w, 0px));
 }
 
 /* Header */
