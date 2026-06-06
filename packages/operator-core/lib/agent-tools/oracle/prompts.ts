@@ -144,7 +144,12 @@ async function buildOracleInventoryBlock(): Promise<string> {
   const base = process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
   let projects: Array<{ slug: string; path: string }> = [];
   try {
-    const r = await fetch(`${base}/api/harness/projects`);
+    // BOUNDED: this is best-effort prompt enrichment — without the abort, a
+    // slow /api/harness/projects hangs every composeOraclePrompt caller for
+    // the route's full latency (2026-06-06: the route degraded to 76s/408 and
+    // took the oracle prompt tests — and with them the green gate — down with
+    // it). Degrade to no-inventory after 3s, same posture as the catch.
+    const r = await fetch(`${base}/api/harness/projects`, { signal: AbortSignal.timeout(3000) });
     if (r.ok) {
       const d = await r.json();
       projects = (d?.projects ?? []).map((p: { slug: string; path: string }) => ({ slug: p.slug, path: p.path }));
