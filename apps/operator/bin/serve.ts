@@ -166,6 +166,30 @@ function defaultSqlDir(): string {
   return fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql', import.meta.url));
 }
 
+/** The embedded-PG data dir as ensurePostgres resolves it (env or default). */
+function resolvedPgDataDir(): string {
+  return process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, 'embedded-pg-data');
+}
+
+/**
+ * Synchronously SIGINT the postmaster named in `<dataDir>/postmaster.pid` —
+ * PG's "fast shutdown". Used by the signal handler, which cannot rely on
+ * surviving past its first await (see the shutdown comment). PG finishes the
+ * shutdown on its own and removes postmaster.pid; we don't wait.
+ */
+export function sigintPostmasterSync(dataDir: string): void {
+  try {
+    const raw = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8');
+    const pid = Number((raw.split('\n')[0] ?? '').trim());
+    if (Number.isInteger(pid) && pid > 0) {
+      log(`fast-shutdown signal to postmaster pid=${pid}`);
+      process.kill(pid, 'SIGINT');
+    }
+  } catch {
+    /* no postmaster.pid / already gone */
+  }
+}
+
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   // ~/.papercusp holds credentials — operator.json carries the superuser bearer
   // token, embedded-pg.json carries a DSN with the PG password (the `url` field
@@ -381,7 +405,17 @@ async function main(): Promise<void> {
   let server: { close?: () => void } | null = null;
   let shuttingDown = false;
 
-  const shutdown = async (sig: string) => {
+  // ⚠ The critical cleanup below is SYNCHRONOUS by design. The async
+  // version of this handler was observed (2026-06-06, bundled serve.mjs)
+  // dying mid-shutdown: operator.json got removed but the process never
+  // came back from `await pg.stop()` — the cold-start lock stayed held and
+  // in one variant the postmaster was orphaned. The host graph bundles
+  // signal-exit (via execa et al.), whose re-raise can kill the process at
+  // the first yield; pg_ctl can also stall on an already-dying PG. Rather
+  // than depend on surviving any await: remove the discovery file, release
+  // the lock, and fast-shutdown the postmaster (SIGINT) all synchronously,
+  // then attempt the graceful async stop as best-effort.
+  const shutdown = (sig: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`${sig} — shutting down`);
@@ -390,13 +424,22 @@ async function main(): Promise<void> {
     } catch {
       /* ignore */
     }
-    await rm(OPERATOR_JSON, { force: true }).catch(() => {});
-    if (pg) await pg.stop().catch(() => {});
+    try {
+      unlinkSync(OPERATOR_JSON);
+    } catch {
+      /* already gone */
+    }
+    if (pg) sigintPostmasterSync(resolvedPgDataDir());
     releaseColdStartLock();
-    process.exit(0);
+    // Best-effort graceful wait — a competing handler may kill us before
+    // this completes; the sync work above already covered the essentials.
+    void (async () => {
+      if (pg) await pg.stop().catch(() => {});
+      process.exit(0);
+    })();
   };
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   try {
     pg = await ensurePostgres();

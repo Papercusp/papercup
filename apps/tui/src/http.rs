@@ -253,3 +253,38 @@ mod tests {
         assert_eq!(f2.data, "{\"name\":\"roster\"}");
     }
 }
+
+#[cfg(test)]
+mod live_tests {
+    //! LIVE verification against a real headless `papercusp serve` (SP1 —
+    //! closes the tui-workbench "HTTP-remote verify blocked on no remote
+    //! `serve` infra" deferral). Boot one isolated instance first:
+    //!
+    //!   HOME=<tmp-home> PAPERCUSP_HONO_PORT=<port> PAPERCUSP_PG_PORT=<port> \
+    //!     node sidecar/serve.mjs        # or: npm --prefix apps/operator run serve
+    //!
+    //! then run with that HOME so `~/.papercusp/operator.json` resolves:
+    //!
+    //!   HOME=<tmp-home> cargo test -p pui --lib http_live -- --ignored
+    use super::*;
+    use serde_json::Value;
+
+    #[tokio::test]
+    #[ignore = "requires a live headless `papercusp serve` (reads ~/.papercusp/operator.json)"]
+    async fn http_live_read_surface_against_headless_serve() {
+        let client = HttpClient::from_discovery().expect("operator.json discovery");
+        let health = client
+            .sys_http("GET", "/api/health", None)
+            .await
+            .expect("GET /api/health over HTTP+bearer");
+        let v: Value = serde_json::from_slice(&health).expect("health JSON");
+        assert_eq!(v["ok"], serde_json::json!(true), "health body: {v}");
+        // A real pui read-surface route (workbench persistence, D-013).
+        let layouts = client
+            .sys_http("GET", "/api/tui/layouts?owner=http-live-test@papercusp", None)
+            .await
+            .expect("GET /api/tui/layouts");
+        let v: Value = serde_json::from_slice(&layouts).expect("layouts JSON");
+        assert!(v.get("layouts").is_some(), "layouts shape: {v}");
+    }
+}
