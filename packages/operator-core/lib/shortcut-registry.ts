@@ -25,7 +25,7 @@ import type { ActionOptions } from './shortcut-bus';
 import { wsLocalKey } from './browser-workspace';
 import { reconcileProfilePref, shallowJsonEquals, writeProfileField } from './profile-pref';
 
-export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'feature-list' | 'editor' | 'palette';
+export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'feature-list' | 'editor' | 'palette' | 'voice';
 
 export interface ShortcutDef {
   /** Stable id used for storage + the settings UI. Dotted convention. */
@@ -63,24 +63,29 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   {
     id: 'palette.toggle',
     description: 'Open or close the command palette',
-    // Three alternates — any of them fires the toggle:
+    // Two alternates — either fires the toggle (Discord-parity pass,
+    // discord-shortcuts 2026-06-06):
+    //   * Mod+K    — PRIMARY: Discord/Linear/Slack quick-switcher muscle
+    //                memory (works in the Tauri webview; only FF/Safari
+    //                browsers swallow it for address-bar search).
     //   * Mod+P    — overrides the browser print dialog (Notion-style).
     //                Browsers let preventDefault win on Ctrl/Cmd+P, so
     //                the user gets our palette, not OS print. Requires
     //                `enableOnFormTags` so it works while focus is in a
     //                textarea/input — otherwise Mod+P inside vditor
     //                would still trigger the browser print path.
-    //   * Mod+/    — universal-safe (Slack uses this); free in FF/Safari.
-    //   * Mod+K    — Linear muscle memory (works on Chrome/Edge; FF +
-    //                Safari swallow it for their address-bar search).
-    defaultCombo: 'mod+p, mod+/, mod+k',
+    //   (Mod+/ moved to `shortcuts.show` — Discord uses it for the
+    //   keyboard-shortcuts help, and we follow.)
+    defaultCombo: 'mod+k, mod+p',
     category: 'palette',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },
   {
     id: 'shortcuts.show',
     description: 'Show keyboard-shortcut cheat-sheet',
-    defaultCombo: 'shift+slash',
+    // Mod+/ is Discord's "Keyboard Shortcuts menu" combo; `?` kept as the
+    // classic alternate.
+    defaultCombo: 'mod+slash, shift+slash',
     // 'global' (not 'palette') — the dispatcher preventDefaults palette
     // combos even when the form-tag guard skips the handler, which would
     // swallow a literal '?' typed into any text input.
@@ -101,6 +106,32 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     defaultCombo: 'mod+s',
     category: 'editor',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+
+  // ── Voice / video (Discord-parity; universal-voice session bus) ───
+  // Mute is a BUS control: it applies once at the session host and the
+  // resulting state broadcasts to every attached surface (P-004 of
+  // universal-voice-interface-2026-06-05). Deafen is LOCAL-only: this
+  // surface keeps receiving transcripts but silences its own playout.
+  {
+    id: 'voice.toggleMute',
+    description: 'Toggle microphone mute (shared voice session)',
+    defaultCombo: 'mod+shift+m', // Discord: Ctrl+Shift+M
+    category: 'voice',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
+    id: 'voice.toggleDeafen',
+    description: 'Toggle deafen (silence local voice playout)',
+    defaultCombo: 'mod+shift+d', // Discord: Ctrl+Shift+D
+    category: 'voice',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
+    id: 'video.toggleCamera',
+    description: 'Toggle camera (video pane)',
+    defaultCombo: 'mod+shift+v', // Discord: Ctrl+Shift+V
+    category: 'voice',
   },
 
   // ── Browser history (back / forward) ────────────────────────────
@@ -161,6 +192,58 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: 'goto.insights',
     description: 'Go to Insights tab',
     defaultCombo: 'g>i',
+    category: 'navigation',
+  },
+
+  // ── Discord-parity navigation (discord-shortcuts 2026-06-06) ──────
+  // Alt+↑/↓ mirrors Discord's prev/next-channel; our channel-analog is
+  // the /adv tab strip. Mod+Alt+←/→ mirrors Discord's server switcher;
+  // our server-analog is the harness/pot selector. Handlers live in
+  // AdvShell (the component that owns the nuqs ?tab= / ?slug= state).
+  {
+    id: 'goto.prevTab',
+    description: 'Previous tab',
+    defaultCombo: 'alt+ArrowUp',
+    category: 'navigation',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
+    id: 'goto.nextTab',
+    description: 'Next tab',
+    defaultCombo: 'alt+ArrowDown',
+    category: 'navigation',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
+    id: 'harness.prev',
+    description: 'Previous harness (pot)',
+    defaultCombo: 'mod+alt+ArrowLeft',
+    category: 'navigation',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
+    id: 'harness.next',
+    description: 'Next harness (pot)',
+    defaultCombo: 'mod+alt+ArrowRight',
+    category: 'navigation',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
+    id: 'goto.inbox',
+    description: 'Go to Conversations (inbox)',
+    defaultCombo: 'mod+i', // Discord: Ctrl+I opens the inbox
+    category: 'navigation',
+  },
+  {
+    id: 'harness.create',
+    description: 'Create a new harness (pot)',
+    defaultCombo: 'mod+shift+n', // Discord: Ctrl+Shift+N = new server
+    category: 'navigation',
+  },
+  {
+    id: 'settings.open',
+    description: 'Open settings',
+    defaultCombo: 'mod+comma', // Discord (and most apps): Ctrl+,
     category: 'navigation',
   },
 

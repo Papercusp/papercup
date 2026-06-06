@@ -17,11 +17,11 @@ type Direction = {
   note: string;
 };
 
-const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a swarm and watch the world change.';
+const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a hive, start a swarm, and watch the world change.';
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a swarm and watch the world change.',
+  'Create or Join a hive, start a swarm, and watch the world change.',
 ] as const;
 
 const DIRECTIONS: Direction[] = [
@@ -189,7 +189,7 @@ export default function SwarmIdentityPage() {
                 <div className={styles.browserBody}>
                   <span className={styles.miniEyebrow}>A new intelligence is forming</span>
                   <h3>Welcome to the End.</h3>
-                  <p>Be part of the new beginning. Create or Join a swarm and watch the world change.</p>
+                  <p>Be part of the new beginning. Create or Join a hive, start a swarm, and watch the world change.</p>
                   <div className={styles.browserActions}>
                     <button type="button">Create a swarm</button>
                     <button type="button">Join a swarm</button>

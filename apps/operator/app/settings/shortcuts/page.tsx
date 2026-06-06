@@ -28,6 +28,7 @@ const CATEGORY_LABELS: Record<ShortcutCategory, string> = {
   history: 'Back / forward',
   'feature-list': 'Feature list',
   editor: 'Editors',
+  voice: 'Voice & video',
 };
 
 const CATEGORY_ORDER: ShortcutCategory[] = [
@@ -35,6 +36,7 @@ const CATEGORY_ORDER: ShortcutCategory[] = [
   'global',
   'navigation',
   'history',
+  'voice',
   'feature-list',
   'editor',
 ];
@@ -50,7 +52,7 @@ export default function ShortcutsSettingsPage() {
 
   const grouped = useMemo(() => {
     const g: Record<ShortcutCategory, ShortcutDef[]> = {
-      global: [], palette: [], navigation: [], history: [], 'feature-list': [], editor: [],
+      global: [], palette: [], navigation: [], history: [], 'feature-list': [], editor: [], voice: [],
     };
     for (const s of SHORTCUTS) g[s.category].push(s);
     return g;
