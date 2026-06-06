@@ -135,7 +135,11 @@ function projectFromObjectSchema(
       return undefined;
     }
     const { type, enumValues, pattern } = scalarTypeOf(inner, name);
-    cols.push({ name, type, optional: !required.has(name), nullable, enumValues, pattern });
+    // A field with a Zod `.default()` projects as `required` (it always has a
+    // value on output) but is omittable on INPUT — treat it as optional so the
+    // model may drop it and Zod fills the default.
+    const optional = !required.has(name) || 'default' in raw;
+    cols.push({ name, type, optional, nullable, enumValues, pattern });
   }
 
   // Mark the single trailing free-text column for write tools (D-006): the LAST
@@ -149,6 +153,15 @@ function projectFromObjectSchema(
     // Any EARLIER free-text-shaped column makes the tool ineligible (≥2 free-text).
     for (let i = 0; i < cols.length - 1; i++) {
       if (cols[i].type === 'string' && FREE_TEXT_NAMES.has(cols[i].name)) return undefined;
+    }
+    // Positional safety (D-006 — "not a pile of optionals"): optional columns
+    // must form a contiguous TRAILING block. A required column AFTER an optional
+    // would let the model omit the optional and silently SHIFT every later value
+    // into the wrong column. Such a tool stays typed-JSON.
+    let seenOptional = false;
+    for (const c of cols) {
+      if (c.optional) seenOptional = true;
+      else if (seenOptional) return undefined;
     }
   } else {
     // Read path / all-scalar write: ≥1 prose-shaped column means it isn't a
@@ -343,7 +356,11 @@ export function reconstructArgs(rowText: string, columns: ColumnSpec[]): Reconst
   const args: Record<string, unknown> = {};
   for (let i = 0; i < columns.length; i++) {
     const col = columns[i];
-    const raw = i < fields.length ? fields[i] : '';
+    // Normalize EDGE whitespace per field: a model that writes the natural CSV
+    // style `WI-42, passed` must not be rejected by the enum/id guard over a
+    // stray leading space. Internal content (commas/newlines inside a free-text
+    // field) is untouched — `.trim()` only strips the field's own edges.
+    const raw = (i < fields.length ? fields[i] : '').trim();
     const coerced = coerceScalar(raw, col);
     if (!coerced.ok) return { ok: false, reason: coerced.reason };
     if (coerced.value !== undefined) args[col.name] = coerced.value;

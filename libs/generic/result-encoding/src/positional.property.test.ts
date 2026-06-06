@@ -57,8 +57,11 @@ describe('positional round-trip — encode → reconstruct is lossless (string-c
     fc.assert(
       fc.property(
         fc.stringMatching(/^[A-Za-z0-9_-]{1,12}$/),
-        // free text: any printable incl. commas/quotes, but kept on one line
-        fc.string({ minLength: 1, maxLength: 80 }).filter((s) => !s.includes('\n') && !s.includes('\r')),
+        // free text: any printable incl. commas/quotes, one line, no EDGE
+        // whitespace (reconstruct normalizes edges — internal content is kept).
+        fc
+          .string({ minLength: 1, maxLength: 80 })
+          .filter((s) => !s.includes('\n') && !s.includes('\r') && s === s.trim()),
         (id, body) => {
           const line = `${id},${body}`; // exactly what the model emits
           const r = reconstructArgs(line, cols);
@@ -77,7 +80,10 @@ describe('positional round-trip — encode → reconstruct is lossless (string-c
     fc.assert(
       fc.property(
         fc.stringMatching(/^[A-Za-z0-9_-]{1,12}$/),
-        fc.string({ minLength: 1, maxLength: 40 }).filter((s) => !s.includes('\n') && !s.includes('\r') && !s.includes('"')),
+        // No edge whitespace (reconstruct normalizes it) and no embedded quote/newline.
+        fc
+          .string({ minLength: 1, maxLength: 40 })
+          .filter((s) => !s.includes('\n') && !s.includes('\r') && !s.includes('"') && s === s.trim()),
         (id, label) => {
           const line = encodeRow({ id, label }, cols);
           const r = reconstructArgs(line, cols);
