@@ -131,8 +131,8 @@ describe('HetznerDriver provision/teardown', () => {
       ...ctx,
       bootstrap: { repoUrl: 'g', install: ['npm ci'] },
     });
-    expect(scripts[0]).toContain('PAPERCUSP_DBOS_ORCHESTRATOR=1'); // same provider-agnostic bootstrap
-    expect(scripts[0]).toContain('npm ci');
+    expect(scripts.at(-1)).toContain('PAPERCUSP_DBOS_ORCHESTRATOR=1'); // same provider-agnostic bootstrap
+    expect(scripts.at(-1)).toContain('npm ci');
   });
   it('default export declares hetzner/remote', () => {
     expect(HetznerDriver.target).toBe('hetzner');

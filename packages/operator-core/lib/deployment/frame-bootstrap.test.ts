@@ -53,6 +53,28 @@ describe('buildFrameBootstrap', () => {
     expect(script).not.toContain('.credentials.json');
   });
 
+  it('runtime tarball delivery: untars instead of the anonymous clone (private repo)', () => {
+    const { script, steps } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      runtimeTarballRemotePath: '/root/papercusp-runtime.tgz',
+    });
+    expect(steps).toContain('runtime');
+    expect(script).toContain("tar xzf '/root/papercusp-runtime.tgz' -C '/opt/papercusp/runtime'");
+    expect(script).not.toContain('git clone --depth 1 https://github.com/Papercusp/papercup.git');
+  });
+
+  it('explicit runtimeSetup still wins over the tarball default', () => {
+    const { script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      runtimeTarballRemotePath: '/root/papercusp-runtime.tgz',
+      runtimeSetup: ['fetch-prebuilt-bundle.sh'],
+    });
+    expect(script).toContain('fetch-prebuilt-bundle.sh');
+    expect(script).not.toContain('tar xzf');
+  });
+
   it('both channels can coexist in one credentials step', () => {
     const { script, steps } = buildFrameBootstrap({
       harnessSlug: 'h',

@@ -17,12 +17,42 @@ import { createSshRemoteExec, type RemoteExec } from './remote-exec';
 export const REMOTE_CRED_PATH = '/root/papercusp-claude-credentials.json';
 /** Where the per-frame long-lived OAuth token (`claude setup-token`) is staged. */
 export const REMOTE_TOKEN_PATH = '/root/papercusp-claude-token';
+/** Where the operator-packed runtime tarball is staged (private-repo delivery). */
+export const REMOTE_RUNTIME_TARBALL_PATH = '/root/papercusp-runtime.tgz';
 
 export interface FrameInstallerDeps {
   /** Build the RemoteExec for a frame. Injected for tests; default = SSH. */
   makeRemoteExec?: (frame: Frame, config: DeploymentConfig) => RemoteExec;
   /** Optional admission hook (P-015). Default: the frame federates via its boot announce. */
   onJoin?: (frame: Frame, config: DeploymentConfig, ctx: DeploymentContext) => Promise<void>;
+  /** SSH-readiness probe tuning (tests inject {attempts, delayMs, sleep}). */
+  sshWait?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
+}
+
+/** Wait for the frame's sshd to accept connections — a provisioned server can
+ *  report ready (IP assigned) before its OS has finished booting sshd. */
+export async function waitForSsh(
+  exec: RemoteExec,
+  log: (msg: string) => void,
+  opts: FrameInstallerDeps['sshWait'] = {},
+): Promise<void> {
+  const attempts = opts.attempts ?? 30;
+  const delayMs = opts.delayMs ?? 10_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let i = 1; ; i++) {
+    try {
+      await exec.runScript('true');
+      return;
+    } catch (e) {
+      if (i >= attempts) {
+        throw new Error(
+          `frame ssh not reachable after ${attempts} attempt(s): ${(e as Error).message}`,
+        );
+      }
+      log(`ssh not ready (attempt ${i}/${attempts}); retrying in ${Math.round(delayMs / 1000)}s`);
+      await sleep(delayMs);
+    }
+  }
 }
 
 export function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
@@ -47,6 +77,9 @@ export async function installFrame(
   const exec = makeRemoteExec(frame, config);
   const log = (msg: string) => ctx.log?.('info', `[install] ${msg}`);
 
+  // The API saying "ready" ≠ sshd accepting — wait before any scp/script.
+  await waitForSsh(exec, log, deps.sshWait);
+
   // P-011: stage the per-frame Claude subscription (its own rate limits) first —
   // either a credentials bundle, a long-lived OAuth token, or both.
   if (boot.credentialsLocalPath) {
@@ -56,6 +89,11 @@ export async function installFrame(
   if (boot.oauthTokenLocalPath) {
     log(`staging per-frame Claude OAuth token → ${REMOTE_TOKEN_PATH}`);
     await exec.copyFile(boot.oauthTokenLocalPath, REMOTE_TOKEN_PATH);
+  }
+  // P-010 private-repo runtime delivery: stage the operator-packed tarball.
+  if (boot.runtimeTarballLocalPath) {
+    log(`staging runtime tarball → ${REMOTE_RUNTIME_TARBALL_PATH}`);
+    await exec.copyFile(boot.runtimeTarballLocalPath, REMOTE_RUNTIME_TARBALL_PATH);
   }
   const { script } = buildFrameBootstrap({
     harnessSlug: ctx.harnessSlug,
@@ -73,6 +111,7 @@ export async function installFrame(
     },
     claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
     claudeTokenRemotePath: boot.oauthTokenLocalPath ? REMOTE_TOKEN_PATH : undefined,
+    runtimeTarballRemotePath: boot.runtimeTarballLocalPath ? REMOTE_RUNTIME_TARBALL_PATH : undefined,
     embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
     orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop
     env: boot.env,

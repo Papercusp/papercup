@@ -49,6 +49,11 @@ export interface FrameBootstrapOpts {
   /** Commands that install the papercusp RUNTIME on the frame (clone+build, or fetch a
    *  prebuilt bundle). Parameterized — infra's choice. A sane default is provided. */
   runtimeSetup?: string[];
+  /** Path on the frame where an operator-packed runtime tarball was staged (P-010
+   *  private-repo delivery). When set (and no explicit runtimeSetup), the runtime
+   *  section untars it instead of the default anonymous `git clone` — which can
+   *  never work against the private runtime repo. */
+  runtimeTarballRemotePath?: string;
   /** Extra NON-SECRET env exported for the run (merged over environment.env). */
   env?: Record<string, string>;
   /** The harness's per-install instance config as JSON — exported as
@@ -136,12 +141,22 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
 
   add('runtime', 'papercusp runtime', [
     `mkdir -p ${shq(root)}`,
-    ...(opts.runtimeSetup ?? [
-      '# Default runtime delivery: clone + install the operator runtime. Prod may',
-      '# swap this for a prebuilt bundle fetch (set opts.runtimeSetup).',
-      `git clone --depth 1 https://github.com/Papercusp/papercup.git ${shq(`${root}/runtime`)} || true`,
-      `cd ${shq(`${root}/runtime`)} && npm ci --no-audit --no-fund || npm install --no-audit --no-fund`,
-    ]),
+    ...(opts.runtimeSetup ??
+      (opts.runtimeTarballRemotePath
+        ? [
+            '# Runtime delivered as an operator-packed tarball (the runtime repo is',
+            '# private — an anonymous clone can never work; no git credential shipped).',
+            `mkdir -p ${shq(`${root}/runtime`)}`,
+            `tar xzf ${shq(opts.runtimeTarballRemotePath)} -C ${shq(`${root}/runtime`)}`,
+            `cd ${shq(`${root}/runtime`)} && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund)`,
+          ]
+        : [
+            '# Default runtime delivery: clone + install the operator runtime. Prod may',
+            '# swap this for a prebuilt bundle fetch (set opts.runtimeSetup) or stage a',
+            '# tarball (runtimeTarballRemotePath) — required while the repo is private.',
+            `git clone --depth 1 https://github.com/Papercusp/papercup.git ${shq(`${root}/runtime`)} || true`,
+            `cd ${shq(`${root}/runtime`)} && npm ci --no-audit --no-fund || npm install --no-audit --no-fund`,
+          ])),
   ]);
 
   if (opts.repoUrl) {

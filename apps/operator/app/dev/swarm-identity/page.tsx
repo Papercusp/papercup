@@ -80,12 +80,16 @@ const DIRECTIONS: Direction[] = [
 
 export default function SwarmIdentityPage() {
   const [showIntro, setShowIntro] = useState(true);
+  const [introReplay] = useQueryState('intro');
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    if (introReplay === '1') {
+      setShowIntro(true);
+    }
     const timer = window.setTimeout(() => setShowIntro(false), 8200);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [introReplay]);
 
   const [selected, setSelected] = useQueryState(
     'direction',

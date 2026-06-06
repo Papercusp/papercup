@@ -24,8 +24,8 @@
   z-index: 50;
   display: grid;
   place-items: center;
-  height: min(620px, calc(100svh - 32px));
-  min-height: 360px;
+  height: clamp(280px, calc(100vh - 96px), 620px);
+  min-height: 0;
   margin: 0 0 18px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 34px;

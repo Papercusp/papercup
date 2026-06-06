@@ -29,6 +29,15 @@ export function resolveCredential(
   return {};
 }
 
+/** Resolve `provider.runtimeTarball` (a local tarball path) for private-repo
+ *  runtime delivery — the frame untars it instead of an anonymous clone. */
+export function resolveRuntimeTarball(config: DeploymentConfig): string | undefined {
+  const provider = (config.provider ?? {}) as Record<string, unknown>;
+  const p = provider.runtimeTarball as string | undefined;
+  if (!p) return undefined;
+  return p.startsWith('~') ? p.replace(/^~/, process.env.HOME ?? '~') : p;
+}
+
 export async function buildDeployBootstrapInput(
   slug: string,
   workspaceId: string,
@@ -82,6 +91,7 @@ export async function buildDeployBootstrapInput(
     ports: env?.ports,
     env: env?.env,
     ...resolveCredential(config.credentialRef),
+    runtimeTarballLocalPath: resolveRuntimeTarball(config),
     instanceConfigJson,
   };
 }

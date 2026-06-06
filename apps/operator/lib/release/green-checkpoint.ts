@@ -136,6 +136,15 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
     async runGreen(treeDir, base) {
       const [cmd, ...args] = cfg.greenCmd.split(' ');
       const env: NodeJS.ProcessEnv = { ...process.env };
+      // GREEN means "the COMMITTED DEFAULTS pass" — strip ad-hoc flag overrides
+      // from the gate's environment. On 2026-06-06 a demo toggle set in the
+      // systemd user-manager env (PAPERCUSP_FLAG_PAPERCUSP_THE_HIVE=1) leaked
+      // into every routine/unit-launched gate run, flipped the lexicon away
+      // from its default, and held `main` red for hours while the same suite
+      // passed in any login shell. A box-level demo must never define green.
+      for (const k of Object.keys(env)) {
+        if (k.startsWith('PAPERCUSP_FLAG_')) delete env[k];
+      }
       if (base) env.AFFECTED_BASE = base;
       // Cap the suite's parallelism: the checkpoint shares the box with the live
       // fleet (deploys, hive agents, builds), and uncapped vitest workers under

@@ -218,8 +218,9 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
     });
     // P-011: credential staged before the script ran.
     expect(exec.copies).toEqual([['/local/claude-creds.json', '/root/papercusp-claude-credentials.json']]);
-    expect(exec.scripts).toHaveLength(1);
-    const script = exec.scripts[0];
+    expect(exec.scripts).toHaveLength(2); // ssh-readiness probe + bootstrap
+    expect(exec.scripts[0]).toBe('true');
+    const script = exec.scripts.at(-1)!;
     expect(script).toContain('Frame for harness: papercup');
     expect(script).toContain('npm ci'); // env-install
     expect(script).toContain('npm run build'); // env-build
@@ -234,7 +235,19 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
     const driver = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => exec });
     await driver.install(frame, cfg, { ...ctx, bootstrap: { repoUrl: 'g' } });
     expect(exec.copies).toEqual([]);
-    expect(exec.scripts).toHaveLength(1);
+    expect(exec.scripts).toHaveLength(2); // probe + bootstrap
+  });
+
+  it('stages the runtime tarball (P-010 private-repo delivery) and the bootstrap untars it', async () => {
+    const exec = fakeExec();
+    const driver = makeLatitudeDriver({ client: fakeClient([]), makeRemoteExec: () => exec });
+    await driver.install(frame, cfg, {
+      ...ctx,
+      bootstrap: { runtimeTarballLocalPath: '/local/runtime.tgz' },
+    });
+    expect(exec.copies).toEqual([['/local/runtime.tgz', '/root/papercusp-runtime.tgz']]);
+    expect(exec.scripts.at(-1)).toContain('tar xzf');
+    expect(exec.scripts.at(-1)).not.toContain('git clone');
   });
 
   it('stages a long-lived OAuth token (P-011 token channel) and exports it in the bootstrap', async () => {
@@ -245,7 +258,7 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
       bootstrap: { repoUrl: 'g', oauthTokenLocalPath: '/local/frame-claude/token' },
     });
     expect(exec.copies).toEqual([['/local/frame-claude/token', '/root/papercusp-claude-token']]);
-    expect(exec.scripts[0]).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(exec.scripts.at(-1)).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 
   it('join default is a no-op log; onJoin hook is honored when provided', async () => {
