@@ -575,12 +575,12 @@ guess method names from memory.
 Every tool exposed via MCP is authored once in a `defineTool({ ... })`
 call (or plugin manifest entry). When you ship a new tool:
 
-1. **Define the tool** in `apps/operator/lib/agent-tools/<group>/<verb>.ts`
+1. **Define the tool** in `packages/operator-core/lib/agent-tools/<group>/<verb>.ts`
    (or `packages/agent-mcp/src/tools/...` for read-side tools).
-2. **Add `import './<group>/<verb>';`** to `apps/operator/lib/agent-tools/index.ts`.
+2. **Add `import './<group>/<verb>';`** to `packages/operator-core/lib/agent-tools/index.ts`.
 3. **Add `guidance: { when, notWhen?, chaining?, byRole? }`** to the `defineTool` call. `when` is the most important field — author it first.
-4. **If exposed on a chat surface**: add `mcp__agentmcp__<group>:<verb>` to that surface's `allowedTools` array (operator-converse: `apps/operator/lib/operator-mcp-tools.ts`; oracle: `apps/operator/app/api/_hono/oracle.ts`).
-5. **Run** the Vitest sync test `apps/operator/lib/__tests__/tools-md-sync.test.ts` (e.g. `cd apps/operator && npx vitest run tools-md-sync`) — must be green before commit.
+4. **If exposed on a chat surface**: add `mcp__agentmcp__<group>:<verb>` to that surface's `allowedTools` array (operator-converse: `packages/operator-core/lib/operator-mcp-tools.ts`; oracle: `packages/operator-core/lib/agent-tools/oracle/prompts.ts`).
+5. **Run** the Vitest sync test `packages/operator-core/lib/__tests__/tools-md-sync.test.ts` (e.g. `cd packages/operator-core && npx vitest run tools-md-sync`) — must be green before commit.
 
 The CI test validates:
 - Every tool in the role's surface has `guidance.when` (warn-only through Phase 4; fail after Phase 5 backfill lands).
@@ -590,7 +590,7 @@ The CI test validates:
 Per-tool when/not-when goes in the tool file. Cross-tool patterns
 (chaining, panel verbs, workflows) go in `<role>.tools.md`. Behavior
 rules ("always call", "tier-high → confirm") go in `<role>.persona.md`.
-The split is intentional — see `apps/operator/lib/prompt-assembly.ts`.
+The split is intentional — see `packages/operator-core/lib/prompt-assembly.ts`.
 
 ## Where new tests go — four canonical frameworks (2026-05-24)
 
