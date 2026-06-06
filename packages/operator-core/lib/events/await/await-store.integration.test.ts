@@ -227,4 +227,61 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(fired).toHaveLength(1);
     expect(fired[0].subscriberId).toBe('su-13');
   });
+
+  // ── unify-watch-primitive: cardinality + floor + coalesce (P-005/P-007) ──
+
+  it('standing watches (once:false) fire on EVERY emit; a one-shot peer fires once (cardinality, D-001)', async () => {
+    await store.registerAwait({ subscriberId: 'su-standing', eventKey: 'card:k', once: false, minSleepSec: 30 });
+    await store.registerAwait({ subscriberId: 'su-oneshot', eventKey: 'card:k', once: true });
+    const first = await store.fireAwaitsForKey({ eventKey: 'card:k' });
+    expect(first.map((a) => a.subscriberId).sort()).toEqual(['su-oneshot', 'su-standing']);
+    // Subsequent emits: the standing watch keeps firing; the one-shot is consumed.
+    const second = await store.fireAwaitsForKey({ eventKey: 'card:k' });
+    expect(second.map((a) => a.subscriberId)).toEqual(['su-standing']);
+    const third = await store.fireAwaitsForKey({ eventKey: 'card:k' });
+    expect(third.map((a) => a.subscriberId)).toEqual(['su-standing']);
+    expect(third[0].once).toBe(false);
+    expect(third[0].minSleepSec).toBe(30);
+  });
+
+  it('floor inputs round-trip; the watch-level urgency OR’s onto its deliveries (P-005)', async () => {
+    const a = await store.registerAwait({
+      subscriberId: 'su-floor',
+      eventKey: 'floor:k',
+      once: false,
+      minSleepSec: 45,
+      urgency: true,
+    });
+    expect(a.minSleepSec).toBe(45);
+    expect(a.urgency).toBe(true);
+    const fired = await store.fireAwaitsForKey({ eventKey: 'floor:k' });
+    // emit-time urgent=false, but the watch is always-urgent → delivery urgent=true.
+    await store.insertDeliveries({ awaits: fired, urgent: false });
+    const [w] = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-floor');
+    expect(w.urgent).toBe(true);
+    expect(w.minSleepSec).toBe(45);
+  });
+
+  it('coalesced siblings settle as a no-turn delivery; last_woken counts only turn-burning channels (P-005)', async () => {
+    await store.registerAwait({ subscriberId: 'su-coal', eventKey: 'coal:k', once: false });
+    await store.insertDeliveries({ awaits: await store.fireAwaitsForKey({ eventKey: 'coal:k' }) });
+    await store.insertDeliveries({ awaits: await store.fireAwaitsForKey({ eventKey: 'coal:k' }) });
+    const work = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-coal');
+    expect(work.length).toBe(2);
+    const [headline, sibling] = work;
+    await store.markDeliveryDelivered(headline.id, 'resume', 2);
+    await store.markDeliveriesCoalesced([sibling.id], headline.id);
+    const recent = await store.listRecentDeliveries('su-coal');
+    expect(recent.find((d) => d.id === sibling.id)).toMatchObject({ status: 'delivered', channel: 'coalesced' });
+    expect(recent.find((d) => d.id === headline.id)).toMatchObject({ coalescedCount: 2 });
+    // The headline 'resume' is a real wake; it sets last_woken.
+    expect((await store.lastWokenAtForSubscribers(['su-coal'])).get('su-coal')).toBeGreaterThan(0);
+
+    // A subscriber whose ONLY delivery is coalesced has NO last wake (no turn spent).
+    await store.registerAwait({ subscriberId: 'su-coalonly', eventKey: 'coalonly:k' });
+    await store.insertDeliveries({ awaits: await store.fireAwaitsForKey({ eventKey: 'coalonly:k' }) });
+    const [only] = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-coalonly');
+    await store.markDeliveriesCoalesced([only.id], 999);
+    expect((await store.lastWokenAtForSubscribers(['su-coalonly'])).has('su-coalonly')).toBe(false);
+  });
 });

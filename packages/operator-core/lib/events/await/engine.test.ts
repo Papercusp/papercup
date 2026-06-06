@@ -52,6 +52,7 @@ function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
     cancelledAt: null,
     once: true,
     minSleepSec: null,
+    urgency: false,
     ...over,
   };
 }

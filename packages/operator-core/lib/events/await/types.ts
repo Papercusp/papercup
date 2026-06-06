@@ -64,6 +64,9 @@ export interface AwaitRow {
   /** Per-subscriber wake floor for this watch's wakes, in seconds. null/0 = no floor
    *  (one-shot grants wake promptly); >0 throttles a recurring wake:true watch. */
   minSleepSec: number | null;
+  /** A watch whose wakes ALWAYS bypass the floor (a human-message / escalation watch).
+   *  OR'd with the emit-time urgent flag onto each delivery. */
+  urgency: boolean;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';

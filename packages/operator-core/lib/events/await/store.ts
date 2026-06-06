@@ -74,6 +74,7 @@ function mapAwait(r: any): AwaitRow {
     cancelledAt: r.cancelled_at ? new Date(r.cancelled_at).toISOString() : null,
     once: r.once ?? true,
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
+    urgency: r.urgency ?? false,
   };
 }
 
@@ -120,13 +121,15 @@ export async function registerAwait(input: {
   once?: boolean;
   /** Per-subscriber wake floor in seconds for this watch (null/0 = no floor). */
   minSleepSec?: number | null;
+  /** This watch's wakes always bypass the floor (a human-message / escalation watch). */
+  urgency?: boolean;
   workspaceId?: string;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec)
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
     VALUES
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
@@ -136,7 +139,7 @@ export async function registerAwait(input: {
          // Date binding (the repo's known quirk); PG casts text→timestamptz.
          input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
        },
-       ${input.once ?? true}, ${input.minSleepSec ?? null})
+       ${input.once ?? true}, ${input.minSleepSec ?? null}, ${input.urgency ?? false})
     RETURNING *
   `;
   return mapAwait(rows[0]);
@@ -205,8 +208,14 @@ export async function listActiveAwaitsForKey(eventKey: string, workspaceId?: str
 }
 
 /**
- * Atomically fire every active await on a key (the one-shot core, D-002).
- * Returns the rows fired BY THIS CALL — a concurrent emit gets the others.
+ * Fire every active watch on a key, returning the rows fired BY THIS CALL.
+ *
+ * Cardinality is honored (unify-watch-primitive D-001/D-004):
+ *  - **one-shot** watches (`once = true`, today's await) are claimed ATOMICALLY
+ *    (`UPDATE … SET fired_at WHERE fired_at IS NULL`) — exactly-once, a concurrent emit
+ *    gets the others, an await can never wake-loop.
+ *  - **standing** watches (`once = false`, the pot-style recurring watch) are MATCHED but
+ *    NOT consumed — they keep firing on every emit until cancelled or expired.
  */
 export async function fireAwaitsForKey(input: {
   eventKey: string;
@@ -215,14 +224,22 @@ export async function fireAwaitsForKey(input: {
 }): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs(input.workspaceId);
-  const rows = await sql`
+  // One-shot watches: atomic claim (exactly-once, D-002).
+  const onceRows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
-       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING *
   `;
-  return rows.map(mapAwait);
+  // Standing watches: match without consuming (still active after this fire).
+  const standingRows = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
+       AND once = false AND cancelled_at IS NULL
+       AND (expires_ts IS NULL OR expires_ts > now())
+  `;
+  return [...onceRows, ...standingRows].map(mapAwait);
 }
 
 /** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the
@@ -242,11 +259,14 @@ export async function insertDeliveries(input: {
   const payloadJson = input.payload === undefined ? null : JSON.stringify(input.payload);
   let n = 0;
   for (const a of input.awaits) {
+    // The delivery is urgent if EITHER the emit declared it OR the watch is an
+    // always-urgent watch (a.urgency) — either bypasses the floor.
+    const urgent = (input.urgent ?? false) || a.urgency;
     await sql`
       INSERT INTO harness_shared.event_wake_deliveries
         (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::jsonb,
-              ${input.summary ?? null}, ${input.urgent ?? false}, ${a.minSleepSec ?? null})
+              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null})
     `;
     n++;
   }

@@ -17,7 +17,7 @@ import { subscribeTopic } from '../topics';
 export default defineTool({
   name: 'topics:subscribe',
   description:
-    'Subscribe to a topic so its updates are injected into your inbox. mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL.',
+    'Subscribe to a topic so its updates are injected into your inbox — the named sugar for watch(topic,{wake:false}). mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL.',
   guidance: {
     when: 'A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet.',
     notWhen: 'You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic.',

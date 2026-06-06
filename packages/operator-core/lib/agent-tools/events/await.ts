@@ -34,7 +34,7 @@ const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d
 export default defineTool({
   name: 'events:await',
   description:
-    'Register a one-shot WAKE subscription on an exact event key (e.g. lock:grant:<ticket>, plan-run:finished:<id>, or any key a source/peer will events:emit). When it fires you are re-invoked — a live managed-pty session gets the wake injected as a turn; an exited session is resumed with the wake reason as the prompt; an open terminal we cannot inject gets an inbox nudge and is resumed when it exits. Then END YOUR TURN — do not poll or hold the connection.',
+    'Register a one-shot WAKE subscription on an exact event key (e.g. lock:grant:<ticket>, plan-run:finished:<id>, or any key a source/peer will events:emit) — the named sugar for watch(key,{wake:true,once:true}). When it fires you are re-invoked — a live managed-pty session gets the wake injected as a turn; an exited session is resumed with the wake reason as the prompt; an open terminal we cannot inject gets an inbox nudge and is resumed when it exits. Then END YOUR TURN — do not poll or hold the connection.',
   guidance: {
     when: 'You need X-to-happen-before-you-proceed and X is announced as an event: a lock grant, a plan-run finishing, a peer answering, CI/deploy landing, a custom key a collaborator will emit. Register, optionally tell the emitter the key, then end your turn and sleep.',
     notWhen:

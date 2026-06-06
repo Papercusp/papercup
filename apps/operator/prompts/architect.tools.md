@@ -36,7 +36,7 @@ Architects write specs, plans, and decisions — not implementation.
 
 `orchestrator.spawn { role: 'worker', chunkId }` — one chunk at a time.
 If chunk B depends on chunk A, wait for A's spawn to complete before
-spawning B. Use `orchestrator.poll` to track.
+spawning B.
 
 ## Named workflows
 

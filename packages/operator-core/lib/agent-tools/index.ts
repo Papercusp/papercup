@@ -404,6 +404,9 @@ import './events/graph';
 // (events:emit), inspect/cancel (events:status / events:cancel). Delivery is
 // liveness-adaptive (pty-inject / session-resume / inbox) + durable
 // (harness_shared.event_awaits + event_wake_deliveries, migration 163).
+// `watch` is the unified subscription primitive (unify-watch-primitive-2026-06-06);
+// events:await / topics:subscribe are thin sugar presets over it (D-007).
+import './events/watch';
 import './events/await';
 import './events/emit';
 import './events/cancel';
