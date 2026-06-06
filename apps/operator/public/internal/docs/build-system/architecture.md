@@ -23,7 +23,7 @@ by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the
     └── src-tauri/            ← main.rs + tauri.conf.json — produces the .deb/.dmg/.msi
 ```
 
-`papercusp-desktop` is the wrapper. It bundles a built copy of `apps/operator` (Next.js standalone) as a **sidecar** and ships the Rust binary + sidecar in one installer.
+`papercusp-desktop` is the wrapper. It bundles a built copy of `apps/operator` (the Vite SPA + Hono host — Next.js is retired) as a **sidecar** and ships the Rust binary + sidecar in one installer.
 
 ## What a Tauri production build does at startup
 

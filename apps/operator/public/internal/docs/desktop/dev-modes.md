@@ -124,6 +124,25 @@ Note: `vite preview` is a static server, not a watcher. To pick up
 edits, re-run `npm run build` and reload the Tauri webview
 (Ctrl-R / Cmd-R).
 
+## Gating dev-only UI: use `MODE`, not `DEV`
+
+A dev-only surface — the **dev admin rail**
+(`apps/operator-vite/src/components/dev-admin-rail/`, plan
+`dev-admin-sidebar-2026-06-05`) is the worked example — must show in the dev
+shells above but be **absent from the shipped build**. The non-obvious part: gate
+it on **`import.meta.env.MODE !== 'production'`**, *not* `import.meta.env.DEV`.
+
+`DEV`/`PROD` follow the **command** (`vite` serve vs `vite build`); `MODE` follows
+`--mode`. The default desktop dev (`bin/desktop-dev-nohmr`) is a `vite build`, so
+`import.meta.env.DEV` is **`false`** there — a `DEV`-gated surface compiles away
+and never appears in the very desktop it's for. Only `MODE` is `development` in
+**both** dev shells (HMR + nohmr) and `production` in the shipped `vite build`.
+Because `MODE` is a static string, a `MODE`-gated `lazy(() => import(...))` is
+dead code in prod and Rollup drops the whole chunk (rail JS *and* CSS).
+
+Full rationale, the CSS-leak/class-prefix gotchas, and the build-grep that proves
+absence: [Gate dev-only UI on MODE, not DEV](/internal/docs/agent-insights/dev-only-ui-gating-mode-not-dev).
+
 ## Next.js is retired
 
 The operator frontend is Vite-only. `next dev` and `next start` are

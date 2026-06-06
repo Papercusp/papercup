@@ -4879,6 +4879,8 @@ mod tests {
             files: vec!["a.md".into(), "sub/b.md".into()],
             active_path: Some("a.md".into()),
             content: Some("# A".into()),
+            entries: vec![],
+            active_entry: None,
         });
         assert_eq!(a.doc_sel, 0); // followed the server's active path
         assert_eq!(a.doc_content, "# A");
@@ -5055,6 +5057,8 @@ mod tests {
             files: vec!["a.md".into(), "b.md".into()],
             active_path: Some("a.md".into()),
             content: Some("x".into()),
+            entries: vec![],
+            active_entry: None,
         });
         assert_eq!(a.doc_scroll, 0);
         a.update(Event::Key(KeyEvent::new(

@@ -159,6 +159,10 @@ with in-memory cache + bulk upsert).
 
 ## 10. dev:web vs dev:operator confusion
 
+> **Retired (2026-05-30).** `apps/web` (the `@papercup/web` public site) was moved to
+> `_retired/papercup/` and dropped from the workspace; the `dev:web` script no longer
+> exists. Kept for reference. The operator (`:3055`) is the **Vite** SPA — see the **Fix** note.
+
 **Symptom**: edits to `apps/web/...` don't take effect after restart.
 
 **Why**: `dev:web` serves `apps/web/.next/standalone/server.js`, **not**

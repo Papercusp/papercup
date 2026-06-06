@@ -3349,6 +3349,8 @@ mod tests {
             files: vec!["readme.md".into(), "spec/x.md".into()],
             active_path: Some("readme.md".into()),
             content: Some("# Hello docs".into()),
+            entries: vec![],
+            active_entry: None,
         });
         let text = render(&app, 100, 12);
         assert!(text.contains("docs (2)"));
