@@ -325,17 +325,44 @@ function parseCardEvent(data: unknown): CardEvent | null {
   return cardFromObj(obj);
 }
 
-function cardFromObj(c: Record<string, unknown>): CardEvent | null {
-  const kind = typeof c.kind === 'string' ? c.kind : typeof c.cardKind === 'string' ? (c.cardKind as string) : null;
+export function cardFromObj(c: Record<string, unknown>): CardEvent | null {
+  // The state-channel OpenCardSnapshot (tooldef card-correlator) carries NO
+  // `kind` field — its shape is { correlationId, prompt, presentation:
+  // { kind: 'radio'|'checkbox', options, voiceAnswerable? }, fallbackText, … }.
+  // The old parser required `kind`/`cardKind` and silently dropped EVERY real
+  // chat_ask_choice card, which is why no S16 run ever recorded a card even
+  // when the brain emitted one (voice-persona P-003, found 2026-06-07).
+  // Derive the kind from the presentation for snapshot-shaped cards.
+  const presentation = (c.presentation && typeof c.presentation === 'object'
+    ? c.presentation
+    : undefined) as
+    | { kind?: unknown; options?: unknown; voiceAnswerable?: unknown }
+    | undefined;
+  const kind =
+    typeof c.kind === 'string'
+      ? c.kind
+      : typeof c.cardKind === 'string'
+        ? (c.cardKind as string)
+        : presentation?.kind === 'radio' || presentation?.kind === 'checkbox'
+          ? 'chat:ask_choice'
+          : null;
   if (!kind) return null;
-  const opts = Array.isArray(c.options) ? (c.options as Array<{ id?: unknown; label?: unknown }>) : undefined;
+  const optsRaw = Array.isArray(c.options)
+    ? (c.options as Array<{ id?: unknown; label?: unknown }>)
+    : Array.isArray(presentation?.options)
+      ? (presentation.options as Array<{ id?: unknown; label?: unknown }>)
+      : undefined;
   const fallbackText = typeof c.fallbackText === 'string' ? (c.fallbackText as string) : undefined;
   return {
     kind,
-    options: opts
+    options: optsRaw
       ?.filter((o) => typeof o.id === 'string' && typeof o.label === 'string')
       .map((o) => ({ id: o.id as string, label: o.label as string })),
-    voiceAnswerable: !!fallbackText,
+    // For snapshot-shaped (presentation-carrying) cards, the REAL voice flag
+    // is presentation.voiceAnswerable (set only when true) — asserting on it
+    // catches a brain that forgot voiceAnswerable:true. Legacy card events
+    // without a presentation keep the fallbackText heuristic.
+    voiceAnswerable: presentation ? presentation.voiceAnswerable === true : !!fallbackText,
     payload: c,
   };
 }

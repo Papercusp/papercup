@@ -30,8 +30,10 @@ import { getCachedRateLimitConfig } from './rate-limit-config';
 // unlike a renamed `createRequire`, stays statically inlinable by the desktop
 // sidecar's esbuild bundle (a createRequire'd literal would not inline → "cannot
 // find module" in the shipped sidecar).
-const HeadlessTerminal = xtermHeadless.Terminal;
-const SerializeAddon = xtermAddonSerialize.SerializeAddon;
+// Lazy-resolve at call time (not module load) to work around CJS interop timing
+// race on first spawnPty call in wake-resume flow.
+const getHeadlessTerminal = () => xtermHeadless.Terminal ?? (xtermHeadless as any).default?.Terminal;
+const getSerializeAddon = () => xtermAddonSerialize.SerializeAddon ?? (xtermAddonSerialize as any).default?.SerializeAddon;
 
 export interface SpawnPtyOpts {
   /** Binary to launch (e.g. 'omp', 'bash', '/usr/local/bin/omp'). */
@@ -79,8 +81,8 @@ export interface PtyHandle {
    * correct for vim/htop because the headless Terminal resizes
    * alongside the pty.
    */
-  headless: InstanceType<typeof HeadlessTerminal>;
-  serializer: InstanceType<typeof SerializeAddon>;
+  headless: InstanceType<ReturnType<typeof getHeadlessTerminal>>;
+  serializer: InstanceType<ReturnType<typeof getSerializeAddon>>;
 }
 
 const HISTORY_CAP_BYTES = 1024 * 1024;
@@ -182,13 +184,27 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   }
 
   const id = randomUUID();
-  const headless = new HeadlessTerminal({
+  const T = getHeadlessTerminal();
+  const S = getSerializeAddon();
+  if (!T) {
+    throw new PtyError(
+      'HeadlessTerminal constructor not resolved (CJS interop)',
+      'TERMINAL_CONSTRUCTOR_FAILED',
+    );
+  }
+  if (!S) {
+    throw new PtyError(
+      'SerializeAddon constructor not resolved (CJS interop)',
+      'SERIALIZE_ADDON_FAILED',
+    );
+  }
+  const headless = new T({
     cols: opts.cols,
     rows: opts.rows,
     scrollback: HEADLESS_SCROLLBACK,
     allowProposedApi: true,
   });
-  const serializer = new SerializeAddon();
+  const serializer = new S();
   headless.loadAddon(serializer);
 
   const handle: PtyHandle = {
