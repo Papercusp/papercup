@@ -13,8 +13,12 @@
  * status + one 1×1-JPEG thumb event.
  */
 import { test, expect, type Page } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { FRAME_THUMB_TESTSRC, FRAME_THUMB_SMPTE, FRAME_THUMB_RGB } from './__fixtures__/frame-thumbs';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+const ARTIFACT_DIR = join(__dirname, '__artifacts__');
 
 // A minimal valid 1×1 JPEG (black) — enough for <img> to decode.
 const TINY_JPEG_B64 =
@@ -83,7 +87,79 @@ async function framesTabMounts(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
+/** A realistic multi-frame / multi-display stub for the VISUAL capture: two
+ *  deployed frames, four active agent-displays with role labels + real
+ *  test-pattern JPEGs, so the screenshot shows the GUI as it actually looks. */
+async function stubRealisticSwarm(page: Page) {
+  await page.route('**/api/deploy/frames*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        frames: [
+          { slug: 'web-checkout', frame: { id: 'hz-1', host: '5.161.10.20', region: 'ash', kind: 'vm', target: 'hetzner' }, desktop: true },
+          { slug: 'docs-site', frame: { id: 'hz-2', host: '5.161.10.21', region: 'ash', kind: 'vm', target: 'hetzner' }, desktop: true },
+        ],
+      }),
+    });
+  });
+  const sse = (slug: string, thumbs: Array<{ display: number; jpeg: string; role: string }>) => {
+    const status = { slug, state: 'polling', frameId: slug === 'web-checkout' ? 'hz-1' : 'hz-2', displays: thumbs.map((t) => t.display) };
+    const lines = [`event: status`, `data: ${JSON.stringify(status)}`, ''];
+    for (const t of thumbs) {
+      lines.push(
+        `event: thumb`,
+        `data: ${JSON.stringify({ slug, display: t.display, jpegBase64: t.jpeg, capturedAtMs: Date.now(), role: t.role, leaseSinceMs: Date.now() - 45_000 })}`,
+        '',
+      );
+    }
+    lines.push('');
+    return lines.join('\n');
+  };
+  await page.route('**/api/deploy/web-checkout/frame-view*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: sse('web-checkout', [
+        { display: 99, jpeg: FRAME_THUMB_TESTSRC, role: 'worker' },
+        { display: 100, jpeg: FRAME_THUMB_SMPTE, role: 'validator' },
+      ]),
+    });
+  });
+  await page.route('**/api/deploy/docs-site/frame-view*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: sse('docs-site', [{ display: 99, jpeg: FRAME_THUMB_RGB, role: 'documenter' }]),
+    });
+  });
+}
+
 test.describe('/adv Frames tab (Swarm live view)', () => {
+  // VISUAL capture (not gating): render the Frames tab against a realistic
+  // multi-frame swarm + open the live-view panel, saving PNGs to __artifacts__
+  // so the GUI can be eyeballed/shared. Mirrors adv-contributors-panel.spec.ts.
+  test('CAPTURE: Frames tab tile grid + live-view panel screenshots', async ({ page }) => {
+    mkdirSync(ARTIFACT_DIR, { recursive: true });
+    await stubRealisticSwarm(page);
+    const mounted = await framesTabMounts(page);
+    test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
+
+    await expect(page.locator('.pc-frames__tile')).toHaveCount(3, { timeout: 15_000 });
+    await expect(page.locator('.pc-frames__chip')).toHaveCount(2);
+    // let the tiles paint
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: join(ARTIFACT_DIR, 'frames-tab-grid.png'), fullPage: false });
+
+    // open the enlarged live-view panel on the first tile
+    await page.locator('.pc-frames__tile').first().click();
+    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    await expect(panel).toBeVisible();
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(ARTIFACT_DIR, 'frames-tab-panel.png'), fullPage: false });
+    console.log(`[frames-capture] wrote ${ARTIFACT_DIR}/frames-tab-{grid,panel}.png`);
+  });
+
   test('renders the tile grid from the roster + SSE thumbs; selection rides nuqs', async ({ page }) => {
     await stubApis(page);
     const mounted = await framesTabMounts(page);

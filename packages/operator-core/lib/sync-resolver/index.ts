@@ -1396,6 +1396,72 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [await buildFleetRateStatus()];
     },
   },
+
+  // ─── Left sidebar (left-sidebar-tauri-2026-06-07) — the desktop's Hives /
+  // Voice / Swarm rail, the SPA twin of the pui dock tabs. ───────────────
+
+  // sidebar.fleetBees — the whole-fleet assignment groups (every agent's ranked
+  // work-list + plan-claim slugs + liveness), the same canonical view
+  // `fleet:assignments` serves. Backs the Swarm tab's fleet-wide task list and
+  // the per-agent dossier filter.
+  'sidebar.fleetBees': {
+    argsSchema: z.object({ workspace: z.string().optional() }),
+    resolve: async (args) => {
+      const { workspace } = (args ?? {}) as { workspace?: string };
+      const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
+      const rows = await listFleetAssignments({ workspaceId: workspace ?? null, activeOnly: true });
+      return groupByAgent(rows);
+    },
+  },
+
+  // sidebar.beeMail — one agent's coord inbox + outbox (the observer view the
+  // bee-dossier comms section renders; `fleet:bee_mail`'s core, most-recent 50
+  // per side). One row: { owner, inbox, outbox }.
+  'sidebar.beeMail': {
+    argsSchema: z.object({ owner: z.string().min(1).max(200) }),
+    resolve: async (args) => {
+      const { owner } = args as { owner: string };
+      const { readInbox, readOutbox } = await import('../agent-tools/coordination/messages');
+      const [inboxAll, outboxAll] = await Promise.all([readInbox(owner, {}), readOutbox(owner, {})]);
+      const tail = <T,>(arr: T[]) => (arr.length > 50 ? arr.slice(arr.length - 50) : arr);
+      return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];
+    },
+  },
+
+  // sidebar.conversations — the whole-fleet conversation list (broadcasts +
+  // multi-party threads — the all-hands channel the Swarm comms view shows
+  // under the selected agent's direct mail).
+  'sidebar.conversations': {
+    argsSchema: z.object({
+      state: z.string().optional(),
+      limit: z.number().int().positive().max(200).default(50),
+    }),
+    resolve: async (args) => {
+      const { state, limit } = args as { state?: string; limit: number };
+      const { listConversations } = await import('../agent-tools/coordination/conversations');
+      type Opts = NonNullable<Parameters<typeof listConversations>[0]>;
+      const rows = await listConversations({ state: state as Opts['state'], limit });
+      return rows;
+    },
+  },
+
+  // sidebar.hives — every p2p-swarm peer (`shared_presence` — remote installs
+  // whose announces the peer-log projected), INCLUDING stale ones (a hive that
+  // joined but went quiet still lists, flagged). The Hives tab groups these
+  // per device client-side, mirroring the pui Hives tab.
+  'sidebar.hives': {
+    resolve: async () => {
+      const { queryFederatedPresenceRows, mapSharedPresenceRow } = await import(
+        '../agent-tools/coordination/federated-presence'
+      );
+      const { PRESENCE_STALE_MS } = await import('@papercusp/coordination/presence');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      const rows = await queryFederatedPresenceRows(sql, {});
+      const now = Date.now();
+      return rows.map((r) => mapSharedPresenceRow(r, { now, staleMs: PRESENCE_STALE_MS }));
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
