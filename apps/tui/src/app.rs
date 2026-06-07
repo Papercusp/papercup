@@ -2188,13 +2188,13 @@ impl App {
         let live: std::collections::HashSet<&str> = self
             .roster
             .iter()
-            .filter(|r| r.is_running())
+            .filter(|r| r.is_live())
             .map(|r| r.owner_id.as_str())
             .collect();
         self.watched_panes.retain(|o| live.contains(o.as_str()));
         let mut out = Vec::new();
         for r in &self.roster {
-            if !r.is_running() || self.watched_panes.contains(&r.owner_id) {
+            if !r.is_live() || self.watched_panes.contains(&r.owner_id) {
                 continue;
             }
             // Already an interactive pane in this dock (a reactive launch).
@@ -7767,14 +7767,102 @@ mod tests {
             pending: vec![p],
         });
         match act {
-            Action::LaunchPanes(panes) => {
-                assert_eq!(panes.len(), 1);
-                assert_eq!(panes[0].adv_session_id, 607);
-                assert_eq!(panes[0].spec.argv, vec!["psu", "--no-picker", "--agent=claude"]);
+            Action::LaunchPanes { sessions, watch } => {
+                assert_eq!(sessions.len(), 1);
+                assert!(watch.is_empty());
+                assert_eq!(sessions[0].adv_session_id, 607);
+                assert_eq!(sessions[0].spec.argv, vec!["psu", "--no-picker", "--agent=claude"]);
             }
             other => panic!("expected LaunchPanes, got {other:?}"),
         }
         assert!(a.tracked_panes.contains(&607));
+    }
+
+    #[test]
+    fn dock_chat_pane_opens_watch_panes_for_active_agents() {
+        // The dock agent stack (pui-dock-agent-stack-2026-06-07): one read-only
+        // watch pane per live agent; dedup'd; pruned when the agent leaves so a
+        // returning bee re-panes.
+        let mut a = App::new();
+        a.dock_agent_panes = true;
+        let bee = |o: &str| RosterEntry {
+            owner_id: o.into(),
+            label: format!("su · {o}"),
+            liveness: "live".into(),
+            agent: Some("claude".into()),
+            ..Default::default()
+        };
+        let act = a.update(Event::Roster {
+            active: vec![bee("su-aaa"), bee("su-bbb")],
+            pending: vec![],
+        });
+        match act {
+            Action::LaunchPanes { sessions, watch } => {
+                assert!(sessions.is_empty());
+                assert_eq!(watch.len(), 2);
+                assert_eq!(watch[0].argv, vec!["pui", "watch-pane", "su-aaa"]);
+                assert!(watch[0].stacked);
+                assert!(watch[0].close_on_exit);
+            }
+            other => panic!("expected LaunchPanes, got {other:?}"),
+        }
+        // Same roster again → all watched → plain Render (no re-open).
+        let act = a.update(Event::Roster {
+            active: vec![bee("su-aaa"), bee("su-bbb")],
+            pending: vec![],
+        });
+        assert_eq!(act, Action::Render);
+        // su-bbb leaves → pruned; when it returns it re-panes.
+        let _ = a.update(Event::Roster {
+            active: vec![bee("su-aaa")],
+            pending: vec![],
+        });
+        assert!(!a.watched_panes.contains("su-bbb"));
+        match a.update(Event::Roster {
+            active: vec![bee("su-aaa"), bee("su-bbb")],
+            pending: vec![],
+        }) {
+            Action::LaunchPanes { watch, .. } => {
+                assert_eq!(watch.len(), 1);
+                assert_eq!(watch[0].argv[2], "su-bbb");
+            }
+            other => panic!("expected LaunchPanes, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_pane_tracks_misses_and_exits_after_two() {
+        // `pui watch-pane <owner>` exits once its agent has been gone for two
+        // consecutive roster refreshes (one miss can be churn) — and NEVER
+        // opens panes itself.
+        let mut a = App::new();
+        a.watch = Some("su-w".into());
+        let live = RosterEntry {
+            owner_id: "su-w".into(),
+            liveness: "live".into(),
+            ..Default::default()
+        };
+        a.update(Event::Roster {
+            active: vec![live.clone()],
+            pending: vec![],
+        });
+        assert!(!a.watch_should_exit());
+        a.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
+        assert!(!a.watch_should_exit()); // one miss — churn tolerance
+        a.update(Event::Roster {
+            active: vec![],
+            pending: vec![],
+        });
+        assert!(a.watch_should_exit()); // two misses — gone
+        a.watch_misses = 0;
+        let act = a.update(Event::Roster {
+            active: vec![live],
+            pending: vec![],
+        });
+        assert_eq!(act, Action::Render);
     }
 
     #[test]

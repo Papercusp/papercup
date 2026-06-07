@@ -434,79 +434,72 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_has_two_panes_chat_and_main() {
-        // The consolidated dock (pui-dock-consolidation-2026-06-07 #5): LEFT =
-        // the chat column — a STACK of operator ⇄ brain (tab-like: one expanded,
-        // the other a clickable title bar) — RIGHT = ONE main pane (a pui
-        // restricted to the Apiary/Voice/Swarm tabs).
+    fn chat_dock_is_one_agent_stack() {
+        // The dock (pui-dock-agent-stack-2026-06-07): ONE full-width zellij
+        // stack — operator (expanded) ⇄ brain; active agents append at runtime.
+        // No main pane, no tab-subset pui, no side-by-side split.
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
         assert!(kdl.contains("name=\"chat\""));
         assert!(kdl.contains("name=\"operator\"")); // lex("operator") = Operator
         assert!(kdl.contains("name=\"brain\""));
-        assert!(kdl.contains("name=\"main\""));
-        // The pinned-pane ARGS are internal identifiers — NEVER lexicon-driven.
-        assert!(kdl.contains("args \"chat-pane\""));
-        assert!(kdl.contains("args \"main-pane\""));
-        assert!(kdl.contains("command \"psu\""));
-        assert!(kdl.contains("args \"--resume\""));
-        // The old single-tab dock panes are GONE — their surfaces are tabs (or
-        // Swarm-tab sections) of the main pane now.
-        for gone in ["apiary-pane", "voice-pane", "swarm-pane", "bee-pane"] {
-            assert!(!kdl.contains(gone), "stale single-tab pane arg: {gone}");
-        }
-        // chat | main side-by-side; operator ⇄ brain STACKED inside the chat
-        // column (zellij tab-like stack), operator expanded by default.
-        assert!(kdl.contains("split_direction=\"vertical\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
-        assert!(!kdl.contains("split_direction=\"horizontal\""));
-        let (c, o, b, m) = (
-            kdl.find("name=\"chat\"").unwrap(),
+        // The pinned-pane ARGS are internal identifiers — NEVER lexicon-driven.
+        assert!(kdl.contains("args \"chat-pane\""));
+        assert!(kdl.contains("command \"psu\""));
+        assert!(kdl.contains("args \"--resume\""));
+        // The main pane (tab-subset pui) + the old single-tab panes are GONE —
+        // tab surfaces live in the pui app, not zellij.
+        for gone in [
+            "main-pane",
+            "apiary-pane",
+            "voice-pane",
+            "swarm-pane",
+            "bee-pane",
+            "name=\"main\"",
+            "split_direction",
+        ] {
+            assert!(!kdl.contains(gone), "stale dock artifact: {gone}");
+        }
+        // Operator leads the stack (expanded + focused), brain under it.
+        let (o, b) = (
             kdl.find("name=\"operator\"").unwrap(),
             kdl.find("name=\"brain\"").unwrap(),
-            kdl.find("name=\"main\"").unwrap(),
         );
-        assert!(
-            c < o && o < b && b < m,
-            "pane order must be chat[operator⇄brain] | main"
-        );
-        // The expanded default is the OPERATOR (focus lands there too).
-        assert!(kdl.find("expanded=true").unwrap() < kdl.find("name=\"brain\"").unwrap());
+        assert!(o < b, "stack order must be operator ⇄ brain");
+        assert!(kdl.find("expanded=true").unwrap() < b);
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // Exactly TWO pui panes (chat + main) + one psu (the brain).
-        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+        // Exactly ONE pui pane (the chat) + one psu (the brain).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
         assert_eq!(kdl.matches("command \"psu\"").count(), 1);
     }
 
     #[test]
-    fn chat_dock_pane_sizes_sum_to_100() {
+    fn chat_dock_stack_children_carry_no_sizes() {
+        // The stack gives the expanded pane everything but title bars; only the
+        // bar panes carry fixed sizes (tab-bar 1 / status-bar 2).
         let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
-        // Top level: chat 38 | main 62 = 100. The stacked chat children carry NO
-        // sizes — the stack gives the expanded pane everything but title bars.
-        for pct in ["38%", "62%"] {
-            assert!(kdl.contains(pct), "missing pane size {pct}");
-        }
-        assert!(!kdl.contains("size=\"50%\""));
+        assert!(!kdl.contains("size=\""), "no percent sizes in the stack dock");
+        assert!(kdl.contains("pane size=1 borderless=true"));
+        assert!(kdl.contains("pane size=2 borderless=true"));
     }
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
         // With the-hive active: operator→queen (lowercased, kdl-safe). The fixed
-        // panes (chat/brain/main) have no lexicon term and stay verbatim.
+        // panes (chat/brain) have no lexicon term and stay verbatim.
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
         assert!(kdl.contains("name=\"queen\""));
         assert!(kdl.contains("name=\"chat\""));
         assert!(kdl.contains("name=\"brain\""));
-        assert!(kdl.contains("name=\"main\""));
         // The classic label must NOT leak when the-hive is on.
         assert!(!kdl.contains("name=\"operator\""));
-        // The internal pinned-pane args are unchanged regardless of pack.
+        // The internal pinned-pane arg is unchanged regardless of pack.
         assert!(kdl.contains("args \"chat-pane\""));
-        assert!(kdl.contains("args \"main-pane\""));
     }
 
     #[test]
@@ -560,7 +553,7 @@ mod tests {
         let written = std::fs::read_to_string(&p).unwrap();
         assert!(written.contains("name=\"brain\""));
         assert!(written.contains("args \"chat-pane\""));
-        assert!(written.contains("args \"main-pane\""));
+        assert!(written.contains("stacked=true"));
     }
 
     #[test]

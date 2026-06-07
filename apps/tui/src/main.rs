@@ -455,14 +455,14 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::LaunchPanes(panes) => {
+            Action::LaunchPanes { sessions, watch } => {
                 // Reactive work-area panes for new LOCAL workbench launches
                 // (pui-reactive-session-panes D-006). For each: open the pane that
                 // RUNS the launch (companion when linked — its CommandPaneExited
                 // feeds pane-exit detection — else `zellij action new-pane`), then
                 // mark the pending row consumed so it drops out of the roster. The
                 // reducer already recorded each id in the tracked set + crew roster.
-                for p in panes {
+                for p in sessions {
                     match &companion {
                         Some(c) => c.open_pane(&p.spec),
                         None => {
@@ -472,6 +472,14 @@ async fn run<B: Backend>(
                         }
                     }
                     tokio::spawn(mark_session_launched(p.adv_session_id, tx.clone()));
+                }
+                // Dock agent stack (pui-dock-agent-stack-2026-06-07): read-only
+                // watch panes for active swarm agents — CLI only (no companion
+                // in the dock, nothing to mark consumed).
+                for spec in watch {
+                    if let Err(e) = Zellij.open_pane(&spec) {
+                        app.update(Event::Error(format!("watch pane: {e}")));
+                    }
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }

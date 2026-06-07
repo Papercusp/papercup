@@ -47,9 +47,10 @@ The Swarm direction is engineered swarm intelligence: honey-amber signal color o
 The Swarm skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 
 * Logo components switch from the classic cup marks to The Swarm primary mark via `useLexiconPackId()`.
-* `HiveThemeBridge` forces `data-theme="hive"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
+* `HiveThemeBridge` forces `data-theme="honeycomb"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
 * When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title.
-* The Swarm theme is generated from `design-tokens/hive.semantic.tokens.json` into `apps/operator/app/_semantic.hive.css`.
+* The selectable Honeycomb theme is generated from `design-tokens/honeycomb.semantic.tokens.json` into `apps/operator/app/_semantic.honeycomb.css`.
+* The legacy `hive` selector remains as an implementation-pack alias; new runtime usage should prefer `honeycomb`.
 * The Swarm desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Swarm pack.
 
 ## Lexicon
@@ -75,14 +76,14 @@ The Swarm token pack is dark-first and WCAG-oriented:
 
 | Token          |     Value | Use                  |
 | -------------- | --------: | -------------------- |
-| Background     | `#0B0E0B` | app shell base       |
-| Surface        | `#12150F` | cards and panels     |
-| Raised surface | `#1A1A12` | elevated chrome      |
-| Text           | `#FFF8E6` | primary foreground   |
-| Muted text     | `#B9A982` | secondary foreground |
-| Primary accent | `#F6B72F` | honey action color   |
-| Strong accent  | `#FFD166` | hover/highlight      |
-| Accent ink     | `#171107` | text on honey        |
+| Background     | `#050505` | app shell base       |
+| Surface        | `#10100B` | cards and panels     |
+| Raised surface | `#17130A` | elevated chrome      |
+| Text           | `#FFF7DF` | primary foreground   |
+| Muted text     | `#B9AA86` | secondary foreground |
+| Primary accent | `#EAB308` | honey action color   |
+| Strong accent  | `#FDE68A` | hover/highlight      |
+| Accent ink     | `#130D03` | text on honey        |
 
 Semantic colors remain distinct from the primary honey accent: success green, danger rose, info blue, and warning honey.
 

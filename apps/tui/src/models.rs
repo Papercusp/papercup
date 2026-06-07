@@ -1131,7 +1131,7 @@ pub struct WorkItemsPayload {
 /// both `activity:recent` (`{activity:[...]}`) and the `/api/activity/stream` SSE
 /// (`event: activity`). The wire is snake_case; `summary` is already server-side
 /// enriched (e.g. `✎ generated.ts`, `▶ npm test`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ActivityRow {
     #[serde(default)]
     pub id: String,

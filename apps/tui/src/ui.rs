@@ -22,6 +22,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     // unchanged; only the rendering is reduced to that body full-screen (the
     // tab is re-pinned in main.rs, so chat shows the FULL chat with no
     // dock-focus marker). Help + the latest toast still overlay.
+    // Watch pane (pui-dock-agent-stack-2026-06-07): a read-only live view of ONE
+    // swarm agent (dossier + activity + coord mail), full-screen — the dock's
+    // per-agent stack pane. No tabs, no HUD; toasts still overlay.
+    if app.watch.is_some() {
+        crate::bee::draw_watch(f, app, f.area());
+        if let Some(t) = &app.toast {
+            draw_toast(f, t);
+        }
+        return;
+    }
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
         if app.show_help {

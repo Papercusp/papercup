@@ -84,6 +84,64 @@ impl BeeState {
     }
 }
 
+/// Full-screen watch view (pui-dock-agent-stack-2026-06-07): the dock's
+/// per-agent stack pane — `pui watch-pane <owner>`. Read-only: the agent's
+/// ranked work-list (top), its live activity tail (middle — the fleet stream
+/// filtered to this owner), and its coord inbox/outbox (bottom). The owner is
+/// pinned as `app.bee` at boot; the dossier refreshes on the push-driven
+/// refetch cadence and the activity rows ride the fleet SSE stream.
+pub fn draw_watch(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ])
+        .split(area);
+    draw_tasklist(f, app, rows[0]);
+    draw_watch_activity(f, app, rows[1]);
+    let mail = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[2]);
+    draw_inbox(f, app, mail[0]);
+    draw_outbox(f, app, mail[1]);
+}
+
+/// The watched agent's slice of the live fleet activity stream, newest-first —
+/// "what is it doing right now", one summary line per tool call/event.
+fn draw_watch_activity(f: &mut Frame, app: &App, area: Rect) {
+    let owner = app.watch.as_deref().or(app.bee.owner_id.as_deref());
+    let items: Vec<ListItem> = app
+        .fleet
+        .activity
+        .iter()
+        .filter(|r| Some(r.owner_id.as_str()) == owner)
+        .map(|r| {
+            ListItem::new(Line::from(Span::styled(
+                r.summary.clone().unwrap_or_else(|| r.kind.clone()),
+                Theme::dim(),
+            )))
+        })
+        .collect();
+    let n = items.len();
+    let body = if items.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no live activity yet — rows stream in as the agent works)",
+            Theme::dim(),
+        )))]
+    } else {
+        items
+    };
+    f.render_widget(
+        List::new(body)
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(format!(" live activity ({n}) ")), n > 0)),
+        area,
+    );
+}
+
 /// Top region: the bee's full work-list in rank (priority) order.
 pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
     let label = app.bee.display_label().unwrap_or_else(|| "?".into());
@@ -365,6 +423,43 @@ mod tests {
         // A fetch for the current bee lands.
         s.set_dossier("su-a", Some(BeeAssignment::default()), None);
         assert!(s.assignment.is_some());
+    }
+
+    #[test]
+    fn watch_view_renders_tasklist_activity_and_mail() {
+        // The dock watch pane (pui-dock-agent-stack-2026-06-07): dossier +
+        // the agent's live-activity slice + coord mail, full-screen.
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new();
+        app.watch = Some("su-w".into());
+        app.bee.set_selection(Some("su-w".into()), Some("forager".into()));
+        app.fleet.push_activity(crate::models::ActivityRow {
+            owner_id: "su-w".into(),
+            kind: "tool".into(),
+            summary: Some("✎ fleet.rs".into()),
+            ..Default::default()
+        });
+        app.fleet.push_activity(crate::models::ActivityRow {
+            owner_id: "su-other".into(),
+            kind: "tool".into(),
+            summary: Some("▶ other-agent-row".into()),
+            ..Default::default()
+        });
+        let mut term = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        term.draw(|f| draw_watch(f, &app, f.area())).unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("forager")); // dossier header names the agent
+        assert!(text.contains("live activity (1)"));
+        assert!(text.contains("✎ fleet.rs")); // its rows
+        assert!(!text.contains("other-agent-row")); // others' rows filtered out
+        assert!(text.contains("inbox"));
+        assert!(text.contains("outbox"));
     }
 
     #[test]

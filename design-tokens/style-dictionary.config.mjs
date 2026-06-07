@@ -103,9 +103,9 @@ export default {
         },
       ],
     },
-    // The Hive theme — semantic-override set emitted under [data-theme="hive"].
-    // Runtime selects this block while FLAGS.THE_HIVE is true; it does not
-    // overwrite the user's saved classic theme preference.
+    // Hive legacy alias — semantic-override set emitted under [data-theme="hive"].
+    // New Swarm runtime usage selects Honeycomb; this block remains for old
+    // previews and docs that still scope to the implementation-pack name.
     "css-semantic-hive": {
       transforms: themeTransforms,
       buildPath: "apps/operator/app/",
