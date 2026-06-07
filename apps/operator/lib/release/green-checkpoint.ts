@@ -21,6 +21,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import {
   revParse,
@@ -161,6 +163,19 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       // regression fails twice; a flake almost never does.
       env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
       const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
+      // Persist the FULL suite output — the 2000-char tail below repeatedly
+      // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with
+      // no test names survived the truncation; 2026-06-06/07 cost five
+      // diagnosis round-trips + manual re-runs). One file per run, tiny disk,
+      // names every failure forever.
+      try {
+        const logDir = path.join(homedir(), '.papercusp', 'checkpoint-logs');
+        mkdirSync(logDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);
+        writeFileSync(logPath, r.stdout + r.stderr);
+        log(`full suite output → ${logPath}`);
+      } catch { /* best-effort — the gate verdict must not depend on logging */ }
       // Strip npm's error boilerplate before truncating — it's ~10 lines of
       // noise per failed workspace and repeatedly pushed the actual FAIL test
       // names out of the 2000-char tail (cost two diagnosis round-trips on
