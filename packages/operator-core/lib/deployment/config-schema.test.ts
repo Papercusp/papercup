@@ -61,4 +61,24 @@ describe('parseDeploymentConfig', () => {
   it('schema applies the local default for a bare target', () => {
     expect(DeploymentConfigSchema.parse({}).target).toBe('local');
   });
+
+  it('accepts the desktop knob — boolean and object forms (hive-frame-desktops P-003)', () => {
+    registerDeploymentDriver(fakeLatitude);
+    expect(parseDeploymentConfig({ target: 'latitude', desktop: true })).toMatchObject({
+      ok: true,
+      config: { desktop: true },
+    });
+    const r = parseDeploymentConfig({
+      target: 'latitude',
+      desktop: { displays: 2, geometry: '1280x800x24' },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.config.desktop).toEqual({ displays: 2, geometry: '1280x800x24' });
+  });
+
+  it('rejects a malformed desktop knob', () => {
+    expect(parseDeploymentConfig({ target: 'local', desktop: { displays: 0 } }).ok).toBe(false);
+    expect(parseDeploymentConfig({ target: 'local', desktop: { geometry: 'huge' } }).ok).toBe(false);
+    expect(parseDeploymentConfig({ target: 'local', desktop: 'yes' }).ok).toBe(false);
+  });
 });

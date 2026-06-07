@@ -92,6 +92,11 @@ export function classifyIdeaType(item: ScoredItem): IdeaTriageClassification {
  * This is the Queen's decision point — she applies judgment per the Queen persona,
  * ranking tasks + briefs, not mechanical gatekeeping. The triage function just
  * surfaces the classification and recommendation; the Queen applies discretion.
+ *
+ * **P-040 (gym re-trigger):** The recommendation returned here may be overridden by the
+ * Queen in the agent tool via improvements:triage { decision: 'gym' }. When the Queen
+ * routes a process/prompt-changing idea as 'gym', the agent tool dispatches a gym A/B
+ * on the target prompt/process before it goes live (D-003).
  */
 export function triageIdea(item: ScoredItem): IdeaTriageDecision {
   const classification = classifyIdeaType(item);
@@ -108,14 +113,15 @@ export function triageIdea(item: ScoredItem): IdeaTriageDecision {
 
   // Process-ideas: human-gate or gym-dispatch (risky — modify the system itself).
   // D-003: Recurrence-decay is weak for this class; they earn gym A/B before live.
+  // P-040: The Queen may override this recommendation and choose 'gym' for verification.
   if (classification.type === 'process') {
-    // For now: human-gate all process ideas. Gym dispatch is a future refinement
-    // (P-040 in self-learning-central Phase 5).
+    // Default recommendation: human-gate. The Queen can override to 'gym' if she
+    // wants A/B verification before the change goes live (P-040).
     return {
       decision: 'gate',
       reason:
         classification.reason +
-        ' — process/prompt changes need human gate (D-003)',
+        ' — process/prompt changes need human gate or gym A/B (D-003, P-040)',
       target: 'human-review',
     };
   }

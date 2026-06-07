@@ -29,6 +29,21 @@ export const DeploymentConfigSchema = z.object({
   kind: z.enum(['vm', 'metal', 'local']).optional(),
   /** Opaque reference to the credential bundle to mount on the frame (P-011). */
   credentialRef: z.string().min(1).optional(),
+  /** Opt-in frame desktop capability (`hive-frame-desktops-live-view` P-001/P-003):
+   *  `true` (defaults: 4 Xvfb displays @ 1920x1080x24, one per agent slot) or
+   *  `{ displays?, geometry? }` to tune the pool. Default off. */
+  desktop: z
+    .union([
+      z.boolean(),
+      z.object({
+        displays: z.number().int().min(1).max(64).optional(),
+        geometry: z
+          .string()
+          .regex(/^\d+x\d+x\d+$/, 'geometry must be WxHxDEPTH, e.g. 1920x1080x24')
+          .optional(),
+      }),
+    ])
+    .optional(),
   /** Provider-specific extras the selected driver narrows + validates. */
   provider: z.record(z.string(), z.unknown()).optional(),
 });

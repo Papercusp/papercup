@@ -150,6 +150,18 @@ export default defineTool({
         triageReason: args.reason,
       };
 
+      // Generate guidance based on decision type (P-040: gym re-trigger)
+      let note = '';
+      if (args.decision === 'place') {
+        note = 'Decision recorded. Use work_items:create to assign and track the implementation.';
+      } else if (args.decision === 'gate') {
+        note = 'Decision recorded. Escalate for human review before proceeding.';
+      } else if (args.decision === 'gym') {
+        note = 'Decision recorded. Gym A/B dispatch for verification (P-040). Next: call fleet:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
+      } else if (args.decision === 'reject') {
+        note = 'Decision recorded. Improvement rejected; record the reason for future dedup queries.';
+      }
+
       return {
         content: [
           {
@@ -161,7 +173,7 @@ export default defineTool({
               decision: args.decision,
               reason: args.reason,
               lifecycle,
-              note: 'Decision recorded. For place-type ideas, use work_items:create to assign. For gate-type, escalate for human review.',
+              note,
             }),
           },
         ],

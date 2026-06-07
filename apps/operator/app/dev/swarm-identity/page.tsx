@@ -25,14 +25,15 @@ type SwarmMark = {
   read: string;
 };
 
-const INTRO_MS = 14_500;
+const INTRO_MS = 19_000;
 const SWARM_TRANSITION_MS = 3_800;
 
-const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm, and watch the world change.';
+const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm. And mold the future for whatever comes next.';
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a Hive, start a swarm, and watch the world change.',
+  'Create or Join a Hive, start a swarm.',
+  'And mold the future for whatever comes next.',
 ] as const;
 
 const DIRECTIONS: Direction[] = [
@@ -232,7 +233,7 @@ export default function SwarmIdentityPage() {
                 <div className={styles.browserBody}>
                   <span className={styles.miniEyebrow}>A new intelligence is forming</span>
                   <h3>Welcome to the End.</h3>
-                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm, and watch the world change.</p>
+                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm. And mold the future for whatever comes next.</p>
                   <div className={styles.browserActions}>
                     <button type="button">Create a Hive</button>
                     <button type="button">Join a Hive</button>

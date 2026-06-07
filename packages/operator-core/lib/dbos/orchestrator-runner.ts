@@ -50,6 +50,7 @@ import {
 import { handleFeaturePassed, type FeaturePassedDeps } from '../harness/fork-pr-on-feature-pass';
 import { planFinalization, needsHumanGateUrl, type FinalizeRecipe } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
+import { acquireAgentDisplay, agentDisplayPool } from '../deployment/display-allocator';
 import {
   emitFeatureWorkedStart,
   emitFeatureWorkedEnd,
@@ -180,42 +181,66 @@ export async function spawnInvokeOnce(
       /* fall back to the child reading .papercusp/config.json */
     }
   }
-  const { command, args, env } = buildInvokeOnce({
-    projectDir,
-    stateDir: join(projectDir, '.papercusp'),
-    harnessDir: harnessPackageDir(),
-    role,
-    extras,
-    extraEnv: resolvedExtraEnv,
-  });
-
-  // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →
-  // unchanged). PACING ONLY — concurrency/rate gate + penalize the governor on a detected
-  // 429, so the whole operator's agent spawns stay under the account's rate limit. We do
-  // NOT retry here: the orchestrator/director already owns turn retries (avoid double-retry).
-  // Key the bucket to the backend+model the spawn ACTUALLY uses (the default `omp -p`
-  // self-paces → its own concurrency-only bucket; claude → the Anthropic per-class bucket)
-  // rather than the old hardcoded `('claude-code','')` which mis-bucketed everything.
-  if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
-    const { backend, model } = resolveSpawnBackendModel(role);
-    const gov = governorForBackend(backend, model);
-    const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
-    if (!release) {
-      return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
-    }
-    try {
-      const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
-      // Classify the outcome; on a detected account-wide stop (429/overload/usage-cap), pause the
-      // SHARED governor so the operator's other agent spawns back off too. No retry here — the
-      // director owns that. A usage_limit carries its reset, so the fleet parks until reset (D-001).
-      const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
-      if (isAccountWide(te.class)) gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
-      return inner;
-    } finally {
-      release();
-    }
+  // P-002 (hive-frame-desktops-live-view): on a desktop-enabled frame the
+  // bootstrap stood up one Xvfb display per agent slot and advertised the pool
+  // via PAPERCUSP_DESKTOP_DISPLAYS/_DISPLAY_BASE — lease one for this agent so
+  // concurrent GUI agents never share a screen (D-001). Off-frame this is a
+  // no-op; pool exhausted → headless spawn (logged), never queued.
+  const displayLease = acquireAgentDisplay({ role });
+  if (displayLease) {
+    resolvedExtraEnv = {
+      ...resolvedExtraEnv,
+      DISPLAY: displayLease.display,
+      // The explicit capability marker — DISPLAY alone can leak in from a dev
+      // box's own session; this says "leased for THIS agent by the frame".
+      PAPERCUSP_AGENT_DISPLAY: displayLease.display,
+    };
+  } else if (agentDisplayPool()) {
+    console.warn(`[dbos-invoke] role=${role} desktop display pool exhausted — spawning headless`);
   }
-  return runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+
+  try {
+    const { command, args, env } = buildInvokeOnce({
+      projectDir,
+      stateDir: join(projectDir, '.papercusp'),
+      harnessDir: harnessPackageDir(),
+      role,
+      extras,
+      extraEnv: resolvedExtraEnv,
+    });
+
+    // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →
+    // unchanged). PACING ONLY — concurrency/rate gate + penalize the governor on a detected
+    // 429, so the whole operator's agent spawns stay under the account's rate limit. We do
+    // NOT retry here: the orchestrator/director already owns turn retries (avoid double-retry).
+    // Key the bucket to the backend+model the spawn ACTUALLY uses (the default `omp -p`
+    // self-paces → its own concurrency-only bucket; claude → the Anthropic per-class bucket)
+    // rather than the old hardcoded `('claude-code','')` which mis-bucketed everything.
+    if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
+      const { backend, model } = resolveSpawnBackendModel(role);
+      const gov = governorForBackend(backend, model);
+      const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
+      if (!release) {
+        return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
+      }
+      try {
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+        // Classify the outcome; on a detected account-wide stop (429/overload/usage-cap), pause the
+        // SHARED governor so the operator's other agent spawns back off too. No retry here — the
+        // director owns that. A usage_limit carries its reset, so the fleet parks until reset (D-001).
+        const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
+        if (isAccountWide(te.class)) gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
+        return inner;
+      } finally {
+        release();
+      }
+    }
+    // `return await` (not bare `return`) so the display lease's finally releases
+    // AFTER the child exits, not when the promise is handed back.
+    return await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+  } finally {
+    displayLease?.release();
+  }
 }
 
 /** SIGKILL grace after the SIGTERM on abort/timeout — gives the child a moment

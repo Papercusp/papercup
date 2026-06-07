@@ -59,6 +59,7 @@ import './tui/dispatch';
 import './activity/report';
 import './activity/recent';
 import './curation/feed';
+import './curation/change-feed';
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — the Pot operator's self-declared
 // wake surface (declare-wake / wake / status):
 import './pot/declare_wake';

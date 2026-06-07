@@ -8,6 +8,7 @@ export type {
   DeploymentTarget,
   DeploymentPlacement,
   FrameKind,
+  DesktopConfig,
   DeploymentConfig,
   Frame,
   FrameService,

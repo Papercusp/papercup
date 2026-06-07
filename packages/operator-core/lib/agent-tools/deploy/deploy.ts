@@ -21,11 +21,11 @@ const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to t
 export default defineTool({
   name: 'deploy:harness',
   description:
-    "Deploy a harness's execution plane to its configured cloud frame: provision the machine, bootstrap the runtime (own loop + own embedded-pg), join it as a federated peer. The harness must have been created with a non-local `deployment` (e.g. {target:'latitude'}). Returns {ok, frame}.",
+    "Deploy a harness's execution plane to its configured cloud frame: provision the machine, bootstrap the runtime (own loop + own embedded-pg), join it as a federated peer. The harness must have been created with a non-local `deployment` (e.g. {target:'latitude'}). Set `deployment.desktop` (true | {displays,geometry}) for a GUI-capable frame: one Xvfb display per agent slot, agents get a leased DISPLAY. Returns {ok, frame}.",
   guidance: {
     when: 'Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.',
     notWhen: 'A local harness (no cloud deployment). Tearing one down — deploy:teardown. Checking status — deploy:status.',
-    chaining: 'harness:create { …, deployment:{target:"latitude",…} } → deploy:harness { slug } → deploy:status / deploy:teardown.',
+    chaining: 'harness:create { …, deployment:{target:"latitude", desktop:true, …} } → deploy:harness { slug } → deploy:status / deploy:teardown.',
   },
   capability: 'harness:write',
   requirePrincipal: false,

@@ -20,7 +20,7 @@ const fail = (payload: Record<string, unknown>) => ({
 const hiveSpecArgs = z.object({
   hiveId: z.string().min(1).describe('Hive id (the grouping)'),
   members: z.array(z.string().min(1)).describe('Member harness slugs to deploy onto the Swarm'),
-  swarm: DeploymentConfigSchema.describe('The cloud target for execution frames (e.g. {target:"latitude",region:"NYC",size:"m4-metal-small"})'),
+  swarm: DeploymentConfigSchema.describe('The cloud target for execution frames (e.g. {target:"latitude",region:"NYC",size:"m4-metal-small"}). Set desktop:true (or {displays,geometry}) for GUI-capable frames — one Xvfb display per agent slot.'),
   queen: z
     .object({
       placement: z.enum(['local', 'dedicated', 'colocated']).default('local'),
