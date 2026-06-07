@@ -157,6 +157,28 @@ describe('nextStep — blocks', () => {
     });
   });
 
+  it('blocks lookup-binding on a non-positive repo id (0/negative — swarm keys on it)', () => {
+    expect(nextStep('lookup-binding', { github_repository_id: 0 })).toEqual({
+      kind: 'block',
+      reason: 'binding_lookup_pending',
+    });
+    expect(nextStep('lookup-binding', { github_repository_id: -7 })).toEqual({
+      kind: 'block',
+      reason: 'binding_lookup_pending',
+    });
+  });
+
+  it('blocks lookup-binding on a non-integer repo id (NaN / fractional)', () => {
+    expect(nextStep('lookup-binding', { github_repository_id: Number.NaN })).toEqual({
+      kind: 'block',
+      reason: 'binding_lookup_pending',
+    });
+    expect(nextStep('lookup-binding', { github_repository_id: 1.5 })).toEqual({
+      kind: 'block',
+      reason: 'binding_lookup_pending',
+    });
+  });
+
   it('blocks lookup-binding with binding_exists_should_join when binding found (P-029b)', () => {
     expect(
       nextStep('lookup-binding', {

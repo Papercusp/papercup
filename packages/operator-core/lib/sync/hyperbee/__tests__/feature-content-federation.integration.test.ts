@@ -221,6 +221,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       expires_at          TIMESTAMPTZ,
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
+      fed_ts              BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
       PRIMARY KEY (harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.harness_issues_consolidated (
@@ -243,6 +244,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       updated_ts        BIGINT NOT NULL,
       author_pubkey     TEXT,
       origin            TEXT NOT NULL DEFAULT 'local',
+      fed_ts            BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column
       PRIMARY KEY (harness_slug, issue_id)
     );
     CREATE TABLE harness_shared.projects (

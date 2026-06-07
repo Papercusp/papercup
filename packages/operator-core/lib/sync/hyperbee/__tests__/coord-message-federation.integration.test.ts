@@ -97,6 +97,8 @@ describe('coord_event_log federation (real PG)', () => {
     await db.sql.unsafe(readFileSync(OUTBOX_MIGRATION, 'utf8'));
     // Migration 147 verbatim: adds harness_slug/origin/author_pubkey + fed index + triggers.
     await db.sql.unsafe(stripMeta(readFileSync(FED_MIGRATION, 'utf8')));
+    // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
+    await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
   }, 60_000);
 
   afterAll(async () => {
@@ -208,7 +210,8 @@ describe('coord_event_log federation (real PG)', () => {
         CREATE TABLE harness_shared.coord_event_log (
           id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
           writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
-          harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text);
+          harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text,
+          fed_ts bigint); -- EI-79 step 2 (mig 181): PG-level LWW guard column
         CREATE UNIQUE INDEX coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)
           WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL;
       `);

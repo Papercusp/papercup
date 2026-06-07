@@ -99,9 +99,11 @@ on tests:</p>
 <ol>
 <li>A feature is <code dir="auto">validating</code> (worker committed). The orchestrator’s <strong>C0</strong>
 decision emits <code dir="auto">NEXT_TESTER &#x3C;F> &#x3C;VAL></code> for each claim VAL with no passing
-covering test. (<code dir="auto">NEXT_TESTER</code> was already wired in the <strong>TS orchestrator</strong> —
-<code dir="auto">packages/orchestrator/src/main-loop.ts</code> dispatches the <code dir="auto">tester</code> role; bash
-<code dir="auto">run.sh</code> is retired. The prompt just needed to start emitting it.)</li>
+covering test. (<code dir="auto">NEXT_TESTER</code> is wired in the <strong>DBOS pipeline</strong> —
+<code dir="auto">packages/operator-core/lib/dbos/orchestrator-decide.ts</code> dispatches the
+<code dir="auto">tester</code> role; bash <code dir="auto">run.sh</code> AND the TS run-loop (<code dir="auto">main-loop.ts</code>, archived
+2026-06-06 to <code dir="auto">_retired/orchestrator-run-loop/</code>) are both retired. The
+prompt just needed to start emitting it.)</li>
 <li>The <strong>tester</strong> (<code dir="auto">staging/tester.md</code>) writes one black-box test per VAL,
 registers it in <code dir="auto">.papercusp/tests.json</code> with <code dir="auto">coversVALs</code>, exits.</li>
 <li>Once every test-requiring VAL has a passing test, the orchestrator sends the

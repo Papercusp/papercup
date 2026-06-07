@@ -5,6 +5,16 @@ TypeScript port of the bash autonomous-harness orchestrator. State as of 2026-04
 
 import { Aside } from '@astrojs/starlight/components';
 
+This is a **historical handoff doc**. The TS run-loop this port produced
+(`main-loop.ts`, `bin/run.ts`, `pre-loop.ts`, the checkpoints/snapshots/dispatches
+cluster) was retired and archived to `libs/papercusp/_retired/orchestrator-run-loop/`
+(plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag
+`legacy-orchestrator-run-loop-retired-2026-06-06`) — superseded by the **DBOS
+durable pipeline** (`packages/operator-core/lib/dbos/`). Parts of the port live
+on inside that pipeline: `invoke.ts`, `lanes.ts`, the worker chunk-loop,
+`cost-cap.ts`, `decision-parse.ts`. The `papercusp-orchestrate` bin and the
+`PAPERCUSP_USE_TS_ORCHESTRATOR` fall-through described below no longer exist.
+
 ## Why this exists
 
 The autonomous-harness orchestrator was historically a 2,122-line bash script (`libs/papercusp/packages/harness/run.sh`). The desktop app needs to drop the bash prereq for Windows users (Git for Windows is currently required to run the loop). A TypeScript port of `run.sh` achieves that without losing Claude Max subscription support — the port keeps the agent CLI (`omp -p` by default, `claude -p` opt-in) as a child-process spawn rather than switching to the SDK.

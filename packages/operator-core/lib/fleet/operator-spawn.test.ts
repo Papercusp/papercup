@@ -19,16 +19,28 @@ vi.mock('../rate-limit-config', () => ({
 }));
 vi.mock('./spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(async () => {}),
-  reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [] })),
+  reclaimOrphanedSpawns: vi.fn(async () => ({ reclaimed: 0, spawnIds: [], workspaces: [] })),
   SPAWN_HEARTBEAT_INTERVAL_MS: 60_000,
+}));
+// Lazy-imported by the slot-freed announce (D-004) — vi.mock intercepts the
+// dynamic import too, so the spy sees every emit.
+vi.mock('../events/await/engine', () => ({
+  emitAwaitedEvent: vi.fn(async () => ({ ok: true, key: '', woken: 0, notified: [], msgId: null })),
 }));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
+import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
-import { spawnAgentInHarness, abortLocalSpawn, spawnConcurrencyCeiling } from './operator-spawn';
+import { reclaimOrphanedSpawns } from './spawn-reclaim';
+import {
+  spawnAgentInHarness,
+  abortLocalSpawn,
+  spawnConcurrencyCeiling,
+  spawnSlotEventKey,
+} from './operator-spawn';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
@@ -264,5 +276,45 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`ceiling ${ceiling}`);
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+});
+
+describe('over-ceiling slot-wait — queue + await, never a silent drop (D-004)', () => {
+  it('an over-ceiling rejection carries the wake key + the events:await instruction', async () => {
+    runningCount = spawnConcurrencyCeiling();
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(false);
+    // The caller sleeps on this exact key and retries on wake — no drop, no busy-wait.
+    expect(res.awaitEvent).toBe(spawnSlotEventKey('ws-1'));
+    expect(res.error).toContain(`events:await { event: "${spawnSlotEventKey('ws-1')}" }`);
+  });
+
+  it('a finished spawn announces the freed slot on the workspace slot key', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    await flush();
+    await flush(); // the announce is a void-chained promise off the finally
+    expect(emitAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({
+      key: spawnSlotEventKey('ws-1'),
+      workspaceId: 'ws-1',
+    }));
+  });
+
+  it('a reclaim that freed slots announces per freed workspace before the cap check', async () => {
+    vi.mocked(reclaimOrphanedSpawns).mockResolvedValue({
+      reclaimed: 2, spawnIds: ['s-a', 's-b'], workspaces: ['ws-1', 'ws-2'],
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    await flush();
+    const keys = vi.mocked(emitAwaitedEvent).mock.calls.map((c) => c[0].key);
+    expect(keys).toContain(spawnSlotEventKey('ws-1'));
+    expect(keys).toContain(spawnSlotEventKey('ws-2'));
+  });
+
+  it('a successful under-ceiling spawn result carries NO awaitEvent', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    expect(res.awaitEvent ?? null).toBeNull();
   });
 });

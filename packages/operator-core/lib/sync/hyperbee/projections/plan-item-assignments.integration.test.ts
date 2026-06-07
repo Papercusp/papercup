@@ -57,6 +57,8 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('pi-fed');
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
+  // EI-79 step 2 (mig 181): the PG-level LWW guard column the writer stamps.
+  await db.sql.unsafe(`ALTER TABLE harness_shared.plan_item_assignments ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
 }, 90_000);
 
 afterAll(async () => {

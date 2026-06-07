@@ -54,6 +54,9 @@ import {
   type HarnessSharedPrivacy,
 } from '@papercusp/operator-core/lib/harness/harness-shared-config-types';
 import { formatHarnessLink } from '@papercusp/operator-core/lib/harness/harness-link-types';
+// Type-only — the route module's runtime (defineTool, node:fs) is never pulled
+// into the browser bundle; this is the response shape the finalize route returns.
+import type { FinalizeShareResult } from '@papercusp/operator-core/lib/endpoint-route/routes/harness/share-finalize';
 
 // ── Props ─────────────────────────────────────────────────────────────────
 
@@ -88,10 +91,16 @@ export interface ShareWizardProps {
    */
   runBackfill?: (state: ShareWizardState) => Promise<void>;
   /**
-   * .papercusp/shared.json finalize injection point. Defaults to the
-   * follow-up API route; tests pass a stub.
+   * .papercusp/shared.json finalize injection point. Defaults to POSTing
+   * `{ state }` to `/api/harness/:slug/share/finalize` and returning the
+   * route's FinalizeShareResult (swarm-reboot + binding outcomes), which the
+   * final step surfaces. Tests pass a stub; a `void` return just skips the
+   * outcome lines.
    */
-  writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
+  writeSharedJson?: (
+    slug: string,
+    state: ShareWizardState,
+  ) => Promise<FinalizeShareResult | void>;
   /**
    * Cupboard publish injection point (P-053). Called on finalize ONLY
    * when privacy === 'shared-public'. Defaults to a fetch against
@@ -152,6 +161,11 @@ const buttonSecondary: CSSProperties = {
   padding: '8px 16px', background: 'transparent', color: 'var(--fg)',
   border: '1px solid var(--border)', borderRadius: 4, fontSize: 14, cursor: 'pointer',
 };
+/** Inline warning box on the finalize step (cupboard/swarm/binding warnings). */
+const warnBoxStyle: CSSProperties = {
+  marginTop: 12, padding: 10, background: 'var(--bg-warning, #4a3a1a)',
+  border: '1px solid var(--border)', borderRadius: 4, fontSize: 13, color: 'var(--fg)',
+};
 
 function FieldLabel({ children }: { children: ReactNode }) {
   return <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>{children}</span>;
@@ -166,7 +180,12 @@ async function defaultResolveBinding(remote: string): Promise<BindingResolveResu
     body: JSON.stringify({ github_remote: remote }),
   });
   if (!res.ok) {
-    throw new Error(`binding lookup failed: ${res.status}`);
+    // The route returns { error } with the real cause (unparseable remote,
+    // GITHUB_API_DOWN, rate limit, …) — surface it, not just the status code.
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(
+      `binding lookup failed: ${res.status}${detail?.error ? ` — ${detail.error}` : ''}`,
+    );
   }
   return (await res.json()) as BindingResolveResult;
 }
@@ -180,13 +199,21 @@ async function defaultRunBackfill(_state: ShareWizardState): Promise<void> {
 async function defaultWriteSharedJson(
   slug: string,
   state: ShareWizardState,
-): Promise<void> {
+): Promise<FinalizeShareResult> {
   const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/share/finalize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ state }),
   });
-  if (!res.ok) throw new Error(`finalize failed: ${res.status}`);
+  if (!res.ok) {
+    // The route 4xxs with { error } (invalid config, unknown slug, …) —
+    // surface the real cause, not just the status code.
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(
+      `finalize failed: ${res.status}${detail?.error ? ` — ${detail.error}` : ''}`,
+    );
+  }
+  return (await res.json()) as FinalizeShareResult;
 }
 
 /**
@@ -312,6 +339,15 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     setBusy(true); setErr(null);
     try {
       const r = await resolveBinding(state.github_remote);
+      // Boot keys the swarm on github_repository_id (derive-swarm-topic) and
+      // the finalize route 400s on a non-positive id — refuse a 0/NaN id HERE
+      // with a visible error rather than storing it and dead-ending at step 9
+      // behind a silently-disabled Finalize button.
+      if (!Number.isInteger(r.github_repository_id) || r.github_repository_id <= 0) {
+        throw new Error(
+          `binding lookup returned an invalid repository id (${String(r.github_repository_id)}) — check the remote URL and try again`,
+        );
+      }
       setExistingBinding(r.existing_binding);
       setState((s) => ({
         ...s,
@@ -597,6 +633,11 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
   }, [state]);
 
   const [finalized, setFinalized] = useState(false);
+  // The finalize route's rich result (swarm reboot + binding outcomes) —
+  // surfaced on the final step so the user knows whether the harness actually
+  // went online or still needs an operator restart. Null until finalize
+  // succeeds (or when an injected writeSharedJson returns void).
+  const [finalizeOutcome, setFinalizeOutcome] = useState<FinalizeShareResult | null>(null);
 
   async function finalizeShared(): Promise<void> {
     if (!finalLink || !state.privacy || !state.topic || !state.github_remote || !state.github_repository_id) return;
@@ -611,7 +652,8 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
         discord_channel: state.discord_channel,
         now: Date.now(),
       });
-      await writeSharedJson(harnessSlug, { ...state, harness_link: finalLink });
+      const outcome = await writeSharedJson(harnessSlug, { ...state, harness_link: finalLink });
+      setFinalizeOutcome(outcome ?? null);
       setState((s) => ({ ...s, harness_link: finalLink }));
       setFinalized(true);
 
@@ -681,11 +723,42 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
               <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
                 Send this link to contributors. They paste it into Entry 4 of the create-harness picker.
               </div>
+              {/* Swarm-reboot outcome — the route reboots the harness after the
+                  write so an already-booted (swarm: null) handle re-resolves the
+                  fresh shared.json and joins the derived topic. Tell the user
+                  whether that actually happened. */}
+              {finalizeOutcome?.swarm && (
+                finalizeOutcome.swarm.rebooted && finalizeOutcome.swarm.state === 'booted' ? (
+                  <div data-testid="swarm-join-ok" style={{ marginTop: 12, fontSize: 13, color: 'var(--accent)' }}>
+                    ✓ Harness substrate rebooted — joining the swarm now.
+                  </div>
+                ) : (
+                  <div data-testid="swarm-join-warning" style={warnBoxStyle}>
+                    The share is saved, but the live swarm join didn’t complete
+                    {finalizeOutcome.swarm.error ? ` (${finalizeOutcome.swarm.error})` : ''} — the
+                    harness will join the swarm on the next operator restart.
+                  </div>
+                )
+              )}
+              {finalizeOutcome?.binding?.already_existed && (
+                <div data-testid="binding-already-existed" style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
+                  A binding for this repo already existed — your share reuses it instead of creating a new one.
+                </div>
+              )}
+              {finalizeOutcome?.binding && !finalizeOutcome.binding.created && !finalizeOutcome.binding.already_existed && (
+                <div data-testid="binding-create-warning" style={warnBoxStyle}>
+                  Binding registration failed
+                  {finalizeOutcome.binding.error ? ` (${finalizeOutcome.binding.error})` : ''} — the
+                  share works locally; re-run Share later to register the binding.
+                </div>
+              )}
+              {finalizeOutcome?.bindingWarning && (
+                <div data-testid="publisher-binding-warning" style={warnBoxStyle}>
+                  Publisher attestation warning: {finalizeOutcome.bindingWarning}
+                </div>
+              )}
               {publishWarning && (
-                <div
-                  data-testid="cupboard-publish-warning"
-                  style={{ marginTop: 12, padding: 10, background: 'var(--bg-warning, #4a3a1a)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13, color: 'var(--fg)' }}
-                >
+                <div data-testid="cupboard-publish-warning" style={warnBoxStyle}>
                   {publishWarning}
                 </div>
               )}

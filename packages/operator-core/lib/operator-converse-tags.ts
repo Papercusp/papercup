@@ -131,8 +131,32 @@ export function parseReportBody(jsonBody: string): ParsedReport | null {
  * markers (`**`, `__`, `_`, `` ` ``, `[…](…)`) — block-level constructs
  * (headings, lists, code fences) shouldn't appear inside a single say
  * body and we don't want to mangle prose with literal asterisks.
+ *
+ * Over-cap handling is the STRUCTURAL backstop of voice-persona
+ * P-002 ("headline + offer to continue"): the persona instruction holds
+ * the cap in validated runs, but when a turn DOES overrun, mid-thought
+ * truncation is degraded speech — so we cut at the last complete
+ * SENTENCE that fits instead (the model's leading sentences are its
+ * headline). Word-boundary + ellipsis remains the fallback for a first
+ * sentence that itself overruns the cap.
  */
 const SAY_MAX_CHARS = 220;
+/** Below this many chars, a sentence-boundary cut would keep so little of
+ *  the turn that the word-boundary fallback preserves more substance. */
+const SAY_MIN_SENTENCE_CUT = 60;
+
+/** Index just past the LAST sentence terminator (., !, ?, …, optionally
+ *  followed by a closing quote/bracket) that is followed by whitespace.
+ *  -1 when the slice holds no complete sentence. "3.5" / "v2.1" never
+ *  match — the terminator must precede whitespace. */
+function lastSentenceBoundary(text: string): number {
+  const re = /[.!?…]+["')\]]*(?=\s)/g;
+  let last = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) last = m.index + m[0].length;
+  return last;
+}
+
 export function clampSay(s: string): string {
   let out = s.trim();
   // Inline markdown:
@@ -142,10 +166,19 @@ export function clampSay(s: string): string {
   out = out.replace(/`([^`]+)`/g, '$1');       // inline code
   out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // links → just the text
   if (out.length > SAY_MAX_CHARS) {
-    // Truncate at a word boundary close to the cap. Keep an ellipsis
-    // hint so the LLM (reading next-turn context) sees the truncation.
-    const cut = out.slice(0, SAY_MAX_CHARS).replace(/\s+\S*$/, '');
-    out = (cut.length > 0 ? cut : out.slice(0, SAY_MAX_CHARS)) + '…';
+    const head = out.slice(0, SAY_MAX_CHARS);
+    const sentenceEnd = lastSentenceBoundary(head);
+    if (sentenceEnd >= SAY_MIN_SENTENCE_CUT) {
+      // Sentence-boundary cut: ends on a complete thought, speaks clean.
+      // No ellipsis — the terminator IS the natural stop.
+      out = head.slice(0, sentenceEnd).trimEnd();
+    } else {
+      // Fallback: truncate at a word boundary close to the cap. Keep an
+      // ellipsis hint so the LLM (reading next-turn context) sees the
+      // truncation.
+      const cut = head.replace(/\s+\S*$/, '');
+      out = (cut.length > 0 ? cut : head) + '…';
+    }
   }
   return out;
 }

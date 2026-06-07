@@ -17,6 +17,7 @@ describe('dev.* glance resolvers', () => {
       'dev.pgHealth',
       'dev.pgActiveQueries',
       'dev.coordPresence',
+      'dev.coordFeed',
       'dev.fleetGovernor',
     ]) {
       expect(names).toContain(n);
@@ -99,6 +100,33 @@ describe('dev.* glance resolvers', () => {
       expect(rows).toEqual(records);
       expect(listPresence).toHaveBeenCalledWith({ workspaceId: 'ws1' });
       vi.doUnmock('../agent-tools/coordination/presence');
+    });
+
+    it('dev.coordFeed returns flat envelope rows with page _meta on row[0]', async () => {
+      const rows = [
+        { ts: '2026-06-07T00:00:02Z', msg_id: 'b', from: 'op', to: ['*'], kind: 'message', surface: 'messages', broadcast: true },
+        { ts: '2026-06-07T00:00:01Z', msg_id: 'a', from: 'op', to: ['w'], kind: 'message', surface: 'messages', broadcast: false },
+      ];
+      const readCoordFeed = vi.fn(async () => ({
+        rows,
+        nextCursor: '2026-06-06T00:00:00Z',
+        total: 9,
+        byKind: { message: 2 },
+      }));
+      vi.doMock('../agent-tools/coordination/feed', () => ({ readCoordFeed }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const out = (await r('dev.coordFeed', { kinds: ['message'], owner: 'op', limit: 50 })) as Array<
+        Record<string, unknown> & { _meta?: { total: number; byKind: Record<string, number>; nextCursor: string | null } }
+      >;
+      expect(out).toHaveLength(2);
+      // _meta rides ONLY on row[0] (the flat-row sync contract).
+      expect(out[0]!._meta).toEqual({ total: 9, byKind: { message: 2 }, nextCursor: '2026-06-06T00:00:00Z' });
+      expect(out[1]!._meta).toBeUndefined();
+      // Args thread through to the read seam.
+      expect(readCoordFeed).toHaveBeenCalledWith(
+        expect.objectContaining({ kinds: ['message'], owner: 'op', limit: 50 }),
+      );
+      vi.doUnmock('../agent-tools/coordination/feed');
     });
 
     it('dev.fleetGovernor wraps buildFleetRateStatus() as a 1-element snapshot', async () => {

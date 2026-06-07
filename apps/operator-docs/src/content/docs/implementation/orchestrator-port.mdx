@@ -7,6 +7,17 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
+<Aside type="caution" title="The ported run-loop is now RETIRED (2026-06-06)">
+This is a **historical handoff doc**. The TS run-loop this port produced
+(`main-loop.ts`, `bin/run.ts`, `pre-loop.ts`, the checkpoints/snapshots/dispatches
+cluster) was retired and archived to `libs/papercusp/_retired/orchestrator-run-loop/`
+(plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag
+`legacy-orchestrator-run-loop-retired-2026-06-06`) — superseded by the **DBOS
+durable pipeline** (`packages/operator-core/lib/dbos/`). Parts of the port live
+on inside that pipeline: `invoke.ts`, `lanes.ts`, the worker chunk-loop,
+`cost-cap.ts`, `decision-parse.ts`. The `papercusp-orchestrate` bin and the
+`PAPERCUSP_USE_TS_ORCHESTRATOR` fall-through described below no longer exist.
+</Aside>
 
 ## Why this exists
 

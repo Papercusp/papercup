@@ -53,6 +53,56 @@ export function spawnConcurrencyCeiling(): number {
 }
 
 /**
+ * The wake key an over-ceiling spawn attempt sleeps on (D-004 — queue + await,
+ * never silent-drop): `events:await { event: spawnSlotEventKey(ws) }`, end the
+ * turn, retry the spawn on wake. Emitted whenever a slot frees — a spawn
+ * completes (done/failed/cancelled) or the P-011 reclaim frees orphaned rows.
+ * The wake is a BROADCAST to all waiters (they re-check the ceiling on retry;
+ * the await pump's per-tick resume cap + per-subscriber coalescing keep a
+ * mass-wake paced) — slot fairness is re-check-on-wake, not a granted ticket
+ * like lock:grant.
+ */
+export function spawnSlotEventKey(workspaceId: string): string {
+  return `spawn-slot:freed:${workspaceId}`;
+}
+
+/**
+ * Announce freed spawn capacity to over-ceiling waiters (best-effort, never
+ * throws). Lazy-imports the await engine so this module keeps its light load
+ * graph (the engine pulls the coord/messages surface).
+ */
+async function announceSpawnSlotFreed(workspaceId: string, summary: string): Promise<void> {
+  try {
+    const { emitAwaitedEvent } = await import('../events/await/engine');
+    await emitAwaitedEvent({
+      key: spawnSlotEventKey(workspaceId),
+      summary,
+      source: 'operator-spawn',
+      workspaceId,
+    });
+  } catch {
+    /* best-effort — a missed announce just means waiters retry on their
+       await timeout instead of the early wake */
+  }
+}
+
+/**
+ * Reclaim orphaned rows AND wake over-ceiling waiters in every workspace the
+ * reclaim freed slots in (D-004). The reclaim itself stays the pure sql unit
+ * (spawn-reclaim.ts); the announce rides this call-site wrapper.
+ */
+async function reclaimAndAnnounce(): Promise<void> {
+  const r = await reclaimOrphanedSpawns(getOrgPg().sql).catch(
+    () => ({ reclaimed: 0, spawnIds: [], workspaces: [] }),
+  );
+  // Rare (only when orphans were actually freed) — await so the announce lands
+  // before the caller's cap check; announceSpawnSlotFreed never throws.
+  await Promise.all(
+    r.workspaces.map((ws) => announceSpawnSlotFreed(ws, `${r.reclaimed} orphaned spawn slot(s) reclaimed`)),
+  );
+}
+
+/**
  * The live limit/headroom the brain consults before deciding whether a spawn is
  * worth it (P-007): the unified ceiling, how many slots are in use right now, and
  * the remaining headroom. Reclaims orphaned rows first so the count reflects live
@@ -63,7 +113,7 @@ export async function getSpawnHeadroom(workspaceId: string): Promise<{
   running: number;
   headroom: number;
 }> {
-  await reclaimOrphanedSpawns(getOrgPg().sql).catch(() => undefined);
+  await reclaimAndAnnounce();
   const ceiling = spawnConcurrencyCeiling();
   const running = await countRunning(workspaceId).catch(() => 0);
   return { ceiling, running, headroom: Math.max(0, ceiling - running) };
@@ -147,6 +197,9 @@ export interface OperatorSpawnResult {
   harness: string | null;
   projectDir: string | null;
   error: string | null;
+  /** Set on an over-ceiling rejection: the wake key to sleep on (D-004 —
+   *  `events:await { event: awaitEvent }`, end the turn, retry on wake). */
+  awaitEvent?: string | null;
 }
 
 /** Walk up to the nearest `.git` ancestor (mirrors locks/coordination-domain.ts). */
@@ -281,16 +334,23 @@ export async function spawnAgentInHarness(
   // never flip) BEFORE counting, so the ceiling reflects live spawns only and a
   // dead host's rows can never wedge it (P-011). Best-effort; the periodic sweep
   // is the backstop.
-  await reclaimOrphanedSpawns(getOrgPg().sql).catch(() => undefined);
+  await reclaimAndAnnounce();
 
   // Global concurrency ceiling — the single deterministic safety floor (P-007),
   // read live from rate_limit_config (maxSimultaneousAgents); durable count holds
   // across restarts. This is the hard backstop, NOT the worth-it allocator (the
-  // brain decides worth-it, informed by getSpawnHeadroom).
+  // brain decides worth-it, informed by getSpawnHeadroom). Over-ceiling is a
+  // QUEUE+AWAIT, not a silent drop (D-004): the result carries the wake key the
+  // caller sleeps on; every slot-free (completion or reclaim) announces it.
   const cap = spawnConcurrencyCeiling();
   const running = await countRunning(input.workspaceId).catch(() => 0);
   if (running >= cap) {
-    return fail(`spawn rejected: ${running} spawns already running (fleet ceiling ${cap} — maxSimultaneousAgents) — wait or fleet:cancel one`);
+    const awaitEvent = spawnSlotEventKey(input.workspaceId);
+    const res = await fail(
+      `spawn rejected: ${running} spawns already running (fleet ceiling ${cap} — maxSimultaneousAgents). ` +
+      `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
+    );
+    return { ...res, awaitEvent };
   }
 
   const spawnId = newSpawnId();
@@ -371,7 +431,12 @@ export async function spawnAgentInHarness(
         errorMessage: err instanceof Error ? err.message : String(err),
       }).catch(() => { /* PG down — nothing left to record to */ }),
     )
-    .finally(() => { localSpawnAborts.delete(spawnId); });
+    .finally(() => {
+      localSpawnAborts.delete(spawnId);
+      // The terminal flip above freed a ceiling slot — wake any over-ceiling
+      // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
+      void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
+    });
 
   return { ok: true, spawnId, harness: slug, projectDir: project.path, error: null };
 }

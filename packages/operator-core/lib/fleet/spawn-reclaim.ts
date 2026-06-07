@@ -46,6 +46,11 @@ export async function heartbeatSpawns(sql: Db, spawnIds: string[]): Promise<void
 export interface ReclaimResult {
   reclaimed: number;
   spawnIds: string[];
+  /** Distinct workspaces whose ceiling the reclaim freed slots in — callers
+   *  announce `spawn-slot:freed:<ws>` per entry so over-ceiling waiters wake
+   *  (D-004 queue+await; the announce lives at the call sites, this module
+   *  stays a pure sql unit). */
+  workspaces: string[];
 }
 
 /**
@@ -61,7 +66,7 @@ export async function reclaimOrphanedSpawns(
   opts: { staleMs?: number } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
-  const rows = await sql<{ spawn_id: string }[]>`
+  const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
     UPDATE harness_shared.spawned_agents
        SET status = 'failed',
            finished_at = now(),
@@ -73,6 +78,10 @@ export async function reclaimOrphanedSpawns(
            )
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'
-    RETURNING spawn_id`;
-  return { reclaimed: rows.length, spawnIds: rows.map((r) => r.spawn_id) };
+    RETURNING spawn_id, workspace_id`;
+  return {
+    reclaimed: rows.length,
+    spawnIds: rows.map((r) => r.spawn_id),
+    workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+  };
 }

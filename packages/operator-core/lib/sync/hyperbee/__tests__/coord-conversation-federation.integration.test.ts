@@ -101,6 +101,7 @@ describe('coord_conversations federation (real PG)', () => {
         created_at        timestamptz DEFAULT now() NOT NULL,
         updated_at        timestamptz DEFAULT now() NOT NULL,
         resolved_at       timestamptz,
+        fed_ts            bigint, -- EI-79 step 2 (mig 181): PG-level LWW guard column
         CONSTRAINT coord_conversations_pkey PRIMARY KEY (workspace_id, id),
         CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
         CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
@@ -279,6 +280,7 @@ describe('coord_conversations federation (real PG)', () => {
           capture_target text, promoted_issue_id text,
           created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
           resolved_at timestamptz, origin text NOT NULL DEFAULT 'local', author_pubkey text,
+          fed_ts bigint, -- EI-79 step 2 (mig 181): PG-level LWW guard column
           CONSTRAINT coord_conversations_pkey PRIMARY KEY (workspace_id, id),
           CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
           CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),

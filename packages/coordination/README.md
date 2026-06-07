@@ -20,6 +20,13 @@ deps — the only injected couplings are a PG handle and a `coordDir` resolver.
 append-only event log and a mutable single-row-per-owner table are different
 data models, not one logic over two engines.
 
+> **Product path:** the operator wires the **PG backends exclusively** —
+> `PgCoordLog` + the Pg presence/watermark/subscription stores
+> (`coord-channels-pg-port-2026-05-30`). `FsCoordLog` (homed in
+> `@papercusp/pubsub-substrate`, re-exported here) remains the *generic*
+> portable backend for detached/portability use — it is not the operator
+> runtime path.
+
 ## What stays host-side (by design — NOT in this package)
 
 - **Identity resolution** (`resolveAgentIdentity` from a host ctx) — host/ctx
@@ -44,13 +51,18 @@ PG impls are run against the shared conformance suites with a live
 
 ## Detached-mode proof (P-051)
 
-`examples/detached-mode.ts` stands the whole substrate up with **zero
-operator and zero Postgres** — it imports only `core` + `event-log` and
-runs the full L3 loop (messages/inbox, thread fold, handoff accept,
-append-only escalation resolve, plan-events) over an OS temp dir, proving
-the portability claim (D-004): a detached agent participates purely over
-the filesystem. Run it:
+The detached-mode example lives with the generic substrate it proves:
+`libs/generic/pubsub-substrate/examples/detached-mode.ts` stands the
+event-log substrate up with **zero operator and zero Postgres** — it
+imports only `core` + `event-log` and runs the full L3 loop
+(messages/inbox, thread fold, handoff accept, append-only escalation
+resolve, plan-events) over an OS temp dir, proving the portability claim
+(D-004): a detached agent participates purely over the filesystem. Run it:
 
 ```
-npx tsx packages/coordination/examples/detached-mode.ts   # exits 0 on PASS
+npx tsx libs/generic/pubsub-substrate/examples/detached-mode.ts   # exits 0 on PASS
 ```
+
+This proves *genericity*, not a product configuration — the detached FS
+event-log path is no longer the operator's product path (see the product-path
+note above; `coord-channels-pg-port-2026-05-30`).

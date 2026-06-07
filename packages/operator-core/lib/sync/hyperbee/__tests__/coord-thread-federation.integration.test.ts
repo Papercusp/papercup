@@ -63,6 +63,9 @@ describe('coord_threads + coord_thread_posts federation (real PG + real PgThread
         author_pubkey TEXT, origin TEXT NOT NULL DEFAULT 'local', PRIMARY KEY (harness_slug, issue_id));`);
     await db.sql.unsafe(readFileSync(OUTBOX_MIGRATION, 'utf8'));
     await db.sql.unsafe(stripMeta(readFileSync(FED_MIGRATION, 'utf8')));
+    // EI-79 step 2 (mig 181): the PG-level LWW guard column the writers stamp.
+    await db.sql.unsafe(`ALTER TABLE harness_shared.coord_threads ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
     threads = new PgThreadStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: WS });
   }, 60_000);
 
@@ -115,6 +118,9 @@ describe('coord_threads + coord_thread_posts federation (real PG + real PgThread
     try {
       await stubRoles(dbB.sql);
       await ensureCoordCapabilityTables(dbB.sql);
+      // EI-79 step 2 (mig 181): the PG-level LWW guard column the writers stamp.
+      await dbB.sql.unsafe(`ALTER TABLE harness_shared.coord_threads ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
+      await dbB.sql.unsafe(`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS fed_ts BIGINT`);
       // B needs the post fed-unique index for the post projection's ON CONFLICT.
       await dbB.sql.unsafe(`CREATE UNIQUE INDEX coord_thread_posts_fed_uq ON harness_shared.coord_thread_posts (workspace_id, post_msg_id) WHERE harness_slug IS NOT NULL AND post_msg_id IS NOT NULL`);
       const projThread = buildCoordThreadProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: dbB.sql });

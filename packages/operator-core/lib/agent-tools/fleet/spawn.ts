@@ -79,9 +79,14 @@ export default defineTool({
             harness: res.harness,
             project_dir: res.projectDir,
             error: res.error,
+            // Over-ceiling (D-004): never drop or busy-wait — sleep on this key
+            // and retry the same spawn on wake (a slot-free announces it).
+            ...(res.awaitEvent ? { await_event: res.awaitEvent } : {}),
             next: res.ok
               ? 'fleet:tree { spawn_id } to watch; fleet:cancel { spawn_id } to abort.'
-              : 'fix the input and retry — the failed attempt is recorded in the nursery.',
+              : res.awaitEvent
+                ? `over ceiling — events:await { event: "${res.awaitEvent}" }, end your turn, retry this fleet:spawn on wake.`
+                : 'fix the input and retry — the failed attempt is recorded in the nursery.',
           }),
         },
       ],

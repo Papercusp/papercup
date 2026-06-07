@@ -3,7 +3,21 @@ URL: /internal/docs/system/lifecycle
 
 Authoritative walkthrough of how a project moves through the harness, traced from the live code (not stale prior docs).
 
+import { Aside } from '@astrojs/starlight/components';
+
 # Project lifecycle — from idea to completion
+
+The harness *drivers* this page traces — bash `run.sh` and the TS run-loop
+(`runMainLoop` / `main-loop.ts` / `bin/run.ts`) — are **retired**. The TS
+run-loop cluster is archived at `libs/papercusp/_retired/orchestrator-run-loop/`
+(plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag
+`legacy-orchestrator-run-loop-retired-2026-06-06`). The **live pipeline is the
+DBOS durable orchestrator** (`packages/operator-core/lib/dbos/` — the decision
+verbs now dispatch from `orchestrator-decide.ts`). The *conceptual* flow below
+(scoper → worker → validator → reviewer, decision verbs, feature statuses,
+hooks) still largely holds — the DBOS pipeline reuses `invoke.ts`, `lanes.ts`,
+and the chunk-loop — but every `main-loop.ts` / `run.sh` code reference on this
+page points at archived code. Trust the concepts, not the line numbers.
 
 This document is the **authoritative walkthrough** of how a project moves through the
 harness, traced from the actual codebase as of 2026-05-06. Earlier docs in this tree

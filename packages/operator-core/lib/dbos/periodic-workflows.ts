@@ -135,6 +135,19 @@ async function spawnReclaimSweepTick(): Promise<void> {
     const r = await reclaimOrphanedSpawns(getOrgPg().sql);
     if (r.reclaimed > 0) {
       console.warn(`[spawn-reclaim] freed ${r.reclaimed} orphaned spawn(s): ${r.spawnIds.join(', ')}`);
+      // Freed slots → wake over-ceiling waiters sleeping on the slot key (D-004).
+      try {
+        const { emitAwaitedEvent } = await import('../events/await/engine');
+        const { spawnSlotEventKey } = await import('../fleet/operator-spawn');
+        for (const ws of r.workspaces) {
+          await emitAwaitedEvent({
+            key: spawnSlotEventKey(ws),
+            summary: `${r.reclaimed} orphaned spawn slot(s) reclaimed by the periodic sweep`,
+            source: 'spawn-reclaim-sweep',
+            workspaceId: ws,
+          }).catch(() => undefined);
+        }
+      } catch { /* best-effort — waiters fall back to their await timeout */ }
     }
   }, { name: 'spawn-reclaim-sweep' });
 }

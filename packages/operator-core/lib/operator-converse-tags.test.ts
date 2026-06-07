@@ -201,7 +201,7 @@ describe('clampSay', () => {
   });
 
   it('truncates at a word boundary near the 220-char cap', () => {
-    const long = 'word '.repeat(60).trim(); // 60 * 5 - 1 = 299 chars
+    const long = 'word '.repeat(60).trim(); // 60 * 5 - 1 = 299 chars, no sentence terminator
     const out = clampSay(long);
     expect(out.length).toBeLessThanOrEqual(221); // 220 + the ellipsis
     expect(out.endsWith('…')).toBe(true);
@@ -213,6 +213,40 @@ describe('clampSay', () => {
     const out = clampSay(long);
     expect(out.length).toBeLessThanOrEqual(221);
     expect(out.endsWith('…')).toBe(true);
+  });
+
+  // Structural backstop (voice-persona P-002): over-cap turns cut at the last
+  // COMPLETE SENTENCE that fits — clean speech, no mid-thought ellipsis.
+  it('cuts an over-cap multi-sentence say at the last sentence boundary that fits', () => {
+    const s1 = 'The auth fix passed review and shipped to the test channel an hour ago.'; // 72 chars
+    const s2 = 'Two more items are waiting on you.'; // 34 chars → s1+s2 = 107
+    const s3 = 'There is also a long tail of further detail that pushes the whole thing well past the two-hundred-and-twenty character cap for spoken turns, which should be dropped.';
+    const out = clampSay(`${s1} ${s2} ${s3}`);
+    expect(out).toBe(`${s1} ${s2}`);
+    expect(out.endsWith('…')).toBe(false);
+    expect(out.length).toBeLessThanOrEqual(220);
+  });
+
+  it('falls back to word-boundary + ellipsis when the first sentence alone overruns the cap', () => {
+    const runOn = 'this single sentence just keeps going and going with more and more clauses '.repeat(5).trim();
+    const out = clampSay(runOn);
+    expect(out.length).toBeLessThanOrEqual(221);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('falls back to word-boundary when the only sentence boundary is degenerately early', () => {
+    // "Yes." (4 chars) is under the minimum sentence cut — keeping only it
+    // would drop nearly the whole turn, so the word-boundary path wins.
+    const out = clampSay(`Yes. ${'detail '.repeat(40).trim()}`);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.length).toBeGreaterThan(100);
+  });
+
+  it('does not treat a decimal point as a sentence boundary', () => {
+    const s1 = 'The build took 3.5 minutes on the runner and finished green just now, all suites included.'; // 91 chars, one real boundary
+    const long = `${s1} ${'and then it kept narrating more and more detail '.repeat(4).trim()}`;
+    const out = clampSay(long);
+    expect(out).toBe(s1);
   });
 });
 

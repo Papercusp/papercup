@@ -150,7 +150,15 @@ export function nextStep(
       return { kind: 'next', step: 'lookup-binding' };
 
     case 'lookup-binding':
-      if (state.github_repository_id === undefined) {
+      // A real positive numeric repo id is required — boot keys the swarm on
+      // github_repository_id (derive-swarm-topic), so a 0/NaN id must not
+      // advance (it would finalize into a swarm-null harness). Matches
+      // isStateCompleteForFinalize's `> 0` requirement.
+      if (
+        state.github_repository_id === undefined ||
+        !Number.isInteger(state.github_repository_id) ||
+        state.github_repository_id <= 0
+      ) {
         return { kind: 'block', reason: 'binding_lookup_pending' };
       }
       if (state.existing_binding_found === true) {

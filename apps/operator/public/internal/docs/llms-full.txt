@@ -2687,7 +2687,7 @@ Do **not** read `.papercusp/validation-contract.md` (retired by plans-central-ha
 
 The staging loop (`libs/papercusp/.../prompts/staging/`) gates feature approval on tests:
 
-1. A feature is `validating` (worker committed). The orchestrator’s **C0** decision emits `NEXT_TESTER <F> <VAL>` for each claim VAL with no passing covering test. (`NEXT_TESTER` was already wired in the **TS orchestrator** — `packages/orchestrator/src/main-loop.ts` dispatches the `tester` role; bash `run.sh` is retired. The prompt just needed to start emitting it.)
+1. A feature is `validating` (worker committed). The orchestrator’s **C0** decision emits `NEXT_TESTER <F> <VAL>` for each claim VAL with no passing covering test. (`NEXT_TESTER` is wired in the **DBOS pipeline** — `packages/operator-core/lib/dbos/orchestrator-decide.ts` dispatches the `tester` role; bash `run.sh` AND the TS run-loop (`main-loop.ts`, archived 2026-06-06 to `_retired/orchestrator-run-loop/`) are both retired. The prompt just needed to start emitting it.)
 2. The **tester** (`staging/tester.md`) writes one black-box test per VAL, registers it in `.papercusp/tests.json` with `coversVALs`, exits.
 3. Once every test-requiring VAL has a passing test, the orchestrator sends the feature to the **validator** (`staging/validator.md` V2), whose primary gate is **running** the VAL-covering tests. An untested required claim is a FAIL.
 
@@ -23723,6 +23723,10 @@ Part of the work, not afterthoughts. \~1d total, folded into the relevant steps:
 
 > TypeScript port of the bash autonomous-harness orchestrator. State as of 2026-04-27.
 
+The ported run-loop is now RETIRED (2026-06-06)
+
+This is a **historical handoff doc**. The TS run-loop this port produced (`main-loop.ts`, `bin/run.ts`, `pre-loop.ts`, the checkpoints/snapshots/dispatches cluster) was retired and archived to `libs/papercusp/_retired/orchestrator-run-loop/` (plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag `legacy-orchestrator-run-loop-retired-2026-06-06`) — superseded by the **DBOS durable pipeline** (`packages/operator-core/lib/dbos/`). Parts of the port live on inside that pipeline: `invoke.ts`, `lanes.ts`, the worker chunk-loop, `cost-cap.ts`, `decision-parse.ts`. The `papercusp-orchestrate` bin and the `PAPERCUSP_USE_TS_ORCHESTRATOR` fall-through described below no longer exist.
+
 ## Why this exists
 
 [Section titled “Why this exists”](#why-this-exists)
@@ -37805,6 +37809,10 @@ The `lib/operator-state-pg.ts` helpers branch on `ENCRYPTED_TABLES.has(table)` a
 # Project lifecycle — from idea to completion
 
 [Section titled “Project lifecycle — from idea to completion”](#project-lifecycle--from-idea-to-completion)
+
+The run-loop described here is RETIRED (2026-06-06)
+
+The harness *drivers* this page traces — bash `run.sh` and the TS run-loop (`runMainLoop` / `main-loop.ts` / `bin/run.ts`) — are **retired**. The TS run-loop cluster is archived at `libs/papercusp/_retired/orchestrator-run-loop/` (plan `archive-legacy-orchestrator-deadcode-2026-06-06`; git tag `legacy-orchestrator-run-loop-retired-2026-06-06`). The **live pipeline is the DBOS durable orchestrator** (`packages/operator-core/lib/dbos/` — the decision verbs now dispatch from `orchestrator-decide.ts`). The *conceptual* flow below (scoper → worker → validator → reviewer, decision verbs, feature statuses, hooks) still largely holds — the DBOS pipeline reuses `invoke.ts`, `lanes.ts`, and the chunk-loop — but every `main-loop.ts` / `run.sh` code reference on this page points at archived code. Trust the concepts, not the line numbers.
 
 This document is the **authoritative walkthrough** of how a project moves through the harness, traced from the actual codebase as of 2026-05-06. Earlier docs in this tree may be out of date; trust this one and the code references it cites.
 

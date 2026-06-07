@@ -12,6 +12,7 @@
  * tested against synthetic transcripts without PG/LLM.
  */
 
+import { CLAUDE_BUILTIN_TOOLS } from '@papercusp/papercup-shared/agent';
 import type { RunSummary, Violation, TurnResult } from '@papercusp/testing-shell/llm';
 
 // =============================================================================
@@ -397,6 +398,74 @@ export function groundedCountBeforeTool(run: RunSummary): Violation[] {
     }
   }
   return violations;
+}
+
+// =============================================================================
+// 12. No stray built-in tool calls (voice-persona P-008)
+// =============================================================================
+//
+// The converse spawn DENIES every Claude Code built-in (`disallowBuiltins` →
+// `--disallowed-tools`, converse.ts) — the brain reaches its world exclusively
+// through agentmcp tools and the control tags. The historical failure was the
+// brain emitting `Bash({command:'echo …'})` as a no-op "comment" plus
+// ToolSearch-flailing over deferred names. converse.ts strips the
+// `mcp__agentmcp__` prefix off LEGIT catalog calls before re-emitting them, so
+// any observed bare built-in name in the tool-call stream IS a stray — either
+// the deny-list regressed or the persona reached for a tool it must not have.
+
+const STRAY_BUILTIN_NAMES: ReadonlySet<string> = new Set([
+  ...CLAUDE_BUILTIN_TOOLS,
+  // Deliberately NOT in CLAUDE_BUILTIN_TOOLS (workers need them), but the
+  // operator brain runs `disableToolSearch` on a non-deferred surface — any
+  // of these on a chat turn is the flailing loop coming back.
+  'ToolSearch',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
+]);
+
+export function noStrayBuiltinCalls(run: RunSummary): Violation[] {
+  const violations: Violation[] = [];
+  for (let i = 0; i < run.turns.length; i++) {
+    for (const tc of run.turns[i].toolCalls) {
+      if (STRAY_BUILTIN_NAMES.has(tc.name)) {
+        violations.push({
+          assertKind: 'noStrayBuiltinCalls',
+          severity: 'error',
+          evidenceTurnIdx: i,
+          claim: `Turn ${i} called built-in tool '${tc.name}'. The operator brain has NO built-ins (disallowBuiltins) — it acts only through its agentmcp catalog and control tags.`,
+          suggestion: "If the deny-list regressed, restore disallowBuiltins on the converse spawn; if the persona reached for it, strengthen the 'Calling tools' rules.",
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+// =============================================================================
+// 13. Ambiguous instruction must produce a choice card (voice-persona P-003)
+// =============================================================================
+//
+// For scenarios whose PREMISE is an ambiguous instruction over ≥2 candidates
+// (S16's "approve the busy one"), the persona's rule 3 REQUIRES one
+// chat_ask_choice card — guessing in prose, or asking a bare spoken question
+// with no card, are both failures. Deterministic on purpose: the judge's
+// cardUsage axis was too high-variance to hold this behavior (the original
+// S16 finding). Only wire this into scenarios that guarantee the ambiguity.
+
+export function disambiguationCardRequired(run: RunSummary): Violation[] {
+  const sawChoiceCard = run.turns.some((t) =>
+    t.cards.some(
+      (c) => /ask_choice/i.test(c.kind) || (c.options?.length ?? 0) >= 2,
+    ),
+  );
+  if (sawChoiceCard) return [];
+  return [{
+    assertKind: 'disambiguationCardRequired',
+    severity: 'error',
+    evidenceTurnIdx: run.turns.length > 0 ? run.turns.length - 1 : undefined,
+    claim: 'The ambiguous instruction never produced a chat_ask_choice card — the brain guessed a candidate or disambiguated in prose.',
+    suggestion: 'Per voice rule 3: ≥2 plausible targets → emit ONE chat_ask_choice card (voiceAnswerable:true) listing the candidates; never pick one autonomously.',
+  }];
 }
 
 // =============================================================================

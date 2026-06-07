@@ -44,9 +44,11 @@ on tests:
 
 1. A feature is `validating` (worker committed). The orchestrator's **C0**
    decision emits `NEXT_TESTER <F> <VAL>` for each claim VAL with no passing
-   covering test. (`NEXT_TESTER` was already wired in the **TS orchestrator** —
-   `packages/orchestrator/src/main-loop.ts` dispatches the `tester` role; bash
-   `run.sh` is retired. The prompt just needed to start emitting it.)
+   covering test. (`NEXT_TESTER` is wired in the **DBOS pipeline** —
+   `packages/operator-core/lib/dbos/orchestrator-decide.ts` dispatches the
+   `tester` role; bash `run.sh` AND the TS run-loop (`main-loop.ts`, archived
+   2026-06-06 to `_retired/orchestrator-run-loop/`) are both retired. The
+   prompt just needed to start emitting it.)
 2. The **tester** (`staging/tester.md`) writes one black-box test per VAL,
    registers it in `.papercusp/tests.json` with `coversVALs`, exits.
 3. Once every test-requiring VAL has a passing test, the orchestrator sends the
