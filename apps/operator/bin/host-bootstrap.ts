@@ -162,6 +162,25 @@ export function runBootstrap(): void {
   // Desktop voice surface (P-015): bridge the local audio socket over a loopback
   // WS so the Tauri webview's getUserMedia path can reach the same voice-node.
   startDesktopVoiceWs();
+  // hive-frame-desktops-live-view P-012: on a desktop-enabled FRAME (the
+  // bootstrap advertised a display pool), publish each ACTIVE display as a
+  // screen track on the harness's video channel. Viewer-driven — a track
+  // encodes only while the channel has an audience. No-op everywhere else.
+  if (process.env.PAPERCUSP_DESKTOP_DISPLAYS && process.env.PAPERCUSP_DESKTOP_SCREEN_TRACKS !== '0') {
+    void (async () => {
+      try {
+        const slug = (process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES ?? '').split(',')[0]?.trim();
+        if (!slug || slug === '*') return; // a Queen/control node hosts no displays
+        const { startFrameScreenPublisher } = await import(
+          '@papercusp/operator-core/lib/voice-node/screen-track/screen-publisher'
+        );
+        startFrameScreenPublisher({ harnessSlug: slug });
+        console.log(`[screen-track] frame screen publisher up for '${slug}' (tracks follow the display-lease pool)`);
+      } catch (err) {
+        console.error('[screen-track] failed to start the frame screen publisher:', err);
+      }
+    })();
+  }
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /
   // smoke-fail / plan-review now push at the source via notifyAttention from
   // their /api/internal/*-event producers; needs-human≥high from set-status.

@@ -3,6 +3,7 @@ import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { Eye, Hand, MonitorPlay, MonitorOff, RefreshCw, X } from 'lucide-react';
 import { createResilientEventSource, type ResilientEventSource } from '@papercusp/sse';
 import FrameVncView from './FrameVncView';
+import FrameScreenTrackView from './FrameScreenTrackView';
 
 /**
  * AdvFramesTab — the Swarm live view
@@ -163,6 +164,13 @@ export default function AdvFramesTab() {
     await setLive(null);
     await setSelectedKey(null);
   };
+  // P-013: watch path tries the holepunch SCREEN TRACK first and falls back to
+  // VNC transparently; VNC remains the input (takeover) path. Transient
+  // per-attempt state — reset whenever the target or mode changes.
+  const [trackFallback, setTrackFallback] = useState<string | null>(null);
+  useEffect(() => {
+    setTrackFallback(null);
+  }, [selectedKey, live, drive]);
 
   const tiles = useMemo(() => {
     const list = [...thumbs.values()];
@@ -334,7 +342,16 @@ export default function AdvFramesTab() {
             </button>
           </div>
           {live ? (
-            <FrameVncView slug={selection.slug} display={selection.display} drive={drive} />
+            drive || trackFallback !== null ? (
+              // VNC: the input path (takeover) and the watch fallback (P-013).
+              <FrameVncView slug={selection.slug} display={selection.display} drive={drive} />
+            ) : (
+              <FrameScreenTrackView
+                slug={selection.slug}
+                display={selection.display}
+                onUnavailable={(reason) => setTrackFallback(reason)}
+              />
+            )
           ) : selected ? (
             <img
               className="pc-frames__panel-img"
@@ -349,8 +366,10 @@ export default function AdvFramesTab() {
             {live
               ? drive
                 ? 'live VNC session — you are driving this display (audited)'
-                : 'live VNC session — read-only; "Take control" to drive (audited)'
-              : 'stills refresh every few seconds — "Watch live" opens the VNC session'}
+                : trackFallback !== null
+                  ? `live VNC session (read-only) — screen track unavailable: ${trackFallback}`
+                  : 'holepunch screen track — read-only; "Take control" switches to VNC for input (audited)'
+              : 'stills refresh every few seconds — "Watch live" opens the live view'}
           </div>
         </div>
       )}

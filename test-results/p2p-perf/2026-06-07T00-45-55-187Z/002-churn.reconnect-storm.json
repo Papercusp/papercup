@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "scenario": "churn.reconnect-storm",
+  "tier": 1,
+  "params": {
+    "readers": 1,
+    "historySize": 1000,
+    "winners": 563,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T00:46:05.148Z",
+  "durationMs": 5718.141344,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "rejoinCatchUpMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 295,
+      "p95": 295,
+      "p99": 295,
+      "max": 295,
+      "mean": 295
+    },
+    "childLoopLagP95Ms": {
+      "unit": "ms",
+      "count": 2,
+      "p50": 20.7,
+      "p95": 20.8,
+      "p99": 20.8,
+      "max": 20.8,
+      "mean": 20.75
+    },
+    "childRssPeak": {
+      "unit": "bytes",
+      "count": 2,
+      "p50": 238645248,
+      "p95": 244015104,
+      "p99": 244015104,
+      "max": 244015104,
+      "mean": 241330176
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20.1,
+    "p95Ms": 20.8,
+    "p99Ms": 24.4,
+    "maxMs": 51.8
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 36.071,
+    "systemMs": 58.649
+  },
+  "rss": {
+    "peakBytes": 233283584
+  },
+  "notes": [
+    "writer loop-lag through storm: p95=20.8ms max=51.8ms"
+  ]
+}

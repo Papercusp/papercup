@@ -40,7 +40,9 @@ export interface PeerChildConfig {
   harnessSlug: string;
   /** Workspace root for this peer's corestore. Reused across churn restarts. */
   root: string;
-  bootstrap: Array<{ host: string; port: number }>;
+  /** Local-testnet DHT bootstrap (Tier 1/2). ABSENT or empty → the PUBLIC DHT
+   *  (Tier-3 real-WAN peers — p2p-performance-suite D-007). */
+  bootstrap?: Array<{ host: string; port: number }>;
   peerIndex: number;
   /** Reader merge-poll cadence (production default 1000). */
   mergePollMs?: number;
@@ -64,11 +66,26 @@ export interface PeerChildConfig {
   catchUpTimeoutMs?: number;
 }
 
+/** Swarm/DHT network observations over the scenario window (Tier-3 P-011:
+ *  real-WAN discovery time + NAT/holepunch behavior; harmless zeros on a
+ *  loopback testnet). Punch/relay counters are DELTAS off `swarm.dht.stats`
+ *  (hyperdht ≥6.32 exposes `punches` + `relaying`). */
+export interface PeerNetStats {
+  /** ms from substrate-boot start to the first swarm connection (DHT discovery + connect). Null = never connected. */
+  firstConnectionMs: number | null;
+  /** Per-connection observations (capped at 200). `remoteHost` distinguishes direct vs relay paths. */
+  connections: Array<{ atMs: number; remoteHost?: string; remotePort?: number; peerKey?: string }>;
+  punches: { consistent: number; random: number; open: number };
+  relaying: { attempts: number; successes: number; aborts: number };
+}
+
 export interface PeerChildResult {
   evt: 'result';
   role: 'writer' | 'reader';
   peerIndex: number;
   keyHex: string;
+  /** Network-path observations (always present; zeros on loopback testnets). */
+  net?: PeerNetStats;
   /** Reader: replication latency summary (ms) over measurement ops (sentAt → applied). */
   latency?: ReturnType<typeof summarize>;
   /** Reader: the raw latency samples (capped) so the parent can compute exact cross-reader distributions. */
@@ -101,9 +118,35 @@ async function main(): Promise<void> {
   });
 
   const identity = makePeerIdentity(`peer-${cfg.peerIndex}`, 1000 + cfg.peerIndex);
-  const swarm = new Hyperswarm({ bootstrap: cfg.bootstrap }) as unknown as HyperswarmLike & {
+  // No bootstrap (or empty) = the PUBLIC DHT — the Tier-3 real-WAN posture (D-007).
+  const swarm = new Hyperswarm(
+    cfg.bootstrap && cfg.bootstrap.length ? { bootstrap: cfg.bootstrap } : {},
+  ) as unknown as HyperswarmLike & {
     destroy(): Promise<void>;
+    on(ev: 'connection', cb: (socket: unknown, peerInfo: unknown) => void): void;
+    dht?: { stats?: { punches?: Record<string, number>; relaying?: Record<string, number> } };
   };
+
+  // Net probe (Tier-3 P-011): first-connection time, per-connection remote
+  // addresses, and dht punch/relay counter deltas over the scenario window.
+  const dhtStats = () => {
+    const s = swarm.dht?.stats;
+    return {
+      punches: {
+        consistent: s?.punches?.consistent ?? 0,
+        random: s?.punches?.random ?? 0,
+        open: s?.punches?.open ?? 0,
+      },
+      relaying: {
+        attempts: s?.relaying?.attempts ?? 0,
+        successes: s?.relaying?.successes ?? 0,
+        aborts: s?.relaying?.aborts ?? 0,
+      },
+    };
+  };
+  const statsAtBoot = dhtStats();
+  const netConnections: PeerNetStats['connections'] = [];
+  let firstConnectionAt: number | null = null;
 
   // Reader measurement state. Measurement ops are table='perf-rep' with
   // value.sentAt; history/corpus ops count toward catch-up via distinct keys.
@@ -112,6 +155,20 @@ async function main(): Promise<void> {
   let appliedOps = 0;
   const bootT0 = Date.now();
   let caughtUpAt: number | null = null;
+
+  swarm.on('connection', (socket, peerInfo) => {
+    const at = Date.now();
+    if (firstConnectionAt === null) firstConnectionAt = at;
+    if (netConnections.length >= 200) return;
+    const raw = (socket as { rawStream?: { remoteHost?: string; remotePort?: number } }).rawStream;
+    const key = (peerInfo as { publicKey?: Buffer } | undefined)?.publicKey;
+    netConnections.push({
+      atMs: at - bootT0,
+      ...(raw?.remoteHost ? { remoteHost: raw.remoteHost } : {}),
+      ...(typeof raw?.remotePort === 'number' ? { remotePort: raw.remotePort } : {}),
+      ...(key ? { peerKey: key.toString('hex') } : {}),
+    });
+  });
 
   const apply = async (op: OpEnvelope): Promise<boolean> => {
     appliedOps++;
@@ -207,6 +264,13 @@ async function main(): Promise<void> {
     for (;;) {
       const line = await stdinLines.next();
       if (line === null || line === 'stop') break;
+      if (line === 'ping') {
+        // Clock probe (Tier-3): the parent estimates this machine's clock offset
+        // over the ALREADY-OPEN channel (min-RTT sample wins), so cross-machine
+        // sentAt→applied latencies can be skew-corrected/sanity-checked.
+        out({ evt: 'pong', tRemote: Date.now() });
+        continue;
+      }
       if (line === 'go' && cfg.role === 'writer') {
         const count = cfg.count ?? 0;
         const rate = cfg.rate ?? 0;
@@ -238,11 +302,27 @@ async function main(): Promise<void> {
     if (progressTimer) clearInterval(progressTimer);
 
     const artifact = meter.finish();
+    const statsAtEnd = dhtStats();
+    const net: PeerNetStats = {
+      firstConnectionMs: firstConnectionAt === null ? null : firstConnectionAt - bootT0,
+      connections: netConnections,
+      punches: {
+        consistent: statsAtEnd.punches.consistent - statsAtBoot.punches.consistent,
+        random: statsAtEnd.punches.random - statsAtBoot.punches.random,
+        open: statsAtEnd.punches.open - statsAtBoot.punches.open,
+      },
+      relaying: {
+        attempts: statsAtEnd.relaying.attempts - statsAtBoot.relaying.attempts,
+        successes: statsAtEnd.relaying.successes - statsAtBoot.relaying.successes,
+        aborts: statsAtEnd.relaying.aborts - statsAtBoot.relaying.aborts,
+      },
+    };
     const result: PeerChildResult = {
       evt: 'result',
       role: cfg.role,
       peerIndex: cfg.peerIndex,
       keyHex: handle.ownLog.keyHex,
+      net,
       appliedKeys: appliedKeys.size,
       appliedOps,
       loopLag: artifact.loopLag!,

@@ -1,5 +1,10 @@
 # memory-backend benchmark — the scorecard for the revive-vs-retire call
 
+> **2026-06-07: see the Addendum at the bottom** — extraction now rides the
+> Claude session (no key to rot, $0 marginal) and the open near-dup question
+> is settled: **4/6 merged under Haiku vs 0/6 under the gpt-4o-mini fallback**.
+> Two operational knocks against mem0 below are stale for claude-code users.
+
 > **Status: COMPLETE — for the owner's needs-human decision (D-006).**
 > All four tiers ran. This document **informs**; the revive-vs-retire
 > call is the **owner's** — the implementing agents deliberately make no
@@ -243,3 +248,58 @@ Two follow-ups are owed **regardless** of the revive/retire call:
   over-fetch on every mem0 search (incl. pre-turn injection) and the
   canonical-store single-`pg.Client` serialization.
 - The cascade fix (P-002) that resurrected mem0 from "stillborn".
+
+---
+
+## Addendum 2026-06-07 — extraction rides the Claude session; dedup re-measured under Haiku
+
+Per `mem0-extraction-via-claude-session-2026-06-06` (all items built, tested,
+live-verified). This updates the **facts** under the decision frame above; per
+D-006 the agents still make **no recommendation**.
+
+### What shipped
+
+- **Cascade rung #1 = claude-session.** mem0's fact extraction now runs
+  `claude-haiku-4-5` direct to api.anthropic.com on Claude Code's own OAuth
+  session (`anthropic-direct`) — probe-validated at client build, strict-JSON
+  with one repair-retry, usage telemetered. The API-key rungs are unchanged
+  beneath it (Anthropic key → OpenAI `gpt-4o-mini`) and remain the shipped
+  product's path when no Claude session exists.
+- **The stillborn class got its structural fix + test.** On 401/403: token
+  cache invalidated → `~/.claude/.credentials.json` re-read → one retry →
+  loud sticky demotion to the key rungs (re-probed next boot). The loudness
+  test asserts a dead token still lands the write via the next rung AND fires
+  the warning — a silent no-op store is impossible by construction.
+- **Live round-trip proven** on the real transport: `remember(raw)` →
+  Haiku-extracted facts → paraphrase-searchable, isolated schema, registered
+  as the memory→Live runner (`session-extraction-live.ts`).
+
+### How this changes the decision frame
+
+1. **The operational-weight knock is removed for claude-code users.** The
+   frame above prices mem0 at "needs an embedder key + a working extraction
+   LLM (the stale-credential failure mode bit once already)". Extraction no
+   longer has a credential to rot on a claude-code box, and an auth failure
+   self-heals or demotes loudly — never silently. (The *embedder* key —
+   OpenAI — is still required; Anthropic has no embeddings API.)
+2. **Extraction cost → ~$0 marginal** on the Max subscription (measured
+   ~430 tokens per remember+near-dup pair, telemetered against quota). The
+   "$0.43/1k remembers" row now applies only to key-rung users.
+3. **The near-dup "REFUTED … may differ under Haiku; not re-tested" row is
+   now re-tested: 4/6 merged under Haiku vs 0/6 under gpt-4o-mini** —
+   identical specs and protocol
+   (`memory-dedup-haiku-2026-06-07T00-44-05-016Z.{json,md}`). The two
+   non-merges are contradiction-bearing cases (the tier updates the fact
+   before writing the dup; re-adding a divergent fact is defensible) — see
+   the artifact's nuance section. mem0's dedup under its intended extractor
+   is real, not absent; the 0/6 was fallback-flavored.
+
+### Unchanged by this work
+
+- Embedder dependency and per-query embed latency (×35–150), the FP@5=100%
+  threshold decision (still owed regardless of backend), and the single-pool
+  scale story (scoping/thresholding still wanted past ~1k same-domain
+  entries per pool).
+- Follow-up 1 (rotate the stale Anthropic key) — **softened, not discharged**:
+  the key is now defense-in-depth rung #2 rather than the live path, but a
+  dead rung is still worth rotating.

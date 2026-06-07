@@ -119,6 +119,17 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
 
   test('live view: Watch live mints a watch session; Take control re-mints as takeover (D-002, nuqs)', async ({ page }) => {
     await stubApis(page);
+    // P-013: the watch path tries the holepunch screen track FIRST. Stub the
+    // voice status to a DIFFERENT live channel so the track view bails
+    // immediately (never-hijack rule) and falls back to VNC — without ever
+    // touching the dev box's REAL voice bridge on :3076.
+    await page.route('**/api/agent-tools/voice/status*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, status: { channel: { id: 'voice-general' }, peers: [] } }),
+      });
+    });
     const minted: Array<{ display: number; mode: string }> = [];
     await page.route(`**/api/deploy/${SLUG}/vnc-session*`, async (route) => {
       minted.push(route.request().postDataJSON() as { display: number; mode: string });

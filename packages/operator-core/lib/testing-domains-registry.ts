@@ -670,6 +670,85 @@ defineTestDomain({
   ],
 });
 
+// p2p-performance-suite-2026-06-07 (D-002): the hyperbee substrate's
+// three-tier performance suite. The vitest files under perf/ ALSO match the
+// dogfood substrate glob — intentional overlap (they are substrate tests);
+// this domain is where the bench RUNNERS live. Artifacts + per-run report
+// land under test-results/p2p-perf/<runId>/; committed baselines next to the
+// suite in perf/baselines/ (advisory comparator — D-005).
+defineTestDomain({
+  id: 'p2p-perf',
+  label: 'P2P Perf',
+  description:
+    'Hyperbee-substrate performance suite: merge/decode benches, multi-process replication + churn, netem WAN sim, real-frame tier.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'infra',
+      label: 'Suite infra',
+      description:
+        'Corpus determinism, comparator math, meter envelope, and the CI-locked EI-79 idle-tick invariant (merge-scaling.test.ts).',
+      globs: ['packages/operator-core/lib/sync/hyperbee/perf/**/*.test.ts'],
+    },
+    {
+      id: 'tier1',
+      label: 'Tier 1 (local)',
+      description:
+        'Loopback benches: merge cost / decode throughput / replication latency+ceiling / churn. Every scenario asserts the loop-lag SLO (p95 < 100ms).',
+      runners: [
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts', '--tier1', '--profile', 'smoke'],
+          label: 'tier1 smoke (~3 min)',
+        },
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts', '--tier1', '--profile', 'ci'],
+          label: 'tier1 ci profile (~15 min)',
+        },
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts', '--tier1', '--profile', 'full'],
+          label: 'tier1 full sweep (long)',
+        },
+      ],
+    },
+    {
+      id: 'tier2',
+      label: 'Tier 2 (netem WAN)',
+      description:
+        'Simulated WAN: unprivileged userns + veth + tc netem (RTT/jitter/loss matrix + the UDX loss curve). Skips on hosts without userns.',
+      runners: [
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts', '--tier2', '--profile', 'smoke'],
+          label: 'tier2 netem smoke',
+        },
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/sync/hyperbee/perf/runner.ts', '--tier2', '--profile', 'full'],
+          label: 'tier2 netem full matrix',
+        },
+      ],
+    },
+    {
+      id: 'tier3',
+      label: 'Tier 3 (real frames)',
+      description:
+        'Latitude/Hetzner real-machine measurements (NAT/holepunch, real-WAN DHT, cross-region replication). Cred-gated: $0 and skipped without LATITUDE_API_KEY.',
+      globs: [
+        'packages/operator-core/lib/deployment/**/p2p-perf*.test.ts',
+        'packages/operator-core/lib/deployment/p2p-perf-tier3/**/*.test.ts',
+      ],
+    },
+  ],
+});
+
 /* ---------------------------------------------------------------- *
  * Newer subsystems that grew their own test trees after the original 20
  * domains were hand-curated, plus catch-all domains so NO canonical test
