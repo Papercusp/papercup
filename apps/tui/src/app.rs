@@ -2180,21 +2180,22 @@ impl App {
 
     /// The dock agent stack's watch panes to open THIS roster refresh
     /// (pui-dock-agent-stack-2026-06-07): one `pui watch-pane <owner>` per
-    /// running agent not yet paned. Prunes departed owners from the dedup set
-    /// so a returning bee re-panes. The brain + interactive launch panes are
-    /// excluded only via `tracked_panes` (adv-session panes); the brain's own
-    /// watch pane is a known cosmetic dup until its coord id is stamped.
+    /// running FLEET BEE (`source == "fleet-spawn"` — Queen/orchestrator
+    /// spawns; engineer shells and the brain are NOT paned — owner ask) not
+    /// yet paned. Prunes departed owners from the dedup set so a returning
+    /// bee re-panes; interactive launch panes are excluded via `tracked_panes`.
     fn watch_panes_to_open(&mut self) -> Vec<crate::mux::PaneSpec> {
+        let is_bee = |r: &crate::models::RosterEntry| r.is_live() && r.source == "fleet-spawn";
         let live: std::collections::HashSet<&str> = self
             .roster
             .iter()
-            .filter(|r| r.is_live())
+            .filter(|r| is_bee(r))
             .map(|r| r.owner_id.as_str())
             .collect();
         self.watched_panes.retain(|o| live.contains(o.as_str()));
         let mut out = Vec::new();
         for r in &self.roster {
-            if !r.is_live() || self.watched_panes.contains(&r.owner_id) {
+            if !is_bee(r) || self.watched_panes.contains(&r.owner_id) {
                 continue;
             }
             // Already an interactive pane in this dock (a reactive launch).
@@ -7787,13 +7788,21 @@ mod tests {
         a.dock_agent_panes = true;
         let bee = |o: &str| RosterEntry {
             owner_id: o.into(),
-            label: format!("su · {o}"),
+            label: format!("bee · {o}"),
+            source: "fleet-spawn".into(),
             liveness: "live".into(),
             agent: Some("claude".into()),
             ..Default::default()
         };
+        // An engineer shell (omp-hook-session) is NEVER paned — bees only.
+        let shell = RosterEntry {
+            owner_id: "su-shell".into(),
+            source: "omp-hook-session".into(),
+            liveness: "live".into(),
+            ..Default::default()
+        };
         let act = a.update(Event::Roster {
-            active: vec![bee("su-aaa"), bee("su-bbb")],
+            active: vec![bee("su-aaa"), bee("su-bbb"), shell],
             pending: vec![],
         });
         match act {

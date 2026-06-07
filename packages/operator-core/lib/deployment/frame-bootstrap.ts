@@ -153,7 +153,10 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
   add('preflight', 'OS packages', [
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -y',
-    'apt-get install -y --no-install-recommends git curl ca-certificates build-essential python3 jq ripgrep openssh-client',
+    // bubblewrap: the fleet OS sandbox (claude --settings sandbox.enabled) hard-
+    // requires bwrap for subprocess isolation — without it every agent spawn
+    // aborts instantly (found live 2026-06-07 on the first frame work item).
+    'apt-get install -y --no-install-recommends git curl ca-certificates build-essential python3 jq ripgrep openssh-client bubblewrap',
   ]);
 
   add('node', `Node.js ${node}`, [
