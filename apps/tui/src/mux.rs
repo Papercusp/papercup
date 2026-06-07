@@ -17,6 +17,12 @@ pub struct PaneSpec {
     /// Optional working directory to run the command in (zellij `--cwd`). Used by
     /// plugin-contributed panes (D-002) that must run inside a specific repo dir.
     pub cwd: Option<String>,
+    /// Open the pane into the focused pane's STACK (`--stacked`) — the dock's
+    /// agent stack (pui-dock-agent-stack-2026-06-07) rather than a new tile.
+    pub stacked: bool,
+    /// Close the pane when its command exits (`--close-on-exit`) — watch panes
+    /// exit themselves when their agent leaves the roster; no EXITED husk.
+    pub close_on_exit: bool,
 }
 
 impl PaneSpec {
@@ -25,7 +31,16 @@ impl PaneSpec {
             argv: argv.into_iter().map(Into::into).collect(),
             title: None,
             cwd: None,
+            stacked: false,
+            close_on_exit: false,
         }
+    }
+    /// Open into the focused stack + auto-close on exit — the dock agent-stack
+    /// pane shape (pui-dock-agent-stack-2026-06-07).
+    pub fn stacked_autoclose(mut self) -> Self {
+        self.stacked = true;
+        self.close_on_exit = true;
+        self
     }
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
@@ -111,6 +126,12 @@ impl Multiplexer for Zellij {
         if let Some(c) = &spec.cwd {
             v.push("--cwd".to_string());
             v.push(c.clone());
+        }
+        if spec.stacked {
+            v.push("--stacked".to_string());
+        }
+        if spec.close_on_exit {
+            v.push("--close-on-exit".to_string());
         }
         v.push("--".to_string());
         v.extend(spec.argv.iter().cloned());

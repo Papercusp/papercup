@@ -1,0 +1,35 @@
+{
+  "_doc-honeycomb": {
+    "$description": "Honeycomb theme — selectable The Swarm color system. Dark charcoal, threat-red depth, and honey amber signal colors matching the swarm identity demo."
+  },
+  "honeycomb": {
+    "bg-deepest":      { "$value": "#030303", "$type": "color", "$description": "Near-black depth from the swarm identity demo" },
+    "bg-deeper":       { "$value": "#050505", "$type": "color" },
+    "bg-deep":         { "$value": "#080806", "$type": "color" },
+    "bg":              { "$value": "#050505", "$type": "color", "$description": "Ominous charcoal page base" },
+    "bg-1":            { "$value": "#0B0B07", "$type": "color" },
+    "bg-2":            { "$value": "rgba(234, 179, 8, 0.07)", "$type": "color", "$description": "Low honey glass tier" },
+    "bg-3":            { "$value": "rgba(234, 179, 8, 0.11)", "$type": "color" },
+    "bg-4":            { "$value": "rgba(234, 179, 8, 0.17)", "$type": "color" },
+    "bg-popover":      { "$value": "#10100B", "$type": "color", "$description": "Solid elevated comb surface" },
+    "bg-raised":       { "$value": "#17130A", "$type": "color" },
+    "bg-raised-high":  { "$value": "#211A0A", "$type": "color" },
+    "fg":              { "$value": "#FFF7DF", "$type": "color" },
+    "fg-dim":          { "$value": "#D8C58E", "$type": "color" },
+    "fg-mute":         { "$value": "#B9AA86", "$type": "color" },
+    "border":          { "$value": "rgba(234, 179, 8, 0.20)", "$type": "color" },
+    "border-strong":   { "$value": "rgba(253, 230, 138, 0.42)", "$type": "color" },
+    "accent":          { "$value": "#EAB308", "$type": "color", "$description": "Honey signal primary accent" },
+    "accent-strong":   { "$value": "#FDE68A", "$type": "color", "$description": "Bright honey hover/focus accent" },
+    "accent-cool":     { "$value": "#FFF7D1", "$type": "color", "$description": "Cream highlight for glows and linework" },
+    "accent-soft":     { "$value": "#FACC15", "$type": "color", "$description": "Soft amber signal tint" },
+    "accent-deep":     { "$value": "#A16207", "$type": "color", "$description": "Burnt honey active tint" },
+    "accent-deeper":   { "$value": "#713F12", "$type": "color", "$description": "Deep amber shadow tint" },
+    "accent-ink":      { "$value": "#130D03", "$type": "color", "$description": "Text on honey fills" },
+    "good":            { "$value": "#4ADE80", "$type": "color" },
+    "warn":            { "$value": "#FDE68A", "$type": "color" },
+    "bad":             { "$value": "#F87171", "$type": "color" },
+    "warn-bg":         { "$value": "rgba(234, 179, 8, 0.14)", "$type": "color" },
+    "warn-border":     { "$value": "rgba(253, 230, 138, 0.42)", "$type": "color" }
+  }
+}

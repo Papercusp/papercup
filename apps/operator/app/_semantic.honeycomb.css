@@ -1,0 +1,34 @@
+/**
+ * Do not edit directly, this file was auto-generated.
+ */
+
+[data-theme="honeycomb"] {
+  --bg-deepest: #030303; /** Near-black depth from the swarm identity demo */
+  --bg-deeper: #050505;
+  --bg-deep: #080806;
+  --bg: #050505; /** Ominous charcoal page base */
+  --bg-1: #0b0b07;
+  --bg-2: rgba(234, 179, 8, 0.07); /** Low honey glass tier */
+  --bg-3: rgba(234, 179, 8, 0.11);
+  --bg-4: rgba(234, 179, 8, 0.17);
+  --bg-popover: #10100b; /** Solid elevated comb surface */
+  --bg-raised: #17130a;
+  --bg-raised-high: #211a0a;
+  --fg: #fff7df;
+  --fg-dim: #d8c58e;
+  --fg-mute: #b9aa86;
+  --border: rgba(234, 179, 8, 0.2);
+  --border-strong: rgba(253, 230, 138, 0.42);
+  --accent: #eab308; /** Honey signal primary accent */
+  --accent-strong: #fde68a; /** Bright honey hover/focus accent */
+  --accent-cool: #fff7d1; /** Cream highlight for glows and linework */
+  --accent-soft: #facc15; /** Soft amber signal tint */
+  --accent-deep: #a16207; /** Burnt honey active tint */
+  --accent-deeper: #713f12; /** Deep amber shadow tint */
+  --accent-ink: #130d03; /** Text on honey fills */
+  --good: #4ade80;
+  --warn: #fde68a;
+  --bad: #f87171;
+  --warn-bg: rgba(234, 179, 8, 0.14);
+  --warn-border: rgba(253, 230, 138, 0.42);
+}

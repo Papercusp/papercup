@@ -6,6 +6,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { applyTheme, readActiveTheme, subscribeTheme } from '@/lib/theme';
 
 const HIVE_TITLE = 'The Swarm';
+const HIVE_THEME_ID = 'honeycomb';
 const CLASSIC_TITLE = 'Papercusp Operator';
 const HIVE_FAVICON_ID = 'pc-hive-favicon';
 const HIVE_FAVICON_HREF = '/brand/the-hive/favicon.svg';
@@ -33,7 +34,7 @@ export function HiveThemeBridge() {
 
     const apply = () => {
       if (hiveEnabled) {
-        document.documentElement.dataset.theme = 'hive';
+        document.documentElement.dataset.theme = HIVE_THEME_ID;
         document.title = HIVE_TITLE;
         setHiveFavicon(true);
         return;

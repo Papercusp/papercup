@@ -44,7 +44,7 @@ export default function OperatorLogoLabPage() {
   );
 
   return (
-    <div className={styles.page} data-theme="hive">
+    <div className={styles.page} data-theme="honeycomb">
       <section className={styles.hero}>
         <div className={styles.heroCopy}>
           <div className={styles.eyebrow}>The Swarm visual identity</div>

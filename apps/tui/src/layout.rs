@@ -209,41 +209,34 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
             .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
             .collect::<Vec<_>>()
             .join(" ");
-        format!("\n                args {quoted}")
+        format!("\n            args {quoted}")
     };
     // Lexicon-resolved, kdl-safe pane display names. Fixed names (chat, brain,
     // main) have no lexicon term and stay verbatim.
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     format!(
-        r#"// Papercusp chat dock — chat[operator⇄brain] | main[Hives·Voice·Swarm]
-// (native-terminal-desktop P-013 / D-011; consolidated to two panes by
-// pui-dock-consolidation-2026-06-07). The desktop-docked native terminal
-// surface: LEFT = the chat column, a zellij STACK of the operator (ElevenLabs
-// voice) chat and the brain (a psu engineer session resumed at launch via the
-// D-013 brain pin) — tab-like: each shows as a one-line title bar, one
-// expanded at a time; click a title or Alt+↑/↓ to switch (mirrors the main
-// pane's Hives/Voice/Swarm tab strip); RIGHT = the main pane, one pui
-// restricted to the Hives / Voice / Swarm tabs (the Swarm tab carries the
-// fleet roster, the selected-bee dossier, plan progress, and the fleet comms
-// sub-view). NO workbench HUD, no work-area agent panes. Pane display names
-// route through the lexicon.
+        r#"// Papercusp chat dock — ONE full-width agent stack (zellij reserved for the
+// truly console-driven surface — owner ask, pui-dock-agent-stack-2026-06-07;
+// supersedes the chat|main split of pui-dock-consolidation-2026-06-07).
+// The stack opens with the operator (ElevenLabs voice) chat — the sentinel
+// bee — expanded over the brain (a psu engineer session resumed at launch via
+// the D-013 brain pin). The chat-pane pui then reactively appends ONE pane per
+// active swarm agent (`pui watch-pane <owner>` — live dossier + activity +
+// mail) and per new local launch, so Alt+↑/↓ (or clicking a title bar) scrolls
+// through ALL active agents. Tab-style pui surfaces (Hives · Voice · Swarm …)
+// live in the pui app's own tab strip, NOT in zellij. Pane display names route
+// through the lexicon.
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
-    pane split_direction="vertical" {{
-        pane name="chat" size="38%" stacked=true {{
-            pane name="{operator_name}" focus=true expanded=true {{
-                command "pui"
-                args "chat-pane"
-            }}
-            pane name="brain" {{
-                command "{brain_cmd}"{args_line}
-            }}
-        }}
-        pane name="main" size="62%" {{
+    pane name="chat" stacked=true {{
+        pane name="{operator_name}" focus=true expanded=true {{
             command "pui"
-            args "main-pane"
+            args "chat-pane"
+        }}
+        pane name="brain" {{
+            command "{brain_cmd}"{args_line}
         }}
     }}
     pane size=2 borderless=true {{

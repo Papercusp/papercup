@@ -20,6 +20,7 @@
 @import './_semantic.frost.css';
 @import './_semantic.black.css';
 @import './_semantic.hive.css';
+@import './_semantic.honeycomb.css';
 
 :root {
   color-scheme: dark;
@@ -88,7 +89,8 @@
    */
 }
 
-[data-theme="hive"] {
+[data-theme="hive"],
+[data-theme="honeycomb"] {
   /* Legacy harness dashboard tables still consume JS color constants. These
    * vars let the Hive skin retune those inline styles without changing the
    * classic Linear-indigo fallbacks in app/harness/theme.ts. */

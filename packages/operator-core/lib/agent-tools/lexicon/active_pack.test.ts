@@ -48,8 +48,8 @@ describe('lexicon:active_pack', () => {
     expect(out.packId).toBe('the-hive');
     expect(out.terms.pot).toEqual({ one: 'Hive', other: 'Hives' });
     expect(out.terms.fleet.one).toBe('Swarm');
-    expect(out.terms.operator.one).toBe('Sentinel Bee');
-    expect(out.terms.brain.one).toBe('Queen');
+    expect(out.terms.operator.one).toBe('Queen');
+    expect(out.terms.brain.one).toBe('Royal Jelly');
     expect(out.terms.human.one).toBe('Keeper');
     expect(out.terms.cupboard.one).toBe('Comb');
     expect(out.terms.contributor.one).toBe('Bee');

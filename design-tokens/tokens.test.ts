@@ -175,6 +175,42 @@ describe('design tokens — Hive theme variant ([data-theme="hive"])', () => {
   });
 });
 
+describe('design tokens — Honeycomb theme variant ([data-theme="honeycomb"])', () => {
+  const honeycomb = loadTokens('design-tokens/honeycomb.semantic.tokens.json');
+  const honeycombCss = loadCss('apps/operator/app/_semantic.honeycomb.css');
+  const baseSemantic = loadTokens('design-tokens/desktop.semantic.tokens.json');
+  const baseMotion = loadTokens('design-tokens/desktop.motion.tokens.json');
+  const allowed = new Set(
+    [...Object.keys(baseSemantic), ...Object.keys(baseMotion)].map((k) =>
+      k.replace(/^motion-/, '').replace(/^shadow-/, '').replace(/^overlay-/, ''),
+    ),
+  );
+
+  test('every Honeycomb token is emitted into _semantic.honeycomb.css with a resolved value', () => {
+    expect(Object.keys(honeycomb).length).toBeGreaterThan(0);
+    for (const key of Object.keys(honeycomb)) {
+      const cssKey = key.replace(/^honeycomb-/, '');
+      expect(honeycombCss, `Honeycomb token "${cssKey}" not emitted`).toHaveProperty(cssKey);
+      expect(honeycombCss[cssKey]).not.toMatch(/^\{/);
+    }
+  });
+
+  test('the generated block is scoped to [data-theme="honeycomb"], not :root', () => {
+    const css = readFileSync(join(REPO, 'apps/operator/app/_semantic.honeycomb.css'), 'utf8');
+    expect(css).toContain('[data-theme="honeycomb"]');
+    expect(css).not.toMatch(/:root\s*\{/);
+  });
+
+  test('THEME CONTRACT — Honeycomb only overrides base semantic tokens (never primitives/invented names)', () => {
+    for (const cssKey of Object.keys(honeycombCss)) {
+      expect(
+        allowed.has(cssKey),
+        `Honeycomb overrides "--${cssKey}", which is not a base semantic token — themes may only override the high (semantic) layer`,
+      ).toBe(true);
+    }
+  });
+});
+
 describe('design tokens — frost is explicitly scopable ([data-theme="frost"])', () => {
   // Frost is the :root default; the scoped block lets a subtree render frost under
   // another active theme (preview swatches). It must carry the SAME color tokens

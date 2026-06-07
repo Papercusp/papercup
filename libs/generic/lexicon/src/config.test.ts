@@ -35,8 +35,8 @@ describe('configureLexicon / ambient resolution', () => {
     configureLexicon({ activePackId: () => (on ? 'the-hive' : 'classic') });
     expect(term('operator')).toBe('Operator');
     on = true;
-    expect(term('operator')).toBe('Sentinel Bee');
-    expect(term('brain')).toBe('Queen');
+    expect(term('operator')).toBe('Queen');
+    expect(term('brain')).toBe('Royal Jelly');
     expect(term('human', { plural: true })).toBe('Keepers');
   });
 

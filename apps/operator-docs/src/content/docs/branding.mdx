@@ -49,9 +49,10 @@ The Swarm direction is engineered swarm intelligence: honey-amber signal color o
 The Swarm skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 
 - Logo components switch from the classic cup marks to The Swarm primary mark via `useLexiconPackId()`.
-- `HiveThemeBridge` forces `data-theme="hive"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
+- `HiveThemeBridge` forces `data-theme="honeycomb"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
 - When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title.
-- The Swarm theme is generated from `design-tokens/hive.semantic.tokens.json` into `apps/operator/app/_semantic.hive.css`.
+- The selectable Honeycomb theme is generated from `design-tokens/honeycomb.semantic.tokens.json` into `apps/operator/app/_semantic.honeycomb.css`.
+- The legacy `hive` selector remains as an implementation-pack alias; new runtime usage should prefer `honeycomb`.
 - The Swarm desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Swarm pack.
 
 ## Lexicon

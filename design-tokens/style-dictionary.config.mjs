@@ -34,7 +34,7 @@ StyleDictionary.registerTransform({
 // Theme namespaces — each is a top-level key holding a semantic-override set,
 // emitted to its own `[data-theme="<name>"]` block. Frost is NOT here: it is the
 // base `:root` layer (top-level semantic keys), not a variant.
-const THEME_NAMESPACES = ["black", "hive"];
+const THEME_NAMESPACES = ["black", "hive", "honeycomb"];
 const isThemeToken = (t) => THEME_NAMESPACES.includes(t.path[0]);
 
 // Filter: primitives layer only (anything under `color.*`).
@@ -115,6 +115,20 @@ export default {
           format: "css/variables",
           options: { outputReferences: false, selector: '[data-theme="hive"]' },
           filter: (t) => t.path[0] === "hive",
+        },
+      ],
+    },
+    // Honeycomb theme — selectable The Swarm color system, using the darker
+    // ominous amber/charcoal palette from the swarm identity demo.
+    "css-semantic-honeycomb": {
+      transforms: themeTransforms,
+      buildPath: "apps/operator/app/",
+      files: [
+        {
+          destination: "_semantic.honeycomb.css",
+          format: "css/variables",
+          options: { outputReferences: false, selector: '[data-theme="honeycomb"]' },
+          filter: (t) => t.path[0] === "honeycomb",
         },
       ],
     },

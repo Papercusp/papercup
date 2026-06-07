@@ -47,7 +47,7 @@ describe('HiveThemeBridge', () => {
     setHive(true);
     render(<HiveThemeBridge />);
 
-    expect(document.documentElement.dataset.theme).toBe('hive');
+    expect(document.documentElement.dataset.theme).toBe('honeycomb');
     expect(document.title).toBe('The Swarm');
     const favicon = document.getElementById('pc-hive-favicon') as HTMLLinkElement | null;
     expect(favicon?.href.endsWith('/brand/the-hive/favicon.svg')).toBe(true);
@@ -57,7 +57,7 @@ describe('HiveThemeBridge', () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'black');
     setHive(true);
     render(<HiveThemeBridge />);
-    expect(document.documentElement.dataset.theme).toBe('hive');
+    expect(document.documentElement.dataset.theme).toBe('honeycomb');
 
     setHive(false);
 

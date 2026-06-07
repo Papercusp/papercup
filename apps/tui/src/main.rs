@@ -71,14 +71,14 @@ async fn main() -> Result<()> {
         // its own 2-pane layout and hands off to zellij.
         Some("chat") => return run_chat_dock().await,
         Some("hud") => {}
-        // Dock pane modes (P-013 / D-011; consolidated by
-        // pui-dock-consolidation-2026-06-07) — fall through to the normal run
-        // loop: `chat-pane` is the dock's operator chat (single pinned tab);
-        // `main-pane` is the dock's MAIN pane — one pui restricted to the
-        // Hives/Voice/Swarm tabs. The old voice-/apiary-/swarm-/bee-pane
-        // single-tab modes are GONE: those surfaces are tabs (or Swarm-tab
-        // sections) of the main pane now.
-        Some("chat-pane") | Some("main-pane") => {}
+        // Dock pane modes (pui-dock-agent-stack-2026-06-07) — fall through to
+        // the normal run loop: `chat-pane` is the dock's operator chat (single
+        // pinned tab; it also drives the dock's reactive agent stack);
+        // `watch-pane <owner>` is a read-only live view of ONE swarm agent
+        // (dossier + activity + mail), one per active bee in the dock stack.
+        // The old main-pane (tab-subset) + voice-/apiary-/swarm-/bee-pane
+        // modes are GONE: tab surfaces live in the pui app, not zellij.
+        Some("chat-pane") | Some("watch-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -88,16 +88,22 @@ async fn main() -> Result<()> {
         Some("chat-pane") => Some(app::Tab::Operator),
         _ => None,
     };
-    // The dock's MAIN pane: the tab strip + switch keys are confined to the
-    // Hives (p2p swarm roster) / Voice / Swarm (Fleet) tabs, opening on Swarm.
-    // The Swarm tab carries the roster, the selected-bee dossier, plan
-    // progress, and the fleet comms sub-view. (Hives replaced the Cupboard in
-    // the subset — owner ask, pui-hives-tab-2026-06-07; the Cupboard remains a
-    // workbench tab.)
-    let tab_subset: Option<Vec<app::Tab>> = match subcommand.as_deref() {
-        Some("main-pane") => Some(vec![app::Tab::Hives, app::Tab::Voice, app::Tab::Fleet]),
+    // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
+    // swarm agent this instance watches, read-only. Required argv[2].
+    let watch: Option<String> = match subcommand.as_deref() {
+        Some("watch-pane") => match std::env::args().nth(2) {
+            Some(o) if !o.trim().is_empty() => Some(o),
+            _ => {
+                eprintln!("usage: pui watch-pane <owner-id>");
+                std::process::exit(2);
+            }
+        },
         _ => None,
     };
+    // The dock's chat-pane drives the reactive agent stack: one watch pane per
+    // active bee + one interactive pane per new local launch, appended to the
+    // dock's zellij stack.
+    let dock_agent_panes = subcommand.as_deref() == Some("chat-pane");
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -118,7 +124,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, tab_subset).await;
+    let result = run(&mut terminal, pinned, watch, dock_agent_panes).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -172,7 +178,8 @@ async fn run_chat_dock() -> Result<()> {
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
-    tab_subset: Option<Vec<app::Tab>>,
+    watch: Option<String>,
+    dock_agent_panes: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
@@ -183,13 +190,13 @@ async fn run<B: Backend>(
     if let Some(p) = pinned {
         app.tab = p;
     }
-    // The dock's MAIN pane (pui-dock-consolidation-2026-06-07): tab strip +
-    // switching confined to the subset; opens on Swarm (Fleet) — the richest
-    // at-a-glance view. The run loop re-clamps on each event (below).
-    let is_main_pane = tab_subset.is_some();
-    app.tab_subset = tab_subset;
-    if is_main_pane {
-        app.tab = app::Tab::Fleet;
+    // Watch pane (pui-dock-agent-stack-2026-06-07): pin the watched agent as
+    // the bee selection so the dossier render + refetches target it from the
+    // first frame; the dock chat-pane flag arms the reactive agent stack.
+    app.watch = watch.clone();
+    app.dock_agent_panes = dock_agent_panes;
+    if let Some(owner) = &app.watch {
+        app.bee.set_selection(Some(owner.clone()), None);
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -206,6 +213,7 @@ async fn run<B: Backend>(
         app.active_harness.clone(),
         app.active_doc.clone(),
         app.active_plan.clone(),
+        watch.clone(),
     );
     // Debounced persistence of the quiet view-state (P12 / D-002): the run loop
     // ships a snapshot on each nav change; the saver coalesces a burst + PUTs.
@@ -227,9 +235,9 @@ async fn run<B: Backend>(
     // inside zellij / without the plugin — orchestration then falls back to
     // fire-and-forget `zellij action` (below). Its events (topology, pane-exit)
     // arrive on `tx` like any other. NOT spawned in the dock modes (P-013 /
-    // pui-dock-consolidation): there is no work area to orchestrate there, and
+    // pui-dock-agent-stack): there is no work area to orchestrate there, and
     // loading the plugin surfaces an empty floating pane over the dock.
-    let companion = if pinned.is_some() || is_main_pane {
+    let companion = if pinned.is_some() || watch.is_some() {
         None
     } else {
         Companion::spawn(tx.clone())
@@ -296,15 +304,12 @@ async fn run<B: Backend>(
                 app.tab = p;
             }
         }
-        // Main dock pane (pui-dock-consolidation-2026-06-07): keep the active
-        // tab within the subset — a stray switch key to an out-of-subset tab
-        // snaps back to the first allowed tab.
-        if let Some(subset) = &app.tab_subset {
-            if !subset.contains(&app.tab) {
-                if let Some(first) = subset.first() {
-                    app.tab = *first;
-                }
-            }
+        // Watch pane lifecycle (pui-dock-agent-stack-2026-06-07): once the
+        // watched agent has been gone from the roster for two consecutive
+        // refreshes, exit — the pane was opened `--close-on-exit`, so it
+        // disappears from the dock stack on its own.
+        if app.watch_should_exit() {
+            break;
         }
 
         if voice_dropped {
@@ -2412,6 +2417,7 @@ fn spawn_sync(
     active_harness: Arc<Mutex<String>>,
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
+    watch: Option<String>,
 ) {
     // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
     let (sig_tx, sig_rx) = mpsc::unbounded_channel::<()>();
@@ -2420,6 +2426,7 @@ fn spawn_sync(
         active_harness,
         active_doc,
         active_plan,
+        watch,
         sig_rx,
     ));
     // Coord-inbox push (P-002 / D-003b): a 3rd task on its own SSE stream.
@@ -2497,6 +2504,7 @@ async fn refetch_loop(
     active_harness: Arc<Mutex<String>>,
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
+    watch: Option<String>,
     mut sig_rx: UnboundedReceiver<()>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -2509,6 +2517,11 @@ async fn refetch_loop(
 
     // Initial load.
     refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+        if let Some(owner) = &watch {
+            // Watch pane: re-pull the watched agent's dossier (ranked work-list
+            // + coord mail) on the same push-driven cadence.
+            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
+        }
     // Seed notification history once from the toast-log (P8); live
     // `attention.notify` events prepend to it as they arrive.
     match client.recent_toasts(50).await {
@@ -2546,9 +2559,19 @@ async fn refetch_loop(
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 while sig_rx.try_recv().is_ok() {}
                 refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+        if let Some(owner) = &watch {
+            // Watch pane: re-pull the watched agent's dossier (ranked work-list
+            // + coord mail) on the same push-driven cadence.
+            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
+        }
             }
             _ = safety.tick() => {
                 refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
+        if let Some(owner) = &watch {
+            // Watch pane: re-pull the watched agent's dossier (ranked work-list
+            // + coord mail) on the same push-driven cadence.
+            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
+        }
             }
         }
         if tx.is_closed() {

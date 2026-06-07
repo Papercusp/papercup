@@ -115,7 +115,7 @@
     0 0 18px rgba(253, 230, 138, 0.22),
     0 0 58px rgba(234, 179, 8, 0.32),
     0 22px 80px rgba(0, 0, 0, 0.88);
-  animation: introLine 4300ms cubic-bezier(.16, 1, .3, 1) calc(760ms + (var(--intro-index) * 4200ms)) both;
+  animation: introLine 3900ms cubic-bezier(.16, 1, .3, 1) calc(760ms + (var(--intro-index) * 4300ms)) both;
   will-change: opacity, transform;
 }
 

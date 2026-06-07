@@ -56,7 +56,13 @@ pub enum Action {
     /// `/api/adv/sessions/mark-launched` for each `adv_session_id` so the pending
     /// row drops out of the roster. The reducer already recorded the ids in the
     /// tracked-pane set, so a refresh in the mark-launched window won't re-open.
-    LaunchPanes(Vec<crate::session_panes::SessionPane>),
+    LaunchPanes {
+        sessions: Vec<crate::session_panes::SessionPane>,
+        /// Read-only `pui watch-pane <owner>` panes for active swarm agents —
+        /// appended to the dock stack (pui-dock-agent-stack-2026-06-07). Opened
+        /// via the zellij CLI only (no companion / no mark-launched).
+        watch: Vec<crate::mux::PaneSpec>,
+    },
     /// Result of an applied agent control intent (P12b / tui:dispatch) — the run
     /// loop POSTs it to `/api/tui/intents/:id/result`. `result_json` is the JSON
     /// payload (the state snapshot for get_state, or `{"ok":true}`); on failure
@@ -983,11 +989,19 @@ pub struct App {
     /// bee's ranked work-list + coord inbox/outbox. Populated by `pui bee-pane`
     /// polling the in-memory selection relay; all logic lives in `bee.rs`.
     pub bee: crate::bee::BeeState,
-    /// Dock MAIN-pane mode (pui-dock-consolidation-2026-06-07): when Some, the
-    /// tab strip + switch keys are confined to this subset (the dock main pane =
-    /// [Cupboard, Voice, Fleet]); None = the full `Tab::ALL` strip. The Fleet
-    /// tab carries the absorbed bee dossier + fleet comms sub-view.
-    pub tab_subset: Option<Vec<Tab>>,
+    /// Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
+    /// swarm agent this instance renders read-only (dossier + activity + mail).
+    /// `None` = a normal tabbed/pinned instance.
+    pub watch: Option<String>,
+    /// Consecutive roster refreshes the watched agent has been absent/stale —
+    /// at 2 the watch pane exits (its `--close-on-exit` pane then closes).
+    pub watch_misses: u8,
+    /// True only in the dock's chat-pane: drive the reactive agent stack (a
+    /// watch pane per active bee + an interactive pane per new local launch).
+    pub dock_agent_panes: bool,
+    /// Owner ids the dock has already opened a watch pane for (dedup; pruned
+    /// when the agent leaves the roster so a returning bee re-panes).
+    pub watched_panes: std::collections::HashSet<String>,
     /// Hive lexicon (pui-hive-lexicon-2026-06-06): the active brand pack's
     /// term→label map, fetched once at startup. Empty = classic fallback (today's
     /// labels). `lex(term)` routes user-facing labels through it.
@@ -1209,7 +1223,10 @@ impl App {
             relaunch_command: None,
             fleet: FleetState::default(),
             bee: crate::bee::BeeState::default(),
-            tab_subset: None,
+            watch: None,
+            watch_misses: 0,
+            dock_agent_panes: false,
+            watched_panes: std::collections::HashSet::new(),
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
@@ -2161,14 +2178,60 @@ impl App {
         }
     }
 
-    /// The tabs the strip shows + switch keys may reach. The dock MAIN pane
-    /// (pui-dock-consolidation-2026-06-07) confines this to `tab_subset`
-    /// ([Cupboard, Voice, Fleet]); otherwise it's the full `Tab::ALL`.
-    pub fn visible_tabs(&self) -> Vec<Tab> {
-        match &self.tab_subset {
-            Some(subset) => subset.clone(),
-            None => Tab::ALL.to_vec(),
+    /// The dock agent stack's watch panes to open THIS roster refresh
+    /// (pui-dock-agent-stack-2026-06-07): one `pui watch-pane <owner>` per
+    /// running agent not yet paned. Prunes departed owners from the dedup set
+    /// so a returning bee re-panes. The brain + interactive launch panes are
+    /// excluded only via `tracked_panes` (adv-session panes); the brain's own
+    /// watch pane is a known cosmetic dup until its coord id is stamped.
+    fn watch_panes_to_open(&mut self) -> Vec<crate::mux::PaneSpec> {
+        let live: std::collections::HashSet<&str> = self
+            .roster
+            .iter()
+            .filter(|r| r.is_running())
+            .map(|r| r.owner_id.as_str())
+            .collect();
+        self.watched_panes.retain(|o| live.contains(o.as_str()));
+        let mut out = Vec::new();
+        for r in &self.roster {
+            if !r.is_running() || self.watched_panes.contains(&r.owner_id) {
+                continue;
+            }
+            // Already an interactive pane in this dock (a reactive launch).
+            if r.adv_session_id.is_some_and(|id| self.tracked_panes.contains(&id)) {
+                continue;
+            }
+            let title = r
+                .agent
+                .clone()
+                .filter(|a| !a.is_empty())
+                .map(|a| format!("{} · {}", a, short_owner(&r.owner_id)))
+                .unwrap_or_else(|| r.label.clone());
+            out.push(
+                crate::mux::PaneSpec::new(["pui", "watch-pane", r.owner_id.as_str()])
+                    .titled(title)
+                    .stacked_autoclose(),
+            );
         }
+        for spec in &out {
+            if let Some(owner) = spec.argv.get(2) {
+                self.watched_panes.insert(owner.clone());
+            }
+        }
+        out
+    }
+
+    /// Watch pane exit rule: the watched agent has been absent/stale for 2
+    /// consecutive roster refreshes (one miss can be churn; two is gone).
+    pub fn watch_should_exit(&self) -> bool {
+        self.watch.is_some() && self.watch_misses >= 2
+    }
+
+    /// The tabs the strip shows + switch keys may reach — the full `Tab::ALL`
+    /// (the dock tab-subset jail is gone — pui-dock-agent-stack-2026-06-07;
+    /// zellij is reserved for the agent stack, tabs live in the pui app).
+    pub fn visible_tabs(&self) -> Vec<Tab> {
+        Tab::ALL.to_vec()
     }
 
     /// Store merged plan-item assignment/claim/liveness for the selected plan (P-005a).
@@ -2671,13 +2734,37 @@ impl App {
             Event::Roster { active, pending } => {
                 self.set_roster(active);
                 self.last_error = None;
+                // Watch pane (pui-dock-agent-stack-2026-06-07): track the watched
+                // agent's roster presence; after 2 consecutive misses the run
+                // loop exits this instance. A watch pane never opens panes.
+                if let Some(w) = &self.watch {
+                    let present = self.roster.iter().any(|r| &r.owner_id == w && !r.stale);
+                    self.watch_misses = if present {
+                        0
+                    } else {
+                        self.watch_misses.saturating_add(1)
+                    };
+                    return Action::Render;
+                }
                 // Reactively open work-area panes for new LOCAL workbench launches
                 // (pui-reactive-session-panes D-006). The pure diff returns the
                 // panes to open; record their ids so a refresh in the mark-launched
                 // window can't re-open, and hand the specs to the run loop (I/O).
-                let to_open =
+                let mut to_open =
                     crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host);
-                if to_open.is_empty() {
+                // The dock's agent stack (pui-dock-agent-stack-2026-06-07): one
+                // read-only watch pane per active swarm agent, so the user
+                // scrolls through ALL active agents in the dock.
+                let watch = if self.dock_agent_panes {
+                    for p in &mut to_open {
+                        // Interactive launch panes join the dock stack too.
+                        p.spec.stacked = true;
+                    }
+                    self.watch_panes_to_open()
+                } else {
+                    Vec::new()
+                };
+                if to_open.is_empty() && watch.is_empty() {
                     // Swarm pane: re-publish an EXISTING bee selection when the
                     // roster lands (keeps the relay fresh across roster churn).
                     // No selection → leave it that way: the default Fleet view is
@@ -2691,7 +2778,10 @@ impl App {
                         self.tracked_panes.insert(p.adv_session_id);
                         self.record_launch(&p.spec); // crew roster (P12b), as a manual launch
                     }
-                    Action::LaunchPanes(to_open)
+                    Action::LaunchPanes {
+                        sessions: to_open,
+                        watch,
+                    }
                 }
             }
             Event::FleetRate(s) => {
@@ -4040,13 +4130,6 @@ impl App {
             // `switch_key` switches to it. Must be the last `Char` arm so the
             // contextual char handlers above (n/g/r/i/p/N/[/]/</>) win first.
             KeyCode::Char(c) => match Tab::from_switch_key(c) {
-                // In the dock main pane, a switch key for an out-of-subset tab
-                // is inert (pui-dock-consolidation-2026-06-07) — only Apiary/
-                // Voice/Swarm are reachable; other keys fall through to char
-                // handling / no-op rather than snapping the strip.
-                Some(t) if self.tab_subset.as_ref().is_some_and(|s| !s.contains(&t)) => {
-                    Action::None
-                }
                 Some(t) => {
                     self.switch_to(t);
                     // Lazy-load the Cupboard listings the first time it's opened
@@ -4342,6 +4425,20 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Shorten an owner id for a pane title: "su-8b77dde5-…" → "su-8b77d".
+fn short_owner(owner: &str) -> String {
+    let mut n = 0usize;
+    for (i, c) in owner.char_indices() {
+        if c == '-' {
+            n += 1;
+            if n == 2 {
+                return owner[..i].to_string();
+            }
+        }
+    }
+    owner.chars().take(8).collect()
 }
 
 #[cfg(test)]
