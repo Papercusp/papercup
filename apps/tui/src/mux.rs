@@ -70,6 +70,11 @@ pub enum MuxAction {
     ClosePane,
     /// Move focus to the next pane.
     FocusNextPane,
+    /// Focus a specific pane by its zellij pane id (`zellij action
+    /// focus-pane-id <id>` — bare numeric id accepted). Used to snap focus
+    /// back to the chat pane after a dock pane burst
+    /// (pui-dock-agent-stack-2026-06-07).
+    FocusPaneId(u32),
     /// Jump to a tab by 1-based index.
     GoToTab(u32),
     /// Rename the focused tab.
@@ -157,6 +162,9 @@ impl Multiplexer for Zellij {
             MuxAction::ClosePane => vec![s("zellij"), s("action"), s("close-pane")],
             MuxAction::FocusNextPane => {
                 vec![s("zellij"), s("action"), s("focus-next-pane")]
+            }
+            MuxAction::FocusPaneId(id) => {
+                vec![s("zellij"), s("action"), s("focus-pane-id"), id.to_string()]
             }
             MuxAction::GoToTab(i) => {
                 vec![s("zellij"), s("action"), s("go-to-tab"), i.to_string()]
@@ -254,6 +262,17 @@ mod tests {
                 "watch-pane",
                 "su-x",
             ]
+        );
+    }
+
+    #[test]
+    fn focus_pane_id_argv() {
+        // The dock's post-burst focus restore (pui-dock-agent-stack):
+        // `focus-pane-id` accepts the bare numeric id zellij exports as
+        // $ZELLIJ_PANE_ID.
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::FocusPaneId(7)),
+            vec!["zellij", "action", "focus-pane-id", "7"]
         );
     }
 

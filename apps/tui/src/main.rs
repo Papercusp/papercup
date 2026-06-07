@@ -484,9 +484,25 @@ async fn run<B: Backend>(
                 // Dock agent stack (pui-dock-agent-stack-2026-06-07): read-only
                 // watch panes for active swarm agents — CLI only (no companion
                 // in the dock, nothing to mark consumed).
+                let opened_watch = watch.len();
                 for spec in watch {
                     if let Err(e) = Zellij.open_pane(&spec) {
                         app.update(Event::Error(format!("watch pane: {e}")));
+                    }
+                }
+                // Snap focus BACK to this pane (the operator chat) after a dock
+                // pane burst: zellij expands + focuses every new stacked pane as
+                // it opens, so a launch-time burst of bee panes flips the dock
+                // around for seconds and strands focus on the last bee (owner
+                // report 2026-06-07 "keeps refreshing like crazy ... before it
+                // settles"). One focus-restore per batch ends the flip on the
+                // chat. Workbench (companion) launches keep their own focus
+                // semantics — this is the dock-CLI path only.
+                if app.dock_agent_panes && opened_watch > 0 {
+                    if let Some(id) = app.hud_pane_id {
+                        if let Err(e) = Zellij.run_action(&crate::mux::MuxAction::FocusPaneId(id)) {
+                            app.update(Event::Error(format!("focus restore: {e}")));
+                        }
                     }
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;

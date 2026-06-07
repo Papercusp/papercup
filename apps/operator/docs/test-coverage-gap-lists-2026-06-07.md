@@ -26,18 +26,25 @@ and the reason it was *deliberately* left.
 | `tools/features/get.ts` | drizzle path: hit verbatim / not-found degraded / slug guard | `tools/features/get.test.ts` (3) |
 | `tools/harness/get.ts` | summary projection vs full+featureCounts (null-status drop, Number coercion) | `tools/harness/get.test.ts` (4) |
 
+**Closed in tranche 2 (2026-06-07, second pass — churn re-measured at 0 since 06-05):**
+
+| file | tested path | test |
+|---|---|---|
+| `tools/harness/list.ts` | registry⊕projects merge (enrichment, source tagging, dedup, limit, summary/full), payload guards | `tools/harness/list.test.ts` (9) — reshape settled, previously skipped for churn |
+| `resources/audit/recent.ts` | {entries} projection, query shape, capability | `resources/audit/recent.test.ts` (3) |
+| `resources/hindsight/banks.ts` | companyId resolution, all degraded paths (missing/corrupt registry) | `resources/hindsight/banks.test.ts` (4) |
+| `resources/harness/issues.ts` | template list expansion, {slug} match, schema-identifier sanitization, error→degraded | `resources/harness/issues.test.ts` (4) |
+
 **Remaining gaps (deliberate, with reasons):**
 
 | file | untested path | suggested test | canonical home | why left |
 |---|---|---|---|---|
 | `src/server.ts` (478) | MCP server wiring / transport lifecycles | spin-up integration | `src/server.integration.test.ts` | process wiring, not unit logic; `server-dispatch.test.ts` covers dispatch |
 | `src/index.ts` (240) | entrypoint composition | smoke import | n/a | barrel/bootstrap; exercised by every tool test |
-| `src/provisioning.ts` (154) | credential/provision flow | PG integration | `src/provisioning.integration.test.ts` | PG-integration tranche HELD until baseline settles (plan ## Now) |
-| `tools/harness/list.ts` (106) | list projection | tx-mock unit | sibling `.test.ts` | **churning** — 3 commits since 06-04 (work_items reshape); item text says avoid |
-| `tools/harness/status.ts` (86) | status aggregation | tx-mock unit | sibling `.test.ts` | 1 recent commit, same reshape neighborhood |
+| `src/provisioning.ts` (154) | credential/provision flow | PG integration | `src/provisioning.integration.test.ts` | next integration-tranche pick |
+| `tools/harness/status.ts` (86) | status aggregation | tx-mock unit | sibling `.test.ts` | 1 recent commit, reshape neighborhood |
 | `tools/artifacts/{save,load,append,delete}.ts` | artifact CRUD | tx-mock unit | sibling `.test.ts` | 2 recent commits on save.ts — family being touched |
 | `tools/tasks/{list,get}.ts`, `tools/goals/get.ts` | drizzle list/get convention | chain-mock unit | sibling `.test.ts` | convention already documented by `goals/list.test.ts`; marginal |
-| `resources/**` (hindsight/banks, harness/issues, audit/recent) | MCP resource readers | tx-mock unit | sibling `.test.ts` | small projections; next tranche candidate |
 
 ## 2. `packages/operator-core/lib` (stable pure-logic clusters) — near-saturated, verified
 
@@ -54,8 +61,22 @@ The P-003 named clusters are covered: `auth.test.ts`, `auth-audit.test.ts`,
 | `endpoint-route/routes/**` (the large tail) | HTTP route handlers — integration surface; PG-integration tranche HELD |
 | `fleet/**`, `sync/hyperbee/**`, `events/await/**` | Briefs 1/2 + EI-79 rewrite — active churn, excluded by contract |
 | `voice-node/codec.ts` | opusscript WASM seam on `@papercusp/p2p-voice` — Brief 6's voice-transport neighborhood; round-trip test ships with that work |
-| `plan-items/claims.ts` (432) | lease/claim semantics need PG — held integration tranche candidate (good first pick when tranches reopen) |
 | `dev-data.ts`, `iq-battery/corpus.ts` | fixture/corpus data, not logic |
+
+**Integration tranche REOPENED in tranche 2** (judgment call: the hold condition — "baseline
+settles" — is met; `self-contained-migration-baseline` is listed SHIPPED in the brief index):
+
+- `plan-items/claims.integration.test.ts` (15 cases, real PG, migration 141 verbatim) — the
+  lease store's acquire/steal/conflict, the D-003 asymmetric heartbeat-kind matrix, ttl
+  clamps, owner-checked release, `renewOwnerActivityClaims` scoping, sweep. *Correction to
+  this audit:* `claims.ts` was already INDIRECTLY exercised via the liveness-layer tests
+  (`plan-items.integration.test.ts`, `activity-claim-renewal`, the two-instance authority
+  test) — sibling-matching missed them; the new test still added the store-level matrix
+  nobody covered, and caught a real diagnostic bug: a lapsed-own claim's heartbeat reported
+  "held by another owner" instead of "lapsed — re-acquire" (fixed in `claims.ts`).
+- Drive-by fix: `plan-item-convert.integration.test.ts` was broken by the migration-178 rank
+  columns (its local DDL seed predated them) — patched with the §1 ALTERs, mirroring
+  work-items-lifecycle's setup; Brief 2 notified.
 
 ## 3. `apps/operator/app` (UI) — was ~30% (122/414), now 151 test files
 
@@ -79,7 +100,7 @@ useHarnessClaimStatus, useWizardStatuses).
 | file | untested path | suggested test | canonical home | why left |
 |---|---|---|---|---|
 | `admin/plans/plans-api.ts` (1509) | the fetch wrappers (fetchPlanList/fetchPlan/…) | fetch-stub unit | sibling (extend `plans-api-result.test.ts`) | thin fetch wrappers; the pure helpers (bucketOf/staleConflictOf/applyPlanFilters/locks) ARE tested (plan-buckets, plans-api-result) |
-| `adv/create/use-create-data.ts` (386) | create-flow data hook | renderHook + fetch-stub | sibling `.test.tsx` | next-tranche candidate; /adv create flow may be reshaped by blueprint-first create |
+| ~~`adv/create/use-create-data.ts`~~ | **CLOSED in tranche 2**: scope precedence (`?h`/`?scope`/sub-harness union), localStorage fallback, plan-list maps (real bucketOf), inbox tag/dedup/counts/facets, refresh fan-out | — | `use-create-data.test.tsx` (15) | — |
 | `_components/voice/operator-voice-runtime.ts` (213), `_components/voice/stt-voicemode.ts` (82) | voice runtime / VAD wrapper | mock MicVAD | sibling | voice surface (Briefs 5/6 neighborhood); stt-voicemode is a thin `@ricky0123/vad-web` wrapper — logic lives in the lib |
 | `admin/testing/_lib/{vitals-recorder,recorder-channel,chaos-store}.ts` | testing-tab instrumentation | jsdom unit | sibling | self-instrumentation of the testing tab; low product risk |
 | `editor-demo/spec-content.ts`, `cupboard/cupboard-theme.ts`, `_components/structured-stream-types.ts` | — | — | — | constants/types only, nothing to test |
@@ -99,7 +120,12 @@ recorded on the plan item.
 
 ---
 
-**Verification trail (2026-06-07):** new tranche = 11 test files / 130 cases, all green
-(`agent-mcp` 6 files/48, `apps/operator` 5 files/82); the 9 previously-landed Phase-2 UI
-files re-verified green (96 cases); `lint:tests` + `gen:contract:check` green (see plan
-## Now for the run record).
+**Verification trail (2026-06-07):**
+- Tranche 1 = 11 test files / 130 cases (`agent-mcp` 6/48, `apps/operator` 5/82); the 9
+  previously-landed Phase-2 UI files re-verified green (96 cases).
+- Tranche 2 = 6 test files / 50 cases (`agent-mcp` harness:list + 3 resources = 20;
+  `use-create-data` 15; `claims.integration` 15) + 2 source fixes (the claims lapsed-reason
+  diagnostic; the convert test's mig-178 column patch).
+- Full suites green after tranche 2: `agent-mcp` 41 files/434; `apps/operator` 192
+  files/1771; `operator-core` plan-items integration 5 files/59 (real PG via testcontainer);
+  `lint:tests` + root `gen:contract:check` green.
