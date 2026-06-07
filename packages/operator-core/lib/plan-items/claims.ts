@@ -228,11 +228,18 @@ export async function heartbeatClaimLocal(p: HeartbeatClaimParams): Promise<Hear
       reason: 'activity-mode claim not renewed by a keepalive — send an activity/extend heartbeat',
     };
   }
+  // A lapsed row still physically exists (acquire steals lazily) — report it
+  // as lapsed, not as "held by another owner", so the caller re-acquires
+  // instead of chasing a phantom holder.
+  const isOwnLapsed = held != null && held.claimId === claimId && held.owner === owner && held.expired;
   return {
     renewed: false,
     held: false,
     expiresTs: null,
-    reason: held ? 'claim is held by another owner or under a new claim_id' : 'claim has lapsed or was released — re-acquire it',
+    reason:
+      held && !isOwnLapsed
+        ? 'claim is held by another owner or under a new claim_id'
+        : 'claim has lapsed or was released — re-acquire it',
   };
 }
 

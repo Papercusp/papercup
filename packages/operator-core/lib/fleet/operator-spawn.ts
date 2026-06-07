@@ -35,6 +35,7 @@ import {
   reclaimOrphanedSpawns,
   SPAWN_HEARTBEAT_INTERVAL_MS,
 } from './spawn-reclaim';
+import { wakeParentOnChildDeath } from './parent-wake';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 
 /**
@@ -418,32 +419,39 @@ export async function spawnAgentInHarness(
   ensureSpawnHeartbeatLoop();
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
+  let finalStatus: string | null = null;
   void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal })
-    .then((r) =>
-      finishSpawn(sql, {
+    .then((r) => {
+      finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
+      return finishSpawn(sql, {
         spawnId,
         workspaceId: input.workspaceId,
-        // An aborted child (fleet:cancel) exits non-zero; record it as cancelled,
-        // not failed, when the abort was the cause.
-        status: abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed'),
+        status: finalStatus,
         exitCode: r.exitCode,
         errorMessage: r.exitCode === 0 ? null : (r.stderr || '').slice(-2000) || null,
         outputTail: (r.output || '').slice(-2000) || null,
-      }),
-    )
-    .catch((err) =>
-      finishSpawn(sql, {
+      });
+    })
+    .catch((err) => {
+      finalStatus = abort.signal.aborted ? 'cancelled' : 'failed';
+      return finishSpawn(sql, {
         spawnId,
         workspaceId: input.workspaceId,
-        status: abort.signal.aborted ? 'cancelled' : 'failed',
+        status: finalStatus,
         errorMessage: err instanceof Error ? err.message : String(err),
-      }).catch(() => { /* PG down — nothing left to record to */ }),
-    )
+      }).catch(() => { /* PG down — nothing left to record to */ });
+    })
     .finally(() => {
       localSpawnAborts.delete(spawnId);
       // The terminal flip above freed a ceiling slot — wake any over-ceiling
       // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
       void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
+      // EI-108: Wake parent on child death (if the spawn has a parent)
+      if (finalStatus) {
+        void wakeParentOnChildDeath(sql, spawnId, input.workspaceId, finalStatus).catch(() => {
+          /* best-effort — logged inside wakeParentOnChildDeath */
+        });
+      }
     });
 
   return { ok: true, spawnId, harness: slug, projectDir: project.path, error: null };

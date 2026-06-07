@@ -117,6 +117,17 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — the engine's
+  // FEATURE_COLS/ISSUE_COLS select them. Same patch as work-items-lifecycle's setup
+  // (the full 178 also rewrites work_items/fleet_assignment views this test never reads).
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+  `).simple();
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
       workspace_id text NOT NULL,

@@ -16,8 +16,10 @@
  * sweep only un-wedges the concurrency ceiling.
  *
  * Migration 174 adds `heartbeat_at` + the partial sweep index.
+ * EI-108: When reclaiming a spawn with a parent, also wake the parent.
  */
 import type { Sql, TransactionSql } from 'postgres';
+import { wakeParentOnChildDeath } from './parent-wake';
 
 /** A query handle — a pooled client or an open transaction. */
 type Db = Sql | TransactionSql;
@@ -79,6 +81,14 @@ export async function reclaimOrphanedSpawns(
      WHERE status IN ('running', 'restarting')
        AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'
     RETURNING spawn_id, workspace_id`;
+
+  // EI-108: Wake parents of reclaimed spawns (best-effort, concurrent, no await)
+  for (const row of rows) {
+    void wakeParentOnChildDeath(sql as Sql, row.spawn_id, row.workspace_id, 'failed').catch(
+      () => { /* best-effort — logged inside wakeParentOnChildDeath */ },
+    );
+  }
+
   return {
     reclaimed: rows.length,
     spawnIds: rows.map((r) => r.spawn_id),

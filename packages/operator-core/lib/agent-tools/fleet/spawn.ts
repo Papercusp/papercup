@@ -43,7 +43,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? actor.workspaceId ?? activeWorkspaceId();
+    // An unscoped (superuser) identity carries workspaceId='*' — never record a
+    // nursery row under the wildcard: it would escape the real workspace's
+    // ceiling ledger AND announce slot-frees on `spawn-slot:freed:*`, which no
+    // real waiter watches (EI-112). Resolve '*' to the active workspace instead.
+    const actorWs = actor.workspaceId && actor.workspaceId !== '*' ? actor.workspaceId : null;
+    const workspaceId = args.workspace ?? actorWs ?? activeWorkspaceId();
     // Dynamic import (like operator/converse.ts): operator-spawn statically pulls
     // dbos/orchestrator-runner → orchestrator-workflow, which registers the
     // featurePipeline DBOS workflow at module load. A static import here loads that
