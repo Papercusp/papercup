@@ -75,21 +75,27 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.feature_queue
       (workspace_id, harness_slug, github_user_id, feature_id, queued_at, removed_at, schema_version,
-       author_pubkey, origin)
+       author_pubkey, origin, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.queued_at} / 1000.0),
        ${row.removed_at == null ? null : sql`to_timestamp(${row.removed_at} / 1000.0)`},
-       ${row.schema_version}, ${authorPubkey}, ${origin})
+       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       queued_at = EXCLUDED.queued_at,
       removed_at = EXCLUDED.removed_at,
       schema_version = EXCLUDED.schema_version,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin = EXCLUDED.origin
+      origin = EXCLUDED.origin,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE feature_queue.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= feature_queue.fed_ts
   `;
 }
 

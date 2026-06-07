@@ -94,12 +94,13 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.harness_issues_consolidated
       (harness_slug, issue_id, title, severity, source, status,
        found_at, found_during, repro, evidence, suggested_fix,
        code_pointer, linked_feature_id, attempts, notes,
-       created_ts, updated_ts, author_pubkey, origin)
+       created_ts, updated_ts, author_pubkey, origin, fed_ts)
     VALUES
       (${row.harness_slug}, ${row.issue_id}, ${row.title}, ${row.severity}, ${row.source}, ${row.status},
        to_timestamp(${row.found_at} / 1000.0),
@@ -108,7 +109,7 @@ async function writeToPg(
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under the getOrgPg runtime
        -- client (agent-insights/postgres-js-jsonb-binding).
        ${JSON.stringify(normalizeJsonbInput(row.notes) ?? [])}::text::jsonb,
-       ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin})
+       ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
       title = EXCLUDED.title,
       severity = EXCLUDED.severity,
@@ -125,7 +126,12 @@ async function writeToPg(
       notes = EXCLUDED.notes,
       updated_ts = EXCLUDED.updated_ts,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin = EXCLUDED.origin
+      origin = EXCLUDED.origin,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE harness_issues_consolidated.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= harness_issues_consolidated.fed_ts
   `;
   void opts.workspaceId;
 }

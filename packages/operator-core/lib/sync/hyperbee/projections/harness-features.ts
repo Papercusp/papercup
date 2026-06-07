@@ -115,12 +115,13 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
-       author_pubkey, origin)
+       author_pubkey, origin, fed_ts)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
        -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
@@ -131,7 +132,7 @@ async function writeToPg(
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
        ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`},
-       ${authorPubkey}, ${origin})
+       ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
       summary = EXCLUDED.summary,
@@ -154,7 +155,15 @@ async function writeToPg(
       taken_at = EXCLUDED.taken_at,
       expires_at = EXCLUDED.expires_at,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin = EXCLUDED.origin
+      origin = EXCLUDED.origin,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard. Drop a strictly-older op so the
+    -- incremental merge cursor is correct even when an out-of-order / backfilled
+    -- op arrives after a newer row already landed. A NULL on either side applies
+    -- (first write after the migration / a synthetic op without a wire ts).
+    WHERE harness_features_consolidated.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= harness_features_consolidated.fed_ts
   `;
 }
 

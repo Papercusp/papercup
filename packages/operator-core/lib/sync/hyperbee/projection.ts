@@ -40,6 +40,17 @@ export interface ProvenanceContext {
   authorPubkey: string;
   /** 'local' | 'remote' — derived from log-source (own vs admitted-remote). */
   origin: 'local' | 'remote';
+  /**
+   * EI-79 residual step 2: the op's WIRE ts (epoch ms) — the LWW ordering field
+   * `lwwPick` orders on. Writers persist it as the table's `fed_ts` column and
+   * guard their `ON CONFLICT ... DO UPDATE` with `WHERE EXCLUDED.fed_ts >=
+   * <table>.fed_ts`, so a strictly-older (out-of-order / backfilled) op can
+   * never clobber a newer projected row — making each writer PG-level
+   * last-write-wins INDEPENDENT of the incremental merge cursor's in-process
+   * fold. `undefined` for a synthetic/local op built without a ts (the writers
+   * treat a NULL stored fed_ts as "older than anything", so such a write lands).
+   */
+  ts?: number;
 }
 
 export interface TableProjection<Row> {
@@ -170,7 +181,13 @@ export async function applyOpVia(
     // operator's OWN write — trustworthy, and the meaningful device pubkey.
     const authorPubkey =
       origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-    provenance = { authorPubkey, origin };
+    provenance = { authorPubkey, origin, ts: op.ts };
+  } else if (typeof op.ts === 'number') {
+    // EI-79 step 2: even a write with no provenance (synthetic / single-harness
+    // legacy op without writerPubkey or ownLogKeyHex) must carry its `ts` so the
+    // writer stamps `fed_ts` and the PG-level LWW guard works. Default the
+    // attribution fields to a local self-write.
+    provenance = { authorPubkey: op.writerPubkey ?? '', origin: 'local', ts: op.ts };
   }
 
   await p.writeToPg(row, provenance);

@@ -12,7 +12,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface HarnessFeaturePrRow {
   harness_slug: string;
@@ -52,20 +52,30 @@ function decodeValue(raw: unknown): HarnessFeaturePrRow | null {
   return isHarnessFeaturePrRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: PrsProjectionOpts, row: HarnessFeaturePrRow): Promise<void> {
+async function writeToPg(
+  opts: PrsProjectionOpts,
+  row: HarnessFeaturePrRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.harness_feature_prs
-      (workspace_id, harness_slug, feature_id, pr_url, pr_state, opened_ts, updated_ts)
+      (workspace_id, harness_slug, feature_id, pr_url, pr_state, opened_ts, updated_ts, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id},
-       ${row.pr_url}, ${row.pr_state}, ${row.opened_ts}, ${row.updated_ts})
+       ${row.pr_url}, ${row.pr_state}, ${row.opened_ts}, ${row.updated_ts}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, feature_id) DO UPDATE SET
       pr_url = EXCLUDED.pr_url,
       pr_state = EXCLUDED.pr_state,
       opened_ts = EXCLUDED.opened_ts,
-      updated_ts = EXCLUDED.updated_ts
+      updated_ts = EXCLUDED.updated_ts,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE harness_feature_prs.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= harness_feature_prs.fed_ts
   `;
 }
 
@@ -85,7 +95,7 @@ export function buildPrsProjection(opts: PrsProjectionOpts): TableProjection<Har
     tableTag: 'prs',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

@@ -28,7 +28,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import { normalizeJsonbInput } from './_jsonb-input';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 import {
   isContributorRow,
   type ContributorRow,
@@ -55,7 +55,11 @@ function decodeValue(raw: unknown): ContributorRow | null {
   return raw;
 }
 
-async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow): Promise<void> {
+async function writeToPg(
+  opts: ContributorsProjectionOpts,
+  row: ContributorRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) {
     // Cross-harness write — drop silently. The projection is bound
     // to one harness; an op for a different one is a substrate bug
@@ -63,6 +67,7 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
     return;
   }
   const sql = opts.sql ?? getOrgPg().sql;
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.contributors
       (workspace_id, harness_slug, github_user_id, github_username,
@@ -71,7 +76,7 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
        joined_at, last_seen_at,
        binding_status, channel1_verified_at, channel2_verified_at,
        channel2_branch_ref, binding_last_checked_at,
-       schema_version)
+       schema_version, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.github_username},
        ${row.display_name}, ${row.avatar_url},
@@ -84,7 +89,7 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
        ${row.channel2_verified_at == null ? null : sql`to_timestamp(${row.channel2_verified_at} / 1000.0)`},
        ${row.channel2_branch_ref},
        ${row.binding_last_checked_at == null ? null : sql`to_timestamp(${row.binding_last_checked_at} / 1000.0)`},
-       ${row.schema_version})
+       ${row.schema_version}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, github_user_id) DO UPDATE SET
       github_username = EXCLUDED.github_username,
       display_name = EXCLUDED.display_name,
@@ -97,7 +102,12 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
       channel2_verified_at = EXCLUDED.channel2_verified_at,
       channel2_branch_ref = EXCLUDED.channel2_branch_ref,
       binding_last_checked_at = EXCLUDED.binding_last_checked_at,
-      schema_version = EXCLUDED.schema_version
+      schema_version = EXCLUDED.schema_version,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE contributors.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= contributors.fed_ts
   `;
 }
 
@@ -122,7 +132,7 @@ export function buildContributorsProjection(opts: ContributorsProjectionOpts): T
     tableTag: 'contributors',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

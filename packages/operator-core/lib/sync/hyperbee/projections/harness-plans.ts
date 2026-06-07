@@ -93,6 +93,7 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   // workspace_id is the LOCAL projection's bound workspace (not the sender's) —
   // a remote plan lands in the workspace this harness is bound to here. version
   // is the local CAS counter: 0 on first insert, bumped on every remote apply so
@@ -102,11 +103,11 @@ async function writeToPg(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
        title, status, created, updated, owner, supersedes, superseded_by,
-       archived, is_legacy, author_pubkey, origin)
+       archived, is_legacy, author_pubkey, origin, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
        ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.supersedes}, ${row.superseded_by},
-       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin})
+       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
       content       = EXCLUDED.content,
       content_hash  = EXCLUDED.content_hash,
@@ -121,7 +122,12 @@ async function writeToPg(
       archived      = EXCLUDED.archived,
       is_legacy     = EXCLUDED.is_legacy,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin        = EXCLUDED.origin
+      origin        = EXCLUDED.origin,
+      fed_ts        = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE harness_shared.harness_plans.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= harness_shared.harness_plans.fed_ts
   `;
 }
 

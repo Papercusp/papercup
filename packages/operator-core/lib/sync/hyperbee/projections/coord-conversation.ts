@@ -111,6 +111,7 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   // workspace_id is the LOCAL projection's bound workspace (not the sender's).
   // accepted_post_id is NOT federated (local bigserial) — NULL on insert,
   // preserved on update (the SET list omits it).
@@ -118,7 +119,7 @@ async function writeToPg(
     INSERT INTO harness_shared.coord_conversations
       (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, state,
        accepted_answer, capture_target, promoted_issue_id,
-       created_at, updated_at, resolved_at, origin, author_pubkey)
+       created_at, updated_at, resolved_at, origin, author_pubkey, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.id}, ${row.kind}, 'harness', ${row.harness_slug}, ${row.asker_id},
        ${row.title}, ${row.body}, ${row.state}, ${row.accepted_answer}, ${row.capture_target},
@@ -126,7 +127,7 @@ async function writeToPg(
        to_timestamp(${row.created_at} / 1000.0),
        to_timestamp(${row.updated_at} / 1000.0),
        ${row.resolved_at === null ? null : sql`to_timestamp(${row.resolved_at} / 1000.0)`},
-       ${origin}, ${authorPubkey})
+       ${origin}, ${authorPubkey}, ${fedTs})
     ON CONFLICT (workspace_id, id) DO UPDATE SET
       kind              = EXCLUDED.kind,
       asker_id          = EXCLUDED.asker_id,
@@ -139,7 +140,12 @@ async function writeToPg(
       updated_at        = EXCLUDED.updated_at,
       resolved_at       = EXCLUDED.resolved_at,
       origin            = EXCLUDED.origin,
-      author_pubkey     = EXCLUDED.author_pubkey
+      author_pubkey     = EXCLUDED.author_pubkey,
+      fed_ts            = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE coord_conversations.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= coord_conversations.fed_ts
   `;
 }
 

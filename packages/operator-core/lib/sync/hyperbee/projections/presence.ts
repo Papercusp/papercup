@@ -20,7 +20,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface SharedPresenceRow {
   harness_slug: string;
@@ -64,24 +64,34 @@ function decodeValue(raw: unknown): SharedPresenceRow | null {
   return isSharedPresenceRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: PresenceProjectionOpts, row: SharedPresenceRow): Promise<void> {
+async function writeToPg(
+  opts: PresenceProjectionOpts,
+  row: SharedPresenceRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
-       intent, current_view, last_seen_at, schema_version)
+       intent, current_view, last_seen_at, schema_version, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
-       ${row.schema_version})
+       ${row.schema_version}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
       current_view = EXCLUDED.current_view,
       last_seen_at = EXCLUDED.last_seen_at,
-      schema_version = EXCLUDED.schema_version
+      schema_version = EXCLUDED.schema_version,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE shared_presence.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= shared_presence.fed_ts
   `;
 }
 
@@ -108,7 +118,7 @@ export function buildPresenceProjection(opts: PresenceProjectionOpts): TableProj
     tableTag: 'presence',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

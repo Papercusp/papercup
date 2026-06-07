@@ -156,21 +156,28 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.feature_working_set
       (workspace_id, harness_slug, github_user_id, feature_id, started_at, cleared_at, schema_version,
-       author_pubkey, origin)
+       author_pubkey, origin, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.started_at} / 1000.0),
        ${row.cleared_at == null ? null : sql`to_timestamp(${row.cleared_at} / 1000.0)`},
-       ${row.schema_version}, ${authorPubkey}, ${origin})
+       ${row.schema_version}, ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       started_at = EXCLUDED.started_at,
       cleared_at = EXCLUDED.cleared_at,
       schema_version = EXCLUDED.schema_version,
       author_pubkey = EXCLUDED.author_pubkey,
-      origin = EXCLUDED.origin
+      origin = EXCLUDED.origin,
+      fed_ts = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op. (recompute
+    -- below stays unconditional: it re-derives the live set from current rows.)
+    WHERE feature_working_set.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= feature_working_set.fed_ts
   `;
   // Reconcile the canonical working_users[] array (Phase 8 P-038): a put may
   // start work (cleared_at NULL) or tombstone it (cleared_at set), both of
