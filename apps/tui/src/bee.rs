@@ -94,19 +94,70 @@ pub fn draw_watch(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
+            Constraint::Percentage(26),
+            Constraint::Percentage(38),
+            Constraint::Percentage(36),
+            Constraint::Length(3),
         ])
         .split(area);
     draw_tasklist(f, app, rows[0]);
-    draw_watch_activity(f, app, rows[1]);
+    draw_watch_output(f, app, rows[1]);
     let mail = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[2]);
     draw_inbox(f, app, mail[0]);
     draw_outbox(f, app, mail[1]);
+    draw_watch_composer(f, app, rows[3]);
+}
+
+/// The "what is it thinking" feed: the bee's live raw stdout (tail of the
+/// spawn's `.out`, streamed by the bee-output poll), newest lines at the
+/// bottom. Until the first chunk lands, falls back to the activity summaries
+/// so the pane is never blank.
+fn draw_watch_output(f: &mut Frame, app: &App, area: Rect) {
+    if app.watch_output.is_empty() {
+        return draw_watch_activity(f, app, area);
+    }
+    // Tail: render the last N lines that fit the pane.
+    let inner_h = area.height.saturating_sub(2) as usize; // block borders
+    let lines: Vec<&str> = app.watch_output.lines().collect();
+    let tail: Vec<Line> = lines
+        .iter()
+        .rev()
+        .take(inner_h.max(1))
+        .rev()
+        .map(|l| Line::from(Span::styled((*l).to_string(), Theme::dim())))
+        .collect();
+    f.render_widget(
+        Paragraph::new(tail).style(Theme::panel()).block(Theme::block(
+            Line::from(" live output — what it's thinking "),
+            true,
+        )),
+        area,
+    );
+}
+
+/// The chat composer: type → Enter sends a durable coord:message-agent thread
+/// to this bee (it replies in-thread; the reply lands in the inbox above).
+fn draw_watch_composer(f: &mut Frame, app: &App, area: Rect) {
+    let hint = if app.watch_sending {
+        "sending…".to_string()
+    } else if app.watch_input.is_empty() {
+        "type to chat with this bee · Enter sends · Esc clears".to_string()
+    } else {
+        format!("{}▏", app.watch_input)
+    };
+    let style = if app.watch_input.is_empty() && !app.watch_sending {
+        Theme::dim()
+    } else {
+        Theme::panel()
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(hint, style)))
+            .block(Theme::block(Line::from(" ✉ chat "), !app.watch_input.is_empty())),
+        area,
+    );
 }
 
 /// The watched agent's slice of the live fleet activity stream, newest-first —

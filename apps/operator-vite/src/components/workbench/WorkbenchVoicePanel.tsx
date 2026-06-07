@@ -102,5 +102,5 @@ let registered = false;
 export function registerWorkbenchVoicePanel(): void {
   if (registered) return;
   registered = true;
-  panelRegistry.register('workbench:voice', WorkbenchVoicePanel, { keepAlive: true });
+  panelRegistry.register('workbench:voice', WorkbenchVoicePanel, { keepAlive: true, title: 'Peers' });
 }

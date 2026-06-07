@@ -7932,6 +7932,70 @@ mod tests {
     }
 
     #[test]
+    fn watch_composer_types_sends_and_clears() {
+        // The watch pane IS a chat surface: printable keys draft, Enter sends
+        // a coord:message-agent thread, Esc clears (pui-dock-agent-stack).
+        let mut a = App::new();
+        a.watch = Some("s-bee1".into());
+        a.update(key('h', KeyModifiers::NONE));
+        a.update(key('i', KeyModifiers::NONE));
+        assert_eq!(a.watch_input, "hi");
+        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(a.watch_input, "h");
+        a.update(key('i', KeyModifiers::NONE));
+        match a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))) {
+            Action::SendBeeMessage { to, body } => {
+                assert_eq!(to, "s-bee1");
+                assert_eq!(body, "hi");
+            }
+            other => panic!("expected SendBeeMessage, got {other:?}"),
+        }
+        assert!(a.watch_input.is_empty());
+        assert!(a.watch_sending);
+        // While sending, Enter on a new draft is a no-op (composer locked).
+        a.update(key('x', KeyModifiers::NONE));
+        assert_eq!(
+            a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
+            Action::Render
+        );
+        // The send result unlocks + toasts.
+        a.update(Event::BeeMessageSent(Ok(())));
+        assert!(!a.watch_sending);
+        // Esc clears the draft.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(a.watch_input.is_empty());
+    }
+
+    #[test]
+    fn bee_output_accumulates_capped_and_stale_guarded() {
+        let mut a = App::new();
+        a.watch = Some("s-bee1".into());
+        a.update(Event::BeeOutput {
+            owner: "s-bee1".into(),
+            offset: 5,
+            chunk: "think".into(),
+        });
+        assert_eq!(a.watch_output, "think");
+        assert_eq!(a.watch_output_offset, 5);
+        // A chunk for a DIFFERENT owner is dropped (stale guard).
+        a.update(Event::BeeOutput {
+            owner: "s-other".into(),
+            offset: 99,
+            chunk: "noise".into(),
+        });
+        assert_eq!(a.watch_output, "think");
+        assert_eq!(a.watch_output_offset, 5);
+        // The ring caps at 64KB, keeping the TAIL.
+        a.update(Event::BeeOutput {
+            owner: "s-bee1".into(),
+            offset: 70_000,
+            chunk: "x".repeat(70_000),
+        });
+        assert_eq!(a.watch_output.len(), 64 * 1024);
+        assert!(a.watch_output.ends_with('x'));
+    }
+
+    #[test]
     fn watch_pane_tracks_misses_and_exits_after_two() {
         // `pui watch-pane <owner>` exits once its agent has been gone for two
         // consecutive roster refreshes (one miss can be churn) — and NEVER

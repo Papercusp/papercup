@@ -493,7 +493,7 @@ export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
             {
               id: 'p-wb-voice',
               type: 'workbench:voice',
-              title: 'Voice / Video',
+              title: 'Peers',
               params: { harnessSlug },
             },
           ],

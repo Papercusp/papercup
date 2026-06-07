@@ -107,7 +107,7 @@ function WorkbenchPage() {
         }}
       >
         <strong>Workbench</strong>
-        <span style={{ color: 'var(--fg-mute, #888)' }}>app · voice/video · terminal (native sibling)</span>
+        <span style={{ color: 'var(--fg-mute, #888)' }}>app · peers · terminal (native sibling)</span>
         <div style={{ flex: 1 }} />
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ color: 'var(--fg-mute, #888)' }}>Harness</span>
