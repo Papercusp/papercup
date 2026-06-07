@@ -1,7 +1,7 @@
-# VM federation harness — cross-machine swarm-join works; same-host-bridge holepunch does not
+# VM federation harness — cross-machine swarm-join works; same-host holepunch does not (any topology)
 URL: /internal/docs/agent-insights/vm-federation-separate-machine-proof
 
-bin/vm-federation.sh stands up two pristine Ubuntu VMs over a host bridge with distinct GitHub identities and a host-run testnet DHT, reusing the one-box smokes' federation-asserts.sh core. What it PROVES (fresh-install, clean embedded-PG boot, share, cross-machine swarm-join) and the wall it hit: hyperdht holepunch does not complete between two SAME-HOST bridged VMs — proven at the raw hyperswarm level and across single/dual-NIC + single/multi-node-DHT, so the single-NIC+NAT candidate is refuted and the bidirectional-merge acceptance needs truly separate machines.
+bin/vm-federation.sh stands up pristine Ubuntu VMs over a host bridge with distinct GitHub identities and a host-run testnet DHT, reusing the one-box smokes' federation-asserts.sh core. What it PROVES (fresh-install, clean embedded-PG boot, share, cross-machine swarm-join — in --vms=2 AND --vms=1) and the wall: hyperdht holepunch does not complete between ANY two endpoints on one physical host — VM↔VM and host↔VM both sit at conns=0 at the raw hyperswarm level (single/dual-NIC, single/multi-node-DHT, and the host's no-NAT position all refuted); --dht=public is INCONCLUSIVE by NAT hairpin. The bidirectional-merge acceptance needs truly separate machines.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -20,6 +20,8 @@ the slow way. Plan: `linux-test-vm-and-federation-2026-06-04` (Phase 2, P-009..P
 ```bash
 cd papercusp-desktop
 bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge   # the primary run
+bin/vm-federation.sh --vms=1                              # host instance ↔ fed-a VM
+bin/vm-federation.sh --vms=2 --dht=public                 # Mode-B stretch (INCONCLUSIVE on one box)
 ```
 
 Each VM (`fed-a`, `fed-b`) is a `vmctl` overlay off the golden image. The driver
@@ -70,17 +72,36 @@ announcing on the DHT, the DHT-coordinated punch never establishes a connection.
 This is the degenerate case the plan's **D-004** flagged as "best-effort … may
 still hairpin."
 
+The remaining hope was that the **host's** network position — directly on the
+bridge at `10.77.0.1`, real network stack, no NAT on its side — would let the
+punch complete where VM↔VM could not. It does not. The packaged `--vms=1` run
+(host instance under its own Xvfb + a pristine `fed-a`) reaches share +
+swarm-join on both sides and then stalls identically, and the **raw hyperswarm
+host↔VM test** (same methodology) sits at `host_conns=0 vm_conns=0` after 60s —
+both `joined+flushed`, the VM's own DHT announce proving VM→host UDP works. So
+the wall is intrinsic to hyperdht holepunch between **any two endpoints on one
+physical host**, in every topology this harness can stand up (plan D-018).
+
 Things ruled out (all retested, all still `conns=0`): dual-NIC vs single-NIC;
 multi-node vs single-node testnet; identical-vs-distinct slirp subnets (distinct
 is necessary but not sufficient); UDP-blocked (UDP works directly);
-DHT-unreachable (both peers announce). The packaged app and the raw library fail
-identically — it is not an app-config gap.
+DHT-unreachable (both peers announce); **host↔VM instead of VM↔VM** (the
+host's no-NAT position doesn't rescue it). The packaged app and the raw library
+fail identically — it is not an app-config gap.
+
+`--dht=public` (P-012, the Mode-B stretch) is **INCONCLUSIVE** rather than
+refuted: both packaged instances announce on the **real public DHT** through
+slirp (so the Mode-B announce path works), but same-host NAT hairpin blocks the
+punch — exactly D-004's caveat. Exit code 7 marks this mode's result explicitly.
 
 **Consequence:** the bidirectional-merge acceptance (a write on A appearing in B's
-PG as `origin='remote'`, and the reverse) is **not achievable with same-host VMs**.
-It needs **truly separate machines** — two physical hosts, or VMs on two different
+PG as `origin='remote'`, and the reverse) is **not achievable on one physical
+host in any topology** — VM↔VM, host↔VM, testnet or public DHT. It needs
+**truly separate machines** — two physical hosts, or VMs on two different
 hosts. The harness is correct and complete up to that boundary; the boundary is a
-hyperdht holepunch property, not a harness defect.
+hyperdht holepunch property, not a harness defect. When a second machine is
+available, `bin/vm-federation.sh` is ready: the same asserts run unchanged with
+one side remote.
 
 ## Networking: dual-NIC, no DHCP/NAT (D-016)
 
@@ -98,13 +119,26 @@ gets the federation network as a **second** NIC:
   point-to-point L2 link (static `10.99.0.1/2`); the DHT bootstrap runs *inside*
   `fed-a`.
 
-## Two traps fixed on the way (both real clean-machine bugs)
+## Three traps fixed on the way (all real clean-machine bugs)
 
 With qemu's **default** user-net every VM is `10.0.2.15`. Hyperswarm's holepunch
 exchanges *local-address candidates*, so a peer dialing the other's `10.0.2.15`
 reaches **itself**. Fix: a **distinct** slirp subnet per VM (`boot-vm.sh`
 `SLIRP_NET`; the driver sets `10.31.<idx>.0/24`). (Necessary but, per the wall
 above, not sufficient for same-host holepunch.)
+
+The packaged app hosts **multiple** HTTP listeners: code-server logs a generic
+`HTTP server listening on http://127.0.0.1:N/` well **before** the sidecar's
+`[serve] listening on http://127.0.0.1:N (UI ON)`. A bare `'listening on'` grep
+in the boot-wait returns as soon as the PG-ready line lands — inside the
+PG-ready→serve-listening window the **only** match is code-server, so the
+harness records the wrong sidecar port and every API call (register,
+`share/finalize`) hits code-server → 405 → masked as an empty response. Seen
+live 2026-06-07: instance B grabbed code-server's port two runs in a row while
+A won the race both times — it *looks* identity-specific and is pure timing.
+Fix: anchor the grep to `[serve] listening` (legacy fallbacks `hono-host]` /
+`operator|sidecar ready on`); never the bare generic
+(`bin/lib/federation-asserts.sh` `fed_wait_boot`).
 
 On a pristine machine the desktop can lose the embedded-PG-vs-sidecar startup race
 (sidecar up first → `readOperatorState` hits the default `127.0.0.1:5432` → no

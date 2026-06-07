@@ -17,6 +17,8 @@
  * forward; we don't poison the whole sweep.
  */
 
+import { Client } from 'pg';
+
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
@@ -238,8 +240,6 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
 
     const embed = await buildEmbedder(mode);
     const pg = await loadPgFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
     const client = new Client({
       host: pg.host,
       port: pg.port,
