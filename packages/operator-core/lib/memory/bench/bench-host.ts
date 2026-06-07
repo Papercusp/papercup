@@ -22,14 +22,17 @@ import '../configure';
 export const BENCH_SCHEMA = 'bench_memory';
 
 /**
- * Re-point the memory host at the bench schema. Returns the previous
- * host so a caller can restore it (tests).
+ * Re-point the memory host at an isolated schema (default the bench's).
+ * The operator seams (admin URL, credentials, embedder cascade, the
+ * session-extraction rung) carry over verbatim. Also used by the live
+ * session-extraction integration probe (`../session-extraction-live.ts`),
+ * which runs in its own schema so concurrent bench runs can't collide.
  */
-export function setupBenchMemoryHost(): void {
+export function setupBenchMemoryHost(schema: string = BENCH_SCHEMA): void {
   const base = memoryHost(); // the operator host '../configure' just wired
   configureMemory({
     ...base,
-    schema: BENCH_SCHEMA,
+    schema,
     localStoreDir: null, // in-memory mem0 history — nothing under ~/.papercusp
     backend: 'mem0', // the bench constructs backends directly; keep the default sane
   });
@@ -44,13 +47,13 @@ export async function benchPgClient(): Promise<Client> {
 }
 
 /**
- * Create the bench schema + the memory tables in migration 081's shape
+ * Create an isolated schema + the memory tables in migration 081's shape
  * (mirrored from the live `harness_shared` definitions). Idempotent.
  */
-export async function ensureBenchSchema(client: Client): Promise<void> {
-  await client.query(`CREATE SCHEMA IF NOT EXISTS ${BENCH_SCHEMA}`);
+export async function ensureBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
+  await client.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   await client.query(`
-    CREATE TABLE IF NOT EXISTS ${BENCH_SCHEMA}.memory_canonical (
+    CREATE TABLE IF NOT EXISTS ${schema}.memory_canonical (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       payload jsonb NOT NULL DEFAULT '{}'::jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
@@ -63,24 +66,24 @@ export async function ensureBenchSchema(client: Client): Promise<void> {
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS memory_canonical_user_id_idx
-      ON ${BENCH_SCHEMA}.memory_canonical ((payload->>'user_id'))
+      ON ${schema}.memory_canonical ((payload->>'user_id'))
   `);
   for (const vec of ['memory_vec_openai', 'memory_vec_local']) {
     await client.query(`
-      CREATE TABLE IF NOT EXISTS ${BENCH_SCHEMA}.${vec} (
-        memory_id uuid PRIMARY KEY REFERENCES ${BENCH_SCHEMA}.memory_canonical(id) ON DELETE CASCADE,
+      CREATE TABLE IF NOT EXISTS ${schema}.${vec} (
+        memory_id uuid PRIMARY KEY REFERENCES ${schema}.memory_canonical(id) ON DELETE CASCADE,
         vector vector(384) NOT NULL,
         embedded_at timestamptz NOT NULL DEFAULT now()
       )
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS ${vec}_hnsw_idx
-        ON ${BENCH_SCHEMA}.${vec} USING hnsw (vector vector_cosine_ops)
+        ON ${schema}.${vec} USING hnsw (vector vector_cosine_ops)
     `);
   }
 }
 
-/** Drop the bench schema entirely (the run's cleanup). */
-export async function dropBenchSchema(client: Client): Promise<void> {
-  await client.query(`DROP SCHEMA IF EXISTS ${BENCH_SCHEMA} CASCADE`);
+/** Drop an isolated schema entirely (the run's cleanup). */
+export async function dropBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
+  await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
 }

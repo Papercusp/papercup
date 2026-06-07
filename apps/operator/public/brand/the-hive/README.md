@@ -12,7 +12,7 @@ Flag-gated visual identity assets for `papercusp-the-hive`. The internal pack id
 - `wordmark-lockup.svg`: The Swarm plus Hive Console lockup.
 - `favicon.svg` and `favicon.png`: flag-gated browser/app favicon.
 - `comb-motif.svg`: reusable geometric background and empty-state texture.
-- `icons/*.svg`: lexicon iconography for Hive, Swarm, Queen, Bee, Cell, Comb, and Frame.
+- `icons/*.svg`: lexicon iconography for Hive, Swarm, Queen, Sentinel Bee, Bee, Keeper, Cell, Comb, and Frame.
 
 ## Usage
 

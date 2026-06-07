@@ -39,7 +39,9 @@ describe('resolveTerm', () => {
     expect(t('pot')).toBe('Hive');
     expect(t('fleet')).toBe('Swarm');
     expect(t('operator')).toBe('Sentinel Bee');
+    expect(t('brain')).toBe('Queen');
     expect(t('contributor')).toBe('Bee');
+    expect(t('human')).toBe('Keeper');
     expect(t('chunk')).toBe('Cell');
     expect(t('cupboard')).toBe('Comb');
     expect(t('node')).toBe('Frame');

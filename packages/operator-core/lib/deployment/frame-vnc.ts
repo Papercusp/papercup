@@ -26,7 +26,7 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { buildSshStreamArgs } from './remote-exec';
 import { sshTargetForFrame } from './frame-installer';
-import { loadDeployedFrame } from './frame-view';
+import { loadDeployedFrame } from './deployed-frame';
 
 export type VncMode = 'watch' | 'takeover';
 
@@ -97,13 +97,13 @@ function defaultAudit(ev: { action: string; actor: string; subject: string; deta
   void (async () => {
     try {
       const { activeWorkspaceId } = await import('../workspace-registry');
-      const { withWorkspace } = await import('../workspace-db');
+      const { withWorkspace, generated } = await import('@papercusp/db-org');
       const { drizzle } = await import('drizzle-orm/postgres-js');
-      const { auditLog } = await import('@papercusp/db/schema');
+      const al = generated.auditLogInHarnessShared;
       const workspaceId = activeWorkspaceId();
       await withWorkspace(workspaceId, async (tx) => {
         const txDb = drizzle(tx as never);
-        await txDb.insert(auditLog).values({
+        await txDb.insert(al).values({
           id: `vnc-${now().toString(36)}-${randomBytes(4).toString('hex')}`,
           ts: now(),
           actor: ev.actor,
@@ -226,16 +226,23 @@ export function bridgeVncSession(ws: VncBridgeWs, session: PendingSession): Chil
       subject: `${session.slug}:${session.display}`,
       details: { slug: session.slug, display: session.display, mode: session.mode, why },
     });
+    // Kill the whole ssh process group; fall back to a single-PID kill when
+    // the group send fails OR the child never got a pid (early spawn failure).
+    let killed = false;
     const pid = child.pid;
     if (pid) {
       try {
         process.kill(-pid, 'SIGTERM');
+        killed = true;
       } catch {
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          /* gone */
-        }
+        /* fall through to single-PID kill */
+      }
+    }
+    if (!killed) {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* gone */
       }
     }
     try {

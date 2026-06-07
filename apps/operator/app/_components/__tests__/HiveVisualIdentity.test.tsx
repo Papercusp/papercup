@@ -47,7 +47,7 @@ describe('Hive visual identity components', () => {
   });
 
   it('covers each Hive lexicon noun with an icon', () => {
-    const kinds = ['hive', 'swarm', 'queen', 'bee', 'cell', 'comb', 'frame'] as const;
+    const kinds = ['hive', 'swarm', 'queen', 'sentinel', 'bee', 'keeper', 'cell', 'comb', 'frame'] as const;
     const { container } = render(
       <div>
         {kinds.map((kind) => (

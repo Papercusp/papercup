@@ -1,16 +1,16 @@
 # Branding
 URL: /internal/docs/branding
 
-Visual identity assets, token packs, icon exports, and flag-gated Hive usage.
+Visual identity assets, token packs, icon exports, and flag-gated The Swarm usage.
 
 import { Aside } from '@astrojs/starlight/components';
 
 Papercusp currently has two visual identity layers:
 
 * **Classic Papercusp** is the default product identity and remains the active skin when `papercusp-the-hive` is off.
-* **The Hive** is a flag-gated visual layer for the bee lexicon and swarm-intelligence direction. It changes presentation assets, theme tokens, favicon, and labeled nouns only; it does not rename code identifiers, database rows, tools, or the product itself.
+* **The Swarm** is a flag-gated visual layer for the bee lexicon and swarm-intelligence direction. It changes presentation assets, theme tokens, favicon, and labeled nouns only; it does not rename code identifiers, database rows, or tools.
 
-The product name remains **Papercusp**. Hive wordmarks should read **Papercusp** or **Papercusp · The Hive**, not a standalone product rename.
+The flag-on product-facing name is **The Swarm**. The implementation pack id remains `the-hive` for reversibility and because the user creates or joins a **Hive**; inside a Hive, many **Swarms** can run.
 
 ## Classic Identity
 
@@ -24,9 +24,9 @@ Classic assets stay in their existing locations and must not be overwritten by H
 | Public wordmark             | `apps/operator/public/wordmark.svg`                        |
 | Desktop icon set            | `papercusp-desktop/src-tauri/icons/`                       |
 
-## The Hive Identity
+## The Swarm Identity
 
-The Hive direction is engineered swarm intelligence: honey-amber signal color on charcoal, precise hex geometry, and a distinct Queen mark for the orchestrator.
+The Swarm direction is engineered swarm intelligence: honey-amber signal color on charcoal, precise hex geometry, a primary bee-swarm mark for the app, and a distinct Queen mark for the brain.
 
 | Asset                   | Path                                                                                                      |
 | ----------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -44,17 +44,34 @@ The Hive direction is engineered swarm intelligence: honey-amber signal color on
 
 ## Runtime Behavior
 
-The Hive skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
+The Swarm skin is selected by `FLAGS.THE_HIVE` / `papercusp-the-hive`.
 
-* Logo components switch from the classic cup marks to Hive marks via `useLexiconPackId()`.
-* `HiveThemeBridge` forces `data-theme="hive"`, sets the title to `Papercusp · The Hive`, and injects the Hive favicon while the flag is on.
+* Logo components switch from the classic cup marks to The Swarm primary mark via `useLexiconPackId()`.
+* `HiveThemeBridge` forces `data-theme="hive"`, sets the title to `The Swarm`, and injects the Hive favicon while the flag is on.
 * When the flag turns off, `HiveThemeBridge` restores the user’s saved active theme and the classic title.
-* The Hive theme is generated from `design-tokens/hive.semantic.tokens.json` into `apps/operator/app/_semantic.hive.css`.
-* The Hive desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Hive pack.
+* The Swarm theme is generated from `design-tokens/hive.semantic.tokens.json` into `apps/operator/app/_semantic.hive.css`.
+* The Swarm desktop icons are parallel exports only. `tauri.conf.json` still points to the classic icon set until packaging explicitly opts into the Swarm pack.
+
+## Lexicon
+
+The flag-on nouns are presentation-only:
+
+| Classic concept                    | Flag-on term |
+| ---------------------------------- | ------------ |
+| Project / deployable group         | Hive         |
+| Live set of working agents         | Swarm        |
+| Brain / high-judgment orchestrator | Queen        |
+| Always-on operator                 | Sentinel Bee |
+| AI agent                           | Bee          |
+| Human member                       | Keeper       |
+| Unit of work                       | Cell         |
+| Shared store                       | Comb         |
+| Machine / region                   | Frame        |
+| Collaboration substrate            | Hive Mind    |
 
 ## Color Tokens
 
-The Hive token pack is dark-first and WCAG-oriented:
+The Swarm token pack is dark-first and WCAG-oriented:
 
 | Token          |     Value | Use                  |
 | -------------- | --------: | -------------------- |
@@ -73,7 +90,7 @@ Semantic colors remain distinct from the primary honey accent: success green, da
 
 Use hexagons as layout structure, not wallpaper. The comb motif works for background texture, dividers, empty states, and swarm/loading states when it is low-contrast and aligned to the UI grid.
 
-Do not use cartoon bees, playful yellow-on-white compositions, or random honeycomb decoration. The Hive should feel like an engineered distributed system.
+Do not use cartoon bees, playful yellow-on-white compositions, or random honeycomb decoration. The Swarm should feel like an engineered distributed system.
 
 ## Preview And Exports
 

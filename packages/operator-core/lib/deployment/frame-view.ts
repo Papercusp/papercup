@@ -18,6 +18,8 @@ import type { RemoteExec } from './remote-exec';
 import { defaultMakeRemoteExec } from './frame-installer';
 import { DESKTOP_CAPTURE_DIR } from './desktop-capture';
 import type { DisplayLeaseInfo } from './display-allocator';
+import { loadDeployedFrame } from './deployed-frame';
+import { activeVncSessions } from './frame-vnc';
 
 /** One thumbnail event fanned to subscribers. */
 export interface FrameThumb {
@@ -39,6 +41,8 @@ export interface FrameViewStatus {
   host?: string;
   displays?: number[];
   error?: string;
+  /** Live VNC viewers on this frame (D-002 session indicator). */
+  viewers?: { display: number; mode: string; sinceMs: number }[];
 }
 
 export interface FrameViewSubscriber {
@@ -165,6 +169,13 @@ class FramePoller {
         frameId: frame.id,
         host: frame.host,
         displays: parsed.thumbs.map((t) => t.display),
+        // D-002: surface who is watching/driving so the view (and anything
+        // reading the stream) can show the session indicator.
+        viewers: activeVncSessions(this.slug).map((v) => ({
+          display: v.display,
+          mode: v.mode,
+          sinceMs: v.sinceMs,
+        })),
       });
       for (const t of parsed.thumbs) {
         const lease = roleByDisplay.get(t.display);
@@ -190,17 +201,7 @@ class FramePoller {
 
 const pollers = new Map<string, FramePoller>();
 
-/** Registry-backed default: the harness's persisted frame handle + deployment config. */
-export async function loadDeployedFrame(
-  slug: string,
-  workspaceId: string,
-): Promise<{ frame: Frame; config: DeploymentConfig } | undefined> {
-  const { loadHarnessRegistry } = await import('../harness-registry');
-  const reg = await loadHarnessRegistry(workspaceId);
-  const p = reg.projects.find((x) => x.slug === slug);
-  if (!p?.deploymentFrame) return undefined;
-  return { frame: p.deploymentFrame, config: p.deployment ?? { target: p.deploymentFrame.target } };
-}
+export { loadDeployedFrame } from './deployed-frame';
 
 /**
  * Subscribe to a harness frame's live thumbnails. Starts the (per-slug, shared)

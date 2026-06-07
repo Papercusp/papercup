@@ -52,6 +52,12 @@ export interface PeerChildConfig {
   count?: number;
   /** Writer: pre-seed this many corpus history ops into the own log BEFORE `ready` (cold-join / churn). */
   preSeed?: number;
+  /**
+   * Author pubkey used for CORPUS ops (not the peer's real device identity).
+   * Fixed + shared with the parent so corpus keys — and therefore the
+   * expected-winner count — are computable on both sides. Default 'a'×64.
+   */
+  corpusAuthor?: string;
   /** Reader: distinct winner keys to consider "caught up". */
   expectedWinners?: number;
   /** Reader: stop waiting after this long even if not caught up. */
@@ -65,6 +71,8 @@ export interface PeerChildResult {
   keyHex: string;
   /** Reader: replication latency summary (ms) over measurement ops (sentAt → applied). */
   latency?: ReturnType<typeof summarize>;
+  /** Reader: the raw latency samples (capped) so the parent can compute exact cross-reader distributions. */
+  latenciesRaw?: number[];
   /** Reader: catch-up wall time from boot to expectedWinners, if it happened. */
   catchUpMs?: number;
   caughtUp?: boolean;
@@ -158,7 +166,7 @@ async function main(): Promise<void> {
       for (const op of generateCorpus({
         seed: cfg.seed ?? 1,
         count: cfg.preSeed,
-        authorPubkey: identity.devicePubkey,
+        authorPubkey: cfg.corpusAuthor ?? 'a'.repeat(64),
       })) {
         batch.push(op);
         if (batch.length >= BATCH) {
@@ -170,6 +178,17 @@ async function main(): Promise<void> {
     }
 
     out({ evt: 'ready', keyHex: handle.ownLog.keyHex });
+
+    // Mesh-readiness: emit `admitted` once this peer has admitted at least one
+    // remote log (the parent gates the load phase on every reader reporting it).
+    let admittedReported = false;
+    const admissionTimer = setInterval(() => {
+      if (!admittedReported && handle!.admitted.size >= 2) {
+        admittedReported = true;
+        out({ evt: 'admitted', size: handle!.admitted.size });
+      }
+    }, 100);
+    admissionTimer.unref();
 
     // Reader: 1Hz progress so the parent can watch catch-up.
     const progressTimer =
@@ -232,6 +251,7 @@ async function main(): Promise<void> {
       ...(cfg.role === 'reader'
         ? {
             latency: summarize(latencies, 'ms'),
+            latenciesRaw: latencies.slice(0, 50_000),
             caughtUp: caughtUpAt !== null,
             ...(caughtUpAt !== null ? { catchUpMs: caughtUpAt - bootT0 } : {}),
           }

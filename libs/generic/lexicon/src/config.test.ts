@@ -36,6 +36,8 @@ describe('configureLexicon / ambient resolution', () => {
     expect(term('operator')).toBe('Operator');
     on = true;
     expect(term('operator')).toBe('Sentinel Bee');
+    expect(term('brain')).toBe('Queen');
+    expect(term('human', { plural: true })).toBe('Keepers');
   });
 
   it('falls back to classic if the selector throws', () => {

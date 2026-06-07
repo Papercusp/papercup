@@ -17,6 +17,7 @@ import type { RouteDefinition } from '../define-route';
 import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
+import deployVncSession from './deploy/vnc-session';
 import flagsWebhook from './flags/webhook';
 import flagsBootstrap from './flags/bootstrap';
 import flagsStream from './flags/stream';
@@ -401,6 +402,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopVersion as AnyRoute | AnyRoute[]),
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
+  ...flatten(deployVncSession as AnyRoute),
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),

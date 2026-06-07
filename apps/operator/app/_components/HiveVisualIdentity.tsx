@@ -177,7 +177,7 @@ export const HiveQueenMark = forwardRef<SVGSVGElement, MarkProps>(function HiveQ
   );
 });
 
-type NounIconKind = 'hive' | 'swarm' | 'queen' | 'bee' | 'cell' | 'comb' | 'frame';
+type NounIconKind = 'hive' | 'swarm' | 'queen' | 'sentinel' | 'bee' | 'keeper' | 'cell' | 'comb' | 'frame';
 
 type NounIconProps = SvgProps & {
   kind: NounIconKind;
@@ -234,6 +234,21 @@ export function HiveNounIcon({ kind, className, decorative = true, ...props }: N
         <g stroke={`url(#${id})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none">
           <path d="M32 18c7 5 10 11 10 19 0 10-4 18-10 18S22 47 22 37c0-8 3-14 10-19Z" />
           <path d="M24 31h16M23 40h18M25 22c-6-6-14-5-18 1 6 3 12 3 18-1ZM39 22c6-6 14-5 18 1-6 3-12 3-18-1Z" />
+        </g>
+      ) : null}
+      {kind === 'sentinel' ? (
+        <g stroke={`url(#${id})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none">
+          <path d="M32 10 54 22v22L32 56 10 44V22z" strokeOpacity="0.42" />
+          <path d="M32 18c7 5 10 11 10 19 0 10-4 18-10 18S22 47 22 37c0-8 3-14 10-19Z" />
+          <path d="M24 31h16M23 40h18M25 22c-6-6-14-5-18 1 6 3 12 3 18-1ZM39 22c6-6 14-5 18 1-6 3-12 3-18-1Z" />
+          <path d="M18 16 10 8M46 16l8-8M14 51l-6 5M50 51l6 5" strokeOpacity="0.78" />
+        </g>
+      ) : null}
+      {kind === 'keeper' ? (
+        <g stroke={`url(#${id})`} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+          <path d="M32 9 52 21v22L32 55 12 43V21z" strokeOpacity="0.42" />
+          <path d="M23 31c0-7 4-12 9-12s9 5 9 12c0 6-4 10-9 10s-9-4-9-10Z" />
+          <path d="M19 54c2-8 7-12 13-12s11 4 13 12M22 26c5 2 12 2 20 0" />
         </g>
       ) : null}
       {kind === 'cell' ? (

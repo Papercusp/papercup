@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
-import { MonitorPlay, MonitorOff, RefreshCw, X } from 'lucide-react';
+import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { Eye, Hand, MonitorPlay, MonitorOff, RefreshCw, X } from 'lucide-react';
 import { createResilientEventSource, type ResilientEventSource } from '@papercusp/sse';
+import FrameVncView from './FrameVncView';
 
 /**
  * AdvFramesTab — the Swarm live view
@@ -39,6 +40,8 @@ export interface FrameStatusEvent {
   host?: string;
   displays?: number[];
   error?: string;
+  /** Live VNC viewers on this frame (D-002 session indicator). */
+  viewers?: { display: number; mode: string; sinceMs: number }[];
 }
 
 /** A thumb is stale once it's older than ~3 capture intervals. */
@@ -138,12 +141,28 @@ export default function AdvFramesTab() {
     return () => clearInterval(t);
   }, []);
 
-  // ── selection in nuqs: ?frame=<slug>:<display> ─────────────────────────
+  // ── selection + live/drive in nuqs (?frame=<slug>:<display>&live=&drive=)
+  //    so agents can drive the viewer and deep links survive reload ────────
   const [selectedKey, setSelectedKey] = useQueryState('frame', parseAsString);
+  const [live, setLive] = useQueryState('live', parseAsBoolean.withDefault(false));
+  const [drive, setDrive] = useQueryState('drive', parseAsBoolean.withDefault(false));
+  const selection = useMemo(() => {
+    if (!selectedKey) return undefined;
+    const i = selectedKey.lastIndexOf(':');
+    if (i <= 0) return undefined;
+    const display = Number(selectedKey.slice(i + 1));
+    if (!Number.isInteger(display)) return undefined;
+    return { slug: selectedKey.slice(0, i), display };
+  }, [selectedKey]);
   const selected = useMemo(
     () => (selectedKey ? thumbs.get(selectedKey) : undefined),
     [selectedKey, thumbs],
   );
+  const closePanel = async () => {
+    await setDrive(null);
+    await setLive(null);
+    await setSelectedKey(null);
+  };
 
   const tiles = useMemo(() => {
     const list = [...thumbs.values()];
@@ -183,9 +202,11 @@ export default function AdvFramesTab() {
           <div className="pc-frames__statusrow">
             {rows.map((r) => {
               const s = statuses.get(r.slug);
-              const live = s?.state === 'polling' && (s.displays?.length ?? 0) > 0;
+              const polling = s?.state === 'polling' && (s.displays?.length ?? 0) > 0;
+              const watchers = s?.viewers ?? [];
+              const driving = watchers.some((v) => v.mode === 'takeover');
               return (
-                <span key={r.slug} className="pc-frames__chip" data-live={live} title={s?.error ?? s?.host ?? r.frame.host ?? ''}>
+                <span key={r.slug} className="pc-frames__chip" data-live={polling} title={s?.error ?? s?.host ?? r.frame.host ?? ''}>
                   <span className="pc-frames__chip-dot" data-state={s?.state ?? 'connecting'} aria-hidden />
                   {r.slug}
                   <span className="pc-frames__chip-meta">
@@ -195,10 +216,17 @@ export default function AdvFramesTab() {
                         ? 'unreachable'
                         : s?.state === 'no-frame'
                           ? 'no frame'
-                          : live
+                          : polling
                             ? `${s?.displays?.length} active`
                             : 'idle'}
                   </span>
+                  {watchers.length > 0 && (
+                    // D-002 session indicator: somebody is watching/driving this frame
+                    <span className="pc-frames__chip-watch" data-drive={driving} title={driving ? 'a human is DRIVING a display' : 'a human is watching (read-only)'}>
+                      {driving ? <Hand size={10} aria-hidden /> : <Eye size={10} aria-hidden />}
+                      {watchers.length}
+                    </span>
+                  )}
                 </span>
               );
             })}
@@ -242,33 +270,87 @@ export default function AdvFramesTab() {
         </>
       )}
 
-      {/* enlarged panel — Phase 3 (P-009) swaps the <img> for the noVNC viewer */}
-      {selected && (
+      {/* enlarged panel — stills by default; "Watch live" mounts noVNC (P-009) */}
+      {selection && (
         <div className="pc-frames__panel" role="dialog" aria-label="Frame live view">
           <div className="pc-frames__panel-head">
             <MonitorPlay size={13} aria-hidden />
             <span>
-              {selected.slug} <code>:{selected.display}</code>
-              {selected.role ? ` — ${selected.role}` : ''}
+              {selection.slug} <code>:{selection.display}</code>
+              {selected?.role ? ` — ${selected.role}` : ''}
             </span>
-            <span className="pc-frames__tile-age">{formatAge(now - selected.capturedAtMs)}</span>
+            {live && (
+              <span className="pc-frames__mode" data-drive={drive}>
+                {drive ? (
+                  <>
+                    <Hand size={11} aria-hidden /> DRIVING
+                  </>
+                ) : (
+                  <>
+                    <Eye size={11} aria-hidden /> read-only
+                  </>
+                )}
+              </span>
+            )}
+            {!live && selected && (
+              <span className="pc-frames__tile-age">{formatAge(now - selected.capturedAtMs)}</span>
+            )}
+            <span className="pc-frames__panel-actions">
+              <button
+                type="button"
+                className="pc-frames__panel-btn"
+                data-active={live}
+                onClick={() => {
+                  if (live) void setDrive(null);
+                  void setLive(live ? null : true);
+                }}
+              >
+                {live ? 'Back to stills' : 'Watch live'}
+              </button>
+              {live && (
+                <button
+                  type="button"
+                  className="pc-frames__panel-btn"
+                  data-danger={!drive}
+                  data-active={drive}
+                  title={
+                    drive
+                      ? 'Hand the mouse/keyboard back to the agent'
+                      : 'Take the mouse/keyboard — disruptive to a working agent; audited (D-002)'
+                  }
+                  onClick={() => void setDrive(drive ? null : true)}
+                >
+                  {drive ? 'Release control' : 'Take control'}
+                </button>
+              )}
+            </span>
             <button
               type="button"
               className="pc-frames__panel-close"
-              onClick={() => void setSelectedKey(null)}
+              onClick={() => void closePanel()}
               aria-label="Close live view"
             >
               <X size={14} aria-hidden />
             </button>
           </div>
-          <img
-            className="pc-frames__panel-img"
-            src={`data:image/jpeg;base64,${selected.jpegBase64}`}
-            alt={`${selected.slug} display :${selected.display} (enlarged)`}
-          />
+          {live ? (
+            <FrameVncView slug={selection.slug} display={selection.display} drive={drive} />
+          ) : selected ? (
+            <img
+              className="pc-frames__panel-img"
+              src={`data:image/jpeg;base64,${selected.jpegBase64}`}
+              alt={`${selection.slug} display :${selection.display} (enlarged)`}
+            />
+          ) : (
+            <div className="pc-frames__panel-img pc-frames__panel-idle">display is idle — no frame yet</div>
+          )}
           <div className="pc-frames__panel-foot">
-            <RefreshCw size={11} aria-hidden /> refreshing every few seconds — live VNC + takeover
-            land with Phase 3
+            <RefreshCw size={11} aria-hidden />
+            {live
+              ? drive
+                ? 'live VNC session — you are driving this display (audited)'
+                : 'live VNC session — read-only; "Take control" to drive (audited)'
+              : 'stills refresh every few seconds — "Watch live" opens the VNC session'}
           </div>
         </div>
       )}
@@ -359,7 +441,36 @@ export default function AdvFramesTab() {
         }
         .pc-frames__panel-head svg { color: #22d3ee; }
         .pc-frames__panel-head code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim, #b9d4e8); }
-        .pc-frames__panel-close { margin-left: auto; background: transparent; border: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
+        .pc-frames__chip-watch {
+          display: inline-flex; align-items: center; gap: 3px;
+          font-size: 9.5px; font-weight: 700;
+          color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4);
+          border-radius: 999px; padding: 0 5px;
+        }
+        .pc-frames__chip-watch[data-drive='true'] { color: #f87171; border-color: rgba(248, 113, 113, 0.5); }
+        .pc-frames__mode {
+          display: inline-flex; align-items: center; gap: 4px;
+          font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em;
+          color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4);
+          border-radius: 5px; padding: 1px 6px;
+        }
+        .pc-frames__mode[data-drive='true'] {
+          color: #fca5a5; border-color: rgba(248, 113, 113, 0.6);
+          background: rgba(239, 68, 68, 0.14);
+        }
+        .pc-frames__panel-actions { margin-left: auto; display: inline-flex; gap: 6px; }
+        .pc-frames__panel-btn {
+          font-size: 10.5px; font-weight: 700;
+          color: var(--fg-dim, #b9d4e8);
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.25));
+          border-radius: 6px; padding: 3px 9px; cursor: pointer;
+        }
+        .pc-frames__panel-btn:hover { color: var(--fg, #e7f7ff); border-color: #22d3ee; }
+        .pc-frames__panel-btn[data-active='true'] { color: #22d3ee; border-color: rgba(34, 211, 238, 0.5); }
+        .pc-frames__panel-btn[data-danger='true']:hover { color: #fca5a5; border-color: rgba(248, 113, 113, 0.6); }
+        .pc-frames__panel-idle { display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--fg-mute, #7f9bb4); }
+        .pc-frames__panel-close { background: transparent; border: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
         .pc-frames__panel-close:hover { color: var(--fg, #e7f7ff); }
         .pc-frames__panel-img { flex: 1; min-height: 0; object-fit: contain; background: #000; }
         .pc-frames__panel-foot {

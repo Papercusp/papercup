@@ -118,6 +118,22 @@ defineTestDomain({
   tier: 'quick',
   sections: [
     { id: 'core', label: 'Health', globs: ['packages/operator-core/lib/memory/**/*.test.ts'] },
+    {
+      id: 'live',
+      label: 'Live',
+      description:
+        'Live session-extraction round-trip on the anthropic-direct transport (mem0-extraction-via-claude-session P-007): ' +
+        'remember → Haiku-extracted facts → paraphrase-searchable, in an isolated PG schema. ' +
+        'Needs a Claude session + PG + embedder key; exits 2 (skip) without a usable session.',
+      runners: [
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/memory/session-extraction-live.ts'],
+          label: 'session-extraction round-trip (live Claude session)',
+        },
+      ],
+    },
   ],
 });
 

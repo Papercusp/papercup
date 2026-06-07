@@ -117,6 +117,43 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     await expect(page).not.toHaveURL(/frame=/);
   });
 
+  test('live view: Watch live mints a watch session; Take control re-mints as takeover (D-002, nuqs)', async ({ page }) => {
+    await stubApis(page);
+    const minted: Array<{ display: number; mode: string }> = [];
+    await page.route(`**/api/deploy/${SLUG}/vnc-session*`, async (route) => {
+      minted.push(route.request().postDataJSON() as { display: number; mode: string });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        // ws URL points at a dead port — the spec verifies session minting +
+        // mode wiring, not the RFB handshake (that's the live verify P-011).
+        body: JSON.stringify({ ok: true, ticket: 't', wsUrl: 'ws://127.0.0.1:1/api/deploy/vnc?ticket=t', mode: 'watch' }),
+      });
+    });
+    const mounted = await framesTabMounts(page);
+    test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
+
+    await page.locator('.pc-frames__tile').first().click();
+    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    await expect(panel).toBeVisible();
+
+    await panel.getByRole('button', { name: 'Watch live' }).click();
+    await expect(page).toHaveURL(/live=true/);
+    await expect(panel.locator('.pc-frames__mode')).toContainText(/read-only/i);
+    await expect.poll(() => minted.length).toBeGreaterThan(0);
+    expect(minted[0]).toMatchObject({ display: 99, mode: 'watch' });
+
+    await panel.getByRole('button', { name: 'Take control' }).click();
+    await expect(page).toHaveURL(/drive=true/);
+    await expect(panel.locator('.pc-frames__mode')).toContainText('DRIVING');
+    await expect.poll(() => minted.length).toBeGreaterThan(1);
+    expect(minted.at(-1)).toMatchObject({ display: 99, mode: 'takeover' });
+
+    await panel.getByRole('button', { name: 'Release control' }).click();
+    await expect(page).not.toHaveURL(/drive=true/);
+    await expect(panel.locator('.pc-frames__mode')).toContainText(/read-only/i);
+  });
+
   test('empty roster renders the deploy hint, no tiles', async ({ page }) => {
     await page.route('**/api/deploy/frames*', async (route) => {
       await route.fulfill({

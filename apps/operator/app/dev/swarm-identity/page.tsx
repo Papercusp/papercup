@@ -146,7 +146,7 @@ export default function SwarmIdentityPage() {
               <span key={index} style={{ '--bee-index': index } as CSSProperties} />
             ))}
           </div>
-          <p>The Hive is open.</p>
+          <p>The Hive is awake.</p>
         </section>
       ) : null}
 

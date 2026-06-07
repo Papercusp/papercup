@@ -20,8 +20,10 @@ export type BrandPackId = 'classic' | 'the-hive';
 export type TermKey =
   | 'pot' // the top-level project / deployable grouping
   | 'fleet' // the live set of agents at work
-  | 'operator' // the coordination orchestrator (NOT the removed chat-operator)
-  | 'contributor' // any member — agent or human
+  | 'operator' // the always-on coordination layer that can wake the brain
+  | 'brain' // the high-judgment thinking/orchestration entity
+  | 'contributor' // any AI member
+  | 'human' // any human member
   | 'chunk' // one worker-turn unit of a feature
   | 'cupboard' // the shared store of blueprints/snapshots/plugins
   | 'node' // a machine / region node a grouping spans

@@ -5,7 +5,11 @@
 
 import type { PerfArtifact } from './artifact';
 
+export type PerfProfile = 'smoke' | 'ci' | 'full' | 'deep';
+
 export interface ScenarioRunCtx {
+  /** Effort profile — scenarios size their internal matrices off this. */
+  profile: PerfProfile;
   /**
    * History sizes to sweep, when the scenario has a history axis. The runner
    * defaults this per profile: `smoke` = [1k], `ci` = [1k, 10k],
