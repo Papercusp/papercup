@@ -21,8 +21,8 @@ export function OperatorWordmarkLockup({
   leading,
 }: Props) {
   const packId = useLexiconPackId();
-  const resolvedTitle = title ?? (packId === 'the-hive' ? 'Papercusp' : 'Papercup');
-  const resolvedSubtitle = subtitle ?? (packId === 'the-hive' ? 'The Hive' : 'mission console');
+  const resolvedTitle = title ?? (packId === 'the-hive' ? 'The Swarm' : 'Papercup');
+  const resolvedSubtitle = subtitle ?? (packId === 'the-hive' ? 'Hive console' : 'mission console');
 
   return (
     <span className={className ? `operator-wordmark ${className}` : 'operator-wordmark'}>

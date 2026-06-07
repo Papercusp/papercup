@@ -2,7 +2,7 @@
  * The shipped brand packs.
  *
  * `classic` reproduces today's user-facing terminology (flag off = no visual
- * change). `the-hive` is the approved bee lexicon (plan
+ * change). `the-hive` is the approved Swarm/Hive lexicon (plan
  * the-hive-lexicon-2026-06-06 D-002). Term *keys* are brand-neutral; only the
  * labels here change. Internal identifiers (code, DB columns, MCP tool names,
  * repos) are NEVER driven by this map — it is presentation only (D-001).
@@ -31,7 +31,7 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
 const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   pot: { one: 'Hive', other: 'Hives' },
   fleet: { one: 'Swarm', other: 'Swarms' },
-  operator: { one: 'Queen', other: 'Queens' },
+  operator: { one: 'Sentinel Bee', other: 'Sentinel Bees' },
   contributor: { one: 'Bee', other: 'Bees' },
   chunk: { one: 'Cell', other: 'Cells' },
   cupboard: { one: 'Comb', other: 'Combs' },
@@ -52,7 +52,7 @@ export const CLASSIC_PACK: BrandPack = {
 
 export const THE_HIVE_PACK: BrandPack = {
   id: 'the-hive',
-  label: 'The Hive',
+  label: 'The Swarm',
   terms: THE_HIVE_TERMS,
 };
 

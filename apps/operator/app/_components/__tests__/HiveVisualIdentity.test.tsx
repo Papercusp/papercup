@@ -93,7 +93,7 @@ describe('Hive visual identity components', () => {
     );
 
     expect(container.querySelector('[data-hive-mark="full"]')).not.toBeNull();
-    expect(screen.getByText('Papercusp')).not.toBeNull();
-    expect(screen.getByText('The Hive')).not.toBeNull();
+    expect(screen.getByText('The Swarm')).not.toBeNull();
+    expect(screen.getByText('Hive console')).not.toBeNull();
   });
 });

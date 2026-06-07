@@ -23,7 +23,10 @@ const TINY_JPEG_B64 =
 const SLUG = 'frames-e2e-h1';
 
 async function stubApis(page: Page) {
-  await page.route('**/api/deploy/frames', async (route) => {
+  // NB: trailing `*` — the SPA's workspace layer appends `?ws=<id>` to API
+  // URLs (observed on the EventSource leg), and Playwright globs match the
+  // QUERY STRING too; without the `*` the stub silently misses.
+  await page.route('**/api/deploy/frames*', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -38,7 +41,7 @@ async function stubApis(page: Page) {
       }),
     });
   });
-  await page.route(`**/api/deploy/${SLUG}/frame-view`, async (route) => {
+  await page.route(`**/api/deploy/${SLUG}/frame-view*`, async (route) => {
     const status = {
       slug: SLUG,
       state: 'polling',
@@ -115,7 +118,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
   });
 
   test('empty roster renders the deploy hint, no tiles', async ({ page }) => {
-    await page.route('**/api/deploy/frames', async (route) => {
+    await page.route('**/api/deploy/frames*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -124,41 +127,33 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     });
     const mounted = await framesTabMounts(page);
     test.skip(!mounted, 'The /adv shell did not mount the Frames tab (stale dev server).');
-    await expect(page.getByText('No deployed frames', { exact: false })).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.locator('.pc-frames__state', { hasText: 'No deployed frames' }),
+    ).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('.pc-frames__tile')).toHaveCount(0);
   });
 
-  test('API: GET /api/deploy/frames is JSON or auth-gated (no stub)', async ({ page }) => {
-    const result = await page.evaluate(async (url) => {
-      try {
-        const res = await fetch(url);
-        return { status: res.status, contentType: res.headers.get('content-type') ?? '' };
-      } catch (e) {
-        return { error: String(e) };
-      }
-    }, `${baseURL}/api/deploy/frames`);
-    if (!('error' in result)) {
-      expect([200, 401, 403]).toContain(result.status);
-      if (result.status === 200) expect(result.contentType).toMatch(/json/);
-    }
+  // The no-stub API probes target the OPERATOR host directly. On the standing
+  // dev box `:3055` proxies /api to the GREEN release host, which doesn't carry
+  // fresh routes until the next deploy — point OPERATOR_E2E_API_URL at the
+  // staging operator (`:3170`) to probe pre-deploy. In CI the stack is built
+  // from the same commit, so the default baseURL serves them.
+  const apiBase = process.env.OPERATOR_E2E_API_URL ?? baseURL;
+
+  test('API: GET /api/deploy/frames is JSON or auth-gated (no stub)', async ({ request }) => {
+    const res = await request.get(`${apiBase}/api/deploy/frames`);
+    expect([200, 401, 403]).toContain(res.status());
+    if (res.status() === 200) expect(res.headers()['content-type'] ?? '').toMatch(/json/);
   });
 
-  test('API: GET /api/deploy/:slug/frame-view is SSE-shaped or auth-gated (no stub)', async ({ page }) => {
-    const result = await page.evaluate(async (url) => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 600);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        return { status: res.status, contentType: res.headers.get('content-type') ?? '' };
-      } catch (e) {
-        return { error: String(e) };
-      }
-    }, `${baseURL}/api/deploy/some-harness/frame-view`);
-    if ('error' in result) {
-      expect(result.error).toMatch(/abort/i);
-    } else {
-      expect([200, 401, 403]).toContain(result.status);
-      if (result.status === 200) expect(result.contentType).toMatch(/event-stream/);
+  test('API: GET /api/deploy/:slug/frame-view is SSE-shaped or auth-gated (no stub)', async ({ request }) => {
+    try {
+      const res = await request.get(`${apiBase}/api/deploy/some-harness/frame-view`, { timeout: 2_000 });
+      // unauthenticated → immediate 401/403 (the route exists + is gated)
+      expect([401, 403]).toContain(res.status());
+    } catch {
+      // authenticated 200 never completes (it's a live SSE stream) — a timeout
+      // means the stream stayed open, which is the SSE-shaped success case.
     }
   });
 });

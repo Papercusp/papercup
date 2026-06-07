@@ -5,7 +5,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { applyTheme, readActiveTheme, subscribeTheme } from '@/lib/theme';
 
-const HIVE_TITLE = 'Papercusp · The Hive';
+const HIVE_TITLE = 'The Swarm';
 const CLASSIC_TITLE = 'Papercusp Operator';
 const HIVE_FAVICON_ID = 'pc-hive-favicon';
 const HIVE_FAVICON_HREF = '/brand/the-hive/favicon.svg';

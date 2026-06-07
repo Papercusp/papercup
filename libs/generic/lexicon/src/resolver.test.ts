@@ -26,7 +26,7 @@ describe('resolveTerm', () => {
 
   it('lowercases multi-word labels word-by-word', () => {
     expect(resolveTerm('the-hive', 'substrate', { lower: true })).toBe('hive mind');
-    expect(resolveTerm('the-hive', 'operator', { lower: true })).toBe('queen');
+    expect(resolveTerm('the-hive', 'operator', { lower: true })).toBe('sentinel bee');
   });
 
   it('accepts an explicit BrandPack object', () => {
@@ -38,7 +38,7 @@ describe('resolveTerm', () => {
     const t = lexiconFor('the-hive');
     expect(t('pot')).toBe('Hive');
     expect(t('fleet')).toBe('Swarm');
-    expect(t('operator')).toBe('Queen');
+    expect(t('operator')).toBe('Sentinel Bee');
     expect(t('contributor')).toBe('Bee');
     expect(t('chunk')).toBe('Cell');
     expect(t('cupboard')).toBe('Comb');

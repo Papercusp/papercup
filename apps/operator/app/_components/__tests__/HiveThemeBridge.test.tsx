@@ -48,7 +48,7 @@ describe('HiveThemeBridge', () => {
     render(<HiveThemeBridge />);
 
     expect(document.documentElement.dataset.theme).toBe('hive');
-    expect(document.title).toBe('Papercusp · The Hive');
+    expect(document.title).toBe('The Swarm');
     const favicon = document.getElementById('pc-hive-favicon') as HTMLLinkElement | null;
     expect(favicon?.href.endsWith('/brand/the-hive/favicon.svg')).toBe(true);
   });

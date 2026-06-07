@@ -71,6 +71,13 @@ void _opEnvelopeCompat;
 export interface OwnLog {
   /** Append a single op to the end of the log. */
   append(op: PeerLogOp): Promise<void>;
+  /**
+   * Append many ops in one Hypercore batch (one signing + flush instead of
+   * one per op). Semantically identical to awaiting `append` per op; exists
+   * because bulk corpus loads (the p2p-perf suite seeds 10k-1M-op histories)
+   * are ~2 orders of magnitude faster batched.
+   */
+  appendBatch(ops: PeerLogOp[]): Promise<void>;
   /** Read the op at index `i` (decoded), or `null` if out of range. */
   get(i: number): Promise<PeerLogOp | null>;
   /** Number of ops appended so far. */
@@ -131,6 +138,11 @@ export async function openOwnLog(store: Corestore): Promise<OwnLog> {
   return {
     async append(op: PeerLogOp): Promise<void> {
       await core.append(op);
+    },
+    async appendBatch(ops: PeerLogOp[]): Promise<void> {
+      if (ops.length === 0) return;
+      // Hypercore's append accepts an array of blocks — one batch, one flush.
+      await core.append(ops);
     },
     async get(i: number): Promise<PeerLogOp | null> {
       // Out-of-range → null. The own core is writable with no peers, so an

@@ -1,22 +1,24 @@
-# The Hive Asset Pack
+# The Swarm Asset Pack
 
-Flag-gated visual identity assets for `papercusp-the-hive`. These files are parallel sources; do not overwrite classic Papercusp assets with them.
+Flag-gated visual identity assets for `papercusp-the-hive`. The internal pack id remains `the-hive` so the skin is reversible; the product-facing name is **The Swarm**.
 
 ## Core Marks
 
-- `primary-mark.svg`: full-color Hive mark for hero and brand surfaces.
+- `primary-mark.svg`: full-color The Swarm mark for app, hero, brand, and OS icon surfaces.
 - `primary-mark.mono.svg`: monochrome `currentColor` variant.
-- `queen-mark.svg`: full-color Queen/orchestrator focal mark.
+- `queen-mark.svg`: full-color Queen brain focal mark.
 - `queen-mark.mono.svg`: monochrome `currentColor` variant.
-- `wordmark.svg`: Papercusp wordmark with Queen mark.
-- `wordmark-lockup.svg`: Papercusp plus The Hive sub-brand lockup.
+- `wordmark.svg`: The Swarm wordmark with primary swarm mark.
+- `wordmark-lockup.svg`: The Swarm plus Hive Console lockup.
 - `favicon.svg` and `favicon.png`: flag-gated browser/app favicon.
 - `comb-motif.svg`: reusable geometric background and empty-state texture.
 - `icons/*.svg`: lexicon iconography for Hive, Swarm, Queen, Bee, Cell, Comb, and Frame.
 
 ## Usage
 
-Use the Queen mark for the orchestrator/operator avatar and app icon contexts. Use the primary mark for product-level brand surfaces. Use comb geometry as a structural grid, divider, empty-state, or loading motif; keep it low-contrast and aligned to layout rhythm.
+Use the primary mark for app-level The Swarm surfaces and small app-icon contexts. Use the Queen mark only for the brain/orchestration avatar and high-judgment moments. Use the Sentinel Bee name for the always-on operator role. Humans are Keepers.
+
+Use comb geometry as a structural grid, divider, empty-state, or loading motif; keep it low-contrast and aligned to layout rhythm.
 
 Do not use cartoon bees, yellow-on-white treatments, or decorative random honeycomb. The system should read as engineered swarm intelligence on charcoal.
 

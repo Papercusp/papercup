@@ -14,7 +14,7 @@ const NOUNS = [
   ['hive', 'Hive', 'Deployable project group'],
   ['swarm', 'Swarm', 'Live working agents'],
   ['queen', 'Queen', 'Orchestrator / brain'],
-  ['bee', 'Bee', 'Agent or human member'],
+  ['bee', 'Bee', 'AI agent; humans are Keepers'],
   ['cell', 'Cell', 'One unit of work'],
   ['comb', 'Comb', 'Shared library'],
   ['frame', 'Frame', 'Machine or region'],
@@ -45,11 +45,12 @@ export default function OperatorLogoLabPage() {
     <div className={styles.page} data-theme="hive">
       <section className={styles.hero}>
         <div className={styles.heroCopy}>
-          <div className={styles.eyebrow}>Papercusp visual identity</div>
-          <h1>The Hive system</h1>
+          <div className={styles.eyebrow}>The Swarm visual identity</div>
+          <h1>The Swarm system</h1>
           <p>
-            A flag-gated visual layer for Papercusp: engineered hex geometry,
-            honey-amber signal color, and a Queen focal mark for the orchestrator.
+            A flag-gated visual layer for ominous distributed intelligence:
+            honey-amber signal color, charcoal fields, engineered hex geometry,
+            and a separate Queen mark for the brain.
           </p>
           <div className={styles.segmented} role="tablist" aria-label="Hive logo lab sections">
             {(['identity', 'icons', 'motif'] as const).map((item) => (
@@ -66,8 +67,8 @@ export default function OperatorLogoLabPage() {
             ))}
           </div>
         </div>
-        <div className={styles.heroMark} aria-label="Queen mark preview">
-          <HiveQueenMark decorative={false} />
+        <div className={styles.heroMark} aria-label="The Swarm primary mark preview">
+          <HivePrimaryMark decorative={false} />
         </div>
       </section>
 
@@ -87,7 +88,7 @@ function IdentityPanel() {
           <code>primary-mark.svg</code>
         </div>
         <div className={styles.bigMark}><HivePrimaryMark /></div>
-        <p>Use for product-level Hive surfaces, empty states, release notes, and hero compositions.</p>
+        <p>Use for app-level The Swarm surfaces, OS icons, empty states, release notes, and hero compositions.</p>
       </section>
 
       <section className={styles.panel}>
@@ -96,16 +97,16 @@ function IdentityPanel() {
           <code>queen-mark.svg</code>
         </div>
         <div className={styles.bigMark}><HiveQueenMark /></div>
-        <p>Use for the operator/orchestrator avatar and app-icon contexts. This is the signature mark.</p>
+        <p>Use for the Queen brain avatar and high-judgment orchestration moments. Do not use it for the always-on Sentinel Bee operator.</p>
       </section>
 
       <section className={`${styles.panel} ${styles.wide}`}>
         <div className={styles.panelHeader}>
           <span>Wordmark lockup</span>
-          <code>Papercusp · The Hive</code>
+          <code>The Swarm · Hive console</code>
         </div>
         <div className={styles.wordmarkCard}>
-          <img src="/brand/the-hive/wordmark-lockup.svg" alt="Papercusp The Hive lockup" />
+          <img src="/brand/the-hive/wordmark-lockup.svg" alt="The Swarm lockup" />
         </div>
       </section>
 

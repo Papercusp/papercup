@@ -11,7 +11,7 @@
  */
 import type { DeploymentConfig, DeploymentContext, Frame } from '@papercusp/deployment-driver';
 import { buildFrameBootstrap } from './frame-bootstrap';
-import { createSshRemoteExec, type RemoteExec } from './remote-exec';
+import { createSshRemoteExec, type RemoteExec, type SshTarget } from './remote-exec';
 
 /** Staging paths live in /tmp — the login user may be non-root (Latitude VMs land
  *  on `ubuntu`; scp can't write /root). scp preserves the local file mode, so the
@@ -59,20 +59,26 @@ export async function waitForSsh(
   }
 }
 
-export function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
+/** Resolve the SSH target for a frame (shared by `install` + the frame-VNC
+ *  stream leg — identical user/key/sudo resolution either way). */
+export function sshTargetForFrame(frame: Frame, config: DeploymentConfig): SshTarget {
   const provider = (config.provider ?? {}) as Record<string, unknown>;
-  if (!frame.host) throw new Error('installFrame: frame has no host/IP to SSH to');
+  if (!frame.host) throw new Error('frame has no host/IP to SSH to');
   // The frame can carry its own ssh user (Latitude VMs land on `ubuntu` — root is
   // disabled); an explicit provider.sshUser still overrides. Non-root logins run
-  // the bootstrap under sudo (passwordless on the default images).
+  // remote commands under sudo (passwordless on the default images).
   const user =
     (provider.sshUser as string | undefined) ?? (frame.meta?.sshUser as string | undefined) ?? 'root';
-  return createSshRemoteExec({
+  return {
     host: frame.host,
     user,
     identityFile: provider.sshIdentityFile as string | undefined,
     sudo: user !== 'root',
-  });
+  };
+}
+
+export function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): RemoteExec {
+  return createSshRemoteExec(sshTargetForFrame(frame, config));
 }
 
 /** Bootstrap the papercusp runtime on a provisioned frame (own loop + own embedded-pg). */

@@ -41,6 +41,7 @@ import {
   currentMemoryBackendChoice,
   initMemoryBackendSelection,
 } from './backend-selection';
+import { getSessionExtractionLlm } from './session-extraction-llm';
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
@@ -189,6 +190,12 @@ configureMemory({
     const c = await readCredentials();
     return { openai_api_key: c.openai_api_key, anthropic_api_key: c.anthropic_api_key };
   },
+  // Fact-extraction cascade rung #1 (mem0-extraction-via-claude-session
+  // D-001/D-002): Haiku on the Claude-session anthropic-direct transport —
+  // no API key to rot, $0 marginal on the subscription. Resolves null
+  // (key rungs unchanged) when there's no session, the probe fails, the
+  // rung auth-died this process, or PAPERCUSP_MEM0_SESSION_EXTRACTION=0.
+  getExtractionLlm: () => getSessionExtractionLlm(),
   resolveEmbedder,
   buildEmbedderForMode,
   // Optional: adaptive extraction instructions from the operator's

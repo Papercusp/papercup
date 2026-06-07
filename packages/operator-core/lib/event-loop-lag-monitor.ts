@@ -1,6 +1,9 @@
 /**
- * event-loop-lag-monitor.ts — cheap, always-on event-loop-lag gauge for the
- * Hono host (EI-79 observability).
+ * event-loop-lag-monitor.ts — cheap, always-on event-loop-lag gauge
+ * (EI-79 observability). Booted by the Hono host; also the central SLO
+ * instrument of the p2p-perf suite (`lib/sync/hyperbee/perf/`), which is why
+ * it lives in operator-core rather than apps/operator
+ * (p2p-performance-suite-2026-06-07 P-007 / D-003).
  *
  * EI-79 was a forensic slog precisely because nothing on the host reported the
  * one number that explained it: the event loop was carrying sustained CPU work

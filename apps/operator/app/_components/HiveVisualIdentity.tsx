@@ -44,6 +44,8 @@ export const HivePrimaryMark = forwardRef<SVGSVGElement, MarkProps>(function Hiv
   const fill = monochrome ? 'none' : `url(#${ids.bg})`;
   const honey = monochrome ? 'currentColor' : `url(#${ids.honey})`;
   const muted = monochrome ? 'currentColor' : HIVE_BRAND_COLORS.cream;
+  const beeFill = monochrome ? 'none' : honey;
+  const beeWing = monochrome ? 'none' : `url(#${ids.wing})`;
 
   return (
     <svg
@@ -77,47 +79,40 @@ export const HivePrimaryMark = forwardRef<SVGSVGElement, MarkProps>(function Hiv
           </feMerge>
         </filter>
       </defs>
-      <path
-        d="M64 8 113 36v56l-49 28-49-28V36z"
-        fill={fill}
-        stroke={stroke}
-        strokeWidth="3.2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M64 20 101 41v43l-37 22-37-22V41z"
-        fill="none"
-        stroke={stroke}
-        strokeOpacity={monochrome ? 0.55 : 0.34}
-        strokeWidth="1.6"
-      />
-      <path
-        d="M64 34 86 47v25L64 85 42 72V47z"
-        fill={monochrome ? 'none' : 'rgba(246, 183, 47, 0.10)'}
-        stroke={stroke}
-        strokeWidth="2"
-      />
-      <path d="M42 47 64 60l22-13M64 60v25" fill="none" stroke={stroke} strokeOpacity="0.62" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="M64 8 113 36v56l-49 28-49-28V36z" fill={fill} stroke={stroke} strokeWidth="3.2" strokeLinejoin="round" />
+      <path d="M64 20 101 41v43l-37 22-37-22V41z" fill="none" stroke={stroke} strokeOpacity={monochrome ? 0.55 : 0.34} strokeWidth="1.6" />
+      <path d="M25 78c21-26 52-37 80-30M25 52c27 13 50 33 68 57M44 103c17-36 31-54 60-67" fill="none" stroke={stroke} strokeOpacity={monochrome ? 0.35 : 0.24} strokeWidth="1.6" strokeLinecap="round" />
       <g filter={monochrome ? undefined : `url(#${ids.glow})`}>
-        <path
-          d="M53 53c-10-10-23-9-29 1 9 4 20 3 29-1Z"
-          fill={monochrome ? 'none' : `url(#${ids.wing})`}
-          stroke={muted}
-          strokeOpacity={monochrome ? 0.70 : 0.46}
-          strokeWidth="1.5"
-        />
-        <path
-          d="M75 53c10-10 23-9 29 1-9 4-20 3-29-1Z"
-          fill={monochrome ? 'none' : `url(#${ids.wing})`}
-          stroke={muted}
-          strokeOpacity={monochrome ? 0.70 : 0.46}
-          strokeWidth="1.5"
-        />
-        <path d="M64 39c7 5 11 13 11 24 0 15-5 26-11 26S53 78 53 63c0-11 4-19 11-24Z" fill={honey} stroke={stroke} strokeWidth="1.7" />
-        <path d="M55 58h18M54 70h20" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.62} strokeWidth="2.4" strokeLinecap="round" />
-        <path d="M58 39c0-5 3-9 6-9s6 4 6 9" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
-        <circle cx="59" cy="50" r="1.8" fill={HIVE_BRAND_COLORS.charcoal} opacity={monochrome ? 0 : 0.78} />
-        <circle cx="69" cy="50" r="1.8" fill={HIVE_BRAND_COLORS.charcoal} opacity={monochrome ? 0 : 0.78} />
+        <g transform="translate(57 48) rotate(-8) scale(1.25)">
+          <path d="M-7-3c-7-7-15-6-20 1 6 3 14 2 20-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.48} strokeWidth="1.3" />
+          <path d="M7-3c7-7 15-6 20 1-6 3-14 2-20-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.48} strokeWidth="1.3" />
+          <path d="M0-12c6 5 9 11 9 19 0 10-4 18-9 18S-9 17-9 7c0-8 3-14 9-19Z" fill={beeFill} stroke={stroke} strokeWidth="1.5" />
+          <path d="M-7 3H7M-7 12H7" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.64} strokeWidth="2" strokeLinecap="round" />
+        </g>
+        <g transform="translate(87 31) rotate(24) scale(.74)">
+          <path d="M-7-2c-6-5-12-4-16 1 5 2 11 2 16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M7-2c6-5 12-4 16 1-5 2-11 2-16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M0-10c5 4 8 9 8 16 0 9-3 16-8 16S-8 15-8 6c0-7 3-12 8-16Z" fill={beeFill} stroke={stroke} strokeWidth="1.8" />
+          <path d="M-6 2H6M-6 10H6" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.62} strokeWidth="2.1" strokeLinecap="round" />
+        </g>
+        <g transform="translate(34 72) rotate(-38) scale(.68)">
+          <path d="M-7-2c-6-5-12-4-16 1 5 2 11 2 16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M7-2c6-5 12-4 16 1-5 2-11 2-16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M0-10c5 4 8 9 8 16 0 9-3 16-8 16S-8 15-8 6c0-7 3-12 8-16Z" fill={beeFill} stroke={stroke} strokeWidth="1.8" />
+          <path d="M-6 2H6M-6 10H6" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.62} strokeWidth="2.1" strokeLinecap="round" />
+        </g>
+        <g transform="translate(82 88) rotate(31) scale(.82)">
+          <path d="M-7-2c-6-5-12-4-16 1 5 2 11 2 16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M7-2c6-5 12-4 16 1-5 2-11 2-16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.42} strokeWidth="1.4" />
+          <path d="M0-10c5 4 8 9 8 16 0 9-3 16-8 16S-8 15-8 6c0-7 3-12 8-16Z" fill={beeFill} stroke={stroke} strokeWidth="1.8" />
+          <path d="M-6 2H6M-6 10H6" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.62} strokeWidth="2.1" strokeLinecap="round" />
+        </g>
+        <g transform="translate(39 35) rotate(49) scale(.58)">
+          <path d="M-7-2c-6-5-12-4-16 1 5 2 11 2 16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.40} strokeWidth="1.4" />
+          <path d="M7-2c6-5 12-4 16 1-5 2-11 2-16-1Z" fill={beeWing} stroke={muted} strokeOpacity={monochrome ? 0.70 : 0.40} strokeWidth="1.4" />
+          <path d="M0-10c5 4 8 9 8 16 0 9-3 16-8 16S-8 15-8 6c0-7 3-12 8-16Z" fill={beeFill} stroke={stroke} strokeWidth="1.8" />
+          <path d="M-6 2H6M-6 10H6" stroke={HIVE_BRAND_COLORS.charcoal} strokeOpacity={monochrome ? 0 : 0.62} strokeWidth="2.1" strokeLinecap="round" />
+        </g>
       </g>
     </svg>
   );
@@ -215,13 +210,24 @@ export function HiveNounIcon({ kind, className, decorative = true, ...props }: N
         <path d="M32 6 55 19v26L32 58 9 45V19z" fill="none" stroke={`url(#${id})`} strokeWidth="3" strokeLinejoin="round" />
       ) : null}
       {kind === 'swarm' ? (
-        <g fill={`url(#${id})`}>
-          <circle cx="18" cy="22" r="4" />
-          <circle cx="34" cy="14" r="4" />
-          <circle cx="46" cy="28" r="4" />
-          <circle cx="27" cy="38" r="4" />
-          <circle cx="44" cy="48" r="4" />
-          <path d="M21 24 31 16M37 17l7 8M42 31 31 36M31 40l10 6" stroke={`url(#${id})`} strokeWidth="2" strokeLinecap="round" fill="none" />
+        <g fill="none" stroke={`url(#${id})`} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 34c9-12 21-17 36-15M19 47c10-10 21-13 33-9" strokeOpacity="0.55" />
+          <g transform="translate(19 23) rotate(-28)">
+            <path d="M0-5c4 3 6 7 6 12 0 6-2 10-6 10S-6 13-6 7c0-5 2-9 6-12Z" />
+            <path d="M-5 1c-5-4-9-3-12 1 4 2 8 1 12-1ZM5 1c5-4 9-3 12 1-4 2-8 1-12-1Z" />
+          </g>
+          <g transform="translate(38 17) rotate(28) scale(.74)">
+            <path d="M0-5c4 3 6 7 6 12 0 6-2 10-6 10S-6 13-6 7c0-5 2-9 6-12Z" />
+            <path d="M-5 1c-5-4-9-3-12 1 4 2 8 1 12-1ZM5 1c5-4 9-3 12 1-4 2-8 1-12-1Z" />
+          </g>
+          <g transform="translate(33 43) rotate(-8) scale(.82)">
+            <path d="M0-5c4 3 6 7 6 12 0 6-2 10-6 10S-6 13-6 7c0-5 2-9 6-12Z" />
+            <path d="M-5 1c-5-4-9-3-12 1 4 2 8 1 12-1ZM5 1c5-4 9-3 12 1-4 2-8 1-12-1Z" />
+          </g>
+          <g transform="translate(49 32) rotate(34) scale(.62)">
+            <path d="M0-5c4 3 6 7 6 12 0 6-2 10-6 10S-6 13-6 7c0-5 2-9 6-12Z" />
+            <path d="M-5 1c-5-4-9-3-12 1 4 2 8 1 12-1ZM5 1c5-4 9-3 12 1-4 2-8 1-12-1Z" />
+          </g>
         </g>
       ) : null}
       {kind === 'bee' ? (

@@ -1,6 +1,6 @@
 {
   "_doc-hive": {
-    "$description": "The Hive theme — a semantic-layer override set. Emitted under [data-theme=\"hive\"] and selected by the papercusp-the-hive flag. Product stays Papercusp; this is a reversible honey-amber + charcoal skin."
+    "$description": "The Swarm theme — a semantic-layer override set. Emitted under [data-theme=\"hive\"] and selected by the papercusp-the-hive flag. The implementation id stays the-hive for reversibility; the product-facing skin is The Swarm."
   },
   "hive": {
     "bg-deepest":      { "$value": "#050504", "$type": "color", "$description": "Deepest charcoal, nearly black with a warm cast" },

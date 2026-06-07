@@ -18,7 +18,7 @@ import { serve } from '@hono/node-server';
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
-import { startEventLoopLagMonitor } from '../lib/event-loop-lag-monitor';
+import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 
 // Resilience guard: when an MCP/SSE client disconnects mid-stream, the
 // `mcp-handler` dependency's response adapter enqueues onto an already-closed

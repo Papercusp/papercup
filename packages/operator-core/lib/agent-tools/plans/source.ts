@@ -17,6 +17,7 @@
  */
 
 import * as fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
@@ -192,6 +193,13 @@ function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: 
   if (opts.repoRoot) {
     candidates.push(opts.repoRoot);
   } else {
+    // Prefer the registry-detected papercup root (same preference as
+    // getRepoRoot): the papercup plans dir is a property of THE papercup
+    // checkout, not of whichever host cwd happens to be running this code.
+    // (A host whose cwd is another checkout — e.g. the :3070 release artifact —
+    // must still resolve the canonical tree's mirror dir.)
+    const detected = detectPapercupRoot();
+    if (detected) candidates.push(detected);
     const cwd = process.cwd();
     candidates.push(cwd);
     if (cwd.endsWith(path.sep + 'apps' + path.sep + 'operator')) {
@@ -202,13 +210,12 @@ function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: 
   }
   for (const root of candidates) {
     const direct = path.join(root, PLANS_DIR_REL);
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      if (require('node:fs').existsSync(direct)) {
-        return { plans: direct, archive: path.join(root, ARCHIVE_DIR_REL) };
-      }
-    } catch {
-      /* fall through */
+    // NB: must be a static import — a runtime `require('node:fs')` here threw
+    // under the tsx/ESM host, silently failing EVERY candidate and falling
+    // back to cwd, which mis-rooted the plan-markdown mirror into a nested
+    // apps/operator/apps/operator/docs/plans/ (found live 2026-06-06).
+    if (existsSync(direct)) {
+      return { plans: direct, archive: path.join(root, ARCHIVE_DIR_REL) };
     }
   }
   const root = candidates[0] ?? process.cwd();

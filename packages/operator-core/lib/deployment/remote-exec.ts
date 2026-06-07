@@ -82,6 +82,21 @@ function sshBaseArgs(t: SshTarget): string[] {
 
 const hostSpec = (t: SshTarget): string => `${t.user ?? 'root'}@${t.host}`;
 
+/**
+ * Build argv for a STREAMING remote command — stdio stays a live byte pipe
+ * for the connection's lifetime (the frame-VNC RFB leg: `x11vnc -inetd`
+ * speaks RFB on stdin/stdout, so the SSH child IS the VNC transport and the
+ * frame never opens a TCP listener — hive-frame-desktops P-008). Same option
+ * set as `runScript`; the command replaces `bash -s`.
+ */
+export function buildSshStreamArgs(
+  target: SshTarget,
+  remoteCommand: string,
+): { cmd: string; args: string[] } {
+  const command = target.sudo ? `sudo -H ${remoteCommand}` : remoteCommand;
+  return { cmd: 'ssh', args: [...sshBaseArgs(target), hostSpec(target), command] };
+}
+
 export function createSshRemoteExec(target: SshTarget, deps: { spawn?: SpawnLike } = {}): RemoteExec {
   const spawn = (deps.spawn ?? (nodeSpawn as unknown as SpawnLike));
 

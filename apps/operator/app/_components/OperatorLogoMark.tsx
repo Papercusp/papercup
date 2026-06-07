@@ -6,7 +6,7 @@ import {
   type ComponentPropsWithoutRef,
 } from 'react';
 import { useLexiconPackId } from '@/lib/useLexicon';
-import { HiveQueenMark } from './HiveVisualIdentity';
+import { HivePrimaryMark } from './HiveVisualIdentity';
 
 type Props = ComponentPropsWithoutRef<'svg'> & {
   decorative?: boolean;
@@ -21,7 +21,7 @@ export const OperatorLogoMark = forwardRef<SVGSVGElement, Props>(function Operat
   const base = useId().replace(/:/g, '');
   if (packId === 'the-hive') {
     return (
-      <HiveQueenMark
+      <HivePrimaryMark
         ref={ref}
         className={className}
         decorative={decorative}
