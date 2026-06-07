@@ -237,7 +237,7 @@ function stubDeps(overrides: Partial<SpawnChildDeps> = {}) {
       calls.push('writeSeedPlan');
       return 'created' as const;
     }),
-    importFeatures: vi.fn(async (_slug, payload) => {
+    importFeatures: vi.fn(async (_slug: string, payload: Parameters<SpawnChildDeps['importFeatures']>[1]) => {
       calls.push('importFeatures');
       return { ids: payload.map((p) => p.id), inserted: payload.length, updated: 0 };
     }),

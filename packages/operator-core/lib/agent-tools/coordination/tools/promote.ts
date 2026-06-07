@@ -545,6 +545,8 @@ export default defineTool({
     // guarantees slug uniqueness across waves). Only policy-mode waves can carry
     // spawn_child — explicit caller features never do.
     const spawnChildConfigs = new Map<string, { child: SpawnChild; waveId: string }>();
+    /** Cross-wave orderings dropped because one side is a spawn_child wave. */
+    const spawnEdgeWarnings: string[] = [];
     if (promoteFeatures.length === 0) {
       const { policy, warnings } = parsePromotePolicy(planFile.parsed.raw);
       if (!policy) {
@@ -586,7 +588,23 @@ export default defineTool({
           if (w.spawn_child) spawnChildConfigs.set(w.spawn_child.slug, { child: w.spawn_child, waveId: w.id });
           if (feats.length > 0) builtByWave.set(w.id, feats);
         }
-        applyInterWaveEdges(policy.waves, builtByWave);
+        // P-003 (spawn_child): cross-wave feature edges can only bind features
+        // that land in the SAME harness — a spawn_child wave's features live in
+        // the child, where parent-batch titles don't resolve (and vice versa).
+        // Exclude any edge into or out of a spawn wave; surface the dropped
+        // ordering instead of letting the import's ref resolver fail the batch.
+        const spawnWaveIds = new Set(policy.waves.filter((w) => w.spawn_child).map((w) => w.id));
+        const edgeEligibleWaves = policy.waves.filter((w) => {
+          if (!w.blocked_by) return true;
+          if (spawnWaveIds.has(w.id) || spawnWaveIds.has(w.blocked_by)) {
+            spawnEdgeWarnings.push(
+              `wave "${w.id}" blocked_by "${w.blocked_by}": cross-harness wave ordering is not enforced for spawn_child waves (v1) — the dependency is dropped`,
+            );
+            return false;
+          }
+          return true;
+        });
+        applyInterWaveEdges(edgeEligibleWaves, builtByWave);
         promoteFeatures = [...builtByWave.values()].flat();
         if (promoteFeatures.length === 0) {
           return fail('empty_policy', `no promote-time features across all waves${deferred.length ? ` (deferred completion-time waves: ${deferred.join(', ')})` : ''}`);
@@ -781,6 +799,7 @@ export default defineTool({
                 assertion_count: previewAssertions.length,
                 assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
                 ...(spawnChildrenPreview.length > 0 && { spawn_children: spawnChildrenPreview }),
+                ...(spawnEdgeWarnings.length > 0 && { spawn_edge_warnings: spawnEdgeWarnings }),
               },
               apply_hint: {
                 ...(harnessSlug && { features_import_endpoint: `/api/harness/${harnessSlug}/features/import` }),
@@ -1144,8 +1163,8 @@ export default defineTool({
               assertions_written: assertionsWritten,
               ...(spawnedChildren.length > 0 && {
                 spawned_children: spawnedChildren,
-                ...(spawnedChildren.some((c) => c.warnings.length > 0) && {
-                  warnings: spawnedChildren.flatMap((c) => c.warnings),
+                ...((spawnedChildren.some((c) => c.warnings.length > 0) || spawnEdgeWarnings.length > 0) && {
+                  warnings: [...spawnEdgeWarnings, ...spawnedChildren.flatMap((c) => c.warnings)],
                 }),
               }),
               ...(assertionErrors.length > 0 && { assertion_errors: assertionErrors }),

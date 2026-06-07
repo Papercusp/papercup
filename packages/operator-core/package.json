@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Headless operator backend — agent-tools, endpoint-route handlers, harness logic, host composition. Zero UI/React dependency; consumed by apps/operator (the UI package) and the desktop sidecar. Carved from apps/operator in SP1 C4 (plan operator-core-headless-serve-2026-06-04). Resolution is via the consumer's tsconfig path / vite alias (source-only, no build); internal imports are relative.",
+  "description": "Headless operator backend \u2014 agent-tools, endpoint-route handlers, harness logic, host composition. Zero UI/React dependency; consumed by apps/operator (the UI package) and the desktop sidecar. Carved from apps/operator in SP1 C4 (plan operator-core-headless-serve-2026-06-04). Resolution is via the consumer's tsconfig path / vite alias (source-only, no build); internal imports are relative.",
   "main": "./lib/index.ts",
   "types": "./lib/index.ts",
   "exports": {
@@ -18,18 +18,19 @@
   },
   "dependencies": {
     "@papercusp/activity-bridge": "*",
+    "@papercusp/audio-dsp": "*",
     "@papercusp/blueprint-distribution": "*",
     "@papercusp/chat-protocol": "*",
+    "@papercusp/debounce-coalesce": "*",
+    "@papercusp/deployment-driver": "*",
     "@papercusp/event-reaction": "*",
-    "@papercusp/rules": "*",
-    "@papercusp/step-program": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",
-    "@papercusp/structured-concurrency": "*",
-    "@papercusp/debounce-coalesce": "*",
     "@papercusp/p2p-voice": "*",
-    "@papercusp/deployment-driver": "*",
-    "@papercusp/result-encoding": "*"
+    "@papercusp/result-encoding": "*",
+    "@papercusp/rules": "*",
+    "@papercusp/step-program": "*",
+    "@papercusp/structured-concurrency": "*"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

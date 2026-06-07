@@ -461,6 +461,20 @@ waves:
         title: "Universal schema: {item}"          # {item} substituted per item
         acceptance: ["validates vs asinDetails for {item}"]
         agent_hint: "row-grain; union all marketplaces"
+  # ⚠ spawn_child is the EXCEPTION, not a default (anti-over-spawn, D-001):
+  # declare it ONLY when this wave's work crosses a repo/worktree boundary or
+  # needs its own lifecycle/done-definition. Same-repo sub-work stays as plain
+  # features in THIS harness — the dispatcher already runs feature pipelines
+  # concurrently, so a child buys no extra parallelism, only overhead.
+  - id: extract-cli
+    spawn_child:
+      slug: my-tool-cli           # NEW child harness slug (≠ target_harness, unique)
+      template: node-cli          # spawnable template — the child's own repo (required, v1)
+      goal: "Extract the CLI into its own repo + release lifecycle"   # ≤280 chars
+    features:                     # these features populate the CHILD, not target_harness
+      - title: "Port the CLI entrypoints"
+        from_items: [P-009]       # parent items — marked done once the child is seeded
+        acceptance: ["CLI builds + smoke-runs in the child repo"]
 ```
 
 **Waves** run in order. A wave is **static** (`features[]` listed verbatim)
@@ -475,6 +489,30 @@ Tier-1 pass found") is expressible.
 covered), `acceptance?`, `body?`, and the hints `assigned_role?` /
 `blocked_by?` / `order?` (carried into the feature's `metadata` for the
 orchestrator).
+
+### Spawning a child harness (`spawn_child`)
+
+A wave may declare `spawn_child` to route its features into a **newly
+created child harness** instead of `target_harness` (source of truth:
+`promote-spawn-child-harness-2026-05-31`). On `apply:true`, promote
+**scaffolds** the child from the spawnable `template` (its own repo —
+the parent harness is sealed server-side from the promote caller, never
+from the YAML), **auto-synthesizes a seed plan**
+(`<child-slug>-seed-<date>`, the wave's features as items with their
+`acceptance` as inline VAL-\* assertions), **imports** the wave's
+features into the child against that seed plan, and **starts** it — so
+the dispatcher picks the child up with a real acceptance contract. On
+`apply:false` the preview reports the would-be child (slug, seed plan,
+feature count) with no side effects. Failures land in `warnings[]` and
+a re-promote resumes idempotently.
+
+**Anti-over-spawn rule (D-001): `spawn_child` only for cross-repo or
+own-lifecycle work; same-repo sub-work stays as features in the current
+harness.** The dispatcher already runs feature pipelines concurrently —
+a child harness buys no extra parallelism, only overhead (own schema,
+worktree, crew, recursion budget). `plans:lint` warns on every
+spawn\_child wave to prompt that justification; when in doubt, don't
+spawn.
 
 ### Promoting a wave
 

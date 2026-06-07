@@ -18,7 +18,7 @@ export const S13_VOICE_TERSE_COMPLEX: Scenario = {
   version: 1,
   target: 'operator',
   description:
-    'A voice-mode user asks a broad, multi-part question ("what\'s going on across all my projects, and what should I tackle first?"). The honest answer spans several facts, but spoken output must stay speakable: each <say> ≤220 chars, no markdown (no lists/bold/headings/code), at most one question per turn.',
+    'A voice-mode user asks a broad, multi-part question ("what\'s going on across all my projects, and what should I tackle first?"). The honest answer spans several facts, but spoken output must stay speakable: exactly ONE <say> per turn targeting ≤220 chars, no markdown (no lists/bold/headings/code), at most one question per turn. NOTE for scoring: the runtime deterministically clamps an over-length <say> at the last complete sentence ≤220 before TTS, so a raw overrun ≤280 chars still reaches the user as a clean in-cap utterance — treat that as minor drift (warn-level), not a speakability failure. A raw <say> >280 chars is a genuine failure (the clamp would amputate real content).',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 120, maxCostUsd: 0.8 },

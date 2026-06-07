@@ -162,6 +162,17 @@ export function runBootstrap(): void {
   // Desktop voice surface (P-015): bridge the local audio socket over a loopback
   // WS so the Tauri webview's getUserMedia path can reach the same voice-node.
   startDesktopVoiceWs();
+  // Voice relay (P-013/D-009): when PG `voice_relay.serve` opts this operator
+  // in as the fleet's reachable peer, run the blind-relay server firewalled
+  // peers fall back through. No-op (null) everywhere else.
+  void (async () => {
+    try {
+      const { maybeStartVoiceRelayServer } = await import('@papercusp/operator-core/lib/voice-node/voice-relay');
+      await maybeStartVoiceRelayServer();
+    } catch (err) {
+      console.error('[voice-relay] bootstrap check failed:', err);
+    }
+  })();
   // hive-frame-desktops-live-view P-012: on a desktop-enabled FRAME (the
   // bootstrap advertised a display pool), publish each ACTIVE display as a
   // screen track on the harness's video channel. Viewer-driven — a track

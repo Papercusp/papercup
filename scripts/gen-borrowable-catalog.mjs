@@ -59,6 +59,8 @@ const BORROWABLE = [
   ['libs/generic/tooldef',                        'IPC, transport & sync'],
   ['libs/generic/tooldef-http',                   'IPC, transport & sync'],
   ['libs/generic/pubsub-substrate',               'IPC, transport & sync'],
+  ['libs/generic/p2p-voice',                      'Audio & media'],
+  ['libs/generic/audio-dsp',                      'Audio & media'],
   ['libs/generic/ui-primitives',                  'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],

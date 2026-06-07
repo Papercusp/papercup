@@ -479,8 +479,19 @@ import './lexicon/active_pack';
 // The registry is in-memory, so this runs on every host boot. Loaded after
 // '../events' (the registry must exist). Fail-soft: a missing table
 // (pre-migration-158) or a PG hiccup must never block boot.
+// Boot registration is a background reader, so it covers every workspace
+// `backgroundWorkspaceIds()` names (per-window-workspace-context P-020) —
+// under the shared-operator model a non-global workspace's pot must still
+// wake on its subscribed events.
 import { registerPotWakeRules } from '../pot/wake';
-void registerPotWakeRules().catch(() => {});
+import { backgroundWorkspaceIds } from '../workspace-registry';
+try {
+  for (const ws of backgroundWorkspaceIds()) {
+    void registerPotWakeRules(ws).catch(() => {});
+  }
+} catch {
+  /* never block boot */
+}
 
 // await-event-primitive-2026-06-05 — the background sweeper (stuck-delivery
 // recovery, await timeouts, parked→resume conversion). Lazy/unref'd interval;

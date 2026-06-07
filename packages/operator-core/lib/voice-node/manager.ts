@@ -32,6 +32,7 @@ import {
   type VoicePeerState,
 } from '@papercusp/p2p-voice';
 import { getOpusCodec, VOICE_FRAME_SAMPLES } from './codec';
+import { createMicDsp, micDspConfigFromPrefs, type MicDspStatus } from './mic-dsp';
 import { ensureVideoChannel, resolveVoiceChannel, type VoiceChannel } from './registry';
 import { swarmConstructorOpts } from '../sync/hyperbee/swarm';
 
@@ -71,10 +72,34 @@ const peerVideoCbs = new Set<(peerId: string, payload: Uint8Array) => void>();
 const changedCbs = new Set<(status: VoiceStatus) => void>();
 const handleUnsubs: Array<() => void> = [];
 
+/**
+ * Mic-path DSP (P-010/D-013): gain → AEC → spectral NS between the clients'
+ * raw capture and the channel encoder. Far-end (the local MIX) feeds the AEC
+ * from the mixed-frame fan-out below; prefs are applied on every join.
+ */
+const micDsp = createMicDsp();
+
+async function configureMicDspFromPrefs(): Promise<void> {
+  try {
+    const { loadVoicePrefs } = await import('../voice-prefs');
+    await micDsp.configure(micDspConfigFromPrefs(await loadVoicePrefs()));
+  } catch (e) {
+    console.warn('[voice] mic-dsp prefs configure failed (chain stays pass-through):', e);
+  }
+}
+
 async function ensureNode(): Promise<VoiceNode> {
   if (node) return node;
   const mod = (await import('hyperswarm')) as { default: new (opts?: unknown) => VoiceSwarmLike };
-  swarm = new mod.default(swarmConstructorOpts());
+  // Explicit relay fallback (P-013/D-009): when relay keys are configured,
+  // hyperswarm retries failed hole-punches THROUGH the blind relay (it stays
+  // blind — the Noise stream is peer↔peer, so D-012's E2E guarantee holds).
+  const { getVoiceRelayKeys } = await import('./voice-relay');
+  const relayKeys = await getVoiceRelayKeys();
+  swarm = new mod.default({
+    ...(swarmConstructorOpts() as Record<string, unknown>),
+    ...(relayKeys.length > 0 ? { relayThrough: relayKeys } : {}),
+  });
   const codec = await getOpusCodec();
   node = createVoiceNode({ swarm, codec, identity });
   return node;
@@ -115,8 +140,12 @@ export async function joinVoiceChannel(idOrName: string): Promise<VoiceStatus> {
   const h = n.joinChannel(target.topicHex);
   handle = h;
   channel = target;
+  // Apply the current voice prefs to the mic DSP chain (fire-and-forget — a
+  // frame arriving before the WASM loads just passes through).
+  void configureMicDspFromPrefs();
   handleUnsubs.push(
     h.onMixedFrame((frame) => {
+      micDsp.pushFarEnd(frame); // AEC far-end reference (P-010)
       for (const cb of mixedCbs) cb(frame);
     }),
     h.onPeerFrame((peerId, frame) => {
@@ -147,6 +176,7 @@ export async function leaveVoiceChannel(): Promise<VoiceStatus> {
     const h = handle;
     handle = null;
     channel = null;
+    micDsp.reset(); // the room/echo path is gone with the channel
     await h.leave();
     emitChanged();
   }
@@ -155,7 +185,12 @@ export async function leaveVoiceChannel(): Promise<VoiceStatus> {
 
 /** Push one local mic frame (PCM16, VOICE_FRAME_SAMPLES samples). */
 export function pushMicFrame(frame: Int16Array): void {
-  handle?.pushMic(frame);
+  handle?.pushMic(micDsp.process(frame));
+}
+
+/** Mic-DSP diagnostics (gain/AEC/NS state + delay/ERLE) — tools + tests. */
+export function micDspStatus(): MicDspStatus {
+  return micDsp.status();
 }
 
 /**

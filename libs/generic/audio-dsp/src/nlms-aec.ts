@@ -49,8 +49,14 @@ const XCORR_WINDOW = 240;
 const ESTIMATE_EVERY_FRAMES = 25;
 /** Minimum normalized correlation to trust a delay estimate. */
 const XCORR_THRESHOLD = 0.35;
-/** Geigel: near-end dominates when |mic|max > ratio × |far|max over the span. */
-const GEIGEL_RATIO = 0.5;
+/**
+ * Geigel: near-end dominates when |mic|max > ratio × |far|max over the span.
+ * The textbook 0.5 assumes ≥6 dB echo-return loss; a speaker driven loud next
+ * to a mic can couple closer to unity, and a frozen filter never converges —
+ * so we assume only ~1 dB of loss and lean on NLMS's own normalization for
+ * robustness against the (now rarer) missed double-talk frames.
+ */
+const GEIGEL_RATIO = 0.9;
 /** Far-end considered active above this RMS (int16 scale) — gates ERLE + DTD. */
 const FAR_ACTIVE_RMS = 100;
 

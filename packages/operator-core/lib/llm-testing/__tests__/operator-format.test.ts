@@ -182,14 +182,27 @@ describe('formatLength220', () => {
     const x = 'a'.repeat(220);
     expect(formatLength220(summary([turn(`<say>${x}</say>`)]))).toHaveLength(0);
   });
-  it('fails 221-char say', () => {
-    const x = 'a'.repeat(221);
-    expect(formatLength220(summary([turn(`<say>${x}</say>`)]))).toHaveLength(1);
+  it('WARNS (not errors) a 221-280 char say the runtime clamp handles cleanly', () => {
+    // The product contract (P-002): the runtime clamps at a sentence/word
+    // boundary ≤220, so a small raw overrun reaches the user in-cap. The
+    // assert flags it as drift, not failure.
+    const x = `${'word '.repeat(45).trim()}.`; // 225 chars
+    const v = formatLength220(summary([turn(`<say>${x}</say>`)]));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('warn');
+  });
+  it('ERRORS a say beyond the 280-char tolerance (dump shape)', () => {
+    const x = 'b'.repeat(300);
+    const v = formatLength220(summary([turn(`<say>${x}</say>`)]));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('error');
   });
   it('fails when one of multiple says is over', () => {
     const ok = 'a'.repeat(100);
     const bad = 'b'.repeat(300);
-    expect(formatLength220(summary([turn(`<say>${ok}</say>\n<say>${bad}</say>`)]))).toHaveLength(1);
+    const v = formatLength220(summary([turn(`<say>${ok}</say>\n<say>${bad}</say>`)]));
+    expect(v).toHaveLength(1);
+    expect(v[0].severity).toBe('error');
   });
 });
 

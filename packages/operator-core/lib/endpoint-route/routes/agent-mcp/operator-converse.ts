@@ -39,6 +39,12 @@ export default defineTool({
   // SSE — one route-stack run per long-lived connection; a route_invocations
   // row per connect carries little signal (RFC Q7). Don't record it.
   sampleRate: 0,
+  // The watchdog times only the handler's PRE-FLIGHT (json/budget/auth — the
+  // SSE Response returns before streaming starts), but under PG contention
+  // those awaits can queue past the default 30s and 408 a healthy voice turn
+  // (observed live 2026-06-07: brain route died at $0.00 spend in an op-S13
+  // run while the box was loaded). The brain's own caps govern the stream.
+  timeoutSec: 120,
   async handler(req) {
     let body: ConverseRequestBody = {};
     try {

@@ -22,7 +22,8 @@ import { decideWake } from '@papercusp/debounce-coalesce';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
+import { runWithWorkspace } from '../../workspace-als';
 import {
   claimDueDeliveries,
   expireLapsedAwaits,
@@ -365,14 +366,30 @@ type Globals = typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
  * all state is PG): recover stuck 'delivering' rows, fire timed-out awaits
  * (timeout_behavior 'wake' → a TIMEOUT wake delivery; 'expire' → visible
  * lapse), then pump anything due (incl. parked rows whose process died).
+ *
+ * A background reader has no request to scope it, so each tick sweeps every
+ * workspace `backgroundWorkspaceIds()` names (per-window-workspace-context
+ * P-020) — under the shared-operator model that is EVERY registered
+ * workspace, so an await registered in a non-global workspace still times
+ * out / resumes. Each sweep runs inside that workspace's ALS scope so nested
+ * `activeWorkspaceId()` reads (reconcilers, wake delivery) resolve it.
  */
 export function startAwaitSweeper(): void {
   const g = globalThis as Globals;
   if (g.__papercuspAwaitSweeperStarted) return;
   g.__papercuspAwaitSweeperStarted = true;
   setInterval(() => {
-    void sweepOnce().catch((e) => log(`sweep failed: ${e instanceof Error ? e.message : e}`));
+    void sweepAllWorkspaces();
   }, SWEEP_INTERVAL_MS).unref?.();
+}
+
+/** One tick of the sweeper: sweepOnce per background workspace (P-020). */
+export async function sweepAllWorkspaces(): Promise<void> {
+  for (const ws of backgroundWorkspaceIds()) {
+    await runWithWorkspace(ws, () => sweepOnce(ws)).catch(
+      (e: unknown) => log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`),
+    );
+  }
 }
 
 export async function sweepOnce(workspaceId?: string): Promise<void> {

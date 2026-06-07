@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   readRegistry,
   activeWorkspaceId,
+  backgroundWorkspaceIds,
   workspaceById,
   isKnownWorkspace,
   DEFAULT_WORKSPACE_ID,
@@ -173,5 +174,57 @@ describe('workspacesRoot', () => {
   it('ignores an empty/whitespace env value', () => {
     process.env[KEY] = '   ';
     expect(workspacesRoot()).toBe(join(homedir(), '.papercusp-workspaces'));
+  });
+});
+
+describe('backgroundWorkspaceIds — which workspaces a background job covers (P-020)', () => {
+  // Isolate the registry in a temp root so these cases never touch the real
+  // ~/.papercusp-workspaces (workspacesRoot honors PAPERCUSP_WORKSPACES_ROOT).
+  const ENV_KEYS = ['PAPERCUSP_WORKSPACES_ROOT', 'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_SHARED_OPERATOR'] as const;
+  let saved: Record<string, string | undefined>;
+  let root: string;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    root = mkdtempSync(join(tmpdir(), 'bg-ws-ids-'));
+    process.env.PAPERCUSP_WORKSPACES_ROOT = root;
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'registry.json'),
+      JSON.stringify({ current: 'ws-a', workspaces: [{ id: 'ws-a' }, { id: 'ws-b' }, { id: 'ws-c' }] }),
+    );
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('PAPERCUSP_WORKSPACE_ID pin wins — a dedicated single-workspace process, even under shared-operator', () => {
+    process.env.PAPERCUSP_WORKSPACE_ID = 'pinned-ws';
+    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+    expect(backgroundWorkspaceIds()).toEqual(['pinned-ws']);
+  });
+
+  it('shared-operator model, no pin → EVERY registered workspace', () => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+    expect(backgroundWorkspaceIds()).toEqual(['ws-a', 'ws-b', 'ws-c']);
+  });
+
+  it('dev / legacy (no shared-operator flag) → just the global active workspace', () => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    delete process.env.PAPERCUSP_SHARED_OPERATOR;
+    expect(backgroundWorkspaceIds()).toEqual(['ws-a']);
+  });
+
+  it('shared-operator with an EMPTY registry degrades to the global active workspace', () => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+    writeFileSync(join(root, 'registry.json'), JSON.stringify({ workspaces: [] }));
+    expect(backgroundWorkspaceIds()).toEqual([DEFAULT_WORKSPACE_ID]);
   });
 });

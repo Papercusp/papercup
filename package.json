@@ -62,6 +62,7 @@
     "libs/generic/structured-concurrency",
     "libs/generic/debounce-coalesce",
     "libs/generic/p2p-voice",
+    "libs/generic/audio-dsp",
     "libs/generic/deployment-driver",
     "libs/generic/lexicon"
   ],
