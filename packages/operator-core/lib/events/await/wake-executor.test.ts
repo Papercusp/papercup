@@ -210,31 +210,37 @@ describe('executeWake — the liveness ladder', () => {
     expect((out as { reason: string }).reason).toContain('alive');
   });
 
-  it('exited claude with a native id → resume-spawn under a managed pty', async () => {
+  it('exited claude with a native id → DETACHED headless `-p` turn (never a pty — a TTY stdin makes `-p` hang)', async () => {
+    const spawnDetached = vi.fn(() => 4321);
     const spawnManagedPty = vi.fn(() => ({ id: 'pty-new' }));
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
-      deps({ alive: vi.fn(() => false), spawnManagedPty: spawnManagedPty as never }),
+      deps({ alive: vi.fn(() => false), spawnDetached, spawnManagedPty: spawnManagedPty as never }),
     );
-    expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
-    const opts = (spawnManagedPty.mock.calls[0] as unknown as [{ command: string; args: string[]; cwd: string; env: Record<string, string> }])[0];
-    expect(opts.command).toBe('claude');
-    expect(opts.args).toContain('--resume');
-    expect(opts.cwd).toBe('/repo');
-    expect(opts.env.PAPERCUSP_SID).toBe('su-abc');
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    // claude resume runs detached, NOT in the pty (the Stage-B hang fix).
+    expect(spawnManagedPty).not.toHaveBeenCalled();
+    const [bin, args, o] = spawnDetached.mock.calls[0] as unknown as [
+      string, string[], { cwd: string; env: Record<string, string> },
+    ];
+    expect(bin).toBe('claude');
+    expect(args).toContain('--resume');
+    expect(args).toContain('-p'); // headless one-turn
+    expect(o.cwd).toBe('/repo');
+    expect(o.env.PAPERCUSP_SID).toBe('su-abc');
   });
 
   it('a session row marked ended is exited even if the recorded pid is reused-alive', async () => {
-    const spawnManagedPty = vi.fn(() => ({ id: 'pty-new' }));
+    const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
       deps({
         getSession: vi.fn(async () => session({ endedAt: new Date().toISOString() })) as never,
         alive: vi.fn(() => true), // pid reused by some other process
-        spawnManagedPty: spawnManagedPty as never,
+        spawnDetached,
       }),
     );
-    expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
   });
 
   it('exited claude WITHOUT a native id + live presence → park, never --continue', async () => {
@@ -284,44 +290,24 @@ describe('executeWake — the liveness ladder', () => {
   });
 
   it('NO recorded pid + stale presence → resume (the session is gone)', async () => {
-    const spawnManagedPty = vi.fn(() => ({ id: 'pty-new' }));
+    const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(
       work({ wakeHandle: advHandle({ pid: null }) }),
       deps({
         getSession: vi.fn(async () => session({ pid: null })) as never,
         presence: vi.fn(async () => stalePresence) as never,
-        spawnManagedPty: spawnManagedPty as never,
-      }),
-    );
-    expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
-  });
-
-  it('pty cap reached → claude falls back to a detached headless -p turn', async () => {
-    const spawnDetached = vi.fn(() => 4321);
-    const out = await executeWake(
-      work({ wakeHandle: advHandle() }),
-      deps({
-        alive: vi.fn(() => false),
-        spawnManagedPty: vi.fn(() => {
-          throw new PtyError('cap', 'PTY_CAP_REACHED');
-        }) as never,
         spawnDetached,
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
-    const [bin, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
-    expect(bin).toBe('claude');
-    expect(args[0]).toBe('-p');
   });
 
-  it('spawn failure → error outcome (the pump retries with backoff)', async () => {
+  it('claude resume spawn failure (detached returns no pid) → error outcome (the pump retries with backoff)', async () => {
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
       deps({
         alive: vi.fn(() => false),
-        spawnManagedPty: vi.fn(() => {
-          throw new Error('boom');
-        }) as never,
+        spawnDetached: vi.fn(() => null) as never,
       }),
     );
     expect(out).toMatchObject({ kind: 'error' });

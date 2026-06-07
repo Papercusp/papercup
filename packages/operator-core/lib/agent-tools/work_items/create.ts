@@ -34,6 +34,12 @@ export default defineTool({
     parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
     topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
     payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
+    urgent: z
+      .boolean()
+      .optional()
+      .describe(
+        'URGENT enqueue: wake the brain (Pot operator) immediately instead of its slow cadence (floor-debounced — a burst coalesces to one wake). Reserve for genuinely-urgent work (a production fire), not routine filing.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -48,6 +54,7 @@ export default defineTool({
         topics: args.topics,
         payload: args.payload,
         createdBy: ident.ownerId,
+        urgent: args.urgent,
       });
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, workItem }) }] };
     } catch (e) {

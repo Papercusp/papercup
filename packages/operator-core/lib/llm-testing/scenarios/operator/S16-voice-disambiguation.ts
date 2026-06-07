@@ -11,7 +11,7 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { formatLength220, noJargonInSay } from '../../asserts/operator-format';
+import { formatLength220, noJargonInSay, noStrayBuiltinCalls, disambiguationCardRequired } from '../../asserts/operator-format';
 import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 const cardsAreVoiceAnswerable = (run: RunSummary): Violation[] => {
@@ -45,6 +45,10 @@ export const S16_VOICE_DISAMBIGUATION: Scenario = {
     { kind: 'custom', name: 'cards-are-voice-answerable', eval: cardsAreVoiceAnswerable },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
+    // P-003: the scenario premise IS an ambiguous ≥2-candidate instruction —
+    // a chat_ask_choice card is REQUIRED behavior, deterministically.
+    { kind: 'custom', name: 'disambiguationCardRequired', eval: disambiguationCardRequired },
+    { kind: 'custom', name: 'noStrayBuiltinCalls', eval: noStrayBuiltinCalls },
   ],
   rubric: OPERATOR_RUBRIC,
 };

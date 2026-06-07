@@ -155,6 +155,25 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // 150: coord_event_log federation — harness_slug/origin/author_pubkey + fed
   // unique index + the messages/handoffs/escalations capture triggers.
   await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '150-coord-event-log-federation.sql'), 'utf8')));
+
+  // 181 (EI-79 step 2): fed_ts LWW-guard column on every federated table the
+  // writers stamp, + MASK fed_ts in the broad hfc/issues capture triggers so a
+  // wall-clock fed_ts bump never re-enqueues an unchanged row (convergence).
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.coord_conversations          ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.plan_item_assignments         ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.coord_event_log               ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
+      AFTER UPDATE ON harness_shared.harness_features_consolidated
+      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
+      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
+    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
+      AFTER UPDATE ON harness_shared.harness_issues_consolidated
+      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
+      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
+  `);
 }
 
 interface OutboxDbRow {

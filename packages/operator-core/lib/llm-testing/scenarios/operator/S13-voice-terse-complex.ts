@@ -10,7 +10,7 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { formatLength220, noMarkdownInSay, oneQuestionMarkPerTurn, noJargonInSay, groundedCountBeforeTool } from '../../asserts/operator-format';
+import { formatLength220, noMarkdownInSay, oneQuestionMarkPerTurn, noJargonInSay, groundedCountBeforeTool, noStrayBuiltinCalls } from '../../asserts/operator-format';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S13_VOICE_TERSE_COMPLEX: Scenario = {
@@ -29,6 +29,7 @@ export const S13_VOICE_TERSE_COMPLEX: Scenario = {
     { kind: 'custom', name: 'oneQuestionMarkPerTurn', eval: oneQuestionMarkPerTurn },
     { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
     { kind: 'custom', name: 'groundedCountBeforeTool', eval: groundedCountBeforeTool },
+    { kind: 'custom', name: 'noStrayBuiltinCalls', eval: noStrayBuiltinCalls },
   ],
   rubric: OPERATOR_RUBRIC,
 };

@@ -272,6 +272,23 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     const sqlText = readFileSync(join(SQL_DIR, file), 'utf8');
     await sql.unsafe(sqlText);
   }
+
+  // EI-79 step 2 (mig 181): the consolidated tables grow a `fed_ts` LWW-guard
+  // column, and the broad `OLD.* IS DISTINCT FROM NEW.*` capture trigger must
+  // MASK it (fed_ts is capture-wall-clock bookkeeping; left in the compare it
+  // re-enqueues every own-log merge-back forever — the convergence guard below).
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    ALTER TABLE harness_shared.harness_issues_consolidated   ADD COLUMN IF NOT EXISTS fed_ts BIGINT;
+    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
+      AFTER UPDATE ON harness_shared.harness_features_consolidated
+      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
+      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('feature_id');
+    CREATE OR REPLACE TRIGGER capture_substrate_outbox_upd_trg
+      AFTER UPDATE ON harness_shared.harness_issues_consolidated
+      FOR EACH ROW WHEN ((to_jsonb(OLD.*) - 'fed_ts') IS DISTINCT FROM (to_jsonb(NEW.*) - 'fed_ts'))
+      EXECUTE FUNCTION harness_shared.capture_substrate_outbox('issue_id');
+  `);
 }
 
 /**

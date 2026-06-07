@@ -17,6 +17,8 @@ import {
   optionsCountWithinBounds,
   noJargonInSay,
   groundedCountBeforeTool,
+  noStrayBuiltinCalls,
+  disambiguationCardRequired,
 } from '../asserts/operator-format';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
@@ -333,5 +335,72 @@ describe('groundedCountBeforeTool', () => {
       turn('<say>Hi there.</say>'),
       turn('<say>3 issues open.</say>'),
     ]))).toHaveLength(1);
+  });
+});
+
+describe('noStrayBuiltinCalls', () => {
+  it('passes a turn that only calls agentmcp catalog tools', () => {
+    expect(noStrayBuiltinCalls(summary([turn(
+      '<say>One harness is active.</say>',
+      { toolCalls: [{ name: 'harness:status', input: {} }, { name: 'harness_list', input: {} }] },
+    )]))).toHaveLength(0);
+  });
+  it('fails a Bash call (the P-008 no-op "comment" incident)', () => {
+    const v = noStrayBuiltinCalls(summary([turn(
+      '<say>Checking now.</say>',
+      { toolCalls: [{ name: 'Bash', input: { command: 'echo ok' } }] },
+    )]));
+    expect(v).toHaveLength(1);
+    expect(v[0].claim).toContain("'Bash'");
+  });
+  it('fails a Task call', () => {
+    expect(noStrayBuiltinCalls(summary([turn(
+      '<say>Delegating.</say>',
+      { toolCalls: [{ name: 'Task', input: {} }] },
+    )]))).toHaveLength(1);
+  });
+  it('fails a ToolSearch call (the deferred-surface flailing loop)', () => {
+    expect(noStrayBuiltinCalls(summary([turn(
+      '<say>One sec.</say>',
+      { toolCalls: [{ name: 'ToolSearch', input: { query: 'harness:status' } }] },
+    )]))).toHaveLength(1);
+  });
+  it('flags every stray call, with the right evidence turn', () => {
+    const v = noStrayBuiltinCalls(summary([
+      turn('<say>a</say>'),
+      turn('<say>b</say>', { toolCalls: [{ name: 'Bash', input: {} }, { name: 'Read', input: {} }] }),
+    ]));
+    expect(v).toHaveLength(2);
+    expect(v.every((x) => x.evidenceTurnIdx === 1)).toBe(true);
+  });
+  it('no-op on turns without tool calls', () => {
+    expect(noStrayBuiltinCalls(summary([turn('<say>quiet turn</say>')]))).toHaveLength(0);
+  });
+});
+
+describe('disambiguationCardRequired', () => {
+  const askChoiceCard = { kind: 'chat:ask_choice', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], voiceAnswerable: true, payload: {} };
+  it('passes when an ask_choice card was emitted on any turn', () => {
+    expect(disambiguationCardRequired(summary([
+      turn('<say>Which one?</say>', { cards: [askChoiceCard] }),
+    ]))).toHaveLength(0);
+  });
+  it('passes a card with ≥2 options even when its kind string differs', () => {
+    expect(disambiguationCardRequired(summary([
+      turn('<say>Which one?</say>', { cards: [{ ...askChoiceCard, kind: 'choice' }] }),
+    ]))).toHaveLength(0);
+  });
+  it('fails a run that disambiguated in prose only (the original S16 finding)', () => {
+    const v = disambiguationCardRequired(summary([
+      turn('<say>I will go with the marketplace one since it looks busiest.</say>'),
+      turn('<say>Approved it.</say>', { toolCalls: [{ name: 'harness:status', input: {} }] }),
+    ]));
+    expect(v).toHaveLength(1);
+    expect(v[0].evidenceTurnIdx).toBe(1);
+  });
+  it('fails an empty run', () => {
+    const v = disambiguationCardRequired(summary([]));
+    expect(v).toHaveLength(1);
+    expect(v[0].evidenceTurnIdx).toBeUndefined();
   });
 });

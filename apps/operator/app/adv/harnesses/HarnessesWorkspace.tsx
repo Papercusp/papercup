@@ -5,6 +5,7 @@ import { Plus } from 'lucide-react';
 import { parseAsString, useQueryState } from 'nuqs';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
+import HarnessWelcomeEmptyState from './HarnessWelcomeEmptyState';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import './adv-dock.css';
 
@@ -62,7 +63,13 @@ export default function HarnessesWorkspace() {
       <HarnessTopBar slug={slug} />
       <div className="pc-adv-harnesses__dock">
         {slug ? (
-          <HarnessesDock slug={slug} />
+          <>
+            <HarnessesDock slug={slug} />
+            {/* No-work-yet onboarding welcome (spec-md-ui-deprecation-cleanup
+                P-005 / D-003) — overlays the dock until the harness has a
+                started plan or an eligible feature, or is dismissed. */}
+            <HarnessWelcomeEmptyState slug={slug} />
+          </>
         ) : (
           <div className="pc-adv-harnesses__empty">
             {projectsError ? (

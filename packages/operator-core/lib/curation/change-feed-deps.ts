@@ -1,127 +1,140 @@
 /**
  * change-feed-deps.ts — the production WIRING of the Change Feed readers
- * to actual database sources (work_items, gym_proposals, plan runs).
+ * to actual database sources (work_items, gym_proposals, harness_plans).
  *
  * Mirrors the fleet-signals / deps pattern: inject minimal reader contracts
  * so the core `change-feed` normalizer stays pure + testable. The production
  * builder wires the real PG queries.
+ *
+ * DERIVED, not logged (self-learning-central D-005): every reader queries the
+ * completion SOURCE — the unified `work_items` view, `gym_proposals`,
+ * `harness_plans` — there is no change_feed table, so "regenerating" the feed
+ * is just running these queries again. Each entry carries a `ref` back to the
+ * original row.
+ *
+ * (Rewritten for P-060: the first cut of this file queried an imagined schema
+ * — `getOperatorDb()` didn't exist, the work_items view has no `id` column and
+ * `taken_at` is timestamptz not epoch-ms, and plan completion lives on
+ * `op_status`/`op_updated_at`, not `status='done'`/`finished_at`. Every reader
+ * silently returned [] via the core's defensive wrapper, so the production
+ * feed regenerated EMPTY. The Phase-7 integration test
+ * (change-feed-deps.integration.test.ts) now pins these queries against the
+ * real migrated schema.)
  */
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { ChangeFeedEntry, ChangeFeedReaders } from './change-feed';
 
+/** ISO timestamp from an epoch-ms bigint column (postgres-js returns bigint as string). */
+function epochMsToIso(v: string | number | null): string {
+  const n = typeof v === 'number' ? v : Number(v ?? 0);
+  return new Date(Number.isFinite(n) ? n : 0).toISOString();
+}
+
 /**
- * Fetch work-item completions: items that reached a terminal status.
- * Reads from the work_items table (union of harness_features_consolidated
- * and engineer_issues), filtering for done/resolved/closed states.
+ * Work-item completions: rows of the unified `work_items` view (features ∪
+ * engineer issues, migrations 159/178) that reached a terminal COMPLETED
+ * status — done/passed (feature family) ∪ resolved/closed (issue family);
+ * deprecated/dropped are terminal but not completions. The view's id column
+ * is `feature_id`; `updated_ts` (epoch ms) is the lifecycle write that took
+ * the item terminal — the completion clock.
  */
 async function fetchWorkItemCompletions(): Promise<ChangeFeedEntry[]> {
-  const db = await getOrgPg();
-  const rows = await db.query(
-    `
-    SELECT
-      COALESCE(feature_id, id) AS item_id,
-      harness_slug,
-      COALESCE(title, '') AS title,
-      status,
-      to_timestamp(taken_at / 1000.0) AT TIME ZONE 'UTC' AS ts,
-      FALSE AS user_requested
-    FROM harness_shared.work_items
-    WHERE status IN ('done', 'passed', 'resolved', 'closed')
-      AND taken_at IS NOT NULL
-    ORDER BY taken_at DESC
-    LIMIT 500
-    `,
-    []
-  );
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    {
+      feature_id: string;
+      harness_slug: string | null;
+      title: string | null;
+      status: string | null;
+      updated_ts: string | null;
+    }[]
+  >`
+    SELECT feature_id, harness_slug, title, status, updated_ts
+      FROM harness_shared.work_items
+     WHERE status IN ('done', 'passed', 'resolved', 'closed')
+     ORDER BY updated_ts DESC NULLS LAST
+     LIMIT 500`;
 
-  return rows.map((r: any) => ({
-    id: `wi:${r.item_id}`,
+  return rows.map((r) => ({
+    id: `wi:${r.feature_id}`,
     kind: 'completion' as const,
-    title: r.title || `Completed: ${r.item_id}`,
+    title: r.title || `Completed: ${r.feature_id}`,
     detail: `Status: ${r.status}`,
-    harness: r.harness_slug || undefined,
-    workItemId: r.item_id,
-    ref: `wi:${r.item_id}`,
-    ts: (r.ts as Date).toISOString(),
-    userRequested: r.user_requested,
+    harness: r.harness_slug ?? undefined,
+    workItemId: r.feature_id,
+    ref: `wi:${r.feature_id}`,
+    ts: epochMsToIso(r.updated_ts),
+    userRequested: false,
   }));
 }
 
 /**
- * Fetch gym proposals: prompt changes that were accepted / rejected.
- * Reads from gym_proposals, filtering for terminal status.
+ * Gym proposals that reached a decision (accepted / rejected / superseded).
+ * `decided_at` is an epoch-ms bigint (migration 110).
  */
 async function fetchGymProposals(): Promise<ChangeFeedEntry[]> {
-  const db = await getOperatorDb();
-  const rows = await db.query(
-    `
-    SELECT
-      id,
-      harness_slug,
-      role,
-      status,
-      decided_at,
-      to_timestamp(decided_at::double precision / 1000.0) AT TIME ZONE 'UTC' AS ts
-    FROM harness_shared.gym_proposals
-    WHERE status IN ('accepted', 'rejected', 'superseded')
-      AND decided_at IS NOT NULL
-    ORDER BY decided_at DESC
-    LIMIT 500
-    `,
-    []
-  );
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    { id: string; harness_slug: string | null; role: string; status: string; decided_at: string }[]
+  >`
+    SELECT id, harness_slug, role, status, decided_at
+      FROM harness_shared.gym_proposals
+     WHERE status IN ('accepted', 'rejected', 'superseded')
+       AND decided_at IS NOT NULL
+     ORDER BY decided_at DESC
+     LIMIT 500`;
 
-  return rows.map((r: any) => ({
+  const label: Record<string, string> = {
+    accepted: 'Accepted',
+    rejected: 'Rejected',
+    superseded: 'Superseded',
+  };
+  return rows.map((r) => ({
     id: `gym:${r.id}`,
     kind: 'proposal' as const,
-    title: `${r.status === 'accepted' ? 'Accepted' : 'Rejected'} prompt for ${r.role}`,
+    title: `${label[r.status] ?? r.status} prompt for ${r.role}`,
     detail: `Status: ${r.status}`,
-    harness: r.harness_slug || undefined,
+    harness: r.harness_slug ?? undefined,
     ref: `gym:${r.id}`,
-    ts: (r.ts as Date).toISOString(),
+    ts: epochMsToIso(r.decided_at),
     userRequested: false,
   }));
 }
 
 /**
- * Fetch plan runs: plans that finished executing.
- * Reads from harness_plan_items with status='done'.
+ * Plan runs that finished: `harness_plans` whose OPERATIONAL status is done.
+ * Completion lives on `op_status`/`op_updated_at` (folded from
+ * harness_plan_status — migration 122, D-007), NOT the frontmatter `status`
+ * column (draft/ready/active/shipped/superseded).
  */
 async function fetchPlanRuns(): Promise<ChangeFeedEntry[]> {
-  const db = await getOperatorDb();
-  const rows = await db.query(
-    `
-    SELECT
-      slug,
-      title,
-      status,
-      finished_at,
-      harness_slug
-    FROM harness_shared.harness_plans
-    WHERE status = 'done'
-      AND finished_at IS NOT NULL
-    ORDER BY finished_at DESC
-    LIMIT 500
-    `,
-    []
-  );
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    { plan_slug: string; title: string | null; harness_slug: string; op_updated_at: Date }[]
+  >`
+    SELECT plan_slug, title, harness_slug, op_updated_at
+      FROM harness_shared.harness_plans
+     WHERE op_status = 'done'
+       AND op_updated_at IS NOT NULL
+     ORDER BY op_updated_at DESC
+     LIMIT 500`;
 
-  return rows.map((r: any) => ({
-    id: `plan:${r.slug}`,
+  return rows.map((r) => ({
+    id: `plan:${r.plan_slug}`,
     kind: 'plan-run' as const,
-    title: `Plan completed: ${r.title || r.slug}`,
+    title: `Plan completed: ${r.title || r.plan_slug}`,
     harness: r.harness_slug || undefined,
-    ref: `plan:${r.slug}`,
-    ts: (r.finished_at as Date).toISOString(),
+    ref: `plan:${r.plan_slug}`,
+    ts: new Date(r.op_updated_at).toISOString(),
     userRequested: false,
   }));
 }
 
 /**
- * Build the production ChangeFeedReaders that queries the database.
- * Each reader is wrapped in defensive error handling so one bad query
- * doesn't kill the entire feed.
+ * Build the production ChangeFeedReaders that query the database.
+ * The core's `gatherCompletions` wraps each reader defensively so one bad
+ * query doesn't kill the entire feed.
  */
 export function buildChangeFeedReaders(): ChangeFeedReaders {
   return {

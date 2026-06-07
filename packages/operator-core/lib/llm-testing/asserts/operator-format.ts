@@ -459,13 +459,14 @@ export function disambiguationCardRequired(run: RunSummary): Violation[] {
     ),
   );
   if (sawChoiceCard) return [];
-  return [{
+  const violation: Violation = {
     assertKind: 'disambiguationCardRequired',
     severity: 'error',
-    evidenceTurnIdx: run.turns.length > 0 ? run.turns.length - 1 : undefined,
     claim: 'The ambiguous instruction never produced a chat_ask_choice card — the brain guessed a candidate or disambiguated in prose.',
     suggestion: 'Per voice rule 3: ≥2 plausible targets → emit ONE chat_ask_choice card (voiceAnswerable:true) listing the candidates; never pick one autonomously.',
-  }];
+  };
+  if (run.turns.length > 0) violation.evidenceTurnIdx = run.turns.length - 1;
+  return [violation];
 }
 
 // =============================================================================

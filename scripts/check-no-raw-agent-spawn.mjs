@@ -22,7 +22,9 @@
  *
  * (The `/invoke` HTTP route at endpoint-route/routes/harness/spawn.ts WAS the last
  * remaining bypass; it now routes through `spawnInvokeOnce` with a per-call timeout
- * — P-008 — so the only build+spawn site left is the chokepoint itself.)
+ * — P-008 — so the only build+spawn site left is the chokepoint itself. Its
+ * allowlist entry is gone: the routed file no longer imports node:child_process,
+ * so the bypass predicate would flag any regression that re-inlines a raw spawn.)
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -32,7 +34,6 @@ const ROOT = new URL('..', import.meta.url).pathname;
 
 export const ALLOWLIST = new Set([
   'packages/operator-core/lib/dbos/orchestrator-runner.ts',
-  'packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts',
 ]);
 
 export const isExcluded = (f) =>

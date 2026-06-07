@@ -7,9 +7,18 @@
  * is read-only (`x11vnc -viewonly`); `takeover` hands the viewer the mouse +
  * keyboard and is audited as such. The returned wsUrl points at the operator's
  * loopback VNC bridge; noVNC connects there and the ticket is consumed once.
+ *
+ * Auth: `getSessionUserOrDefault` — the desktop webview is cookie-less
+ * (loopback bind is the perimeter; see auth.ts header + auth/me), so a strict
+ * session gate 401s the shipping desktop. The resolved user (real session or
+ * the single-user `default`) feeds the audit `actor`. Belt-and-braces: the
+ * loopback perimeter is also asserted in-handler (`requireLoopbackOr403`) —
+ * this route mints input-takeover tickets, so a listener-bind
+ * misconfiguration must never expose it off-box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   createVncSession,
@@ -22,10 +31,9 @@ export default defineTool({
   path: '/deploy/:slug/vnc-session',
   auth: 'public',
   async handler(req, ctx) {
-    const user = await getSessionUser(req.headers);
-    if (!user) {
-      return new Response('unauthorized', { status: 401 });
-    }
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
+    const user = await getSessionUserOrDefault(req.headers);
     const slug = ctx.params.slug as string;
     let body: { display?: unknown; mode?: unknown };
     try {
@@ -49,7 +57,7 @@ export default defineTool({
         workspaceId: activeWorkspaceId(),
         display,
         mode,
-        actor: `user:${(user as { email?: string; id?: string }).email ?? (user as { id?: string }).id ?? 'session'}`,
+        actor: `user:${user.username}`,
       });
       return Response.json({
         ok: true,

@@ -31,7 +31,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getAdvSession } from '../../adv-sessions';
-import { findPtyByPid, spawnPty, writePty, PtyError } from '../../pty-bridge';
+import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import type { DeliveryWork, WakeOutcome } from './types';
 
@@ -246,6 +246,33 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
     }
 
+    const spawnDetached =
+      deps.spawnDetached ??
+      ((bin: string, args: string[], o: { cwd: string; env: Record<string, string> }) => {
+        const child = childSpawn(bin, args, {
+          cwd: o.cwd,
+          env: { ...process.env, ...o.env },
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+        return child.pid ?? null;
+      });
+
+    // A claude resume is HEADLESS one-turn (`-p`, set in resumeCommandFor) — it
+    // must run DETACHED with stdio:'ignore', NOT in a managed pty. In a pty
+    // claude's stdin is a TTY, so `-p` waits for interactive input instead of
+    // consuming the positional prompt and exiting — the process hangs alive,
+    // never runs the turn, and "delivered:resume" is a lie (Stage-B finding,
+    // 2026-06-07: every pty resume sat idle 2+ min; the manual non-tty `-p`
+    // ran one turn and exited). The pty path stays for omp/interactive
+    // injection (promptViaPty), where a live TTY is the whole point.
+    if (resume.bin === 'claude' && !resume.promptViaPty) {
+      const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env });
+      if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
+      return { kind: 'error', error: 'headless resume spawn failed' };
+    }
+
     try {
       const h = spawnManaged({
         command: resume.bin,
@@ -267,25 +294,6 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
       return { kind: 'delivered', channel: 'resume' };
     } catch (err) {
-      if (err instanceof PtyError && err.code === 'PTY_CAP_REACHED' && resume.bin === 'claude' && !resume.promptViaPty) {
-        // Headless fallback: a bounded one-turn `-p` run, fully detached.
-        const spawnDetached =
-          deps.spawnDetached ??
-          ((bin: string, args: string[], o: { cwd: string; env: Record<string, string> }) => {
-            const child = childSpawn(bin, args, {
-              cwd: o.cwd,
-              env: { ...process.env, ...o.env },
-              detached: true,
-              stdio: 'ignore',
-            });
-            child.unref();
-            return child.pid ?? null;
-          });
-        const headlessArgs = ['-p', ...resume.args];
-        const pid2 = spawnDetached(resume.bin, headlessArgs, { cwd, env });
-        if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
-        return { kind: 'error', error: 'headless resume spawn failed' };
-      }
       return { kind: 'error', error: `resume spawn failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   } catch (err) {

@@ -154,6 +154,12 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(call.disableToolSearch).toBe(true);
   });
 
+  it('spawns with disallowBuiltins so the brain has NO Bash/Task/file tools (P-008)', async () => {
+    await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { disallowBuiltins?: boolean };
+    expect(call.disallowBuiltins).toBe(true);
+  });
+
   it('&tools= drops chat:ask_choice on surface="tui" (mirrors allowedTools)', async () => {
     await handler(
       { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },

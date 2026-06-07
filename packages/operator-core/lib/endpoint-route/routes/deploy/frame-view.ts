@@ -8,12 +8,15 @@
  *   `thumb`  — { slug, display, jpegBase64, capturedAtMs, role?, leaseSinceMs? }
  *   `status` — { slug, state: polling|no-frame|error, frameId?, host?, displays?, error? }
  *
- * `auth: 'public'` + inline session check (the state-snapshot SSE pattern).
+ * `auth: 'public'` with NO session gate — the desktop webview is cookie-less
+ * (loopback bind is the perimeter; see auth.ts header + auth/me's default-user
+ * fallback). A strict getSessionUser gate here 401'd every stream in the
+ * shipping desktop and blanked the Frames tab.
  */
 import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 import {
   subscribeFrameView,
   type FrameThumb,
@@ -32,10 +35,12 @@ export default defineTool({
   // SSE — one route-stack run per long-lived connection; don't sample it.
   sampleRate: 0,
   async handler(req, ctx) {
-    const user = await getSessionUser(req.headers);
-    if (!user) {
-      return new Response('unauthorized', { status: 401 });
-    }
+    // Belt-and-braces (security review 2026-06-07): this stream carries live
+    // agent-desktop pixels — assert the loopback perimeter in-handler so a
+    // listener-bind misconfiguration can never expose it off-box. Loopback
+    // callers (the desktop webview) pass unchanged.
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();
 

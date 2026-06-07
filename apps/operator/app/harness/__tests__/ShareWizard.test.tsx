@@ -21,6 +21,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ShareWizard, type BindingResolveResult } from '../ShareWizard';
 import type { ShareWizardState } from '@papercusp/operator-core/lib/harness/share-wizard-step-types';
+import type { FinalizeShareResult } from '@papercusp/operator-core/lib/endpoint-route/routes/harness/share-finalize';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ function renderWizard(opts: {
   existingBinding?: boolean;
   repoPrivate?: boolean;
   resolveBinding?: (remote: string) => Promise<BindingResolveResult>;
-  writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
+  writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<FinalizeShareResult | void>;
   publishToCupboard?: (input: unknown) => Promise<void>;
 } = {}) {
   const onClose = vi.fn();
@@ -502,5 +503,212 @@ describe('block reasons', () => {
     await waitFor(() =>
       screen.getByText(/A GitHub remote is required/),
     );
+  });
+});
+
+// ── P-003 (phase 11) — finalize wiring + outcome surfacing ────────────────
+
+/** Minimal valid FinalizeShareResult for stubs (shared_config is opaque here). */
+function finalizeResult(over: Partial<FinalizeShareResult> = {}): FinalizeShareResult {
+  return {
+    ok: true,
+    shared_config: {} as FinalizeShareResult['shared_config'],
+    path: '/repo/.papercusp/shared.json',
+    ...over,
+  };
+}
+
+/** Walk steps 1→9 (shared-private) up to the Finalize button. */
+async function walkTo9(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByText('Next →'));                  // 1→2
+  await user.click(screen.getByText('Look up binding'));
+  await waitFor(() => screen.getByTestId('no-binding-message'));
+  await user.click(screen.getByText('Next →'));                  // 2→3
+  await user.click(screen.getByText('Next →'));                  // 3→4
+  await user.click(screen.getByText('Generate topic'));
+  await user.click(screen.getByText('Next →'));                  // 4→5
+  await user.click(screen.getByText('Next →'));                  // 5→6
+  await user.click(screen.getByLabelText(/shared-private/, { exact: false }));
+  await user.click(screen.getByText('Next →'));                  // 6→7
+  await user.click(screen.getByLabelText(/I understand and want to continue/));
+  await user.click(screen.getByText('Next →'));                  // 7→8
+  await user.click(screen.getByText('Run backfill'));
+  await waitFor(() => screen.getByText(/Backfill complete/));
+  await user.click(screen.getByText('Next →'));                  // 8→9
+  await waitFor(() => screen.getByText('Finalize + share'));
+}
+
+describe('P-003 — default wiring POSTs { state } to the shipped finalize route', () => {
+  function stubFetch(finalizeResponse: () => Response) {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u === '/api/harness/binding/resolve') {
+        return new Response(
+          JSON.stringify({
+            github_repository_id: 4242,
+            github_owner: 'owner',
+            github_repo: 'repo',
+            private: false,
+            existing_binding: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (u === '/api/harness/myslug/share/finalize') return finalizeResponse();
+      throw new Error(`unexpected fetch: ${u}`);
+    }) as typeof fetch);
+    return calls;
+  }
+
+  /** Render with NO resolveBinding/writeSharedJson injection — exercises the
+   *  real default fetch wiring against the stubbed routes. */
+  function renderDefaultWired() {
+    return render(
+      <ShareWizard
+        open
+        onClose={vi.fn()}
+        harnessSlug="myslug"
+        initialGithubRemote="https://github.com/owner/repo"
+        runBackfill={async () => {}}
+      />,
+    );
+  }
+
+  it('POSTs the full wizard state (real numeric repo id) and surfaces the swarm join', async () => {
+    const user = userEvent.setup();
+    const calls = stubFetch(
+      () =>
+        new Response(
+          JSON.stringify(finalizeResult({ swarm: { rebooted: true, state: 'booted' } })),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    renderDefaultWired();
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+
+    const finalize = calls.find((c) => c.url === '/api/harness/myslug/share/finalize');
+    expect(finalize).toBeTruthy();
+    const state = (finalize!.body as { state: Record<string, unknown> }).state;
+    expect(state.github_repository_id).toBe(4242); // the real numeric id from binding-resolve
+    expect(state.github_remote).toBe('https://github.com/owner/repo');
+    expect(state.privacy).toBe('shared-private');
+    expect(state.topic).toMatch(TOPIC_LIKE);
+    expect(state.harness_link).toMatch(/repo_id=4242/);
+
+    // The route rebooted the substrate — the wizard says so.
+    screen.getByTestId('swarm-join-ok');
+    expect(screen.queryByTestId('swarm-join-warning')).toBeNull();
+  });
+
+  it('surfaces the route error body on a 4xx finalize', async () => {
+    const user = userEvent.setup();
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: 'invalid shared-harness config: github_repository_id must be a positive integer',
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    renderDefaultWired();
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() =>
+      screen.getByText(/finalize failed: 400 — invalid shared-harness config/),
+    );
+  });
+});
+
+describe('finalize outcome surfacing (swarm reboot + binding)', () => {
+  it('reboot failure → "next operator restart" warning', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      writeSharedJson: async () =>
+        finalizeResult({ swarm: { rebooted: false, error: 'corestore wedged' } }),
+    });
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    const warning = screen.getByTestId('swarm-join-warning');
+    expect(warning.textContent).toContain('corestore wedged');
+    expect(warning.textContent).toContain('next operator restart');
+    expect(screen.queryByTestId('swarm-join-ok')).toBeNull();
+  });
+
+  it('binding already existed → informational note, not a warning', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      writeSharedJson: async () =>
+        finalizeResult({
+          swarm: { rebooted: true, state: 'booted' },
+          binding: { created: false, already_existed: true, claim_status: 'unclaimed' },
+        }),
+    });
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    screen.getByTestId('binding-already-existed');
+    expect(screen.queryByTestId('binding-create-warning')).toBeNull();
+  });
+
+  it('binding-create failure + publisher attestation warning both surface', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      writeSharedJson: async () =>
+        finalizeResult({
+          swarm: { rebooted: true, state: 'booted' },
+          binding: { created: false, error: 'no gh token' },
+          bindingWarning: 'gh auth required — re-share after `gh auth login`',
+        }),
+    });
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    expect(screen.getByTestId('binding-create-warning').textContent).toContain('no gh token');
+    expect(screen.getByTestId('publisher-binding-warning').textContent).toContain('gh auth required');
+  });
+
+  it('a void writeSharedJson (legacy stub) renders no outcome lines', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      writeSharedJson: async () => {},
+    });
+    await walkTo9(user);
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByText('Done'));
+    expect(screen.queryByTestId('swarm-join-ok')).toBeNull();
+    expect(screen.queryByTestId('swarm-join-warning')).toBeNull();
+  });
+});
+
+describe('repo-id guard at the lookup step', () => {
+  it('rejects a 0 repository id with a visible error and blocks advance', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      resolveBinding: async () => ({
+        github_repository_id: 0, // the swarm keys on this — must never be stored
+        github_owner: 'owner',
+        github_repo: 'repo',
+        private: false,
+        existing_binding: null,
+      }),
+    });
+    await user.click(screen.getByText('Next →')); // 1→2
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByText(/invalid repository id \(0\)/));
+    expect(screen.queryByTestId('no-binding-message')).toBeNull();
+    // Next stays blocked — the bad id was never stored.
+    await user.click(screen.getByText('Next →'));
+    await waitFor(() => screen.getByText(/Look up the binding before continuing/));
   });
 });

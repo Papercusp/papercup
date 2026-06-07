@@ -34,8 +34,14 @@ import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { findUnknownFromItems, type PromoteFeatureInput } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
-import { readPlanBySlug } from '../../plans/source';
-import { parsePromotePolicy, buildWaveFeatures, applyInterWaveEdges, type BuiltFeature } from '../../plans/promote-policy';
+import { readPlanBySlug, resolvePlanScope } from '../../plans/source';
+import { parsePromotePolicy, buildWaveFeatures, applyInterWaveEdges, type BuiltFeature, type SpawnChild } from '../../plans/promote-policy';
+import {
+  executeSpawnChild,
+  buildDefaultSpawnChildDeps,
+  childSeedSlug,
+  type SpawnChildResult,
+} from '../spawn-child';
 import {
   computeDestructiveReplanDiff,
   decideDestructiveReplan,
@@ -184,6 +190,11 @@ export interface PromotedRowFeature {
   /** Per-feature wave (set by the all-waves promote, P-044). Falls back to the
    *  call-level `waveId` when unset. */
   wave?: string;
+  /** P-004 (promote-spawn-child-harness): set when this feature was routed into
+   *  a spawned child harness — the `## Promoted` row is annotated
+   *  `→ spawned child <slug> (plan <seed-slug>)` so the parent plan records
+   *  where its sub-work went. */
+  spawned_child?: { slug: string; seedSlug: string };
 }
 
 /**
@@ -217,6 +228,9 @@ export function buildPromotedRows(
     if (f.blocked_by && f.blocked_by.length > 0) {
       const refs = f.blocked_by.map((ref) => idByTitle.get(ref.trim().toLowerCase()) ?? ref);
       bits.push(`blocked_by ${refs.join(', ')}`);
+    }
+    if (f.spawned_child) {
+      bits.push(`→ spawned child ${f.spawned_child.slug} (plan ${f.spawned_child.seedSlug})`);
     }
     const struct = bits.length > 0 ? ` — ${bits.join(' · ')}` : '';
     return `- [ ] ${fid} — ${f.title ?? fid}${struct}${itemRef}`;
@@ -426,11 +440,14 @@ export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
   description:
-    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
+    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Always emits a `plan_event` of kind=promoted.",
   guidance: {
     when: 'A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.',
     notWhen:
-      'Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled.',
+      'Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled. ' +
+      'ANTI-OVER-SPAWN (D-001, promote-spawn-child-harness): a `spawn_child` wave is justified ONLY when the work crosses a repo/worktree boundary or needs its own lifecycle/done-definition — same-repo sub-work stays as plain features in the current harness (the dispatcher already runs feature pipelines concurrently; a child harness buys no extra parallelism, only overhead). When in doubt, do NOT spawn.',
+    chaining:
+      'spawn_child waves: re-run with apply:false first — the preview lists the child slug, seed plan, and feature count with zero side effects. A partially-failed spawn (see `spawned_children[].warnings`) is retried by simply re-promoting (idempotent: scaffold/seed/import/start all upsert or no-op).',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -523,6 +540,11 @@ export default defineTool({
     let promoteFeatures: BuiltFeature[] = (explicitFeatures ?? []) as BuiltFeature[];
     let harnessSlug = explicitHarness;
     let waveId = explicitWave;
+    // P-003 (promote-spawn-child-harness): per-child spawn config, captured while
+    // resolving the policy waves (keyed by child slug; the policy superRefine
+    // guarantees slug uniqueness across waves). Only policy-mode waves can carry
+    // spawn_child — explicit caller features never do.
+    const spawnChildConfigs = new Map<string, { child: SpawnChild; waveId: string }>();
     if (promoteFeatures.length === 0) {
       const { policy, warnings } = parsePromotePolicy(planFile.parsed.raw);
       if (!policy) {
@@ -536,9 +558,8 @@ export default defineTool({
         // so the P-042 frontier alone sequences the waves — no 30s wave-advance
         // poll. Completion-time (`from_feature`) waves stay deferred (expand on
         // publish); promote-time resolvers (items/glob/sql) resolve inline.
-        if (!harnessSlug) {
-          return fail('harness_slug_required', 'all_waves needs a target harness (set harness_slug or `## Promote` target_harness)');
-        }
+        // (harnessSlug is only needed when a generative resolver actually runs —
+        // checked there — so a pure spawn_child plan needs no target_harness.)
         const builtByWave = new Map<string, BuiltFeature[]>();
         const deferred: string[] = [];
         for (const w of policy.waves) {
@@ -549,6 +570,9 @@ export default defineTool({
           } else {
             let items = args.generate_items;
             if (w.generate && isForEachResolver(w.generate.for_each)) {
+              if (!harnessSlug) {
+                return fail('harness_slug_required', `wave "${w.id}" has a for_each glob/sql resolver, which needs a target harness (set harness_slug or \`## Promote\` target_harness)`);
+              }
               try {
                 items = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
               } catch (e) {
@@ -559,6 +583,7 @@ export default defineTool({
             feats = buildWaveFeatures(w, { generateItems: items }).features;
           }
           for (const f of feats) f.wave = w.id;
+          if (w.spawn_child) spawnChildConfigs.set(w.spawn_child.slug, { child: w.spawn_child, waveId: w.id });
           if (feats.length > 0) builtByWave.set(w.id, feats);
         }
         applyInterWaveEdges(policy.waves, builtByWave);
@@ -594,6 +619,7 @@ export default defineTool({
             };
           }
           for (const f of staticOnly) f.wave = w.id;
+          if (w.spawn_child) spawnChildConfigs.set(w.spawn_child.slug, { child: w.spawn_child, waveId: w.id });
           promoteFeatures = staticOnly;
         } else {
           // P-043: a promote-time resolver (items/glob/sql) resolves the item-set by
@@ -617,11 +643,38 @@ export default defineTool({
             return fail('empty_wave', `wave "${waveId}" resolved to 0 features${built.warnings.length ? ': ' + built.warnings.join('; ') : ''}`);
           }
           for (const f of built.features) f.wave = w.id;
+          if (w.spawn_child) spawnChildConfigs.set(w.spawn_child.slug, { child: w.spawn_child, waveId: w.id });
           promoteFeatures = built.features;
         }
       }
     }
-    if (!harnessSlug) return fail('harness_slug_required', 'harness_slug is required (or set target_harness in the `## Promote` policy)');
+
+    // ── spawn_child partition (P-003) ──────────────────────────────────────
+    // Features stamped `spawn_child_slug` (by buildWaveFeatures) route into
+    // their child harness; the rest follow the normal target-harness path. A
+    // pure spawn promote (every wave spawns) needs no target harness at all.
+    const parentFeatures: BuiltFeature[] = [];
+    const childGroups = new Map<string, BuiltFeature[]>();
+    for (const f of promoteFeatures) {
+      if (f.spawn_child_slug) {
+        const arr = childGroups.get(f.spawn_child_slug) ?? [];
+        arr.push(f);
+        childGroups.set(f.spawn_child_slug, arr);
+      } else {
+        parentFeatures.push(f);
+      }
+    }
+    for (const slug of childGroups.keys()) {
+      if (!spawnChildConfigs.has(slug)) {
+        // Internal invariant: a spawn_child_slug stamp always pairs with a
+        // captured wave config (both written in the same policy resolution).
+        return fail('spawn_child_config_missing', `features carry spawn_child_slug=${slug} but no wave declared that child`);
+      }
+    }
+    if (parentFeatures.length > 0 && !harnessSlug) {
+      return fail('harness_slug_required', 'harness_slug is required (or set target_harness in the `## Promote` policy)');
+    }
+    const promoteDate = new Date().toISOString().slice(0, 10);
 
     // Validate every from_items P-NNN against the plan's actual items
     // (audit B2). A typo'd id would otherwise be silently dropped during
@@ -648,13 +701,6 @@ export default defineTool({
       };
     }
 
-    const features: PromoteFeatureInput[] = promoteFeatures.map((f) => ({
-      title: f.title,
-      body: f.body,
-      acceptance: f.acceptance,
-      from_items: f.from_items,
-    }));
-
     // Preview path: emit plan event + return per-feature covers + assertion preview.
     if (!args.apply) {
       const previewItemIds = new Set<string>();
@@ -665,23 +711,46 @@ export default defineTool({
         ? extractAssertions(planFile.parsed.raw, previewItemIds)
         : [];
 
+      // P-003: report what a spawn_child apply WOULD create — child slug, seed
+      // plan slug, feature count — with zero side effects (reads only).
+      const spawnChildrenPreview = await Promise.all(
+        [...childGroups.entries()].map(async ([slug, feats]) => {
+          const cfg = spawnChildConfigs.get(slug)!;
+          let childExists = false;
+          try {
+            childExists = Boolean(await resolveProject(slug));
+          } catch { /* unknown → false */ }
+          return {
+            child_slug: slug,
+            seed_plan_slug: childSeedSlug(slug, promoteDate),
+            feature_count: feats.length,
+            wave: cfg.waveId,
+            template: cfg.child.template ?? null,
+            ...(cfg.child.repo && { repo: cfg.child.repo }),
+            child_already_exists: childExists,
+          };
+        }),
+      );
+
+      const previewTarget = harnessSlug ?? '(spawned children only)';
       await emitPlanEventForCaller(ctx, {
         planSlug: args.slug,
         event: 'promoted',
         after: {
-          harness_slug: harnessSlug,
+          harness_slug: harnessSlug ?? null,
           feature_count: promoteFeatures.length,
           assertion_count: previewAssertions.length,
+          ...(spawnChildrenPreview.length > 0 && { spawn_children: spawnChildrenPreview.length }),
           mode: 'preview',
         },
-        detail: `previewed promote to ${harnessSlug}: ${promoteFeatures.length} feature(s), ${previewAssertions.length} assertion(s)`,
+        detail: `previewed promote to ${previewTarget}: ${promoteFeatures.length} feature(s), ${previewAssertions.length} assertion(s)${spawnChildrenPreview.length > 0 ? `, ${spawnChildrenPreview.length} spawned child(ren)` : ''}`,
       });
 
       // Destructive preview: report what a destructive apply WOULD deprecate
       // (read-only). Needs the plan's stable ids to diff — on apply those come
       // from importRes; in preview they must be supplied via `feature_ids`.
       let destructivePreview: DestructiveReplanOutcome | { note: string } | undefined;
-      if (args.destructive) {
+      if (args.destructive && harnessSlug) {
         if (args.feature_ids && args.feature_ids.length > 0) {
           const dr = await runDestructiveReplan({
             harnessSlug,
@@ -711,9 +780,10 @@ export default defineTool({
                 feature_count: promoteFeatures.length,
                 assertion_count: previewAssertions.length,
                 assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
+                ...(spawnChildrenPreview.length > 0 && { spawn_children: spawnChildrenPreview }),
               },
               apply_hint: {
-                features_import_endpoint: `/api/harness/${harnessSlug}/features/import`,
+                ...(harnessSlug && { features_import_endpoint: `/api/harness/${harnessSlug}/features/import` }),
                 note: 'Re-call with apply=true to import features + store assertions + mark plan items.',
               },
               ...(destructivePreview && { destructive: destructivePreview }),
@@ -723,11 +793,49 @@ export default defineTool({
       };
     }
 
+    // ── spawn_child apply (P-003): scaffold → seed plan → import → start, per
+    // child wave. The parent is SEALED from the promote CALLER's identity — a
+    // harness-principal caller IS the parent; otherwise the plan's home harness
+    // — never from the YAML body (mirrors execute-action's parent_slug sealing).
+    // Every failure lands in the result's warnings[] (D-004) — never thrown.
+    const spawnedChildren: SpawnChildResult[] = [];
+    const spawnedBySlug = new Map<string, SpawnChildResult>();
+    if (childGroups.size > 0) {
+      let sealedParent: string | null = null;
+      const principalSlug = (ctx as { principal?: { slug?: string } }).principal?.slug;
+      if (principalSlug && !principalSlug.startsWith('system:')) {
+        try {
+          if (await resolveProject(principalSlug, ctx.workspaceId)) sealedParent = principalSlug;
+        } catch { /* not a harness principal — fall through */ }
+      }
+      if (!sealedParent) sealedParent = (await resolvePlanScope({})).harnessSlug;
+      const spawnDeps = buildDefaultSpawnChildDeps({ importFeatures: postFeaturesImport });
+      for (const [slug, feats] of childGroups) {
+        const cfg = spawnChildConfigs.get(slug)!;
+        const r = await executeSpawnChild(
+          {
+            child: cfg.child,
+            waveId: cfg.waveId,
+            parentSlug: sealedParent,
+            parentPlanSlug: args.slug,
+            features: feats,
+            date: promoteDate,
+          },
+          spawnDeps,
+        );
+        spawnedChildren.push(r);
+        spawnedBySlug.set(slug, r);
+      }
+    }
+
     // Extract inline VAL-* assertions before building the import payload so
     // claims can be included in the SQLite INSERT (the import endpoint only
     // sets claims on INSERT, not UPDATE, so they must arrive with the row).
+    // Scoped to the PARENT-bound features: a spawned child's features carry
+    // claims synthesized from the wave's acceptance into the child SEED plan
+    // (D-002) — the parent plan's VAL store doesn't track them.
     const allItemIds = new Set<string>();
-    for (const f of promoteFeatures) {
+    for (const f of parentFeatures) {
       for (const id of f.from_items ?? []) allItemIds.add(id);
     }
     // assertions keyed by item_id for O(1) lookup during payload construction.
@@ -744,7 +852,7 @@ export default defineTool({
     // POST features to /features/import. Server allocates F-AUTO-* ids.
     // metadata.source_plan + metadata.covers carry provenance forward.
     // claims is populated from extracted VAL-* assertions for this feature's items.
-    const importPayload = promoteFeatures.map((f, idx) => {
+    const importPayload = parentFeatures.map((f, idx) => {
       const metadata: Record<string, unknown> = {
         source_plan: args.slug,
       };
@@ -790,13 +898,18 @@ export default defineTool({
       }
       return out;
     });
-    const importRes = await postFeaturesImport(harnessSlug, importPayload);
+    // A pure spawn_child promote has no parent-bound features — skip the
+    // target-harness import entirely (harnessSlug may legitimately be unset).
+    const importRes =
+      importPayload.length > 0 && harnessSlug
+        ? await postFeaturesImport(harnessSlug, importPayload)
+        : { ids: [] as string[], inserted: 0, updated: 0 };
 
     // Destructive replan: the import above is additive; now converge the harness
     // to the plan's CURRENT set by deprecating features it dropped (source_plan=
     // slug, no longer in importRes.ids). Fail closed on an empty-plan wipe.
     let destructive: DestructiveReplanOutcome | undefined;
-    if (args.destructive) {
+    if (args.destructive && harnessSlug) {
       const dr = await runDestructiveReplan({
         harnessSlug,
         planSlug: args.slug,
@@ -814,7 +927,7 @@ export default defineTool({
     // don't break validation, just degrade the /assertion/:valId endpoint.
     let assertionsWritten = 0;
     const assertionErrors: string[] = [];
-    if (allAssertions.length > 0) {
+    if (allAssertions.length > 0 && harnessSlug) {
       try {
         const { sql } = getOrgPg();
         const workspaceId = ctx.workspaceId ?? '';
@@ -845,8 +958,18 @@ export default defineTool({
       }
     }
 
-    // Mark plan items as done via withPlanLock + flipStatusInBody.
-    const allFromItems = allItemIds;
+    // Mark plan items as done via withPlanLock + flipStatusInBody. Also covers
+    // child-routed features whose spawn actually imported (P-004: the parent's
+    // items are done — the sub-work now lives in the child) — but NOT a
+    // failed/aborted spawn's items (nothing covers those yet; retry will).
+    const allFromItems = new Set<string>(allItemIds);
+    for (const [slug, feats] of childGroups) {
+      const spawned = spawnedBySlug.get(slug);
+      if (!spawned || spawned.feature_ids.length === 0) continue;
+      for (const f of feats) {
+        for (const id of f.from_items ?? []) allFromItems.add(id);
+      }
+    }
     const markedItems: string[] = [];
     const skippedItems: Array<{ id: string; reason: string }> = [];
     if (args.mark_items && allFromItems.size > 0) {
@@ -895,7 +1018,7 @@ export default defineTool({
     // write proceeds regardless.
     let statusCounts: { total: number; inflight: number; passed: number } | null = null;
     let waveSummaries: WaveSummary[] | undefined;
-    try {
+    if (harnessSlug) try {
       const { sql } = getOrgPg();
       // P-041: scope to the caller's workspace (already used for the assertion
       // write above). The admin handle bypasses RLS, and post-091 neither
@@ -946,6 +1069,20 @@ export default defineTool({
     // ProposalsPanel filters drafts only, so this is what makes the card
     // disappear from the panel after Accept. Idempotent: a plan that's
     // already `active`/`shipped`/`superseded` is left alone.
+    // P-004 (spawn_child): the parent plan's `## Promoted` block records the
+    // child-routed rows too, annotated `→ spawned child <slug> (plan <seed>)` —
+    // skipped for a child whose import didn't land (a retry promotes the rows).
+    const promotedRowFeatures: PromotedRowFeature[] = [...parentFeatures];
+    const promotedRowIds: string[] = [...importRes.ids];
+    for (const [slug, feats] of childGroups) {
+      const spawned = spawnedBySlug.get(slug);
+      if (!spawned || spawned.feature_ids.length !== feats.length) continue;
+      feats.forEach((f, i) => {
+        promotedRowFeatures.push({ ...f, spawned_child: { slug, seedSlug: spawned.seed_plan_slug } });
+        promotedRowIds.push(spawned.feature_ids[i]);
+      });
+    }
+
     await withPlanLock<null>(
       ctx as never,
       { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status + activate' },
@@ -953,9 +1090,9 @@ export default defineTool({
         if (current === null) return { newBody: null, value: null };
         // P-041: record the REALIZED wave/parallelism structure (wave/order/
         // blocked_by) the promoting agent emitted, not just the bare id+title.
-        const featureRows = buildPromotedRows(promoteFeatures, importRes.ids, waveId);
+        const featureRows = buildPromotedRows(promotedRowFeatures, promotedRowIds, waveId);
         let newBody = upsertPromotedBlock(current, featureRows);
-        if (statusCounts) {
+        if (statusCounts && harnessSlug) {
           newBody = upsertPromoteStatusLine(newBody, harnessSlug, statusCounts, waveSummaries);
         }
         // Promote-on-draft: flip status to active. Only the literal
@@ -966,17 +1103,28 @@ export default defineTool({
       },
     );
 
+    const spawnSummary = spawnedChildren.map((c) => ({
+      child_slug: c.child_slug,
+      seed_plan_slug: c.seed_plan_slug,
+      feature_ids: c.feature_ids,
+      started: c.started,
+    }));
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
       event: 'promoted',
       after: {
-        harness_slug: harnessSlug,
+        harness_slug: harnessSlug ?? null,
         feature_count: promoteFeatures.length,
         feature_ids: importRes.ids,
         marked_items: markedItems,
+        ...(spawnedChildren.length > 0 && { spawned_children: spawnSummary }),
         mode: 'apply',
       },
-      detail: `applied promote to ${harnessSlug}: ${promoteFeatures.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done`,
+      detail:
+        `applied promote to ${harnessSlug ?? '(spawned children only)'}: ${parentFeatures.length} feature(s) → ids [${importRes.ids.join(', ')}], ${markedItems.length} item(s) marked done` +
+        (spawnedChildren.length > 0
+          ? `; spawned ${spawnedChildren.length} child(ren): ${spawnedChildren.map((c) => `${c.child_slug} (plan ${c.seed_plan_slug}, ${c.feature_ids.length} feature(s)${c.started ? ', started' : ''})`).join(', ')}`
+          : ''),
     });
 
     return {
@@ -994,6 +1142,12 @@ export default defineTool({
               marked_items: markedItems,
               skipped_items: skippedItems,
               assertions_written: assertionsWritten,
+              ...(spawnedChildren.length > 0 && {
+                spawned_children: spawnedChildren,
+                ...(spawnedChildren.some((c) => c.warnings.length > 0) && {
+                  warnings: spawnedChildren.flatMap((c) => c.warnings),
+                }),
+              }),
               ...(assertionErrors.length > 0 && { assertion_errors: assertionErrors }),
               ...(importRes.provenanceFailed != null && importRes.provenanceFailed > 0 && {
                 provenance_failed: importRes.provenanceFailed,

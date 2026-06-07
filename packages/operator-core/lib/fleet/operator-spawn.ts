@@ -67,13 +67,21 @@ export function spawnSlotEventKey(workspaceId: string): string {
 }
 
 /**
+ * Memoized lazy import of the await engine — keeps this module's load graph
+ * light (the engine pulls the coord/messages surface) and gives concurrent
+ * announces ONE shared import promise (concurrent dynamic imports of the same
+ * module can reject under the vitest module runner).
+ */
+let awaitEngine: Promise<typeof import('../events/await/engine')> | null = null;
+const loadAwaitEngine = () => (awaitEngine ??= import('../events/await/engine'));
+
+/**
  * Announce freed spawn capacity to over-ceiling waiters (best-effort, never
- * throws). Lazy-imports the await engine so this module keeps its light load
- * graph (the engine pulls the coord/messages surface).
+ * throws).
  */
 async function announceSpawnSlotFreed(workspaceId: string, summary: string): Promise<void> {
   try {
-    const { emitAwaitedEvent } = await import('../events/await/engine');
+    const { emitAwaitedEvent } = await loadAwaitEngine();
     await emitAwaitedEvent({
       key: spawnSlotEventKey(workspaceId),
       summary,

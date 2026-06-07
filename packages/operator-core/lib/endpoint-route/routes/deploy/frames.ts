@@ -5,20 +5,29 @@
  * opening a per-slug `/api/deploy/:slug/frame-view` SSE stream
  * (`hive-frame-desktops-live-view-2026-06-06` P-006). Registry-backed: a frame
  * appears here exactly while its handle is persisted (deploy → teardown).
+ *
+ * `auth: 'public'` with NO session gate — the desktop webview is cookie-less
+ * (loopback bind is the perimeter; see auth.ts header + auth/me). Same trust
+ * class as the other workspace-global reads the /adv tabs hit
+ * (`/harness/projects/lite`). A strict getSessionUser gate here 401s the
+ * Frames tab in the shipping desktop.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 export default defineTool({
   method: 'GET',
   path: '/deploy/frames',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) {
-      return new Response('unauthorized', { status: 401 });
-    }
+    // Belt-and-braces (security review 2026-06-07): the cookie-less desktop
+    // webview is why there is no session gate, but the loopback PERIMETER must
+    // also be asserted in-handler — a listener-bind misconfiguration must not
+    // silently de-authenticate the frame roster. Loopback callers (the desktop
+    // webview, psu, agents) pass unchanged.
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const { loadHarnessRegistry } = await import('../../../harness-registry');
     const reg = await loadHarnessRegistry(activeWorkspaceId());
     const frames = reg.projects

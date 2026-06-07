@@ -83,7 +83,6 @@ import { Route as SnapshotsIdForkRouteImport } from './routes/snapshots/$id/fork
 import { Route as SettingsUserSearchRouteImport } from './routes/settings/user/search'
 import { Route as SettingsUserMemoryRouteImport } from './routes/settings/user/memory'
 import { Route as SettingsPluginsToolsRouteImport } from './routes/settings/plugins/tools'
-import { Route as HarnessSlugSpecRouteImport } from './routes/harness/$slug/spec'
 import { Route as HarnessSlugInsightsRouteImport } from './routes/harness/$slug/insights'
 import { Route as HarnessSlugDockPreviewRouteImport } from './routes/harness/$slug/dock-preview'
 import { Route as HarnessSlugProjectsIndexRouteImport } from './routes/harness/$slug/projects/index'
@@ -460,11 +459,6 @@ const SettingsPluginsToolsRoute = SettingsPluginsToolsRouteImport.update({
   path: '/plugins/tools',
   getParentRoute: () => SettingsRoute,
 } as any)
-const HarnessSlugSpecRoute = HarnessSlugSpecRouteImport.update({
-  id: '/harness/$slug/spec',
-  path: '/harness/$slug/spec',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const HarnessSlugInsightsRoute = HarnessSlugInsightsRouteImport.update({
   id: '/harness/$slug/insights',
   path: '/harness/$slug/insights',
@@ -561,7 +555,6 @@ export interface FileRoutesByFullPath {
   '/snapshots/': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
-  '/harness/$slug/spec': typeof HarnessSlugSpecRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
@@ -642,7 +635,6 @@ export interface FileRoutesByTo {
   '/snapshots': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
-  '/harness/$slug/spec': typeof HarnessSlugSpecRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
@@ -725,7 +717,6 @@ export interface FileRoutesById {
   '/snapshots/': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
-  '/harness/$slug/spec': typeof HarnessSlugSpecRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
@@ -809,7 +800,6 @@ export interface FileRouteTypes {
     | '/snapshots/'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
-    | '/harness/$slug/spec'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
@@ -890,7 +880,6 @@ export interface FileRouteTypes {
     | '/snapshots'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
-    | '/harness/$slug/spec'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
@@ -972,7 +961,6 @@ export interface FileRouteTypes {
     | '/snapshots/'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
-    | '/harness/$slug/spec'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
@@ -1034,7 +1022,6 @@ export interface RootRouteChildren {
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
   HarnessSlugDockPreviewRoute: typeof HarnessSlugDockPreviewRoute
   HarnessSlugInsightsRoute: typeof HarnessSlugInsightsRoute
-  HarnessSlugSpecRoute: typeof HarnessSlugSpecRoute
   SnapshotsIdForkRoute: typeof SnapshotsIdForkRoute
   UsersGithubIdRoute: typeof UsersGithubIdRoute
   HarnessSlugIndexRoute: typeof HarnessSlugIndexRoute
@@ -1564,13 +1551,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsPluginsToolsRouteImport
       parentRoute: typeof SettingsRoute
     }
-    '/harness/$slug/spec': {
-      id: '/harness/$slug/spec'
-      path: '/harness/$slug/spec'
-      fullPath: '/harness/$slug/spec'
-      preLoaderRoute: typeof HarnessSlugSpecRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/harness/$slug/insights': {
       id: '/harness/$slug/insights'
       path: '/harness/$slug/insights'
@@ -1726,7 +1706,6 @@ const rootRouteChildren: RootRouteChildren = {
   SnapshotsIndexRoute: SnapshotsIndexRoute,
   HarnessSlugDockPreviewRoute: HarnessSlugDockPreviewRoute,
   HarnessSlugInsightsRoute: HarnessSlugInsightsRoute,
-  HarnessSlugSpecRoute: HarnessSlugSpecRoute,
   SnapshotsIdForkRoute: SnapshotsIdForkRoute,
   UsersGithubIdRoute: UsersGithubIdRoute,
   HarnessSlugIndexRoute: HarnessSlugIndexRoute,

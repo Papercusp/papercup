@@ -33,6 +33,10 @@
    * consolidate components onto the canonical names and delete these aliases. */
   --text: var(--fg);
   --pc-color-text: var(--fg);
+  --pc-text: var(--fg);
+  --pc-surface: var(--bg-raised);
+  --pc-surface-2: var(--bg-2);
+  --pc-border: var(--border);
   --muted: var(--fg-mute);
   --mut: var(--fg-mute);
   --pc-color-muted: var(--fg-mute);

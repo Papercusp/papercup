@@ -63,6 +63,9 @@ describe('reclaimOrphanedSpawns (P-011, real PG)', () => {
     const r = await reclaimOrphanedSpawns(db.sql, STALE);
     expect(r.reclaimed).toBe(1);
     expect(r.spawnIds).toEqual(['stale']);
+    // The freed workspace rides the result so callers announce the slot-free
+    // (spawn-slot:freed:<ws>) to over-ceiling waiters (D-004).
+    expect(r.workspaces).toEqual([WS]);
     expect(await statusOf('stale')).toBe('failed');
     const [row] = await db.sql<{ error_message: string; finished_at: Date | null; duration_ms: number | null }[]>`
       SELECT error_message, finished_at, duration_ms FROM harness_shared.spawned_agents WHERE spawn_id = 'stale'`;
@@ -83,6 +86,7 @@ describe('reclaimOrphanedSpawns (P-011, real PG)', () => {
     await insertSpawn('fresh', 'running', 5);
     const r = await reclaimOrphanedSpawns(db.sql, STALE);
     expect(r.reclaimed).toBe(0);
+    expect(r.workspaces).toEqual([]); // nothing freed → nothing to announce
     expect(await statusOf('fresh')).toBe('running');
   });
 

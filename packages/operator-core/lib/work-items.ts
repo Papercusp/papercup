@@ -392,6 +392,30 @@ export interface CreateWorkItemInput {
   assignee?: string;
   /** Durable delegator (collapse-delegate D-002). Issue-family. */
   assignedBy?: string;
+  /**
+   * URGENT enqueue (swarm-coordination P-006/D-005): wake the Pot operator (the
+   * brain) immediately instead of waiting out its slow cadence. Floor-debounced +
+   * coalesced (a burst of urgent creates collapses to one wake); fire-and-forget
+   * (the create never fails because the wake path failed). Enqueue-time wake
+   * semantics only — nothing durable is stamped on the item (severity/rank are
+   * the durable priority surfaces).
+   */
+  urgent?: boolean;
+}
+
+/** Fire the urgent brain wake for an urgent enqueue (P-006). Lazy import +
+ *  fire-and-forget: same pattern as the settled-events emit — a wake-path
+ *  failure must never break the write. */
+function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
+  if (!input.urgent) return;
+  void import('./pot/urgent-wake')
+    .then((m) =>
+      m.requestUrgentPotWake({
+        reason: `urgent work_item ${wi.id} (${wi.kind}) enqueued: ${wi.title}`,
+        harness: wi.harness,
+      }),
+    )
+    .catch(() => {});
 }
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
@@ -413,7 +437,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       assignedBy: input.assignedBy,
       payload: input.payload,
     });
-    return issueToWorkItem(issue);
+    const created = issueToWorkItem(issue);
+    maybeFireUrgentWake(input, created);
+    return created;
   }
 
   // feature-family — harness-scoped row in harness_features_consolidated.
@@ -478,6 +504,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       created_ts: nowIso(),
     });
   }
+  maybeFireUrgentWake(input, wi);
   return wi;
 }
 

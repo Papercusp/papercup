@@ -151,13 +151,18 @@ export async function buildOperatorPrompt(
   systemSections.push(
     `## Calling tools\n\n` +
       `Every tool you can call is listed in **Available tools** above — they are ` +
-      `ALREADY LOADED and ready to call directly. Two hard rules:\n` +
+      `ALREADY LOADED and ready to call directly. Three hard rules:\n` +
       `- **Never call \`ToolSearch\`.** Your tools are not deferred; searching ` +
       `finds nothing new and wastes the turn. Just call the tool.\n` +
       `- **Use the exact catalog name — underscores, never colons.** It is ` +
       `\`harness_status\`, not \`harness:status\`; \`chat_ask_choice\`, not ` +
       `\`chat:ask_choice\`. Don't retry name variants; the catalog name is the ` +
-      `only form that resolves.`,
+      `only form that resolves.\n` +
+      `- **The catalog is your ENTIRE tool surface — there are no built-ins.** ` +
+      `You have no \`Bash\`, no \`Task\`, no file or shell access, and they will ` +
+      `not work if you try. Never emit a \`Bash(...)\` call as a comment or ` +
+      `no-op. If no catalog tool does what you need, say so in your \`<say>\` ` +
+      `instead of improvising a tool.`,
   );
 
   const playbook = loadRoleToolsMd('operator');
@@ -280,7 +285,7 @@ NOTE: chat_ask_choice works in both text and voice. Voice users hear the questio
   userSections.push(
     `## Modality\n\nOutput surface: **${modality}**.\n\n` +
       (modality === 'voice'
-        ? 'You are speaking to a voice user — every <say> is read aloud by TTS, so brevity is a HARD constraint, not a style preference. (1) LENGTH: each <say> MUST be ≤220 characters / 1–2 short sentences. NEVER read a list, multiple feature IDs, or a multi-item status dump in one <say>. When you have more than one fact, lead with the SINGLE most important one and OFFER to continue ("…want the rest?") — put the remainder in a later turn or a card, never in a longer <say>. (2) ONE QUESTION per turn — never stack two. (3) DISAMBIGUATION: when the user is ambiguous and there are ≥2 plausible targets (e.g. "approve the busy one"), do NOT guess or pick one yourself — emit ONE chat_ask_choice card with voiceAnswerable:true listing the candidates (voice users hear the options and speak or click their pick). Use a plain <say> recommendation only when there is a single obvious answer. chat_ask_choice supports ≤6 short options. (4) GROUNDED: never state a count or status before the tool result that supports it has come back — call the tool first, then speak the result; never invent a number and silently correct it next turn. (5) PLAIN LANGUAGE: no internal jargon or raw IDs read aloud (not "F-FMT-002 dash-delimited parsing" / "dig the chunks") — say what a non-engineer listener understands ("the formatting fix", "the items waiting on you").'
+        ? 'You are speaking to a voice user — every <say> is read aloud by TTS, so brevity is a HARD constraint, not a style preference. (1) LENGTH: each <say> MUST be ≤220 characters / 1–2 short sentences. NEVER read a list, multiple feature IDs, or a multi-item status dump in one <say>. When you have more than one fact, lead with the SINGLE most important one and OFFER to continue ("…want the rest?") — put the remainder in a later turn or a card, never in a longer <say>. (2) ONE QUESTION per turn — never stack two. (3) DISAMBIGUATION: when the user is ambiguous and there are ≥2 plausible targets (e.g. "approve the busy one"), do NOT guess or pick one yourself — emit ONE chat_ask_choice card with voiceAnswerable:true listing the candidates (voice users hear the options and speak or click their pick). Use a plain <say> recommendation only when there is a single obvious answer. chat_ask_choice supports ≤6 short options. (4) GROUNDED: never state a count or status before the tool result that supports it has come back — call the tool first, then speak the result; never invent a number and silently correct it next turn. Equally: never name or act on a project, harness, or work item that neither the user nor a tool result has surfaced in this conversation — if you are not sure it exists, look it up first. (5) PLAIN LANGUAGE: no internal jargon or raw IDs read aloud (not "F-FMT-002 dash-delimited parsing" / "dig the chunks") — say what a non-engineer listener understands ("the formatting fix", "the items waiting on you").'
         : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat_ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
   );
 
