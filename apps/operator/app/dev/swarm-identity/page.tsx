@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react';
 import { useEffect, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { HiveNounIcon, HivePrimaryMark, HiveQueenMark } from '../../_components/HiveVisualIdentity';
+import { HiveNounIcon, HiveQueenMark } from '../../_components/HiveVisualIdentity';
 import styles from './swarm-identity.module.css';
 
 type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'sentinel' | 'eclipse';
@@ -29,12 +29,12 @@ type SwarmMark = {
 const INTRO_MS = 19_000;
 const SWARM_TRANSITION_MS = 3_800;
 
-const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm. And mold the future for whatever comes next.';
+const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm, and mold the future for whatever comes next.';
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a Hive, start a swarm.',
-  'And mold the future for whatever comes next.',
+  'Create or Join a Hive, start a swarm,',
+  'and mold the future for whatever comes next.',
 ] as const;
 
 const DIRECTIONS: Direction[] = [
@@ -167,10 +167,11 @@ export default function SwarmIdentityPage() {
               <span><strong>Keepers</strong> humans</span>
               <span><strong>Bees</strong> agents</span>
             </div>
+            <a className={styles.replayIntro} href="/dev/swarm-identity?v=intro">
+              Replay intro and swarm vortex
+            </a>
           </div>
-          <div className={styles.logoStage} aria-label="Implemented The Swarm primary logo">
-            <HivePrimaryMark decorative={false} className={styles.implementedMark} />
-          </div>
+          <HeroLogo direction="blackcomb" />
         </section>
 
         <section className={styles.implementedSystem} aria-label="Implemented Swarm design system">
@@ -262,7 +263,7 @@ export default function SwarmIdentityPage() {
                 <div className={styles.browserBody}>
                   <span className={styles.miniEyebrow}>A new intelligence is forming</span>
                   <h3>Welcome to the End.</h3>
-                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm. And mold the future for whatever comes next.</p>
+                  <p>Be part of the new beginning. Create or Join a Hive, start a swarm, and mold the future for whatever comes next.</p>
                   <div className={styles.browserActions}>
                     <button type="button">Create a Hive</button>
                     <button type="button">Join a Hive</button>

@@ -2880,13 +2880,6 @@ async fn refetch_all(
             let _ = tx.send(Event::Error(format!("activity-todos: {e}")));
         }
     }
-    // The curator's salience feed for the Fleet curated mode (P3). A 404/absent
-    // route (pre-restart, or the curator not built) is EXPECTED — the curated
-    // view falls back to its local heuristic — so an error is swallowed quietly
-    // here rather than surfaced as a status-bar error.
-    if let Ok(s) = client.curation_feed().await {
-        let _ = tx.send(Event::CuratedSignals(s));
-    }
     // The Memory tab's list (D-006 Step 2). `ok:false` (backend unavailable —
     // mem0 unconfigured, auth missing) is an EXPECTED state the tab renders as
     // its empty state, so errors are quiet here too.

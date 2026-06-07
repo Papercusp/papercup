@@ -8,7 +8,7 @@
 
 use crate::models::{
     ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
-    ConvDetail, ConvSummary, CuratedSignal, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
+    ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
     FleetRateStatus, HarnessFeature, HarnessIssue, HarnessRef, LexiconPackPayload, Notif,
     OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution,
     ViewState, WorkItem,
@@ -110,12 +110,10 @@ pub enum Event {
     ActivityTodos(Vec<ActivityRow>),
     /// One live activity row from /api/activity/stream — prepended to the feed (P1).
     ActivityLive(ActivityRow),
-    /// The curator's salience-ranked "what matters" signals (curation:feed) for
-    /// the Fleet curated mode (P3 — wire curated view to the curator-operator).
-    CuratedSignals(Vec<CuratedSignal>),
     // --- Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ---
-    /// The selected bee changed on the ephemeral relay (the bee pane's poll). The
-    /// reducer updates `bee` + signals a dossier refetch when it actually changed.
+    /// The Fleet-tab bee selection changed (applied in-process by the run loop's
+    /// `PublishBeeSelection` arm — pui-dock-consolidation-2026-06-07). The
+    /// reducer updates `bee`, clearing the stale dossier on a change.
     BeeSelection {
         owner_id: Option<String>,
         name: Option<String>,

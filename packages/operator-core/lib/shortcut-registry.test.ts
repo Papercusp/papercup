@@ -128,6 +128,8 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
     expectCombo('goto.inbox', 'mod+i');
     expectCombo('harness.create', 'mod+shift+n');
     expectCombo('settings.open', 'mod+comma');
+    expectCombo('search.global', 'mod+shift+f');
+    expectCombo('panel.togglePresence', 'mod+u');
   });
 
   it('mod+/ moved from the palette to the cheat-sheet (Discord help combo)', () => {

@@ -28,7 +28,7 @@ use crate::ui::trunc;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph, Wrap},
+    widgets::{List, ListItem, Paragraph},
     Frame,
 };
 
@@ -82,42 +82,6 @@ impl BeeState {
             .filter(|s| !s.is_empty())
             .or_else(|| self.owner_id.clone())
     }
-}
-
-/// Render the bee dossier full-screen (the `pui bee-pane` body). Pure over `&App`.
-pub fn draw_bee(f: &mut Frame, app: &App, area: Rect) {
-    // Empty state: no bee selected in the swarm pane yet.
-    let Some(_owner) = app.bee.owner_id.as_deref() else {
-        let hint = format!(
-            "{} select a bee in the swarm pane\n\nThe dossier shows the selected bee's task list\n(top) and its coord inbox / outbox (bottom).",
-            glyph::nav::CURSOR
-        );
-        f.render_widget(
-            Paragraph::new(hint)
-                .wrap(Wrap { trim: false })
-                .style(Theme::panel())
-                .block(Theme::block(
-                    Line::from(format!(" {} Bee dossier ", glyph::nav::FLEET)),
-                    false,
-                )),
-            area,
-        );
-        return;
-    };
-
-    // Top 50% = task list; bottom 50% = inbox over outbox.
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-    draw_tasklist(f, app, rows[0]);
-
-    let bottom = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
-    draw_inbox(f, app, bottom[0]);
-    draw_outbox(f, app, bottom[1]);
 }
 
 /// Top region: the bee's full work-list in rank (priority) order.
@@ -353,8 +317,23 @@ mod tests {
 
     fn render(app: &App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        // Drive the pinned bee body directly (full-screen, like the dock pane).
-        term.draw(|f| draw_bee(f, app, f.area())).unwrap();
+        // Compose the dossier pieces the Fleet tab renders (tasklist over
+        // inbox/outbox) — the old full-screen bee pane is gone
+        // (pui-dock-consolidation-2026-06-07).
+        term.draw(|f| {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(f.area());
+            draw_tasklist(f, app, rows[0]);
+            let bottom = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(rows[1]);
+            draw_inbox(f, app, bottom[0]);
+            draw_outbox(f, app, bottom[1]);
+        })
+        .unwrap();
         term.backend()
             .buffer()
             .content()
@@ -386,14 +365,6 @@ mod tests {
         // A fetch for the current bee lands.
         s.set_dossier("su-a", Some(BeeAssignment::default()), None);
         assert!(s.assignment.is_some());
-    }
-
-    #[test]
-    fn empty_state_when_no_bee_selected() {
-        let app = App::new();
-        let text = render(&app, 60, 24);
-        assert!(text.contains("select a bee in the swarm pane"));
-        assert!(text.contains("Bee dossier"));
     }
 
     #[test]

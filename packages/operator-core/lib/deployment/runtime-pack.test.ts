@@ -19,6 +19,8 @@ describe('packRuntimeTarball', () => {
       writeFileSync(join(root, 'node_modules', 'dep', 'big.js'), '//');
       mkdirSync(join(root, 'sub', 'target'), { recursive: true });
       writeFileSync(join(root, 'sub', 'target', 'bin'), 'x');
+      mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
+      writeFileSync(join(root, 'apps', 'operator', '.env.local'), 'SECRET=1');
 
       const out = join(root, '..', 'pc-pack-out.tgz');
       const { bytes } = await packRuntimeTarball(root, out);
@@ -30,6 +32,8 @@ describe('packRuntimeTarball', () => {
       expect(listing).not.toContain('.git/HEAD');
       expect(listing).not.toContain('node_modules');
       expect(listing).not.toContain('target/bin');
+      // security: env files (live secrets + host-specific config) never ship
+      expect(listing).not.toContain('.env.local');
       rmSync(out, { force: true });
     } finally {
       rmSync(root, { recursive: true, force: true });

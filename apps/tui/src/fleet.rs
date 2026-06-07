@@ -12,11 +12,11 @@
 //!   - **worker-todo mirroring** — the `kind:"todos"` activity rows, mapped to
 //!     per-agent todo lists.
 //!
-//! Two modes (D-006): **curated** (default, calm — per-agent latest + plan
-//! progress) and the **faithful mirror** (the raw activity firehose). Both
-//! consume the same stream; `m` toggles. The "wire curated to the
-//! curator-operator" seam is left open (no curator surface has landed yet) — the
-//! curated mode is a local heuristic for now.
+//! Two modes (D-006): **curated** (default, calm — roster | dossier + plan
+//! progress, whole-fleet by default, agent-filtered on selection, with a
+//! `c`-toggled comms sub-view — pui-dock-consolidation-2026-06-07) and the
+//! **faithful mirror** (the raw activity firehose). Both consume the same
+//! stream; `Tab` toggles the mode.
 //!
 //! All state + render lives here; `app.rs`/`ui.rs` only hold a `fleet` field, a
 //! `Tab::Fleet` arm, and a one-line `draw` delegation, so this barely collides
@@ -24,13 +24,13 @@
 
 use crate::app::App;
 use crate::glyph;
-use crate::models::{ActivityRow, CuratedSignal, TodoSnapshot, WorkItem};
+use crate::models::{ActivityRow, TodoSnapshot, WorkItem};
 use crate::theme::Theme;
 use crate::ui::trunc;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{List, ListItem, ListState, Paragraph},
     Frame,
 };
 use std::collections::HashMap;
@@ -79,14 +79,6 @@ pub struct FleetState {
     pub agent_todos: HashMap<String, TodoSnapshot>,
     /// Selection cursor into the agent list (the roster).
     pub agent_sel: usize,
-    /// The curator's salience-ranked "what matters" signals (curation:feed). The
-    /// curated mode shows these when available (D-006 — the curator deciding what
-    /// matters); empty otherwise.
-    pub curated_signals: Vec<CuratedSignal>,
-    /// True once `curation:feed` has answered (the curator surface is live). Lets
-    /// the curated view distinguish "curator live + fleet calm" (show "calm")
-    /// from "no curator surface yet" (fall back to the local heuristic).
-    pub curation_available: bool,
     /// Comms sub-view toggle (pui-dock-consolidation-2026-06-07, `c`): false =
     /// roster + dossier + plan-progress (default); true = roster + inbox/outbox
     /// (selected agent) over conversations (whole-fleet broadcasts + threads).
@@ -106,8 +98,6 @@ impl Default for FleetState {
             work_items: Vec::new(),
             agent_todos: HashMap::new(),
             agent_sel: 0,
-            curated_signals: Vec::new(),
-            curation_available: false,
             show_comms: false,
             all_assignments: Vec::new(),
         }
@@ -125,12 +115,6 @@ impl FleetState {
 
     pub fn set_work_items(&mut self, items: Vec<WorkItem>) {
         self.work_items = items;
-    }
-
-    /// Record the curator's salience feed (curation:feed) + mark the surface live.
-    pub fn set_curated_signals(&mut self, signals: Vec<CuratedSignal>) {
-        self.curated_signals = signals;
-        self.curation_available = true;
     }
 
     /// Replace the activity ring from a backfill (`activity:recent` returns
@@ -404,17 +388,17 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
             agg.wi_total,
             agg.wi_remaining,
         )),
-        Span::styled(format!("[{}]  m: toggle", mode.label()), Theme::info()),
+        // Key hints: Tab flips curated↔mirror (D-006 moved off `m`); `c` swaps
+        // the comms sub-view in/out (dock consolidation #3/#4).
+        Span::styled(
+            format!("[{}]  Tab: mode · c: comms", mode.label()),
+            Theme::info(),
+        ),
     ]);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
 
-/// Curated mode (D-006 — "the curator deciding what matters, calm"). When the
-/// curator surface is live (`curation:feed` answered), the salience-ranked "what
-/// matters" list leads, with agents + plan progress as supporting context. Until
-/// the curator lands (pre-restart / not built), it falls back to the local
-/// heuristic (agents + selected-agent detail + plan progress) so the view is
-/// always useful.
+/// Curated mode (D-006 — calm by default).
 /// The default Swarm view (pui-dock-consolidation-2026-06-07): roster (left) |
 /// dossier (right-top) + plan progress (right-bottom). The dossier + plan
 /// progress default to the WHOLE FLEET; selecting an agent in the roster filters
@@ -932,8 +916,68 @@ mod tests {
         assert!(text.contains("Plan progress"));
     }
 
+    #[test]
+    fn plan_progress_filters_to_selected_agents_plans() {
+        // #2: selecting an agent narrows plan progress to ITS plans (declared
+        // plan + claim plan-slugs from fleet:assignments); Esc clears.
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        let mk = |slug: &str| crate::models::PlanSummary {
+            slug: slug.into(),
+            title: slug.to_uppercase(),
+            status: "active".into(),
+            updated: "x".into(),
+            owner: None,
+            harness: None,
+            archived: false,
+            next_action: None,
+            item_counts: crate::models::ItemCounts {
+                todo: 1,
+                done: 1,
+                ..Default::default()
+            },
+            priority: None,
+        };
+        app.set_plans(vec![mk("plan-mine"), mk("plan-other")]);
+        app.fleet.all_assignments = vec![crate::models::BeeAssignment {
+            agent_id: "su-a".into(),
+            declared_plan_slug: Some("plan-mine".into()),
+            ..Default::default()
+        }];
+        // No selection → both plans render.
+        let text = render_fleet(&app, 120, 30);
+        assert!(text.contains("plan-mine"));
+        assert!(text.contains("plan-other"));
+        // Selection → only the agent's plan; the title names the agent.
+        app.bee.set_selection(Some("su-a".into()), Some("forager".into()));
+        let text = render_fleet(&app, 120, 30);
+        assert!(text.contains("plan-mine"));
+        assert!(!text.contains("plan-other"));
+        assert!(text.contains("forager"));
+        assert!(text.contains("Esc clears"));
+    }
+
+    #[test]
+    fn bee_assignment_plan_slugs_unions_declared_and_claims() {
+        let a = crate::models::BeeAssignment {
+            declared_plan_slug: Some("p-declared".into()),
+            claims: vec![
+                crate::models::BeeClaim {
+                    plan_slug: Some("p-claimed".into()),
+                },
+                crate::models::BeeClaim { plan_slug: None },
+            ],
+            ..Default::default()
+        };
+        let set = a.plan_slugs();
+        assert!(set.contains("p-declared"));
+        assert!(set.contains("p-claimed"));
+        assert_eq!(set.len(), 2);
+    }
+
     /// Brief 27 / P-010: buffer-level width safety. Render the Fleet view
-    /// (agent roster + work-item rollup + curated signals) at 80 and 120 cols
+    /// (agent roster + work-item rollup) at 80 and 120 cols
     /// and assert (a) no double-width symbol appears anywhere in the frame
     /// outside the header-only set (`glyph::header::SET` — Block-title emoji),
     /// and (b) the roster labels align in a single column across rows (a wide
@@ -998,22 +1042,6 @@ mod tests {
             );
         }
 
-    }
-
-    #[test]
-    fn curation_feed_payload_parses() {
-        // The inner JSON of the curation:feed MCP envelope.
-        let j = r#"{"signals":[
-            {"id":"escalation:m1","kind":"escalation","title":"help","detail":null,
-             "harness":"papercup","severity":"advisory","ref":"escalation:m1",
-             "ts":"2026-06-04T00:00:00Z","disposition":"surface","urgent":true}
-        ],"count":1,"policyVersion":"curator-v1"}"#;
-        let p: crate::models::CurationFeedPayload = serde_json::from_str(j).unwrap();
-        assert_eq!(p.signals.len(), 1);
-        assert_eq!(p.signals[0].kind, "escalation");
-        assert!(p.signals[0].urgent);
-        assert_eq!(p.signals[0].disposition, "surface");
-        assert_eq!(p.signals[0].harness.as_deref(), Some("papercup"));
     }
 
     /// Live read-only QA (feedback-no-live-keystroke-drive-pui): fetch REAL fleet

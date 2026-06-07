@@ -6,7 +6,7 @@
 use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
-    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal, DocsResponse,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
     TuiPaneContribution, ViewState, WorkItem,
@@ -1634,14 +1634,6 @@ impl App {
             .collect()
     }
 
-    /// The curator's signals under the current pot scope (Fleet curated mode).
-    pub fn visible_signals(&self) -> Vec<&CuratedSignal> {
-        self.fleet
-            .curated_signals
-            .iter()
-            .filter(|s| self.in_scope(s.harness.as_deref()))
-            .collect()
-    }
 
     /// The Memory tab's visible entries (D-006): search hits while a query is
     /// active, else the full list. `memory_sel` indexes THIS list.
@@ -2127,10 +2119,12 @@ impl App {
             .map(|r| (r.owner_id.clone(), r.agent.clone()))
     }
 
-    /// If the Fleet (swarm) tab is focused, publish the selected bee to the relay
-    /// so the bee-dossier pane renders it (pui-bee-dossier-pane-2026-06-06). The
-    /// run loop POSTs the result. Off the Fleet tab → `Action::Render` (no-op
-    /// publish). Called after a roster cursor move + on Fleet entry.
+    /// If the Fleet (swarm) tab is focused, publish the cursor's bee as the
+    /// selection: the run loop applies it in-process (the Fleet-tab dossier —
+    /// pui-dock-consolidation-2026-06-07) and POSTs the relay for external
+    /// consumers. Off the Fleet tab → `Action::Render` (no-op publish). Called
+    /// after a roster cursor move; entering Fleet leaves the selection empty so
+    /// the whole-fleet view leads (#2).
     fn publish_swarm_selection(&self) -> Action {
         if self.tab != Tab::Fleet {
             return Action::Render;
@@ -2478,13 +2472,6 @@ impl App {
         }
     }
 
-    /// Whether the workbench WORK AREA is empty — the companion is linked but
-    /// holds no work-area terminal panes (no agents). Drives the empty-pane hint
-    /// (D-002): at startup the work area is blank, so the Fleet view shows
-    /// "press n to launch an agent here" instead of nothing.
-    pub fn work_area_empty(&self) -> bool {
-        self.companion_version.is_some() && self.work_pane_ids().is_empty()
-    }
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
     /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
@@ -2671,10 +2658,11 @@ impl App {
                 let to_open =
                     crate::session_panes::panes_to_open(&self.tracked_panes, &pending, &self.local_host);
                 if to_open.is_empty() {
-                    // Swarm pane: publish the initial bee selection once the roster
-                    // lands so the bee-dossier pane has something to render before
-                    // the first cursor move (pui-bee-dossier-pane-2026-06-06).
-                    if self.tab == Tab::Fleet {
+                    // Swarm pane: re-publish an EXISTING bee selection when the
+                    // roster lands (keeps the relay fresh across roster churn).
+                    // No selection → leave it that way: the default Fleet view is
+                    // the whole fleet (#2); only a cursor move selects an agent.
+                    if self.tab == Tab::Fleet && self.bee.owner_id.is_some() {
                         return self.publish_swarm_selection();
                     }
                     Action::Render
@@ -2871,11 +2859,6 @@ impl App {
             }
             Event::ActivityLive(a) => {
                 self.fleet.push_activity(a);
-                self.last_error = None;
-                Action::Render
-            }
-            Event::CuratedSignals(s) => {
-                self.fleet.set_curated_signals(s);
                 self.last_error = None;
                 Action::Render
             }
@@ -3736,6 +3719,15 @@ impl App {
                     self.memory_sel = 0;
                     return Action::Render;
                 }
+                // On the Fleet tab, Esc clears an active agent filter back to
+                // the whole-fleet dossier/plan view (#2). The run loop applies
+                // the cleared selection in-process + republishes the relay.
+                if self.tab == Tab::Fleet && self.bee.owner_id.is_some() {
+                    return Action::PublishBeeSelection {
+                        owner_id: None,
+                        name: None,
+                    };
+                }
                 self.toast = None;
                 Action::Render
             }
@@ -3824,6 +3816,23 @@ impl App {
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
+            // Comms sub-view toggle (pui-dock-consolidation-2026-06-07 #3/#4):
+            // 'c' on the Fleet tab swaps the dossier + plan-progress view for the
+            // comms view (selected agent's inbox/outbox over the whole-fleet
+            // conversations). Shadows the Cupboard switch key while on Fleet —
+            // the contextual-handlers-win-first rule of the keymap arm below.
+            KeyCode::Char('c') if self.tab == Tab::Fleet => {
+                self.fleet.show_comms = !self.fleet.show_comms;
+                // The conversations half reuses the Conversations-tab data —
+                // lazy-load it the first time the comms view opens.
+                if self.fleet.show_comms
+                    && self.conversations.is_empty()
+                    && !self.conversations_loading
+                {
+                    return self.refetch_conversations();
+                }
+                Action::Render
+            }
             // Plugins tab (D-007/D-014): in Panes focus, Enter launches the
             // selected pane (original D-002 behavior); in List focus, Enter
             // loads the selected plugin's per-harness config for the settings
@@ -4023,6 +4032,12 @@ impl App {
                     // socket + fetch the channel list on first open.
                     if t == Tab::Voice && !self.voice_ui.connected {
                         return Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect);
+                    }
+                    // Fleet (Swarm) tab: refresh the whole-fleet task list — the
+                    // default dossier (pui-dock-consolidation-2026-06-07 #2) —
+                    // on every entry (assignments are volatile: claims churn).
+                    if t == Tab::Fleet {
+                        return Action::FetchFleetAssignments;
                     }
                     Action::Render
                 }
@@ -4690,6 +4705,66 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_fleet_fetches_whole_fleet_assignments() {
+        // Entering the Fleet tab refreshes the whole-fleet task list — the
+        // default dossier (pui-dock-consolidation-2026-06-07 #2).
+        let mut a = App::new();
+        assert_eq!(
+            a.update(key('4', KeyModifiers::NONE)),
+            Action::FetchFleetAssignments
+        );
+        assert_eq!(a.tab, Tab::Fleet);
+        // The payload lands in fleet.all_assignments via the reducer.
+        a.update(Event::FleetAssignments(vec![
+            crate::models::BeeAssignment::default(),
+        ]));
+        assert_eq!(a.fleet.all_assignments.len(), 1);
+    }
+
+    #[test]
+    fn fleet_comms_toggle_on_c_lazy_loads_conversations() {
+        // 'c' on the Fleet tab swaps in the comms sub-view (#3/#4); the first
+        // open lazy-loads the whole-fleet conversations list it renders.
+        let mut a = App::new();
+        a.switch_to(Tab::Fleet);
+        let act = a.update(key('c', KeyModifiers::NONE));
+        assert!(a.fleet.show_comms);
+        assert!(matches!(act, Action::FetchConversations { .. }));
+        assert!(a.conversations_loading);
+        // Toggling back off is a plain render — no refetch.
+        assert_eq!(a.update(key('c', KeyModifiers::NONE)), Action::Render);
+        assert!(!a.fleet.show_comms);
+    }
+
+    #[test]
+    fn esc_on_fleet_clears_agent_filter() {
+        // Esc with an agent selected publishes the CLEARED selection — back to
+        // the whole-fleet dossier/plan view (#2).
+        let mut a = App::new();
+        a.switch_to(Tab::Fleet);
+        a.update(Event::BeeSelection {
+            owner_id: Some("su-x".into()),
+            name: Some("forager".into()),
+        });
+        match a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))) {
+            Action::PublishBeeSelection { owner_id, name } => {
+                assert!(owner_id.is_none());
+                assert!(name.is_none());
+            }
+            other => panic!("expected PublishBeeSelection(None), got {other:?}"),
+        }
+        // With no selection, Esc falls through to the toast-dismiss render.
+        a.update(Event::BeeSelection {
+            owner_id: None,
+            name: None,
+        });
+        assert_eq!(
+            a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))),
+            Action::Render
+        );
+    }
+
+    #[test]
     fn lexicon_pack_event_routes_tab_labels() {
         use crate::models::{LexiconPackPayload, TermForms};
         use std::collections::HashMap;
@@ -4994,40 +5069,6 @@ mod tests {
             Action::Render
         );
         assert!(a.fleet_action_menu.is_none());
-    }
-
-    #[test]
-    fn work_area_empty_tracks_companion_and_panes() {
-        use pui_companion_proto::{PaneNode, TabNode, Topology};
-        let mut a = App::new();
-        // No companion link → not "empty" (we just don't know the work area).
-        assert!(!a.work_area_empty());
-        a.companion_version = Some("0.1.0".into());
-        a.topology = Some(Topology {
-            tabs: vec![],
-            panes: vec![],
-        });
-        assert!(a.work_area_empty());
-        // A live work pane → no longer empty.
-        a.topology = Some(Topology {
-            tabs: vec![TabNode {
-                pos: 0,
-                name: "papercup".into(),
-                active: true,
-                swap_layout: None,
-                swap_dirty: false,
-            }],
-            panes: vec![PaneNode {
-                id: 1,
-                tab: 0,
-                title: "claude".into(),
-                focused: true,
-                is_plugin: false,
-                exited: false,
-                command: Some("psu".into()),
-            }],
-        });
-        assert!(!a.work_area_empty());
     }
 
     #[test]
@@ -6655,23 +6696,6 @@ mod tests {
         );
         assert_eq!(a.fleet.activity.len(), 2);
         assert_eq!(a.fleet.activity[0].summary.as_deref(), Some("▶ test")); // prepended
-                                                                            // The curator feed marks the surface available + stores the signals (P3).
-        assert!(!a.fleet.curation_available);
-        let sig = crate::models::CuratedSignal {
-            id: "e1".into(),
-            kind: "escalation".into(),
-            title: "needs a human".into(),
-            detail: None,
-            harness: Some("papercup".into()),
-            severity: None,
-            disposition: "surface".into(),
-            urgent: true,
-            ts: "2026-06-04T00:00:00Z".into(),
-        };
-        assert_eq!(a.update(Event::CuratedSignals(vec![sig])), Action::Render);
-        assert!(a.fleet.curation_available);
-        assert_eq!(a.fleet.curated_signals.len(), 1);
-        assert!(a.fleet.curated_signals[0].urgent);
     }
 
     #[test]

@@ -316,9 +316,22 @@ function isLoopback(req: IncomingMessage): boolean {
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
 }
 
-/** Lazy-start the loopback VNC WS bridge (first vnc-session request). */
+let startingPromise: Promise<number | null> | null = null;
+
+/** Lazy-start the loopback VNC WS bridge (first vnc-session request). Concurrent
+ *  callers share ONE in-flight bind (no TOCTOU on `state.started` → null port). */
 export async function startFrameVncWs(): Promise<number | null> {
-  if (state.started) return state.chosenPort;
+  if (state.chosenPort !== null) return state.chosenPort;
+  if (!startingPromise) {
+    startingPromise = doStartFrameVncWs().finally(() => {
+      startingPromise = null;
+    });
+  }
+  return startingPromise;
+}
+
+async function doStartFrameVncWs(): Promise<number | null> {
+  if (state.chosenPort !== null) return state.chosenPort;
   state.started = true;
   const { WebSocketServer } = await import('ws');
   await new Promise<void>((resolve) => {
@@ -354,7 +367,7 @@ export async function startFrameVncWs(): Promise<number | null> {
           return;
         }
         console.error('[frame-vnc] ws server failed to bind:', e.message);
-        state.started = false;
+        state.started = false; // allow a later retry to re-attempt the bind
         resolve();
       });
     };

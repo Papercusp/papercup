@@ -246,6 +246,19 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     defaultCombo: 'mod+comma', // Discord (and most apps): Ctrl+,
     category: 'navigation',
   },
+  {
+    id: 'search.global',
+    description: 'Search everywhere (plans, docs, turns, decisions)',
+    defaultCombo: 'mod+shift+f', // Discord: search all channels
+    category: 'global',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
+    id: 'panel.togglePresence',
+    description: 'Toggle the live-agents rail (member list)',
+    defaultCombo: 'mod+u', // Discord: Ctrl+U member list
+    category: 'global',
+  },
 
   // ── Feature list ────────────────────────────────────────────────
   {

@@ -2992,13 +2992,32 @@ mod tests {
             heartbeat_at: None,
             ..Default::default()
         }]);
+        // Default (no selection): the whole-fleet task list leads (#2).
         let text = render(&app, 120, 40);
         assert!(text.contains("Fleet")); // headline
         assert!(text.contains("Agents (1)"));
         assert!(text.contains("claude"));
-        assert!(text.contains("Dossier"));
-        assert!(text.contains("worker"));
-        assert!(text.contains("a.rs")); // file listed in the dossier
+        assert!(text.contains("fleet task list"));
+        // Selecting a bee swaps in ITS dossier (the bee tasklist).
+        app.bee.set_selection(Some("su-1".into()), Some("claude".into()));
+        app.bee.set_dossier(
+            "su-1",
+            Some(crate::models::BeeAssignment {
+                agent_id: "su-1".into(),
+                intent: "porting handlers".into(),
+                load: 1,
+                queued: vec![crate::models::BeeWorkItem {
+                    id: "WI-1".into(),
+                    title: "port the handler".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            None,
+        );
+        let text = render(&app, 120, 40);
+        assert!(text.contains("task list (1 claimed)"));
+        assert!(text.contains("port the handler"));
     }
 
     #[test]
@@ -4047,24 +4066,17 @@ mod tests {
     }
 
     #[test]
-    fn fleet_empty_work_area_hint_and_enter_title_render() {
-        use pui_companion_proto::Topology;
+    fn fleet_agents_title_advertises_enter_and_launch() {
+        // The work-area pane is gone (dock consolidation) — the launch + reach
+        // affordances live on the Agents column title now.
         let mut app = App::new();
         app.tab = Tab::Fleet;
         app.show_presence = false;
-        // Companion linked but no work-area panes → the work area is empty.
-        app.companion_version = Some("0.1.0".into());
-        app.topology = Some(Topology {
-            tabs: vec![],
-            panes: vec![],
-        });
         app.set_roster(vec![fleet_roster("su-a", "claude", "x")]);
         let text = render(&app, 120, 24);
-        // D-002: the empty work area surfaces the launch affordance, not a blank.
-        assert!(text.contains("Work area is empty"));
-        assert!(text.contains("press n to launch"));
         // D-001: Enter-by-location routing is advertised on the Agents column.
         assert!(text.contains("Enter: reach"));
+        assert!(text.contains("n: launch"));
     }
 
     #[test]
@@ -4105,12 +4117,10 @@ mod tests {
             ],
         }));
         app.update(crate::event::Event::ActivityTodos(vec![todos]));
-        // A realistic terminal height so the detail pane shows the todo list
-        // (in a short pane the preamble can push it below the fold).
+        // The roster row carries the mirrored todo progress cell (the old
+        // per-agent detail panel folded into the roster — dock consolidation).
         let text = render(&app, 120, 44);
-        assert!(text.contains("todos (1/3)"));
-        assert!(text.contains("build fleet.rs"));
-        assert!(text.contains(crate::glyph::status::WIP)); // in_progress marker (Brief 27 vocabulary)
+        assert!(text.contains("\u{21c4}1/3")); // ⇄done/count
     }
 
     #[test]

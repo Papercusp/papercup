@@ -48,6 +48,7 @@ export default function FrameScreenTrackView({
   useEffect(() => {
     let cancelled = false;
     let session: { close(): void } | undefined;
+    let firstFrameTimer: ReturnType<typeof setTimeout> | undefined;
     let gotFrame = false;
     const wantLabel = `frame:${slug}:${display}`;
     let wantPeerId: string | null = null;
@@ -106,13 +107,14 @@ export default function FrameScreenTrackView({
         },
         onError: () => bail('video channel error'),
       });
-      setTimeout(() => {
+      firstFrameTimer = setTimeout(() => {
         if (!cancelled && !gotFrame) bail('no screen track for this display (frame not publishing?)');
       }, FIRST_FRAME_TIMEOUT_MS);
     })();
 
     return () => {
       cancelled = true;
+      if (firstFrameTimer) clearTimeout(firstFrameTimer);
       try {
         session?.close();
       } catch {

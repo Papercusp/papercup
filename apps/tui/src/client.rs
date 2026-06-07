@@ -12,11 +12,11 @@ use crate::models;
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
     BeeAssignment, BeeMailPayload, ConvDetail, ConvListResponse, ConvSummary, ConversationLoad,
-    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, CuratedSignal,
-    CurationFeedPayload, DocsResponse, FeaturesPayload, FleetAssignmentsPayload, FlagsResponse,
+    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse,
+    DocsResponse, FeaturesPayload, FleetAssignmentsPayload, FlagsResponse,
     HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary,
     LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary,
-    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, SelectedBee, SelectedBeePayload,
+    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
     TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState,
     ViewStateResponse, WorkItem, WorkItemsPayload,
 };
@@ -814,29 +814,6 @@ impl OperatorClient {
         self.subscribe_sse("/api/activity/stream").await
     }
 
-    /// The curator's salience-ranked fleet signals via the `curation:feed`
-    /// agent-tool (curator-operator; MCP envelope unwrapped). The Fleet curated
-    /// mode shows these as "what matters". A 404/absent route (pre-restart, or the
-    /// curator not built) surfaces as an Err the caller treats as "fall back to
-    /// the local heuristic" — never fatal.
-    pub async fn curation_feed(&self) -> Result<Vec<CuratedSignal>> {
-        let env = self
-            .post_json(
-                "/api/agent-tools/curation/feed",
-                serde_json::json!({ "limit": 50 }),
-            )
-            .await?;
-        let text = env
-            .get("content")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-            .context("curation:feed: missing content[0].text")?;
-        Ok(serde_json::from_str::<CurationFeedPayload>(text)
-            .context("parse curation feed payload")?
-            .signals)
-    }
-
     // ─── Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ───
     // The bee pane (`pui bee-pane`) renders the swarm-selected bee's dossier:
     // its ranked work-list (fleet:assignments) + coord inbox/outbox
@@ -906,24 +883,6 @@ impl OperatorClient {
             .and_then(|t| t.as_str())
             .context("fleet:bee_mail: missing content[0].text")?;
         serde_json::from_str::<BeeMailPayload>(text).context("parse bee_mail payload")
-    }
-
-    /// Read the ephemeral selected bee (the bee pane polls this; the swarm pane
-    /// sets it). `fleet:selected_bee {}` (MCP envelope unwrapped). `None` = unset.
-    pub async fn selected_bee_get(&self) -> Result<Option<SelectedBee>> {
-        let env = self
-            .post_json("/api/agent-tools/fleet/selected_bee", serde_json::json!({}))
-            .await?;
-        let text = env
-            .get("content")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-            .context("fleet:selected_bee: missing content[0].text")?;
-        Ok(serde_json::from_str::<SelectedBeePayload>(text)
-            .context("parse selected_bee payload")?
-            .selected
-            .filter(|s| s.owner_id.is_some()))
     }
 
     /// Publish the swarm-pane selection. `fleet:selected_bee { select }`. An

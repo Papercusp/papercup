@@ -298,6 +298,10 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     // running each frame's loop.
     add('orchestrator-loop', 'frame orchestrator loop (D-006)', [
       `cd ${shq(`${root}/runtime`)}`,
+      // DBOS itself is gated default-OFF (instrumentation-node checks DBOS_ENABLE);
+      // without it the frame's "own loop" silently never launches (found live
+      // 2026-06-06 in the work-on-frame verification).
+      'export PAPERCUSP_DBOS_ENABLE=1',
       'export PAPERCUSP_DBOS_ORCHESTRATOR=1',
       // Control node (Queen) supervises ACROSS frames → unscoped (`*`); an execution
       // frame self-dispatches only the one harness it hosts (D-006).

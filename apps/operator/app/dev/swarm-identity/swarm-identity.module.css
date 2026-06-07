@@ -470,6 +470,30 @@
   color: var(--accent-2);
 }
 
+.replayIntro {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 18px;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 18% 10%, color-mix(in srgb, var(--accent-2) 18%, transparent), transparent 46%),
+    rgba(0, 0, 0, 0.36);
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-decoration: none;
+  text-transform: uppercase;
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.replayIntro:hover {
+  border-color: color-mix(in srgb, var(--accent-2) 58%, transparent);
+  color: var(--text);
+}
+
 .logoStage,
 .logoStageCompact {
   position: relative;
@@ -492,6 +516,7 @@
 .logoStage svg {
   width: min(270px, 70vw);
   height: min(270px, 70vw);
+  overflow: visible;
 }
 
 .logoStage .implementedMark {
@@ -515,7 +540,7 @@
   inset: 28px;
   border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 999px;
-  animation: rotateOrbit 28s linear infinite;
+  animation: rotateOrbit 18s linear infinite;
 }
 
 .orbit span {
@@ -532,6 +557,22 @@
 .orbit span:nth-child(3) { --bee-size: 15px; right: 16%; bottom: 7%; rotate: 226deg; }
 .orbit span:nth-child(4) { --bee-size: 18px; left: 14%; bottom: 11%; rotate: 296deg; }
 .orbit span:nth-child(5) { --bee-size: 13px; left: 4%; top: 31%; rotate: 18deg; }
+
+.logoStage:not(.logoStageCompact) .swarmOrbitStroke {
+  stroke-dasharray: 7 16;
+  animation: orbitPulse 4.8s ease-in-out infinite;
+}
+
+.logoStage:not(.logoStageCompact) .swarmBee,
+.logoStage:not(.logoStageCompact) .swarmBeeHot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: beeSignal 2.8s ease-in-out infinite;
+}
+
+.logoStage:not(.logoStageCompact) .swarmBeeHot {
+  animation-duration: 2.2s;
+}
 
 .switcher {
   display: grid;
@@ -1211,6 +1252,32 @@
 @keyframes rotateOrbit {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes orbitPulse {
+  0%,
+  100% {
+    opacity: 0.44;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    opacity: 0.92;
+    stroke-dashoffset: -34;
+  }
+}
+
+@keyframes beeSignal {
+  0%,
+  100% {
+    opacity: 0.84;
+    scale: 0.96;
+    filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 44%, transparent));
+  }
+  50% {
+    opacity: 1;
+    scale: 1.08;
+    filter: drop-shadow(0 0 18px color-mix(in srgb, var(--accent-2) 64%, transparent));
   }
 }
 

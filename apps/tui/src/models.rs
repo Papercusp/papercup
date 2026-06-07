@@ -1185,40 +1185,6 @@ pub struct TodoSnapshot {
     pub todos: Vec<TodoItem>,
 }
 
-/// One salience-ranked fleet signal from the curator's `curation:feed` tool
-/// (curator-operator-2026-06-04). The Fleet **curated** mode renders these as
-/// "what matters across the fleet" (D-006). `disposition` is surface|batch|
-/// suppress; `urgent` marks escalations/blockers.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CuratedSignal {
-    #[serde(default)]
-    pub id: String,
-    /// escalation | blocker | decision | completion | progress.
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub detail: Option<String>,
-    #[serde(default)]
-    pub harness: Option<String>,
-    #[serde(default)]
-    pub severity: Option<String>,
-    #[serde(default)]
-    pub disposition: String,
-    #[serde(default)]
-    pub urgent: bool,
-    #[serde(default)]
-    pub ts: String,
-}
-
-/// Inner JSON of the `curation:feed` MCP envelope (`content[0].text`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct CurationFeedPayload {
-    #[serde(default)]
-    pub signals: Vec<CuratedSignal>,
-}
-
 // ─── Memory tab (D-006 Step 2, pui-completion-and-polish-2026-06-05) ────────
 //
 // The PUI Memory tab reads the `memory:list` / `memory:search` agent tools
@@ -1672,24 +1638,6 @@ pub struct BeeMailPayload {
     pub inbox: BeeMailSide,
     #[serde(default)]
     pub outbox: BeeMailSide,
-}
-
-/// The ephemeral selected-bee relay value (`fleet:selected_bee` → `selected`).
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-pub struct SelectedBee {
-    #[serde(default)]
-    pub owner_id: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub ts: i64,
-}
-
-/// Inner JSON of the `fleet:selected_bee` envelope (`content[0].text`).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct SelectedBeePayload {
-    #[serde(default)]
-    pub selected: Option<SelectedBee>,
 }
 
 // ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ──────────────────────────────

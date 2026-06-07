@@ -17,6 +17,8 @@ import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
 import GlobalShortcutsHelp from '@/app/_components/GlobalShortcutsHelp';
 import GlobalAppShortcuts from '@/app/_components/GlobalAppShortcuts';
 import GlobalVoiceShortcuts from '@/app/_components/GlobalVoiceShortcuts';
+import GlobalSearchDialog from '@/app/_components/GlobalSearchDialog';
+import PresenceRail from '@/app/_components/PresenceRail';
 // Side effect: register the browser voice controls into operator-core's
 // voice-control bridge so voice.* commands reach the UI voice engine without a
 // core→@/app back-edge (operator-core stays headless/UI-free).
@@ -143,10 +145,13 @@ function RootComponent() {
               <GlobalFindInPage />
               {/* Discord-parity shortcuts (discord-shortcuts 2026-06-06):
                   Mod+/ cheat-sheet, Mod+, settings, Mod+I inbox,
-                  Mod+Shift+N create, Mod+Shift+M/D voice mute/deafen. */}
+                  Mod+Shift+N create, Mod+Shift+M/D voice mute/deafen,
+                  Mod+Shift+F global search, Mod+U live-agents rail. */}
               <GlobalShortcutsHelp />
               <GlobalAppShortcuts />
               <GlobalVoiceShortcuts />
+              <GlobalSearchDialog />
+              <PresenceRail />
               <RouteTransitionProvider>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>

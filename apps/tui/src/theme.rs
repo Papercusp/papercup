@@ -288,19 +288,6 @@ impl Theme {
         }
     }
 
-    /// Colour for a curated-signal kind (escalation/blocker/decision/…).
-    pub fn signal_style(kind: &str) -> Style {
-        match kind.trim().to_ascii_lowercase().as_str() {
-            "escalation" => Self::warn(),
-            "blocker" => Self::danger(),
-            "completion" => Self::success(),
-            "decision" => Style::default()
-                .fg(Self::active().human)
-                .add_modifier(Modifier::BOLD),
-            _ => Self::dim(),
-        }
-    }
-
     /// A status glyph + its colour as a ready-to-render `Span`.
     pub fn status_marker(token: &str) -> Span<'static> {
         Span::styled(glyph::status_for(token), Self::status_style(token))
@@ -312,11 +299,6 @@ impl Theme {
             glyph::liveness_dot(stale, liveness),
             Self::liveness_style(stale, liveness),
         )
-    }
-
-    /// A curated-signal glyph + its colour as a `Span`.
-    pub fn signal_marker(kind: &str) -> Span<'static> {
-        Span::styled(glyph::signal_for(kind), Self::signal_style(kind))
     }
 }
 

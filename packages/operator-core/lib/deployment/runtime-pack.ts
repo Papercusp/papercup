@@ -14,7 +14,11 @@ import { statSync } from 'node:fs';
 
 const execFileP = promisify(execFile);
 
-/** Heavy/derived trees the frame never needs — it re-installs deps itself. */
+/** Heavy/derived trees the frame never needs — it re-installs deps itself.
+ *  `.env*` is a SECURITY exclude: the dev box's .env.local carries live secrets
+ *  and host-specific config (a pinned DATABASE_URL would override the frame's
+ *  embedded-pg discovery; BIND_HOST=0.0.0.0 would expose the frame's operator).
+ *  The bootstrap's exported env is the frame's ONLY env authority. */
 export const DEFAULT_RUNTIME_EXCLUDES = [
   './.git',
   '.git', // submodule .git files/dirs at any depth
@@ -26,6 +30,7 @@ export const DEFAULT_RUNTIME_EXCLUDES = [
   'test-results',
   'playwright-report',
   '*.log',
+  '.env*', // secrets + host-specific config — never ship to a frame
 ];
 
 export interface PackResult {
