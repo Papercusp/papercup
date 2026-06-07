@@ -129,6 +129,9 @@ pub enum Event {
     /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
     /// them in `fleet.all_assignments`.
     FleetAssignments(Vec<BeeAssignment>),
+    /// The federated p2p roster for the Hives tab (pui-hives-tab-2026-06-07) —
+    /// every remote peer announced into `shared_presence`, via `coord:presence`.
+    Hives(Vec<crate::models::PresenceRow>),
     /// The active Hive lexicon pack, fetched once at startup
     /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
     LexiconPack(LexiconPackPayload),

@@ -17,6 +17,7 @@ mod event;
 mod fleet;
 mod framing;
 mod glyph;
+mod hives;
 mod http;
 mod ipc;
 mod layout;
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
         // pui-dock-consolidation-2026-06-07) — fall through to the normal run
         // loop: `chat-pane` is the dock's operator chat (single pinned tab);
         // `main-pane` is the dock's MAIN pane — one pui restricted to the
-        // Apiary/Voice/Swarm tabs. The old voice-/apiary-/swarm-/bee-pane
+        // Hives/Voice/Swarm tabs. The old voice-/apiary-/swarm-/bee-pane
         // single-tab modes are GONE: those surfaces are tabs (or Swarm-tab
         // sections) of the main pane now.
         Some("chat-pane") | Some("main-pane") => {}
@@ -88,11 +89,13 @@ async fn main() -> Result<()> {
         _ => None,
     };
     // The dock's MAIN pane: the tab strip + switch keys are confined to the
-    // Apiary (Cupboard) / Voice / Swarm (Fleet) tabs, opening on Swarm. The
-    // Swarm tab carries the roster, the selected-bee dossier, plan progress,
-    // and the fleet comms sub-view.
+    // Hives (p2p swarm roster) / Voice / Swarm (Fleet) tabs, opening on Swarm.
+    // The Swarm tab carries the roster, the selected-bee dossier, plan
+    // progress, and the fleet comms sub-view. (Hives replaced the Cupboard in
+    // the subset — owner ask, pui-hives-tab-2026-06-07; the Cupboard remains a
+    // workbench tab.)
     let tab_subset: Option<Vec<app::Tab>> = match subcommand.as_deref() {
-        Some("main-pane") => Some(vec![app::Tab::Cupboard, app::Tab::Voice, app::Tab::Fleet]),
+        Some("main-pane") => Some(vec![app::Tab::Hives, app::Tab::Voice, app::Tab::Fleet]),
         _ => None,
     };
 
@@ -415,6 +418,12 @@ async fn run<B: Backend>(
                 // Whole-fleet task list for the default Swarm dossier (#2) —
                 // fetched off the UI thread → Event::FleetAssignments.
                 tokio::spawn(fetch_fleet_assignments(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchHives => {
+                // The federated p2p roster for the Hives tab — fetched off the
+                // UI thread → Event::Hives (pui-hives-tab-2026-06-07).
+                tokio::spawn(fetch_hives(tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::DocsAction { action, doc_id } => {
@@ -1988,6 +1997,24 @@ async fn lexicon_fetch(tx: UnboundedSender<Event>) {
     };
     if let Ok(pack) = client.lexicon_active_pack().await {
         let _ = tx.send(Event::LexiconPack(pack));
+    }
+}
+
+/// Fetch the federated p2p roster (`coord:presence`, federated rows only) and
+/// emit `Event::Hives` — the Hives tab's per-device swarm roster
+/// (pui-hives-tab-2026-06-07). Best-effort: transport loss keeps the previous
+/// list; the next Hives entry retries.
+async fn fetch_hives(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    match client.federated_hives().await {
+        Ok(rows) => {
+            let _ = tx.send(Event::Hives(rows));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("hives: {e}")));
+        }
     }
 }
 

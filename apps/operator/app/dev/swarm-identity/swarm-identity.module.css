@@ -100,7 +100,7 @@
   min-height: 100%;
   padding: clamp(20px, 5vw, 56px);
   opacity: 0;
-  color: #fff7df;
+  color: #fde68a;
   font-family: "Bahnschrift", "Aptos Display", "Helvetica Neue", "Arial Narrow", ui-sans-serif, sans-serif;
   font-size: clamp(32px, 6.2vw, 88px);
   font-stretch: condensed;
@@ -130,10 +130,6 @@
   font-size: clamp(26px, 5.4vw, 76px);
   line-height: 0.94;
   letter-spacing: -0.06em;
-}
-
-.introLines span:first-child {
-  color: #fde68a;
 }
 
 .introSwarm {

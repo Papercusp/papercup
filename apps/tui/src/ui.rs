@@ -159,6 +159,7 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Cupboard => draw_cupboard(f, app, body),
         Tab::Conversations => draw_conversations(f, app, body),
         Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
+        Tab::Hives => crate::hives::draw_hives(f, app, body),
     }
 }
 

@@ -33,7 +33,7 @@ const TAGLINE = 'Welcome to the End. Be part of the new beginning. Create or Joi
 const TAGLINE_SEQUENCE = [
   'Welcome to the End.',
   'Be part of the new beginning.',
-  'Create or Join a Hive, start a swarm,',
+  'Create or Join a Hive, start a swarm.',
   'and mold the future for whatever comes next.',
 ] as const;
 

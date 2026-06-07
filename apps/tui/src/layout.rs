@@ -184,8 +184,9 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
 /// consolidated pui-dock-consolidation-2026-06-07): the surface the
 /// desktop-docked native terminal runs. TWO panes — the **chat** column
-/// (operator chat over the brain) and the **main** pane (ONE pui restricted to
-/// the Apiary · Voice · Swarm tabs, switchable via its tab strip) — and NOTHING
+/// (a stack: operator chat ⇄ the brain) and the **main** pane (ONE pui
+/// restricted to the Hives · Voice · Swarm tabs, switchable via its tab
+/// strip) — and NOTHING
 /// else: no workbench HUD, no work-area agent panes, no swap presets. The old
 /// standalone apiary/voice/swarm/bee panes are TABS (or Swarm-tab sections) of
 /// the main pane now; the bee/contributor dossier renders inside the Swarm tab.
@@ -214,15 +215,15 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
     // main) have no lexicon term and stay verbatim.
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     format!(
-        r#"// Papercusp chat dock — chat[operator⇄brain] | main[Apiary·Voice·Swarm]
+        r#"// Papercusp chat dock — chat[operator⇄brain] | main[Hives·Voice·Swarm]
 // (native-terminal-desktop P-013 / D-011; consolidated to two panes by
 // pui-dock-consolidation-2026-06-07). The desktop-docked native terminal
 // surface: LEFT = the chat column, a zellij STACK of the operator (ElevenLabs
 // voice) chat and the brain (a psu engineer session resumed at launch via the
 // D-013 brain pin) — tab-like: each shows as a one-line title bar, one
 // expanded at a time; click a title or Alt+↑/↓ to switch (mirrors the main
-// pane's Apiary/Voice/Swarm tab strip); RIGHT = the main pane, one pui
-// restricted to the Apiary / Voice / Swarm tabs (the Swarm tab carries the
+// pane's Hives/Voice/Swarm tab strip); RIGHT = the main pane, one pui
+// restricted to the Hives / Voice / Swarm tabs (the Swarm tab carries the
 // fleet roster, the selected-bee dossier, plan progress, and the fleet comms
 // sub-view). NO workbench HUD, no work-area agent panes. Pane display names
 // route through the lexicon.

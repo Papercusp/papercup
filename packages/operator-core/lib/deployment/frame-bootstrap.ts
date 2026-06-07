@@ -316,6 +316,10 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // claude's install.sh lands in ~/.local/bin, which a non-login bootstrap
       // shell doesn't have on PATH — the loop's agent spawns need it.
       'export PATH="$HOME/.local/bin:$PATH"',
+      // Role prompts resolve via PAPERCUSP_HARNESS_DIR (the dev-box default is a
+      // ~/autonomous-harness symlink that frames don't have) — without it the
+      // boot guard sees zero roles and refuses to start (found live 2026-06-06).
+      `export PAPERCUSP_HARNESS_DIR=${shq(`${root}/runtime/libs/papercusp/packages/harness`)}`,
       // DBOS itself is gated default-OFF (instrumentation-node checks DBOS_ENABLE);
       // without it the frame's "own loop" silently never launches (found live
       // 2026-06-06 in the work-on-frame verification).

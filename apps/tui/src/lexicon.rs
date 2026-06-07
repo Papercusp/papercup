@@ -28,6 +28,8 @@ const CLASSIC: &[(&str, &str, &str)] = &[
     ("chunk", "Chunk", "Chunks"),
     ("cupboard", "Cupboard", "Cupboards"),
     ("node", "Node", "Nodes"),
+    // A whole Papercusp install joined to the p2p swarm (the Hives tab).
+    ("hive", "Hive", "Hives"),
     ("substrate", "Coordination", "Coordination"),
     ("blueprint", "Blueprint", "Blueprints"),
     ("harness", "Harness", "Harnesses"),

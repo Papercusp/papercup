@@ -190,6 +190,9 @@ pub enum Action {
     /// Fetch whole-fleet assignments for the default Swarm dossier
     /// (pui-dock-consolidation-2026-06-07 #2) → `Event::FleetAssignments`.
     FetchFleetAssignments,
+    /// Fetch the federated p2p roster for the Hives tab
+    /// (pui-hives-tab-2026-06-07) → `Event::Hives`.
+    FetchHives,
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -614,13 +617,18 @@ pub enum Tab {
     /// operator Conv-AI voice MODE (voice-realtime-tui) is a dock toggle, not
     /// this tab — agreed division, coord 2026-06-05.
     Voice,
+    /// Hives — the p2p swarm roster (pui-hives-tab-2026-06-07): every remote
+    /// Papercusp install (machine) that has announced into the Model-B
+    /// substrate (`shared_presence`), grouped by device. Replaces the Cupboard
+    /// in the dock MAIN pane's tab subset; key 'i'.
+    Hives,
 }
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Fleet tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Fleet exactly.
-    pub const ALL: [Tab; 15] = [
+    pub const ALL: [Tab; 16] = [
         Tab::Overview,
         Tab::Operator,
         Tab::Inbox,
@@ -636,6 +644,7 @@ impl Tab {
         Tab::Cupboard,
         Tab::Conversations,
         Tab::Voice,
+        Tab::Hives,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -656,6 +665,7 @@ impl Tab {
             Tab::Cupboard => "Cupboard",
             Tab::Conversations => "Convos",
             Tab::Voice => "Voice",
+            Tab::Hives => "Hives",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -671,6 +681,8 @@ impl Tab {
             Tab::Fleet => lex.lex("fleet"),
             Tab::Cupboard => lex.lex("cupboard"),
             Tab::Operator => lex.lex("operator"),
+            // "Hives" is the plural of the `hive` term (a swarm-joined install).
+            Tab::Hives => lex.lex_plural("hive"),
             other => other.title().to_string(),
         }
     }
@@ -696,6 +708,8 @@ impl Tab {
             Tab::Cupboard => 'c',
             Tab::Conversations => 'd',
             Tab::Voice => 'a',
+            // hIves — 'h' is Overview (home), so the mnemonic falls to 'i'.
+            Tab::Hives => 'i',
         }
     }
     pub fn index(self) -> usize {
@@ -859,6 +873,10 @@ pub struct App {
     /// optional search-hit overlay (`memory:search` — shown instead of the
     /// list while a query is active), the cursor, whether the backend reported
     /// itself available, and the `/`-search composer state.
+    /// Hives tab (pui-hives-tab-2026-06-07): the federated p2p roster (raw
+    /// shared_presence rows; grouped per-machine at render) + the list cursor.
+    pub hives: Vec<crate::models::PresenceRow>,
+    pub hive_sel: usize,
     pub memories: Vec<crate::models::MemoryEntry>,
     pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
     pub memory_sel: usize,
@@ -1141,6 +1159,8 @@ impl App {
             plugin_sel: 0,
             plugins_focus: PluginsFocus::List,
             plugin_config: None,
+            hives: Vec::new(),
+            hive_sel: 0,
             memories: Vec::new(),
             memory_hits: None,
             memory_sel: 0,
@@ -2892,6 +2912,12 @@ impl App {
                 self.fleet.all_assignments = agents;
                 Action::Render
             }
+            Event::Hives(rows) => {
+                // The federated p2p roster landed (the Hives tab). Raw rows;
+                // per-device grouping happens at render (hives::group_hives).
+                self.hives = rows;
+                Action::Render
+            }
             Event::LexiconPack(payload) => {
                 // The active brand pack landed (startup fetch). Store the resolved
                 // term→label map; user-facing labels route through it from now on.
@@ -4047,6 +4073,11 @@ impl App {
                     if t == Tab::Fleet {
                         return Action::FetchFleetAssignments;
                     }
+                    // Hives tab: refresh the federated p2p roster on every entry
+                    // (presence is volatile — peers announce + go stale).
+                    if t == Tab::Hives {
+                        return Action::FetchHives;
+                    }
                     Action::Render
                 }
                 None => Action::None,
@@ -4269,6 +4300,7 @@ impl App {
             Tab::Memory => self.visible_memories().len(),
             Tab::Cupboard => self.cupboard.len(),
             Tab::Conversations => self.visible_conversations().len(),
+            Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, and the Voice tab owns its own j/k in voice_ui.
             Tab::Config | Tab::Operator | Tab::Voice => return,
@@ -4298,6 +4330,7 @@ impl App {
             Tab::Memory => &mut self.memory_sel,
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
+            Tab::Hives => &mut self.hive_sel,
             Tab::Config | Tab::Operator | Tab::Voice => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
@@ -6760,13 +6793,17 @@ mod tests {
         // Sessions folded into Fleet (D-002b) + Activity retired (D-004b) → ten
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
         // D-011) + Conversations ('d', Brief 25) + Voice ('a', holepunch-voice-
-        // channels P-008) letter tabs + the prepended Overview ('h', Brief 23).
-        assert_eq!(Tab::ALL.len(), 15);
+        // channels P-008) + Hives ('i', pui-hives-tab-2026-06-07) letter tabs
+        // + the prepended Overview ('h', Brief 23).
+        assert_eq!(Tab::ALL.len(), 16);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
         assert_eq!(Tab::Conversations.switch_key(), 'd');
         assert_eq!(Tab::Voice.switch_key(), 'a');
+        assert_eq!(Tab::Hives.switch_key(), 'i');
         assert_eq!(Tab::from_switch_key('a'), Some(Tab::Voice));
+        assert_eq!(Tab::from_switch_key('i'), Some(Tab::Hives));
+        assert_eq!(Tab::from_title("Hives"), Some(Tab::Hives));
         // `h` returns to the Overview from elsewhere; `1` still reaches the chat.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));

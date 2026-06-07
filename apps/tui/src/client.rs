@@ -845,6 +845,33 @@ impl OperatorClient {
         }))
     }
 
+    /// The federated p2p roster — every remote hive announced into
+    /// `shared_presence`, via `coord:presence { include_stale: true }` (MCP
+    /// envelope unwrapped). Local (non-federated) session rows are dropped;
+    /// stale federated rows are KEPT — a hive that joined the swarm but is
+    /// currently quiet still lists, marked stale (pui-hives-tab-2026-06-07).
+    pub async fn federated_hives(&self) -> Result<Vec<crate::models::PresenceRow>> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/coord/presence",
+                serde_json::json!({ "include_stale": true }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("coord:presence: missing content[0].text")?;
+        let p: crate::models::PresencePayload =
+            serde_json::from_str(text).context("parse presence payload")?;
+        Ok(p.active
+            .into_iter()
+            .chain(p.stale)
+            .filter(|r| r.federated)
+            .collect())
+    }
+
     /// Whole-fleet assignments — every bee's ranked work-list in one call
     /// (`fleet:assignments {}` with NO `agent` filter). Drives the default Swarm
     /// dossier (pui-dock-consolidation-2026-06-07 #2 "show all tasks from the

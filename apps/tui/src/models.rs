@@ -1640,6 +1640,56 @@ pub struct BeeMailPayload {
     pub outbox: BeeMailSide,
 }
 
+// ─── Hives tab (p2p swarm roster — pui-hives-tab-2026-06-07) ─────────────────
+
+/// One unified `coord:presence` row — only the fields the Hives tab reads.
+/// Federated rows (remote peers projected from `shared_presence` announces)
+/// carry `federated: true` plus the machine/device identity; local session
+/// rows are filtered out client-side. Wire is camelCase.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceRow {
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub owner_label: String,
+    #[serde(default)]
+    pub intent: String,
+    /// The peer's machine label (federation identity half; `host` on the wire).
+    #[serde(default)]
+    pub host: String,
+    /// The gh user id (stringified) for federated rows.
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub stale: bool,
+    /// True for a row sourced from the p2p swarm (`shared_presence`).
+    #[serde(default)]
+    pub federated: bool,
+    /// The peer's device pubkey (raw-32-byte-base64 Ed25519 — the hive identity).
+    #[serde(default)]
+    pub device_pubkey: Option<String>,
+    /// The harness the peer announced presence in (shared_presence is per-harness).
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    /// The peer's current view (the federated analogue of currentPlanSlug).
+    #[serde(default)]
+    pub current_view: Option<String>,
+    /// ISO timestamp of the peer's last announce (freshness; ISO sorts lexically).
+    #[serde(default)]
+    pub heartbeat_at: Option<String>,
+}
+
+/// Inner JSON of the `coord:presence` envelope (`content[0].text`). `stale`
+/// is only present when the call passes `include_stale: true`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PresencePayload {
+    #[serde(default)]
+    pub active: Vec<PresenceRow>,
+    #[serde(default)]
+    pub stale: Vec<PresenceRow>,
+}
+
 // ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ──────────────────────────────
 
 /// Singular/plural display forms for one lexicon term.
