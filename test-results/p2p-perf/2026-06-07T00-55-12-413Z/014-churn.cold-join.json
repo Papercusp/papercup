@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "scenario": "churn.cold-join",
+  "tier": 1,
+  "params": {
+    "historySize": 10000,
+    "winners": 3288,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T00:56:56.311Z",
+  "durationMs": 13998.368742,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "childLoopLagP95Ms": {
+      "unit": "ms",
+      "count": 2,
+      "p50": 20.7,
+      "p95": 20.9,
+      "p99": 20.9,
+      "max": 20.9,
+      "mean": 20.8
+    },
+    "childRssPeak": {
+      "unit": "bytes",
+      "count": 2,
+      "p50": 281567232,
+      "p95": 288948224,
+      "p99": 288948224,
+      "max": 288948224,
+      "mean": 285257728
+    },
+    "coldJoinMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 14026,
+      "p95": 14026,
+      "p99": 14026,
+      "max": 14026,
+      "mean": 14026
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20.1,
+    "p95Ms": 20.9,
+    "p99Ms": 26.2,
+    "maxMs": 67.6
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 58.485,
+    "systemMs": 120.333
+  },
+  "rss": {
+    "peakBytes": 237002752
+  },
+  "opsDecoded": 3288,
+  "notes": [
+    "caughtUp=true appliedKeys=3288/3288"
+  ]
+}

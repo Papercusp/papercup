@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface FeatureQueueRow {
@@ -27,6 +28,9 @@ export interface FeatureQueueRow {
 }
 
 export interface FeatureQueueProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -68,7 +72,7 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   await sql`
@@ -97,7 +101,7 @@ async function deleteFromPg(opts: FeatureQueueProjectionOpts, key: string): Prom
   const featureId = key.slice(sepIdx + 1);
   const userId = Number(userIdStr);
   if (!Number.isFinite(userId) || userId <= 0 || !featureId) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.feature_queue
     WHERE workspace_id = ${opts.workspaceId}

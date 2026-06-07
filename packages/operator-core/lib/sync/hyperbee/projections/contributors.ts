@@ -26,6 +26,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type { TableProjection } from '../projection';
 import {
@@ -34,6 +35,9 @@ import {
 } from '../../../harness/contributor-row-types';
 
 export interface ContributorsProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -58,7 +62,7 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
     // we don't want to compound by writing it through.
     return;
   }
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.contributors
       (workspace_id, harness_slug, github_user_id, github_username,
@@ -100,7 +104,7 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
 async function deleteFromPg(opts: ContributorsProjectionOpts, key: string): Promise<void> {
   const userId = Number(key);
   if (!Number.isFinite(userId) || userId <= 0) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.contributors
     WHERE workspace_id = ${opts.workspaceId}

@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
@@ -31,6 +32,9 @@ export interface ContributorUsageEventRow {
 }
 
 export interface UsageProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -65,7 +69,7 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   // Echo-guard (mirrors feature-queue / issues): a remote-applied row is stamped
   // origin='remote' so the capture_substrate_outbox trigger skips it — otherwise
   // peer B would re-federate every event it received from peer A. Local emits

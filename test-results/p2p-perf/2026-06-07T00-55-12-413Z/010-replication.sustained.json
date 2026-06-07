@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "scenario": "replication.sustained",
+  "tier": 1,
+  "params": {
+    "peers": 5,
+    "rate": 100,
+    "count": 400
+  },
+  "startedAt": "2026-06-07T00:56:25.908Z",
+  "durationMs": 5132.509473,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "childLoopLagP95Ms": {
+      "unit": "ms",
+      "count": 5,
+      "p50": 21,
+      "p95": 21,
+      "p99": 21,
+      "max": 21,
+      "mean": 20.94
+    },
+    "childRssPeak": {
+      "unit": "bytes",
+      "count": 5,
+      "p50": 245854208,
+      "p95": 246812672,
+      "p99": 246812672,
+      "max": 246812672,
+      "mean": 245051392
+    },
+    "appendToVisibleMs": {
+      "unit": "ms",
+      "count": 1600,
+      "p50": 745,
+      "p95": 1185,
+      "p99": 1282,
+      "max": 1331,
+      "mean": 739.397
+    },
+    "appendCallMs": {
+      "unit": "ms",
+      "count": 400,
+      "p50": 2,
+      "p95": 3,
+      "p99": 4,
+      "max": 6,
+      "mean": 1.745
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20.1,
+    "p95Ms": 21,
+    "p99Ms": 22.9,
+    "maxMs": 30.2
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 22.562,
+    "systemMs": 60.403
+  },
+  "rss": {
+    "peakBytes": 345686016
+  },
+  "notes": []
+}

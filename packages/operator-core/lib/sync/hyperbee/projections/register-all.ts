@@ -47,6 +47,13 @@ export interface RegisterAllOpts {
   workspaceId: string;
   harnessSlug: string;
   /**
+   * Test/multi-peer seam — thread a specific postgres-js client into every
+   * projection writer instead of the process-global `getOrgPg().sql`.
+   * Production leaves this undefined. (p2p-perf projection-write-cost bench
+   * + multi-peer integration tests.)
+   */
+  sql?: import('postgres').Sql;
+  /**
    * G1 Provenance (P-002): the own log's hex keyHex. When provided,
    * `buildHarnessProjectionApply` threads it into `applyOpVia` so ops from
    * the own log are stamped `origin='local'` and ops from admitted remote

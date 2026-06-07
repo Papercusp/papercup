@@ -19,6 +19,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection } from '../projection';
 
 export interface SharedPresenceRow {
@@ -33,6 +34,9 @@ export interface SharedPresenceRow {
 }
 
 export interface PresenceProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -62,7 +66,7 @@ function decodeValue(raw: unknown): SharedPresenceRow | null {
 
 async function writeToPg(opts: PresenceProjectionOpts, row: SharedPresenceRow): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
@@ -89,7 +93,7 @@ async function deleteFromPg(opts: PresenceProjectionOpts, key: string): Promise<
   const machineLabel = key.slice(sepIdx + 1);
   const userId = Number(userIdStr);
   if (!Number.isFinite(userId) || userId <= 0 || !machineLabel) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.shared_presence
     WHERE workspace_id = ${opts.workspaceId}

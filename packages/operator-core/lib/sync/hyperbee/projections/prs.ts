@@ -11,6 +11,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection } from '../projection';
 
 export interface HarnessFeaturePrRow {
@@ -23,6 +24,9 @@ export interface HarnessFeaturePrRow {
 }
 
 export interface PrsProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -50,7 +54,7 @@ function decodeValue(raw: unknown): HarnessFeaturePrRow | null {
 
 async function writeToPg(opts: PrsProjectionOpts, row: HarnessFeaturePrRow): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.harness_feature_prs
       (workspace_id, harness_slug, feature_id, pr_url, pr_state, opened_ts, updated_ts)
@@ -67,7 +71,7 @@ async function writeToPg(opts: PrsProjectionOpts, row: HarnessFeaturePrRow): Pro
 
 async function deleteFromPg(opts: PrsProjectionOpts, key: string): Promise<void> {
   if (!key) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.harness_feature_prs
     WHERE workspace_id = ${opts.workspaceId}

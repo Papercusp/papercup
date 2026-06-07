@@ -34,8 +34,35 @@ npx tsx packages/operator-core/lib/memory/bench/index-cap-cli.ts   # pure FS, no
 
 Isolation (D-009): the live bench uses the `bench_memory` PG schema
 (created/dropped per run) and temp-dir claude-file stores — it never writes
-`harness_shared.memory_*` or the real `~/.claude` store. **The schema name is
-fixed, so two live bench runs must not overlap.**
+`harness_shared.memory_*` or the real `~/.claude` store. **`bench-cli`'s schema
+name is fixed, so two full bench runs must not overlap**; the session-extraction
+probe and the dedup re-run below each use their own schema and can run alongside.
+
+## Session-backed extraction (mem0-extraction-via-claude-session-2026-06-06)
+
+mem0's fact extraction rides cascade rung #1 = the Claude session
+(`claude-haiku-4-5` on `anthropic-direct`); the adapter lives at
+`lib/memory/session-extraction-llm.ts`, the seam/cascade in
+`libs/generic/memory` (see that package's TESTING.md).
+
+| File | Covers |
+|---|---|
+| `session-extraction-llm.test.ts` | The `SessionExtractionLlm` adapter: strict-JSON parse + one repair-retry + throw-to-cascade (D-005), the 401 → cache-invalidate → re-read → retry-once → sticky-demote protocol (P-004/D-004), the factory's probe/env/dead-rung gating, usage-counter telemetry, and the loudness end-to-end (`mem0.add()` stores via the fallback WHILE warning loudly — P-006). |
+
+Live runs (not Vitest — need a Claude session, PG, and an embedder key; both
+**exit 2 = skip** without a usable session so a key-rung pass can't false-positive):
+
+```bash
+# P-007 round-trip probe: remember → Haiku-extracted → paraphrase-searchable,
+# isolated schema `live_session_extraction`. Registered in /admin/testing
+# (memory → Live).
+npx tsx packages/operator-core/lib/memory/session-extraction-live.ts
+
+# P-008 dedup re-run: the bench's near-dup tier under the session extractor,
+# isolated schema `bench_dedup_haiku`; artifact → .papercusp/bench-reports/
+# (2026-06-07 result: 4/6 merged vs 0/6 under the gpt-4o-mini fallback).
+npx tsx packages/operator-core/lib/memory/bench/dedup-rerun-cli.ts
+```
 
 ## After editing memory code
 

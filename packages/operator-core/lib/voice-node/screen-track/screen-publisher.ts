@@ -60,7 +60,18 @@ export interface ScreenPublisher {
 }
 
 export function startFrameScreenPublisher(opts: ScreenPublisherOpts): ScreenPublisher {
-  const displays = opts.displays ?? (() => agentDisplayPool()?.leased() ?? []);
+  // Default: publish LEASED displays (one track per active agent). The 'all'
+  // mode (PAPERCUSP_DESKTOP_SCREEN_TRACKS=all) publishes the whole pool —
+  // used by the live E2E (no agents leased yet) and as an operator knob.
+  const defaultDisplays = () => {
+    const pool = agentDisplayPool();
+    if (!pool) return [];
+    if (process.env.PAPERCUSP_DESKTOP_SCREEN_TRACKS === 'all') {
+      return Array.from({ length: pool.size }, (_, n) => pool.base + n);
+    }
+    return pool.leased();
+  };
+  const displays = opts.displays ?? defaultDisplays;
   const makeTrack = opts.makeTrack ?? ((display: number) => makeRealTrack(opts.harnessSlug, display));
   const live = new Map<number, Promise<DisplayTrack | undefined>>();
   let stopped = false;

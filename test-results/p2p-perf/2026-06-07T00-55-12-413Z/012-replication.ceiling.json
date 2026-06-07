@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "scenario": "replication.ceiling",
+  "tier": 1,
+  "params": {
+    "peers": 5,
+    "count": 1500
+  },
+  "startedAt": "2026-06-07T00:56:42.267Z",
+  "durationMs": 3698.198829,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "ceilingOpsPerSec": {
+      "unit": "ops/sec",
+      "count": 4,
+      "p50": 425.894,
+      "p95": 450.45,
+      "p99": 450.45,
+      "max": 450.45,
+      "mean": 437.802
+    },
+    "floodCatchUpMs": {
+      "unit": "ms",
+      "count": 4,
+      "p50": 3341,
+      "p95": 3522,
+      "p99": 3522,
+      "max": 3522,
+      "mean": 3428.75
+    },
+    "childLoopLagP95Ms": {
+      "unit": "ms",
+      "count": 5,
+      "p50": 20.8,
+      "p95": 20.9,
+      "p99": 20.9,
+      "max": 20.9,
+      "mean": 20.84
+    },
+    "childRssPeak": {
+      "unit": "bytes",
+      "count": 5,
+      "p50": 254398464,
+      "p95": 258646016,
+      "p99": 258646016,
+      "max": 258646016,
+      "mean": 255125913.6
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20,
+    "p95Ms": 20.9,
+    "p99Ms": 22.3,
+    "maxMs": 43.5
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 30.563,
+    "systemMs": 27.411
+  },
+  "rss": {
+    "peakBytes": 345686016
+  },
+  "notes": []
+}

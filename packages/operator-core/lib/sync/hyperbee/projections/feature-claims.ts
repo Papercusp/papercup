@@ -12,6 +12,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection } from '../projection';
 
 export interface FeatureClaimRow {
@@ -26,6 +27,9 @@ export interface FeatureClaimRow {
 }
 
 export interface FeatureClaimsProjectionOpts {
+  /** Test/multi-peer seam — write to THIS postgres-js client instead of the
+   *  process-global `getOrgPg().sql`. Production leaves this undefined. */
+  sql?: postgres.Sql;
   workspaceId: string;
   harnessSlug: string;
 }
@@ -63,7 +67,7 @@ function decodeValue(raw: unknown): FeatureClaimRow | null {
 
 async function writeToPg(opts: FeatureClaimsProjectionOpts, row: FeatureClaimRow): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     INSERT INTO harness_shared.feature_claims
       (workspace_id, harness_slug, feature_id, seq,
