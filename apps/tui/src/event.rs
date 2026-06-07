@@ -129,6 +129,16 @@ pub enum Event {
     /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
     /// them in `fleet.all_assignments`.
     FleetAssignments(Vec<BeeAssignment>),
+    /// A RUNNING bee's appended raw output (the watch pane's thinking feed,
+    /// pui-dock-agent-stack-2026-06-07): bytes since the last poll cursor.
+    BeeOutput {
+        owner: String,
+        offset: u64,
+        chunk: String,
+    },
+    /// The watch pane's chat send finished (Ok → the thread is open and the
+    /// bee was pinged; Err carries the message).
+    BeeMessageSent(Result<(), String>),
     /// The federated p2p roster for the Hives tab (pui-hives-tab-2026-06-07) —
     /// every remote peer announced into `shared_presence`, via `coord:presence`.
     Hives(Vec<crate::models::PresenceRow>),

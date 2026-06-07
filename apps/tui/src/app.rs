@@ -199,6 +199,9 @@ pub enum Action {
     /// Fetch the federated p2p roster for the Hives tab
     /// (pui-hives-tab-2026-06-07) → `Event::Hives`.
     FetchHives,
+    /// Watch-pane chat (pui-dock-agent-stack): send the composer draft to the
+    /// watched bee via coord:message-agent → `Event::BeeMessageSent`.
+    SendBeeMessage { to: String, body: String },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -996,6 +999,16 @@ pub struct App {
     /// Consecutive roster refreshes the watched agent has been absent/stale —
     /// at 2 the watch pane exits (its `--close-on-exit` pane then closes).
     pub watch_misses: u8,
+    /// The watched bee's accumulated raw output (the "thinking" feed) — a
+    /// capped ring fed by the bee-output poll; newest at the END.
+    pub watch_output: String,
+    /// The bee-output poll cursor (byte offset into the spawn's .out file).
+    pub watch_output_offset: u64,
+    /// The watch pane's chat composer draft (Enter sends via
+    /// coord:message-agent; Esc clears).
+    pub watch_input: String,
+    /// True while a chat send is in flight (composer locked).
+    pub watch_sending: bool,
     /// True only in the dock's chat-pane: drive the reactive agent stack (a
     /// watch pane per active bee + an interactive pane per new local launch).
     pub dock_agent_panes: bool,
@@ -1225,6 +1238,10 @@ impl App {
             bee: crate::bee::BeeState::default(),
             watch: None,
             watch_misses: 0,
+            watch_output: String::new(),
+            watch_output_offset: 0,
+            watch_input: String::new(),
+            watch_sending: false,
             dock_agent_panes: false,
             watched_panes: std::collections::HashSet::new(),
             lexicon: crate::lexicon::Lexicon::default(),
@@ -3009,6 +3026,48 @@ impl App {
                 self.hives = rows;
                 Action::Render
             }
+            Event::BeeOutput {
+                owner,
+                offset,
+                chunk,
+            } => {
+                // Appended raw output from the watched bee. Stale-guarded on
+                // owner; capped ring so a chatty agent can't grow the pane.
+                if self.watch.as_deref() == Some(owner.as_str()) {
+                    self.watch_output_offset = offset;
+                    if !chunk.is_empty() {
+                        self.watch_output.push_str(&chunk);
+                        const CAP: usize = 64 * 1024;
+                        if self.watch_output.len() > CAP {
+                            let cut = self.watch_output.len() - CAP;
+                            // keep char boundary
+                            let cut = (cut..self.watch_output.len())
+                                .find(|i| self.watch_output.is_char_boundary(*i))
+                                .unwrap_or(cut);
+                            self.watch_output.drain(..cut);
+                        }
+                    }
+                }
+                Action::Render
+            }
+            Event::BeeMessageSent(res) => {
+                self.watch_sending = false;
+                match res {
+                    Ok(()) => self.push_notif(Notif {
+                        level: "info".into(),
+                        message: "sent — the bee replies in-thread (inbox below)".into(),
+                        harness: None,
+                        ts: None,
+                    }),
+                    Err(e) => self.push_notif(Notif {
+                        level: "error".into(),
+                        message: format!("send failed: {e}"),
+                        harness: None,
+                        ts: None,
+                    }),
+                }
+                Action::Render
+            }
             Event::LexiconPack(payload) => {
                 // The active brand pack landed (startup fetch). Store the resolved
                 // term→label map; user-facing labels route through it from now on.
@@ -3232,6 +3291,39 @@ impl App {
         if self.show_notifs {
             self.show_notifs = false;
             return Action::Render;
+        }
+        // Watch pane (pui-dock-agent-stack): the pane IS a chat-with-this-bee
+        // surface — printable keys type into the composer, Enter sends (a
+        // durable coord:message-agent thread + ping), Esc clears the draft.
+        // Ctrl+C still quits (handled by the caller before on_key).
+        if self.watch.is_some() {
+            match code {
+                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
+                    self.watch_input.push(c);
+                    return Action::Render;
+                }
+                KeyCode::Backspace => {
+                    self.watch_input.pop();
+                    return Action::Render;
+                }
+                KeyCode::Esc => {
+                    self.watch_input.clear();
+                    return Action::Render;
+                }
+                KeyCode::Enter => {
+                    let body = self.watch_input.trim().to_string();
+                    if body.is_empty() || self.watch_sending {
+                        return Action::Render;
+                    }
+                    self.watch_sending = true;
+                    self.watch_input.clear();
+                    return Action::SendBeeMessage {
+                        to: self.watch.clone().expect("watch checked above"),
+                        body,
+                    };
+                }
+                _ => return Action::None,
+            }
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.

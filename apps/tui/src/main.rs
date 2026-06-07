@@ -197,6 +197,8 @@ async fn run<B: Backend>(
     app.dock_agent_panes = dock_agent_panes;
     if let Some(owner) = &app.watch {
         app.bee.set_selection(Some(owner.clone()), None);
+        // The thinking feed: tail the bee's live stdout (offset-cursor poll).
+        tokio::spawn(bee_output_loop(owner.clone(), tx.clone()));
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -423,6 +425,12 @@ async fn run<B: Backend>(
                 // Whole-fleet task list for the default Swarm dossier (#2) —
                 // fetched off the UI thread → Event::FleetAssignments.
                 tokio::spawn(fetch_fleet_assignments(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::SendBeeMessage { to, body } => {
+                // Watch-pane chat: open/continue a thread with the bee + ping it
+                // (coord:message-agent). Result lands as Event::BeeMessageSent.
+                tokio::spawn(send_bee_message(to, body, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchHives => {
@@ -2010,6 +2018,60 @@ async fn lexicon_fetch(tx: UnboundedSender<Event>) {
     };
     if let Ok(pack) = client.lexicon_active_pack().await {
         let _ = tx.send(Event::LexiconPack(pack));
+    }
+}
+
+/// Watch-pane chat send: coord:message-agent { to, body } via the admin proxy.
+async fn send_bee_message(to: String, body: String, tx: UnboundedSender<Event>) {
+    let res = match OperatorClient::from_discovery().await {
+        Ok(client) => {
+            let title: String = body.chars().take(60).collect();
+            client
+                .message_agent(Some(&to), None, None, None, &title, &body)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    let _ = tx.send(Event::BeeMessageSent(res));
+}
+
+/// The watch pane's thinking feed: poll the RUNNING bee's appended raw output
+/// (GET /api/fleet/bee-output, offset cursor) every ~2s and ship the chunks as
+/// `Event::BeeOutput`. Offset state lives here; the reducer stale-guards on
+/// owner. Justified poll: the source is a local log file with no push rail,
+/// and exactly one pane consumes it (see the route's doc).
+async fn bee_output_loop(owner: String, tx: UnboundedSender<Event>) {
+    let client = loop {
+        match OperatorClient::from_discovery().await {
+            Ok(c) => break c,
+            Err(_) => tokio::time::sleep(Duration::from_secs(3)).await,
+        }
+    };
+    let mut offset: u64 = 0;
+    let mut ticker = tokio::time::interval(Duration::from_millis(2000));
+    loop {
+        ticker.tick().await;
+        if tx.is_closed() {
+            return;
+        }
+        match client.bee_output(&owner, offset).await {
+            Ok((next, chunk, _status)) => {
+                offset = next;
+                if tx
+                    .send(Event::BeeOutput {
+                        owner: owner.clone(),
+                        offset: next,
+                        chunk,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(_) => { /* transient — keep polling; the pane keeps its tail */ }
+        }
     }
 }
 
