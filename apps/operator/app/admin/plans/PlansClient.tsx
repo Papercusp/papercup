@@ -572,9 +572,13 @@ export default function PlansClient() {
         planSlug: null,
         label: resolvedHarnessSlug ? `new-plan · ${resolvedHarnessSlug}` : 'new-plan',
         kickoff: { kind: 'new-plan' },
+        // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
+        // record a pending workbench launch; the dock's chat-pane pui panes it
+        // reactively instead of the server spawning an OS terminal window.
+        deferSpawn: true,
       });
       if (result.ok) {
-        toast.success('Agent launched to draft a new plan.', { duration: 3000 });
+        toast.success('Plan-drafting agent queued — opening as a pane in the dock.', { duration: 3000 });
       } else if (result.installCmd) {
         toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
       } else {
