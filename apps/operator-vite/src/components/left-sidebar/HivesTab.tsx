@@ -31,7 +31,7 @@ export interface HiveGroup {
   stale: boolean;
 }
 
-/** Group per-（user, harness) presence rows into one entry per device — the
+/** Group per-(user, harness) presence rows into one entry per device — the
  *  freshest row wins the doing field; a hive is stale only when ALL its rows
  *  are. Live hives sort first, then by machine (pui group_hives parity). */
 export function groupHives(rows: FederatedRow[]): HiveGroup[] {

@@ -148,7 +148,7 @@ body.has-dev-rail {
   padding-right: var(--dev-rail-w, 48px);
 }
 body.has-dev-rail .pc-header {
-  width: calc(100vw - var(--op-chat-w, 0px) - var(--dev-rail-w, 0px));
+  width: calc(100vw - var(--op-chat-w, 0px) - var(--dev-rail-w, 0px) - var(--left-sidebar-w, 0px));
 }
 
 /* Header */

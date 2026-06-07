@@ -1451,15 +1451,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // per device client-side, mirroring the pui Hives tab.
   'sidebar.hives': {
     resolve: async () => {
-      const { queryFederatedPresenceRows, mapSharedPresenceRow } = await import(
+      const { listFederatedPresence } = await import(
         '../agent-tools/coordination/federated-presence'
       );
-      const { PRESENCE_STALE_MS } = await import('@papercusp/coordination/presence');
-      const { getOrgPg } = await import('@papercusp/db-org');
-      const { sql } = getOrgPg();
-      const rows = await queryFederatedPresenceRows(sql, {});
-      const now = Date.now();
-      return rows.map((r) => mapSharedPresenceRow(r, { now, staleMs: PRESENCE_STALE_MS }));
+      // All rows, stale ones flagged (a hive that joined but went quiet still
+      // lists); fail-soft empty when the org PG is unreachable.
+      return listFederatedPresence({});
     },
   },
 } satisfies Record<string, QueryEntry<unknown>>;

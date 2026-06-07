@@ -108,6 +108,11 @@ const DevAdminRail =
     ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
     : null;
 
+// Left sidebar (left-sidebar-tauri-2026-06-07) — the Swarm / Voice / Hives
+// rail, the desktop twin of the pui dock's retired main pane. First-class app
+// chrome (NOT dev-gated); lazy so the shell paint doesn't pay for its panels.
+const LeftSidebar = lazy(() => import('../components/left-sidebar/LeftSidebar'));
+
 export const Route = createRootRoute({
   component: RootComponent,
   notFoundComponent: NotFound,
@@ -152,6 +157,13 @@ function RootComponent() {
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
               <PresenceRail />
+              {/* Left sidebar — Swarm / Voice / Hives (left-sidebar-tauri-
+                  2026-06-07). Inside NuqsAdapter (its open/tab/selection state
+                  is URL-backed) + RootSyncProvider (its panels use
+                  useSyncQuery); docked via body.has-left-sidebar. */}
+              <Suspense fallback={null}>
+                <LeftSidebar />
+              </Suspense>
               <RouteTransitionProvider>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>

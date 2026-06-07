@@ -1,0 +1,24 @@
+{
+  "name": "@papercusp/the-swarm-site",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3190",
+    "build": "next build",
+    "start": "npx serve out -l 3190 --no-clipboard",
+    "deploy": "wrangler pages deploy ./out --project-name the-swarm --branch main --commit-dirty=true"
+  },
+  "dependencies": {
+    "next": "^16.2.4",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^6.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
