@@ -33,11 +33,13 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
 const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   pot: { one: 'Hive', other: 'Hives' },
   fleet: { one: 'Swarm', other: 'Swarms' },
-  // Canon (the-hive-lexicon D-002 table): the coordination orchestrator IS the
-  // Queen — resolves the two-meanings-of-"operator" collision. `brain` has no
-  // canon row; Royal Jelly = what makes a Queen (the intelligence/memory layer).
-  operator: { one: 'Queen', other: 'Queens' },
-  brain: { one: 'Royal Jelly', other: 'Royal Jelly' },
+  // Canon (owner revision 2026-06-07, supersedes the-hive-lexicon D-002 row):
+  // the BRAIN — the persistent engineer session that places + supervises bees —
+  // IS the Queen (matches the fleet's own Queen-dispatcher concept, e.g.
+  // QUEEN_BRIEF / "the Queen reads for placement"). The operator chat — the
+  // hive's conversational front door, always watching — is the Sentinel Bee.
+  operator: { one: 'Sentinel Bee', other: 'Sentinel Bees' },
+  brain: { one: 'Queen', other: 'Queens' },
   contributor: { one: 'Bee', other: 'Bees' },
   human: { one: 'Keeper', other: 'Keepers' },
   chunk: { one: 'Cell', other: 'Cells' },

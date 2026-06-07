@@ -24,6 +24,7 @@ const CLASSIC: &[(&str, &str, &str)] = &[
     ("pot", "Pot", "Pots"),
     ("fleet", "Fleet", "Fleets"),
     ("operator", "Operator", "Operators"),
+    ("brain", "Brain", "Brains"),
     ("contributor", "Contributor", "Contributors"),
     ("chunk", "Chunk", "Chunks"),
     ("cupboard", "Cupboard", "Cupboards"),

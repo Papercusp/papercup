@@ -310,6 +310,7 @@ import adminDogfoodSubstrateBootHistory from './admin/dogfood-substrate-boot-his
 import adminSubstrateRevokeSelfDevice from './admin/substrate-revoke-self-device';
 import adminSubstrateRevokeContributor from './admin/substrate-revoke-contributor';
 import advSessions from './adv/sessions';
+import fleetBeeOutput from './fleet/bee-output';
 import advLaunchSu from './adv/launch-su';
 import advLaunchPui from './adv/launch-pui';
 import adminPruneExecutedActions from './admin/prune-executed-actions';
@@ -699,6 +700,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminSubstrateRevokeSelfDevice as AnyRoute[]),
   ...flatten(adminSubstrateRevokeContributor as AnyRoute[]),
   ...flatten(advSessions as unknown as AnyRoute[]),
+  ...flatten(fleetBeeOutput as unknown as AnyRoute[]),
   ...flatten(advLaunchSu as unknown as AnyRoute[]),
   ...flatten(advLaunchPui as unknown as AnyRoute[]),
   ...flatten(adminPruneExecutedActions as AnyRoute),

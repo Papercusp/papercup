@@ -211,9 +211,11 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
             .join(" ");
         format!("\n            args {quoted}")
     };
-    // Lexicon-resolved, kdl-safe pane display names. Fixed names (chat, brain,
-    // main) have no lexicon term and stay verbatim.
+    // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
+    // the-hive pack: operator → sentinel-bee, brain → queen (owner naming,
+    // 2026-06-07 — the brain IS the Queen; the chat is the hive's sentinel).
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
+    let brain_name = kdl_pane_name(&lex.lex("brain"), "brain");
     format!(
         r#"// Papercusp chat dock — ONE full-width agent stack (zellij reserved for the
 // truly console-driven surface — owner ask, pui-dock-agent-stack-2026-06-07;
@@ -235,7 +237,7 @@ layout {{
             command "pui"
             args "chat-pane"
         }}
-        pane name="brain" {{
+        pane name="{brain_name}" {{
             command "{brain_cmd}"{args_line}
         }}
     }}
@@ -414,7 +416,8 @@ mod tests {
     fn hive_lex() -> Lexicon {
         let mut terms = HashMap::new();
         for (k, one, other) in [
-            ("operator", "Queen", "Queens"),
+            ("operator", "Sentinel Bee", "Sentinel Bees"),
+            ("brain", "Queen", "Queens"),
             ("fleet", "Swarm", "Swarms"),
             ("contributor", "Bee", "Bees"),
         ] {
@@ -490,14 +493,15 @@ mod tests {
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
-        // With the-hive active: operator→queen (lowercased, kdl-safe). The fixed
-        // panes (chat/brain) have no lexicon term and stay verbatim.
+        // With the-hive active: operator→sentinel-bee, brain→queen (lowercased,
+        // kdl-safe — owner naming 2026-06-07). The fixed "chat" stays verbatim.
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
+        assert!(kdl.contains("name=\"sentinel-bee\""));
         assert!(kdl.contains("name=\"queen\""));
         assert!(kdl.contains("name=\"chat\""));
-        assert!(kdl.contains("name=\"brain\""));
-        // The classic label must NOT leak when the-hive is on.
+        // The classic labels must NOT leak when the-hive is on.
         assert!(!kdl.contains("name=\"operator\""));
+        assert!(!kdl.contains("name=\"brain\""));
         // The internal pinned-pane arg is unchanged regardless of pack.
         assert!(kdl.contains("args \"chat-pane\""));
     }
