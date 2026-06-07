@@ -93,6 +93,14 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
   await db.sql.unsafe(readMigration('142-work-items-unify.sql')).simple();
   await db.sql.unsafe(readMigration('152-delegate-task-workitems.sql')).simple();
+  // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
+  await db.sql.unsafe(`
+    ALTER TABLE IF EXISTS harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+    ALTER TABLE IF EXISTS harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;`).simple();
   links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
 }, 90_000);
 

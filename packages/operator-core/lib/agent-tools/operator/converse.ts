@@ -210,7 +210,20 @@ export default defineTool({
     // readSystemPrincipal. Missing principal falls through to a lean
     // tool-less path so conversation still works.
     const principal = await readSystemPrincipal('operator');
-    const workspaceId = activeWorkspaceId();
+    // The workspace this turn runs in. Prefer the DISPATCH context's
+    // workspace — the route/IPC layer resolved it INSIDE the request scope
+    // (x-papercusp-workspace header / window stamp). Re-resolving
+    // activeWorkspaceId() here runs outside the request ALS (the SSE setup
+    // dispatches after the route handler has returned its Response), so it
+    // silently falls back to the process-global workspace. That mis-keys the
+    // state channel: chat_ask_choice cards register under the global
+    // workspace while the voice SSE subscribed the request's workspace — no
+    // overlap, so EVERY voice disambiguation card silently died and the
+    // brain's askUser timed out to a prose fallback (root cause of the S16
+    // cardUsage failures; voice-persona-production-readiness P-003, found
+    // live 2026-06-07). '*' is the superuser wildcard, not a real workspace.
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
     const principalOk = principal !== null && principal.workspaceId === workspaceId;
 
     // mcpConfig with agentmcp HTTP via mcp-remote bridge (same pattern

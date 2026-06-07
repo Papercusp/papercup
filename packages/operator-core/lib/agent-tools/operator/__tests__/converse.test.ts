@@ -160,6 +160,47 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(call.disallowBuiltins).toBe(true);
   });
 
+  it('mcpUrl workspace comes from ctx.workspaceId, NOT the process-global (voice-card state-channel keying, P-003)', async () => {
+    // The dispatch ctx carries the REQUEST's workspace (resolved in-ALS by the
+    // route); activeWorkspaceId() inside the handler runs outside the request
+    // scope and resolves the process-global. The two diverging mis-keyed the
+    // state channel and killed every voice disambiguation card (found live
+    // 2026-06-07). Pin ctx-first precedence.
+    const { readSystemPrincipal } = await import('../../../system-principal');
+    vi.mocked(readSystemPrincipal).mockResolvedValueOnce({
+      workspaceId: 'ws-window',
+      capabilities: new Set(['tasks:read']),
+      slug: 'system:operator',
+      kind: 'system',
+    } as never);
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-global');
+    await handler(
+      { messages: [], trigger: 'user_message', sessionUser: null },
+      { ...makeCtx(), workspaceId: 'ws-window' },
+    );
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
+    const url = mcpUrlOf(call.mcpConfig)!;
+    expect(url).toContain('&workspace=ws-window');
+    expect(url).not.toContain('ws-global');
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+  });
+
+  it("ctx.workspaceId='*' (superuser wildcard) falls through to activeWorkspaceId()", async () => {
+    const { readSystemPrincipal } = await import('../../../system-principal');
+    vi.mocked(readSystemPrincipal).mockResolvedValueOnce({
+      workspaceId: 'ws-real',
+      capabilities: new Set(['tasks:read']),
+      slug: 'system:operator',
+      kind: 'system',
+    } as never);
+    await handler(
+      { messages: [], trigger: 'user_message', sessionUser: null },
+      { ...makeCtx(), workspaceId: '*' },
+    );
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
+    expect(mcpUrlOf(call.mcpConfig)!).toContain('&workspace=ws-real');
+  });
+
   it('&tools= drops chat:ask_choice on surface="tui" (mirrors allowedTools)', async () => {
     await handler(
       { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },
@@ -173,12 +214,16 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
 
   it('workspaceId is URL-encoded in the mcpUrl', async () => {
     const wonky = 'ws with space/slash';
-    vi.mocked(activeWorkspaceId).mockReturnValue(wonky);
     const { readSystemPrincipal } = await import('../../../system-principal');
     // converse only reads principal.workspaceId; cast past the full
     // SystemPrincipal shape (which is in flux from the capability work).
     vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: wonky } as never);
-    await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
+    // ctx.workspaceId is the authoritative source (request-scoped) — the
+    // wonky value rides the ctx, not the process-global.
+    await handler(
+      { messages: [], trigger: 'user_message', sessionUser: null },
+      { ...makeCtx(), workspaceId: wonky },
+    );
     const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
     expect(mcpUrlOf(call.mcpConfig)).toContain('&workspace=ws%20with%20space%2Fslash');
   });
