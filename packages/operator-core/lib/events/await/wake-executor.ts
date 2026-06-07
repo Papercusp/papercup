@@ -222,6 +222,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       PAPERCUSP_SID: d.subscriberId,
       PAPERCUSP_WAKE_DELIVERY_ID: String(d.id),
     };
+    // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
+    // + plugin isolation) at a conventional path — point the resumed claude at
+    // it so `--resume <sessionId>` finds the session file (D-010 resume leg).
+    const owner = fresh?.coordOwnerId ?? null;
+    if (owner) {
+      const cfgDir = join(
+        process.env.PAPERCUSP_SESSION_CLAUDE_DIR || join(homedir(), '.papercusp', 'session-claude'),
+        owner,
+      );
+      if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
+    }
 
     try {
       const h = spawnManaged({

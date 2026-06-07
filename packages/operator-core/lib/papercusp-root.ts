@@ -21,7 +21,7 @@
  * workspace served data from it until the operator was restarted.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { workspacesRoot, activeWorkspaceId } from './workspace-registry';
+import { workspacesRoot, activeWorkspaceId, DEFAULT_WORKSPACE_ID } from './workspace-registry';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -86,8 +86,9 @@ function resolve(): string {
     if (existsSync(cand)) return cand;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { DEFAULT_WORKSPACE_ID } = require('./workspace-registry') as typeof import('./workspace-registry');
+  // Was a lazy `require()` — a vestige that crashed under a pure-ESM tsx
+  // context on cloud frames ("require is not defined"; found live 2026-06-06).
+  // The module is already statically imported above; no cycle exists.
   const def = join(workspacesRoot(), DEFAULT_WORKSPACE_ID, '.papercusp');
   if (existsSync(def)) return def;
 
