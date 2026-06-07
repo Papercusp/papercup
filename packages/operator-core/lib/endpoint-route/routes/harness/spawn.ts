@@ -187,22 +187,28 @@ const invoke = defineTool({
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
 
-    // Record a session for kind:'hive' blueprints so coord:send {wake:true} can resume.
-    // The pot is the only built-in kind:'hive' blueprint; when invoked via this route,
-    // it needs a tracked session so the Queen (the pot's harness operator) can be woken
-    // and resumed by the bee (local-hive-orchestration P-010/P-011).
+    // Tracked, resumable session for kind:'hive' blueprint launches (D-010).
+    // fireLaunchBlueprint marks them with `?bpkind=hive` — this route only ever
+    // sees the INSTALL slug, never the blueprint, so the launcher must say so.
+    // ONE identity end-to-end: the minted spawn id becomes BOTH the
+    // adv_sessions coordOwnerId AND the child's PAPERCUSP_SPAWN_ID (→ the
+    // signed MCP URL's `client=` param, the Queen's coord identity). A bee's
+    // coord:send {wake:true} addressed to that id finds this row and
+    // wake-executor resumes `claude --resume <nativeSessionId>`.
     let nativeSessionId: string | null = null;
-    if (project.slug === 'pot') {
+    let hiveSpawnId: string | null = null;
+    let advSessionRowId: number | null = null;
+    if (url.searchParams.get('bpkind') === 'hive') {
       nativeSessionId = randomUUID();
-      const coordOwnerId = randomUUID(); // Identity for this spawned pot invocation.
-      await recordAdvSession({
+      hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
+      advSessionRowId = await recordAdvSession({
         sessionId: nativeSessionId,
-        coordOwnerId,
+        coordOwnerId: hiveSpawnId,
         agent: 'claude',
         role,
         cwd: project.path,
         mode: 'console',
-        label: `${project.slug}/${role}`,
+        label: `hive · ${project.slug}/${role}`,
       });
     }
 
@@ -264,9 +270,10 @@ const invoke = defineTool({
     // duplicate-registration crash. Loading it on first /invoke (cached thereafter)
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
-    const env = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
-    if (nativeSessionId) {
+    const env: Record<string, string> = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
+    if (nativeSessionId && hiveSpawnId) {
       env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
+      env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
     }
     const r = await spawnInvokeOnce(
       project.path,
@@ -276,12 +283,15 @@ const invoke = defineTool({
       { timeoutMs },
     );
 
-    // Clean up the tracked session on exit.
-    if (nativeSessionId) {
+    // Mark the tracked session ended (by ROW id — markAdvSessionEnded takes the
+    // adv_sessions PK, not the native session UUID). The row stays queryable so
+    // a wake during the idle window can still resume the ended process via
+    // `claude --resume` (wake-executor checks pid liveness, then resumes).
+    if (advSessionRowId != null) {
       try {
-        await markAdvSessionEnded(nativeSessionId, r.exitCode ?? null);
+        await markAdvSessionEnded(advSessionRowId, r.exitCode ?? null);
       } catch (e) {
-        console.warn(`[invoke] failed to mark session ${nativeSessionId} as ended:`, e);
+        console.warn(`[invoke] failed to mark adv session ${advSessionRowId} as ended:`, e);
       }
     }
     const agentOutput = r.output; // spawnInvokeOnce already strips the [timestamp] log lines

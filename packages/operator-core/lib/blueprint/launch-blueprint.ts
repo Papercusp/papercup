@@ -53,9 +53,13 @@ export function setLaunchBlueprintResolver(fn: LaunchResolverFn | null): void {
 }
 
 /** Build the invoke-route URL for a role launch. */
-function invokeUrl(installSlug: string, role: string, workspaceId: string): string {
+function invokeUrl(installSlug: string, role: string, workspaceId: string, bpkind?: 'hive' | 'harness'): string {
   const ws = encodeURIComponent(workspaceId);
-  return `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}`;
+  // `bpkind=hive` tells the invoke route this launch is a kind:'hive' blueprint
+  // (the pot/Queen) so it records a TRACKED, resumable session (D-010) — the
+  // route can't resolve the blueprint itself (it only sees the install slug).
+  const kind = bpkind === 'hive' ? '&bpkind=hive' : '';
+  return `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}${kind}`;
 }
 
 export interface LaunchTarget {
@@ -78,8 +82,9 @@ export async function resolveLaunchTarget(
   blueprintId: string,
   opts: { installSlug: string; workspaceId: string },
 ): Promise<LaunchTarget> {
-  const role = await resolveLaunchRole(blueprintId);
-  return { blueprintId, role, url: invokeUrl(opts.installSlug, role, opts.workspaceId) };
+  const bp = await _resolver(blueprintId);
+  const role = bp.spine.decider;
+  return { blueprintId, role, url: invokeUrl(opts.installSlug, role, opts.workspaceId, bp.kind) };
 }
 
 /**

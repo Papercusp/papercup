@@ -70,7 +70,10 @@ function synthesizeSpeech(text) {
 }
 
 (async () => {
-  const { socketPath } = JSON.parse(readFileSync(join(homedir(), '.papercusp', 'voice-ipc.json'), 'utf8'));
+  // VOICE_SOCK overrides discovery — on a multi-operator dev box the discovery
+  // file is last-writer-wins and can point at a dead operator's socket.
+  const socketPath =
+    process.env.VOICE_SOCK ?? JSON.parse(readFileSync(join(homedir(), '.papercusp', 'voice-ipc.json'), 'utf8')).socketPath;
   console.log(`[live-e2e] host socket: ${socketPath}`);
   console.log(`[live-e2e] utterance: "${UTTERANCE}"`);
   const speech = synthesizeSpeech(UTTERANCE);

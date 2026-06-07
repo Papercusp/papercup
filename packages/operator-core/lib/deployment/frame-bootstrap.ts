@@ -276,6 +276,12 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // is the bin, which boots PG, applies PAPERCUSP_PG_SQL_DIR migrations, and
       // writes ~/.papercusp/embedded-pg.json on ready (the discovery contract).
       'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
+      // Frames bootstrap as root; Postgres refuses root, so the server creates
+      // + setuids a dedicated postgres OS user (found live 2026-06-06) — and the
+      // data dir must live OUTSIDE /root (0700 blocks the postgres user's initdb).
+      'export PAPERCUSP_PG_CREATE_USER=1',
+      'export PAPERCUSP_PG_DATA_DIR=/var/lib/papercusp/embedded-pg-data',
+      'mkdir -p /var/lib/papercusp',
       '( node libs/papercusp/packages/embedded-postgres-server/bin/embedded-postgres-server.mjs >/var/log/embedded-pg.log 2>&1 & )',
       'for i in $(seq 1 60); do [ -f "$HOME/.papercusp/embedded-pg.json" ] && break; sleep 2; done',
       // Fail LOUD — a silent pg miss leaves a frame that "deployed" but can't work.

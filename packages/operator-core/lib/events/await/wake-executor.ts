@@ -27,6 +27,9 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty, PtyError } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
@@ -63,17 +66,30 @@ export function resumeCommandFor(handle: {
   agent: string | null;
   sessionId: string | null;
   ompThreadId: string | null;
+  /** adv_sessions.coord_owner_id — for tracked hive launches this is the spawn
+   *  id that keys the persistent signed MCP config dir (D-010 resume leg). */
+  coordOwnerId?: string | null;
 }, wakeText: string): { bin: string; args: string[]; promptViaPty: boolean } | null {
   if (handle.agent === 'claude') {
     // Exact-session resume only (see header). Prompt rides as the positional
     // arg — claude submits it as the first user message of the resumed turn.
     if (!handle.sessionId) return null;
+    // Tracked hive launches (invoke route, bpkind=hive) bake their signed MCP
+    // config at a PERSISTENT conventional path keyed by the coord owner id —
+    // remount it on resume or the resumed Queen wakes toolless (her original
+    // spawn loaded it via --mcp-config; resume must too).
+    const mcpArgs: string[] = [];
+    if (handle.coordOwnerId) {
+      const cfg = join(homedir(), '.papercusp', 'session-mcp', handle.coordOwnerId, '.mcp.json');
+      if (existsSync(cfg)) mcpArgs.push('--mcp-config', cfg, '--strict-mcp-config');
+    }
     return {
       bin: 'claude',
       args: [
         '--resume', handle.sessionId,
         '--dangerously-skip-permissions',
         '--permission-mode', 'bypassPermissions',
+        ...mcpArgs,
         wakeText,
       ],
       promptViaPty: false,
@@ -187,6 +203,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         agent: fresh?.agent ?? handle.agent,
         sessionId: fresh?.sessionId ?? handle.sessionId,
         ompThreadId: fresh?.ompThreadId ?? handle.ompThreadId,
+        coordOwnerId: fresh?.coordOwnerId ?? null,
       },
       text,
     );
