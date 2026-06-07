@@ -192,26 +192,56 @@ export function collectServiceDownSignals(
     }));
 }
 
+/** (P-011) Collector definition: a pluggable source of watchdog signals for a target. */
+export interface WatchdogCollector {
+  /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
+  name: string;
+  /** Collect signals. Errors are caught + logged by runWatchdogTick. */
+  collect: () => Promise<WatchdogSignal[]>;
+}
+
 /** Injectable collector seam (the routine handler uses the default; tests inject). */
 export interface WatchdogDeps {
   collect: () => Promise<WatchdogSignal[]>;
   capture: typeof captureImprovement;
 }
 
-export async function collectWatchdogSignals(workspaceId: string, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
-  const { sql } = getOrgPg();
-  const settled = await Promise.allSettled([
-    collectRedTestSignals(sql, opts),
-    collectSmokeFailSignals(sql, workspaceId),
-    collectToolErrorSignals(sql, opts),
-  ]);
+/** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
+export async function defaultPapercuspCollectors(workspaceId: string, opts: CollectOptions = {}): Promise<WatchdogCollector[]> {
+  return [
+    {
+      name: 'papercusp-red-test',
+      collect: () => collectRedTestSignals(getOrgPg().sql, opts),
+    },
+    {
+      name: 'papercusp-smoke-fail',
+      collect: () => collectSmokeFailSignals(getOrgPg().sql, workspaceId),
+    },
+    {
+      name: 'papercusp-repeated-tool-error',
+      collect: () => collectToolErrorSignals(getOrgPg().sql, opts),
+    },
+    {
+      name: 'papercusp-service-down',
+      collect: () => Promise.resolve(collectServiceDownSignals()),
+    },
+  ];
+}
+
+export async function collectWatchdogSignals(workspaceId: string, opts: CollectOptions = {}, collectors?: WatchdogCollector[]): Promise<WatchdogSignal[]> {
+  // (P-011) Use provided collectors or default to papercusp
+  const activeCollectors = collectors ?? (await defaultPapercuspCollectors(workspaceId, opts));
+
+  const settled = await Promise.allSettled(activeCollectors.map((c) => c.collect()));
   const collected = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
-  for (const s of settled) {
+  for (let i = 0; i < settled.length; i++) {
+    const s = settled[i];
     if (s.status === 'rejected') {
-      console.warn(`[improvement-watchdog] a collector failed: ${s.reason instanceof Error ? s.reason.message : s.reason}`);
+      const collectorName = activeCollectors[i]?.name ?? `collector[${i}]`;
+      console.warn(`[improvement-watchdog] collector "${collectorName}" failed: ${s.reason instanceof Error ? s.reason.message : s.reason}`);
     }
   }
-  return [...collected, ...collectServiceDownSignals()];
+  return collected;
 }
 
 export interface WatchdogTickResult {
@@ -225,13 +255,14 @@ export interface WatchdogTickResult {
  * One watchdog tick: collect → plan (cap) → capture each through the shared core
  * (`dedupScope:'open'` — an open duplicate declines; a resolved one re-files the
  * regression). Returns a compact result for the routine log.
+ * (P-011) Accepts optional collectors for per-target-project sources.
  */
 export async function runWatchdogTick(
   workspaceId: string,
   opts: WatchdogPlanOptions & CollectOptions = {},
-  deps?: Partial<WatchdogDeps>,
+  deps?: Partial<WatchdogDeps> & { collectors?: WatchdogCollector[] },
 ): Promise<WatchdogTickResult> {
-  const collect = deps?.collect ?? (() => collectWatchdogSignals(workspaceId, opts));
+  const collect = deps?.collect ?? (() => collectWatchdogSignals(workspaceId, opts, deps?.collectors));
   const capture = deps?.capture ?? captureImprovement;
   const signals = await collect();
   const plan = planWatchdogCaptures(signals, opts);

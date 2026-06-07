@@ -121,6 +121,14 @@ jobs:
       - name: Lint no-restart imports
         run: npm run lint:no-restart
 
+      # TSC type-error gate (lint-tsc-gating-EI-60): operator-core has a
+      # pre-existing baseline of type errors. This gates NEW errors above the
+      # baseline while allowing legacy errors. Baseline is stored in
+      # packages/operator-core/.tsc-baseline.json and updated only
+      # intentionally (npm run lint:tsc -- --update).
+      - name: Lint TSC type errors (gates new errors, allows pre-existing baseline)
+        run: npm run lint:tsc
+
       # Drizzle drift: regenerate generated.ts from the live test PG and
       # fail if it differs from HEAD. Proves `.sql` is the source of
       # truth (PRs that forget to re-run pull-schema fail here).

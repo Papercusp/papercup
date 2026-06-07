@@ -7,8 +7,8 @@
  * builder wires the real PG queries.
  */
 
+import { getOrgPg } from '@papercusp/db-org';
 import type { ChangeFeedEntry, ChangeFeedReaders } from './change-feed';
-import { getOperatorDb } from '../db-tools/get-operator-db';
 
 /**
  * Fetch work-item completions: items that reached a terminal status.
@@ -16,7 +16,7 @@ import { getOperatorDb } from '../db-tools/get-operator-db';
  * and engineer_issues), filtering for done/resolved/closed states.
  */
 async function fetchWorkItemCompletions(): Promise<ChangeFeedEntry[]> {
-  const db = await getOperatorDb();
+  const db = await getOrgPg();
   const rows = await db.query(
     `
     SELECT

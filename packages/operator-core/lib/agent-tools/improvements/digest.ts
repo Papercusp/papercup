@@ -20,9 +20,9 @@ export default defineTool({
   name: 'improvements:digest',
   profile: 'engineer',
   description:
-    'Triage the captured papercusp-improvement backlog: scores + dedups every improvement work-unit and splits it into the auto-eligible lane (kind=bug, no protected surface) vs the human-review queue. Read-only — surfaces the queue, implements nothing.',
+    'Triage the captured papercusp-improvement backlog: scores + dedups every improvement work-unit and splits it into the auto-eligible lane (kind=bug, no protected surface) vs the human-review queue. Read-only — surfaces the queue, implements nothing. (P-010) Supports per-Hive scope filtering.',
   guidance: {
-    when: 'To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view.',
+    when: 'To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Hive\'s ideas.',
     notWhen: 'You want one improvement in full — issues:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.',
     chaining: 'improvements:digest → issues:get / issues:claim on a queued item → fix it self/inline (or improvements:capture to add more).',
   },
@@ -32,10 +32,11 @@ export default defineTool({
   args: z.object({
     state: z.enum(['open', 'resolved', 'closed']).optional().describe('restrict the read to one lifecycle state (default: all, so rollups + dedup see resolved too)'),
     limit: z.number().int().positive().max(500).optional(),
+    harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Hive\'s ideas (default: all)'),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const items = await readImprovementItems({ state: args.state, limit: args.limit });
+    const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
     const digest = buildDigest(items, { nowMs: Date.now() });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, digest }) }] };
   },

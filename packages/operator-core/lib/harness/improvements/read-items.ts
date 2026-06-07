@@ -70,6 +70,8 @@ export interface ReadImprovementOpts {
   /** Restrict to a lifecycle state (default: all states, so rollups + dedup see resolved too). */
   state?: 'open' | 'resolved' | 'closed';
   limit?: number;
+  /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
+  harnessSlug?: string;
 }
 
 /** Injectable dependency seam so the adapter is unit-testable without PG. */
@@ -82,6 +84,7 @@ const defaultDeps: ReadImprovementDeps = { listIssues };
 /**
  * Read every captured improvement (tagged the `papercusp-improvement` topic) as
  * storage-agnostic candidates. THE repoint point for any future storage move.
+ * (P-010) Supports per-Hive scope filtering via harnessSlug.
  */
 export async function readImprovementItems(
   opts: ReadImprovementOpts = {},
@@ -92,5 +95,14 @@ export async function readImprovementItems(
     state: opts.state,
     limit: opts.limit ?? 500,
   });
+
+  // (P-010) Filter by scope if harnessSlug is specified
+  if (opts.harnessSlug) {
+    const targetScope = `harness:${opts.harnessSlug}`;
+    return issues
+      .filter(issue => issue.scope === targetScope)
+      .map(issueToCandidate);
+  }
+
   return issues.map(issueToCandidate);
 }

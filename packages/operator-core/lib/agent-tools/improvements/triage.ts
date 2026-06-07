@@ -23,10 +23,10 @@ export default defineTool({
   name: 'improvements:triage',
   profile: 'engineer',
   description:
-    'Queen-turn triage: read the scored improvements:digest and type-route each idea (product→place, process→gate/gym). Updates idea lifecycle state with the Queen\'s decision.',
+    'Queen-turn triage: read the scored improvements:digest and type-route each idea (product→place, process→gate/gym). Updates idea lifecycle state with the Queen\'s decision. (P-010) Supports per-Hive scope filtering. (P-012) Routes product-ideas to target project, process/prompt-ideas to papercusp gate.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen\'s judgment.',
+      'To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug to triage a specific Hive\'s ideas. (P-012) Type-routing: product→place as work-item in target; process/prompt→papercusp gate/gym.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: 'improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas.',
   },
@@ -46,12 +46,13 @@ export default defineTool({
       .optional()
       .describe('For triage-one, the Queen\'s decision'),
     reason: z.string().optional().describe('Reason for the decision (required if decision is set)'),
+    harnessSlug: z.string().min(1).max(80).optional().describe('(P-010) restrict to a specific Hive\'s ideas (default: all)'),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
 
-    // Read all open ideas
-    const items = await readImprovementItems({ state: 'open', limit: 100 });
+    // Read all open ideas (P-010: filter by harnessSlug if provided)
+    const items = await readImprovementItems({ state: 'open', limit: 100, harnessSlug: args.harnessSlug });
     const digest = buildDigest(items);
 
     // Summary mode: just show the breakdown

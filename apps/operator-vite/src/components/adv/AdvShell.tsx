@@ -13,6 +13,7 @@ import {
   Lightbulb,
   ListChecks,
   MessageCircle,
+  MonitorPlay,
   Plus,
   Settings,
   Share2,
@@ -28,7 +29,7 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans', 'frames'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -49,6 +50,7 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
   { id: 'harnesses', label: 'Harnesses', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
@@ -70,6 +72,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'plans',
   'harnesses',
   'conversations',
+  // Swarm live view aggregates every deployed frame in the workspace
+  // (hive-frame-desktops-live-view P-006).
+  'frames',
 ]);
 
 /** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */

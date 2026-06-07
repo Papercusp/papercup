@@ -104,6 +104,7 @@
     "lint:no-raw-spawn": "node scripts/check-no-raw-agent-spawn.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
+    "lint:tsc": "node scripts/lint-tsc.mjs",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
   },

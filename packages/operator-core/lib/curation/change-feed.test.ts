@@ -2,7 +2,7 @@
  * change-feed.test.ts — unit tests for the Change Feed projection service.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   gatherCompletions,
   rankChangeFeed,
@@ -92,6 +92,7 @@ describe('Change Feed', () => {
     });
 
     it('handles reader errors gracefully', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
       const errorReaders: ChangeFeedReaders = {
         async workItemCompletions() {
           throw new Error('DB error');
@@ -106,6 +107,7 @@ describe('Change Feed', () => {
       const result = await gatherCompletions(errorReaders);
       // Should return only proposals (work items failed, so empty).
       expect(result.some((e) => e.kind === 'proposal')).toBe(true);
+      expect(console.warn).toHaveBeenCalled();
     });
   });
 

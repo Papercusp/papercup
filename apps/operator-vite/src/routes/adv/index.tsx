@@ -3,6 +3,7 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
+import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -32,6 +33,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'overview') return 'Overview';
   if (tab === 'conversations') return 'Conversations';
   if (tab === 'harnesses') return 'Harnesses';
+  if (tab === 'frames') return 'Frames';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
@@ -46,6 +48,10 @@ function renderAdvTab(tab: AdvTabId) {
       return <AdvConversationsTab />;
     case 'harnesses':
       return <HarnessesWorkspace />;
+    case 'frames':
+      // Swarm live view — per-agent-display thumbnails from deployed frames
+      // (hive-frame-desktops-live-view P-006).
+      return <AdvFramesTab />;
     case 'brainstorm':
     case 'prs':
     case 'insights':
