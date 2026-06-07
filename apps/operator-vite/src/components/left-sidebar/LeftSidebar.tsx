@@ -19,7 +19,7 @@
  * Unlike DevAdminRail this is NOT dev-gated — it's a first-class app surface.
  */
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
+import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { useLexicon } from '@/lib/useLexicon';
@@ -70,8 +70,17 @@ function readStoredWidth(): number {
 
 export default function LeftSidebar() {
   const t = useLexicon();
-  const [open, setOpen] = useQueryState('lsb', parseAsBoolean.withDefault(true));
-  const [tab, setTab] = useQueryState('lst', parseAsStringLiteral(TAB_IDS).withDefault('swarm'));
+  // ONE useQueryStates group (not two useQueryState hooks): the collapsed
+  // rail's icon buttons set open+tab together, and two same-tick writes race
+  // through the custom nuqs adapter (each merges over the pre-tick search, so
+  // the last writer clobbers the first's key — observed live: lst landed,
+  // lsb=false survived). A single setRail() write is atomic.
+  const [{ lsb: open, lst: tab }, setRail] = useQueryStates({
+    lsb: parseAsBoolean.withDefault(true),
+    lst: parseAsStringLiteral(TAB_IDS).withDefault('swarm'),
+  });
+  const setOpen = (v: boolean) => void setRail({ lsb: v });
+  const setTab = (v: TabId) => void setRail({ lst: v });
 
   const pathname = usePathname() ?? '';
   const chromeless = CHROMELESS_PREFIXES.some(
@@ -176,10 +185,7 @@ export default function LeftSidebar() {
                 data-testid={`left-sidebar-rail-${x.id}`}
                 title={x.label}
                 aria-label={`Open ${x.label}`}
-                onClick={() => {
-                  void setTab(x.id);
-                  void setOpen(true);
-                }}
+                onClick={() => void setRail({ lsb: true, lst: x.id })}
               >
                 <Icon size={17} aria-hidden="true" />
               </button>

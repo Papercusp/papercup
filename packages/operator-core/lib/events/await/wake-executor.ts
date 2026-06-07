@@ -221,6 +221,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const env: Record<string, string> = {
       PAPERCUSP_SID: d.subscriberId,
       PAPERCUSP_WAKE_DELIVERY_ID: String(d.id),
+      // MCP handshake headroom: under fleet load the operator's event loop can
+      // stall past claude's default MCP connect timeout, and claude then marks
+      // the server offline for the WHOLE resumed session (no retry) — a woken
+      // Queen with no voice (Stage-A finding, 2026-06-07, load ~200).
+      MCP_TIMEOUT: process.env.PAPERCUSP_WAKE_MCP_TIMEOUT_MS || '120000',
     };
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at
