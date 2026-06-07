@@ -349,9 +349,30 @@ Type "Resume the most recent architect chat." Within 25s:
 
 ### 3.3 Keyboard shortcuts
 
+The authoritative, always-current list is the **in-app cheat-sheet** —
+`Ctrl+/` (or `?`) — and the remap editor at `/settings/shortcuts`; both
+render live from `packages/operator-core/lib/shortcut-registry.ts`, so
+prefer those over this table when they disagree. The high-traffic
+defaults after the Discord-parity pass (discord-shortcuts 2026-06-06;
+`⌘` on macOS = `Ctrl` elsewhere):
+
 | Keys | Where | Action |
 |---|---|---|
-| `⌘K` / `Ctrl+K` | `/harness` (and child panels) | open Command Palette |
+| `Ctrl+K` (alt `Ctrl+P`) | everywhere | open Command Palette (quick switcher) |
+| `Ctrl+/` (alt `?`) | everywhere | keyboard-shortcut cheat-sheet (`?shortcuts=1`) |
+| `Ctrl+,` | everywhere | open Settings |
+| `Ctrl+I` | everywhere | go to Conversations (inbox) |
+| `Ctrl+Shift+N` | everywhere | create a new harness (`?create=true` on /adv) |
+| `Ctrl+Shift+F` | everywhere | global content search overlay (`?gsearch=1&gq=…`) |
+| `Ctrl+U` | everywhere | live-agents rail / member list (`?members=1`) |
+| `Ctrl+Shift+M` | everywhere | toggle mic mute on the shared voice session (bus control) |
+| `Ctrl+Shift+D` | everywhere | toggle local deafen (playout off, transcripts continue) |
+| `Ctrl+Shift+V` | video pane mounted | toggle camera (`?vcam=1`, VIDEO_CHANNELS-gated) |
+| `Alt+↑` / `Alt+↓` | `/adv` | previous / next tab in the visible strip |
+| `Ctrl+Alt+←` / `Ctrl+Alt+→` | `/adv` | previous / next harness (pot) |
+| `Alt+←` / `Alt+→` | everywhere | history back / forward |
+| `Ctrl+F` | everywhere | in-app find in page |
+| `g` then `d`/`s`/`c`/`b`/`p`/`i` | harness tabs | go-to tab (Linear-style sequence) |
 | `Esc` | any modal/popover/dock | close (popover, modal, dock if open) |
 | `Esc` | feature search box | clear filter |
 | `↑` / `↓` | open command palette / inbox / proposal list | navigate selection |

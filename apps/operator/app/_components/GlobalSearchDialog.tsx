@@ -121,6 +121,9 @@ export default function GlobalSearchDialog() {
           <Dialog.Title style={{ fontSize: 13, opacity: 0.7, margin: '0 0 8px' }}>
             Search everywhere
           </Dialog.Title>
+          <Dialog.Description style={{ fontSize: 11, opacity: 0.5, margin: '0 0 8px' }}>
+            Full-text search across plans, docs, conversation turns, and decisions.
+          </Dialog.Description>
           <input
             ref={inputRef}
             value={query}

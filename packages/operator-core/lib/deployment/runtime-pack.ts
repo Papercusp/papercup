@@ -26,7 +26,9 @@ export const DEFAULT_RUNTIME_EXCLUDES = [
   'target', // rust build trees (papercusp-desktop)
   '.next',
   '.turbo',
-  'backups',
+  // ROOT-anchored: bare 'backups' ate apps/operator/app/settings/backups (a
+  // SOURCE dir) and broke the frame's SPA build — found live 2026-06-06.
+  './backups',
   'test-results',
   'playwright-report',
   '*.log',

@@ -21,6 +21,12 @@ describe('packRuntimeTarball', () => {
       writeFileSync(join(root, 'sub', 'target', 'bin'), 'x');
       mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
       writeFileSync(join(root, 'apps', 'operator', '.env.local'), 'SECRET=1');
+      // root backups/ (kopia repo) is excluded; a NESTED source dir named
+      // backups/ must SURVIVE (app/settings/backups bit us live).
+      mkdirSync(join(root, 'backups'), { recursive: true });
+      writeFileSync(join(root, 'backups', 'snap.bin'), 'x');
+      mkdirSync(join(root, 'apps', 'operator', 'app', 'backups'), { recursive: true });
+      writeFileSync(join(root, 'apps', 'operator', 'app', 'backups', 'page.tsx'), 'export {}');
 
       const out = join(root, '..', 'pc-pack-out.tgz');
       const { bytes } = await packRuntimeTarball(root, out);
@@ -34,6 +40,9 @@ describe('packRuntimeTarball', () => {
       expect(listing).not.toContain('target/bin');
       // security: env files (live secrets + host-specific config) never ship
       expect(listing).not.toContain('.env.local');
+      // root backups excluded; nested source backups survives
+      expect(listing).not.toContain('./backups/snap.bin');
+      expect(listing).toContain('./apps/operator/app/backups/page.tsx');
       rmSync(out, { force: true });
     } finally {
       rmSync(root, { recursive: true, force: true });

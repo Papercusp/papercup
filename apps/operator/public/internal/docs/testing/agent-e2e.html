@@ -460,6 +460,12 @@ curl is unchanged)</li>
 reset to welcome only.</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="33-keyboard-shortcuts">3.3 Keyboard shortcuts</h3><a class="sl-anchor-link" href="#33-keyboard-shortcuts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3.3 Keyboard shortcuts”</span></a></div>
+<p>The authoritative, always-current list is the <strong>in-app cheat-sheet</strong> —
+<code dir="auto">Ctrl+/</code> (or <code dir="auto">?</code>) — and the remap editor at <code dir="auto">/settings/shortcuts</code>; both
+render live from <code dir="auto">packages/operator-core/lib/shortcut-registry.ts</code>, so
+prefer those over this table when they disagree. The high-traffic
+defaults after the Discord-parity pass (discord-shortcuts 2026-06-06;
+<code dir="auto">⌘</code> on macOS = <code dir="auto">Ctrl</code> elsewhere):</p>
 
 
 
@@ -510,7 +516,77 @@ reset to welcome only.</li>
 
 
 
-<table><thead><tr><th>Keys</th><th>Where</th><th>Action</th></tr></thead><tbody><tr><td><code dir="auto">⌘K</code> / <code dir="auto">Ctrl+K</code></td><td><code dir="auto">/harness</code> (and child panels)</td><td>open Command Palette</td></tr><tr><td><code dir="auto">Esc</code></td><td>any modal/popover/dock</td><td>close (popover, modal, dock if open)</td></tr><tr><td><code dir="auto">Esc</code></td><td>feature search box</td><td>clear filter</td></tr><tr><td><code dir="auto">↑</code> / <code dir="auto">↓</code></td><td>open command palette / inbox / proposal list</td><td>navigate selection</td></tr><tr><td><code dir="auto">Enter</code></td><td>open command palette</td><td>execute selected command</td></tr><tr><td><code dir="auto">⌘+Enter</code> / <code dir="auto">Ctrl+Enter</code></td><td>proposal goal editor textarea</td><td>save edit</td></tr><tr><td><code dir="auto">Tab</code> / <code dir="auto">Shift+Tab</code></td><td>every form</td><td>normal tab order through controls</td></tr><tr><td>Drag (mouse)</td><td><code dir="auto">/pi</code> dockview tabs</td><td>rearrange tabs / split groups</td></tr></tbody></table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Keys</th><th>Where</th><th>Action</th></tr></thead><tbody><tr><td><code dir="auto">Ctrl+K</code> (alt <code dir="auto">Ctrl+P</code>)</td><td>everywhere</td><td>open Command Palette (quick switcher)</td></tr><tr><td><code dir="auto">Ctrl+/</code> (alt <code dir="auto">?</code>)</td><td>everywhere</td><td>keyboard-shortcut cheat-sheet (<code dir="auto">?shortcuts=1</code>)</td></tr><tr><td><code dir="auto">Ctrl+,</code></td><td>everywhere</td><td>open Settings</td></tr><tr><td><code dir="auto">Ctrl+I</code></td><td>everywhere</td><td>go to Conversations (inbox)</td></tr><tr><td><code dir="auto">Ctrl+Shift+N</code></td><td>everywhere</td><td>create a new harness (<code dir="auto">?create=true</code> on /adv)</td></tr><tr><td><code dir="auto">Ctrl+Shift+F</code></td><td>everywhere</td><td>global content search overlay (<code dir="auto">?gsearch=1&#x26;gq=…</code>)</td></tr><tr><td><code dir="auto">Ctrl+U</code></td><td>everywhere</td><td>live-agents rail / member list (<code dir="auto">?members=1</code>)</td></tr><tr><td><code dir="auto">Ctrl+Shift+M</code></td><td>everywhere</td><td>toggle mic mute on the shared voice session (bus control)</td></tr><tr><td><code dir="auto">Ctrl+Shift+D</code></td><td>everywhere</td><td>toggle local deafen (playout off, transcripts continue)</td></tr><tr><td><code dir="auto">Ctrl+Shift+V</code></td><td>video pane mounted</td><td>toggle camera (<code dir="auto">?vcam=1</code>, VIDEO_CHANNELS-gated)</td></tr><tr><td><code dir="auto">Alt+↑</code> / <code dir="auto">Alt+↓</code></td><td><code dir="auto">/adv</code></td><td>previous / next tab in the visible strip</td></tr><tr><td><code dir="auto">Ctrl+Alt+←</code> / <code dir="auto">Ctrl+Alt+→</code></td><td><code dir="auto">/adv</code></td><td>previous / next harness (pot)</td></tr><tr><td><code dir="auto">Alt+←</code> / <code dir="auto">Alt+→</code></td><td>everywhere</td><td>history back / forward</td></tr><tr><td><code dir="auto">Ctrl+F</code></td><td>everywhere</td><td>in-app find in page</td></tr><tr><td><code dir="auto">g</code> then <code dir="auto">d</code>/<code dir="auto">s</code>/<code dir="auto">c</code>/<code dir="auto">b</code>/<code dir="auto">p</code>/<code dir="auto">i</code></td><td>harness tabs</td><td>go-to tab (Linear-style sequence)</td></tr><tr><td><code dir="auto">Esc</code></td><td>any modal/popover/dock</td><td>close (popover, modal, dock if open)</td></tr><tr><td><code dir="auto">Esc</code></td><td>feature search box</td><td>clear filter</td></tr><tr><td><code dir="auto">↑</code> / <code dir="auto">↓</code></td><td>open command palette / inbox / proposal list</td><td>navigate selection</td></tr><tr><td><code dir="auto">Enter</code></td><td>open command palette</td><td>execute selected command</td></tr><tr><td><code dir="auto">⌘+Enter</code> / <code dir="auto">Ctrl+Enter</code></td><td>proposal goal editor textarea</td><td>save edit</td></tr><tr><td><code dir="auto">Tab</code> / <code dir="auto">Shift+Tab</code></td><td>every form</td><td>normal tab order through controls</td></tr><tr><td>Drag (mouse)</td><td><code dir="auto">/pi</code> dockview tabs</td><td>rearrange tabs / split groups</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="4-home-">4. Home (<code dir="auto">/</code>)</h2><a class="sl-anchor-link" href="#4-home-"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “4. Home (/)”</span></a></div>
 <p>Interactive inventory:</p>
 

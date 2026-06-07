@@ -272,9 +272,18 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     // D-007: the frame runs its OWN embedded-pg, federating via the peer-log.
     add('embedded-pg', 'embedded Postgres + migrations (D-007)', [
       `cd ${shq(`${root}/runtime`)}`,
-      'npm run --workspace @papercusp/embedded-postgres-server start >/var/log/embedded-pg.log 2>&1 &',
-      '# the embedded-pg boot runner applies libs/papercusp/libs/db/sql/<NNN>-*.sql on start',
-      'for i in $(seq 1 30); do [ -f "$HOME/.papercusp/embedded-pg.json" ] && break; sleep 2; done',
+      // The package has NO npm `start` script (found live 2026-06-06) — its entry
+      // is the bin, which boots PG, applies PAPERCUSP_PG_SQL_DIR migrations, and
+      // writes ~/.papercusp/embedded-pg.json on ready (the discovery contract).
+      'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
+      '( node libs/papercusp/packages/embedded-postgres-server/bin/embedded-postgres-server.mjs >/var/log/embedded-pg.log 2>&1 & )',
+      'for i in $(seq 1 60); do [ -f "$HOME/.papercusp/embedded-pg.json" ] && break; sleep 2; done',
+      // Fail LOUD — a silent pg miss leaves a frame that "deployed" but can't work.
+      'if [ ! -f "$HOME/.papercusp/embedded-pg.json" ]; then',
+      '  echo "FATAL: embedded-pg never wrote its discovery file" >&2',
+      '  tail -30 /var/log/embedded-pg.log >&2 || true',
+      '  exit 1',
+      'fi',
     ]);
   }
 

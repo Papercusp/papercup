@@ -32,6 +32,7 @@ import { phasePhaseLabel } from '../../../harness-phases';
 import { SUPERUSER_TOKEN_PATH } from '../../../superuser-token';
 import { launchRun } from '../../../harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
+import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../../loopback-guard';
 
@@ -186,6 +187,25 @@ const invoke = defineTool({
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
 
+    // Record a session for kind:'hive' blueprints so coord:send {wake:true} can resume.
+    // The pot is the only built-in kind:'hive' blueprint; when invoked via this route,
+    // it needs a tracked session so the Queen (the pot's harness operator) can be woken
+    // and resumed by the bee (local-hive-orchestration P-010/P-011).
+    let nativeSessionId: string | null = null;
+    if (project.slug === 'pot') {
+      nativeSessionId = randomUUID();
+      const coordOwnerId = randomUUID(); // Identity for this spawned pot invocation.
+      await recordAdvSession({
+        sessionId: nativeSessionId,
+        coordOwnerId,
+        agent: 'claude',
+        role,
+        cwd: project.path,
+        mode: 'console',
+        label: `${project.slug}/${role}`,
+      });
+    }
+
     // Phase 7: write pending_events for the role to read at $STATE_DIR/pending-events.jsonl.
     if (role === 'orchestrator') {
       try {
@@ -244,13 +264,26 @@ const invoke = defineTool({
     // duplicate-registration crash. Loading it on first /invoke (cached thereafter)
     // keeps route registration side-effect-free; the cost is a one-time async import.
     const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
+    const env = suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {};
+    if (nativeSessionId) {
+      env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
+    }
     const r = await spawnInvokeOnce(
       project.path,
       role,
       extra,
-      suBearer ? { PAPERCUSP_SPAWN_SU_BEARER: suBearer } : {},
+      env,
       { timeoutMs },
     );
+
+    // Clean up the tracked session on exit.
+    if (nativeSessionId) {
+      try {
+        await markAdvSessionEnded(nativeSessionId, r.exitCode ?? null);
+      } catch (e) {
+        console.warn(`[invoke] failed to mark session ${nativeSessionId} as ended:`, e);
+      }
+    }
     const agentOutput = r.output; // spawnInvokeOnce already strips the [timestamp] log lines
     const decisionLine = (agentOutput.split('\n')[0] ?? '').trim();
     const timedOut = r.timedOut ?? false;

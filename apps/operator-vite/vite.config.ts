@@ -89,7 +89,7 @@ export default defineConfig({
       { find: '@papercusp/operator-core', replacement: resolve(operatorRoot, '../../packages/operator-core') },
       // The browser bundle may import server modules through the generated
       // route tree; postgres-js touches Buffer at module eval and blanks the SPA.
-      { find: /^postgres$/, replacement: resolve(import.meta.dirname, 'src/shims/postgres-browser.ts') },
+      { find: /^postgres(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/postgres-browser.ts') },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React
