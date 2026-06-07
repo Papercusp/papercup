@@ -120,6 +120,28 @@ export function buildRemotePeerCommand(
   return { remoteCommand, childCfg };
 }
 
+/**
+ * SSH options for the LONG-LIVED peer-launch stream (distinct from the install
+ * path's short request/response runs). Two needs the shared sshBaseArgs doesn't
+ * cover: (1) connect resilience — a fresh VM right after a CPU-saturating
+ * `npm ci` can miss a single 10s connect window (hit live 2026-06-07: install
+ * succeeded, the very next peer-launch connect timed out), so retry the TCP
+ * connect; (2) keepalive — the connection carries ndjson for the whole scenario
+ * (minutes), so probe it so a silent drop is detected rather than hanging.
+ * `ConnectionAttempts` isn't set in sshBaseArgs, so this extraArgs value applies
+ * (for ssh, the FIRST value of a repeated -o wins; base already pins ConnectTimeout).
+ */
+const PEER_STREAM_SSH_ARGS = [
+  '-o',
+  'ConnectionAttempts=6', // ~6 connect tries before giving up (transient-tolerant)
+  '-o',
+  'ServerAliveInterval=15',
+  '-o',
+  'ServerAliveCountMax=8', // ~2 min of silence before the stream is declared dead
+  '-o',
+  'TCPKeepAlive=yes',
+];
+
 export function sshPeerLauncher(opts: { frames: SshSlotSpec[]; log: (line: string) => void }): PeerLauncher {
   const slots: PeerSlot[] = opts.frames.map((f) => ({
     label: f.label,
@@ -128,7 +150,12 @@ export function sshPeerLauncher(opts: { frames: SshSlotSpec[]; log: (line: strin
       const { remoteCommand, childCfg } = buildRemotePeerCommand(cfg, f);
       // Run as the login user (no sudo) — runtime files are world-readable; the
       // corestore lives in world-writable /tmp. Avoids sudo's stdin quirks.
-      const { cmd, args } = buildSshStreamArgs({ ...f.target, sudo: false }, remoteCommand);
+      const target: SshTarget = {
+        ...f.target,
+        sudo: false,
+        extraArgs: [...(f.target.extraArgs ?? []), ...PEER_STREAM_SSH_ARGS],
+      };
+      const { cmd, args } = buildSshStreamArgs(target, remoteCommand);
       const proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       return new PeerChildHandle(childCfg, proc, opts.log);
     },

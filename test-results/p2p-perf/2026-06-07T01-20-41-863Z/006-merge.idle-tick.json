@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "scenario": "merge.idle-tick",
+  "tier": 1,
+  "params": {
+    "historySize": 10000,
+    "ticks": 100,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T01:20:49.808Z",
+  "durationMs": 1070.146113,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "backfillMergeMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 1066.956,
+      "p95": 1066.956,
+      "p99": 1066.956,
+      "max": 1066.956,
+      "mean": 1066.956
+    },
+    "idleTickMs": {
+      "unit": "ms",
+      "count": 100,
+      "p50": 0.005,
+      "p95": 0.027,
+      "p99": 0.042,
+      "max": 0.099,
+      "mean": 0.009
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20,
+    "p95Ms": 20.6,
+    "p99Ms": 20.8,
+    "maxMs": 21.1
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 639.817,
+    "systemMs": 213.379
+  },
+  "rss": {
+    "peakBytes": 336801792
+  },
+  "opsDecoded": 10000,
+  "notes": []
+}

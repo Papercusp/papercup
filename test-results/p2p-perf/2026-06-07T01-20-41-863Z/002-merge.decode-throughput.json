@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "scenario": "merge.decode-throughput",
+  "tier": 1,
+  "params": {
+    "historySize": 10000,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T01:20:42.499Z",
+  "durationMs": 720.954114,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "decodeMs": {
+      "unit": "ms",
+      "count": 10000,
+      "p50": 0.059,
+      "p95": 0.095,
+      "p99": 0.428,
+      "max": 2.223,
+      "mean": 0.071
+    },
+    "decodeRate": {
+      "unit": "ops/sec",
+      "count": 1,
+      "p50": 13962.438,
+      "p95": 13962.438,
+      "p99": 13962.438,
+      "max": 13962.438,
+      "mean": 13962.438
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20,
+    "p95Ms": 20.1,
+    "p99Ms": 20.2,
+    "maxMs": 20.2
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 473.442,
+    "systemMs": 203.34
+  },
+  "rss": {
+    "peakBytes": 289345536
+  },
+  "opsDecoded": 10000,
+  "notes": []
+}
