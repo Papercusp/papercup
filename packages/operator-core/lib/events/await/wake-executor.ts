@@ -80,7 +80,9 @@ export function resumeCommandFor(handle: {
     // spawn loaded it via --mcp-config; resume must too).
     const mcpArgs: string[] = [];
     if (handle.coordOwnerId) {
-      const cfg = join(homedir(), '.papercusp', 'session-mcp', handle.coordOwnerId, '.mcp.json');
+      const root =
+        process.env.PAPERCUSP_SESSION_MCP_DIR || join(homedir(), '.papercusp', 'session-mcp');
+      const cfg = join(root, handle.coordOwnerId, '.mcp.json');
       if (existsSync(cfg)) mcpArgs.push('--mcp-config', cfg, '--strict-mcp-config');
     }
     return {

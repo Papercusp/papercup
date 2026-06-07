@@ -313,6 +313,9 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     // running each frame's loop.
     add('orchestrator-loop', 'frame orchestrator loop (D-006)', [
       `cd ${shq(`${root}/runtime`)}`,
+      // claude's install.sh lands in ~/.local/bin, which a non-login bootstrap
+      // shell doesn't have on PATH — the loop's agent spawns need it.
+      'export PATH="$HOME/.local/bin:$PATH"',
       // DBOS itself is gated default-OFF (instrumentation-node checks DBOS_ENABLE);
       // without it the frame's "own loop" silently never launches (found live
       // 2026-06-06 in the work-on-frame verification).

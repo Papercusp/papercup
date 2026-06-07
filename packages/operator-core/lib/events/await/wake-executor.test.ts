@@ -114,6 +114,40 @@ describe('resumeCommandFor', () => {
     expect(resumeCommandFor({ agent: 'claude', sessionId: null, ompThreadId: null }, 'WAKE')).toBeNull();
   });
 
+  it('claude tracked-hive resume remounts the persistent signed MCP config (D-010 resume leg)', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = mkdtempSync(join(tmpdir(), 'session-mcp-'));
+    const prev = process.env.PAPERCUSP_SESSION_MCP_DIR;
+    process.env.PAPERCUSP_SESSION_MCP_DIR = root;
+    try {
+      mkdirSync(join(root, 's-123-queen'), { recursive: true });
+      writeFileSync(join(root, 's-123-queen', '.mcp.json'), '{"mcpServers":{}}');
+
+      const r = resumeCommandFor(
+        { agent: 'claude', sessionId: 'sid-q', ompThreadId: null, coordOwnerId: 's-123-queen' },
+        'WAKE',
+      );
+      expect(r!.args).toContain('--mcp-config');
+      expect(r!.args).toContain(join(root, 's-123-queen', '.mcp.json'));
+      expect(r!.args).toContain('--strict-mcp-config');
+      // Prompt stays the trailing positional arg.
+      expect(r!.args[r!.args.length - 1]).toBe('WAKE');
+
+      // No config on disk for this owner → resume still works, just no remount.
+      const bare = resumeCommandFor(
+        { agent: 'claude', sessionId: 'sid-q', ompThreadId: null, coordOwnerId: 's-nope' },
+        'WAKE',
+      );
+      expect(bare!.args).not.toContain('--mcp-config');
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_SESSION_MCP_DIR;
+      else process.env.PAPERCUSP_SESSION_MCP_DIR = prev;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('omp: thread resume, prompt rides the pty', () => {
     const r = resumeCommandFor({ agent: 'omp', sessionId: null, ompThreadId: 'th-9' }, 'WAKE');
     expect(r!.bin).toBe('omp');

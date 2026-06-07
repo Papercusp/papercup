@@ -69,7 +69,11 @@ async function resolveSessionToken(headers?: Headers): Promise<string | undefine
     return parseCookieHeader(headers.get('cookie')).get(SESSION_COOKIE);
   }
   try {
-    const { cookies } = await import('next/headers');
+    // @vite-ignore: `next` is a PHANTOM package (no package.json declares it;
+    // absent from the lock) — present on long-lived dev boxes, absent on any
+    // clean install (cloud frames — found live 2026-06-06). Without the ignore,
+    // Rolldown fails the whole SPA build trying to resolve this fallback.
+    const { cookies } = await import(/* @vite-ignore */ 'next/headers');
     const jar = await cookies();
     return jar.get(SESSION_COOKIE)?.value;
   } catch {
