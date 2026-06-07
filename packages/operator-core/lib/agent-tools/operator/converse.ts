@@ -209,7 +209,6 @@ export default defineTool({
     // operator:delegate — transport-agnostic gate via
     // readSystemPrincipal. Missing principal falls through to a lean
     // tool-less path so conversation still works.
-    const principal = await readSystemPrincipal('operator');
     // The workspace this turn runs in. Prefer the DISPATCH context's
     // workspace — the route/IPC layer resolved it INSIDE the request scope
     // (x-papercusp-workspace header / window stamp). Re-resolving
@@ -224,6 +223,11 @@ export default defineTool({
     // live 2026-06-07). '*' is the superuser wildcard, not a real workspace.
     const workspaceId =
       ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    // The principal lookup must target the SAME workspace (it defaults to the
+    // ALS-lost activeWorkspaceId() too — leaving it implicit reintroduces the
+    // mismatch as a tool-less brain: principal from the global workspace,
+    // comparison against the request's).
+    const principal = await readSystemPrincipal('operator', workspaceId);
     const principalOk = principal !== null && principal.workspaceId === workspaceId;
 
     // mcpConfig with agentmcp HTTP via mcp-remote bridge (same pattern

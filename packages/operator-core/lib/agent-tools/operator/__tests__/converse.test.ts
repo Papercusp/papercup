@@ -182,6 +182,10 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     const url = mcpUrlOf(call.mcpConfig)!;
     expect(url).toContain('&workspace=ws-window');
     expect(url).not.toContain('ws-global');
+    // The principal lookup must target the same request workspace — the
+    // implicit default resolves the ALS-lost global and yields a tool-less
+    // brain (principal/comparison workspace mismatch).
+    expect(vi.mocked(readSystemPrincipal)).toHaveBeenCalledWith('operator', 'ws-window');
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
   });
 

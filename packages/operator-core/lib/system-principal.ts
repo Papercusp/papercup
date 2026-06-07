@@ -34,12 +34,23 @@ export interface SystemPrincipal {
 
 /**
  * Read the system principal for `name` ('operator' | 'oracle' | …) in the
- * active workspace. Returns null when not provisioned (caller surfaces a
- * "POST /api/agent-mcp/provision first" error per established route convention).
+ * given workspace (default: the active workspace). Returns null when not
+ * provisioned (caller surfaces a "POST /api/agent-mcp/provision first" error
+ * per established route convention).
+ *
+ * Pass `workspaceId` explicitly when the caller already resolved the
+ * REQUEST's workspace (e.g. from its dispatch ctx) — calling this with the
+ * implicit default from a context where the request ALS has expired (an SSE
+ * setup, a background continuation) silently looks up the PROCESS-GLOBAL
+ * workspace's principal instead (voice-persona-production-readiness P-003
+ * root-cause, 2026-06-07).
  */
-export async function readSystemPrincipal(name: string): Promise<SystemPrincipal | null> {
+export async function readSystemPrincipal(
+  name: string,
+  workspaceId?: string,
+): Promise<SystemPrincipal | null> {
   const { db } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = workspaceId ?? activeWorkspaceId();
   const slug = `system:${name}`;
   const rows = await db
     .select({ token: ti.token, capabilities: sp.capabilities })
