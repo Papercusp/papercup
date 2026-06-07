@@ -64,18 +64,22 @@ function deps(over: Parameters<typeof _setFrameVncDepsForTests>[0] = {}) {
 afterEach(() => _resetFrameVncForTests());
 
 describe('vncRemoteCommand', () => {
-  it('watch mode is read-only (-viewonly), inetd + once + nopw (no listener, no pw theater)', () => {
+  it('watch mode: localhost-only x11vnc + socat bridge, read-only, on-demand', () => {
     const cmd = vncRemoteCommand(99, 'watch');
-    expect(cmd).toContain('-inetd');
-    expect(cmd).toContain('-once');
-    expect(cmd).toContain('-nopw');
-    expect(cmd).toContain('-viewonly');
     expect(cmd).toContain('-display :99');
-    expect(cmd).not.toContain('-rfbport'); // never a TCP listener
+    expect(cmd).toContain('-localhost'); // never network-exposed
+    expect(cmd).toContain('-once'); // exits when the viewer leaves
+    expect(cmd).toContain('-timeout 30'); // self-exit if the bridge never connects
+    expect(cmd).toContain('-nopw'); // auth is the ticketed tunnel, not an RFB pw
+    expect(cmd).toContain('-viewonly');
+    expect(cmd).toContain('socat STDIO TCP:127.0.0.1:$P'); // the stdio bridge
+    expect(cmd).not.toContain('-inetd'); // -inetd can't run over an SSH pipe
+    expect(cmd).not.toMatch(/0\.0\.0\.0/);
   });
 
   it('takeover mode drops -viewonly (D-002 explicit takeover)', () => {
     expect(vncRemoteCommand(100, 'takeover')).not.toContain('-viewonly');
+    expect(vncRemoteCommand(100, 'takeover')).toContain('-display :100');
   });
 });
 
@@ -89,8 +93,12 @@ describe('createVncSession + ticket lifecycle (P-010)', () => {
     const s = consumeTicket(t.ticket)!;
     expect(s.sshCmd.cmd).toBe('ssh');
     expect(s.sshCmd.args.at(-2)).toBe('ubuntu@203.0.113.7');
-    // non-root login → sudo'd x11vnc, viewonly for watch
-    expect(s.sshCmd.args.at(-1)).toBe('sudo -H x11vnc -inetd -once -quiet -nopw -viewonly -display :99');
+    // non-root login → sudo'd bridge command, read-only for watch on :99
+    const remote = s.sshCmd.args.at(-1)!;
+    expect(remote.startsWith('sudo -H bash -c ')).toBe(true);
+    expect(remote).toContain('-display :99');
+    expect(remote).toContain('-viewonly');
+    expect(remote).toContain('socat STDIO TCP:127.0.0.1:$P');
     // single-use: second consume fails
     expect(consumeTicket(t.ticket)).toBeUndefined();
   });

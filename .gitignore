@@ -10,6 +10,13 @@ package-lock.json
 # Vitest coverage output (published as CI artifacts, never committed — spec §1.13)
 coverage/
 **/coverage/
+
+# Per-run test output (p2p-perf bench artifacts + report.md, Playwright, etc.).
+# Ephemeral, keyed by a timestamp/runId — NOT source. Committed baselines that
+# ARE source live elsewhere (e.g. perf/baselines/*.json) and are unaffected.
+# (2026-06-07: git-sync was sweeping p2p-perf run dirs into commits.)
+test-results/
+**/test-results/
 .env
 .env.local
 .source/

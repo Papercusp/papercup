@@ -183,7 +183,9 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     // on-demand per viewer session (localhost-only; never a listening 5900).
     const displayNumbers = Array.from({ length: desktop.displays }, (_, n) => DESKTOP_DISPLAY_BASE + n);
     add('desktop', `Xvfb desktops (${desktop.displays} displays — D-001 one per agent slot)`, [
-      'apt-get install -y --no-install-recommends xvfb openbox x11vnc xdotool ffmpeg x11-utils',
+      // socat bridges x11vnc's localhost port to the SSH stdio (the VNC leg —
+      // `-inetd` can't run over an SSH pipe; see frame-vnc.ts vncRemoteCommand).
+      'apt-get install -y --no-install-recommends xvfb openbox x11vnc xdotool ffmpeg x11-utils socat',
       `mkdir -p /var/log/papercusp-desktop ${shq(DESKTOP_CAPTURE_DIR)}`,
       ...displayNumbers.flatMap((d) => [
         `( Xvfb :${d} -screen 0 ${shq(desktop.geometry)} -nolisten tcp >/var/log/papercusp-desktop/xvfb-${d}.log 2>&1 & )`,

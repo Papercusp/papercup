@@ -122,13 +122,30 @@ function defaultAudit(ev: { action: string; actor: string; subject: string; deta
 const audit = (ev: { action: string; actor: string; subject: string; details: Record<string, unknown> }) =>
   (depsOverride.audit ?? defaultAudit)(ev);
 
-/** The x11vnc command a session runs on the frame (exported for tests). */
+/**
+ * The command a session runs on the frame (exported for tests).
+ *
+ * x11vnc's `-inetd` mode does NOT work over an SSH channel: it does socket
+ * syscalls (getnameinfo/setsockopt TCP_NODELAY) on stdin/stdout, but SSH gives
+ * PIPES, not sockets, so it bails before the RFB greeting ("Socket operation
+ * on non-socket" — verified live 2026-06-06). So instead: x11vnc listens on a
+ * fresh LOCALHOST-only autoport (never 0.0.0.0 — not network-exposed), and
+ * `socat` bridges that port to the SSH stdio. Properties preserved:
+ *   - no network-exposed VNC port (x11vnc `-localhost`, autoport ≥5900),
+ *   - on-demand (`-once` → x11vnc exits when socat, its one client, leaves;
+ *     `-timeout 30` → self-exit if the bridge never connects),
+ *   - read-only via `-viewonly` for watch mode (D-002).
+ * The whole thing is a `bash -c` so buildSshStreamArgs can prefix `sudo -H`.
+ */
 export function vncRemoteCommand(display: number, mode: VncMode): string {
-  // -inetd: RFB on stdio (no listener). -once: exit when the viewer leaves.
-  // -nopw: no VNC password — auth is the ticketed, loopback-only WS + SSH leg
-  // (an RFB password would be theater on a non-network pipe).
   const viewonly = mode === 'takeover' ? '' : ' -viewonly';
-  return `x11vnc -inetd -once -quiet -nopw${viewonly} -display :${display}`;
+  // No single quotes inside the script (it's wrapped in single quotes here).
+  const script =
+    `P=$(x11vnc -display :${display} -localhost -nopw${viewonly} -once -timeout 30 -autoport 5900 -bg 2>/dev/null ` +
+    `| sed -n "s/.*PORT=\\([0-9]*\\).*/\\1/p"); ` +
+    `[ -n "$P" ] || { echo "x11vnc-no-port" >&2; exit 9; }; ` +
+    `exec socat STDIO TCP:127.0.0.1:$P`;
+  return `bash -c '${script}'`;
 }
 
 /**

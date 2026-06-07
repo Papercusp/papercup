@@ -394,10 +394,27 @@ async fn run<B: Backend>(
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::PublishBeeSelection { owner_id, name } => {
-                // Swarm pane → bee-dossier relay (pui-bee-dossier-pane-2026-06-06):
-                // POST the selection off the UI thread (fire-and-forget; the bee
-                // pane polls the relay). Redraw immediately.
+                // In-process selection drive (pui-dock-consolidation-2026-06-07):
+                // the dossier renders inside the Fleet tab now — apply the
+                // selection to app state and fetch the bee's dossier directly.
+                // The relay POST stays for external consumers.
+                let changed = app.bee.owner_id != owner_id;
+                app.update(Event::BeeSelection {
+                    owner_id: owner_id.clone(),
+                    name: name.clone(),
+                });
+                if changed {
+                    if let Some(o) = owner_id.clone() {
+                        tokio::spawn(bee_dossier_fetch(o, tx.clone()));
+                    }
+                }
                 tokio::spawn(publish_bee_selection(owner_id, name, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchFleetAssignments => {
+                // Whole-fleet task list for the default Swarm dossier (#2) —
+                // fetched off the UI thread → Event::FleetAssignments.
+                tokio::spawn(fetch_fleet_assignments(tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::DocsAction { action, doc_id } => {
@@ -1974,34 +1991,20 @@ async fn lexicon_fetch(tx: UnboundedSender<Event>) {
     }
 }
 
-/// The bee-dossier pane's selection poll (pui-bee-dossier-pane-2026-06-06): every
-/// ~1.5s read the ephemeral selected-bee relay (`fleet:selected_bee`). On a
-/// CHANGE, emit `Event::BeeSelection` and fetch that bee's dossier (assignment +
-/// coord mail). A cheap single GET per tick — the documented v1 transport (NOT
-/// PG); a future push rail could replace it. Reconnects on transport loss.
-async fn bee_selection_loop(tx: UnboundedSender<Event>) {
-    let mut current: Option<String> = None;
-    let mut ticker = tokio::time::interval(Duration::from_millis(1500));
-    loop {
-        ticker.tick().await;
-        let client = match OperatorClient::from_discovery().await {
-            Ok(c) => c,
-            Err(_) => continue, // operator not up yet — retry next tick
-        };
-        let sel = client.selected_bee_get().await.ok().flatten();
-        let owner = sel.as_ref().and_then(|s| s.owner_id.clone());
-        let name = sel.as_ref().and_then(|s| s.name.clone());
-        if owner != current {
-            current = owner.clone();
-            let _ = tx.send(Event::BeeSelection {
-                owner_id: owner.clone(),
-                name: name.clone(),
-            });
-            if let Some(owner_id) = owner {
-                // Fetch the new bee's dossier right away (don't wait for the next
-                // tick). Spawned so a slow fetch doesn't stall the poll cadence.
-                tokio::spawn(bee_dossier_fetch(owner_id, tx.clone()));
-            }
+/// Fetch the whole-fleet assignments (`fleet:assignments`, no agent filter) and
+/// emit `Event::FleetAssignments` — the default Swarm dossier's task list
+/// (pui-dock-consolidation-2026-06-07 #2). Best-effort: a transport loss keeps
+/// the "(loading fleet task list…)" placeholder; the next Fleet entry retries.
+async fn fetch_fleet_assignments(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    match client.fleet_assignments_all().await {
+        Ok(agents) => {
+            let _ = tx.send(Event::FleetAssignments(agents));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("fleet assignments: {e}")));
         }
     }
 }

@@ -437,75 +437,72 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_has_six_panes_apiary_voice_operator_brain_swarm_bee() {
-        // Classic lexicon: operator→"operator", swarm→"fleet", bee→"contributor".
+    fn chat_dock_has_two_panes_chat_and_main() {
+        // The consolidated dock (pui-dock-consolidation-2026-06-07 #5): LEFT =
+        // the chat column (operator over brain), RIGHT = ONE main pane (a pui
+        // restricted to the Apiary/Voice/Swarm tabs).
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
-        // The six panes (classic pane names).
-        assert!(kdl.contains("name=\"apiary\""));
-        assert!(kdl.contains("name=\"voice\""));
+        assert!(kdl.contains("name=\"chat\""));
         assert!(kdl.contains("name=\"operator\"")); // lex("operator") = Operator
         assert!(kdl.contains("name=\"brain\""));
-        assert!(kdl.contains("name=\"fleet\"")); // lex("fleet") = Fleet (swarm pane)
-        assert!(kdl.contains("name=\"contributor\"")); // lex("contributor") = Contributor (bee pane)
+        assert!(kdl.contains("name=\"main\""));
         // The pinned-pane ARGS are internal identifiers — NEVER lexicon-driven.
-        assert!(kdl.contains("args \"apiary-pane\""));
-        assert!(kdl.contains("args \"voice-pane\""));
         assert!(kdl.contains("args \"chat-pane\""));
-        assert!(kdl.contains("args \"swarm-pane\""));
-        assert!(kdl.contains("args \"bee-pane\"")); // the 6th pane
+        assert!(kdl.contains("args \"main-pane\""));
         assert!(kdl.contains("command \"psu\""));
         assert!(kdl.contains("args \"--resume\""));
-        // Side-by-side, left→right: apiary | voice | operator | brain | swarm | bee.
+        // The old single-tab dock panes are GONE — their surfaces are tabs (or
+        // Swarm-tab sections) of the main pane now.
+        for gone in ["apiary-pane", "voice-pane", "swarm-pane", "bee-pane"] {
+            assert!(!kdl.contains(gone), "stale single-tab pane arg: {gone}");
+        }
+        // chat | main side-by-side; operator over brain inside the chat column.
         assert!(kdl.contains("split_direction=\"vertical\""));
-        let (a, v, o, b, s, e) = (
-            kdl.find("name=\"apiary\"").unwrap(),
-            kdl.find("name=\"voice\"").unwrap(),
+        assert!(kdl.contains("split_direction=\"horizontal\""));
+        let (c, o, b, m) = (
+            kdl.find("name=\"chat\"").unwrap(),
             kdl.find("name=\"operator\"").unwrap(),
             kdl.find("name=\"brain\"").unwrap(),
-            kdl.find("name=\"fleet\"").unwrap(),
-            kdl.find("name=\"contributor\"").unwrap(),
+            kdl.find("name=\"main\"").unwrap(),
         );
         assert!(
-            a < v && v < o && o < b && b < s && s < e,
-            "pane order must be apiary | voice | operator | brain | swarm | bee (bee RIGHT of swarm)"
+            c < o && o < b && b < m,
+            "pane order must be chat[operator/brain] | main"
         );
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // Exactly FIVE pui panes (apiary + voice + chat + swarm + bee) + one psu.
-        assert_eq!(kdl.matches("command \"pui\"").count(), 5);
+        // Exactly TWO pui panes (chat + main) + one psu (the brain).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
         assert_eq!(kdl.matches("command \"psu\"").count(), 1);
     }
 
     #[test]
     fn chat_dock_pane_sizes_sum_to_100() {
         let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
-        // apiary 12 | voice 15 | operator 22 | brain 22 | swarm 14 | bee 15 = 100.
-        for pct in ["12%", "15%", "22%", "14%"] {
+        // Top level: chat 38 | main 62 = 100. Inside chat: operator 50 / brain 50.
+        for pct in ["38%", "62%"] {
             assert!(kdl.contains(pct), "missing pane size {pct}");
         }
-        assert_eq!(kdl.matches("size=\"15%\"").count(), 2); // voice + bee
-        assert_eq!(kdl.matches("size=\"22%\"").count(), 2); // operator + brain
+        assert_eq!(kdl.matches("size=\"50%\"").count(), 2); // operator + brain
     }
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
-        // With the-hive active: operator→queen, swarm→swarm, bee→bee (lowercased,
-        // kdl-safe). The fixed panes (apiary/voice/brain) stay verbatim.
+        // With the-hive active: operator→queen (lowercased, kdl-safe). The fixed
+        // panes (chat/brain/main) have no lexicon term and stay verbatim.
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
         assert!(kdl.contains("name=\"queen\""));
-        assert!(kdl.contains("name=\"swarm\""));
-        assert!(kdl.contains("name=\"bee\""));
-        assert!(kdl.contains("name=\"apiary\""));
-        // Classic labels must NOT leak when the-hive is on.
+        assert!(kdl.contains("name=\"chat\""));
+        assert!(kdl.contains("name=\"brain\""));
+        assert!(kdl.contains("name=\"main\""));
+        // The classic label must NOT leak when the-hive is on.
         assert!(!kdl.contains("name=\"operator\""));
-        assert!(!kdl.contains("name=\"contributor\""));
         // The internal pinned-pane args are unchanged regardless of pack.
         assert!(kdl.contains("args \"chat-pane\""));
-        assert!(kdl.contains("args \"swarm-pane\""));
-        assert!(kdl.contains("args \"bee-pane\""));
+        assert!(kdl.contains("args \"main-pane\""));
     }
 
     #[test]
@@ -559,7 +556,7 @@ mod tests {
         let written = std::fs::read_to_string(&p).unwrap();
         assert!(written.contains("name=\"brain\""));
         assert!(written.contains("args \"chat-pane\""));
-        assert!(written.contains("args \"bee-pane\""));
+        assert!(written.contains("args \"main-pane\""));
     }
 
     #[test]

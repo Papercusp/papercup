@@ -1591,6 +1591,39 @@ pub struct BeeAssignment {
     /// Work-item count — the load signal.
     #[serde(default)]
     pub load: i64,
+    /// Self-declared current plan (presence) — feeds the per-agent plan filter
+    /// (pui-dock-consolidation-2026-06-07 #2).
+    #[serde(default)]
+    pub declared_plan_slug: Option<String>,
+    /// The agent's claims (plan-item + work-item) — only the plan linkage is
+    /// kept; the rest of the wire claim is ignored.
+    #[serde(default)]
+    pub claims: Vec<BeeClaim>,
+}
+
+/// One claim row on a `fleet:assignments` agent — trimmed to the plan linkage
+/// the Fleet plan-progress filter needs (#2).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BeeClaim {
+    #[serde(default)]
+    pub plan_slug: Option<String>,
+}
+
+impl BeeAssignment {
+    /// Every plan slug this agent is linked to — its declared plan + any plan
+    /// its claims touch. Backs the agent-filtered plan-progress view (#2).
+    pub fn plan_slugs(&self) -> std::collections::HashSet<&str> {
+        let mut set: std::collections::HashSet<&str> = self
+            .claims
+            .iter()
+            .filter_map(|c| c.plan_slug.as_deref())
+            .collect();
+        if let Some(p) = self.declared_plan_slug.as_deref() {
+            set.insert(p);
+        }
+        set
+    }
 }
 
 /// Inner JSON of the `fleet:assignments` envelope (`content[0].text`).

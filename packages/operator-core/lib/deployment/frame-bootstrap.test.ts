@@ -161,7 +161,7 @@ describe('buildFrameBootstrap', () => {
       desktop: true,
     });
     expect(steps).toContain('desktop');
-    expect(script).toContain('xvfb openbox x11vnc xdotool ffmpeg x11-utils');
+    expect(script).toContain('xvfb openbox x11vnc xdotool ffmpeg x11-utils socat');
     for (const d of [99, 100, 101, 102]) {
       expect(script).toContain(`( Xvfb :${d} -screen 0 '1920x1080x24' -nolisten tcp >/var/log/papercusp-desktop/xvfb-${d}.log 2>&1 & )`);
       expect(script).toContain(`DISPLAY=:${d} openbox`);

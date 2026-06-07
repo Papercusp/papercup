@@ -496,61 +496,6 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
-/// The curator's "what matters" — salience-ranked fleet signals (curation:feed).
-/// Urgent (escalations/blockers) lead, then decisions-owed + user-completions,
-/// then routine. An empty feed means the curator is live but the fleet is calm.
-fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
-    // Pot-scope-filtered (D-003).
-    let sigs = app.visible_signals();
-    let items: Vec<ListItem> = sigs
-        .iter()
-        .map(|s| {
-            let mark = Theme::signal_marker(&s.kind);
-            let style = if s.urgent {
-                Theme::warn()
-            } else if s.disposition == "surface" {
-                Theme::selected()
-            } else {
-                Theme::dim()
-            };
-            let loc = s
-                .harness
-                .clone()
-                .filter(|h| !h.is_empty())
-                .map(|h| format!(" [{h}]"))
-                .unwrap_or_default();
-            ListItem::new(Line::from(vec![
-                mark,
-                Span::raw(" "),
-                Span::styled(trunc(&s.title, 40), style),
-                Span::styled(loc, Theme::dim()),
-            ]))
-        })
-        .collect();
-    let body = if items.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            format!(
-                "{} fleet calm — nothing needs attention",
-                glyph::status::DONE
-            ),
-            Theme::dim(),
-        )))]
-    } else {
-        items
-    };
-    f.render_widget(
-        List::new(body).style(Theme::panel()).block(Theme::block(
-            Line::from(format!(
-                " {} What matters ({}) — the curator's view ",
-                glyph::header::BOLT,
-                sigs.len()
-            )),
-            !sigs.is_empty(),
-        )),
-        area,
-    );
-}
-
 /// The agent list — roster joined to each agent's latest activity summary + todo
 /// progress. The navigable spine of the Fleet tab (j/k).
 fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
@@ -624,91 +569,34 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, body_area, &mut state);
 }
 
-/// Detail for the selected agent: presence + last activity + its mirrored todos.
-fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
-    // Same plans-filtered roster as `draw_agents` (D-009) — the dossier must
-    // describe the row the cursor is on.
-    let roster = app.visible_roster();
-    let sel = roster
-        .get(app.fleet.agent_sel.min(roster.len().saturating_sub(1)))
-        .copied();
-    let body = match sel {
-        Some(r) => {
-            let latest = app.fleet.latest_by_owner();
-            let last = latest
-                .get(r.owner_id.as_str())
-                .map(|a| {
-                    format!(
-                        "{}  ({})",
-                        a.summary.clone().unwrap_or_default(),
-                        hms(&a.created_at)
-                    )
-                })
-                .unwrap_or_else(|| "(no recent activity)".to_string());
-            // The dossier (folded in from the old Sessions tab — D-002b): presence
-            // + plan/heartbeat + last activity + mirrored todos + open files.
-            let mut out = format!(
-                "{}\n\nagent: {}   role: {}   feature: {}\nliveness: {}{}\nplan: {}   beat: {}\nintent: {}\n\nlast: {}\n",
-                r.label,
-                r.agent.clone().unwrap_or_default(),
-                r.role.clone().unwrap_or_default(),
-                r.feature.clone().unwrap_or_default(),
-                r.liveness,
-                if r.stale { " (stale)" } else { "" },
-                r.current_plan_slug.clone().unwrap_or_default(),
-                r.heartbeat_at.clone().unwrap_or_default(),
-                r.intent.clone().unwrap_or_default(),
-                last,
-            );
-            // Mirrored todos (D-004): the selected agent's Claude/Codex/OMP todos.
-            if let Some(t) = app.fleet.agent_todos.get(&r.owner_id) {
-                out.push_str(&format!("\ntodos ({}/{}):\n", t.done, t.count));
-                for td in t.todos.iter().take(8) {
-                    let mark = glyph::status_for(td.status.as_deref().unwrap_or("todo"));
-                    out.push_str(&format!("  {mark} {}\n", trunc(&td.content, 46)));
-                }
-            }
-            // Files in scope (the dossier's file list).
-            if !r.current_files.is_empty() {
-                out.push_str(&format!("\nfiles ({}):\n", r.current_files.len()));
-                for fpath in r.current_files.iter().take(8) {
-                    out.push_str(&format!("  {}\n", trunc(fpath, 46)));
-                }
-            }
-            out
-        }
-        None => "Select an agent (j/k) to see its dossier · n launches a new agent.".to_string(),
-    };
-    // Empty-work-area hint (pui-workbench-usability D-002): at startup the
-    // workbench opens with a blank work area + no agent — surface the launch
-    // affordance instead of leaving it silent. Prepended so it's the first thing
-    // seen whether or not an agent row is selected.
-    let body = if app.work_area_empty() {
-        format!(
-            "{} Work area is empty — press n to launch an agent here.\n\n{}",
-            glyph::nav::PANES,
-            body
-        )
-    } else {
-        body
-    };
-    f.render_widget(
-        Paragraph::new(body)
-            .wrap(Wrap { trim: false })
-            .style(Theme::panel())
-            .block(Theme::block(Line::from(" Dossier "), sel.is_some())),
-        area,
-    );
-}
-
 /// Fleet-wide plan progress — one bar per live plan, ordered by priority desc
-/// then by remaining work desc (the plans that need attention float up).
+/// then by remaining work desc (the plans that need attention float up). With an
+/// agent selected in the roster (#2), narrows to the plans that agent is linked
+/// to (declared plan + claim plan-slugs from `fleet:assignments`).
 fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
+    // The selected agent's plan-set (None = no selection → whole fleet). Prefer
+    // the whole-fleet snapshot; fall back to the per-bee dossier fetch.
+    let agent_plans: Option<std::collections::HashSet<&str>> =
+        app.bee.owner_id.as_deref().map(|owner| {
+            app.fleet
+                .all_assignments
+                .iter()
+                .find(|a| a.agent_id == owner)
+                .or(app.bee.assignment.as_ref())
+                .map(|a| a.plan_slugs())
+                .unwrap_or_default()
+        });
+
     // Pot-scope-filtered (D-003), matching the aggregate's headline numbers.
     let mut plans: Vec<&crate::models::PlanSummary> = app
         .visible_plans()
         .into_iter()
         .filter(|p| !p.archived && p.item_counts.total() > 0)
+        .filter(|p| {
+            agent_plans
+                .as_ref()
+                .is_none_or(|set| set.contains(p.slug.as_str()))
+        })
         .collect();
     plans.sort_by(|a, b| {
         b.priority
@@ -730,18 +618,28 @@ fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect
         .collect();
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "(no plan items)",
+            if agent_plans.is_some() {
+                "(no plans for this agent — Esc for the whole fleet)"
+            } else {
+                "(no plan items)"
+            },
             Theme::dim(),
         )))]
     } else {
         items
     };
+    let title = match app.bee.name.as_deref().or(app.bee.owner_id.as_deref()) {
+        Some(who) if agent_plans.is_some() => {
+            format!(" Plan progress — {} (Esc clears) ", trunc(who, 24))
+        }
+        _ => format!(
+            " Plan progress — {}/{} items done ",
+            agg.plan_items_done, agg.plan_items_total
+        ),
+    };
     f.render_widget(
         List::new(body).style(Theme::panel()).block(Theme::block(
-            Line::from(format!(
-                " Plan progress — {}/{} items done ",
-                agg.plan_items_done, agg.plan_items_total
-            )),
+            Line::from(title),
             agg.plan_items_total > 0,
         )),
         area,
@@ -1020,71 +918,18 @@ mod tests {
             .collect()
     }
 
-    fn curated(id: &str, kind: &str, title: &str, harness: &str, urgent: bool) -> CuratedSignal {
-        CuratedSignal {
-            id: id.into(),
-            kind: kind.into(),
-            title: title.into(),
-            detail: None,
-            harness: if harness.is_empty() {
-                None
-            } else {
-                Some(harness.into())
-            },
-            severity: None,
-            disposition: "surface".into(),
-            urgent,
-            ts: "2026-06-04T00:00:00Z".into(),
-        }
-    }
-
     #[test]
-    fn curated_what_matters_renders_signals_when_curator_live() {
+    fn curated_default_shows_roster_fleet_tasklist_and_plan_progress() {
+        // The default curated layout (pui-dock-consolidation-2026-06-07 #2):
+        // roster (left) | whole-fleet task list + plan progress (right). No
+        // agent selected → the fleet-wide dossier, not a single bee's.
         let mut app = App::new();
         app.tab = crate::app::Tab::Fleet;
         app.show_presence = false;
-        app.fleet.set_curated_signals(vec![
-            curated(
-                "e1",
-                "escalation",
-                "needs a human decision",
-                "papercup",
-                true,
-            ),
-            curated("d1", "decision", "design review owed", "restart", false),
-        ]);
-        assert!(app.fleet.curation_available);
-        let text = render_fleet(&app, 120, 24);
-        assert!(text.contains("What matters (2)"));
-        assert!(text.contains("the curator's view"));
-        assert!(text.contains("needs a human decision"));
-        assert!(text.contains("design review owed"));
-        assert!(text.contains("[papercup]"));
-        assert!(text.contains(glyph::severity::WARN)); // escalation glyph (Brief 27 vocabulary)
-    }
-
-    #[test]
-    fn curated_empty_feed_shows_calm() {
-        let mut app = App::new();
-        app.tab = crate::app::Tab::Fleet;
-        app.show_presence = false;
-        app.fleet.set_curated_signals(vec![]); // curator live, nothing salient
-        let text = render_fleet(&app, 120, 24);
-        assert!(text.contains("What matters (0)"));
-        assert!(text.contains("fleet calm"));
-    }
-
-    #[test]
-    fn curated_falls_back_to_heuristic_without_curator() {
-        let mut app = App::new();
-        app.tab = crate::app::Tab::Fleet;
-        app.show_presence = false;
-        // No curation feed yet (curation_available == false) → the agents+detail
-        // heuristic, not the what-matters panel.
-        assert!(!app.fleet.curation_available);
         let text = render_fleet(&app, 120, 24);
         assert!(text.contains("Agents"));
-        assert!(!text.contains("What matters"));
+        assert!(text.contains("fleet task list"));
+        assert!(text.contains("Plan progress"));
     }
 
     /// Brief 27 / P-010: buffer-level width safety. Render the Fleet view
@@ -1153,20 +998,6 @@ mod tests {
             );
         }
 
-        // Curated mode — the What-matters panel renders the signal glyphs
-        // (escalation ▲ / blocker ⊘) plus the ⚡ header emoji (sanctioned).
-        app.fleet.set_curated_signals(vec![
-            curated("e1", "escalation", "needs a human", "papercup", true),
-            curated("b1", "blocker", "blocked on X", "papercup", false),
-        ]);
-        for &(w, h) in &[(80u16, 30u16), (120, 30)] {
-            let rows = scan(&app, w, h);
-            let joined = rows.join("\n");
-            assert!(
-                joined.contains(glyph::severity::WARN),
-                "escalation glyph missing from curated render at width {w}"
-            );
-        }
     }
 
     #[test]
