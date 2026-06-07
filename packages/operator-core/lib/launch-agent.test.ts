@@ -25,12 +25,12 @@ function firstBody(): Record<string, unknown> {
 }
 
 describe('launchAgent', () => {
-  it('defaults to omp → POST launch-su with agent:omp (no special-case path)', async () => {
+  it('agent-less launch sends agent:null — launch-su resolves the CONFIGURED backend', async () => {
     const r = await launchAgent({ slug: 'papercup', planSlug: 'p' });
     expect(r.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalled();
     const body = firstBody();
-    expect(body.agent).toBe('omp');
+    expect(body.agent).toBeNull();
     expect(body.harness_slug).toBe('papercup');
     expect(body.plan_slug).toBe('p');
   });
@@ -57,7 +57,7 @@ describe('launchAgent', () => {
         }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    const r = await launchAgent({ agent: 'claude', planSlug: 'my-plan', deferSpawn: true });
+    const r = await launchAgent({ agent: 'claude', slug: null, planSlug: 'my-plan', deferSpawn: true });
     expect(r.ok).toBe(true);
     expect(r.advSessionId).toBe(77);
     expect(firstBody().defer_spawn).toBe(true);

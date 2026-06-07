@@ -63,12 +63,13 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? row.created_at ?? null;
   await sql`
     INSERT INTO harness_shared.coord_thread_posts
-      (workspace_id, thread_id, author_id, body, created_at, post_msg_id, harness_slug, origin, author_pubkey)
+      (workspace_id, thread_id, author_id, body, created_at, post_msg_id, harness_slug, origin, author_pubkey, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.thread_id}, ${row.author_id}, ${row.body},
-       to_timestamp(${row.created_at} / 1000.0), ${row.post_msg_id}, ${row.harness_slug}, ${origin}, ${authorPubkey})
+       to_timestamp(${row.created_at} / 1000.0), ${row.post_msg_id}, ${row.harness_slug}, ${origin}, ${authorPubkey}, ${fedTs})
     ON CONFLICT (workspace_id, post_msg_id)
       WHERE harness_slug IS NOT NULL AND post_msg_id IS NOT NULL
     DO UPDATE SET
@@ -76,16 +77,28 @@ async function writeToPg(
       author_id     = EXCLUDED.author_id,
       body          = EXCLUDED.body,
       origin        = EXCLUDED.origin,
-      author_pubkey = EXCLUDED.author_pubkey
+      author_pubkey = EXCLUDED.author_pubkey,
+      fed_ts        = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE coord_thread_posts.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= coord_thread_posts.fed_ts
   `;
 }
 
-async function deleteFromPg(opts: CoordThreadPostProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: CoordThreadPostProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.coord_thread_posts
     WHERE workspace_id = ${opts.workspaceId} AND post_msg_id = ${key}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -97,7 +110,7 @@ export function buildCoordThreadPostProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

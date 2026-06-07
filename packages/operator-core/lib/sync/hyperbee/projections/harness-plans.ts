@@ -131,14 +131,21 @@ async function writeToPg(
   `;
 }
 
-async function deleteFromPg(opts: HarnessPlansProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: HarnessPlansProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.harness_plans
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND plan_slug = ${key}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -150,7 +157,7 @@ export function buildHarnessPlansProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

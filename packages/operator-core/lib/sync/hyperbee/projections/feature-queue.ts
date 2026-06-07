@@ -99,7 +99,11 @@ async function writeToPg(
   `;
 }
 
-async function deleteFromPg(opts: FeatureQueueProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: FeatureQueueProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   // key shape: `<github_user_id>/<feature_id>`
   const sepIdx = key.indexOf('/');
   if (sepIdx <= 0) return;
@@ -108,12 +112,15 @@ async function deleteFromPg(opts: FeatureQueueProjectionOpts, key: string): Prom
   const userId = Number(userIdStr);
   if (!Number.isFinite(userId) || userId <= 0 || !featureId) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.feature_queue
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -125,7 +132,7 @@ export function buildFeatureQueueProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

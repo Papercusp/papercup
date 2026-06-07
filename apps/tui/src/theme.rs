@@ -62,7 +62,32 @@ pub struct ThemeSpec {
     pub tab_bar_bg: Color,
 }
 
-/// The default theme — the styling pass's polished palette, ported byte-for-byte
+/// Blue Frost — the operator's default theme, adapted to terminal RGB slots.
+/// Honeycomb remains selectable, but new sessions should open on the classic
+/// frost baseline unless a future persisted theme switcher says otherwise.
+pub const BLUE_FROST: ThemeSpec = ThemeSpec {
+    name: "frost",
+    ink: Color::Rgb(231, 247, 255),
+    muted: Color::Rgb(185, 212, 232),
+    panel: Color::Rgb(7, 16, 29),
+    panel_active: Color::Rgb(11, 18, 32),
+    border: Color::Rgb(42, 78, 103),
+    border_active: Color::Rgb(125, 211, 252),
+    accent: Color::Rgb(56, 189, 248),
+    accent_hot: Color::Rgb(125, 211, 252),
+    on_accent: Color::Rgb(5, 24, 39),
+    sky: Color::Rgb(56, 189, 248),
+    sage: Color::Rgb(52, 211, 153),
+    warn: Color::Rgb(251, 191, 36),
+    danger: Color::Rgb(251, 113, 133),
+    human: Color::Rgb(244, 114, 182),
+    popup: Color::Rgb(13, 24, 41),
+    input: Color::Rgb(3, 10, 20),
+    status: Color::Rgb(2, 6, 12),
+    tab_bar_bg: Color::Rgb(3, 10, 20),
+};
+
+/// The original PUI theme — the styling pass's polished palette, ported byte-for-byte
 /// (workbench-theme-system D-004). This is the single source of every colour the
 /// workbench previously hardcoded as `Theme::*` consts.
 pub const PAPERCUSP_DARK: ThemeSpec = ThemeSpec {
@@ -112,15 +137,13 @@ pub const HONEYCOMB: ThemeSpec = ThemeSpec {
     tab_bar_bg: Color::Rgb(5, 5, 5),
 };
 
-/// Registry of built-in themes. P0 ships `papercusp-dark` only (the polished
-/// palette, byte-identical to the pre-refactor consts). P1 — the `:theme`
-/// switcher — adds `papercusp-light` + the ports (catppuccin/gruvbox/nord/
-/// dracula) and a live-selectable, ViewState-persisted active theme.
-pub const THEMES: &[&ThemeSpec] = &[&HONEYCOMB, &PAPERCUSP_DARK];
+/// Registry of built-in themes. P1 — the `:theme` switcher — adds a
+/// live-selectable, ViewState-persisted active theme.
+pub const THEMES: &[&ThemeSpec] = &[&BLUE_FROST, &HONEYCOMB, &PAPERCUSP_DARK];
 
 /// Default active theme id. P1 (the `:theme` switcher) overrides this with the
 /// ViewState-persisted selection; P0 always resolves to it.
-pub const DEFAULT_THEME: &str = "honeycomb";
+pub const DEFAULT_THEME: &str = "frost";
 
 /// Resolve a theme by name, or `None` if unknown (callers list `THEMES` on a
 /// miss rather than erroring silently — workbench-theme-system D-002).
@@ -363,27 +386,27 @@ mod tests {
     }
 
     #[test]
-    fn honeycomb_is_the_default_active_palette() {
+    fn blue_frost_is_the_default_active_palette() {
         let t = Theme::active();
-        assert_eq!(t.name, "honeycomb");
-        assert_eq!(t.ink, Color::Rgb(255, 247, 223));
-        assert_eq!(t.muted, Color::Rgb(185, 170, 134));
-        assert_eq!(t.panel, Color::Rgb(5, 5, 5));
-        assert_eq!(t.panel_active, Color::Rgb(16, 16, 11));
-        assert_eq!(t.border, Color::Rgb(93, 70, 18));
-        assert_eq!(t.border_active, Color::Rgb(234, 179, 8));
-        assert_eq!(t.accent, Color::Rgb(234, 179, 8));
-        assert_eq!(t.accent_hot, Color::Rgb(253, 230, 138));
-        assert_eq!(t.on_accent, Color::Rgb(19, 13, 3));
-        assert_eq!(t.sky, Color::Rgb(250, 204, 21));
-        assert_eq!(t.sage, Color::Rgb(74, 222, 128));
-        assert_eq!(t.warn, Color::Rgb(253, 230, 138));
-        assert_eq!(t.danger, Color::Rgb(248, 113, 113));
-        assert_eq!(t.human, Color::Rgb(251, 146, 60));
-        assert_eq!(t.popup, Color::Rgb(16, 16, 11));
-        assert_eq!(t.input, Color::Rgb(3, 3, 3));
-        assert_eq!(t.status, Color::Rgb(8, 8, 6));
-        assert_eq!(t.tab_bar_bg, Color::Rgb(5, 5, 5));
+        assert_eq!(t.name, "frost");
+        assert_eq!(t.ink, Color::Rgb(231, 247, 255));
+        assert_eq!(t.muted, Color::Rgb(185, 212, 232));
+        assert_eq!(t.panel, Color::Rgb(7, 16, 29));
+        assert_eq!(t.panel_active, Color::Rgb(11, 18, 32));
+        assert_eq!(t.border, Color::Rgb(42, 78, 103));
+        assert_eq!(t.border_active, Color::Rgb(125, 211, 252));
+        assert_eq!(t.accent, Color::Rgb(56, 189, 248));
+        assert_eq!(t.accent_hot, Color::Rgb(125, 211, 252));
+        assert_eq!(t.on_accent, Color::Rgb(5, 24, 39));
+        assert_eq!(t.sky, Color::Rgb(56, 189, 248));
+        assert_eq!(t.sage, Color::Rgb(52, 211, 153));
+        assert_eq!(t.warn, Color::Rgb(251, 191, 36));
+        assert_eq!(t.danger, Color::Rgb(251, 113, 133));
+        assert_eq!(t.human, Color::Rgb(244, 114, 182));
+        assert_eq!(t.popup, Color::Rgb(13, 24, 41));
+        assert_eq!(t.input, Color::Rgb(3, 10, 20));
+        assert_eq!(t.status, Color::Rgb(2, 6, 12));
+        assert_eq!(t.tab_bar_bg, Color::Rgb(3, 10, 20));
     }
 
     /// Pin the composed accessor styles (a regression here means a `Self::CONST`
@@ -412,6 +435,7 @@ mod tests {
 
     #[test]
     fn registry_resolves_by_name() {
+        assert_eq!(theme_by_name("frost"), Some(&BLUE_FROST));
         assert_eq!(theme_by_name("honeycomb"), Some(&HONEYCOMB));
         assert_eq!(theme_by_name("papercusp-dark"), Some(&PAPERCUSP_DARK));
         assert!(theme_by_name("does-not-exist").is_none());

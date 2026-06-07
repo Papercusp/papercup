@@ -15,7 +15,8 @@ import type { LaunchOpts } from './native-console';
 import type { SuAgent } from './su-agents';
 
 export interface LaunchAgentOpts extends LaunchOpts {
-  /** Which backend to launch. Defaults to 'omp' (preserves prior behavior). */
+  /** Which backend to launch. Omitted → the configured backend
+   *  (/settings/agent, resolved server-side by launch-su). */
   agent?: SuAgent;
   /**
    * Deferred (pui-reactive-session-panes D-006): RECORD a pending "workbench
@@ -54,7 +55,10 @@ function launchSuEndpoints(): string[] {
  * Threads model / resume / kickoff so every backend has parity.
  */
 export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentResult> {
-  const agent: SuAgent = opts.agent ?? 'omp';
+  // No explicit agent → omit it; the launch-su route resolves the CONFIGURED
+  // backend (/settings/agent). Explicit picks (the sessions launcher) pass
+  // through unchanged.
+  const agent: SuAgent | null = opts.agent ?? null;
   const body = JSON.stringify({
     agent,
     harness_slug: opts.slug ?? null,

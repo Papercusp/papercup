@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { isSuAgent } from '../../../su-agents';
+import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
@@ -64,10 +64,20 @@ const launchSu = defineTool({
       return json({ status: 'error', error: 'invalid JSON body' }, 400);
     }
 
-    if (!isSuAgent(body.agent)) {
+    // No explicit agent → the CONFIGURED backend (/settings/agent — owner ask
+    // 2026-06-07: an agent-less launch like the New-Plan button must follow
+    // the global pick, not a hardcoded omp). Config speaks 'claude-code';
+    // psu speaks 'claude'.
+    let agent: SuAgent;
+    if (body.agent == null || body.agent === '') {
+      const { readAgentConfig, effectiveBackend } = await import('../../../agent-config');
+      const b = effectiveBackend(await readAgentConfig());
+      agent = b === 'claude-code' ? 'claude' : b;
+    } else if (isSuAgent(body.agent)) {
+      agent = body.agent;
+    } else {
       return json({ status: 'error', error: 'agent must be one of claude|omp|codex' }, 400);
     }
-    const agent = body.agent;
     const harness = body.harness_slug?.trim() || null;
     const plan = body.plan_slug?.trim() || null;
     if (harness && !SLUG_RE.test(harness)) return json({ status: 'error', error: 'invalid harness slug' }, 400);

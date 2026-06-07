@@ -773,7 +773,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         return 0;
       }
 
-      const { applied } = await mergeAdmittedLogsIncremental(logs, mergeCursor, {
+      const mergeOpts = {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own).
         applyImpl: scopedApply,
@@ -782,7 +782,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).
         maxOpsPerPass: MAX_OPS_PER_AUTHOR,
         // Surface standing backlog in boot-history (best-effort observability).
-        onBacklog: (keyHex, position, length) => {
+        onBacklog: (keyHex: string, position: number, length: number) => {
           try {
             recordBootEvent(
               opts.workspaceId,
@@ -794,7 +794,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // observability must never abort the merge pass
           }
         },
-      });
+      };
+      let result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
+      // EI-79 step 3 (correctness escape hatch): a TRUNCATED log (length dropped
+      // below its cursor — a reset/forked peer log) invalidates the standing fold.
+      // Reset the cursor and re-fold all logs from scratch THIS pass (the same
+      // response as a log removal). One retry suffices: the reset cursor starts
+      // every position at 0, so it can't re-trigger truncation.
+      if (result.truncated) {
+        try {
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'peer_capped',
+            'truncated log → cursor reset + full re-fold',
+          );
+        } catch {
+          // observability must never abort the merge pass
+        }
+        mergeCursor = createMergeCursor();
+        result = await mergeAdmittedLogsIncremental(logs, mergeCursor, mergeOpts);
+      }
+      const { applied } = result;
 
       // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
       // (merging=true) so it cannot race a concurrent merge pass. This collapses

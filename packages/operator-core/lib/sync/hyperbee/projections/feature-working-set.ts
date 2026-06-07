@@ -188,6 +188,7 @@ async function writeToPg(
 async function deleteFromPg(
   opts: FeatureWorkingSetProjectionOpts,
   key: string,
+  delTs?: number,
 ): Promise<void> {
   // key shape: `<github_user_id>/<feature_id>`
   const sepIdx = key.indexOf('/');
@@ -197,14 +198,18 @@ async function deleteFromPg(
   const userId = Number(userIdStr);
   if (!Number.isFinite(userId) || userId <= 0 || !featureId) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.feature_working_set
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
-  // A hard delete removes a worker → recompute the canonical array.
+  // A hard delete removes a worker → recompute the canonical array (idempotent;
+  // safe to run even when the guarded DELETE above matched nothing).
   await recomputeWorkingUsers(opts, featureId);
 }
 
@@ -216,7 +221,7 @@ export function buildFeatureWorkingSetProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

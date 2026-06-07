@@ -233,6 +233,9 @@ import './coordination/tools/escalations';
 import './coordination/tools/resolve';
 import './coordination/tools/handoff';
 import './coordination/tools/handoffs';
+// The whole-fleet coordination firehose — every envelope across every channel
+// (high-tier audit:read; backs the /adv Conversations "Feed" view).
+import './coordination/tools/feed';
 // Spawn admission — the brain decides worth-it (unify-agent-spawn-chokepoint P-005/P-006)
 import './spawn/request';
 import './spawn/approve';

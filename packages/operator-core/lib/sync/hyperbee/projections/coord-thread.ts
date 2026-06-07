@@ -75,15 +75,16 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.coord_threads
       (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, created_at,
-       last_post_at, post_count, harness_slug, origin, author_pubkey)
+       last_post_at, post_count, harness_slug, origin, author_pubkey, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.thread_id}, ${row.parent_kind}, ${row.parent_ref}, ${row.title},
        ${row.created_by}, to_timestamp(${row.created_at} / 1000.0),
        ${row.last_post_at === null ? null : sql`to_timestamp(${row.last_post_at} / 1000.0)`},
-       ${row.post_count}, ${row.harness_slug}, ${origin}, ${authorPubkey})
+       ${row.post_count}, ${row.harness_slug}, ${origin}, ${authorPubkey}, ${fedTs})
     ON CONFLICT (workspace_id, thread_id) DO UPDATE SET
       parent_kind   = EXCLUDED.parent_kind,
       parent_ref    = EXCLUDED.parent_ref,
@@ -92,16 +93,28 @@ async function writeToPg(
       last_post_at  = EXCLUDED.last_post_at,
       post_count    = EXCLUDED.post_count,
       origin        = EXCLUDED.origin,
-      author_pubkey = EXCLUDED.author_pubkey
+      author_pubkey = EXCLUDED.author_pubkey,
+      fed_ts        = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE coord_threads.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= coord_threads.fed_ts
   `;
 }
 
-async function deleteFromPg(opts: CoordThreadProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: CoordThreadProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.coord_threads
     WHERE workspace_id = ${opts.workspaceId} AND thread_id = ${key}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -113,7 +126,7 @@ export function buildCoordThreadProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

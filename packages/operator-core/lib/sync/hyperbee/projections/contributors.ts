@@ -111,15 +111,22 @@ async function writeToPg(
   `;
 }
 
-async function deleteFromPg(opts: ContributorsProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: ContributorsProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   const userId = Number(key);
   if (!Number.isFinite(userId) || userId <= 0) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.contributors
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -133,7 +140,7 @@ export function buildContributorsProjection(opts: ContributorsProjectionOpts): T
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

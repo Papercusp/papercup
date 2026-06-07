@@ -89,6 +89,13 @@ export function resumeCommandFor(handle: {
       bin: 'claude',
       args: [
         '--resume', handle.sessionId,
+        // Headless one-turn (`-p`): a wake IS one turn — run the resumed turn to
+        // completion and exit, leaving the session file updated for the NEXT
+        // wake. WITHOUT `-p`, claude boots its interactive TUI which, spawned
+        // into a managed pty nothing drives, just sits idle and never runs the
+        // turn — every "delivered:resume" produced silence (Stage-B finding,
+        // 2026-06-07; the manual `-p` resume is what actually worked).
+        '-p',
         '--dangerously-skip-permissions',
         '--permission-mode', 'bypassPermissions',
         ...mcpArgs,

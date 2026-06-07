@@ -32,6 +32,17 @@ vi.mock('../../adv-sessions', () => ({
   recordAdvSession: recordAdvSessionMock,
 }));
 
+// The agent-less branch resolves the CONFIGURED backend (owner ask
+// 2026-06-07) via a dynamic import of agent-config — mock it so the test
+// pins the config instead of reading the dev box's real file/PG.
+const { effectiveBackendMock } = vi.hoisted(() => ({
+  effectiveBackendMock: vi.fn(() => 'claude-code'),
+}));
+vi.mock('../../agent-config', () => ({
+  readAgentConfig: vi.fn(async () => ({})),
+  effectiveBackend: effectiveBackendMock,
+}));
+
 const CTX: RouteContext = {
   principal: null,
   input: undefined,
@@ -108,6 +119,24 @@ describe('launch-su', () => {
     expect(opts.launchArgv).toEqual(
       expect.arrayContaining(['--no-picker', '--agent=claude', '--harness=papercup', '--plan=my-plan']),
     );
+  });
+
+  it('agent-less launch resolves the CONFIGURED backend (claude-code → claude)', async () => {
+    const res = await callPost({ harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.agent).toBe('claude');
+    expect(effectiveBackendMock).toHaveBeenCalled();
+    expect(lastOneliner()).toContain('--agent=claude');
+  });
+
+  it('agent-less launch passes a configured omp/codex straight through', async () => {
+    effectiveBackendMock.mockReturnValueOnce('codex');
+    const res = await callPost({ harness_slug: 'papercup' });
+    const json = await res.json();
+    expect(json.agent).toBe('codex');
+    expect(lastOneliner()).toContain('--agent=codex');
   });
 
   it('rejects an unknown agent (no spawn)', async () => {

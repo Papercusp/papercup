@@ -288,6 +288,15 @@ export interface IncrementalMergeResult {
   decoded: number;
   /** True when every log's cursor reached its length (no backlog left). */
   caughtUp: boolean;
+  /**
+   * EI-79 step 3 (correctness escape hatch): a log whose `length` dropped BELOW
+   * its cursor position — a truncated / reset / forked log. Its prior ops (incl.
+   * any that won their key) may no longer exist, so the standing fold is invalid.
+   * When true, NO ops were folded this pass; the caller MUST reset the cursor
+   * (`createMergeCursor()`) and re-run for a clean full re-fold. `false` on every
+   * normal pass.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -326,6 +335,17 @@ export async function mergeAdmittedLogsIncremental(
   let applied = 0;
   let decoded = 0;
   let caughtUp = true;
+
+  // EI-79 step 3: detect a TRUNCATED log (length < its cursor) BEFORE folding.
+  // A shrunk log means ops we already counted as winners may be gone, so a
+  // forward-only incremental pass can't repair the fold — bail and let the
+  // caller reset + re-fold from scratch. Detected up front so we never apply a
+  // partial pass on top of a known-invalid fold.
+  for (const log of logs) {
+    if (log.length < (cursor.positions.get(log.keyHex) ?? 0)) {
+      return { applied: 0, decoded: 0, caughtUp: false, truncated: true };
+    }
+  }
 
   for (const log of logs) {
     const from = cursor.positions.get(log.keyHex) ?? 0;
@@ -378,7 +398,7 @@ export async function mergeAdmittedLogsIncremental(
     }
   }
 
-  return { applied, decoded, caughtUp };
+  return { applied, decoded, caughtUp, truncated: false };
 }
 
 /** Like readOpBounded, but distinguishes a RESOLVED null (gate drop / out of

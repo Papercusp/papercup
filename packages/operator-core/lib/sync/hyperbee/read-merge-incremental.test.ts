@@ -235,6 +235,75 @@ describe('O(delta) + ts-guarded apply (the EI-79 residual contract)', () => {
     expect(backlogged.length).toBeGreaterThan(0); // observability hook fired while behind
   });
 
+  it('EI-79 step 3: a TRUNCATED log (length < cursor) returns {truncated} and folds nothing', async () => {
+    const author = 'c3'.repeat(32);
+    const ops: PeerLogOp[] = Array.from({ length: 20 }, (_, i) => ({
+      type: 'put' as const,
+      table: 't',
+      hbKey: `k-${i}`,
+      value: { i },
+      ts: 1000 + i,
+      schema_version: 1,
+      author_pubkey: author,
+    }));
+    const log = memLog(author, [...ops]);
+    const cursor = createMergeCursor();
+    const apply = vi.fn(async () => true);
+
+    // First pass catches up: cursor.position = 20.
+    const r1 = await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    expect(r1.caughtUp).toBe(true);
+    expect(r1.truncated).toBe(false);
+    expect(cursor.positions.get(author)).toBe(20);
+
+    // The log is TRUNCATED below the cursor (a reset / forked peer log).
+    log.ops.length = 5;
+    const callsBefore = apply.mock.calls.length;
+    const r2 = await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    expect(r2.truncated).toBe(true);
+    expect(r2.applied).toBe(0);
+    expect(r2.decoded).toBe(0);
+    // NOTHING was folded/applied on the truncated pass (caller must reset).
+    expect(apply.mock.calls.length).toBe(callsBefore);
+
+    // The caller's response (mirrors boot.ts): reset + re-fold from scratch lands
+    // exactly the surviving log's winners.
+    const fresh = createMergeCursor();
+    const r3 = await mergeAdmittedLogsIncremental([log], fresh, { applyImpl: apply, getTimeoutMs: 0 });
+    expect(r3.truncated).toBe(false);
+    expect(r3.caughtUp).toBe(true);
+    expect(r3.decoded).toBe(5); // only the 5 surviving ops
+    expect(fresh.positions.get(author)).toBe(5);
+  });
+
+  it('a newly-admitted peer is ADDITIVE: its cursor starts at 0, no reset, old ops it carries lose to standing newer winners', async () => {
+    const existing = 'aa'.repeat(32);
+    const newcomer = 'bb'.repeat(32);
+    const existingLog = memLog(existing, [
+      { type: 'put', table: 't', hbKey: 'shared', value: { v: 'newer' }, ts: 5000, schema_version: 1, author_pubkey: existing },
+    ]);
+    const cursor = createMergeCursor();
+    const applied: OpEnvelope[] = [];
+    const apply = async (env: OpEnvelope) => {
+      applied.push(env);
+      return true;
+    };
+    // Fold the existing peer first → 'shared' winner is ts=5000.
+    await mergeAdmittedLogsIncremental([existingLog], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    expect(applied.at(-1)!.value).toEqual({ v: 'newer' });
+
+    // A new peer is admitted carrying an OLDER op for the SAME key (backfill).
+    // No cursor reset (additive); the standing winners map still holds ts=5000,
+    // so the newcomer's older op loses and never reaches the apply sink.
+    const newcomerLog = memLog(newcomer, [
+      { type: 'put', table: 't', hbKey: 'shared', value: { v: 'older' }, ts: 2000, schema_version: 1, author_pubkey: newcomer },
+    ]);
+    const before = applied.length;
+    await mergeAdmittedLogsIncremental([existingLog, newcomerLog], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    // The newcomer's old op was decoded but did NOT apply (lost LWW to ts=5000).
+    expect(applied.length).toBe(before);
+  });
+
   it('an unavailable op halts the pass for that log WITHOUT advancing (no holes)', async () => {
     const author = 'b2'.repeat(32);
     const ops: PeerLogOp[] = Array.from({ length: 10 }, (_, i) => ({

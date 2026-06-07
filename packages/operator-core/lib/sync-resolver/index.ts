@@ -1388,6 +1388,51 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // dev.coordFeed — the WHOLE coordination firehose: every envelope across every
+  // channel + every agent (messages/acks/notifies/broadcasts, handoffs,
+  // escalations, plan events), newest-first with a cursor. Backs the /adv
+  // Conversations "Feed" view. Same observer read as the high-tier coord:feed
+  // tool. One row per envelope (the raw envelope + `surface` + `broadcast`); the
+  // first row also carries `_meta` (total / by_kind / next_cursor) hidden behind
+  // an underscore so the flat-row contract is preserved. The UI reads _meta off
+  // row[0]; the rest are envelopes.
+  'dev.coordFeed': {
+    argsSchema: z.object({
+      kinds: z.array(z.string()).optional(),
+      owner: z.string().optional(),
+      plan_slug: z.string().optional(),
+      q: z.string().optional(),
+      since_ts: z.string().optional(),
+      before_ts: z.string().optional(),
+      limit: z.number().int().positive().max(500).optional(),
+    }),
+    resolve: async (args) => {
+      const a = (args ?? {}) as {
+        kinds?: string[];
+        owner?: string;
+        plan_slug?: string;
+        q?: string;
+        since_ts?: string;
+        before_ts?: string;
+        limit?: number;
+      };
+      const { readCoordFeed } = await import('../agent-tools/coordination/feed');
+      const { rows, nextCursor, total, byKind } = await readCoordFeed({
+        kinds: a.kinds as never,
+        owner: a.owner,
+        plan_slug: a.plan_slug,
+        q: a.q,
+        since_ts: a.since_ts,
+        before_ts: a.before_ts,
+        limit: a.limit,
+      });
+      // Stash the page metadata on the first row so the flat-row sync contract
+      // is preserved (no envelope wrapper). The UI reads `rows[0]?._meta`.
+      const meta = { total, byKind, nextCursor };
+      return rows.map((r, i) => (i === 0 ? { ...r, _meta: meta } : r));
+    },
+  },
+
   // dev.fleetGovernor — the fleet rate/cap snapshot: hard cap vs in-flight vs
   // AIMD-effective concurrency (the second half of the fleet glance, P-008).
   'dev.fleetGovernor': {

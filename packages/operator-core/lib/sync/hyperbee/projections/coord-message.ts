@@ -84,6 +84,7 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? row.ts ?? null;
   // workspace_id is the LOCAL projection's bound workspace; id is a fresh local
   // bigserial. ON CONFLICT targets the partial fed unique index (ws, msg_id)
   // over the federated subset — msg_id is globally unique so this updates the one
@@ -91,11 +92,11 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.coord_event_log
       (workspace_id, surface, writer_key, msg_id, body, harness_slug,
-       ts, origin, author_pubkey)
+       ts, origin, author_pubkey, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.surface}, ${row.writer_key}, ${row.msg_id},
        ${JSON.stringify(row.body)}::text::jsonb, ${row.harness_slug},
-       to_timestamp(${row.ts} / 1000.0), ${origin}, ${authorPubkey})
+       to_timestamp(${row.ts} / 1000.0), ${origin}, ${authorPubkey}, ${fedTs})
     ON CONFLICT (workspace_id, msg_id)
       WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL
     DO UPDATE SET
@@ -104,18 +105,30 @@ async function writeToPg(
       body          = EXCLUDED.body,
       ts            = EXCLUDED.ts,
       origin        = EXCLUDED.origin,
-      author_pubkey = EXCLUDED.author_pubkey
+      author_pubkey = EXCLUDED.author_pubkey,
+      fed_ts        = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE coord_event_log.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= coord_event_log.fed_ts
   `;
 }
 
-async function deleteFromPg(opts: CoordMessageProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: CoordMessageProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.coord_event_log
     WHERE workspace_id = ${opts.workspaceId}
       AND msg_id = ${key}
       AND harness_slug = ${opts.harnessSlug}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -127,7 +140,7 @@ export function buildCoordMessageProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

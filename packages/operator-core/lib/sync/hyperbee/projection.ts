@@ -72,8 +72,18 @@ export interface TableProjection<Row> {
    * silently ignore the context).
    */
   writeToPg: (row: Row, provenance?: ProvenanceContext) => Promise<void>;
-  /** Delete the row from PG (idempotent). */
-  deleteFromPg: (key: string) => Promise<void>;
+  /**
+   * Delete the row from PG (idempotent).
+   *
+   * EI-79 residual step 2: `delTs` is the del op's WIRE ts (epoch ms). The
+   * deleter guards its DELETE with `WHERE fed_ts IS NULL OR fed_ts <= <delTs>`,
+   * the symmetric partner of the upsert's `fed_ts`-`>=` guard, so a stale (out
+   * of order / backfilled) del can never erase a row a newer put recreated —
+   * making the deleter PG-level LWW independent of the merge cursor's fold.
+   * `undefined` for a del op built without a ts (unguarded → deletes, the
+   * pre-step-2 behavior).
+   */
+  deleteFromPg: (key: string, delTs?: number) => Promise<void>;
 }
 
 const registry = new Map<string, TableProjection<unknown>>();
@@ -146,7 +156,9 @@ export async function applyOpVia(
   if (!p) return false;
   if (op.type === 'del') {
     if (!op.hbKey) return false;
-    await p.deleteFromPg(op.hbKey);
+    // EI-79 step 2: thread the del op's wire ts so the deleter can ts-guard the
+    // DELETE (a stale del must not erase a row a newer put recreated).
+    await p.deleteFromPg(op.hbKey, op.ts);
     return true;
   }
   const row = p.decodeValue(op.value);

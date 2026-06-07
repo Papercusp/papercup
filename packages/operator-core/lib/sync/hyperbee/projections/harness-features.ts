@@ -167,13 +167,20 @@ async function writeToPg(
   `;
 }
 
-async function deleteFromPg(opts: HarnessFeaturesProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: HarnessFeaturesProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.harness_features_consolidated
     WHERE harness_slug = ${opts.harnessSlug}
       AND feature_id = ${key}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
   // workspaceId is captured for future per-workspace partitioning of the
   // consolidated view; the table is currently shared across the workspace.
@@ -188,7 +195,7 @@ export function buildHarnessFeaturesProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

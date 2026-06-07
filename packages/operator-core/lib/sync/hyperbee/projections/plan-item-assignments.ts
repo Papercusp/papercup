@@ -81,14 +81,15 @@ async function writeToPg(
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
+  const fedTs = provenance?.ts ?? null;
   await sql`
     INSERT INTO harness_shared.plan_item_assignments
       (workspace_id, harness_slug, plan_slug, item_id, assignee_name, assigned_by_user,
-       assigned_ts, released_ts, strategy, note, author_pubkey, origin)
+       assigned_ts, released_ts, strategy, note, author_pubkey, origin, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.item_id},
        ${row.assignee_name}, ${row.assigned_by_user}, ${row.assigned_ts}, ${row.released_ts},
-       ${row.strategy}, ${row.note}, ${authorPubkey}, ${origin})
+       ${row.strategy}, ${row.note}, ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, plan_slug, item_id) DO UPDATE SET
       assignee_name    = EXCLUDED.assignee_name,
       assigned_by_user = EXCLUDED.assigned_by_user,
@@ -97,11 +98,20 @@ async function writeToPg(
       strategy         = EXCLUDED.strategy,
       note             = EXCLUDED.note,
       author_pubkey    = EXCLUDED.author_pubkey,
-      origin           = EXCLUDED.origin
+      origin           = EXCLUDED.origin,
+      fed_ts           = EXCLUDED.fed_ts
+    -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
+    WHERE plan_item_assignments.fed_ts IS NULL
+       OR EXCLUDED.fed_ts IS NULL
+       OR EXCLUDED.fed_ts >= plan_item_assignments.fed_ts
   `;
 }
 
-async function deleteFromPg(opts: PlanItemAssignmentsProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: PlanItemAssignmentsProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   // key == '<plan_slug>:<item_id>'; item_id has no colon, so split on the LAST ':'.
@@ -110,12 +120,15 @@ async function deleteFromPg(opts: PlanItemAssignmentsProjectionOpts, key: string
   const planSlug = key.slice(0, cut);
   const itemId = key.slice(cut + 1);
   if (!planSlug || !itemId) return;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.plan_item_assignments
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND plan_slug = ${planSlug}
       AND item_id = ${itemId}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -127,7 +140,7 @@ export function buildPlanItemAssignmentsProjection(
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 

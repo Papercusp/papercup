@@ -95,7 +95,11 @@ async function writeToPg(
   `;
 }
 
-async function deleteFromPg(opts: PresenceProjectionOpts, key: string): Promise<void> {
+async function deleteFromPg(
+  opts: PresenceProjectionOpts,
+  key: string,
+  delTs?: number,
+): Promise<void> {
   // key shape: `<github_user_id>/<machine_label>`
   const sepIdx = key.indexOf('/');
   if (sepIdx <= 0) return;
@@ -104,12 +108,15 @@ async function deleteFromPg(opts: PresenceProjectionOpts, key: string): Promise<
   const userId = Number(userIdStr);
   if (!Number.isFinite(userId) || userId <= 0 || !machineLabel) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  const ts = delTs ?? null;
   await sql`
     DELETE FROM harness_shared.shared_presence
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}
       AND machine_label = ${machineLabel}
+      -- EI-79 step 2: ts-guard the delete (a stale del must not erase a newer row).
+      AND (${ts}::bigint IS NULL OR fed_ts IS NULL OR fed_ts <= ${ts}::bigint)
   `;
 }
 
@@ -119,7 +126,7 @@ export function buildPresenceProjection(opts: PresenceProjectionOpts): TableProj
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
-    deleteFromPg: (key) => deleteFromPg(opts, key),
+    deleteFromPg: (key, delTs) => deleteFromPg(opts, key, delTs),
   };
 }
 
