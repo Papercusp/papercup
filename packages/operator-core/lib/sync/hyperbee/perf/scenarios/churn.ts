@@ -12,11 +12,11 @@
  *     pattern. Measures per-reader rejoin catch-up and the writer's loop lag
  *     through the storm.
  *
- * KNOWN LIMIT this bench exposes (and exists to keep exposed): boot.ts caps
- * merge ingest at MAX_OPS_PER_AUTHOR=50k ops per log per pass with NO cursor,
- * so a cold-join against >50k ops of history never fully catches up until the
- * EI-79 residual (P-013, incremental merge cursor) lands. Artifacts record
- * `caughtUp:false` + the applied fraction rather than hiding it.
+ * HISTORY NOTE: this bench originally exposed EI-91 (the 50k per-log read cap
+ * had no cursor, so a >50k-op cold-join could NEVER catch up). The P-013
+ * incremental merge cursor fixed it — the budget is now a per-pass chunk and
+ * catch-up spans passes. Artifacts still record `caughtUp` + applied fraction
+ * so any regression of that class is loud.
  */
 
 import { ScenarioMeter, summarize } from '../metrics';
@@ -74,8 +74,8 @@ export const coldJoin: PerfScenario = {
         });
         if (size > 50_000) {
           meter.note(
-            'historySize exceeds MAX_OPS_PER_AUTHOR (50k, no merge cursor) — full catch-up is ' +
-              'EXPECTED to fail until the EI-79 residual (P-013) lands.',
+            'historySize exceeds the 50k per-pass budget — catch-up spans multiple merge passes ' +
+              '(the P-013 incremental cursor drains backlog chunk-by-chunk; pre-P-013 this NEVER caught up — EI-91).',
           );
         }
         const reader = mesh.readers[0];

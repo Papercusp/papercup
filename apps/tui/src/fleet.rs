@@ -87,6 +87,15 @@ pub struct FleetState {
     /// the curated view distinguish "curator live + fleet calm" (show "calm")
     /// from "no curator surface yet" (fall back to the local heuristic).
     pub curation_available: bool,
+    /// Comms sub-view toggle (pui-dock-consolidation-2026-06-07, `c`): false =
+    /// roster + dossier + plan-progress (default); true = roster + inbox/outbox
+    /// (selected agent) over conversations (whole-fleet broadcasts + threads).
+    pub show_comms: bool,
+    /// Whole-fleet assignments (every bee's ranked work-list), for the DEFAULT
+    /// dossier when no agent is selected (#2: "show all tasks from the fleet").
+    /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
+    /// dossier (`app.bee`).
+    pub all_assignments: Vec<crate::models::BeeAssignment>,
 }
 
 impl Default for FleetState {
@@ -99,6 +108,8 @@ impl Default for FleetState {
             agent_sel: 0,
             curated_signals: Vec::new(),
             curation_available: false,
+            show_comms: false,
+            all_assignments: Vec::new(),
         }
     }
 }
@@ -293,10 +304,86 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
     draw_headline(f, &agg, app.fleet.mode, rows[0]);
 
+    // Comms sub-view (pui-dock-consolidation-2026-06-07, `c`): roster + the
+    // selected agent's direct inbox/outbox over the whole-fleet conversations.
+    // Off by default — the dossier + plan-progress view leads. Mirror mode keeps
+    // its own raw feed.
+    if app.fleet.show_comms && app.fleet.mode == FleetMode::Curated {
+        draw_comms_view(f, app, rows[1]);
+        return;
+    }
+
     match app.fleet.mode {
         FleetMode::Curated => draw_curated(f, app, &agg, rows[1]),
         FleetMode::Mirror => draw_mirror(f, app, rows[1]),
     }
+}
+
+/// The comms sub-view (#3/#4): roster (left) | the selected agent's coord
+/// **Inbox/Outbox** (right-top, direct messages — reused from `bee.rs`) over the
+/// whole-fleet **Conversations** (right-bottom — broadcasts + multi-party
+/// threads, the all-hands channel). The 3-way split (direct → inbox/outbox,
+/// group → conversations, structured coord events → the dossier/swarm activity)
+/// is how ALL fleet communication is captured.
+fn draw_comms_view(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
+        .split(area);
+    draw_agents(f, app, cols[0]);
+
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        // inbox + outbox share the top half; conversations take the bottom half.
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(cols[1]);
+    let mail = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(right[0]);
+    crate::bee::draw_inbox(f, app, mail[0]);
+    crate::bee::draw_outbox(f, app, mail[1]);
+    draw_conversations_compact(f, app, right[1]);
+}
+
+/// Whole-fleet conversations (broadcasts + multi-party threads) — the all-hands
+/// channel. A compact list reusing the Conversations-tab data (`visible_conversations`).
+fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect) {
+    let convs = app.visible_conversations();
+    let items: Vec<ListItem> = if convs.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no fleet conversations)",
+            Theme::dim(),
+        )))]
+    } else {
+        convs
+            .iter()
+            .map(|c| {
+                let k = match c.kind.as_str() {
+                    "question" => "Q",
+                    "discussion" => "D",
+                    _ => "·",
+                };
+                let title = c.title.clone().unwrap_or_else(|| c.id.clone());
+                ListItem::new(Line::from(format!(
+                    "{} {:<9} {}",
+                    k,
+                    trunc(&c.state, 9),
+                    trunc(&title, 40)
+                )))
+            })
+            .collect()
+    };
+    let body = crate::ui::block_with_header(
+        f,
+        area,
+        Theme::block(
+            Line::from(format!(" {} conversations (fleet) ", glyph::nav::FLEET)),
+            false,
+        ),
+        " all-hands — broadcasts + threads",
+    );
+    f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
@@ -328,27 +415,12 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
 /// the curator lands (pre-restart / not built), it falls back to the local
 /// heuristic (agents + selected-agent detail + plan progress) so the view is
 /// always useful.
+/// The default Swarm view (pui-dock-consolidation-2026-06-07): roster (left) |
+/// dossier (right-top) + plan progress (right-bottom). The dossier + plan
+/// progress default to the WHOLE FLEET; selecting an agent in the roster filters
+/// both to that agent (#2). `c` swaps in the comms sub-view (handled in
+/// `draw_fleet`).
 fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
-    if app.fleet.curation_available {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
-            .split(area);
-        draw_what_matters(f, app, cols[0]);
-        let right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(cols[1]);
-        draw_agents(f, app, right[0]);
-        draw_plan_progress(f, app, agg, right[1]);
-    } else {
-        draw_curated_heuristic(f, app, agg, area);
-    }
-}
-
-/// The pre-curator fallback: agents (left) + selected-agent detail over plan
-/// progress (right). Used until `curation:feed` is live.
-fn draw_curated_heuristic(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
@@ -358,10 +430,70 @@ fn draw_curated_heuristic(f: &mut Frame, app: &App, agg: &FleetAggregate, area: 
 
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[1]);
-    draw_agent_detail(f, app, right[0]);
+    draw_dossier(f, app, right[0]);
     draw_plan_progress(f, app, agg, right[1]);
+}
+
+/// The dossier region (#2): when an agent is selected in the roster, that bee's
+/// ranked task list (reused from `bee.rs`, driven by the in-process selection
+/// fetch); with NO selection, the whole-fleet task list (every bee's claimed
+/// work, from `fleet.all_assignments`).
+fn draw_dossier(f: &mut Frame, app: &App, area: Rect) {
+    if app.bee.owner_id.is_some() {
+        crate::bee::draw_tasklist(f, app, area);
+    } else {
+        draw_all_tasklist(f, app, area);
+    }
+}
+
+/// Whole-fleet task list: every bee's claimed work-items, grouped by bee in load
+/// order. The default dossier when no agent is selected (#2 "show all tasks from
+/// the fleet"). Reuses `bee::task_row` per item under a per-bee header line.
+fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
+    let asn = &app.fleet.all_assignments;
+    let total: i64 = asn.iter().map(|a| a.load).sum();
+    let mut items: Vec<ListItem> = Vec::new();
+    if asn.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "(loading fleet task list…)",
+            Theme::dim(),
+        ))));
+    } else {
+        // Busiest bees first; a bee with no claimed work still shows its header.
+        let mut ordered: Vec<&crate::models::BeeAssignment> = asn.iter().collect();
+        ordered.sort_by(|a, b| b.load.cmp(&a.load));
+        for a in ordered {
+            let label = a
+                .name
+                .clone()
+                .or_else(|| a.label.clone())
+                .unwrap_or_else(|| a.agent_id.clone());
+            let dot = if a.alive {
+                glyph::status::DONE
+            } else {
+                glyph::status::DROPPED
+            };
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!(" {} {} ({})", dot, trunc(&label, 22), a.load),
+                Theme::info(),
+            ))));
+            for (i, w) in a.queued.iter().enumerate() {
+                items.push(crate::bee::task_row(i, w));
+            }
+        }
+    }
+    let body = crate::ui::block_with_header(
+        f,
+        area,
+        Theme::block(
+            Line::from(format!(" {} fleet task list ({total} claimed) ", glyph::nav::FLEET)),
+            false,
+        ),
+        " select an agent to filter · rank · st · task",
+    );
+    f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
 /// The curator's "what matters" — salience-ranked fleet signals (curation:feed).

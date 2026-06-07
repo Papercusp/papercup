@@ -250,10 +250,18 @@ describe('IQ Battery Metrics Collectors', () => {
         throw new Error('iq_battery_metrics table does not exist');
       }
 
+      // run_id/case_id are UUID columns; case_id has an FK to iq_battery_cases
+      const runId = randomUUID();
+      const caseId = randomUUID();
+      await sql`
+        INSERT INTO iq_battery_cases (id, variant, title, prompt, ground_truth, rubric)
+        VALUES (${caseId}, 'fix-injected-bug', 'store test case', 'p', '{}'::jsonb, '{}'::jsonb)
+      `;
+
       const collector = await createMetricsCollector(sql);
       const metrics = await collector.collectMetrics({
-        runId: 'run-store-1',
-        caseId: 'case-store-1',
+        runId,
+        caseId,
         variant: 'fix-injected-bug',
         workItemStatus: 'done',
         escalated: false,
@@ -263,29 +271,41 @@ describe('IQ Battery Metrics Collectors', () => {
 
       await collector.storeMetrics(metrics);
 
-      // Verify stored
-      const result = await sql.unsafe(`
+      // Verify stored (postgres-js returns the row array directly; numeric comes back as string)
+      const result = await sql`
         SELECT success, tokens_per_solved_task
         FROM iq_battery_metrics
-        WHERE run_id = 'run-store-1'
-      `);
+        WHERE run_id = ${runId}
+      `;
 
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0].success).toBe(true);
-      expect(result.rows[0].tokens_per_solved_task).toBe(150);
+      expect(result).toHaveLength(1);
+      expect(result[0].success).toBe(true);
+      expect(Number(result[0].tokens_per_solved_task)).toBe(150);
     });
   });
 
   describe('Aggregation functions', () => {
+    // case_id is a UUID with an FK to iq_battery_cases — seed the cases first
+    const CASE_BUG = '650e8400-e29b-41d4-a716-446655440101';
+    const CASE_SPEC = '650e8400-e29b-41d4-a716-446655440102';
+
     beforeEach(async () => {
       // Seed test data (table already exists from migration)
       await sql.unsafe(`
-        INSERT INTO iq_battery_metrics VALUES
-          ('550e8400-e29b-41d4-a716-446655440001', 'case-1', 'fix-injected-bug', true, 100, 60, true, 1, false, 0.9, NOW()),
-          ('550e8400-e29b-41d4-a716-446655440002', 'case-1', 'fix-injected-bug', true, 120, 70, false, 2, false, 0.8, NOW()),
-          ('550e8400-e29b-41d4-a716-446655440003', 'case-1', 'fix-injected-bug', false, null, null, false, 3, true, 0.5, NOW()),
-          ('550e8400-e29b-41d4-a716-446655440004', 'case-2', 'build-spec', true, 200, 120, true, 1, false, 0.95, NOW()),
-          ('550e8400-e29b-41d4-a716-446655440005', 'case-2', 'build-spec', true, 220, 140, false, 2, false, 0.85, NOW())
+        INSERT INTO iq_battery_cases (id, variant, title, prompt, ground_truth, rubric) VALUES
+          ('${CASE_BUG}', 'fix-injected-bug', 'agg case bug', 'p', '{}'::jsonb, '{}'::jsonb),
+          ('${CASE_SPEC}', 'build-spec', 'agg case spec', 'p', '{}'::jsonb, '{}'::jsonb)
+      `);
+      await sql.unsafe(`
+        INSERT INTO iq_battery_metrics
+          (run_id, case_id, variant, success, tokens_per_solved_task, time_to_green_secs,
+           first_attempt_pass, recurrence, escalation, recall_hit, collected_at)
+        VALUES
+          ('550e8400-e29b-41d4-a716-446655440001', '${CASE_BUG}', 'fix-injected-bug', true, 100, 60, true, 1, false, 0.9, NOW()),
+          ('550e8400-e29b-41d4-a716-446655440002', '${CASE_BUG}', 'fix-injected-bug', true, 120, 70, false, 2, false, 0.8, NOW()),
+          ('550e8400-e29b-41d4-a716-446655440003', '${CASE_BUG}', 'fix-injected-bug', false, null, null, false, 3, true, 0.5, NOW()),
+          ('550e8400-e29b-41d4-a716-446655440004', '${CASE_SPEC}', 'build-spec', true, 200, 120, true, 1, false, 0.95, NOW()),
+          ('550e8400-e29b-41d4-a716-446655440005', '${CASE_SPEC}', 'build-spec', true, 220, 140, false, 2, false, 0.85, NOW())
       `);
     });
 
@@ -295,11 +315,13 @@ describe('IQ Battery Metrics Collectors', () => {
       const bugVariant = summary[0] as any;
 
       expect(bugVariant.variant).toBe('fix-injected-bug');
-      expect(bugVariant.success_count).toBe(2);
-      expect(bugVariant.total_count).toBe(3);
+      // count() comes back from PG as a bigint string
+      expect(Number(bugVariant.success_count)).toBe(2);
+      expect(Number(bugVariant.total_count)).toBe(3);
       expect(parseFloat(bugVariant.success_rate)).toBeCloseTo(66.67, 1);
       expect(parseFloat(bugVariant.avg_tokens)).toBeCloseTo(110, 0);
-      expect(parseFloat(bugVariant.first_attempt_rate)).toBeCloseTo(50, 1);
+      // first_attempt_rate is over ALL attempts (1 of 3), same denominator as success_rate
+      expect(parseFloat(bugVariant.first_attempt_rate)).toBeCloseTo(33.33, 1);
       expect(parseFloat(bugVariant.escalation_rate)).toBeCloseTo(33.33, 1);
     });
 
@@ -309,8 +331,8 @@ describe('IQ Battery Metrics Collectors', () => {
 
       const buildSpec = (summary as any[]).find((row: any) => row.variant === 'build-spec');
       expect(buildSpec).toBeDefined();
-      expect(buildSpec?.success_count).toBe(2);
-      expect(buildSpec?.total_count).toBe(2);
+      expect(Number(buildSpec?.success_count)).toBe(2);
+      expect(Number(buildSpec?.total_count)).toBe(2);
     });
 
     it('computes percentile distributions', async () => {
@@ -319,10 +341,11 @@ describe('IQ Battery Metrics Collectors', () => {
       const bugVariant = percentiles[0] as any;
 
       expect(bugVariant.variant).toBe('fix-injected-bug');
-      expect(bugVariant.p50_tokens).toBe(100);
-      expect(bugVariant.p95_tokens).toBe(120);
-      expect(bugVariant.p50_time_secs).toBe(60);
-      expect(bugVariant.p95_time_secs).toBe(70);
+      // percentile_cont interpolates: over {100,120} p50=110, p95=119; over {60,70} p50=65, p95=69.5
+      expect(Number(bugVariant.p50_tokens)).toBe(110);
+      expect(Number(bugVariant.p95_tokens)).toBe(119);
+      expect(Number(bugVariant.p50_time_secs)).toBe(65);
+      expect(Number(bugVariant.p95_time_secs)).toBe(69.5);
     });
   });
 

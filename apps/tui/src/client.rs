@@ -868,6 +868,28 @@ impl OperatorClient {
         }))
     }
 
+    /// Whole-fleet assignments — every bee's ranked work-list in one call
+    /// (`fleet:assignments {}` with NO `agent` filter). Drives the default Swarm
+    /// dossier (pui-dock-consolidation-2026-06-07 #2 "show all tasks from the
+    /// fleet"); a roster selection narrows to one bee via `bee_assignment`.
+    pub async fn fleet_assignments_all(&self) -> Result<Vec<BeeAssignment>> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/fleet/assignments",
+                serde_json::json!({ "include_stale": true }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("fleet:assignments: missing content[0].text")?;
+        let payload: FleetAssignmentsPayload =
+            serde_json::from_str(text).context("parse fleet assignments payload")?;
+        Ok(payload.agents)
+    }
+
     /// The selected bee's coord inbox + outbox via `fleet:bee_mail { owner_id }`
     /// (MCP envelope unwrapped).
     pub async fn bee_mail(&self, owner_id: &str, limit: u32) -> Result<BeeMailPayload> {

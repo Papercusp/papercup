@@ -187,6 +187,9 @@ pub enum Action {
         state: String,
         kind: String,
     },
+    /// Fetch whole-fleet assignments for the default Swarm dossier
+    /// (pui-dock-consolidation-2026-06-07 #2) → `Event::FleetAssignments`.
+    FetchFleetAssignments,
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -962,10 +965,11 @@ pub struct App {
     /// bee's ranked work-list + coord inbox/outbox. Populated by `pui bee-pane`
     /// polling the in-memory selection relay; all logic lives in `bee.rs`.
     pub bee: crate::bee::BeeState,
-    /// `pui bee-pane` mode: render JUST the bee dossier full-screen (the 6th dock
-    /// pane), no tab strip / HUD / work area. Parallel to `pinned: Option<Tab>`
-    /// (the dossier is a NEW view, not a Tab — kept out of Tab::ALL).
-    pub pinned_bee: bool,
+    /// Dock MAIN-pane mode (pui-dock-consolidation-2026-06-07): when Some, the
+    /// tab strip + switch keys are confined to this subset (the dock main pane =
+    /// [Cupboard, Voice, Fleet]); None = the full `Tab::ALL` strip. The Fleet
+    /// tab carries the absorbed bee dossier + fleet comms sub-view.
+    pub tab_subset: Option<Vec<Tab>>,
     /// Hive lexicon (pui-hive-lexicon-2026-06-06): the active brand pack's
     /// term→label map, fetched once at startup. Empty = classic fallback (today's
     /// labels). `lex(term)` routes user-facing labels through it.
@@ -1185,7 +1189,7 @@ impl App {
             relaunch_command: None,
             fleet: FleetState::default(),
             bee: crate::bee::BeeState::default(),
-            pinned_bee: false,
+            tab_subset: None,
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
@@ -2143,6 +2147,16 @@ impl App {
         }
     }
 
+    /// The tabs the strip shows + switch keys may reach. The dock MAIN pane
+    /// (pui-dock-consolidation-2026-06-07) confines this to `tab_subset`
+    /// ([Cupboard, Voice, Fleet]); otherwise it's the full `Tab::ALL`.
+    pub fn visible_tabs(&self) -> Vec<Tab> {
+        match &self.tab_subset {
+            Some(subset) => subset.clone(),
+            None => Tab::ALL.to_vec(),
+        }
+    }
+
     /// Store merged plan-item assignment/claim/liveness for the selected plan (P-005a).
     pub fn set_plan_item_states(&mut self, s: PlanItemStates) {
         self.plan_item_states = Some(s);
@@ -2880,6 +2894,11 @@ impl App {
                 // Stale-guard: only paint a dossier for the currently selected bee.
                 self.bee.set_dossier(&owner_id, assignment, mail);
                 self.last_error = None;
+                Action::Render
+            }
+            Event::FleetAssignments(agents) => {
+                // Whole-fleet task list landed (the default Swarm dossier, #2).
+                self.fleet.all_assignments = agents;
                 Action::Render
             }
             Event::LexiconPack(payload) => {
@@ -3978,6 +3997,13 @@ impl App {
             // `switch_key` switches to it. Must be the last `Char` arm so the
             // contextual char handlers above (n/g/r/i/p/N/[/]/</>) win first.
             KeyCode::Char(c) => match Tab::from_switch_key(c) {
+                // In the dock main pane, a switch key for an out-of-subset tab
+                // is inert (pui-dock-consolidation-2026-06-07) — only Apiary/
+                // Voice/Swarm are reachable; other keys fall through to char
+                // handling / no-op rather than snapping the strip.
+                Some(t) if self.tab_subset.as_ref().is_some_and(|s| !s.contains(&t)) => {
+                    Action::None
+                }
                 Some(t) => {
                     self.switch_to(t);
                     // Lazy-load the Cupboard listings the first time it's opened

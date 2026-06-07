@@ -162,7 +162,7 @@ describe('improvements:triage tool', () => {
       const result = (await triageTool.handler(
         { mode: 'triage-one', ideaId: 'idea-1' },
         ctx,
-      );
+      )) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(false);
@@ -180,7 +180,7 @@ describe('improvements:triage tool', () => {
           reason: 'Ready to implement',
         },
         ctx,
-      );
+      )) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(true);
@@ -211,7 +211,7 @@ describe('improvements:triage tool', () => {
             reason: `Test ${decision}`,
           },
           ctx,
-        );
+        )) as any;
 
         const response = JSON.parse(result.content[0].text);
         expect(response.ok).toBe(true);
@@ -229,7 +229,7 @@ describe('improvements:triage tool', () => {
           reason: 'Ready',
         },
         ctx,
-      );
+      )) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.note).toBeDefined();

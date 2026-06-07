@@ -14,8 +14,12 @@
  *   - `system:improvement-digest` + `system:improvement-implement` —
  *     papercusp-self-improvement-loop-2026-06-04 (Phase 2 + 3). Seeded INACTIVE;
  *     implement is additionally flag-gated (papercusp-improvement-auto-implement, OFF).
+ *   - `system:p2p-perf-tier1` (nightly) + `system:p2p-perf-tier2` (weekly) —
+ *     p2p-performance-suite-2026-06-07 P-014. Advisory bench runs; findings
+ *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
 import './improvement-actions';
+import './p2p-perf-actions';

@@ -22,18 +22,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     // unchanged; only the rendering is reduced to that body full-screen (the
     // tab is re-pinned in main.rs, so chat shows the FULL chat with no
     // dock-focus marker). Help + the latest toast still overlay.
-    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): the 6th dock pane
-    // renders JUST the selected bee's dossier full-screen — a NEW view, not a Tab,
-    // so it short-circuits before the Tab pinning below. Help + toast still overlay.
-    if app.pinned_bee {
-        crate::bee::draw_bee(f, app, f.area());
-        if app.show_help {
-            draw_help(f);
-        } else if let Some(t) = &app.toast {
-            draw_toast(f, t);
-        }
-        return;
-    }
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
         if app.show_help {
@@ -175,7 +163,10 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Tab::ALL
+    // The dock main pane confines the strip to its subset
+    // (pui-dock-consolidation-2026-06-07); otherwise it's the full Tab::ALL.
+    let visible = app.visible_tabs();
+    let titles: Vec<Line> = visible
         .iter()
         .map(|t| {
             // The switch shortcut: digit (1-9, 0) for the first 10 tabs, a letter
@@ -210,9 +201,12 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             }
         })
         .collect();
+    // Selection index is the position within the VISIBLE list (which differs
+    // from Tab::index() when a subset is active).
+    let sel = visible.iter().position(|t| *t == app.tab).unwrap_or(0);
     let tabs = Tabs::new(titles)
         .style(Theme::tab_bar())
-        .select(app.tab.index())
+        .select(sel)
         .highlight_style(Theme::selected());
     f.render_widget(tabs, area);
 }

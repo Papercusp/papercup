@@ -92,7 +92,7 @@ describe.skipIf(!haveCreds)(
   'Tier-3 p2p-perf — REAL Latitude frames (needs LATITUDE_API_KEY + P2P_PERF_LATITUDE_PROJECT)',
   () => {
     it(
-      'provisions 2 VM frames (1 firewalled), measures cross-region replication + DHT discovery + holepunch, DESTROYS always',
+      'provisions VM frames, measures cross-region replication + DHT discovery (+holepunch with ≥2 frames), DESTROYS always',
       async () => {
         const { LatitudeDriver } = await import('../latitude/latitude-driver');
         const { provisionBenchFleet } = await import('./bench-frames');
@@ -103,8 +103,13 @@ describe.skipIf(!haveCreds)(
         const identityFile = process.env.P2P_PERF_SSH_IDENTITY_FILE;
         const size = process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small';
         // VM stock (live 2026-06-07): ASH/DAL/TYO3/LON/FRA — NYC is metal-only.
-        const regionA = process.env.P2P_PERF_REGION_A ?? 'ASH';
-        const regionB = process.env.P2P_PERF_REGION_B ?? 'DAL';
+        const regions = (process.env.P2P_PERF_REGIONS ?? 'ASH,DAL').split(',').map((s) => s.trim());
+        // Quota-adaptive: a constrained account (e.g. a 2-VM cap) runs FRAMES=1 +
+        // PEERS_PER_FRAME=2 — co-located peers over the PUBLIC DHT still verify the
+        // full real-metal path (SSH launch, npm-ci'd runtime, DHT join, measurement)
+        // minus true cross-region RTT. A full account runs FRAMES=2-3 for real WAN.
+        const frameCount = Math.max(1, Number(process.env.P2P_PERF_FRAMES ?? 2));
+        const peersPerFrame = Math.max(1, Number(process.env.P2P_PERF_PEERS_PER_FRAME ?? 1));
         const log = (lvl: string, m: string) => console.log(`[tier3 ${lvl}] ${m}`);
 
         const fleet = await provisionBenchFleet({
@@ -112,24 +117,35 @@ describe.skipIf(!haveCreds)(
           repoRoot,
           sshIdentityFile: identityFile,
           providerDefaults: { project, sshKeys: sshKeyIds, sshIdentityFile: identityFile },
-          specs: [
-            { label: regionA, region: regionA, size, kind: 'vm' },
-            // The second frame is firewalled (NAT-like) so holepunch is exercised.
-            { label: regionB, region: regionB, size, kind: 'vm', firewall: true },
-          ],
+          specs: Array.from({ length: frameCount }, (_, i) => ({
+            label: regions[i % regions.length] + (frameCount > regions.length ? `-${i}` : ''),
+            region: regions[i % regions.length],
+            size,
+            kind: 'vm' as const,
+            // Firewall the 2nd+ frame (NAT-like) so holepunch is exercised cross-frame.
+            firewall: i > 0,
+          })),
           log,
         });
         try {
-          const launcher = sshPeerLauncher({
-            frames: fleet.frames.map(
-              (f): SshSlotSpec => ({ label: f.spec.label, region: f.spec.region, target: f.target }),
-            ),
-            log: (l) => console.log(`[tier3 peer] ${l}`),
-          });
+          // Fan each frame into `peersPerFrame` slots (distinct peerIndex → distinct
+          // remote corestore root), so 1 frame can host writer+reader if quota-capped.
+          const frameSlots: SshSlotSpec[] = fleet.frames.flatMap((f) =>
+            Array.from({ length: peersPerFrame }, (_, k) => ({
+              label: peersPerFrame > 1 ? `${f.spec.label}-p${k}` : f.spec.label,
+              region: f.spec.region,
+              target: f.target,
+            })),
+          );
+          const launcher = sshPeerLauncher({ frames: frameSlots, log: (l) => console.log(`[tier3 peer] ${l}`) });
+          const scenarios: Array<'cross-region-replication' | 'dht-discovery' | 'nat-holepunch'> =
+            fleet.frames.length >= 2
+              ? ['cross-region-replication', 'dht-discovery', 'nat-holepunch']
+              : ['cross-region-replication', 'dht-discovery'];
           const res = await runTier3Suite({
             launcher,
             harnessSlug: `p2p-perf-tier3-${Date.now()}`,
-            scenarios: ['cross-region-replication', 'dht-discovery', 'nat-holepunch'],
+            scenarios,
             count: 200,
             rate: 10,
             estimateClock: true,
@@ -137,13 +153,13 @@ describe.skipIf(!haveCreds)(
             catchUpTimeoutMs: 300_000,
             log: (l) => console.log(`[tier3] ${l}`),
           });
-          expect(res.artifacts.length).toBe(3);
+          expect(res.artifacts.length).toBe(scenarios.length);
           for (const a of res.artifacts) assertTier3Artifact(a);
           const cr = res.artifacts.find((a) => a.scenario === 'tier3.cross-region-replication')!;
           expect(cr.metrics['appendToVisibleMs']?.count).toBeGreaterThan(0);
           console.log(`[tier3] cross-region append→visible p95=${cr.metrics['appendToVisibleMs']?.p95}ms`);
-          const hp = res.artifacts.find((a) => a.scenario === 'tier3.nat-holepunch')!;
-          console.log(`[tier3] holepunch notes: ${hp.notes.join(' | ')}`);
+          const hp = res.artifacts.find((a) => a.scenario === 'tier3.nat-holepunch');
+          if (hp) console.log(`[tier3] holepunch notes: ${hp.notes.join(' | ')}`);
         } finally {
           await fleet.teardownAll();
         }

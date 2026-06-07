@@ -19,6 +19,8 @@
  *   --update-baseline                           rewrite the baseline from this run
  *   --gate                                      exit 1 on regressions/SLO violations (OFF by default — D-005)
  *   --slo-only                                  exit 1 only on SLO violations (used by the CI-able invariant path)
+ *   --summary-json <file>                       ALSO write a machine-readable run summary (the
+ *                                               nightly/weekly routine reads this to auto-file findings — P-014)
  *
  * Output: one JSON artifact per (scenario, params) under
  * `<out>/<runId>/`, a generated `report.md` (P-012), and an advisory
@@ -68,6 +70,21 @@ interface Args {
   updateBaseline: boolean;
   gate: boolean;
   sloOnly: boolean;
+  summaryJson: string | null;
+}
+
+/** Machine-readable run summary (consumed by the P-014 routine handler). */
+export interface RunSummary {
+  runId: string;
+  profile: string;
+  outDir: string;
+  reportPath: string;
+  artifacts: number;
+  scenarioFailures: string[];
+  sloViolations: Array<{ scenario: string; paramsKey: string; p95Ms: number; limitMs: number }>;
+  regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
+  improvements: number;
+  baselineCompared: boolean;
 }
 
 function parseArgs(argv: string[]): Args | 'list' {
@@ -107,6 +124,7 @@ function parseArgs(argv: string[]): Args | 'list' {
     updateBaseline: argv.includes('--update-baseline'),
     gate: argv.includes('--gate'),
     sloOnly: argv.includes('--slo-only'),
+    summaryJson: get('--summary-json'),
   };
 }
 
@@ -185,27 +203,28 @@ async function main(): Promise<void> {
     `p2p-perf runner — ${args.scenarios.length} scenario(s), profile=${args.profile} sizes=[${ctx.sizes}] peers=[${ctx.peerCounts}]`,
   );
   let failed = false;
+  const scenarioFailures: string[] = [];
   for (const s of args.scenarios) {
     console.log(`\n▶ ${s.id} — ${s.describe}`);
     try {
       await s.run(ctx);
     } catch (e) {
       failed = true;
+      scenarioFailures.push(`${s.id}: ${e instanceof Error ? e.message : String(e)}`);
       console.error(`  ✖ ${s.id} FAILED: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
     }
   }
 
   // Baseline comparison (advisory — D-005).
   let compareText: string | null = null;
-  let regressionCount = 0;
-  let sloViolations = artifacts.filter((a) => a.sloPassed === false).length;
+  let compared = false;
+  let compareReport: ReturnType<typeof compareArtifacts> | null = null;
   if (existsSync(args.baseline) && !args.updateBaseline) {
     try {
       const baseline = JSON.parse(readFileSync(args.baseline, 'utf8')) as BaselineFile;
-      const report = compareArtifacts(baseline, artifacts);
-      regressionCount = report.regressions.length;
-      sloViolations = report.sloViolations.length;
-      compareText = formatCompareReport(report);
+      compareReport = compareArtifacts(baseline, artifacts);
+      compared = true;
+      compareText = formatCompareReport(compareReport);
       console.log('\n— baseline comparison (advisory) —');
       console.log(compareText);
     } catch (e) {
@@ -214,6 +233,20 @@ async function main(): Promise<void> {
   } else if (!args.updateBaseline) {
     console.log(`\n(no baseline at ${args.baseline} — run with --update-baseline to create one)`);
   }
+  const sloViolations =
+    compareReport?.sloViolations ??
+    artifacts
+      .filter((a) => a.sloPassed === false)
+      .map((a) => ({
+        scenario: a.scenario,
+        paramsKey: Object.entries(a.params)
+          .sort(([x], [y]) => (x < y ? -1 : 1))
+          .map(([k, v]) => `${k}=${v}`)
+          .join(','),
+        p95Ms: a.loopLag?.p95Ms ?? -1,
+        limitMs: a.sloLimitMs,
+      }));
+  const regressionCount = compareReport?.regressions.length ?? 0;
 
   if (args.updateBaseline && artifacts.length) {
     const baseline = baselineFromArtifacts(artifacts, args.profile);
@@ -227,9 +260,34 @@ async function main(): Promise<void> {
   console.log(`\nartifacts: ${outDir}`);
   console.log(`report:    ${reportPath}`);
 
+  const summary: RunSummary = {
+    runId,
+    profile: args.profile,
+    outDir,
+    reportPath,
+    artifacts: artifacts.length,
+    scenarioFailures,
+    sloViolations,
+    regressions: (compareReport?.regressions ?? []).map((d) => ({
+      scenario: d.scenario,
+      paramsKey: d.paramsKey,
+      metric: d.metric,
+      baseline: d.baseline,
+      current: d.current,
+      relChange: d.relChange,
+    })),
+    improvements: compareReport?.improvements.length ?? 0,
+    baselineCompared: compared,
+  };
+  writeFileSync(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+  if (args.summaryJson) {
+    mkdirSync(dirname(args.summaryJson), { recursive: true });
+    writeFileSync(args.summaryJson, JSON.stringify(summary, null, 2));
+  }
+
   if (failed) process.exitCode = 1;
-  else if (args.gate && (regressionCount > 0 || sloViolations > 0)) process.exitCode = 1;
-  else if (args.sloOnly && sloViolations > 0) process.exitCode = 1;
+  else if (args.gate && (regressionCount > 0 || sloViolations.length > 0)) process.exitCode = 1;
+  else if (args.sloOnly && sloViolations.length > 0) process.exitCode = 1;
 }
 
 void main();

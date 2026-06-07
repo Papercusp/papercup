@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "scenario": "merge.delta-tick",
+  "tier": 1,
+  "params": {
+    "historySize": 1000000,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T01:11:58.149Z",
+  "durationMs": 439445.218489,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "backfillMergeMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 436800.853,
+      "p95": 436800.853,
+      "p99": 436800.853,
+      "max": 436800.853,
+      "mean": 436800.853
+    },
+    "deltaTick1Ms": {
+      "unit": "ms",
+      "count": 20,
+      "p50": 0.089,
+      "p95": 0.126,
+      "p99": 0.191,
+      "max": 0.191,
+      "mean": 0.098
+    },
+    "deltaTick100Ms": {
+      "unit": "ms",
+      "count": 20,
+      "p50": 8.969,
+      "p95": 13.487,
+      "p99": 21.538,
+      "max": 21.538,
+      "mean": 9.985
+    },
+    "deltaTick1000Ms": {
+      "unit": "ms",
+      "count": 20,
+      "p50": 98.943,
+      "p95": 117.422,
+      "p99": 138.274,
+      "max": 138.274,
+      "mean": 96.444
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20.2,
+    "p95Ms": 29.1,
+    "p99Ms": 57.1,
+    "maxMs": 1013.4
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 88931.654,
+    "systemMs": 32914.619
+  },
+  "rss": {
+    "peakBytes": 607416320
+  },
+  "opsDecoded": 1022020,
+  "notes": []
+}

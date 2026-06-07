@@ -167,9 +167,8 @@ export const idleTick: PerfScenario = {
         });
         if (size > 50_000) {
           meter.note(
-            'historySize exceeds boot.ts MAX_OPS_PER_AUTHOR (50k) — the backfill pass is capped ' +
-              'and ops beyond the cap are never merged (no per-log cursor); backfillMergeMs here ' +
-              'measures a capped pass. See p2p-performance-suite P-013 / the EI-79 residual.',
+            'historySize exceeds the 50k per-pass budget — backfillMergeMs measures the FIRST ' +
+              'pass only; the incremental cursor (P-013) drains the rest across subsequent ticks.',
           );
         }
         const backfill = meter.metric('backfillMergeMs', 'ms');

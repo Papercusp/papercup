@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, pinned_bee).await;
+    let result = run(&mut terminal, pinned, tab_subset).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -169,7 +169,7 @@ async fn run_chat_dock() -> Result<()> {
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
-    pinned_bee: bool,
+    tab_subset: Option<Vec<app::Tab>>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
@@ -180,10 +180,14 @@ async fn run<B: Backend>(
     if let Some(p) = pinned {
         app.tab = p;
     }
-    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): render JUST the bee
-    // dossier full-screen (the renderer short-circuits on this before the Tab
-    // pinning). Driven by the swarm→bee selection relay polled below.
-    app.pinned_bee = pinned_bee;
+    // The dock's MAIN pane (pui-dock-consolidation-2026-06-07): tab strip +
+    // switching confined to the subset; opens on Swarm (Fleet) — the richest
+    // at-a-glance view. The run loop re-clamps on each event (below).
+    let is_main_pane = tab_subset.is_some();
+    app.tab_subset = tab_subset;
+    if is_main_pane {
+        app.tab = app::Tab::Fleet;
+    }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
     // dock-verbs target this pane. Absent outside zellij (the run loop then uses
@@ -219,10 +223,10 @@ async fn run<B: Backend>(
     // zellij over a long-lived `zellij pipe` child. `None` when not running
     // inside zellij / without the plugin — orchestration then falls back to
     // fire-and-forget `zellij action` (below). Its events (topology, pane-exit)
-    // arrive on `tx` like any other. NOT spawned in chat-only mode (the chat
-    // dock, P-013): there is no work area to orchestrate there, and loading
-    // the plugin surfaces an empty floating pane over the dock.
-    let companion = if pinned.is_some() || pinned_bee {
+    // arrive on `tx` like any other. NOT spawned in the dock modes (P-013 /
+    // pui-dock-consolidation): there is no work area to orchestrate there, and
+    // loading the plugin surfaces an empty floating pane over the dock.
+    let companion = if pinned.is_some() || is_main_pane {
         None
     } else {
         Companion::spawn(tx.clone())
@@ -234,12 +238,10 @@ async fn run<B: Backend>(
     // respected. Fail-soft: an unreachable operator leaves the classic fallback.
     tokio::spawn(lexicon_fetch(tx.clone()));
 
-    // Bee-dossier pane (pui-bee-dossier-pane-2026-06-06): poll the ephemeral
-    // selection relay (~1.5s, a cheap single GET — the documented v1 transport,
-    // NOT PG). On a selection CHANGE, fetch the dossier (assignment + mail).
-    if pinned_bee {
-        tokio::spawn(bee_selection_loop(tx.clone()));
-    }
+    // Bee dossier (pui-dock-consolidation-2026-06-07): the dossier renders
+    // INSIDE the Fleet tab now, driven in-process by the roster cursor (see the
+    // Action::PublishBeeSelection arm) — the old relay-polling pane loop is
+    // gone. The relay POST itself stays for external consumers.
 
     // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
     // audio handles — the long-lived playback `Player` and the in-flight mic
@@ -289,6 +291,16 @@ async fn run<B: Backend>(
         if let Some(p) = app.pinned {
             if app.tab != p {
                 app.tab = p;
+            }
+        }
+        // Main dock pane (pui-dock-consolidation-2026-06-07): keep the active
+        // tab within the subset — a stray switch key to an out-of-subset tab
+        // snaps back to the first allowed tab.
+        if let Some(subset) = &app.tab_subset {
+            if !subset.contains(&app.tab) {
+                if let Some(first) = subset.first() {
+                    app.tab = *first;
+                }
             }
         }
 

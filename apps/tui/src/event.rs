@@ -127,6 +127,10 @@ pub enum Event {
         assignment: Option<BeeAssignment>,
         mail: Option<BeeMailPayload>,
     },
+    /// Whole-fleet assignments (every bee's ranked work-list), for the default
+    /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
+    /// them in `fleet.all_assignments`.
+    FleetAssignments(Vec<BeeAssignment>),
     /// The active Hive lexicon pack, fetched once at startup
     /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
     LexiconPack(LexiconPackPayload),

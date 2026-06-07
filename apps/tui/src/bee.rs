@@ -121,7 +121,7 @@ pub fn draw_bee(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Top region: the bee's full work-list in rank (priority) order.
-fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
     let label = app.bee.display_label().unwrap_or_else(|| "?".into());
     let asn = app.bee.assignment.as_ref();
     let queued: &[BeeWorkItem] = asn.map(|a| a.queued.as_slice()).unwrap_or(&[]);
@@ -188,7 +188,7 @@ fn draw_tasklist(f: &mut Frame, app: &App, area: Rect) {
 
 /// One task row: rank · status glyph · title (head-of-line — rank 0 / index 0 —
 /// is highlighted as "doing").
-fn task_row(idx: usize, w: &BeeWorkItem) -> ListItem<'static> {
+pub(crate) fn task_row(idx: usize, w: &BeeWorkItem) -> ListItem<'static> {
     let rank = w
         .rank
         .map(|r| format!("#{r}"))
@@ -220,7 +220,7 @@ fn task_row(idx: usize, w: &BeeWorkItem) -> ListItem<'static> {
 }
 
 /// Bottom-upper region: the bee's coord INBOX (messages addressed TO it).
-fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     let side = app.bee.mail.as_ref().map(|m| &m.inbox);
     let entries: &[BeeMailEntry] = side.map(|s| s.entries.as_slice()).unwrap_or(&[]);
     let total = side.map(|s| s.total).unwrap_or(0);
@@ -235,7 +235,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Bottom-lower region: the bee's coord OUTBOX (messages FROM it).
-fn draw_outbox(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_outbox(f: &mut Frame, app: &App, area: Rect) {
     let side = app.bee.mail.as_ref().map(|m| &m.outbox);
     let entries: &[BeeMailEntry] = side.map(|s| s.entries.as_slice()).unwrap_or(&[]);
     let total = side.map(|s| s.total).unwrap_or(0);

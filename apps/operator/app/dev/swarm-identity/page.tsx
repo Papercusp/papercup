@@ -3,6 +3,7 @@
 import type { CSSProperties } from 'react';
 import { useEffect, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { HiveNounIcon, HivePrimaryMark, HiveQueenMark } from '../../_components/HiveVisualIdentity';
 import styles from './swarm-identity.module.css';
 
 type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'sentinel' | 'eclipse';
@@ -104,6 +105,10 @@ export default function SwarmIdentityPage() {
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    if (introReplay === 'skip') {
+      setIntroPhase('done');
+      return undefined;
+    }
     setIntroPhase('lines');
     const swarmTimer = window.setTimeout(() => setIntroPhase('swarm'), INTRO_MS);
     const doneTimer = window.setTimeout(() => setIntroPhase('done'), INTRO_MS + SWARM_TRANSITION_MS);
@@ -151,19 +156,43 @@ export default function SwarmIdentityPage() {
       ) : null}
 
       <div className={introPhase === 'done' ? styles.contentVisible : styles.contentReveal}>
-        <section className={`${styles.hero} ${styles[active.id]}`}>
+        <section className={`${styles.hero} ${styles.finalDirection}`}>
           <div className={styles.heroCopy}>
-            <span className={styles.eyebrow}>theswarm.dev identity lab</span>
+            <span className={styles.eyebrow}>implemented now · theswarm.dev</span>
             <h1>The Swarm</h1>
             <p>{TAGLINE}</p>
             <div className={styles.lexicon}>
               <span><strong>Queen</strong> brain</span>
-              <span><strong>{active.operator}</strong> operator</span>
+              <span><strong>Sentinel Bee</strong> operator</span>
               <span><strong>Keepers</strong> humans</span>
               <span><strong>Bees</strong> agents</span>
             </div>
           </div>
-          <HeroLogo direction={active.id} />
+          <div className={styles.logoStage} aria-label="Implemented The Swarm primary logo">
+            <HivePrimaryMark decorative={false} className={styles.implementedMark} />
+          </div>
+        </section>
+
+        <section className={styles.implementedSystem} aria-label="Implemented Swarm design system">
+          <article className={styles.implementedWordmark}>
+            <div className={styles.cardHeader}>
+              <span>Final app mark</span>
+              <code>/brand/the-hive/wordmark-lockup.svg</code>
+            </div>
+            <img src="/brand/the-hive/wordmark-lockup.svg" alt="The Swarm Hive Console wordmark" />
+          </article>
+          <article>
+            <div className={styles.cardHeader}>
+              <span>Role split</span>
+              <code>lexicon pack</code>
+            </div>
+            <div className={styles.roleGrid}>
+              <span><HiveQueenMark monochrome /> <strong>Queen</strong><small>brain</small></span>
+              <span><HiveNounIcon kind="sentinel" /> <strong>Sentinel Bee</strong><small>operator</small></span>
+              <span><HiveNounIcon kind="keeper" /> <strong>Keeper</strong><small>human</small></span>
+              <span><HiveNounIcon kind="swarm" /> <strong>Swarm</strong><small>live bees</small></span>
+            </div>
+          </article>
         </section>
 
         <section className={styles.switcher} aria-label="Swarm identity directions">
