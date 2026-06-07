@@ -214,26 +214,29 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
     // main) have no lexicon term and stay verbatim.
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     format!(
-        r#"// Papercusp chat dock — chat[operator/brain] | main[Apiary·Voice·Swarm]
+        r#"// Papercusp chat dock — chat[operator⇄brain] | main[Apiary·Voice·Swarm]
 // (native-terminal-desktop P-013 / D-011; consolidated to two panes by
 // pui-dock-consolidation-2026-06-07). The desktop-docked native terminal
-// surface: LEFT = the chat column (the operator (ElevenLabs voice) chat over
-// the brain — a psu engineer session resumed at launch via the D-013 brain
-// pin); RIGHT = the main pane, one pui restricted to the Apiary / Voice /
-// Swarm tabs (the Swarm tab carries the fleet roster, the selected-bee
-// dossier, plan progress, and the fleet comms sub-view). NO workbench HUD,
-// no work-area agent panes. Pane display names route through the lexicon.
+// surface: LEFT = the chat column, a zellij STACK of the operator (ElevenLabs
+// voice) chat and the brain (a psu engineer session resumed at launch via the
+// D-013 brain pin) — tab-like: each shows as a one-line title bar, one
+// expanded at a time; click a title or Alt+↑/↓ to switch (mirrors the main
+// pane's Apiary/Voice/Swarm tab strip); RIGHT = the main pane, one pui
+// restricted to the Apiary / Voice / Swarm tabs (the Swarm tab carries the
+// fleet roster, the selected-bee dossier, plan progress, and the fleet comms
+// sub-view). NO workbench HUD, no work-area agent panes. Pane display names
+// route through the lexicon.
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     pane split_direction="vertical" {{
-        pane name="chat" size="38%" split_direction="horizontal" {{
-            pane name="{operator_name}" focus=true size="50%" {{
+        pane name="chat" size="38%" stacked=true {{
+            pane name="{operator_name}" focus=true expanded=true {{
                 command "pui"
                 args "chat-pane"
             }}
-            pane name="brain" size="50%" {{
+            pane name="brain" {{
                 command "{brain_cmd}"{args_line}
             }}
         }}
@@ -439,7 +442,8 @@ mod tests {
     #[test]
     fn chat_dock_has_two_panes_chat_and_main() {
         // The consolidated dock (pui-dock-consolidation-2026-06-07 #5): LEFT =
-        // the chat column (operator over brain), RIGHT = ONE main pane (a pui
+        // the chat column — a STACK of operator ⇄ brain (tab-like: one expanded,
+        // the other a clickable title bar) — RIGHT = ONE main pane (a pui
         // restricted to the Apiary/Voice/Swarm tabs).
         let lex = Lexicon::default();
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
@@ -457,9 +461,12 @@ mod tests {
         for gone in ["apiary-pane", "voice-pane", "swarm-pane", "bee-pane"] {
             assert!(!kdl.contains(gone), "stale single-tab pane arg: {gone}");
         }
-        // chat | main side-by-side; operator over brain inside the chat column.
+        // chat | main side-by-side; operator ⇄ brain STACKED inside the chat
+        // column (zellij tab-like stack), operator expanded by default.
         assert!(kdl.contains("split_direction=\"vertical\""));
-        assert!(kdl.contains("split_direction=\"horizontal\""));
+        assert!(kdl.contains("stacked=true"));
+        assert!(kdl.contains("expanded=true"));
+        assert!(!kdl.contains("split_direction=\"horizontal\""));
         let (c, o, b, m) = (
             kdl.find("name=\"chat\"").unwrap(),
             kdl.find("name=\"operator\"").unwrap(),
@@ -468,8 +475,10 @@ mod tests {
         );
         assert!(
             c < o && o < b && b < m,
-            "pane order must be chat[operator/brain] | main"
+            "pane order must be chat[operator⇄brain] | main"
         );
+        // The expanded default is the OPERATOR (focus lands there too).
+        assert!(kdl.find("expanded=true").unwrap() < kdl.find("name=\"brain\"").unwrap());
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
@@ -482,11 +491,12 @@ mod tests {
     #[test]
     fn chat_dock_pane_sizes_sum_to_100() {
         let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
-        // Top level: chat 38 | main 62 = 100. Inside chat: operator 50 / brain 50.
+        // Top level: chat 38 | main 62 = 100. The stacked chat children carry NO
+        // sizes — the stack gives the expanded pane everything but title bars.
         for pct in ["38%", "62%"] {
             assert!(kdl.contains(pct), "missing pane size {pct}");
         }
-        assert_eq!(kdl.matches("size=\"50%\"").count(), 2); // operator + brain
+        assert!(!kdl.contains("size=\"50%\""));
     }
 
     #[test]

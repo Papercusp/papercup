@@ -19,6 +19,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useShortcutAction } from '../../lib/hotkeys';
+import { useRouter } from '../../lib/router-compat/navigation';
 
 export interface FulltextHit {
   source: string;
@@ -27,6 +28,29 @@ export interface FulltextHit {
   excerpt: string;
   highlight?: string;
   rank?: number;
+}
+
+/**
+ * Map a fulltext hit to the GUI route that shows it. The four prose
+ * sources today (see agent-tools/search/sources.ts): `brainstorm` /
+ * `escalations` / `decisions` are per-harness (hit.harness_slug carries
+ * the slug; decisions/escalations land on the harness overview — the
+ * finest stable surface for them today); `turns` are the global operator
+ * conversation. Unknown sources → null (hit renders unlinked).
+ */
+export function hitHref(hit: Pick<FulltextHit, 'source' | 'harness_slug'>): string | null {
+  const slug = hit.harness_slug ? `slug=${encodeURIComponent(hit.harness_slug)}&` : '';
+  switch (hit.source) {
+    case 'brainstorm':
+      return `/adv?${slug}tab=brainstorm`;
+    case 'escalations':
+    case 'decisions':
+      return hit.harness_slug ? `/adv?${slug}tab=overview` : '/adv';
+    case 'turns':
+      return '/adv?tab=conversations';
+    default:
+      return null;
+  }
 }
 
 /**
@@ -56,6 +80,14 @@ export default function GlobalSearchDialog() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const router = useRouter();
+
+  const openHit = (h: FulltextHit) => {
+    const href = hitHref(h);
+    if (!href) return;
+    void setOpen(false);
+    router.push(href);
+  };
 
   useShortcutAction('search.global', () => {
     void setOpen(!open);
@@ -153,24 +185,39 @@ export default function GlobalSearchDialog() {
             )}
             {hits && hits.length > 0 && (
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                {hits.map((h, i) => (
-                  <li
-                    key={`${h.source}:${h.source_id}:${i}`}
-                    data-testid="gsearch-hit"
-                    style={{
-                      padding: '8px 6px',
-                      borderBottom: '1px solid var(--pc-border, #232730)',
-                    }}
-                  >
-                    <div style={{ fontSize: 11, opacity: 0.65, display: 'flex', gap: 8 }}>
-                      <span>{h.source}</span>
-                      {h.harness_slug && <span>· {h.harness_slug}</span>}
-                    </div>
-                    <div style={{ fontSize: 13, marginTop: 2 }}>
-                      {renderHighlight(h.highlight || h.excerpt || '')}
-                    </div>
-                  </li>
-                ))}
+                {hits.map((h, i) => {
+                  const linked = hitHref(h) != null;
+                  return (
+                    <li
+                      key={`${h.source}:${h.source_id}:${i}`}
+                      data-testid="gsearch-hit"
+                      {...(linked
+                        ? {
+                            role: 'button' as const,
+                            tabIndex: 0,
+                            onClick: () => openHit(h),
+                            onKeyDown: (e: React.KeyboardEvent) => {
+                              if (e.key === 'Enter') openHit(h);
+                            },
+                          }
+                        : {})}
+                      style={{
+                        padding: '8px 6px',
+                        borderBottom: '1px solid var(--pc-border, #232730)',
+                        cursor: linked ? 'pointer' : 'default',
+                      }}
+                    >
+                      <div style={{ fontSize: 11, opacity: 0.65, display: 'flex', gap: 8 }}>
+                        <span>{h.source}</span>
+                        {h.harness_slug && <span>· {h.harness_slug}</span>}
+                        {linked && <span style={{ marginLeft: 'auto', opacity: 0.5 }}>↵ open</span>}
+                      </div>
+                      <div style={{ fontSize: 13, marginTop: 2 }}>
+                        {renderHighlight(h.highlight || h.excerpt || '')}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

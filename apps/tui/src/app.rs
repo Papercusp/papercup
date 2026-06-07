@@ -2687,7 +2687,15 @@ impl App {
             Event::ConvAi(u) => {
                 use crate::voice_convai::ConvAiUpdate as U;
                 match u {
-                    U::Connected { .. } => {
+                    U::Connected { conversation_id } => {
+                        // The shared operator thread id (universal-voice D-005):
+                        // backfill the app's conversation pointer when chat
+                        // history hasn't loaded yet, so history paging + the
+                        // conversation-gated features work in a voice-first
+                        // session too.
+                        if self.conversation_id.is_none() && !conversation_id.is_empty() {
+                            self.conversation_id = Some(conversation_id);
+                        }
                         self.convai_phase = ConvAiPhase::Live;
                         self.push_notif(Notif {
                             level: "info".into(),
@@ -6777,9 +6785,11 @@ mod tests {
         // V starts: optimistic Connecting + the run-loop action.
         assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStart);
         assert_eq!(a.convai_phase, ConvAiPhase::Connecting);
-        // Session connects → Live (+ a toast).
+        // Session connects → Live (+ a toast) and the shared thread id
+        // backfills the app's conversation pointer (voice-first session).
         a.update(Event::ConvAi(U::Connected { conversation_id: "conv_1".into() }));
         assert_eq!(a.convai_phase, ConvAiPhase::Live);
+        assert_eq!(a.conversation_id.as_deref(), Some("conv_1"));
         // V again stops.
         assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStop);
         assert_eq!(a.convai_phase, ConvAiPhase::Off);

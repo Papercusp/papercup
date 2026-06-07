@@ -336,7 +336,10 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // P-008: the frame reads its per-install instance config from env (no config.json file).
       ...(opts.instanceConfigJson ? [`export HARNESS_CONFIG_JSON=${shq(opts.instanceConfigJson)}`] : []),
       ...Object.entries(mergedEnv).map(([k, v]) => `export ${k}=${shq(v)}`),
-      '( npm run dev:operator >/var/log/papercusp-operator.log 2>&1 & )',
+      // `dev:operator` is only the SPA BUILDER (the desktop shell starts the host
+      // separately) — a headless frame must launch the hono host itself, which
+      // serves /api + the loop. Found live 2026-06-06: ":3070 never listened."
+      `( cd ${shq(`${root}/runtime/apps/operator`)} && npx tsx bin/hono-host.ts >/var/log/papercusp-operator.log 2>&1 & )`,
       // shq() the whole literal so a slug with shell metacharacters can't break
       // out of the echo (consistent with every other interpolation here).
       `echo ${shq('frame orchestrator loop started for harness ' + opts.harnessSlug)}`,

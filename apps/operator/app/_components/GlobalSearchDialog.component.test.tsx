@@ -5,13 +5,22 @@
  * (and ONLY them — no raw-HTML injection).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
-import GlobalSearchDialog, { renderHighlight } from './GlobalSearchDialog';
+
+// The dialog navigates via the router-compat shim (TanStack useNavigate
+// underneath) — mock it so tests don't need a RouterProvider.
+const pushMock = vi.fn();
+vi.mock('../../lib/router-compat/navigation', () => ({
+  useRouter: () => ({ push: pushMock }),
+}));
+
+import GlobalSearchDialog, { hitHref, renderHighlight } from './GlobalSearchDialog';
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  pushMock.mockClear();
 });
 
 function envelope(results: unknown[]) {
@@ -89,5 +98,56 @@ describe('renderHighlight', () => {
     const nodes = renderHighlight('a <b>hit</b> & <script>alert(1)</script>');
     // Three segments: text, mark, text — the script tag stays a literal string.
     expect(nodes.length).toBe(3);
+  });
+});
+
+describe('hitHref (source→route map)', () => {
+  it('maps the four prose sources; unknown sources stay unlinked', () => {
+    expect(hitHref({ source: 'brainstorm', harness_slug: 'papercup' })).toBe(
+      '/adv?slug=papercup&tab=brainstorm',
+    );
+    expect(hitHref({ source: 'escalations', harness_slug: 'papercup' })).toBe(
+      '/adv?slug=papercup&tab=overview',
+    );
+    expect(hitHref({ source: 'decisions', harness_slug: 'pot/a b' })).toBe(
+      '/adv?slug=pot%2Fa%20b&tab=overview',
+    );
+    expect(hitHref({ source: 'turns' })).toBe('/adv?tab=conversations');
+    expect(hitHref({ source: 'something-new' })).toBeNull();
+  });
+});
+
+describe('hit navigation', () => {
+  it('clicking a linked hit closes the overlay and routes to it', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          envelope([
+            {
+              source: 'brainstorm',
+              source_id: 'papercup:staging',
+              harness_slug: 'papercup',
+              excerpt: 'voice notes',
+              highlight: '<b>voice</b> notes',
+            },
+          ]),
+        ),
+      ),
+    );
+    const onUrlUpdate = vi.fn();
+    render(
+      <NuqsTestingAdapter searchParams="?gsearch=true&gq=voice" onUrlUpdate={onUrlUpdate}>
+        <GlobalSearchDialog />
+      </NuqsTestingAdapter>,
+    );
+    const hit = await waitFor(() => screen.getByTestId('gsearch-hit'), { timeout: 3000 });
+    fireEvent.click(hit);
+    expect(pushMock).toHaveBeenCalledWith('/adv?slug=papercup&tab=brainstorm');
+    // The overlay closed itself (gsearch cleared from the URL).
+    await waitFor(() => {
+      const writes = onUrlUpdate.mock.calls.map((c) => String((c[0] as { search: string }).search));
+      expect(writes.some((s) => !s.includes('gsearch=true'))).toBe(true);
+    });
   });
 });

@@ -85,6 +85,19 @@ export type ChatIconComponent = ComponentType<{
   'aria-hidden'?: boolean;
 }>;
 
+/**
+ * Discord's ↑-to-edit-last, adapted for an agent chat (discord-shortcuts
+ * 2026-06-06): editing an already-answered turn is semantically murky in a
+ * request→response conversation, so ↑ in the EMPTY composer instead RECALLS
+ * your last sent message into the input to revise + resend.
+ */
+export function lastUserMessageText(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && messages[i].content.trim()) return messages[i].content;
+  }
+  return null;
+}
+
 export interface ChatConversationProps {
   messages: ChatMessage[];
   /** True while the model is composing/streaming. Disables input + shows thinking row. */
@@ -458,6 +471,15 @@ export function ChatConversation(props: ChatConversationProps) {
               ref={inputRef}
               value={inputValue}
               onChange={(e) => onInputChange(e.target.value)}
+              onKeyDown={(e) => {
+                // ↑ in the EMPTY composer recalls the last sent message
+                // (Discord ↑-to-edit analog — see lastUserMessageText).
+                if (e.key !== 'ArrowUp' || inputValue !== '' || busy) return;
+                const last = lastUserMessageText(messages);
+                if (!last) return;
+                e.preventDefault();
+                onInputChange(last);
+              }}
               placeholder={busy ? 'thinking…' : inputPlaceholder}
               disabled={busy}
               aria-label={inputPlaceholder}
