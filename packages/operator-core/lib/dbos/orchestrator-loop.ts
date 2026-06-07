@@ -72,7 +72,7 @@ import type { AuditorSpawnFn, CreateEscalationFn, HarnessConfig } from '@papercu
 import type { BlueprintDispatch } from '@papercusp/orchestrator/blueprint';
 import { getEffectiveBlueprint } from '../blueprint/project-to-pg';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
-import { activeWorkspaceId, readRegistry } from '../workspace-registry';
+import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { listAllHarnesses } from '../dev-data';
 import { resolveProject } from '../harness-core';
@@ -723,24 +723,16 @@ async function readPlanPriority(
  * The workspace(s) a single sweep covers (Phase E, P-020).
  *
  * One shared operator serves every workspace (D-008), so the single background
- * orchestrator must decide which workspaces to sweep:
- *   - `PAPERCUSP_WORKSPACE_ID` pinned (a dedicated single-workspace process) →
- *     just that one.
- *   - else, in the shared-operator model (`PAPERCUSP_SHARED_OPERATOR=1`, set
- *     only by the new desktop shell) → EVERY registered workspace. Each harness
- *     is still gated by its own concurrency + `maxCostUsd` caps, so cost scales
- *     with opted-in harnesses, not workspace/window count.
- *   - else (dev / legacy) → the single global active workspace — today's
- *     behavior, unchanged (D-009: don't flip the fleet's dispatch scope in dev).
+ * orchestrator must decide which workspaces to sweep. The pin → shared-all →
+ * global-active policy now lives in `backgroundWorkspaceIds()`
+ * (workspace-registry.ts) — the canonical helper every background reader
+ * shares (this dispatcher, the await-event sweeper, pot wake-rule boot
+ * registration). Each harness is still gated by its own concurrency +
+ * `maxCostUsd` caps, so cost scales with opted-in harnesses, not
+ * workspace/window count.
  */
 export function orchestratorWorkspaceIds(): string[] {
-  const pin = process.env.PAPERCUSP_WORKSPACE_ID?.trim();
-  if (pin) return [pin];
-  if (process.env.PAPERCUSP_SHARED_OPERATOR === '1') {
-    const ids = readRegistry().workspaces.map((w) => w.id).filter(Boolean);
-    if (ids.length) return ids;
-  }
-  return [activeWorkspaceId()];
+  return backgroundWorkspaceIds();
 }
 
 /**

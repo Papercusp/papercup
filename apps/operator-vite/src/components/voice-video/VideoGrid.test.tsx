@@ -29,6 +29,10 @@ vi.mock('../../lib/video/desktop-video-client', () => ({
   },
 }));
 vi.mock('../../lib/video/camera-capture', () => ({ startCameraCapture: h.startCameraCapture }));
+// Runtime-config port discovery (P-015 D-014) — resolve immediately in tests.
+vi.mock('../../lib/voice/resolve-voice-ws-url', () => ({
+  resolveDesktopVoiceWsUrl: () => Promise.resolve('ws://127.0.0.1:3076/api/desktop/voice'),
+}));
 
 import VideoGrid from './VideoGrid';
 
@@ -52,12 +56,15 @@ afterEach(() => {
   delete g.EncodedVideoChunk;
 });
 
-function renderGrid() {
-  return render(
+async function renderGrid() {
+  const r = render(
     <NuqsTestingAdapter>
       <VideoGrid harnessSlug="harnessX" />
     </NuqsTestingAdapter>,
   );
+  // Flush the (mocked) runtime-config URL resolution so the session connects.
+  await act(async () => {});
+  return r;
 }
 
 function pushStatus(status: VoiceSessionStatus) {
@@ -67,8 +74,8 @@ function pushStatus(status: VoiceSessionStatus) {
 }
 
 describe('<VideoGrid>', () => {
-  it('connects for the harness and renders the control bar + empty state', () => {
-    renderGrid();
+  it('connects for the harness and renders the control bar + empty state', async () => {
+    await renderGrid();
     expect(h.captured.opts).not.toBeNull();
     expect(screen.getByText(/Waiting for others to join/)).toBeTruthy();
     expect(screen.getByRole('toolbar', { name: /call controls/i })).toBeTruthy();
@@ -78,8 +85,8 @@ describe('<VideoGrid>', () => {
     expect(screen.getByText(/Leave/)).toBeTruthy();
   });
 
-  it('renders a tile per peer and flags the active speaker', () => {
-    renderGrid();
+  it('renders a tile per peer and flags the active speaker', async () => {
+    await renderGrid();
     pushStatus({
       channel: { id: 'vid-harnessX' },
       muted: false,
@@ -96,28 +103,28 @@ describe('<VideoGrid>', () => {
     expect(screen.queryByText(/Waiting for others to join/)).toBeNull();
   });
 
-  it('camera button is enabled when WebCodecs is available (not audio-only)', () => {
-    renderGrid();
+  it('camera button is enabled when WebCodecs is available (not audio-only)', async () => {
+    await renderGrid();
     const cam = screen.getByText(/Camera/).closest('button')!;
     expect(cam.hasAttribute('disabled')).toBe(false);
   });
 
   it('toggling mute drives the session', async () => {
-    renderGrid();
+    await renderGrid();
     fireEvent.click(screen.getByText(/Mute/));
     // nuqs updates vmute → re-render → effect calls setMuted(true)
     await screen.findByText(/Unmute/);
     expect(h.session.setMuted).toHaveBeenCalledWith(true);
   });
 
-  it('Leave tears down the session', () => {
-    renderGrid();
+  it('Leave tears down the session', async () => {
+    await renderGrid();
     fireEvent.click(screen.getByText(/Leave/));
     expect(h.session.close).toHaveBeenCalled();
   });
 
-  it('closes the session on unmount', () => {
-    const { unmount } = renderGrid();
+  it('closes the session on unmount', async () => {
+    const { unmount } = await renderGrid();
     unmount();
     expect(h.session.close).toHaveBeenCalled();
   });

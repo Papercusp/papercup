@@ -32,7 +32,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
-import { findUnknownFromItems, type PromoteFeatureInput } from '../promote';
+import { findUnknownFromItems } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug, resolvePlanScope } from '../../plans/source';
 import { parsePromotePolicy, buildWaveFeatures, applyInterWaveEdges, type BuiltFeature, type SpawnChild } from '../../plans/promote-policy';

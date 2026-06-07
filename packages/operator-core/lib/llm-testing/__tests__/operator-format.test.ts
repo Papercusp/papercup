@@ -19,6 +19,7 @@ import {
   groundedCountBeforeTool,
   noStrayBuiltinCalls,
   disambiguationCardRequired,
+  oneSayPerTurn,
 } from '../asserts/operator-format';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
@@ -375,6 +376,32 @@ describe('noStrayBuiltinCalls', () => {
   });
   it('no-op on turns without tool calls', () => {
     expect(noStrayBuiltinCalls(summary([turn('<say>quiet turn</say>')]))).toHaveLength(0);
+  });
+});
+
+describe('oneSayPerTurn', () => {
+  it('passes a turn with exactly one say', () => {
+    expect(oneSayPerTurn(summary([turn('<say>One thing.</say>')]))).toHaveLength(0);
+  });
+  it('passes a turn with no say (sleep turn)', () => {
+    expect(oneSayPerTurn(summary([turn('<sleep duration_minutes="10"/>')]))).toHaveLength(0);
+  });
+  it('fails a turn with two say blocks (the observed duplicate-say shape)', () => {
+    const v = oneSayPerTurn(summary([turn(
+      '<say>14 decisions waiting and one critical bug. Want the list?</say>\n<say>There are 14 decisions waiting plus a critical bug — want me to go through them?</say>',
+    )]));
+    expect(v).toHaveLength(1);
+    expect(v[0].evidenceTurnIdx).toBe(0);
+    expect(v[0].claim).toContain('2 <say>');
+  });
+  it('flags the right turn in a multi-turn run', () => {
+    const v = oneSayPerTurn(summary([
+      turn('<say>fine</say>'),
+      turn('<say>a</say><say>b</say><say>c</say>'),
+    ]));
+    expect(v).toHaveLength(1);
+    expect(v[0].evidenceTurnIdx).toBe(1);
+    expect(v[0].claim).toContain('3 <say>');
   });
 });
 

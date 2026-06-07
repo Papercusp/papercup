@@ -29,6 +29,11 @@ export const FLAGS = {
   // channel (the participant-grid VideoGrid). OFF by default — ships dark until
   // the live two-instance camera E2E (P-010) passes on the real Tauri webview.
   VIDEO_CHANNELS: "papercusp-video-channels",
+  // holepunch-voice-channels-2026-06-05 (P-015/D-014): gates the desktop P2P
+  // VOICE-channel surface (VoiceChannelPanel — channel list/join/mute/meter +
+  // mic capture/mix playback over the desktop voice bridge). OFF by default —
+  // ships dark until the supervised live Tauri+mic pass (D-014) lands.
+  VOICE_CHANNELS: "papercusp-voice-channels",
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
   // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
   // unchanged, D-001). OFF (default) = the `classic` Papercusp pack = V1 ship
@@ -57,6 +62,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
   // OFF by default — desktop video ships dark behind the live-camera E2E (P-010).
   [FLAGS.VIDEO_CHANNELS]: false,
+  // OFF by default — desktop voice channels ship dark behind the supervised
+  // live Tauri+mic pass (holepunch-voice-channels D-014).
+  [FLAGS.VOICE_CHANNELS]: false,
   // OFF by default — classic Papercusp is the V1 ship state; flip on to adopt
   // the bee lexicon (the-hive-lexicon-2026-06-06). Presentation only.
   [FLAGS.THE_HIVE]: false,

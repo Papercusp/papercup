@@ -442,6 +442,33 @@ export function noStrayBuiltinCalls(run: RunSummary): Violation[] {
 }
 
 // =============================================================================
+// 12b. Exactly one <say> per voice turn (voice rule 1)
+// =============================================================================
+//
+// The runtime speaks only the FIRST <say> in a turn (SAY_RE is non-global in
+// operator-converse-tags.ts) — any further <say> is silently dropped, so a
+// model that emits two (observed live: near-duplicate blocks, each ending in
+// a question) is wasting the turn and double-counting questions. Voice
+// scenarios enforce the de-facto runtime contract deterministically.
+
+export function oneSayPerTurn(run: RunSummary): Violation[] {
+  const violations: Violation[] = [];
+  for (let i = 0; i < run.turns.length; i++) {
+    const n = [...run.turns[i].assistantText.matchAll(/<say[^>]*>/gi)].length;
+    if (n > 1) {
+      violations.push({
+        assertKind: 'oneSayPerTurn',
+        severity: 'error',
+        evidenceTurnIdx: i,
+        claim: `Turn ${i} emitted ${n} <say> blocks. Only the first is spoken — the rest are dead text (and usually duplicate it).`,
+        suggestion: 'Emit exactly ONE <say> per turn; put extra facts in a later turn or a card.',
+      });
+    }
+  }
+  return violations;
+}
+
+// =============================================================================
 // 13. Ambiguous instruction must produce a choice card (voice-persona P-003)
 // =============================================================================
 //

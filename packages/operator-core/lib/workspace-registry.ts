@@ -133,6 +133,34 @@ export function workspaceById(id: string): WorkspaceEntry | undefined {
 }
 
 /**
+ * The workspace set a BACKGROUND job must cover — per-window-workspace-context
+ * P-020. A background reader (interval sweeper, boot-time re-registration,
+ * scheduled dispatcher) has no request to scope it, so it must decide which
+ * workspaces it serves instead of silently following the global:
+ *   1. `PAPERCUSP_WORKSPACE_ID` pin → just that one (a dedicated
+ *      single-workspace process — orchestrator agent, durable dispatcher).
+ *   2. Shared-operator model (`PAPERCUSP_SHARED_OPERATOR=1`, set only by the
+ *      desktop shell, D-008) → EVERY registered workspace; wrap each unit of
+ *      work in `runWithWorkspace(ws, …)` so nested `activeWorkspaceId()`
+ *      reads resolve that workspace.
+ *   3. Dev / legacy single-active model → the one global active workspace —
+ *      today's behavior, unchanged (D-009).
+ * Canonical policy shared by the DBOS dispatcher (`orchestratorWorkspaceIds`),
+ * the await-event sweeper, and the pot wake-rule boot registration.
+ */
+export function backgroundWorkspaceIds(): string[] {
+  const pin = process.env.PAPERCUSP_WORKSPACE_ID?.trim();
+  if (pin) return [pin];
+  if (process.env.PAPERCUSP_SHARED_OPERATOR === '1') {
+    const ids = readRegistry()
+      .workspaces.map((w) => w.id)
+      .filter(Boolean);
+    if (ids.length) return ids;
+  }
+  return [activeWorkspaceId()];
+}
+
+/**
  * Is `id` a workspace this host knows about? Used by the request-scope
  * middleware to distinguish a *missing* header (→ global fallback) from a
  * *present-but-unknown* one (→ hard error, D-007). The literal default

@@ -20,6 +20,7 @@
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import VideoGrid from '../voice-video/VideoGrid';
+import VoiceChannelPanel from '../voice-video/VoiceChannelPanel';
 import { panelRegistry, type PanelComponentProps } from '@/app/harness/dock/panel-registry';
 
 const fill: React.CSSProperties = {
@@ -40,6 +41,7 @@ const mute: React.CSSProperties = {
 export function WorkbenchVoicePanel({ params }: PanelComponentProps) {
   const harnessSlug = typeof params.harnessSlug === 'string' ? params.harnessSlug : '';
   const videoOn = useFlag(FLAGS.VIDEO_CHANNELS);
+  const voiceOn = useFlag(FLAGS.VOICE_CHANNELS);
 
   return (
     <div style={fill} data-testid="workbench-voice-pane">
@@ -78,19 +80,23 @@ export function WorkbenchVoicePanel({ params }: PanelComponentProps) {
           </div>
         )}
       </div>
-      {/* Voice seam — the universal-voice shared-session controls attach here. */}
+      {/* Voice seam — P2P voice channels (holepunch-voice P-015) when the flag
+          is on; otherwise the universal-voice shared-session placeholder. */}
       <div
         data-testid="workbench-voice-seam"
         style={{
           flex: 1,
           minHeight: 0,
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 12,
+          flexDirection: 'column',
+          ...(voiceOn ? { overflow: 'auto' } : { alignItems: 'center', justifyContent: 'center', padding: 12 }),
         }}
       >
-        <span style={mute}>Voice — shared operator session (universal-voice-interface)</span>
+        {voiceOn ? (
+          <VoiceChannelPanel className="workbench-voice-channels" />
+        ) : (
+          <span style={mute}>Voice — shared operator session (universal-voice-interface)</span>
+        )}
       </div>
     </div>
   );

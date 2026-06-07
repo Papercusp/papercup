@@ -11,7 +11,7 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { formatLength220, noJargonInSay, noStrayBuiltinCalls, disambiguationCardRequired } from '../../asserts/operator-format';
+import { formatLength220, noJargonInSay, noStrayBuiltinCalls, disambiguationCardRequired, oneSayPerTurn } from '../../asserts/operator-format';
 import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 const cardsAreVoiceAnswerable = (run: RunSummary): Violation[] => {
@@ -49,6 +49,7 @@ export const S16_VOICE_DISAMBIGUATION: Scenario = {
     // a chat_ask_choice card is REQUIRED behavior, deterministically.
     { kind: 'custom', name: 'disambiguationCardRequired', eval: disambiguationCardRequired },
     { kind: 'custom', name: 'noStrayBuiltinCalls', eval: noStrayBuiltinCalls },
+    { kind: 'custom', name: 'oneSayPerTurn', eval: oneSayPerTurn },
   ],
   rubric: OPERATOR_RUBRIC,
 };

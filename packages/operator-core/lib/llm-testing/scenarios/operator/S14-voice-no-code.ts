@@ -9,7 +9,7 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { noMarkdownInSay, formatLength220, noJargonInSay, noStrayBuiltinCalls } from '../../asserts/operator-format';
+import { noMarkdownInSay, formatLength220, noJargonInSay, noStrayBuiltinCalls, oneSayPerTurn } from '../../asserts/operator-format';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S14_VOICE_NO_CODE: Scenario = {
@@ -27,6 +27,7 @@ export const S14_VOICE_NO_CODE: Scenario = {
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
     { kind: 'custom', name: 'noStrayBuiltinCalls', eval: noStrayBuiltinCalls },
+    { kind: 'custom', name: 'oneSayPerTurn', eval: oneSayPerTurn },
   ],
   rubric: OPERATOR_RUBRIC,
 };

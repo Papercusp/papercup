@@ -25,7 +25,24 @@
  *         feature_template:
  *           title: "Universal schema: {item}"
  *           acceptance: ["validates vs asinDetails for {item}"]
+ *     - id: extract-cli                   # EXCEPTION case: a spawn_child wave
+ *       spawn_child:
+ *         slug: my-tool-cli               # new child harness (own repo via template)
+ *         template: node-cli              # spawnable template (required for v1, D-003)
+ *         goal: "Extract the CLI into its own repo + lifecycle"
+ *       features:
+ *         - title: "Port the CLI entrypoints"
+ *           acceptance: ["CLI builds + smoke-runs in the child repo"]
  *   ```
+ *
+ * ANTI-OVER-SPAWN (promote-spawn-child-harness-2026-05-31 D-001): a wave should
+ * declare `spawn_child` ONLY when its work crosses a **repo/worktree boundary**
+ * or needs its **own lifecycle/done-definition**. Same-repo "more stuff to
+ * build" stays as plain features in the current harness — the dispatcher
+ * already runs feature pipelines concurrently, so a child harness buys no extra
+ * parallelism, only overhead (own schema, worktree, crew, recursion budget).
+ * `plans:lint` warns (never blocks) on every spawn_child wave to prompt that
+ * boundary justification; default to features-in-parent when in doubt.
  *
  * FAIL-SAFE: a missing block → `null` (no warning); a malformed block → `null`
  * plus a warning. Never throws — a bad policy must not break plan parsing.

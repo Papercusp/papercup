@@ -26,6 +26,7 @@ import {
   type DesktopVideoSession,
   type VoiceSessionStatus,
 } from '../../lib/video/desktop-video-client';
+import { resolveDesktopVoiceWsUrl } from '../../lib/voice/resolve-voice-ws-url';
 import { webCodecsSupported, type VideoFrameLike } from '../../lib/video/video-codec';
 import { startCameraCapture, type CameraCapture } from '../../lib/video/camera-capture';
 import { buildGridModel, type GridModel, type GridTile } from './video-grid-state';
@@ -87,29 +88,39 @@ export default function VideoGrid({ harnessSlug, className }: VideoGridProps): J
   // --- session lifecycle (per harness) ---
   useEffect(() => {
     if (!harnessSlug) return;
-    const session = connectDesktopVideo({
-      harness: harnessSlug,
-      onStatus: (s) => {
-        setStatus(s);
-        // A newly-joined peer must receive a keyframe before our deltas decode.
-        const known = keyframedPeersRef.current;
-        let hasNew = false;
-        for (const p of s.peers) {
-          if (!known.has(p.id)) {
-            known.add(p.id);
-            hasNew = true;
+    let cancelled = false;
+    let session: DesktopVideoSession | null = null;
+    // Resolve the bridge URL via runtime-config first (P-015 D-014): with
+    // several operators on one box each walks to its own port, so the
+    // webview must ask ITS operator rather than assume :3076.
+    void resolveDesktopVoiceWsUrl().then((url) => {
+      if (cancelled) return;
+      session = connectDesktopVideo({
+        url,
+        harness: harnessSlug,
+        onStatus: (s) => {
+          setStatus(s);
+          // A newly-joined peer must receive a keyframe before our deltas decode.
+          const known = keyframedPeersRef.current;
+          let hasNew = false;
+          for (const p of s.peers) {
+            if (!known.has(p.id)) {
+              known.add(p.id);
+              hasNew = true;
+            }
           }
-        }
-        if (hasNew) captureRef.current?.encoder.requestKeyframe();
-      },
-      onPeerFrame: (peerId, frame) => drawFrame(peerCanvasRefs.current.get(peerId) ?? null, frame),
-      onError: (e) => console.warn('[video-grid] session error', e),
+          if (hasNew) captureRef.current?.encoder.requestKeyframe();
+        },
+        onPeerFrame: (peerId, frame) => drawFrame(peerCanvasRefs.current.get(peerId) ?? null, frame),
+        onError: (e) => console.warn('[video-grid] session error', e),
+      });
+      sessionRef.current = session;
     });
-    sessionRef.current = session;
     return () => {
+      cancelled = true;
       captureRef.current?.stop();
       captureRef.current = null;
-      session.close();
+      session?.close();
       sessionRef.current = null;
       keyframedPeersRef.current.clear();
       setStatus(EMPTY_STATUS);

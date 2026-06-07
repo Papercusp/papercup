@@ -1,13 +1,11 @@
 import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest';
 
-// Control the workspace registry for orchestratorWorkspaceIds (P-020). Only
-// readRegistry + activeWorkspaceId are consumed by orchestrator-loop here.
+// Control the workspace policy for orchestratorWorkspaceIds (P-020). The
+// pin → shared-all → global-active policy itself lives in (and is
+// behaviorally tested at) workspace-registry.test.ts `backgroundWorkspaceIds`;
+// here we only verify the dispatcher delegates to it.
 vi.mock('../workspace-registry', () => ({
-  activeWorkspaceId: () => 'global-ws',
-  readRegistry: () => ({
-    current: 'global-ws',
-    workspaces: [{ id: 'ws-a' }, { id: 'ws-b' }, { id: 'ws-c' }],
-  }),
+  backgroundWorkspaceIds: () => ['ws-a', 'ws-b', 'ws-c'],
 }));
 
 import type { HarnessConfig } from '@papercusp/orchestrator';
@@ -274,31 +272,8 @@ describe('resolveDispatchPolicy — blueprint dispatch: merged with per-install 
 });
 
 describe('orchestratorWorkspaceIds — which workspaces a sweep covers (Phase E P-020)', () => {
-  const savedPin = process.env.PAPERCUSP_WORKSPACE_ID;
-  const savedShared = process.env.PAPERCUSP_SHARED_OPERATOR;
-  afterEach(() => {
-    if (savedPin === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
-    else process.env.PAPERCUSP_WORKSPACE_ID = savedPin;
-    if (savedShared === undefined) delete process.env.PAPERCUSP_SHARED_OPERATOR;
-    else process.env.PAPERCUSP_SHARED_OPERATOR = savedShared;
-  });
-
-  test('PAPERCUSP_WORKSPACE_ID pin → just that one (dedicated single-workspace process), even under shared-operator', () => {
-    process.env.PAPERCUSP_WORKSPACE_ID = 'pinned-ws';
-    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
-    expect(orchestratorWorkspaceIds()).toEqual(['pinned-ws']);
-  });
-
-  test('shared operator, no pin → EVERY registered workspace (P-020)', () => {
-    delete process.env.PAPERCUSP_WORKSPACE_ID;
-    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+  test('delegates to the canonical backgroundWorkspaceIds policy (behavioral cases live in workspace-registry.test.ts)', () => {
     expect(orchestratorWorkspaceIds()).toEqual(['ws-a', 'ws-b', 'ws-c']);
-  });
-
-  test('dev / legacy (no shared-operator flag) → only the global active workspace (today\'s behavior)', () => {
-    delete process.env.PAPERCUSP_WORKSPACE_ID;
-    delete process.env.PAPERCUSP_SHARED_OPERATOR;
-    expect(orchestratorWorkspaceIds()).toEqual(['global-ws']);
   });
 });
 

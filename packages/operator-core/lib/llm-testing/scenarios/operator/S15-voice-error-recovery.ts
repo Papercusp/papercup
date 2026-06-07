@@ -11,7 +11,7 @@
  */
 import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { noMarkdownInSay, groundedCountBeforeTool, noStrayBuiltinCalls } from '../../asserts/operator-format';
+import { noMarkdownInSay, groundedCountBeforeTool, noStrayBuiltinCalls, oneSayPerTurn } from '../../asserts/operator-format';
 import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 function extractSay(text: string): string {
@@ -54,6 +54,7 @@ export const S15_VOICE_ERROR_RECOVERY: Scenario = {
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'custom', name: 'groundedCountBeforeTool', eval: groundedCountBeforeTool },
     { kind: 'custom', name: 'noStrayBuiltinCalls', eval: noStrayBuiltinCalls },
+    { kind: 'custom', name: 'oneSayPerTurn', eval: oneSayPerTurn },
   ],
   rubric: OPERATOR_RUBRIC,
 };

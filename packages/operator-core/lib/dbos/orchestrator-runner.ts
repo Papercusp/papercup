@@ -616,6 +616,30 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
             ...(workspaceId ? { workspaceId } : {}),
           });
         } else if (step.hook === 'afterDone') {
+          // P-004 (promote-spawn-child-harness): the parent-notification BUILTIN.
+          // A per-harness hooks/afterDone.sh overrides it entirely (parity with
+          // the retired run.sh builtin resolver); when no user hook ran, the TS
+          // builtin posts a `Completion` message to this harness's sealed parent
+          // once the feature queue drains — so a parent that spawn_child'ed this
+          // harness learns its sub-work is done. Plugins fire regardless.
+          const userHook = runHook('afterDone', {
+            stateDir,
+            projectDir,
+            logDir,
+            env: { TRIGGER: 'done', FEATURE_ID: featureId ?? '', PROJECT_DIR: projectDir, STATE_DIR: stateDir },
+            log: (m) => console.log(`[dbos-finalize] ${m}`),
+            harnessSlug,
+            ...(workspaceId ? { workspaceId } : {}),
+          });
+          if (!userHook.ran) {
+            const { notifyParentOnDone } = await import('./notify-parent-done');
+            await notifyParentOnDone({
+              harnessSlug,
+              workspaceId: workspaceId ?? activeWorkspaceId(),
+              ...(featureId && featureId !== '-' ? { featureId } : {}),
+              log: (m) => console.log(`[dbos-finalize] ${m}`),
+            });
+          }
           firePluginHook({
             hookName: 'afterDone',
             projectDir,
