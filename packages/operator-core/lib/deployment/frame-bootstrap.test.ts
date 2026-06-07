@@ -17,6 +17,7 @@ describe('buildFrameBootstrap', () => {
         env: { NODE_ENV: 'production' },
       },
       claudeCredentialsRemotePath: '/root/creds.json',
+      desktop: true,
     });
     expect(script.startsWith('#!/usr/bin/env bash')).toBe(true);
     expect(script).toContain('set -euo pipefail');
@@ -142,5 +143,63 @@ describe('buildFrameBootstrap', () => {
   it('an execution frame scopes the loop to its one harness', () => {
     const { script } = buildFrameBootstrap({ harnessSlug: 'papercup', environment: baseEnv });
     expect(script).toContain("PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES='papercup'");
+  });
+
+  // ── desktop capability (hive-frame-desktops-live-view P-001/P-002/P-005) ──
+
+  it('no desktop knob → no desktop section, no display env', () => {
+    const { steps, script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv });
+    expect(steps).not.toContain('desktop');
+    expect(script).not.toContain('Xvfb');
+    expect(script).not.toContain('PAPERCUSP_DESKTOP_DISPLAYS');
+  });
+
+  it('desktop:true emits the section with 4 default displays at :99+n (D-001)', () => {
+    const { steps, script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      desktop: true,
+    });
+    expect(steps).toContain('desktop');
+    expect(script).toContain('xvfb openbox x11vnc xdotool ffmpeg x11-utils');
+    for (const d of [99, 100, 101, 102]) {
+      expect(script).toContain(`( Xvfb :${d} -screen 0 '1920x1080x24' -nolisten tcp >/var/log/papercusp-desktop/xvfb-${d}.log 2>&1 & )`);
+      expect(script).toContain(`DISPLAY=:${d} openbox`);
+    }
+    expect(script).not.toContain('Xvfb :103');
+  });
+
+  it('desktop object form tunes the pool (displays + geometry)', () => {
+    const { script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      desktop: { displays: 2, geometry: '1280x800x24' },
+    });
+    expect(script).toContain("Xvfb :99 -screen 0 '1280x800x24'");
+    expect(script).toContain('Xvfb :100');
+    expect(script).not.toContain('Xvfb :101');
+  });
+
+  it('desktop advertises the pool to the orchestrator loop (P-002)', () => {
+    const { script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      desktop: { displays: 3 },
+    });
+    expect(script).toContain('export PAPERCUSP_DESKTOP_DISPLAY_BASE=99');
+    expect(script).toContain('export PAPERCUSP_DESKTOP_DISPLAYS=3');
+  });
+
+  it('desktop installs + starts the capture loop (P-005), x11vnc NOT started', () => {
+    const { script } = buildFrameBootstrap({
+      harnessSlug: 'h',
+      environment: baseEnv,
+      desktop: true,
+    });
+    expect(script).toContain("cat > '/usr/local/bin/papercusp-desktop-capture' <<'PAPERCUSP_CAPTURE_EOF'");
+    expect(script).toContain('f x11grab'); // the embedded capture loop
+    expect(script).toContain('( /usr/local/bin/papercusp-desktop-capture >/var/log/papercusp-desktop/capture.log 2>&1 & )');
+    // x11vnc is on-demand (Phase 3) — never a boot-time listener.
+    expect(script).not.toMatch(/^\s*\(?\s*x11vnc /m);
   });
 });

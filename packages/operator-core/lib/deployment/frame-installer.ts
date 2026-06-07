@@ -136,6 +136,9 @@ export async function installFrame(
     env: boot.env,
     instanceConfigJson: boot.instanceConfigJson, // P-008: frame's instance config via env
     controlNode: boot.controlNode, // P-016: the Queen supervises across frames (unscoped)
+    // hive-frame-desktops P-001/P-003: the desktop capability knob rides the
+    // deployment config (a frame capability, not a bootstrap input).
+    desktop: config.desktop,
   });
   log(`bootstrapping frame ${frame.id} (${script.length} bytes; own loop + own embedded-pg per D-006/D-007)`);
   await exec.runScript(script);

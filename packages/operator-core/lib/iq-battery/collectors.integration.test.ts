@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
@@ -24,10 +24,24 @@ describe('IQ Battery Metrics Collectors', () => {
 
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
     // Apply the migration DDL
-    const ddl = readFileSync(
-      join(__dirname, '../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
-      'utf8',
-    );
+    let ddl = '';
+    const basePath = __dirname.includes('dist') ? '../' : '';
+    const paths = [
+      join(__dirname, basePath + '../../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
+      join(__dirname, basePath + '../../../libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql'),
+      '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/179-iq-battery-corpus.sql',
+    ];
+    for (const path of paths) {
+      try {
+        ddl = readFileSync(path, 'utf8');
+        break;
+      } catch (e) {
+        // Continue to next path
+      }
+    }
+    if (!ddl) {
+      throw new Error(`Could not find migration file in any of the expected locations: ${paths.join(', ')}`);
+    }
     await sql.unsafe(ddl);
   });
 

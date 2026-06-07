@@ -20,6 +20,11 @@
  * without a live frame.
  */
 import type { BlueprintEnvironment } from '@papercusp/orchestrator/blueprint';
+import {
+  buildDesktopCaptureScript,
+  DESKTOP_CAPTURE_DIR,
+  DESKTOP_CAPTURE_SCRIPT_PATH,
+} from './desktop-capture';
 
 export interface FrameBootstrapOpts {
   /** The harness this frame hosts. */
@@ -64,6 +69,14 @@ export interface FrameBootstrapOpts {
    *  loop UNSCOPED (supervises across frames via coordination) rather than scoped to
    *  one harness. */
   controlNode?: boolean;
+  /** Opt-in desktop capability (`hive-frame-desktops-live-view` P-001/D-001): stand
+   *  up one Xvfb display per agent slot (`:99 + n`, openbox WM each) so the frame's
+   *  agents can drive GUIs, plus the capture loop the live view pulls (P-005).
+   *  `true` = defaults (4 displays @ 1920x1080x24). The orchestrator-loop section
+   *  advertises the pool via `PAPERCUSP_DESKTOP_DISPLAYS` +
+   *  `PAPERCUSP_DESKTOP_DISPLAY_BASE` so the spawn path leases per-agent
+   *  `DISPLAY`s (P-002). */
+  desktop?: boolean | { displays?: number; geometry?: string };
 }
 
 /** The bootstrap section ids, in run order — the observable contract. */
@@ -71,6 +84,7 @@ export const FRAME_BOOTSTRAP_STEPS = [
   'preflight',
   'node',
   'agent-clis',
+  'desktop',
   'runtime',
   'repo',
   'credentials',
@@ -84,6 +98,28 @@ export const FRAME_BOOTSTRAP_STEPS = [
 export type FrameBootstrapStep = (typeof FRAME_BOOTSTRAP_STEPS)[number];
 
 const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** Desktop defaults (D-001): displays start at `:99` (the local agent-e2e
+ *  convention — one display per agent, no focus stealing), 4 per frame unless
+ *  tuned, llvmpipe-rendered 1080p. */
+export const DESKTOP_DISPLAY_BASE = 99;
+export const DESKTOP_DEFAULT_DISPLAYS = 4;
+export const DESKTOP_DEFAULT_GEOMETRY = '1920x1080x24';
+
+export interface NormalizedDesktop {
+  displays: number;
+  geometry: string;
+}
+
+/** Normalize the `desktop` knob (`true` → defaults; object → clamped/filled). */
+export function normalizeDesktop(
+  d: boolean | { displays?: number; geometry?: string } | undefined,
+): NormalizedDesktop | undefined {
+  if (!d) return undefined;
+  const o = d === true ? {} : d;
+  const displays = Math.max(1, Math.min(64, Math.floor(o.displays ?? DESKTOP_DEFAULT_DISPLAYS)));
+  return { displays, geometry: o.geometry ?? DESKTOP_DEFAULT_GEOMETRY };
+}
 
 function section(id: FrameBootstrapStep, title: string, lines: string[]): string {
   return [`# ── ${id}: ${title} ──`, `log ${shq(id)}`, ...lines, ''].join('\n');
@@ -138,6 +174,30 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       ? '( meridian >/var/log/meridian.log 2>&1 & ) # OAuth router on :3456'
       : '# backend is not omp — Meridian not started',
   ]);
+
+  const desktop = normalizeDesktop(opts.desktop);
+  if (desktop) {
+    // P-001/D-001: one Xvfb display per agent slot (`:99 + n`), an openbox WM
+    // each, plus the capture loop (P-005) the operator's live view pulls over
+    // SSH. x11vnc is installed here but NOT started — Phase 3 starts it
+    // on-demand per viewer session (localhost-only; never a listening 5900).
+    const displayNumbers = Array.from({ length: desktop.displays }, (_, n) => DESKTOP_DISPLAY_BASE + n);
+    add('desktop', `Xvfb desktops (${desktop.displays} displays — D-001 one per agent slot)`, [
+      'apt-get install -y --no-install-recommends xvfb openbox x11vnc xdotool ffmpeg x11-utils',
+      `mkdir -p /var/log/papercusp-desktop ${shq(DESKTOP_CAPTURE_DIR)}`,
+      ...displayNumbers.flatMap((d) => [
+        `( Xvfb :${d} -screen 0 ${shq(desktop.geometry)} -nolisten tcp >/var/log/papercusp-desktop/xvfb-${d}.log 2>&1 & )`,
+        `( sleep 1; DISPLAY=:${d} openbox >/var/log/papercusp-desktop/openbox-${d}.log 2>&1 & )`,
+      ]),
+      // The capture loop (P-005): latest-frame JPEG per ACTIVE display, written
+      // atomically for the operator's viewer-driven SSH pull (D-003).
+      `cat > ${shq(DESKTOP_CAPTURE_SCRIPT_PATH)} <<'PAPERCUSP_CAPTURE_EOF'`,
+      buildDesktopCaptureScript({ displays: displayNumbers, geometry: desktop.geometry }).trimEnd(),
+      'PAPERCUSP_CAPTURE_EOF',
+      `chmod +x ${shq(DESKTOP_CAPTURE_SCRIPT_PATH)}`,
+      `( ${DESKTOP_CAPTURE_SCRIPT_PATH} >/var/log/papercusp-desktop/capture.log 2>&1 & )`,
+    ]);
+  }
 
   add('runtime', 'papercusp runtime', [
     `mkdir -p ${shq(root)}`,
@@ -241,6 +301,14 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // frame self-dispatches only the one harness it hosts (D-006).
       `export PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=${shq(opts.controlNode ? '*' : opts.harnessSlug)}`,
       `export AGENT_BACKEND=${shq(backend === 'omp' ? 'omp' : backend === 'claude' ? 'claude-code' : 'codex')}`,
+      // P-002 (hive-frame-desktops): advertise the display pool so the loop's
+      // spawn path leases a per-agent DISPLAY (display-allocator.ts).
+      ...(desktop
+        ? [
+            `export PAPERCUSP_DESKTOP_DISPLAY_BASE=${DESKTOP_DISPLAY_BASE}`,
+            `export PAPERCUSP_DESKTOP_DISPLAYS=${desktop.displays}`,
+          ]
+        : []),
       // P-008: the frame reads its per-install instance config from env (no config.json file).
       ...(opts.instanceConfigJson ? [`export HARNESS_CONFIG_JSON=${shq(opts.instanceConfigJson)}`] : []),
       ...Object.entries(mergedEnv).map(([k, v]) => `export ${k}=${shq(v)}`),

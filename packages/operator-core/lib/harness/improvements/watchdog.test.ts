@@ -4,6 +4,7 @@ import {
   collectServiceDownSignals,
   runWatchdogTick,
   type WatchdogSignal,
+  type WatchdogCollector,
 } from './watchdog';
 import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
@@ -129,6 +130,51 @@ describe('runWatchdogTick — captures through the shared core', () => {
       const res = await runWatchdogTick('ws', {}, { collect: async () => [sig({ key: 'a' }), sig({ key: 'b' })], capture });
       expect(res.captured).toEqual(['EI-9']);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/capture failed for red-test:a/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('(P-011) accepts pluggable per-target collectors', async () => {
+    const { calls, capture } = captureRecorder();
+    const customCollectors: WatchdogCollector[] = [
+      {
+        name: 'my-project-integration-tests',
+        collect: async () => [
+          sig({ key: 'integration-test', source: 'red-test', title: 'My project integration test failing' }),
+        ],
+      },
+      {
+        name: 'my-project-smoke',
+        collect: async () => [sig({ key: 'smoke', source: 'smoke-fail', title: 'My project smoke test failing' })],
+      },
+    ];
+    const res = await runWatchdogTick('ws', {}, { collectors: customCollectors, capture });
+    expect(res.captured).toHaveLength(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ title: 'My project integration test failing' });
+    expect(calls[1]).toMatchObject({ title: 'My project smoke test failing' });
+  });
+
+  it('(P-011) collector failures are caught + logged but do not abort the tick', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { capture } = captureRecorder();
+      const collectors: WatchdogCollector[] = [
+        {
+          name: 'good-collector',
+          collect: async () => [sig({ key: 'good', title: 'Good signal' })],
+        },
+        {
+          name: 'bad-collector',
+          collect: async () => {
+            throw new Error('connection timeout');
+          },
+        },
+      ];
+      const res = await runWatchdogTick('ws', {}, { collectors, capture });
+      expect(res.signals).toBe(1); // only the good signal
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/collector "bad-collector" failed/));
     } finally {
       warn.mockRestore();
     }

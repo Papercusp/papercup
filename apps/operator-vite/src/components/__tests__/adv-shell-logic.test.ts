@@ -50,14 +50,14 @@ describe('ADV_TABS', () => {
     // "strip is scope-independent" guard: that guard existed because all-mode
     // once collapsed to just TWO tabs, which read as breakage.
     expect(visibleAdvTabs(true).map((t) => t.id)).toEqual([
-      'overview', 'plans', 'harnesses', 'conversations',
+      'overview', 'plans', 'harnesses', 'frames', 'conversations',
     ]);
     // A single pot shows the full strip. Strip order: Overview leads (the
     // default landing surface, Brief 23 / overview-dashboard-2026-06-05
     // D-001); Conversations sits with the browse surfaces (Brief 25).
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
-      'overview', 'brainstorm', 'plans', 'harnesses', 'git', 'testing', 'docs', 'insights',
+      'overview', 'brainstorm', 'plans', 'harnesses', 'frames', 'git', 'testing', 'docs', 'insights',
       'conversations', 'config', 'settings',
     ]);
   });

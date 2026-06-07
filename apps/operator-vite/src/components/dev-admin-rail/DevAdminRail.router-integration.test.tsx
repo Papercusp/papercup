@@ -84,5 +84,20 @@ describe('DevAdminRail × real TanStack router + real nuqs adapter', () => {
     fireEvent.click(screen.getByTestId('dev-rail-sec-db'));
     await waitFor(() => expect(window.location.search).toContain('devSec=db'));
     expect(screen.getByTestId('dev-admin-rail').getAttribute('data-collapsed')).toBe('false');
+
+    // The quote-escalation regression: nuqs's 'true' must land as a plain
+    // typed boolean, never JSON-quoted (%22true%22) — that quoting is what
+    // compounded per write until parseAsBoolean rejected it and the rail
+    // snapped shut.
+    expect(window.location.search).not.toContain('%22');
+
+    // Close still works: devRail clears (default) and the rail collapses.
+    fireEvent.click(screen.getByLabelText('Close dev admin rail'));
+    await waitFor(() =>
+      expect(screen.getByTestId('dev-admin-rail').getAttribute('data-collapsed')).toBe('true'),
+    );
+    await waitFor(() => expect(window.location.search).not.toContain('devRail'));
+    // The section param survives the close (it's an independent key).
+    expect(window.location.search).toContain('devSec=db');
   });
 });

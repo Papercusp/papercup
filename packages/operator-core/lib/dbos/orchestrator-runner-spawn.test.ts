@@ -22,10 +22,20 @@ vi.hoisted(() => {
 });
 
 // buildInvokeOnce is the seam: tests set H.cmd to the {command,args,env} to spawn.
-const H = vi.hoisted(() => ({ cmd: null as null | { command: string; args: string[]; env: NodeJS.ProcessEnv } }));
-vi.mock('../harness-invoke-once', () => ({ buildInvokeOnce: () => H.cmd }));
+// Inputs are recorded so the display-lease wiring (extraEnv.DISPLAY) is assertable.
+const H = vi.hoisted(() => ({
+  cmd: null as null | { command: string; args: string[]; env: NodeJS.ProcessEnv },
+  inputs: [] as Array<{ extraEnv: Record<string, string> }>,
+}));
+vi.mock('../harness-invoke-once', () => ({
+  buildInvokeOnce: (input: { extraEnv: Record<string, string> }) => {
+    H.inputs.push(input);
+    return H.cmd;
+  },
+}));
 
 import { spawnInvokeOnce } from './orchestrator-runner';
+import { _resetDisplayPoolForTests } from '../deployment/display-allocator';
 
 const node = (script: string) => ({ command: execPath, args: ['-e', script], env: process.env });
 
@@ -76,5 +86,53 @@ describe('spawnInvokeOnce', () => {
     expect(r.output).toBe('');
     expect(r.stderr).toBeTruthy(); // the spawn-error message
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+// ── per-agent DISPLAY leasing (hive-frame-desktops-live-view P-002) ─────────
+describe('spawnInvokeOnce display leasing', () => {
+  beforeEach(() => {
+    H.inputs = [];
+    process.env.PAPERCUSP_DESKTOP_DISPLAYS = '1';
+    process.env.PAPERCUSP_DESKTOP_STATE_DIR = '/tmp/pc-display-spawn-test';
+    _resetDisplayPoolForTests();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    delete process.env.PAPERCUSP_DESKTOP_DISPLAYS;
+    delete process.env.PAPERCUSP_DESKTOP_STATE_DIR;
+    _resetDisplayPoolForTests();
+  });
+
+  it('on a desktop frame the agent env carries the leased DISPLAY, released on exit', async () => {
+    H.cmd = node('process.exit(0)');
+    const r1 = await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    expect(r1.exitCode).toBe(0);
+    expect(H.inputs[0].extraEnv.DISPLAY).toBe(':99');
+    expect(H.inputs[0].extraEnv.PAPERCUSP_AGENT_DISPLAY).toBe(':99');
+    // lease released after the child exited → next spawn re-leases :99
+    await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    expect(H.inputs[1].extraEnv.DISPLAY).toBe(':99');
+  });
+
+  it('pool exhausted → headless spawn (no DISPLAY) + a warn, never queued', async () => {
+    H.cmd = node('setTimeout(() => process.exit(0), 250)');
+    const slow = spawnInvokeOnce(process.cwd(), 'worker', [], {}); // holds :99
+    await new Promise((r) => setTimeout(r, 50));
+    H.cmd = node('process.exit(0)');
+    const r2 = await spawnInvokeOnce(process.cwd(), 'validator', [], {});
+    expect(r2.exitCode).toBe(0);
+    expect(H.inputs[1].extraEnv.DISPLAY).toBeUndefined();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('display pool exhausted'));
+    await slow;
+  });
+
+  it('off-frame (no pool env) nothing is injected', async () => {
+    delete process.env.PAPERCUSP_DESKTOP_DISPLAYS;
+    _resetDisplayPoolForTests();
+    H.cmd = node('process.exit(0)');
+    await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    expect(H.inputs[0].extraEnv.DISPLAY).toBeUndefined();
+    expect(H.inputs[0].extraEnv.PAPERCUSP_AGENT_DISPLAY).toBeUndefined();
   });
 });

@@ -93,4 +93,29 @@ describe('readImprovementItems', () => {
     await readImprovementItems({ state: 'open' }, { listIssues: async (f) => ((seen = f), []) });
     expect(seen).toMatchObject({ topic: IMPROVEMENT_TOPIC, state: 'open' });
   });
+
+  it('(P-010) filters by harness scope when harnessSlug is provided', async () => {
+    const allIssues = [
+      issue({ id: 'EI-1', title: 'a bug', kind: 'bug', scope: 'operator' }),
+      issue({ id: 'EI-2', title: 'harness-foo issue', kind: 'change', scope: 'harness:foo' }),
+      issue({ id: 'EI-3', title: 'harness-bar issue', kind: 'change', scope: 'harness:bar' }),
+      issue({ id: 'EI-4', title: 'another foo issue', kind: 'change', scope: 'harness:foo' }),
+    ];
+    const fakeList = async () => allIssues;
+
+    // With no harnessSlug, should return all
+    const all = await readImprovementItems({}, { listIssues: fakeList });
+    expect(all.length).toBe(4);
+
+    // With harnessSlug='foo', should return only 'harness:foo' scoped issues
+    const fooItems = await readImprovementItems({ harnessSlug: 'foo' }, { listIssues: fakeList });
+    expect(fooItems.length).toBe(2);
+    expect(fooItems.map((i) => i.id)).toEqual(['EI-2', 'EI-4']);
+    expect(fooItems.every((i) => i.scope === 'harness:foo')).toBe(true);
+
+    // With harnessSlug='bar', should return only 'harness:bar' scoped issues
+    const barItems = await readImprovementItems({ harnessSlug: 'bar' }, { listIssues: fakeList });
+    expect(barItems.length).toBe(1);
+    expect(barItems[0]?.id).toBe('EI-3');
+  });
 });
