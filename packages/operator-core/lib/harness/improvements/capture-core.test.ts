@@ -163,3 +163,42 @@ describe('captureImprovement — "already decided" recall (self-learning P-003)'
     expect(res.alreadyDecided).toBeUndefined();
   });
 });
+
+describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
+  it('stores sourceRole in payload when not human (P-010 source-tag)', async () => {
+    const d = deps();
+    const res = await captureImprovement({ title: 'broken watchdog signal', kind: 'bug', sourceRole: 'system' }, d);
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ sourceRole: 'system' });
+  });
+
+  it('does not store sourceRole in payload when human (default)', async () => {
+    const d = deps();
+    const res = await captureImprovement({ title: 'broken thing', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload?.sourceRole).toBeUndefined();
+  });
+
+  it('adds improvement-source topic tag when sourceRole is Queen or bee (P-010)', async () => {
+    const d1 = deps();
+    await captureImprovement({ title: 'queen-filed idea', kind: 'bug', sourceRole: 'Queen' }, d1);
+    expect(d1.created[0].topics).toContain('improvement-source:Queen');
+
+    const d2 = deps();
+    await captureImprovement({ title: 'bee-filed idea', kind: 'bug', sourceRole: 'bee' }, d2);
+    expect(d2.created[0].topics).toContain('improvement-source:bee');
+  });
+
+  it('respects per-Hive scope (harness:<slug>) alongside sourceRole (P-010)', async () => {
+    const d = deps();
+    const res = await captureImprovement({
+      title: 'harness-specific bug',
+      kind: 'bug',
+      scope: 'harness:sheets',
+      sourceRole: 'bee',
+    }, d);
+    expect(res.created).toBe(true);
+    expect(d.created[0].scope).toBe('harness:sheets');
+    expect(d.created[0].payload?.sourceRole).toBe('bee');
+  });
+});

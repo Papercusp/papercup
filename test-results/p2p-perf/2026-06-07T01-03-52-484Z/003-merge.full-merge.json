@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "scenario": "merge.full-merge",
+  "tier": 1,
+  "params": {
+    "historySize": 1000,
+    "logs": 3,
+    "repeats": 5,
+    "seed": 1234
+  },
+  "startedAt": "2026-06-07T01:03:54.186Z",
+  "durationMs": 466.607104,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "fullMergeMs": {
+      "unit": "ms",
+      "count": 5,
+      "p50": 95.003,
+      "p95": 99.887,
+      "p99": 99.887,
+      "max": 99.887,
+      "mean": 93.004
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20,
+    "p95Ms": 20.4,
+    "p99Ms": 20.5,
+    "maxMs": 20.5
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 322.152,
+    "systemMs": 93.926
+  },
+  "rss": {
+    "peakBytes": 293060608
+  },
+  "opsDecoded": 5000,
+  "notes": [
+    "winners applied per pass ≈ 594"
+  ]
+}

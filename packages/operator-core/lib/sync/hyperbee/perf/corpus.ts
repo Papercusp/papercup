@@ -217,9 +217,10 @@ const OP_KINDS: OpKind[] = [
           harness_slug: harness,
           issue_id: issueId,
           title: words(rnd, 10),
+          // Values match the DB CHECK constraints (130-harness-issues-enums-canonical).
           severity: ['minor', 'major', 'critical'][Math.floor(rnd() * 3)],
-          source: 'su',
-          status: ['open', 'claimed', 'resolved'][Math.floor(rnd() * 3)],
+          source: ['validator', 'worker', 'system'][Math.floor(rnd() * 3)],
+          status: ['open', 'acknowledged', 'fixing', 'closed'][Math.floor(rnd() * 4)],
           found_at: ts,
           found_during: rnd() < 0.5 ? null : words(rnd, 3),
           repro: rnd() < 0.3 ? words(rnd, 20) : null,

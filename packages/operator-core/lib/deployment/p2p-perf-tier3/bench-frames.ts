@@ -85,6 +85,10 @@ export interface ProvisionBenchFleetOpts {
   manifestPath?: string;
   /** SSH-readiness probe tuning (tests). */
   sshWait?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> };
+  /** Build the RemoteExec for a frame. Injected for tests; default = real SSH. */
+  makeRemoteExec?: (target: SshTarget) => RemoteExec;
+  /** Pack the runtime tarball. Injected for tests; default = real `tar`. */
+  packTarball?: (repoRoot: string, outPath: string) => Promise<{ outPath: string; bytes: number }>;
   signal?: AbortSignal;
 }
 
@@ -197,10 +201,12 @@ export async function provisionBenchFleet(opts: ProvisionBenchFleetOpts): Promis
   });
 
   // 2. Pack the runtime tarball once (sources only; the frame npm-ci's the rest).
+  const pack = opts.packTarball ?? packRuntimeTarball;
+  const makeExec = opts.makeRemoteExec ?? createSshRemoteExec;
   const tarballPath = join(homedir(), '.papercusp', `p2p-perf-runtime-${Date.now()}.tgz`);
   mkdirSync(join(tarballPath, '..'), { recursive: true });
   opts.log('info', `[bench-fleet] packing runtime tarball from ${opts.repoRoot}`);
-  const { bytes } = await packRuntimeTarball(opts.repoRoot, tarballPath);
+  const { bytes } = await pack(opts.repoRoot, tarballPath);
   opts.log('info', `[bench-fleet] runtime tarball ${(bytes / 1024 / 1024).toFixed(0)}MB`);
 
   const provisioned: BenchFrame[] = [];
@@ -244,7 +250,7 @@ export async function provisionBenchFleet(opts: ProvisionBenchFleetOpts): Promis
       const target: SshTarget = {
         ...sshTargetForFrame(frame, { ...config, provider: { ...config.provider, sshIdentityFile: opts.sshIdentityFile } }),
       };
-      const exec = createSshRemoteExec(target);
+      const exec = makeExec(target);
       const bf: BenchFrame = { spec, frame, target, exec, firewall: !!spec.firewall };
       provisioned.push(bf);
 

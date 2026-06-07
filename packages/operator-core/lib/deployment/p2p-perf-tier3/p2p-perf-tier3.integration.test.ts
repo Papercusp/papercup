@@ -102,7 +102,8 @@ describe.skipIf(!haveCreds)(
         const sshKeyIds = (process.env.P2P_PERF_SSH_KEY_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
         const identityFile = process.env.P2P_PERF_SSH_IDENTITY_FILE;
         const size = process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small';
-        const regionA = process.env.P2P_PERF_REGION_A ?? 'NYC';
+        // VM stock (live 2026-06-07): ASH/DAL/TYO3/LON/FRA — NYC is metal-only.
+        const regionA = process.env.P2P_PERF_REGION_A ?? 'ASH';
         const regionB = process.env.P2P_PERF_REGION_B ?? 'DAL';
         const log = (lvl: string, m: string) => console.log(`[tier3 ${lvl}] ${m}`);
 

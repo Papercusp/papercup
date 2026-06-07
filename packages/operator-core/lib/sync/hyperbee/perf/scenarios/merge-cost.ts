@@ -193,4 +193,92 @@ export const idleTick: PerfScenario = {
   },
 };
 
-export const mergeCostScenarios: PerfScenario[] = [decodeThroughput, fullMerge, idleTick];
+export const deltaTick: PerfScenario = {
+  id: 'merge.delta-tick',
+  tier: 1,
+  describe:
+    'Tick cost when k NEW ops arrive on an H-op history: must be O(k), independent of H (the P-013 incremental cursor — the EI-79 residual validation).',
+  async run(ctx: ScenarioRunCtx): Promise<void> {
+    const DELTAS = [1, 100, 1000];
+    const TICKS_PER_DELTA = 20;
+    for (const size of ctx.sizes) {
+      const cleanups = new Cleanups();
+      try {
+        ctx.log(`delta-tick: booting substrate with ${size}-op own log…`);
+        const workspaceRoot = makeTmpDir(cleanups, 'p2p-perf-delta-');
+        const harnessSlug = 'perf-delta';
+        const handle = await bootHarnessSubstrate({
+          workspaceRoot,
+          workspaceId: 'ws-p2p-perf',
+          harnessSlug,
+          mergePollMs: 0,
+          pendingRetryMs: 0,
+          reverifyIntervalMs: 0,
+          applyOverride: async () => true,
+          loadRevokedOverride: async () => new Set(),
+        });
+        cleanups.push(async () => {
+          await handle.close();
+          await closeHarnessStore({ workspaceRoot, harnessSlug });
+        });
+
+        const BATCH = 2000;
+        let batch: PeerLogOp[] = [];
+        for (const op of generateCorpus({ seed: ctx.seed, count: size, authorPubkey: AUTHOR })) {
+          batch.push(op);
+          if (batch.length >= BATCH) {
+            await handle.ownLog.appendBatch(batch);
+            batch = [];
+          }
+        }
+        if (batch.length) await handle.ownLog.appendBatch(batch);
+
+        const meter = new ScenarioMeter({
+          scenario: 'merge.delta-tick',
+          tier: 1,
+          params: { historySize: size, seed: ctx.seed },
+        });
+        // Backfill: with the incremental cursor this is the one full-history
+        // fold (chunked at 50k/pass — loop until caught up).
+        const backfill = meter.metric('backfillMergeMs', 'ms');
+        const doneBackfill = startTimer();
+        for (;;) {
+          await handle.mergeNow();
+          // caught up when an immediate re-tick merges nothing
+          if ((await handle.mergeNow()) === 0) break;
+        }
+        backfill.push(doneBackfill());
+        meter.opsDecoded += size;
+
+        // Delta ticks: append k ops, tick once, measure. O(k) regardless of H
+        // is the P-013 contract (pre-cursor this was O(H) per changed tick).
+        let seq = 0;
+        for (const k of DELTAS) {
+          const series = meter.metric(`deltaTick${k}Ms`, 'ms');
+          for (let t = 0; t < TICKS_PER_DELTA; t++) {
+            const ops: PeerLogOp[] = Array.from({ length: k }, (_, j) => ({
+              type: 'put' as const,
+              table: 'features-by-id',
+              hbKey: `F-delta-${seq}-${j}`,
+              value: { i: j },
+              ts: 1_800_000_000_000 + seq * 10_000 + j,
+              schema_version: 1,
+              author_pubkey: AUTHOR,
+            }));
+            seq++;
+            await handle.ownLog.appendBatch(ops);
+            const done = startTimer();
+            await handle.mergeNow();
+            series.push(done());
+            meter.opsDecoded += k;
+          }
+        }
+        await ctx.emit(meter.finish());
+      } finally {
+        await cleanups.run();
+      }
+    }
+  },
+};
+
+export const mergeCostScenarios: PerfScenario[] = [decodeThroughput, fullMerge, idleTick, deltaTick];

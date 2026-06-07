@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "scenario": "tier3.dht-discovery",
+  "tier": 3,
+  "params": {
+    "peers": 2,
+    "rate": 0,
+    "count": 10,
+    "regions": "local-0+local-1"
+  },
+  "startedAt": "2026-06-07T01:00:58.316Z",
+  "durationMs": 1059.59002,
+  "host": {
+    "hostname": "main-server-Precision-7865-Tower",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 128,
+    "node": "v25.9.0"
+  },
+  "metrics": {
+    "childLoopLagP95Ms": {
+      "unit": "ms",
+      "count": 2,
+      "p50": 20.9,
+      "p95": 22,
+      "p99": 22,
+      "max": 22,
+      "mean": 21.45
+    },
+    "childRssPeak": {
+      "unit": "bytes",
+      "count": 2,
+      "p50": 224628736,
+      "p95": 233406464,
+      "p99": 233406464,
+      "max": 233406464,
+      "mean": 229017600
+    },
+    "appendToVisibleMs": {
+      "unit": "ms",
+      "count": 10,
+      "p50": 902,
+      "p95": 912,
+      "p99": 912,
+      "max": 912,
+      "mean": 903.2
+    },
+    "appendToVisibleRawMs": {
+      "unit": "ms",
+      "count": 10,
+      "p50": 902,
+      "p95": 912,
+      "p99": 912,
+      "max": 912,
+      "mean": 903.2
+    },
+    "peerReadyMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 2100,
+      "p95": 2100,
+      "p99": 2100,
+      "max": 2100,
+      "mean": 2100
+    },
+    "peerAdmittedMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 2200,
+      "p95": 2200,
+      "p99": 2200,
+      "max": 2200,
+      "mean": 2200
+    },
+    "appendCallMs": {
+      "unit": "ms",
+      "count": 10,
+      "p50": 1,
+      "p95": 5,
+      "p99": 5,
+      "max": 5,
+      "mean": 1.5
+    },
+    "dhtFirstConnectionMs": {
+      "unit": "ms",
+      "count": 1,
+      "p50": 145,
+      "p95": 145,
+      "p99": 145,
+      "max": 145,
+      "mean": 145
+    },
+    "punchesConsistent": {
+      "unit": "count",
+      "count": 1,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "mean": 0
+    },
+    "punchesRandom": {
+      "unit": "count",
+      "count": 1,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "mean": 0
+    },
+    "punchesOpen": {
+      "unit": "count",
+      "count": 1,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "mean": 0
+    },
+    "relaySuccesses": {
+      "unit": "count",
+      "count": 1,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "mean": 0
+    },
+    "connectedPeers": {
+      "unit": "count",
+      "count": 1,
+      "p50": 1,
+      "p95": 1,
+      "p99": 1,
+      "max": 1,
+      "mean": 1
+    }
+  },
+  "loopLag": {
+    "p50Ms": 20.1,
+    "p95Ms": 22,
+    "p99Ms": 22.6,
+    "maxMs": 24.1
+  },
+  "sloPassed": true,
+  "sloLimitMs": 100,
+  "cpu": {
+    "userMs": 9.563,
+    "systemMs": 4.839
+  },
+  "rss": {
+    "peakBytes": 66056192
+  },
+  "notes": [
+    "net: 1/1 readers connected; punches=0 relaySuccess=0",
+    "clock-offset corrected (writerOffset=0ms vs orchestrator)"
+  ]
+}

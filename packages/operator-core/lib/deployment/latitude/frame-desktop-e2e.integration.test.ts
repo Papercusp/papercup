@@ -181,22 +181,38 @@ describe.skipIf(!haveAll)(
 
           // A real GUI on :99 (xterm + xeyes; browser-equivalent X clients —
           // chromium on Ubuntu is snap-only and flaky as root, so the GUI
-          // clients prove the display; the capture proves the pixels).
-          await exec.runScript(
+          // clients prove the display; the capture proves the pixels). A fresh
+          // VM's cloud-init can hold the dpkg lock — wait for it, fail LOUD.
+          const gui = await exec.runScript(
             [
+              'set -e',
               'export DEBIAN_FRONTEND=noninteractive',
-              'apt-get install -y --no-install-recommends xterm x11-apps >/dev/null 2>&1',
+              'apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xterm x11-apps',
+              'command -v xterm >/dev/null || { echo "XTERM-MISSING" >&2; exit 9; }',
               `nohup bash -c 'DISPLAY=:99 xterm -geometry 120x30 -e "bash -c \\"while true; do date; sleep 1; done\\"" ' >/dev/null 2>&1 &`,
               `nohup bash -c 'DISPLAY=:99 xeyes' >/dev/null 2>&1 &`,
-              'sleep 2',
-              'DISPLAY=:99 xlsclients',
+              // wait until the clients actually registered on the display
+              'for i in $(seq 1 15); do',
+              `  n=$(DISPLAY=:99 xlsclients 2>/dev/null | grep -civ openbox || true)`,
+              '  [ "$n" -gt 0 ] && break || sleep 1',
+              'done',
+              'echo "CLIENTS:"; DISPLAY=:99 xlsclients',
             ].join('\n'),
           );
+          console.log(`[desktop-e2e] GUI clients on :99 →\n${gui.stdout.slice(-400)}`);
+          expect(gui.stdout).toMatch(/CLIENTS:[\s\S]*(xterm|xeyes)/);
 
           // capture interval is 5s — wait two ticks then pull via the REAL script
           await new Promise((r) => setTimeout(r, 12_000));
           const pull = await exec.runScript(FRAME_PULL_SCRIPT);
           const parsed = parseFramePull(pull.stdout);
+          if (parsed.thumbs.length === 0) {
+            // surface the frame-side state before the assertion kills the run
+            const diag = await exec.runScript(
+              'ls -la /run/papercusp/desktop 2>&1; echo ---; tail -20 /var/log/papercusp-desktop/capture.log 2>&1; echo ---; pgrep -afc papercusp-desktop-capture || true',
+            );
+            console.log(`[desktop-e2e] DIAG (no thumbs):\n${diag.stdout.slice(-1200)}`);
+          }
           expect(parsed.noCaptureDir).toBe(false);
           const displays = parsed.thumbs.map((t) => t.display);
           expect(displays).toContain(99); // active display captured

@@ -96,23 +96,36 @@ export interface SshSlotSpec {
  * child process IS the peer transport — its stdio is the child's ndjson pipe, so
  * `PeerChildHandle` wraps it unchanged.
  */
+/**
+ * Build the remote peer-child invocation for one slot (pure — unit-tested).
+ * The child config is delivered via an inline env assignment (SSH does not
+ * forward arbitrary env), and `exec` replaces the remote shell with node so
+ * stdin-EOF / signals land on the child directly (clean stop-and-collect).
+ */
+export function buildRemotePeerCommand(
+  cfg: PeerChildConfig,
+  spec: Pick<SshSlotSpec, 'label' | 'installRoot'>,
+): { remoteCommand: string; childCfg: PeerChildConfig } {
+  // Public DHT on real frames: never pass a local-testnet bootstrap.
+  const { bootstrap: _drop, ...rest } = cfg;
+  void _drop;
+  const remoteRoot = `/tmp/p2p-perf-${spec.label}-${rest.peerIndex}-${rest.role}`;
+  const childCfg: PeerChildConfig = { ...rest, root: remoteRoot };
+  const peerChild = remotePeerChildPath(spec.installRoot);
+  const runtimeDir = benchRuntimeDir(spec.installRoot);
+  const remoteCommand =
+    `mkdir -p ${shq(remoteRoot)} && cd ${shq(runtimeDir)} && ` +
+    `P2P_PERF_CHILD=${shq(JSON.stringify(childCfg))} NODE_ENV=test ` +
+    `exec node --import tsx ${shq(peerChild)}`;
+  return { remoteCommand, childCfg };
+}
+
 export function sshPeerLauncher(opts: { frames: SshSlotSpec[]; log: (line: string) => void }): PeerLauncher {
   const slots: PeerSlot[] = opts.frames.map((f) => ({
     label: f.label,
     region: f.region,
     launch: (cfg: PeerChildConfig) => {
-      // Public DHT on real frames: never pass a local-testnet bootstrap.
-      const { bootstrap: _drop, ...rest } = cfg;
-      void _drop;
-      const remoteRoot = `/tmp/p2p-perf-${f.label}-${rest.peerIndex}-${rest.role}`;
-      const childCfg: PeerChildConfig = { ...rest, root: remoteRoot };
-      const peerChild = remotePeerChildPath(f.installRoot);
-      const runtimeDir = benchRuntimeDir(f.installRoot);
-      // exec so signals + stdin-EOF go straight to node (clean stop-and-collect).
-      const remoteCommand =
-        `mkdir -p ${shq(remoteRoot)} && cd ${shq(runtimeDir)} && ` +
-        `P2P_PERF_CHILD=${shq(JSON.stringify(childCfg))} NODE_ENV=test ` +
-        `exec node --import tsx ${shq(peerChild)}`;
+      const { remoteCommand, childCfg } = buildRemotePeerCommand(cfg, f);
       // Run as the login user (no sudo) — runtime files are world-readable; the
       // corestore lives in world-writable /tmp. Avoids sudo's stdin quirks.
       const { cmd, args } = buildSshStreamArgs({ ...f.target, sudo: false }, remoteCommand);

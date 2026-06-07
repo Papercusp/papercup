@@ -97,6 +97,14 @@ export interface RemoteLog {
   get(i: number): Promise<PeerLogOp | null>;
   /** Block until the writer's current length is known to this replica. */
   update(): Promise<void>;
+  /**
+   * Fire-and-forget RANGED download request for blocks [start, end). Makes the
+   * peer stream the whole range continuously instead of paying one round trip
+   * per sequential `get(i)` — without it, WAN merge ingest is RTT-bound at
+   * ~1/RTT ops/sec per log (EI-92). Never throws and never blocks: subsequent
+   * `get(i)` calls resolve as blocks arrive.
+   */
+  prefetch(start: number, end: number): void;
   /** Known length of the remote log (call `update()` first to refresh). */
   readonly length: number;
   /** 64-char lowercase hex hypercore key this replica tracks. */
@@ -113,6 +121,9 @@ interface CoreLike {
   append(value: unknown): Promise<number>;
   get(index: number, opts?: { wait?: boolean }): Promise<unknown>;
   update(opts?: { wait?: boolean }): Promise<boolean>;
+  /** Hypercore ranged download — returns a Range whose `done()` resolves when
+   *  the range is local. Optional in the structural view (present on real cores). */
+  download?(range: { start: number; end: number }): { done(): Promise<void> };
   readonly length: number;
   readonly key: Buffer;
   readonly writable: boolean;
@@ -184,6 +195,19 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
     },
     async update(): Promise<void> {
       await core.update({ wait: true });
+    },
+    prefetch(start: number, end: number): void {
+      if (typeof core.download !== 'function') return;
+      if (end <= start || start < 0) return;
+      try {
+        // Fire-and-forget: the range request rides the replication stream in
+        // the background; `done()` is observed only to swallow rejection
+        // (peer gone mid-range is normal churn, not an error).
+        const range = core.download({ start, end });
+        void range.done().catch(() => {});
+      } catch {
+        // A failed request degrades to per-op sequential fetch — still correct.
+      }
     },
     get length(): number {
       return core.length;

@@ -70,36 +70,31 @@ async fn main() -> Result<()> {
         // its own 2-pane layout and hands off to zellij.
         Some("chat") => return run_chat_dock().await,
         Some("hud") => {}
-        // Single-pane dock modes (P-013 / D-011) — fall through to the normal
-        // run loop with the tab pinned below: `chat-pane` is the dock's
-        // operator chat, `voice-pane` the dock's voice channels, `apiary-pane`
-        // the hive browser (the Cupboard's browse/join surface) and
-        // `swarm-pane` the fleet/swarm activity view. `bee-pane` is the 6th
-        // dock pane (pui-bee-dossier-pane-2026-06-06) — a NEW view (not a Tab),
-        // pinned via `pinned_bee` below.
-        Some("chat-pane")
-        | Some("voice-pane")
-        | Some("apiary-pane")
-        | Some("swarm-pane")
-        | Some("bee-pane") => {}
+        // Dock pane modes (P-013 / D-011; consolidated by
+        // pui-dock-consolidation-2026-06-07) — fall through to the normal run
+        // loop: `chat-pane` is the dock's operator chat (single pinned tab);
+        // `main-pane` is the dock's MAIN pane — one pui restricted to the
+        // Apiary/Voice/Swarm tabs. The old voice-/apiary-/swarm-/bee-pane
+        // single-tab modes are GONE: those surfaces are tabs (or Swarm-tab
+        // sections) of the main pane now.
+        Some("chat-pane") | Some("main-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
-    // Pinned single-tab dock panes: render JUST that tab's body (no tab strip /
+    // Pinned single-tab dock pane: render JUST that tab's body (no tab strip /
     // HUD / work area); the full data wiring in run() is unchanged.
     let pinned = match subcommand.as_deref() {
         Some("chat-pane") => Some(app::Tab::Operator),
-        Some("voice-pane") => Some(app::Tab::Voice),
-        // The hive browser (the-hive lexicon: an APIARY is a yard of hives) —
-        // pins the Cupboard tab: browse/search the listings + per-kind join.
-        Some("apiary-pane") => Some(app::Tab::Cupboard),
-        // The swarm (fleet) activity view — pins the Fleet tab.
-        Some("swarm-pane") => Some(app::Tab::Fleet),
         _ => None,
     };
-    // The bee-dossier pane (pui-bee-dossier-pane-2026-06-06): NOT a Tab — a
-    // dedicated full-screen view driven by the swarm→bee selection relay.
-    let pinned_bee = subcommand.as_deref() == Some("bee-pane");
+    // The dock's MAIN pane: the tab strip + switch keys are confined to the
+    // Apiary (Cupboard) / Voice / Swarm (Fleet) tabs, opening on Swarm. The
+    // Swarm tab carries the roster, the selected-bee dossier, plan progress,
+    // and the fleet comms sub-view.
+    let tab_subset: Option<Vec<app::Tab>> = match subcommand.as_deref() {
+        Some("main-pane") => Some(vec![app::Tab::Cupboard, app::Tab::Voice, app::Tab::Fleet]),
+        _ => None,
+    };
 
     enable_raw_mode()?;
     let mut out = stdout();

@@ -23,10 +23,10 @@ describe('improvements:triage tool', () => {
     severity: p.severity || 'minor',
     title: p.title || 'test idea',
     scope: p.scope || 'harness:papercup',
-    paths: p.paths || [],
+    tier: p.tier || 'human',
     score: p.score || 0.5,
-    recurrenceDecay: p.recurrenceDecay || 1,
-    createdAt: p.createdAt || new Date().toISOString(),
+    ageDays: p.ageDays || 0,
+    tierReason: p.tierReason || 'test reason',
     ...p,
   });
 
@@ -54,7 +54,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({ mode: 'summary' }, ctx);
+      const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
 
       expect(result.content).toBeDefined();
       expect(result.content[0].type).toBe('text');
@@ -77,7 +77,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({}, ctx);
+      const result = (await triageTool.handler({}, ctx)) as any;
 
       expect(result.content).toBeDefined();
       const response = JSON.parse(result.content[0].text);
@@ -102,7 +102,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({ mode: 'triage-all' }, ctx);
+      const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
 
       expect(result.content).toBeDefined();
       const response = JSON.parse(result.content[0].text);
@@ -130,7 +130,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({ mode: 'triage-all' }, ctx);
+      const result = (await triageTool.handler({ mode: 'triage-all' }, ctx)) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.note).toContain('Queen');
@@ -150,7 +150,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({ mode: 'triage-one' }, ctx);
+      const result = (await triageTool.handler({ mode: 'triage-one' }, ctx)) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(false);
@@ -159,7 +159,7 @@ describe('improvements:triage tool', () => {
 
     it('requires decision and reason, rejects if missing', async () => {
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler(
+      const result = (await triageTool.handler(
         { mode: 'triage-one', ideaId: 'idea-1' },
         ctx,
       );
@@ -172,7 +172,7 @@ describe('improvements:triage tool', () => {
 
     it('records the Queen\'s decision for a single idea', async () => {
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler(
+      const result = (await triageTool.handler(
         {
           mode: 'triage-one',
           ideaId: 'idea-123',
@@ -203,7 +203,7 @@ describe('improvements:triage tool', () => {
       ];
 
       for (const decision of decisions) {
-        const result = await triageTool.handler(
+        const result = (await triageTool.handler(
           {
             mode: 'triage-one',
             ideaId: `idea-${decision}`,
@@ -221,7 +221,7 @@ describe('improvements:triage tool', () => {
 
     it('includes guidance for next steps in the response', async () => {
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler(
+      const result = (await triageTool.handler(
         {
           mode: 'triage-one',
           ideaId: 'idea-1',
@@ -249,7 +249,7 @@ describe('improvements:triage tool', () => {
       });
 
       const ctx = { principalIdentity: 'test-agent' } as any;
-      const result = await triageTool.handler({ mode: 'unknown' as any }, ctx);
+      const result = (await triageTool.handler({ mode: 'unknown' as any }, ctx)) as any;
 
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(false);

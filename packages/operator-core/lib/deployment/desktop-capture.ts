@@ -50,7 +50,10 @@ export function buildDesktopCaptureScript(opts: DesktopCaptureOpts): string {
     [
       `  if [ "$(DISPLAY=:${d} xlsclients 2>/dev/null | grep -civ 'openbox' || true)" -gt 0 ]; then`,
       // -q:v 6 ≈ visually-fine thumbnail quality at ~30-60KB/1080p frame.
-      `    ffmpeg -loglevel error -y -f x11grab -video_size ${size} -i :${d} -frames:v 1 -q:v 6 "${DESKTOP_CAPTURE_DIR}/display-${d}.jpg.tmp" 2>/dev/null \\`,
+      // -f mjpeg is REQUIRED: the atomic-write `.jpg.tmp` name defeats ffmpeg's
+      // extension-based format inference ("Unable to choose an output format")
+      // and the failure would be silently swallowed by the `|| true`.
+      `    ffmpeg -loglevel error -y -f x11grab -video_size ${size} -i :${d} -frames:v 1 -q:v 6 -f mjpeg "${DESKTOP_CAPTURE_DIR}/display-${d}.jpg.tmp" 2>/dev/null \\`,
       `      && mv -f "${DESKTOP_CAPTURE_DIR}/display-${d}.jpg.tmp" "${DESKTOP_CAPTURE_DIR}/display-${d}.jpg" || true`,
       '  else',
       // No agent on this display — remove the stale frame so the live view

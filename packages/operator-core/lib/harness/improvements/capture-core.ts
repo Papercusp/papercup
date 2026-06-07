@@ -48,7 +48,7 @@ export interface CaptureImprovementInput {
   severity?: IssueSeverity;
   /** Optional sub-area topic, e.g. coord-dx, db-tooling. */
   subTopic?: string;
-  /** 'operator' (default) or 'harness:<slug>'. */
+  /** 'operator' (default) or 'harness:<slug>'. Determines per-Hive scope (P-010). */
   scope?: string;
   foundDuring?: string;
   /** Repo-relative paths the improvement touches — feeds the protected-path gate. */
@@ -64,6 +64,11 @@ export interface CaptureImprovementInput {
    */
   dedupScope?: 'all' | 'open';
   createdBy?: string;
+  /**
+   * Source role that filed this improvement (P-010 source-tag): 'Queen', 'bee', 'system',
+   * or 'human'. Default 'human'. Used to track per-Hive topic lens + who filed it.
+   */
+  sourceRole?: 'Queen' | 'bee' | 'system' | 'human';
   source?: IssueSource;
 }
 
@@ -157,11 +162,19 @@ export async function captureImprovement(
     };
   }
 
+  // Per-Hive topic lens (P-010): add sourceRole to topics when it differs from default
   const topics = [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])];
-  // Kind-specific payload: the 'feature' refinement + candidate paths (close-loop D-002).
+  const sourceRole = input.sourceRole ?? 'human';
+  if (sourceRole !== 'human') {
+    topics.push(`improvement-source:${sourceRole}`);
+  }
+
+  // Kind-specific payload: the 'feature' refinement + candidate paths (close-loop D-002) + sourceRole (P-010).
   const payload: Record<string, unknown> = {};
   if (input.kind === 'feature') payload.improvementKind = 'feature';
   if (input.paths?.length) payload.paths = input.paths;
+  // P-010 source-tag: track who filed this improvement for per-Hive analytics
+  if (sourceRole !== 'human') payload.sourceRole = sourceRole;
 
   const issue = await deps.createIssue({
     title: input.title,

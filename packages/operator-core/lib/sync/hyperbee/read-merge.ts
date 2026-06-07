@@ -193,3 +193,220 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
   }
   return applied;
 }
+
+/* ------------------------------------------------------------------ *
+ * Incremental merge (the EI-79 residual — p2p-performance-suite P-013)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Compact per-key winner record. Holds ONLY what the LWW comparison needs —
+ * not the op value — so the standing fold state costs ~tens of bytes per live
+ * key instead of retaining every winning payload.
+ */
+interface WinnerMeta {
+  ts: number;
+  hlc?: string;
+  type: 'put' | 'del';
+  src: string; // sourceLogKeyHex ('' when absent) — lwwPick's total-order tiebreak
+}
+
+/**
+ * Durable-for-the-process fold state of an incremental merge: per-log read
+ * cursors + the materialized per-key winner metadata. Created once per booted
+ * harness (`createMergeCursor`) and threaded through every
+ * `mergeAdmittedLogsIncremental` pass. NOT persisted — a process restart
+ * rebuilds it with one full pass (the same cost as today's boot backfill).
+ */
+export interface MergeCursor {
+  /** keyHex → next log index to read. */
+  positions: Map<string, number>;
+  /** `${table}::${hbKey}` → current winner meta. */
+  winners: Map<string, WinnerMeta>;
+}
+
+export function createMergeCursor(): MergeCursor {
+  return { positions: new Map(), winners: new Map() };
+}
+
+/**
+ * Does `env` beat the stored winner? EXACTLY mirrors `lwwPick(prev, env)`
+ * (prev wins ties through the final source-key tiebreak's `>=`), so an
+ * incremental fold across any pass/chunk boundaries lands on the identical
+ * winner set a from-scratch `mergeAdmittedLogs` fold would — lwwPick's order
+ * is total (clock → del>put → source key), hence fold-order independent.
+ */
+function beatsStored(env: OpEnvelope, prev: WinnerMeta): boolean {
+  if (env.hlc && prev.hlc) {
+    if (env.hlc > prev.hlc) return true;
+    if (prev.hlc > env.hlc) return false;
+  } else {
+    const te = env.ts ?? 0;
+    if (te > prev.ts) return true;
+    if (prev.ts > te) return false;
+  }
+  if (env.type === 'del' && prev.type !== 'del') return true;
+  if (prev.type === 'del' && env.type !== 'del') return false;
+  const se = env.sourceLogKeyHex ?? '';
+  return se > prev.src; // prev wins on equality — same as lwwPick(prev, env)
+}
+
+function toMeta(env: OpEnvelope): WinnerMeta {
+  return {
+    ts: env.ts ?? 0,
+    ...(env.hlc ? { hlc: env.hlc } : {}),
+    type: env.type as 'put' | 'del',
+    src: env.sourceLogKeyHex ?? '',
+  };
+}
+
+/** A log the incremental merge can OPTIONALLY range-prefetch (RemoteLog does;
+ *  the own log + in-memory test logs don't). Feature-detected per log. */
+interface PrefetchableLog extends AdmittedLog {
+  prefetch?(start: number, end: number): void;
+}
+
+export interface IncrementalMergeOpts {
+  /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). */
+  applyImpl?: (op: OpEnvelope) => Promise<boolean>;
+  /** Per-op read timeout (ms) — same semantics as MergeOpts.getTimeoutMs. */
+  getTimeoutMs?: number;
+  /**
+   * Per-LOG per-PASS read budget (the old `maxOpsPerAuthor` reshaped). A pass
+   * advances each log's cursor by at most this many ops; the remainder is
+   * picked up by the NEXT pass — so unlike the legacy cap, history beyond the
+   * budget is delayed, never lost (EI-91). `<= 0` disables the bound.
+   */
+  maxOpsPerPass?: number;
+  /** Fires once per pass per log that still has backlog beyond this pass. */
+  onBacklog?: (keyHex: string, position: number, length: number) => void;
+}
+
+export interface IncrementalMergeResult {
+  /** Ops that applied (winner changed + apply sink returned true). */
+  applied: number;
+  /** Ops decoded this pass (the EI-79 cost driver — O(delta), not O(history)). */
+  decoded: number;
+  /** True when every log's cursor reached its length (no backlog left). */
+  caughtUp: boolean;
+}
+
+/**
+ * One INCREMENTAL merge pass: for each log, read only [cursor, bounded-upper),
+ * fold each new op against the standing winner state, and apply ONLY the ops
+ * that change their key's winner. Replaces the O(total-history) re-decode +
+ * re-fold + re-apply that `mergeAdmittedLogs` pays on every changed tick.
+ *
+ *   - O(delta): a tick after k new ops decodes exactly k ops.
+ *   - ts-guarded apply: an op that does not beat the standing winner is never
+ *     handed to the projection writers, so PG rows only ever move forward.
+ *   - No lost tail (EI-91): the per-pass budget defers, never drops.
+ *   - WAN-friendly (EI-92): logs exposing `prefetch` get a fire-and-forget
+ *     ranged download for the pass window before the sequential decode.
+ *
+ * CALLER CONTRACT (boot.ts): the cursor assumes the LOG SET is stable. When
+ * the admitted set changes (admit/revoke/channel-2 drop), reset the cursor
+ * (`createMergeCursor()`) and re-run — removing a log's contributions
+ * requires a fresh fold without it. Cursor entries for logs absent from
+ * `logs` are left untouched (the caller resets; this function never guesses).
+ *
+ * A read that times out / rejects STOPS this pass for that log WITHOUT
+ * advancing its cursor (retried next pass) — an op can be delayed, never
+ * skipped. A read that resolves `null` (the version gate dropping an
+ * unknown-newer op, D-024) advances past it deliberately.
+ */
+export async function mergeAdmittedLogsIncremental(
+  logs: AdmittedLog[],
+  cursor: MergeCursor,
+  opts?: IncrementalMergeOpts,
+): Promise<IncrementalMergeResult> {
+  const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
+  const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
+  const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;
+
+  let applied = 0;
+  let decoded = 0;
+  let caughtUp = true;
+
+  for (const log of logs) {
+    const from = cursor.positions.get(log.keyHex) ?? 0;
+    const upper = budget > 0 ? Math.min(log.length, from + budget) : log.length;
+    if (upper <= from) {
+      if (log.length > from) caughtUp = false;
+      continue;
+    }
+
+    // EI-92: ask the peer to stream the whole window now instead of paying a
+    // round trip per op below. Feature-detected; fire-and-forget.
+    const pf = (log as PrefetchableLog).prefetch;
+    if (typeof pf === 'function') {
+      try {
+        pf.call(log, from, upper);
+      } catch {
+        /* degraded to sequential fetch — still correct */
+      }
+    }
+
+    let pos = from;
+    for (; pos < upper; pos++) {
+      // Distinguish "op resolved (possibly version-dropped)" from
+      // "unavailable" — only the former may advance the cursor.
+      let op: PeerLogOp | null;
+      try {
+        const got = await readOpBoundedDetailed(log, pos, getTimeoutMs);
+        if (got.kind === 'unavailable') break; // retry from here next pass
+        op = got.op;
+      } catch {
+        break;
+      }
+      if (!op) continue; // version-gated drop — advance past it
+      decoded++;
+      const env = toEnvelope(op, log.keyHex);
+      const groupKey = `${env.table}::${env.hbKey}`;
+      const prev = cursor.winners.get(groupKey);
+      if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
+      cursor.winners.set(groupKey, toMeta(env));
+      if (await apply(env)) applied++;
+    }
+    cursor.positions.set(log.keyHex, pos);
+    if (pos < log.length) {
+      caughtUp = false;
+      try {
+        opts?.onBacklog?.(log.keyHex, pos, log.length);
+      } catch {
+        // observability must never abort the pass
+      }
+    }
+  }
+
+  return { applied, decoded, caughtUp };
+}
+
+/** Like readOpBounded, but distinguishes a RESOLVED null (gate drop / out of
+ *  range → cursor may advance) from an UNAVAILABLE op (timeout / rejection →
+ *  cursor must NOT advance). */
+async function readOpBoundedDetailed(
+  log: AdmittedLog,
+  i: number,
+  timeoutMs: number,
+): Promise<{ kind: 'op'; op: PeerLogOp | null } | { kind: 'unavailable' }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const UNAVAILABLE = Symbol('unavailable');
+  try {
+    const get = Promise.resolve(log.get(i)).then((op) => ({ kind: 'op' as const, op }));
+    if (timeoutMs <= 0) {
+      return await get;
+    }
+    const timeout = new Promise<typeof UNAVAILABLE>((resolve) => {
+      timer = setTimeout(() => resolve(UNAVAILABLE), timeoutMs);
+      if (typeof (timer as { unref?: () => void }).unref === 'function') {
+        (timer as { unref: () => void }).unref();
+      }
+    });
+    const r = await Promise.race([get, timeout]);
+    return r === UNAVAILABLE ? { kind: 'unavailable' } : r;
+  } catch {
+    return { kind: 'unavailable' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

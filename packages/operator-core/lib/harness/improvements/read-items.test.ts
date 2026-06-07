@@ -70,6 +70,32 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
     expect(c.needsHuman).toBeUndefined();
     expect(c.paths).toBeUndefined();
   });
+
+  it('maps payload.sourceRole → candidate.sourceRole (P-010 source-tag)', () => {
+    const c = issueToCandidate(
+      issue({
+        id: 'EI-7',
+        title: 'system-filed bug',
+        kind: 'bug',
+        payload: { sourceRole: 'system' },
+      }),
+    );
+    expect(c.sourceRole).toBe('system');
+  });
+
+  it('extracts sourceRole for Queen, bee, and system roles (P-010)', () => {
+    for (const role of ['Queen', 'bee', 'system', 'human'] as const) {
+      const c = issueToCandidate(
+        issue({
+          id: `EI-${role}`,
+          title: `${role}-filed idea`,
+          kind: 'change',
+          payload: { sourceRole: role },
+        }),
+      );
+      expect(c.sourceRole).toBe(role);
+    }
+  });
 });
 
 describe('readImprovementItems', () => {

@@ -44,6 +44,9 @@ export function makeFakeBootedHandle(opts: {
     async append(op: PeerLogOp): Promise<void> {
       ops.push(op);
     },
+    async appendBatch(batch: PeerLogOp[]): Promise<void> {
+      ops.push(...batch);
+    },
     async get(i: number): Promise<PeerLogOp | null> {
       return ops[i] ?? null;
     },

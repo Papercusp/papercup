@@ -19,18 +19,37 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
-import { createMigratedTestDb, type MigratedTestDb } from '@papercusp/test-config';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config';
 import { buildHarnessProjectionApply } from '../projections/register-all';
 import type { OpEnvelope } from '../op-envelope-types';
 import { corpusArray } from './corpus';
 import { ScenarioMeter, startTimer } from './metrics';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
+const REPO_ROOT = resolve(HERE, '../../../../../..');
+const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
+const MIGRATION_RUNNER = resolve(
+  REPO_ROOT,
+  'libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js',
+);
+
+// Boot pre-step (roles + extensions) — mirrors embedded-postgres-server boot +
+// the shared baseline-schema globalSetup. Roles are cluster-global on the
+// reused testcontainer, hence the IF NOT EXISTS guards.
+const BOOT_PREREQS_DDL = `
+  DO $pg$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_app')   THEN CREATE ROLE harness_app   LOGIN PASSWORD 'harness_app_pwd'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_admin') THEN CREATE ROLE harness_admin LOGIN SUPERUSER PASSWORD 'harness_admin_pwd'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='harness_zero')  THEN CREATE ROLE harness_zero  LOGIN REPLICATION SUPERUSER PASSWORD 'harness_zero_pwd'; END IF;
+  END $pg$;
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE EXTENSION IF NOT EXISTS vector;
+`;
 
 const WS = 'ws-proj-cost';
 const HARNESS = 'proj-cost';
@@ -40,12 +59,27 @@ let db: MigratedTestDb;
 let sql: postgres.Sql;
 
 beforeAll(async () => {
-  const files = readdirSync(SQL_DIR)
-    .filter((f) => /^\d+-.*\.sql$/.test(f))
-    .sort((a, b) => Number(a.split('-')[0]) - Number(b.split('-')[0]))
-    .map((f) => join(SQL_DIR, f));
-  expect(files[0].endsWith('000-baseline.sql')).toBe(true);
-  db = await createMigratedTestDb(files);
+  // A fresh database migrated empty → head through the REAL boot-path runner
+  // (own DB, not the shared baselineSchemaDsn — this test writes 3k rows).
+  db = await createFreshTestDb({
+    prefix: 'p2pperf',
+    provision: async (url) => {
+      const { applyPendingMigrations } = (await import(pathToFileURL(MIGRATION_RUNNER).href)) as {
+        applyPendingMigrations: (opts: {
+          client: postgres.Sql;
+          sqlDir: string;
+        }) => Promise<{ appliedCount: number; totalKnown: number }>;
+      };
+      // max:1 — the runner applies each migration in an explicit BEGIN/COMMIT.
+      const s = postgres(url, { max: 1, onnotice: () => {} });
+      try {
+        await s.unsafe(BOOT_PREREQS_DDL);
+        await applyPendingMigrations({ client: s, sqlDir: SQL_DIR });
+      } finally {
+        await s.end({ timeout: 5 });
+      }
+    },
+  });
   sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
 }, 180_000);
 

@@ -111,7 +111,9 @@ describe('EI-79 steady-state skip (idle merge ticks are O(#logs), not O(history)
     });
     const applied = await handle.mergeNow();
     expect(applied).toBeGreaterThan(0);
-    expect(apply.mock.calls.length).toBeGreaterThan(afterBackfill);
+    // O(delta), boot-level (the P-013 incremental cursor): ONE appended op
+    // costs exactly ONE apply — not a re-apply of the whole winner set.
+    expect(apply.mock.calls.length).toBe(afterBackfill + 1);
 
     const afterGrowth = apply.mock.calls.length;
     expect(await handle.mergeNow()).toBe(0);

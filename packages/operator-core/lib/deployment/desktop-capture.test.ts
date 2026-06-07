@@ -38,6 +38,10 @@ describe('buildDesktopCaptureScript', () => {
     expect(script).toContain(`mv -f "${DESKTOP_CAPTURE_DIR}/display-99.jpg.tmp" "${DESKTOP_CAPTURE_DIR}/display-99.jpg"`);
   });
 
+  it('forces the mjpeg muxer — the .tmp name defeats extension inference (live-bug regression)', () => {
+    expect(script).toContain('-f mjpeg "');
+  });
+
   it('pauses idle displays (no clients beyond the WM) and clears their stale frame', () => {
     expect(script).toContain(`DISPLAY=:99 xlsclients 2>/dev/null | grep -civ 'openbox'`);
     expect(script).toContain(`rm -f "${DESKTOP_CAPTURE_DIR}/display-99.jpg"`);

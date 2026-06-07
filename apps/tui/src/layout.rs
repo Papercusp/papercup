@@ -182,21 +182,19 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 }
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
-/// bee pane added pui-bee-dossier-pane-2026-06-06): the surface the desktop-docked
-/// native terminal runs. SIX panes side-by-side — the **apiary** (the hive
-/// browser: the Cupboard's browse/join surface, `pui apiary-pane`), the **voice**
-/// channels (`pui voice-pane`), the **operator chat** (`pui chat-pane`), the
-/// **brain** (a `psu` engineer-collaborator session), the **swarm** (fleet
-/// activity, `pui swarm-pane`) and the **bee** dossier (the swarm-selected bee's
-/// task list + coord inbox/outbox, `pui bee-pane`, RIGHT of swarm) — and NOTHING
-/// else: no workbench HUD, no work-area agent panes, no swap presets.
+/// consolidated pui-dock-consolidation-2026-06-07): the surface the
+/// desktop-docked native terminal runs. TWO panes — the **chat** column
+/// (operator chat over the brain) and the **main** pane (ONE pui restricted to
+/// the Apiary · Voice · Swarm tabs, switchable via its tab strip) — and NOTHING
+/// else: no workbench HUD, no work-area agent panes, no swap presets. The old
+/// standalone apiary/voice/swarm/bee panes are TABS (or Swarm-tab sections) of
+/// the main pane now; the bee/contributor dossier renders inside the Swarm tab.
 ///
-/// Pane DISPLAY names route through the active Hive lexicon (`lex`): the operator
-/// pane is the `operator` term (Queen), swarm is `fleet` (Swarm), bee is
-/// `contributor` (Bee). The pinned-pane ARGS (`chat-pane`, `swarm-pane`,
-/// `bee-pane`, …) are internal identifiers and never change. `brain_argv` is the
-/// brain pane's command; its first element is the command, the rest are quoted
-/// args. Pure (no I/O) so it is unit-tested.
+/// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
+/// operator pane is the `operator` term (Queen). The pinned-pane ARGS
+/// (`chat-pane`, `main-pane`) are internal identifiers and never change.
+/// `brain_argv` is the brain pane's command; its first element is the command,
+/// the rest are quoted args. Pure (no I/O) so it is unit-tested.
 pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
     let (brain_cmd, brain_args) = brain_argv
         .split_first()
@@ -210,50 +208,38 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
             .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
             .collect::<Vec<_>>()
             .join(" ");
-        format!("\n            args {quoted}")
+        format!("\n                args {quoted}")
     };
-    // Lexicon-resolved, kdl-safe pane display names. Fixed names (apiary, voice,
-    // brain) have no lexicon term and stay verbatim.
+    // Lexicon-resolved, kdl-safe pane display names. Fixed names (chat, brain,
+    // main) have no lexicon term and stay verbatim.
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
-    let swarm_name = kdl_pane_name(&lex.lex("fleet"), "swarm");
-    let bee_name = kdl_pane_name(&lex.lex("contributor"), "bee");
     format!(
-        r#"// Papercusp chat dock — apiary | voice | operator | brain | swarm | bee
-// (native-terminal-desktop P-013 / D-011; bee dossier pane added
-// pui-bee-dossier-pane-2026-06-06). The desktop-docked native terminal surface:
-// SIX panes only, NO workbench HUD and NO work-area agent panes. Left→right: the
-// apiary (the hive browser — the Cupboard's browse/join surface), the P2P voice
-// channels, the operator (ElevenLabs voice) chat, the brain (a psu engineer
-// session, resumed at launch via the D-013 brain pin), the swarm (fleet
-// activity) and the bee dossier (the swarm-selected bee's task list + coord
-// inbox/outbox). Pane display names route through the active Hive lexicon.
+        r#"// Papercusp chat dock — chat[operator/brain] | main[Apiary·Voice·Swarm]
+// (native-terminal-desktop P-013 / D-011; consolidated to two panes by
+// pui-dock-consolidation-2026-06-07). The desktop-docked native terminal
+// surface: LEFT = the chat column (the operator (ElevenLabs voice) chat over
+// the brain — a psu engineer session resumed at launch via the D-013 brain
+// pin); RIGHT = the main pane, one pui restricted to the Apiary / Voice /
+// Swarm tabs (the Swarm tab carries the fleet roster, the selected-bee
+// dossier, plan progress, and the fleet comms sub-view). NO workbench HUD,
+// no work-area agent panes. Pane display names route through the lexicon.
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     pane split_direction="vertical" {{
-        pane name="apiary" size="12%" {{
-            command "pui"
-            args "apiary-pane"
+        pane name="chat" size="38%" split_direction="horizontal" {{
+            pane name="{operator_name}" focus=true size="50%" {{
+                command "pui"
+                args "chat-pane"
+            }}
+            pane name="brain" size="50%" {{
+                command "{brain_cmd}"{args_line}
+            }}
         }}
-        pane name="voice" size="15%" {{
+        pane name="main" size="62%" {{
             command "pui"
-            args "voice-pane"
-        }}
-        pane name="{operator_name}" focus=true size="22%" {{
-            command "pui"
-            args "chat-pane"
-        }}
-        pane name="brain" size="22%" {{
-            command "{brain_cmd}"{args_line}
-        }}
-        pane name="{swarm_name}" size="14%" {{
-            command "pui"
-            args "swarm-pane"
-        }}
-        pane name="{bee_name}" size="15%" {{
-            command "pui"
-            args "bee-pane"
+            args "main-pane"
         }}
     }}
     pane size=2 borderless=true {{

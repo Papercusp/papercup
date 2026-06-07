@@ -30,7 +30,7 @@ export type ImprovementState = 'open' | 'resolved' | 'closed';
 export interface ImprovementCandidate {
   id: string;
   kind: WorkItemKind;
-  /** 'operator' | 'harness:<slug>' */
+  /** 'operator' | 'harness:<slug>' — per-Hive scope (P-010). */
   scope: string;
   title: string;
   body?: string;
@@ -59,6 +59,9 @@ export interface ImprovementCandidate {
   /** Explicitly routed to a human (improvements:resolve outcome 'needs-human',
    *  or auto-set when implement retries exhaust). Forces the human tier. */
   needsHuman?: boolean;
+  /** Source role that filed this improvement (P-010 source-tag): Queen, bee, system, or human.
+   *  Tracked for per-Hive analytics and topic lens. */
+  sourceRole?: 'Queen' | 'bee' | 'system' | 'human';
 }
 
 export type Tier = 'auto' | 'human';

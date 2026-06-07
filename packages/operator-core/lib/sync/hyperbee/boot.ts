@@ -36,7 +36,8 @@
 import { getHarnessStore, type HarnessStoreOpts } from './corestore';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import {
-  mergeAdmittedLogs,
+  createMergeCursor,
+  mergeAdmittedLogsIncremental,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
 } from './read-merge';
@@ -413,6 +414,8 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
  * "newer Papercusp available" alert once per (slug, version).
  */
 function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
+  const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): void })
+    .prefetch;
   return {
     get keyHex() {
       return log.keyHex;
@@ -427,6 +430,11 @@ function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
       if (!acceptOpVersion(slug, op.schema_version)) return null;
       return op;
     },
+    // Forward the ranged-prefetch capability (EI-92) — the incremental merge
+    // feature-detects it on the wrapped log.
+    ...(typeof maybePrefetch === 'function'
+      ? { prefetch: (start: number, end: number) => maybePrefetch.call(log, start, end) }
+      : {}),
   };
 }
 
@@ -690,22 +698,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let stopped = false;
   // Teardown hooks (Stage 5 outbox drain stopper, etc.) run once on close().
   const closeHooks = new Set<() => void | Promise<void>>();
-  // EI-79 steady-state skip: a snapshot of `keyHex → length` across all admitted
-  // logs as of the last COMPLETED full merge. The poll fires `mergeNow` every
-  // MERGE_POLL_MS, and `mergeAdmittedLogs` re-reads + re-DECODES every op from
-  // index 0 in every admitted log on each pass — an O(total-history) CPU burn
-  // (profiled as the dominant on-loop consumer: compact-encoding `decode` ~16%,
-  // `mergeAdmittedLogs`/`readOpBounded` ~6%). The full re-fold is only NECESSARY
-  // when some log GREW (the LWW fold needs the whole history to pick the global
-  // winner, and the per-table writers are not yet PG-level ts-guarded — see
-  // EI-79 follow-up). When no admitted log's length changed since the last
-  // completed pass, the merge would re-decode + re-apply the identical winners,
-  // so we skip the decode/fold/apply entirely. We still `update()` every remote
-  // each tick (cheap, I/O-bound) so growth is detected promptly, and the
-  // revocation-refresh + channel-2 reverify hooks still run on their cadence.
-  // The snapshot keys off the lengths read AFTER update(), so a remote that
-  // grew mid-tick is caught on the next tick at the latest.
-  let lastMergedLengths = new Map<string, number>();
+  // EI-79 residual (p2p-performance-suite P-013): the INCREMENTAL merge cursor.
+  // Replaces the lengths-snapshot steady-state skip with per-log read cursors +
+  // a materialized winner-meta fold, so a changed tick decodes only the DELTA
+  // (O(new ops)) instead of re-decoding + re-folding + re-applying the entire
+  // history (O(total-history) — the original EI-79 burn; the snapshot skip only
+  // rescued the *idle* tick). Also fixes EI-91: the per-log read budget is now
+  // a per-PASS chunk the cursor advances through, so history beyond 50k ops is
+  // delayed across passes, never silently dropped. The cursor is in-memory;
+  // boot's first pass is the full-history fold (same cost as the old backfill).
+  //
+  // INVARIANT: the cursor's fold state is only valid for a stable log SET.
+  // A log REMOVAL (revoke / channel-2 drop) resets the cursor — the next pass
+  // re-folds the remaining logs from index 0 (exactly what the old full
+  // re-merge did after a drop). A log ADDITION is additive (its cursor starts
+  // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
+  let mergeCursor = createMergeCursor();
   async function mergeNow(): Promise<number> {
     if (merging || stopped) return 0;
     merging = true;
@@ -737,57 +745,56 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         logs.push(versionGatedLog(slug, log));
       }
 
-      // EI-79 steady-state skip: if no admitted log grew (or shrank, or
-      // appeared/disappeared) since the last completed full merge, the LWW fold
-      // would produce the identical winners — skip the O(history) decode + apply.
-      // Built from the post-update lengths so we react to growth detected this
-      // tick. The own log is included (its appends are local writes that must be
-      // projected). Compared by size + per-key equality.
-      const currentLengths = new Map<string, number>();
-      for (const log of logs) currentLengths.set(log.keyHex, log.length);
-      let changed = currentLengths.size !== lastMergedLengths.size;
-      if (!changed) {
-        for (const [k, len] of currentLengths) {
-          if (lastMergedLengths.get(k) !== len) {
-            changed = true;
-            break;
-          }
+      // Log-set change detection: any cursor entry whose log is GONE from the
+      // admitted set invalidates the fold state (its winners must be re-derived
+      // without that log's ops) → reset and re-fold from zero this pass.
+      const logKeys = new Set(logs.map((l) => l.keyHex));
+      for (const known of mergeCursor.positions.keys()) {
+        if (!logKeys.has(known)) {
+          mergeCursor = createMergeCursor();
+          break;
+        }
+      }
+
+      // EI-79 steady-state skip (cursor form): nothing new past any log's
+      // cursor → skip decode/fold/apply entirely. Lengths are post-update()
+      // so growth is caught promptly; the cadenced refresh/reverify hooks
+      // below still run.
+      let changed = false;
+      for (const log of logs) {
+        if (log.length > (mergeCursor.positions.get(log.keyHex) ?? 0)) {
+          changed = true;
+          break;
         }
       }
       if (!changed) {
-        // No structural growth — still run the cadenced refresh/reverify hooks
-        // (they're independent of log content) then return without merging.
         await applyRevocationRefresh();
         await maybeReverifyAdmitted();
         return 0;
       }
 
-      const applied = await mergeAdmittedLogs(logs, {
+      const { applied } = await mergeAdmittedLogsIncremental(logs, mergeCursor, {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own).
         applyImpl: scopedApply,
-        maxOpsPerAuthor: MAX_OPS_PER_AUTHOR,
-        // Surface a capped author in boot-history (best-effort observability).
-        onCapped: (keyHex, total, cap) => {
+        // The old per-author cap, reshaped: a per-PASS read budget. A log with
+        // more backlog than this advances chunk-by-chunk across the 1Hz poll
+        // (≈50k ops/sec/log ingest ceiling) instead of losing its tail (EI-91).
+        maxOpsPerPass: MAX_OPS_PER_AUTHOR,
+        // Surface standing backlog in boot-history (best-effort observability).
+        onBacklog: (keyHex, position, length) => {
           try {
             recordBootEvent(
               opts.workspaceId,
               opts.harnessSlug,
               'peer_capped',
-              `${keyHex.slice(0, 8)} capped ${cap}/${total}`,
+              `${keyHex.slice(0, 8)} backlog ${position}/${length}`,
             );
           } catch {
             // observability must never abort the merge pass
           }
         },
       });
-
-      // EI-79: record the post-update lengths we just folded so the next tick
-      // can skip an identical re-merge. Recorded BEFORE the refresh hooks below
-      // (which may drop revoked peers from `admitted`): if a peer is dropped, the
-      // next tick's log set differs from this snapshot → a fresh full merge runs,
-      // which is the correct behaviour (a drop changes the materialized winners).
-      lastMergedLengths = currentLengths;
 
       // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
       // (merging=true) so it cannot race a concurrent merge pass. This collapses
@@ -796,6 +803,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // `applyRevocationRefresh` calls `loadRevoked` (which may call the real PG
       // loader in production) then synchronously drops any newly-revoked peers from
       // admitted/pubkeyToLogKey/pendingPeers — no re-entrancy into mergeNow.
+      // (A peer it drops vanishes from `admitted`; the cursor-reset check at the
+      // top of the NEXT pass sees the removal and re-folds without it.)
       await applyRevocationRefresh();
 
       // ── Channel-2 re-verify (rev-v2 Component A): run inside the same

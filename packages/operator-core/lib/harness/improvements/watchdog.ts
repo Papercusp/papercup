@@ -279,6 +279,7 @@ export async function runWatchdogTick(
         paths: s.paths,
         foundDuring: 'improvement-watchdog',
         createdBy: 'system:improvement-watchdog',
+        sourceRole: 'system',
         source: 'su',
         dedupScope: 'open',
       });
