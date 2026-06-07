@@ -39,7 +39,15 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
  * call (`bootstrap-su/options`) with no output. A bounded timeout fails fast
  * with an actionable message instead. Override with PAPERCUSP_PSU_TIMEOUT_MS.
  */
-const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 15_000;
+// Per-request timeout. Raised 15s→45s (2026-06-07): a busy operator can take
+// 10-30s on a hop-heavy bootstrap route under fleet load, and a 15s cap turned
+// every transient slow window into a hard `psu` failure. 45s rides through the
+// blip; a truly wedged host still fails (just later) with the same guidance.
+const REQUEST_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_TIMEOUT_MS) || 45_000;
+// One automatic retry on a transient failure (timeout OR connection-refused —
+// the latter is a restart blip) before surfacing the error, so a single slow
+// tick or an in-flight host restart self-heals instead of failing the launch.
+const API_RETRIES = Number(process.env.PAPERCUSP_PSU_RETRIES) || 1;
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
@@ -377,21 +385,39 @@ function readToken() {
 async function api(path, opts = {}) {
   const token = readToken();
   let res;
-  try {
-    res = await fetch(OPERATOR_URL + path, {
-      ...opts,
-      // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
-      signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: {
-        'content-type': 'application/json',
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(opts.headers || {}),
-      },
-    });
-  } catch (e) {
+  // Retry a transient failure (timeout / connection-refused) once before giving
+  // up — a single slow tick or an in-flight host restart shouldn't fail psu.
+  // A caller-supplied AbortSignal disables retry (the caller owns the lifetime).
+  const maxAttempts = opts.signal ? 1 : API_RETRIES + 1;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      res = await fetch(OPERATOR_URL + path, {
+        ...opts,
+        // Without a timeout a wedged operator hangs psu indefinitely. Fail fast.
+        signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(opts.headers || {}),
+        },
+      });
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxAttempts) {
+        process.stderr.write(`psu: ${path} did not respond (attempt ${attempt}/${maxAttempts}) — retrying…\n`);
+        await new Promise((r) => setTimeout(r, 1_500));
+        continue;
+      }
+    }
+  }
+  if (lastErr) {
+    const e = lastErr;
     if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
       throw new Error(
-        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}). ` +
+        `the operator at ${OPERATOR_URL} did not respond within ${REQUEST_TIMEOUT_MS}ms (${path}, ${maxAttempts} attempts). ` +
           `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), ` +
           `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
       );
