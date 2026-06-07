@@ -25,6 +25,12 @@
  *           WS → ssh socat→x11vnc → Xvfb): watch handshakes read-only and its
  *           input is IGNORED; takeover DRIVES the pointer (xdotool-verified);
  *           audit events fire for request/start/end.
+ *   P-012 — the v3 screen-track ENCODER on real hardware: the production
+ *           ffmpeg x11grab→libvpx-vp9→IVF argv (`ffmpegScreenArgs`) run against
+ *           :99 produces an IVF stream the production parser (`createIvfStreamParser`
+ *           + `vp9IsKeyframe`) decodes into real VP9 frames with ≥1 keyframe.
+ *           (The two-peer holepunch TRANSPORT rides that plan's own camera E2E —
+ *           D-004; this closes the Node-encoder gap unit tests mock.)
  *
  * ALWAYS destroys the frame in finally — a failed run never leaks billing.
  */
@@ -36,6 +42,9 @@ import { HetznerDriver } from './hetzner/hetzner-driver';
 import { buildFrameBootstrap } from './frame-bootstrap';
 import { createSshRemoteExec, type RemoteExec } from './remote-exec';
 import { sshTargetForFrame, waitForSsh } from './frame-installer';
+import { ffmpegScreenArgs } from '../voice-node/screen-track/screen-capture-source';
+import { createIvfStreamParser } from '../voice-node/screen-track/ivf';
+import { vp9IsKeyframe } from '../voice-node/screen-track/vp9';
 import { FRAME_PULL_SCRIPT, parseFramePull } from './frame-view';
 import {
   createVncSession,
@@ -324,6 +333,34 @@ describe.skipIf(!TARGET.gateOk)(
           expect(actions).toContain('frame-vnc.takeover-requested');
           expect(actions).toContain('frame-vnc.takeover-started');
           expect(actions.filter((a) => a === 'frame-vnc.ended').length).toBeGreaterThanOrEqual(2);
+
+          // ── P-012 (v3 encoder live): run the PRODUCTION ffmpeg argv against
+          //    :99 for ~3s → IVF on the frame → pull → decode with the PRODUCTION
+          //    parser + VP9 keyframe detector. Closes the Node-encoder gap unit
+          //    tests mock (the holepunch two-peer transport is out of scope, D-004).
+          const ffArgs = ffmpegScreenArgs({ display: 99, fps: 10, videoSize: '640x480', gopFrames: 10 });
+          // The production argv ends with `-f ivf pipe:1`; swap stdout for a file
+          // + a 3s duration cap so it self-terminates, keeping every encode flag.
+          const remoteFfmpeg = `ffmpeg ${ffArgs.slice(0, -1).join(' ')} -t 3 /tmp/screencap.ivf`;
+          const cap = await exec.runScript(
+            `${remoteFfmpeg} >/tmp/ff.log 2>&1; echo "FF_RC=$?"; echo "SIZE=$(stat -c%s /tmp/screencap.ivf 2>/dev/null || echo 0)"; echo IVF_B64:; base64 -w0 /tmp/screencap.ivf 2>/dev/null; echo`,
+          );
+          if (!/FF_RC=0/.test(cap.stdout) || /SIZE=0/.test(cap.stdout)) {
+            const log = await exec.runScript('tail -20 /tmp/ff.log 2>&1; echo ---; ffmpeg -encoders 2>/dev/null | grep -i vp9 || echo NO-VP9-ENCODER');
+            console.log(`[desktop-e2e] DIAG (screen encode):\n${cap.stdout.slice(-400)}\n${log.stdout.slice(-600)}`);
+          }
+          expect(cap.stdout).toMatch(/FF_RC=0/); // ffmpeg + libvpx-vp9 ran on the frame
+          const b64 = (cap.stdout.split('IVF_B64:')[1] ?? '').trim();
+          const ivf = Buffer.from(b64, 'base64');
+          const parser = createIvfStreamParser();
+          const frames = parser.push(new Uint8Array(ivf));
+          expect(parser.header()?.fourcc).toBe('VP90'); // real VP9 IVF from x11grab
+          expect(frames.length).toBeGreaterThan(5); // ~30 frames @ 10fps × 3s
+          expect(frames.every((f) => f.data.length > 0)).toBe(true);
+          expect(frames.some((f) => vp9IsKeyframe(f.data))).toBe(true); // ≥1 keyframe (GOP=10)
+          console.log(
+            `[desktop-e2e] P-012 OK — live VP9 encode: ${frames.length} frames (${ivf.length}B IVF), ${frames.filter((f) => vp9IsKeyframe(f.data)).length} keyframe(s)`,
+          );
         } finally {
           if (frame) {
             await driver.teardown(frame, config, ctx);
