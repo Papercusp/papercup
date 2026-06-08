@@ -132,6 +132,16 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__blueprint:validate',
   'mcp__agentmcp__blueprint:extend',
   'mcp__agentmcp__harness:create',
+
+  // hive-tool-namespace-2026-06-08 — local hive lifecycle. The operator manages
+  // its hives: list/get to inspect; create/update/dissolve to manage. create/
+  // dissolve/update are root-only (the operator is root; bees are refused). Wake
+  // stays pot:wake / pot:declare-wake; bee placement stays fleet:* (no aliases).
+  'mcp__agentmcp__hive:list',
+  'mcp__agentmcp__hive:get',
+  'mcp__agentmcp__hive:create',
+  'mcp__agentmcp__hive:update',
+  'mcp__agentmcp__hive:dissolve',
 ];
 
 /**

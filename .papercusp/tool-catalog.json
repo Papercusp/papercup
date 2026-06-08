@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 343,
+  "count": 346,
   "tools": [
     {
       "name": "actions:recent",
@@ -4169,6 +4169,68 @@
       }
     },
     {
+      "name": "hive:create",
+      "http": {
+        "path": "/api/agent-tools/hive/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Stand up a NEW local hive (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Standing up a NEW local hive (its home harness + Queen) in one call. Operator/user only.",
+        "notWhen": "Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).",
+        "chaining": "hive:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down."
+      }
+    },
+    {
+      "name": "hive:dissolve",
+      "http": {
+        "path": "/api/agent-tools/hive/dissolve",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Tear down a local hive (root-only, destructive — pass confirm:true): clear the Queen's wake so she won't re-wake, cancel every live bee + its subtree, and deregister the home harness. Optionally drop the harness PG schema (default keep). Idempotent. Does NOT destroy a deployed cloud frame — that is deploy:teardown_hive.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Permanently tearing down a local hive — stop the Queen, cancel its bees, deregister it. Operator/user only.",
+        "notWhen": "Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.",
+        "chaining": "hive:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm."
+      }
+    },
+    {
       "name": "hive:get",
       "http": {
         "path": "/api/agent-tools/hive/get",
@@ -4228,6 +4290,37 @@
         "when": "You want the workspace-local hives (the Pots) and their wake/load at a glance.",
         "notWhen": "Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One hive in depth — hive:get.",
         "chaining": "hive:get { slug } to drill into one; hive:create to add one; hive:dissolve to tear one down."
+      }
+    },
+    {
+      "name": "hive:update",
+      "http": {
+        "path": "/api/agent-tools/hive/update",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Edit a hive's config: its deployment target (execution plane) and per-instance config overrides (maxCostUsd, parallelWorkers, …). A thin registry writer — no agent-lifecycle effects (never wakes/cancels). Cannot change harness_kind (a hive cannot reclassify). Root-only.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Changing a hive's deployment target or its per-instance config overrides (budget/parallelism knobs).",
+        "notWhen": "Waking/pausing the Queen — pot:wake / pot:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.",
+        "chaining": "hive:get { slug } to see the current config; deploy:hive to act on a changed deployment target."
       }
     },
     {

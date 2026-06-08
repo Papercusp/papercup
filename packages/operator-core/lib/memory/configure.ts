@@ -30,6 +30,8 @@ import {
   ClaudeFileMemoryBackend,
   CLAUDE_FILE_BACKEND_NAME,
   claudeProjectMemoryDir,
+  HybridBackend,
+  Mem0Backend,
   type EmbedFn,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
@@ -162,14 +164,27 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
 // Claude store reports unavailable rather than inventing one. MEMORY.md
 // (the auto-generated index) is never touched; the SessionStart
 // memory-compact hook projects new topic files into it.
-registerMemoryBackend(CLAUDE_FILE_BACKEND_NAME, () => new ClaudeFileMemoryBackend({
-  memoryDir:
-    process.env.PAPERCUSP_CLAUDE_MEMORY_DIR ||
-    claudeProjectMemoryDir(
-      process.env.PAPERCUSP_CLAUDE_PROJECT_DIR || os.homedir(),
-      path.join(os.homedir(), '.claude'),
-    ),
-}));
+function makeClaudeFileBackend(): ClaudeFileMemoryBackend {
+  return new ClaudeFileMemoryBackend({
+    memoryDir:
+      process.env.PAPERCUSP_CLAUDE_MEMORY_DIR ||
+      claudeProjectMemoryDir(
+        process.env.PAPERCUSP_CLAUDE_PROJECT_DIR || os.homedir(),
+        path.join(os.homedir(), '.claude'),
+      ),
+  });
+}
+registerMemoryBackend(CLAUDE_FILE_BACKEND_NAME, makeClaudeFileBackend);
+
+// The hybrid store (memory-backend-improve-and-hybrid P-020): select with
+// PAPERCUSP_MEMORY_BACKEND=hybrid (or the live settings flip). Fuses a
+// LEXICAL leg (the claude-file topic-file token search — wins exact-identifier
+// recall) and a COSINE leg (the mem0/canonical pgvector store — wins
+// paraphrase recall) via cosine-gated reciprocal-rank fusion, so one backend
+// captures both bench columns without admitting hard-negative noise (the
+// cosine leg's FP floor is the gate). WRITES delegate to the mem0 leg — the
+// canonical PG store — so the hybrid is cross-backend by construction (D-002).
+registerMemoryBackend('hybrid', () => new HybridBackend(makeClaudeFileBackend(), new Mem0Backend()));
 
 configureMemory({
   getAdminUrl: getHarnessAdminUrl,

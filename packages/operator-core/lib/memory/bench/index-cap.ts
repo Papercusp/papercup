@@ -125,6 +125,11 @@ function truncate(s: string): string {
   return s.slice(0, MAX_ENTRY_CHARS - 1).trimEnd() + '…';
 }
 
+/** Bytes of one rendered index line — mirror of the projector's entrySize. */
+function entrySize(e: ProjectionEntry): number {
+  return ('- [' + e.name + '](' + e.file + ') — ' + truncate(e.description) + '\n').length;
+}
+
 const PLAN_SLUG_RE = /\b[a-z0-9]+(?:-[a-z0-9]+)*-20\d\d-\d\d-\d\d\b/;
 function derivableSignalCount(text: string): number {
   if (!text) return 0;
@@ -144,7 +149,7 @@ function isEvictable(e: ProjectionEntry): boolean {
   return e.type === 'project' && derivableSignalCount(e.description) >= 2;
 }
 
-function render(active: ProjectionEntry[]): string {
+function render(active: ProjectionEntry[], note = ''): string {
   const groups = new Map<string, ProjectionEntry[]>();
   for (const e of active) {
     if (!groups.has(e.type)) groups.set(e.type, []);
@@ -169,6 +174,7 @@ function render(active: ProjectionEntry[]): string {
     for (const e of list) lines.push(`- [${e.name}](${e.file}) — ${truncate(e.description)}`);
     lines.push('');
   }
+  if (note) lines.push(note);
   return lines.join('\n').replace(/\n+$/, '\n');
 }
 
@@ -176,30 +182,73 @@ function renderSize(active: ProjectionEntry[]): number {
   return Buffer.byteLength(render(active), 'utf8');
 }
 
+// ---- tiering (mirror of memory-compact.mjs tierForCap / overflowNote) -------
+// Post-eviction, the durable set can still exceed the always-loaded cap. Rather
+// than abort + leave a stale index (the OLD silent-loss failure), the projector
+// TIERS: keep `user` + the most-recent durables that fit a byte budget in
+// MEMORY.md, and page the rest to MEMORY-overflow.md — reachable on demand and
+// STILL searchable (the topic file is untouched). No fact is lost.
+const OVERFLOW_FILE = 'MEMORY-overflow.md';
+
+function tierForCap(active: ProjectionEntry[]): { keep: ProjectionEntry[]; tiered: ProjectionEntry[] } {
+  const reserve = 1200 + renderSize([]); // header + (empty) skills + pointer block
+  const budget = Math.max(4096, SOFT_CAP_KB * 1024 - reserve);
+  const userEntries = active.filter((e) => e.type === 'user');
+  const rest = active.filter((e) => e.type !== 'user').sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keep = [...userEntries];
+  let used = userEntries.reduce((s, e) => s + entrySize(e), 0);
+  const tiered: ProjectionEntry[] = [];
+  for (const e of rest) {
+    const sz = entrySize(e);
+    if (used + sz <= budget) { keep.push(e); used += sz; } else tiered.push(e);
+  }
+  return { keep, tiered };
+}
+
+function overflowNote(tiered: ProjectionEntry[]): string {
+  if (!tiered.length) return '';
+  const counts = tiered.reduce<Record<string, number>>((m, e) => ((m[e.type] = (m[e.type] || 0) + 1), m), {});
+  const breakdown = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ');
+  return `## More memories (load on demand)\n\n` +
+    `${tiered.length} older memories (${breakdown}) did not fit the always-loaded cap and are in ` +
+    `[${OVERFLOW_FILE}](${OVERFLOW_FILE}) — read that file (or grep the topic files in this dir) when you ` +
+    `need a fact not listed above. The newest memories are kept above; only older ones page out.\n`;
+}
+
 export interface IndexProjectionResult {
   /** Topic files present in the store (post exact-dup dedup). */
   totalFiles: number;
-  /** Entries that survive eviction and land in the rendered index. */
+  /**
+   * Entries in the always-loaded MEMORY.md — what a booting agent sees at
+   * session start (the projector's `always-loaded` count = tierForCap's keep).
+   */
   indexed: number;
+  /** Entries paged to MEMORY-overflow.md — on-demand, but STILL searchable. */
+  tiered: number;
+  /** Rendered MEMORY.md size (keep + overflow pointer), kept under the cap. */
   indexBytes: number;
-  /** Eviction tallies — these files are PHYSICALLY ARCHIVED by a real run. */
+  /** Eviction tallies — these files ARE physically archived by a real run. */
   archivedStale: number;
   archivedOverflow: number;
   durableIndexed: number;
   projectIndexed: number;
+  /** The untiered active set exceeded the soft cap → tiering kicked in. */
   overSoftCap: boolean;
+  /** Even MEMORY.md (post-tiering) exceeds the hard cap — should never happen. */
   overHardCap: boolean;
   /** Fraction of the (deduped) store visible from the session-start index. */
   indexedFraction: number;
   /**
-   * Files still SEARCHABLE after a real (non-dry-run) compaction pass —
-   * archive/ is invisible to the backend's collect(), so this equals
-   * `indexed`: the cap bounds recall itself, not just boot visibility.
+   * Files still SEARCHABLE after a real (non-dry-run) compaction pass. Tiering
+   * (unlike archiving) leaves the topic file in place, so this is the active
+   * set = indexed + tiered; only stale/overflow/dup ARCHIVE out of recall.
+   * The whole point of P-010: tiering bounds session-start VISIBILITY without
+   * bounding RECALL.
    */
   searchableAfterCompaction: number;
 }
 
-/** Pure mirror of the projector's dedup → evict → render pipeline. */
+/** Pure mirror of the projector's dedup → evict → tier → render pipeline. */
 export function simulateIndexProjection(
   entries: readonly ProjectionEntry[],
   nowMs: number = Date.now(),
@@ -213,7 +262,7 @@ export function simulateIndexProjection(
   }
   const deduped = [...byBody.values()];
 
-  // (a) STALE: derivable project memories older than STALE_DAYS.
+  // (a) STALE: derivable project memories older than STALE_DAYS → archived.
   const stale: ProjectionEntry[] = [];
   let active: ProjectionEntry[] = [];
   for (const e of deduped) {
@@ -228,27 +277,33 @@ export function simulateIndexProjection(
     overflow.push(victim);
     active = active.filter((e) => e !== victim);
   };
-  // (b) overflow pass 1: derivable project memories, oldest first.
+  // (b) overflow pass 1: derivable project memories, oldest first → archived.
   const evictable = active.filter(isEvictable).sort((a, b) => a.mtimeMs - b.mtimeMs);
   let i = 0;
   while (renderSize(active) > softCapBytes && i < evictable.length) evict(evictable[i++]);
-  // (c) overflow pass 2 (safety valve): any remaining project memory, oldest first.
+  // (c) overflow pass 2 (safety valve): any remaining project memory → archived.
   const fallback = active.filter((e) => e.type === 'project').sort((a, b) => a.mtimeMs - b.mtimeMs);
   let j = 0;
   while (renderSize(active) > softCapBytes && j < fallback.length) evict(fallback[j++]);
 
-  const indexBytes = renderSize(active);
+  // (d) TIER: the protected/active set that survives archiving is split into the
+  // always-loaded MEMORY.md (keep) and the on-demand MEMORY-overflow.md (tiered).
+  // Tiered entries are NOT archived — they stay in their topic file + searchable.
+  const untieredBytes = renderSize(active);
+  const { keep, tiered } = tierForCap(active);
+  const indexBytes = Buffer.byteLength(render(keep, overflowNote(tiered)), 'utf8');
   return {
     totalFiles: deduped.length,
-    indexed: active.length,
+    indexed: keep.length,
+    tiered: tiered.length,
     indexBytes,
     archivedStale: stale.length,
     archivedOverflow: overflow.length,
-    durableIndexed: active.filter((e) => DURABLE_TYPES.has(e.type)).length,
-    projectIndexed: active.filter((e) => e.type === 'project').length,
-    overSoftCap: indexBytes > softCapBytes,
+    durableIndexed: keep.filter((e) => DURABLE_TYPES.has(e.type)).length,
+    projectIndexed: keep.filter((e) => e.type === 'project').length,
+    overSoftCap: untieredBytes > softCapBytes,
     overHardCap: indexBytes > HARD_CAP_KB * 1024,
-    indexedFraction: deduped.length === 0 ? 1 : active.length / deduped.length,
+    indexedFraction: deduped.length === 0 ? 1 : keep.length / deduped.length,
     searchableAfterCompaction: active.length,
   };
 }
@@ -257,8 +312,9 @@ export function simulateIndexProjection(
 
 /**
  * Run the actual memory-compact.mjs in --dry-run over a store and parse its
- * report (`active (indexed): N`, `index size: X KB`). Returns null when the
- * script is missing or its output doesn't parse (CI boxes without ~/.claude).
+ * report (`always-loaded: N of M`, `index size: X KB`). `indexed` is the
+ * always-loaded count (tierForCap's keep). Returns null when the script is
+ * missing or its output doesn't parse (CI boxes without ~/.claude).
  */
 export function runRealProjectorDryRun(
   memoryDir: string,
@@ -271,7 +327,8 @@ export function runRealProjectorDryRun(
     env: { ...process.env, MEMORY_SOFT_CAP_KB: '', MEMORY_STALE_DAYS: '', MEMORY_MAX_ENTRY_CHARS: '' },
   });
   if (r.error) return null;
-  const indexed = /active \(indexed\):\s*(\d+)/.exec(r.stderr ?? '');
+  // P-010 tiering report: `always-loaded: <keep> of <active>`.
+  const indexed = /always-loaded:\s*(\d+)\s+of\s+\d+/.exec(r.stderr ?? '');
   const sizeKb = /index size:\s*([\d.]+) KB/.exec(r.stderr ?? '');
   if (!indexed || !sizeKb) return null;
   return { indexed: Number(indexed[1]), indexKb: Number(sizeKb[1]) };

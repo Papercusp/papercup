@@ -23,10 +23,15 @@ describe('cost model', () => {
     expect(costPer1kRemembers(free)).toBe(0);
     expect(costPer1kSearches(free)).toBe(0);
 
+    // Default (D-005): extraction rides the Claude subscription session at
+    // ~$0 marginal, so a live mem0 remember is EMBEDDING-ONLY: 100 tok * $0.02/M.
     const mem0 = { avgRememberChars: 400, avgSearchChars: 60, extractionOnRemember: true, embeds: true };
-    // embed: 100 tok * $0.02/M; extraction: (1800+100)*$0.15/M + 150*$0.6/M
-    const perRemember = (100 * 0.02 + 1900 * 0.15 + 150 * 0.6) / 1e6;
-    expect(costPer1kRemembers(mem0)).toBeCloseTo(perRemember * 1000, 10);
+    const embedOnly = (100 * 0.02) / 1e6;
+    expect(costPer1kRemembers(mem0)).toBeCloseTo(embedOnly * 1000, 10);
+    // Metered-key FALLBACK rung (extractionMetered:true) is the upper bound:
+    // embed 100 tok * $0.02/M + extraction (1800+100)*$0.15/M + 150*$0.6/M.
+    const perMetered = (100 * 0.02 + 1900 * 0.15 + 150 * 0.6) / 1e6;
+    expect(costPer1kRemembers({ ...mem0, extractionMetered: true })).toBeCloseTo(perMetered * 1000, 10);
     expect(costPer1kSearches(mem0)).toBeCloseTo(((15 * 0.02) / 1e6) * 1000, 10);
     expect(COST_METHODOLOGY).toContain('chars/4');
   });

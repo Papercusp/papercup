@@ -264,7 +264,7 @@ function buildOneliner(
  * registers the DBOS workflow graph at module load), so importing it eagerly here
  * would drag those process-global registrations into this route's import graph.
  */
-async function checkInteractiveSafetyFloor(): Promise<{ ok: boolean; reason?: string }> {
+export async function checkInteractiveSafetyFloor(): Promise<{ ok: boolean; reason?: string }> {
   try {
     const { getSpawnHeadroom } = await import('../../../fleet/operator-spawn');
     const floor = await getSpawnHeadroom(activeWorkspaceId());
