@@ -608,7 +608,15 @@ async function pickFeature(workspace, harness, need) {
  * raw mode); a non-TTY launch (the brain dock pane, --no-picker scripts) keeps
  * the plain inherit spawn, which is correct — there's no terminal to bridge.
  */
-export const PTY_DEFAULT_ON = false; // TODO(P-012): flip true once the feel-check passes
+// P-012/P-015: managed-pty IS the interactive launch path (D-006). Flipped on
+// 2026-06-08 after the mechanical feel-check passed end-to-end (a real bash
+// driven through the host: cooked-line editing + backspace, $COLUMNS from the
+// pty size, Ctrl-C interrupts the foreground job without killing the shell,
+// bracketed-paste/readline intact, clean exit). Per-launch escape hatches stay:
+// `PAPERCUSP_PSU_PTY=0` opts one launch out, `PAPERCUSP_PSU_NO_PTY=1` is the
+// always-wins kill switch. A non-TTY launch (brain dock pane, --no-picker
+// scripts) still takes the plain inherit spawn — there's no terminal to bridge.
+export const PTY_DEFAULT_ON = true;
 export function usePtyHost({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
   if (env.PAPERCUSP_PSU_NO_PTY === '1') return false;
   const enabled =

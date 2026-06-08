@@ -22,6 +22,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/config-schema';
+import { resolveCreateHiveMembership } from './create-hive-membership';
 
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
@@ -52,6 +53,12 @@ export default defineTool({
       blueprintId: z.string().min(1).optional().describe('A blueprint to extend — resolved local → installed → built-in (e.g. coding/base/research or a Cupboard-installed id)'),
       blueprint: z.record(z.string(), z.unknown()).optional().describe('An inline blueprint object (alternative to blueprintId)'),
       deployment: DeploymentConfigSchema.optional().describe('Where this harness\'s execution plane runs — a sibling to the blueprint (cloud-deployment-layer D-001). Omit ⇒ {target:"local"}. e.g. {target:"latitude",region:"NYC",kind:"vm"}.'),
+      hive: z
+        .string()
+        .min(1)
+        .regex(/^[a-z0-9][a-z0-9-]*$/, 'hive must be a harness slug')
+        .optional()
+        .describe('Create this harness directly INTO a Hive: the home slug of a kind:\'hive\' harness. Stamps the new harness\'s hive_slug so its substrate federates over the Hive topic (shared-hive-federation D-010 create-time membership producer). Omit ⇒ a standalone harness. The complement of hive:add-member (which adds an EXISTING harness).'),
     })
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
       message: 'pass `path`, or both `parentDir` and `folderName`',
@@ -64,6 +71,19 @@ export default defineTool({
 
     const reg = await loadHarnessRegistry();
     if (reg.projects.some((p) => p.slug === args.slug)) return fail({ error: 'slug already exists' });
+
+    // Create-time Hive membership (shared-hive-federation D-010 producer): when
+    // `hive` is given, validate it's a real Hive home + capture the hive_slug to
+    // stamp on the new registry entry below. Fail-fast before any dir/schema side
+    // effect, like the deployment + dependency gates. No nesting guard needed —
+    // harness:create never sets harness_kind, so the new harness is never a Hive
+    // home (Hive homes come only from hive:create), so it cannot nest a Hive.
+    let hiveMembership: string | undefined;
+    if (args.hive != null) {
+      const membership = resolveCreateHiveMembership(reg, args.hive);
+      if (!membership.ok) return fail({ error: membership.error, message: membership.message });
+      hiveMembership = membership.hive_slug;
+    }
 
     // 1. Resolve + validate the blueprint FIRST — knobs.requiresRepo drives the
     //    dir/git decision below. `blueprintId` → a thin inheriting child
@@ -179,6 +199,7 @@ export default defineTool({
     reg.projects.push({
       slug: args.slug,
       path,
+      ...(hiveMembership ? { hive_slug: hiveMembership } : {}),
       ...(deployment.target !== 'local' ? { deployment } : {}),
     });
     await saveHarnessRegistry(reg);
@@ -223,6 +244,7 @@ export default defineTool({
             blueprintFile: bpFile,
             blueprint: { id: validation.blueprint!.id, version: validation.blueprint!.version },
             deployment,
+            ...(hiveMembership ? { hive: hiveMembership } : {}),
             warnings: validation.validation!.warnings,
             provisioning,
             scheduledRoutines,

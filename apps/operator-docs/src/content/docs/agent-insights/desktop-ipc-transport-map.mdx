@@ -119,7 +119,7 @@ window.__ipcInspector.churn()
 // FAIL → constructions climbing for one URL = a consumer is still recreating it.
 ```
 
-The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost
+The inspector (`packages/operator-core/lib/dev/ipc-inspector-client.ts` + the zero-cost
 seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is on automatically in
 dev. **But IPC only runs in a *release* build** (debug skips the sidecar spawn —
 see the dormancy gates), and a release build is `NODE_ENV=production`, where the

@@ -8,10 +8,11 @@ sidebar:
   order: 16
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 ## What
 
-On every operator boot, two helpers run via
-`apps/operator/instrumentation-node.ts`:
+Two helpers make Papercusp dogfood itself:
 
 1. **`ensurePapercuspWorkspace()`** — guarantees a workspace called
    `papercusp-workspace` (literal name) exists in the workspace
@@ -21,15 +22,28 @@ On every operator boot, two helpers run via
    inside that sentinel workspace, `state: private`. Idempotent
    + no-op for packaged installs.
 
-Together: Papercusp dogfoods itself the moment the operator starts.
+Together: Papercusp dogfoods itself.
 The user finds `papercup` in their harness dropdown when they
 switch to `papercusp-workspace` — no manual `harness create` step.
 
 Files:
-- `apps/operator/lib/harness/papercusp-workspace.ts`
-- `apps/operator/lib/harness/register-papercup.ts`
-- `apps/operator/instrumentation-node.ts:47-72` (boot wiring)
+- `packages/operator-core/lib/harness/papercusp-workspace.ts`
+- `packages/operator-core/lib/harness/register-papercup.ts`
 - `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
+
+<Aside type="caution">
+**Update (2026-06):** The original boot wiring was
+`apps/operator/instrumentation-node.ts` (the Next.js instrumentation hook),
+which is **retired** along with the Next standalone operator. The two helper
+modules moved from `apps/operator/lib/harness/` to
+`packages/operator-core/lib/harness/`. As of this audit there is **no live
+boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()`
+in the operator source — they are exercised only by the one-shot driver
+`apps/operator/scripts/run-dogfood-bootstrap.ts` (npm `verify:dogfood-bootstrap`)
+and their unit tests. Run the driver manually to flip dogfooding on; the rest of
+this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still
+accurate.
+</Aside>
 
 ## Why two helpers, not one
 
@@ -97,8 +111,8 @@ result.
   the two-marker rule was chosen specifically to avoid false
   positives. Adding a 3rd marker is fine; removing one is risky.
 - **Adding a 3rd bootstrap helper** (e.g. auto-register sub-harnesses
-  for papercup's submodules)? Best done as another fire-and-forget
-  block in instrumentation-node, between the existing two. Keep
+  for papercup's submodules)? Add it to the one-shot driver
+  (`run-dogfood-bootstrap.ts`), alongside the existing two. Keep
   each helper idempotent.
 
 ## Verifying it works without restarting the operator
@@ -139,13 +153,13 @@ harness_registry@papercusp-workspace: 1 projects
 
 ## Related
 
-- `apps/operator/lib/harness/classify-tree.ts` — the 5-rule classifier
+- `packages/operator-core/lib/harness/classify-tree.ts` — the 5-rule classifier
   for nested `.git` entries; uses the same `existsSync`-on-markers
   pattern. See [the classifier insight](/internal/docs/agent-insights/harness-tree-classifier).
 - v5 plan Phase 1a P-014 (workspace bootstrap) + Phase 4 P-024
   (papercup self-registration).
-- `apps/operator/lib/workspace-registry.ts` — the underlying file-
+- `packages/operator-core/lib/workspace-registry.ts` — the underlying file-
   backed registry helpers.
-- `apps/operator/lib/operator-state-pg.ts` — `readOperatorState` /
+- `packages/operator-core/lib/operator-state-pg.ts` — `readOperatorState` /
   `writeOperatorState` with optional `wsOverride` for per-workspace
   scoping.

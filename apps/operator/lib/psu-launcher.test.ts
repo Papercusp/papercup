@@ -477,29 +477,28 @@ describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
   const tty = { isTTY: true };
   const notTty = { isTTY: false };
 
-  it('is OFF by default (opt-in until the feel-check flips PTY_DEFAULT_ON)', () => {
-    // Guards the live fleet: psu-launcher is exec'd directly, so the default
-    // launch path must stay the plain inherit spawn until proven.
-    expect(PTY_DEFAULT_ON).toBe(false);
-    expect(usePtyHost({ env: {}, stdin: tty, stdout: tty })).toBe(false);
+  it('is ON by default for an interactive TTY (managed-pty IS the launch path, D-006)', () => {
+    // Flipped 2026-06-08 after the feel-check (P-012/P-015). A bare interactive
+    // launch now goes through the managed pty.
+    expect(PTY_DEFAULT_ON).toBe(true);
+    expect(usePtyHost({ env: {}, stdin: tty, stdout: tty })).toBe(true);
   });
 
-  it('opt-in via PAPERCUSP_PSU_PTY=1 enables it for an interactive TTY', () => {
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
-  });
-
-  it('needs a real TTY on BOTH ends (no bridge without a terminal)', () => {
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: notTty, stdout: tty })).toBe(false);
-    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: notTty })).toBe(false);
+  it('still needs a real TTY on BOTH ends — a non-TTY launch keeps the plain spawn', () => {
+    // brain dock pane / --no-picker scripts have no terminal to bridge.
+    expect(usePtyHost({ env: {}, stdin: notTty, stdout: tty })).toBe(false);
+    expect(usePtyHost({ env: {}, stdin: tty, stdout: notTty })).toBe(false);
   });
 
   it('PAPERCUSP_PSU_NO_PTY=1 is an always-wins kill switch', () => {
-    expect(
-      usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1', PAPERCUSP_PSU_NO_PTY: '1' }, stdin: tty, stdout: tty }),
-    ).toBe(false);
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_NO_PTY: '1' }, stdin: tty, stdout: tty })).toBe(false);
   });
 
-  it('PAPERCUSP_PSU_PTY=0 explicitly disables even if the default later flips on', () => {
+  it('PAPERCUSP_PSU_PTY=0 opts a single launch out of the default', () => {
     expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '0' }, stdin: tty, stdout: tty })).toBe(false);
+  });
+
+  it('PAPERCUSP_PSU_PTY=1 is still honored as an explicit enable', () => {
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
   });
 });

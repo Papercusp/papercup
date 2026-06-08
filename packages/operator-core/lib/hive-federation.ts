@@ -44,22 +44,11 @@ export async function resolveHiveSwarmBinding(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<SwarmBinding | null> {
-  // Find the harness's home Hive slug + identity row.
-  let hiveHomeSlug: string | null = null;
-  let hive = await getHiveBySlug(workspaceId, harnessSlug);
-  if (hive) {
-    // The harness IS a Hive home (it carries an identity).
-    hiveHomeSlug = harnessSlug;
-  } else {
-    // A member harness points at its home Hive via `hive_slug`.
-    const reg = await loadHarnessRegistry(workspaceId);
-    const member = reg.projects.find((x) => x.slug === harnessSlug);
-    if (member?.hive_slug) {
-      hiveHomeSlug = member.hive_slug;
-      hive = await getHiveBySlug(workspaceId, member.hive_slug);
-    }
-  }
-  if (!hiveHomeSlug || !hive) return null; // not part of a (resolvable) Hive
+  const hiveHomeSlug = await hiveHomeSlugForHarness(workspaceId, harnessSlug);
+  if (!hiveHomeSlug) return null; // not part of a Hive
+
+  const hive = await getHiveBySlug(workspaceId, hiveHomeSlug);
+  if (!hive) return null; // Hive identity not resolvable (e.g. un-backfilled)
 
   // Gate: only an owner-published (public/invite) Hive federates over the DHT.
   // A private/un-published Hive stays local-only — zero DHT footprint.
@@ -67,4 +56,21 @@ export async function resolveHiveSwarmBinding(
   if (!meta || meta.visibility === 'private') return null;
 
   return { kind: 'hive', hive_pubkey: hive.pubkeyBase64 };
+}
+
+/**
+ * The home Hive slug for a harness: itself if it is a `kind:'hive'` home (carries
+ * an identity row), else its declared `hive_slug` (a member harness), else null
+ * (not part of a Hive). Shared by the swarm-binding re-key (P-004) and the
+ * per-Hive admission union (P-006 seam) — both answer "which Hive is this harness
+ * in". Pure resolution (a PG identity read + a registry read).
+ */
+export async function hiveHomeSlugForHarness(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<string | null> {
+  if (await getHiveBySlug(workspaceId, harnessSlug)) return harnessSlug;
+  const reg = await loadHarnessRegistry(workspaceId);
+  const member = reg.projects.find((x) => x.slug === harnessSlug);
+  return member?.hive_slug ?? null;
 }

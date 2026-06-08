@@ -524,7 +524,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // Fail-open: a load failure records a boot event and continues.
   const loadRevoked =
     opts.loadRevokedOverride ??
-    (() => loadRevokedPubkeys({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug }));
+    (async () => {
+      // Harness-scope revocations (the base set).
+      const base = await loadRevokedPubkeys({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+      });
+      // Per-Hive admission (shared-hive-federation-2026-06-08 P-006 seam-1): when
+      // this harness belongs to a Hive, UNION the Hive-scope revoked pubkeys so a
+      // contributor revoked at the Hive grain is refused on EVERY member harness.
+      // The read-admission decider is unchanged. Best-effort / fail-open: a hive
+      // lookup failure leaves the harness-scope set intact.
+      try {
+        const { hiveHomeSlugForHarness } = await import('../../hive-federation');
+        const hiveHome = await hiveHomeSlugForHarness(opts.workspaceId, opts.harnessSlug);
+        if (hiveHome) {
+          const { loadRevokedHivePubkeys } = await import('../../hive-membership-store');
+          for (const pk of await loadRevokedHivePubkeys(opts.workspaceId, hiveHome)) {
+            base.add(pk);
+          }
+        }
+      } catch {
+        // fail-open: harness-scope revocations still apply
+      }
+      return base;
+    });
   try {
     const seeded = await loadRevoked();
     for (const pk of seeded) revoked.add(pk);

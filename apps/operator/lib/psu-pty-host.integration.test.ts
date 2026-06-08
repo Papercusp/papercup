@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
 import {
   hostThroughPty,
@@ -16,6 +17,10 @@ import {
   metaPathFor,
   encodeControl,
 } from '../scripts/psu-pty-host.mjs';
+// The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
+// pty-force, reused by e8630's turn:interrupt tool). Importing the published
+// subpath keeps this an integration test of the actual chain, not a re-impl.
+import { interruptViaPty, findLiveHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin. */
 function fakeIo() {
@@ -96,5 +101,65 @@ describe('hostThroughPty real round-trip', () => {
       expect(existsSync(meta)).toBe(false);
     },
     20_000,
+  );
+});
+
+describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg)', () => {
+  it(
+    'lands a real SIGINT mid-run through the control socket; the shell survives',
+    async () => {
+      // The full live chain: a managed-pty session is hosting a real bash with a
+      // long foreground job ("the agent mid-thinking"); the operator calls
+      // interruptViaPty(owner,'sigint') — discover the session by ownerId → connect
+      // to its control socket → inject a RAW Ctrl-C → the pty line discipline turns
+      // it into SIGINT for the foreground process group. NOT the user's keyboard,
+      // NOT the stdin bridge — the same path e8630's turn:interrupt force mode uses.
+      let captured = '';
+      const stdout = { columns: 100, rows: 40, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
+      const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {}, setRawMode() {} });
+      const type = (s: string) => (stdin as EventEmitter).emit('data', Buffer.from(s, 'utf8'));
+
+      const ownerId = `su-force-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const done = hostThroughPty({
+        command: 'bash',
+        args: ['--norc', '--noprofile', '-i'],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PS1: '$ ' },
+        ownerId,
+        io: { stdin, stdout },
+        bridgeTty: false,
+        onExit: () => {},
+      });
+
+      await sleep(500);
+      // The operator can discover the live session (same lookup the wake-executor uses).
+      expect(findLiveHost(ownerId)).not.toBeNull();
+
+      // Start a 20s foreground job. If the interrupt FAILS, the typed `exit` queues
+      // behind it and this test blows its 15s timeout — so a clean finish is itself
+      // evidence the sleep was cut short.
+      type('sleep 20\n');
+      await sleep(600);
+
+      const ok = await interruptViaPty(ownerId, 'sigint');
+      expect(ok).toBe(true);
+      await sleep(500);
+
+      // Shell survived the interrupt and accepts a new command.
+      type('echo SURVIVED_FORCE\n');
+      await sleep(500);
+      type('exit\n');
+      await done;
+
+      expect(captured).toContain('^C'); // the foreground job got SIGINT
+      expect(captured).toContain('SURVIVED_FORCE'); // shell still alive afterward
+
+      // Cleanup
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    15_000,
   );
 });
