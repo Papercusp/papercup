@@ -11,11 +11,30 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note">
-**Status:** plan, not yet shipped. Goes from architecture decisions through
-four end-to-end smokes. Estimate: 15–18 days realistic. Companion to
+**Status (original):** plan, not yet shipped. Goes from architecture decisions
+through four end-to-end smokes. Estimate: 15–18 days realistic. Companion to
 [`orchestrator-port`](/internal/docs/implementation/orchestrator-port) — that one
 ports `run.sh` to TS; this one builds the harness-of-harnesses APIs the
 ported orchestrator emits actions into.
+</Aside>
+
+<Aside type="caution" title="Shipped, then evolved — read this as the original plan">
+The multi-harness substrate described here **did ship** and has since moved.
+Treat the inline file paths below as the plan's original targets, not current
+locations:
+
+- `POST /api/admin/execute-action` lives in
+  **`packages/operator-core/lib/endpoint-route/routes/admin/execute-action.ts`**
+  (Hono), alongside `rotate-token.ts` and `prune-executed-actions.ts`.
+  Cross-harness reads are under
+  **`packages/operator-core/lib/endpoint-route/routes/cross-harness/`**.
+- The per-harness `config_token` design was later **retired** (migration
+  `121-retire-per-harness-config-token-and-proposals.sql`); token identity
+  was reworked. The orchestrator-emitted spawning is now the `fleet:*` /
+  cross-harness substrate (`packages/operator-core/lib/fleet/operator-spawn.ts`).
+- The orchestrator the plan refers to (`run.sh` → TS) was ported and its
+  run-loop later retired; see
+  [orchestrator-port](/internal/docs/implementation/orchestrator-port).
 </Aside>
 
 ## 1. Goal

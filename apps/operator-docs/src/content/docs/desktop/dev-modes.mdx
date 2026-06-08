@@ -9,9 +9,19 @@ The operator-vite SPA can be served to `tauri dev` three ways. They use
 different ports and the choice has real implications for what bugs you
 see.
 
+> **Command names (verify against `papercusp-desktop/package.json`):** the
+> HMR mode is launched by **`npm run dev:hmr`** (= `tauri dev`, which uses the
+> default `devUrl: http://localhost:3055` from `src-tauri/tauri.conf.json`) — not
+> by `bin/desktop-dev`. The plain **`npm run dev`** is the rebuild-watch (nohmr)
+> mode (`= bin/desktop-dev-nohmr`, `:3070`), and **`npm run dev:preview`** is
+> prod-preview (`= bin/desktop-preview-prod`, `:4173`). The `bin/desktop-dev`
+> script in this repo is a *different* thing — it runs the prebuilt release
+> binary against the system Postgres on `:5432` (a dev-PG inspection mode), not
+> an HMR Vite server.
+
 ## TL;DR
 
-| | `bin/desktop-dev` (HMR) | `bin/desktop-dev-nohmr` (rebuild-watch) | `bin/desktop-preview-prod` (prod-preview) |
+| | `npm run dev:hmr` (HMR) | `npm run dev` / `bin/desktop-dev-nohmr` (rebuild-watch) | `npm run dev:preview` / `bin/desktop-preview-prod` (prod-preview) |
 |---|---|---|---|
 | URL Tauri loads | `http://localhost:3055` | `http://localhost:3070` | `http://localhost:4173` |
 | Frontend process | `vite` (dev server) | `vite build --watch` → `apps/operator-vite/dist/` | `vite build` → `vite preview` |
@@ -25,7 +35,7 @@ see.
 | Path-equivalence to prod | ⚠ different from `tauri build` | ✓ same code path as `tauri build` (dev mode) | ✓✓ identical to what users install |
 | libsoup-pool exhaustion risk | Yes (HMR + SSE both long-lived) | No | No |
 
-## When to use HMR (`bin/desktop-dev`)
+## When to use HMR (`npm run dev:hmr`)
 
 The default for active UI iteration. State preservation between saves
 matters when you're working on a deeply-nested view that takes effort
@@ -119,8 +129,8 @@ The launcher starts `vite preview` on `:4173` as a background child
 (killed on Tauri exit), waits for it to come up, then launches
 `tauri dev` with `build.devUrl=http://localhost:4173`. The
 `/api/*` calls go to whatever backend the prod bundle expects —
-typically the operator process on `:3070` (the `papercup-dev` systemd
-unit), so that needs to be running.
+typically the operator Hono host on `:3070` (the `papercup-dev-api`
+systemd unit started by the root `bin/dev`), so that needs to be running.
 
 Note: `vite preview` is a static server, not a watcher. To pick up
 edits, re-run `npm run build` and reload the Tauri webview
@@ -147,21 +157,24 @@ absence: [Gate dev-only UI on MODE, not DEV](/internal/docs/agent-insights/dev-o
 
 ## Next.js is retired
 
-The operator frontend is Vite-only. `next dev` and `next start` are
-**blocked** — a guard at the top of `apps/operator/next.config.js`
-throws if either subcommand is detected, so an accidental `npm run`,
-an `npx next dev`, or stale muscle memory can't bind `:3055` or
-`:3070` and shadow the real servers.
+The operator frontend is Vite-only. There is no longer a standalone
+Next webapp: `apps/operator/next.config.js` (and the old `apps/operator/bin/{dev,prod}`
+standalone entrypoints) **no longer exist** — the Next removal advanced past
+the guard-throws-on-`next dev` stage. A `PreToolUse` hook now blocks browser
+navigation to `:3055`/`:3070` so you can't accidentally treat the desktop's
+internal content ports as a standalone site.
 
 The `apps/operator` npm scripts are Vite equivalents:
 
 | `apps/operator` script | Runs |
 |---|---|
-| `npm run dev` | `vite` — the operator-vite dev server (`:3055`) |
-| `npm run build` | Starlight docs build + `vite build` |
+| `npm run dev` | `npm --workspace @papercusp/operator-vite run dev` → `vite` (`:3055`) |
+| `npm run build` | `@papercupai/operator-docs` build (Starlight) + `@papercusp/operator-vite` build |
 | `npm run start` | `tsx bin/hono-host.ts` — the Hono host (`:3070`) |
 
-`bin/dev` runs the dev server as a systemd unit; `bin/prod` builds the
-operator and runs the Hono host. Neither invokes `next`. `next build`
-is still allowed (it binds no port) for reference tooling — it is
-removed outright in Phase H.
+The **root** `bin/dev` runs the Vite dev server (`:3055`) + Hono API host
+(`:3070`) as systemd `--user` transient units; the **root** `bin/prod` builds
+the operator and runs the production Hono host on `:3070`. Neither invokes
+`next`. (Stale aside: a couple of script header comments still point at
+`apps/operator/next.config.js` for "the guard that blocks `next dev`" — that
+file is gone; the port-blocking is now the `PreToolUse` hook.)

@@ -11,16 +11,16 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] agents (7)
 - [x] agent-spawning (8)
 - [x] data-sync (7)
-- [ ] spec (45)
+- [~] spec (38) [b1: plan-format,vocabulary,roles,capabilities,state, harness-contract,orchestrator,operator-v5,operator-architecture-decisions,routines]
 - [x] system (5)
 - [x] build-system (7)
 - [x] snapshots (7)
 - [x] testing (4)
 - [x] security (2)
 - [x] plugins (1)
-- [~] posthog (2)
-- [~] desktop (3)
-- [~] implementation (6)
+- [x] posthog (2)
+- [x] desktop (3)
+- [x] implementation (6)
 - [ ] design (17)
 - [ ] reference (5) — CHECK IF GENERATED before hand-editing
 - [ ] agent-insights (98)
@@ -99,6 +99,20 @@ NOTE: real baseline SQL path = libs/papercusp/libs/db/sql/000-baseline.sql (arch
 - security/distribution-trust: ACCURATE.
 - security/shared-harnesses: ACCURATE (proposed-design doc, dated 2026-05-31).
 - plugins/branch-buttons: EDITS — Next route handler example→plugin apiRoutes Hono app.
+
+### Batch 5 (posthog + desktop + implementation) — DONE
+- posthog/index: EDITS — bootstrap source value; snapshots default true; projectId informational.
+- posthog/feature-flags: EDITS (heavy) — flag set 9→12; Next route gating→TanStack requireFlag; operator-core paths; PATCH @current; MCP tools.
+- desktop/dev-modes: EDITS — no next.config.js (gone); bin/desktop-dev runs release binary not HMR; dev:hmr is real HMR; papercup-dev-api unit.
+- desktop/native-console: EDITS — operator-core paths; orchestrator.spawn→fleet:*; PAPERCUSP_OPERATOR_URL.
+- desktop/workbench: ACCURATE.
+- implementation/status: DATED — added rename-orientation Aside.
+- implementation/orchestrator-port: ACCURATE (already caveated).
+- implementation/multi-harness-spawning: DATED — added shipped/moved Aside; config_token retired.
+- implementation/marketplace: SUPERSEDED — added Cupboard danger Aside.
+- implementation/plugin-marketplace-state-2026-05-11: DATED — Aside; worktree rule reversed→staging-only.
+- implementation/pi-integration: EDITS — apps/papercusp→apps/operator + operator-core pty paths; Track A flagged aspirational; desktop shell run cmd.
+MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOICE_CHANNELS (12th flag).
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

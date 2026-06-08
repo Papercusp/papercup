@@ -10,29 +10,37 @@ sidebar:
 
 Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. Every flag defaults to **off**, the operator falls back to bundled defaults when offline, and admins flip flags through the operator's own UI — no PostHog dashboard required for day-to-day use.
 
-## The 9 flags
+## The 12 flags
+
+The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
 
 | Key | TS constant | Default | What it gates |
 |---|---|---|---|
-| `papercusp-snapshots` | `FLAGS.SNAPSHOTS` | `false` | Save / restore mission state. Toolbar button, `/installed/snapshots`, `/snapshots/*`, 7 API routes, 2 MCP tools. |
-| `papercusp-templates` | `FLAGS.TEMPLATES` | `false` | Save / install harness templates. Toolbar button, `/installed/templates`, 6 API routes. |
-| `papercusp-marketplace` | `FLAGS.MARKETPLACE` | `false` | Plugin + template + snapshot marketplace. Top-nav entry, `/marketplace/*`, plugins-page "Add" button, 6 API routes (including the CORS-allowed `/api/marketplace/install`). |
-| `papercusp-cloudflare-publish` | `FLAGS.CLOUDFLARE_PUBLISH` | `false` | Publish-to-Cloudflare flow. `/settings/publishing` page, settings sidebar entry, `/api/publish-credentials*` routes. |
-| `papercusp-oracle` | `FLAGS.ORACLE` | `false` | Always-on tutorial Oracle dock. Top-nav launcher button, `/settings/oracle` page, all `/api/oracle/*` Hono endpoints (404 when off). |
+| `papercusp-snapshots` | `FLAGS.SNAPSHOTS` | **`true`** | Save / restore mission state — now the Cupboard's `kind=snapshot` fork-source (capture + local instantiate are live; defaults **on**). |
+| `papercusp-cloudflare-publish` | `FLAGS.CLOUDFLARE_PUBLISH` | `false` | Publish-to-Cloudflare flow. |
+| `papercusp-oracle` | `FLAGS.ORACLE` | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off). |
 | `papercusp-rust-port-ui` | `FLAGS.RUST_PORT_UI` | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today. |
-| `papercusp-harness-phases` | `FLAGS.HARNESS_PHASES` | `false` | Multi-phase harness (staging / testing / production). Top phase strip in HarnessDashboard, the IssuesPanel "tests" tab, the two `harness.use('/:slug/tests*')` Hono endpoints. |
-| `papercusp-design` | `FLAGS.DESIGN` | `false` | In-harness "design" tab + DesignDashboard render, `/design` index, `/design/[slug]`, 4 `/api/design/*` routes. |
+| `papercusp-harness-phases` | `FLAGS.HARNESS_PHASES` | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints. |
+| `papercusp-design` | `FLAGS.DESIGN` | `false` | In-harness "design" tab + `/design` route + `/api/design/*` routes. |
+| `papercusp-testing` | `FLAGS.TESTING` | `false` | Testing-only surfaces: the `pi` tab + the "add plugin" button. |
+| `papercusp-inbox-durable-escalations` | `FLAGS.INBOX_DURABLE_ESCALATIONS` | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox). |
+| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only. |
+| `papercusp-video-channels` | `FLAGS.VIDEO_CHANNELS` | `false` | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes. |
+| `papercusp-voice-channels` | `FLAGS.VOICE_CHANNELS` | `false` | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass. |
+| `papercusp-the-hive` | `FLAGS.THE_HIVE` | `false` | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
+
+> `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. Their keys no longer exist in `FLAGS`.
 
 All keys also live in `libs/flags/src/types.ts` as the single source of truth — adding a new flag means editing **one file**, then creating the matching definition in PostHog. The TypeScript `FlagKey` type is derived from the object, so call sites get autocomplete and any rename is a compile error at every site.
 
 ## Defaults and the V1 ship contract
 
-`FLAG_DEFAULTS` in `libs/flags/src/types.ts` hard-codes all 9 flags as `false`. The operator returns this map whenever PostHog is unreachable or unconfigured. That's the V1 ship state: every cut feature stays cut, no network call required to discover it.
+`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state. Every flag defaults `false` **except `papercusp-snapshots`, which defaults `true`** (snapshots back the Cupboard's fork-source). The operator returns this map whenever PostHog is unreachable or unconfigured: every other cut feature stays cut, no network call required to discover it.
 
 Two statements that hold for every shipped binary:
 
 1. A freshly installed Papercusp binary on Linux / macOS / Windows makes **zero** outbound HTTP requests to `flags.papercuspai.com` under normal use.
-2. All nine flags resolve `false`, so every cut surface is unreachable: routes redirect, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
+2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false` except `papercusp-snapshots`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
 
 Both hold without any post-install configuration. Verified by the build-agent handoff via a clean-machine smoke test.
 
@@ -46,7 +54,7 @@ A single boolean. `true` → operator phones home to PostHog and reads live flag
 
 **Knob 2 — individual flag values in PostHog**
 
-The 9 actual on/off switches. Only consulted when `testingFeatures: true`. With `testingFeatures: false`, PostHog values are irrelevant; the operator never reads them.
+The actual per-flag on/off switches. Only consulted when `testingFeatures: true`. With `testingFeatures: false`, PostHog values are irrelevant; the operator never reads them.
 
 Combined behavior:
 
@@ -66,9 +74,9 @@ Open **Admin → Features** (`/admin/features`). You'll see:
 
 1. **Preset row** — two one-click buttons:
    - **🚀 V1 Production** → sets `testingFeatures: false`. Operator stops contacting PostHog. Cuts stay cut. PostHog values are left untouched (irrelevant).
-   - **🧪 Full testing** → sets `testingFeatures: true` + flips all 9 PostHog flags to `active=true` with `rollout_percentage: 100`. Everything on.
-2. **Master switch** — the `testingFeatures` toggle with a status pill (`on` / `off`) and its current source (`discovery-file`, `env`, `unconfigured`).
-3. **Per-flag toggles** — all 9 flags listed with label, blurb, raw key. Toggles are disabled (greyed) when `testingFeatures` is off — turn that on first.
+   - **🧪 Full testing** → sets `testingFeatures: true` + flips every flag in `ALL_FLAG_KEYS` to `active=true` with `rollout_percentage: 100`. Everything on.
+2. **Master switch** — the `testingFeatures` toggle with a status pill (`on` / `off`) and its current source (`discovery-file`, `discovery-file-opt-out`, `env`, `unconfigured`).
+3. **Per-flag toggles** — each flag listed with label, blurb, raw key. Toggles are disabled (greyed) when `testingFeatures` is off — turn that on first.
 
 Every toggle round-trips through the operator's HTTP endpoints, which:
 
@@ -91,11 +99,13 @@ Use this when you need targeting (cohort A/B, gradual rollout) beyond the binary
 
 For agents:
 
-| Tool | Action |
-|---|---|
-| `flags:list` | Lists all flags with current values. |
-| `flags:get` | Reads a single flag value. |
-| `flags:set` | Flips a flag in PostHog. Requires `audit:write` capability. Writes an audit log row in `harness_shared.audit_log`. |
+| Tool | Capability | Action |
+|---|---|---|
+| `flags:list` | `intel:read` | Lists all flags with current values (mirrors `/api/flags/bootstrap`). |
+| `flags:get` | `intel:read` | Reads a single flag value. |
+| `flags:set` | `audit:write` | Flips a flag in PostHog. Requires a `reason` arg (≥8 chars). Writes an audit row (`action='flag:set'`) in `harness_shared.audit_log`. |
+
+All three are defined under `packages/operator-core/lib/agent-tools/flags/` and exposed to the `operator` / `architect` agent roles (`flags:list` / `flags:get` also to `debugger`).
 
 `flags:set` writes both `active` and `filters.groups[].rollout_percentage` so the binary on/off semantics work as expected — see "Bug 1" in the [Wire-up gotchas](#wire-up-gotchas) section for why.
 
@@ -112,38 +122,41 @@ For CI and ephemeral overrides:
 
 Env vars are checked **before** the discovery file. They never get written into the desktop binary at build time — that would defeat the privacy contract.
 
+There is also a **per-flag** dev override, independent of PostHog: `PAPERCUSP_FLAG_<KEY>=1` (or `=true`) flips a single flag on without configuring PostHog at all. The key is uppercased with `-`→`_` — e.g. `PAPERCUSP_FLAG_PAPERCUSP_ORACLE=1`. This override beats test overrides / PostHog / defaults and is applied to both the single-flag `getFlag()` path and the all-flags bootstrap payload (so `useFlag()` sees it too). Useful in dev for exercising a gated feature (e.g. the llm-testing framework running oracle scenarios) when PostHog isn't configured.
+
 ## How flags are enforced
 
 Each cut feature has gating at multiple layers; the goal is that no path — direct URL, deep-link, command palette, API call, MCP tool — surfaces a cut feature when its flag is off.
 
-### Route layer (Next.js pages)
+### Route layer (TanStack Router, operator-vite SPA)
 
-Server components call `requireFlag(FLAGS.X)` at the top of the page. The helper redirects to `/` (or 404s) if the flag is off:
+The operator frontend is the Vite SPA (Next.js is retired). Gated routes call `requireFlag(FLAGS.X)` in their `beforeLoad`; the helper (`apps/operator-vite/src/lib/require-flag.ts`) `loadFlags()`-then-`throw notFound()` if the flag is off, which renders the root route's `notFoundComponent`:
 
 ```tsx
-// apps/operator/app/installed/snapshots/page.tsx
+// apps/operator-vite/src/routes/installed/snapshots.tsx
 import { FLAGS } from '@papercusp/flags';
 import { requireFlag } from '@/lib/require-flag';
 
-export default async function Page() {
-  await requireFlag(FLAGS.SNAPSHOTS);
-  // …existing UI…
-}
+export const Route = createFileRoute('/installed/snapshots')({
+  beforeLoad: () => requireFlag(FLAGS.SNAPSHOTS),
+  component: SnapshotsClient,
+});
 ```
+
+`loadFlags()` is idempotent + cached in `@papercusp/flags/client`, so every gated route's `beforeLoad` shares a single fetch. (The old page-side `requireFlag()` was a Next Server-Component gate using `next/navigation`'s `notFound()`; it was removed with the Next→Vite migration — `finish-next-removal-2026-06-01`.)
 
 ### Nav layer
 
-Top-nav entries in `apps/operator/app/_components/ChromeShell.tsx` are wrapped in `useFlag(FLAGS.X) && …`:
+Nav / settings-sidebar entries are wrapped in `useFlag(FLAGS.X) && …`. `useFlag` comes from `@papercusp/flags/client` (a synchronous read of the cached bootstrap payload that re-renders on SSE flag-change events):
 
 ```tsx
-const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
-// …
-{marketplaceFlag ? (
-  <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
-) : null}
-```
+import { useFlag } from '@papercusp/flags/client';
+import { FLAGS } from '@papercusp/flags';
 
-Same for settings-sidebar entries (see `apps/operator/app/settings/layout.tsx`).
+const oracleFlag = useFlag(FLAGS.ORACLE);
+// …
+{oracleFlag ? <OracleLauncher /> : null}
+```
 
 ### Component layer (defense-in-depth)
 
@@ -163,30 +176,27 @@ if (snapshotsEnabled) cs.push({ id: 'snapshots', … });
 
 ### API route layer
 
-For Next.js API routes, the `gateApiRoute` helper returns a 404 response when the flag is off:
+API routes are now Hono `endpoint-route` handlers (`packages/operator-core/lib/endpoint-route/routes/**`), each authored with `defineTool({ method, path, … })`. The `gateApiRoute(req, key)` helper (`packages/operator-core/lib/require-flag.ts`) returns a 404 `Response` when the flag is off, or `null` to continue:
 
 ```ts
 import { FLAGS } from '@papercusp/flags';
-import { gateApiRoute } from '@/lib/require-flag';
+import { gateApiRoute } from '../../../require-flag';
 
-export async function GET(req: Request) {
+async handler(req) {
   const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
   if (blocked) return blocked;
   // …handler logic…
 }
 ```
 
-For Hono-mounted routes (Oracle, harness tests), middleware on the path returns 404:
+For a whole route group (Oracle, harness tests), the gate is checked per handler against `getFlag(FLAGS.X, 'system')` and returns 404 when off (see `packages/operator-core/lib/endpoint-route/routes/oracle/index.ts`):
 
 ```ts
-// apps/operator/app/api/_hono/oracle.ts
-app.use('/oracle/*', async (c, next) => {
+async function oracleEnabled(): Promise<boolean> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
-  const enabled = await getFlag(FLAGS.ORACLE, 'system');
-  if (!enabled) return c.notFound();
-  return next();
-});
+  return getFlag(FLAGS.ORACLE, 'system');
+}
 ```
 
 ### MCP tool layer
@@ -203,14 +213,14 @@ The system lives in three places:
 
 | Path | What |
 |---|---|
-| `libs/flags/` | The package. Types, defaults, server SDK wrapper, client cache, test overrides. Versioned, exported as `@papercusp/flags`. |
-| `apps/operator/lib/flag-bus.ts` | In-process pub/sub + boot-time backend init. Wraps the @restart/sse channel. |
-| `apps/operator/lib/posthog-config.ts` | Discovery-file resolver. The three-tier env → file → unconfigured fallback lives here. |
-| `apps/operator/lib/require-flag.ts` | The `requireFlag` / `gateApiRoute` helpers used by pages + API routes. |
-| `apps/operator/lib/flag-hooks.tsx` | `useFlag` React hook with SSE subscription. |
-| `apps/operator/app/api/flags/*` | The 5 endpoints: `bootstrap`, `stream`, `webhook`, `testing-features`, `set`, `preset`, `dashboard-url`. |
-| `apps/operator/app/admin/features/` | The admin UI. |
-| `apps/operator/app/settings/flags/` | **Removed.** Used to be a read-only viewer; replaced by the interactive admin page. |
+| `libs/flags/` | The package. Types + defaults (`src/types.ts`), server SDK wrapper (`src/server.ts`), client cache + `useFlag` (`src/client.ts`), test overrides (`src/test.ts`). Exported as `@papercusp/flags` (+ `/server`, `/client`, `/test`). |
+| `packages/operator-core/lib/flag-bus.ts` | In-process pub/sub + boot-time backend init. Wraps the `@papercusp/sse` channel. |
+| `packages/operator-core/lib/posthog-config.ts` | Discovery-file resolver + `fs.watch` auto-reload. The env → file → unconfigured fallback lives here. |
+| `packages/operator-core/lib/require-flag.ts` | The server-side `gateApiRoute` helper used by Hono route handlers. |
+| `apps/operator-vite/src/lib/require-flag.ts` | The SPA `requireFlag` (TanStack `beforeLoad` → `notFound()`). |
+| `packages/operator-core/lib/endpoint-route/routes/flags/*` | The Hono handlers: `bootstrap`, `stream`, `webhook`, `testing-features`, `set`, `preset`, `dashboard-url`. |
+| `packages/operator-core/lib/agent-tools/flags/*` | The MCP tools: `list`, `get`, `set`. |
+| `apps/operator/app/admin/features/FeaturesAdmin.tsx` | The admin UI component, mounted by the SPA route `apps/operator-vite/src/routes/admin/features.tsx`. |
 
 ## HTTP API
 
@@ -222,10 +232,10 @@ The system lives in three places:
 | `GET /api/flags/testing-features` | — | `{ testingFeatures: bool, source }` |
 | `POST /api/flags/testing-features` | `{ enabled: bool }` | Writes the discovery file, resets the in-process config cache, re-inits the flag backend. |
 | `POST /api/flags/set` | `{ key: FlagKey, enabled: bool }` | PATCHes the flag in PostHog. Sets `active` + `rollout_percentage` (100 or 0). |
-| `POST /api/flags/preset` | `{ name: 'production' \| 'testing' }` | Atomic preset apply. `production` writes `testingFeatures: false`; `testing` sets `testingFeatures: true` + flips all 9 flags on. |
+| `POST /api/flags/preset` | `{ name: 'production' \| 'testing' }` | Atomic preset apply (loopback-guarded). `production` writes `testingFeatures: false`; `testing` sets `testingFeatures: true` + flips every flag in `ALL_FLAG_KEYS` on. |
 | `GET /api/flags/dashboard-url` | — | Returns the PostHog UI URL for deep-linking out of the admin page. |
 
-All endpoints require `runtime: 'nodejs'` and `dynamic: 'force-dynamic'`. They run in the operator's bundled server, not at the edge.
+All of these are Hono `endpoint-route` handlers (`packages/operator-core/lib/endpoint-route/routes/flags/*`) authored via `defineTool({ method, path, auth: 'public', … })` and served by the operator's bundled Hono host on `:3070`. `auth: 'public'` opts the route out of principal auth; `/set` and `/preset` keep their own loopback guard (`requireLoopbackOr403`), and `/webhook` authenticates via the shared-secret header.
 
 ## How a flag flip propagates
 
@@ -234,21 +244,21 @@ All endpoints require `runtime: 'nodejs'` and `dynamic: 'force-dynamic'`. They r
    └─> POST /api/flags/set { key, enabled }
 
 2. Handler invokes setFlag(key, enabled) in @papercusp/flags/server.
-   └─> PATCH flags.papercuspai.com/api/projects/1/feature_flags/<id>/
+   └─> GET  flags.papercuspai.com/api/projects/@current/feature_flags/?search=<key>
+       PATCH flags.papercuspai.com/api/projects/@current/feature_flags/<id>/
        body: { active, filters.groups[0].rollout_percentage }
 
 3. Handler publishes 'flag_changed' on the in-process flag bus.
-   └─> SSE channel @restart/sse fan-out.
+   └─> SSE channel @papercusp/sse fan-out.
 
 4. Every open tab connected to /api/flags/stream gets the event.
-   └─> The React client calls loadFlags() → GET /api/flags/bootstrap.
+   └─> The client calls loadFlags() → GET /api/flags/bootstrap.
 
 5. The operator's posthog-node SDK has its own 10s polling interval.
    Either the SDK's local cache is already fresh (rare — flips are
    pushed via the bus) or it refreshes on its next poll.
 
-6. All useFlag() hooks re-render. Components that subscribe to flag
-   state via SSR don't auto-update; a navigation or refresh picks them up.
+6. All useFlag() reads re-render via the client's flag-stream subscription.
 ```
 
 End-to-end: a flag flip typically reflects in the UI within 1–2 seconds for client-rendered components, and on next navigation for server-rendered pages.
@@ -257,7 +267,7 @@ End-to-end: a flag flip typically reflects in the UI within 1–2 seconds for cl
 
 ## Discovery-file auto-reload
 
-`apps/operator/lib/posthog-config.ts` installs an `fs.watch` on `~/.papercusp/`. Any write to `posthog.json` (manual edit, secret rotation, bin-helper script) invalidates the in-process config cache and triggers `reinitFlagBackend()`:
+`packages/operator-core/lib/posthog-config.ts` installs an `fs.watch` on `~/.papercusp/`. Any write to `posthog.json` (manual edit, secret rotation, bin-helper script) invalidates the in-process config cache and triggers `reinitFlagBackend()`:
 
 - If `testingFeatures` flipped on → the PostHog SDK is initialized (or re-initialized with the new key)
 - If `testingFeatures` flipped off → the PostHog SDK is torn down; subsequent flag reads return `FLAG_DEFAULTS`
@@ -267,15 +277,14 @@ Net effect: edit the discovery file → operator picks it up within ~50ms, no re
 
 ## The admin UI architecture
 
-The Admin section is structured like Restart's `DashboardShell` (separate routes per tab, not in-page state):
+The Admin section is structured as separate operator-vite SPA routes per tab (not in-page state):
 
-- `/admin` → 302 redirect to `/admin/run`
-- `/admin/run` → `<AdminShell><AdminOps /></AdminShell>` — existing build/run/simulators commands.
-- `/admin/features` → `<AdminShell><FeaturesAdmin /></AdminShell>` — the flag console.
+- `/admin/features` → `<AdminShell title="Features"><FeaturesAdmin /></AdminShell>` — the flag console (`apps/operator-vite/src/routes/admin/features.tsx`; the `FeaturesAdmin` component still lives at `apps/operator/app/admin/features/FeaturesAdmin.tsx`, imported via the SPA's `@/app` alias).
+- Sibling tabs (`/admin/git`, `/admin/testing`, …) follow the same `<AdminShell>` pattern.
 
-`AdminShell` is the chrome (header with title + tabs + host pill). Each tab is a `<Link>` so navigations are full route transitions. URL is the source of truth for the active tab; no `useState` for tab selection.
+`AdminShell` is the chrome (header with title + tabs). Each tab is a TanStack `<Link>` so navigations are full route transitions; the URL is the source of truth for the active tab (no `useState`).
 
-The `/admin/*` tree is loopback-only (operator binds `127.0.0.1:3055`) and intentionally not linked from the nav. Reach it by URL. Earlier versions had a `requireFlag(FLAGS.ADMIN)` gate; it was removed 2026-05-13 in favor of the URL-only convention.
+The `/admin/*` routes are intentionally not linked from the nav — reach them by URL. The flag-mutating endpoints behind them (`/api/flags/set`, `/api/flags/preset`) enforce a loopback guard server-side (`requireLoopbackOr403`); the route itself is **not** flag-gated (an earlier `FLAGS.ADMIN` gate was removed — and that key no longer exists in `FLAGS`).
 
 ## Wire-up gotchas
 
@@ -295,7 +304,7 @@ Fix: pass `personalApiKey` + set `featureFlagsPollingInterval: 10_000`. The SDK 
 
 ### Bug 3: One-shot `booted` latch in flag-bus
 
-`apps/operator/lib/flag-bus.ts` had `let booted = false` at module scope, set to `true` after the first `bootIfNeeded()` call. The intent was "init the PostHog client once at startup." But if `testingFeatures` was off at startup and got flipped to `true` later, the latch had already fired, so no init ever happened.
+`packages/operator-core/lib/flag-bus.ts` had `let booted = false` at module scope, set to `true` after the first `bootIfNeeded()` call. The intent was "init the PostHog client once at startup." But if `testingFeatures` was off at startup and got flipped to `true` later, the latch had already fired, so no init ever happened.
 
 Fix: added `reinitFlagBackend()` which the `testing-features` and `preset` endpoints call after writing the discovery file. The latch is now a debounce, not a guard against re-init.
 
@@ -309,14 +318,14 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 beforeEach(() => {
   setFlagOverridesForTest({
     [FLAGS.SNAPSHOTS]: true,
-    [FLAGS.MARKETPLACE]: false,
+    [FLAGS.ORACLE]: false,
   });
 });
 ```
 
 When overrides are set, the server's `getAllFlags()` returns them directly with `source: "override"`, bypassing PostHog entirely. Tests don't need to mock the SDK or run a real PostHog instance.
 
-The hook is currently defined but unused — there's no test consumer yet. When the operator gets a real test suite, this is how to neutralize flag state.
+This is the live way to neutralize flag state in tests — consumers include `packages/operator-core/lib/lexicon/configure.test.ts`, the `@papercusp/flags` server suites, and `apps/operator/bin/host-spa.test.ts`. (`PAPERCUSP_FLAG_<KEY>` env overrides win over test overrides, so clear them if a test relies on the override map.)
 
 ## Common operations
 

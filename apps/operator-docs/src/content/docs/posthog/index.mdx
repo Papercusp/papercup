@@ -65,7 +65,7 @@ The operator code reads its PostHog configuration from a single source — the d
 
 1. **Env vars** — `PAPERCUSP_POSTHOG_HOST` + `PAPERCUSP_POSTHOG_KEY` + optional `PAPERCUSP_POSTHOG_TESTING_FEATURES`. For CI and explicit dev overrides.
 2. **Discovery file** — `~/.papercusp/posthog.json`. The canonical home for the project key + personal API key + the `testingFeatures` flag.
-3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (all features off — V1 ship state). No outbound request happens. `/api/flags/bootstrap` returns `source: "unconfigured"`.
+3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (the V1 ship state — every flag off except `papercusp-snapshots`, which defaults `true`). No outbound request happens. `/api/flags/bootstrap` returns `source: "defaults"`. (The discovery-file *resolver* reports `source: "unconfigured"` for the un-configured case, but the flag-bootstrap payload's `source` is always one of `defaults` / `posthog` / `override`.)
 
 A fresh install on an end-user machine ends up in path 3 by default. To opt into PostHog contact, the user (or admin) must either:
 
@@ -95,7 +95,7 @@ There is no other path. The discovery file is **not** shipped inside the desktop
 | `host` | yes | PostHog server URL |
 | `projectKey` | yes | The public `phc_…` project token. Used by `posthog-node` to identify the project. |
 | `personalApiKey` | yes | The private `phx_…` key. Needed for **local flag evaluation** (the SDK polls flag definitions every 10s and evaluates in-process — fast, no per-request round-trip). Without this the SDK falls back to remote evaluation with different semantics. |
-| `projectId` | no | PostHog's numeric project id. Used for direct PATCH calls when flipping flags via the API. |
+| `projectId` | no | PostHog's numeric project id. Informational only — the flag-flip + dashboard-URL code addresses the project as `@current` (resolved from the personal API key), so this field isn't read by the resolver (`packages/operator-core/lib/posthog-config.ts` only consumes `host` / `projectKey` / `personalApiKey` / `testingFeatures` / `webhookSecret`). |
 | `testingFeatures` | n/a | The master switch. `false` (default) means "never phone home." `true` means "fetch flag definitions live." |
 | `webhookSecret` | no | If set, validates incoming `POST /api/flags/webhook` calls from PostHog so live flag flips can fan out via SSE. Optional; absent means clients refresh on a polling interval instead. |
 
