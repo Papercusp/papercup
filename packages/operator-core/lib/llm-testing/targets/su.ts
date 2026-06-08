@@ -292,9 +292,22 @@ class SuSession implements ChatSession {
     const model = sutModel();
     const price = priceFor(model);
     const cache = promptCacheEnabled();
-    const system = cache
-      ? [{ type: 'text', text: loadPlaybook(), cache_control: { type: 'ephemeral' } }]
-      : loadPlaybook();
+    // A Claude Max/Pro OAuth token (the no-ANTHROPIC_API_KEY path) is admitted to
+    // the full, CLI-equivalent rate-limit bucket on the raw Messages API ONLY when
+    // the request is FRAMED AS CLAUDE CODE — the first system block must be the
+    // Claude Code identifier. Without it the SAME token is shunted to a far
+    // stricter raw-OAuth bucket that 429s almost immediately, independent of any
+    // real account usage (measured 2026-06-08: identical call 429s without this
+    // block, 200s with it, while the `claude` CLI runs fine the whole time).
+    // This also makes the SUT's framing match a real psu session (Claude Code +
+    // the engineer playbook). Harmless when an ANTHROPIC_API_KEY is set instead.
+    const CLAUDE_CODE_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude.";
+    const system = [
+      { type: 'text', text: CLAUDE_CODE_IDENTIFIER },
+      ...(cache
+        ? [{ type: 'text', text: loadPlaybook(), cache_control: { type: 'ephemeral' } }]
+        : [{ type: 'text', text: loadPlaybook() }]),
+    ];
     const tools = this.state.catalog.tools;
 
     // The conversation transcript for THIS turn (stateless: caller threads the

@@ -1,26 +1,29 @@
 // @vitest-environment jsdom
 //
-// AdvConversationsTab render coverage — the /adv Conversations tab's new "Feed"
-// view (the fix for "Conversations only shows a small number"). Mounts the tab
-// against a realistic dev.coordFeed snapshot (useSyncQuery + nuqs mocked, the
-// pinned sibling pattern — see admin/GitClient.test.tsx) and asserts:
-//   - the clarity bar + total count render,
-//   - every kind appears with its colour badge,
+// AdvConversationsTab render coverage — the /adv Conversations tab's simplified
+// design. Mounts the tab against a realistic dev.coordFeed snapshot (useSyncQuery
+// + nuqs mocked, the pinned sibling pattern — see admin/GitClient.test.tsx) and
+// asserts:
+//   - Threads is the default front door,
+//   - the top "Needs you" affordance renders,
+//   - the Activity log keeps raw traffic reachable,
+//   - human category filters replace the raw 12-kind wall by default,
 //   - a BROADCAST row is marked, and a "→ human" escalation is highlighted,
 //   - the plan-slug chip renders,
 //   - an ack groups under its parent as a reply (related_msg_id chain),
-//   - the view switch shows Feed + Threads.
+//   - the view switch shows Threads + Activity log.
 // Guards against render-time crashes the typecheck can't catch.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 
 // nuqs: every useQueryState call needs the adapter context — stub each param to
-// a stable [value, noop]. The component reads `conv` (view), the feed filters
-// (fkind array, fagent/fplan/fq strings, fmsg selection). Default view is feed.
+// a stable [value, noop]. The component reads `conv` (view), the activity filters
+// (fkind array, fadvanced, fagent/fplan/fq strings, fmsg selection). Default view is threads.
 const nuqsState: Record<string, unknown> = {
-  conv: 'feed',
+  conv: 'threads',
   fkind: [],
+  fadvanced: 'closed',
   fagent: '',
   fplan: '',
   fq: '',
@@ -122,22 +125,60 @@ vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => mockResult }));
 
 import AdvConversationsTab from './AdvConversationsTab';
 
-afterEach(() => cleanup());
+beforeEach(() => {
+  nuqsState.conv = 'threads';
+  nuqsState.fkind = [];
+  nuqsState.fadvanced = 'closed';
+  nuqsState.fagent = '';
+  nuqsState.fplan = '';
+  nuqsState.fq = '';
+  nuqsState.fmsg = null;
+  mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+  vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ conversations: [] }) })));
+});
 
-describe('AdvConversationsTab — Feed view', () => {
-  it('renders the clarity bar, the total count, and the view switch', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe('AdvConversationsTab — simplified design', () => {
+  it('opens on Threads with a compact header and Needs you summary', () => {
     render(<AdvConversationsTab />);
 
-    expect(screen.getByText(/Every coordination envelope across the fleet/i)).toBeTruthy();
-    expect(screen.getByText(/6 matching/)).toBeTruthy();
-    // View switch tabs.
-    expect(screen.getByRole('tab', { name: /Feed/i })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Conversations' })).toBeTruthy();
+    expect(screen.getByText(/Questions, discussions, and agent messages/i)).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Threads/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Needs you/i })).toBeTruthy();
+    expect(screen.getByText(/Question & discussion threads/i)).toBeTruthy();
   });
 
-  it('shows every kind across the channels with kind badges + counts', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+  it('shows Activity log as the secondary view with grouped filters', () => {
+    nuqsState.conv = 'feed';
+    render(<AdvConversationsTab />);
+
+    expect(screen.getByText(/Raw coordination events for debugging/i)).toBeTruthy();
+    expect(screen.getByText(/6 matching/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Messages/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Handoffs/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Escalations/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Plan events/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Advanced \/ all kinds/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^ack/i })).toBeNull();
+  });
+
+  it('shows raw kind filters only when the advanced URL state is open', () => {
+    nuqsState.conv = 'feed';
+    nuqsState.fadvanced = 'open';
+    render(<AdvConversationsTab />);
+
+    expect(screen.getByRole('button', { name: /^ack/i })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /handoff/i }).length).toBeGreaterThan(1);
+  });
+
+  it('shows channel summaries and kind badges in the Activity log', () => {
+    nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
     // Summaries from each surface render.
@@ -146,13 +187,13 @@ describe('AdvConversationsTab — Feed view', () => {
     expect(screen.getByText('build finished')).toBeTruthy();
     expect(screen.getByText('handing off the UI work')).toBeTruthy();
 
-    // Kind filter chips carry counts from byKind.
+    // Row badges still carry the raw event kind.
     const handoffChips = screen.getAllByText('handoff');
     expect(handoffChips.length).toBeGreaterThan(0);
   });
 
   it('marks a broadcast row and highlights a "→ human" escalation', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
     expect(screen.getByText('BROADCAST')).toBeTruthy();
@@ -160,14 +201,14 @@ describe('AdvConversationsTab — Feed view', () => {
   });
 
   it('renders the plan-slug chip on plan-scoped rows', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
     // Two rows carry the slug (escalation + handoff) → at least one chip.
     expect(screen.getAllByText('auth-refactor-2026').length).toBeGreaterThan(0);
   });
 
   it('groups an ack under its parent message as a reply (related_msg_id chain)', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
     // The ack is a CHILD of m-direct → it must NOT be a top-level summary row,
@@ -179,6 +220,7 @@ describe('AdvConversationsTab — Feed view', () => {
   });
 
   it('shows the empty state when no traffic matches', () => {
+    nuqsState.conv = 'feed';
     mockResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
     render(<AdvConversationsTab />);
     expect(screen.getByText(/No matching traffic/i)).toBeTruthy();
@@ -186,7 +228,7 @@ describe('AdvConversationsTab — Feed view', () => {
   });
 
   it('shows a "Load older" control when the server reports more rows', () => {
-    mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
     expect(screen.getByText(/Load older/i)).toBeTruthy();
   });

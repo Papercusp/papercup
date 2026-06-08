@@ -1,24 +1,18 @@
 /**
  * AdvConversationsTab — the /adv "Conversations" tab. Two views (nuqs `?conv=`):
  *
- *  - **Feed** (default, `conv=feed`): the COMPLETE coordination firehose — every
- *    envelope every agent has exchanged across every channel (messages, acks,
- *    notifies, broadcasts, handoffs + acceptances, escalations + resolutions,
- *    plan events), newest-first, with day separators, kind-coloured badges,
- *    `from → to` (BROADCAST + "→ human" highlighted), a plan-slug chip, and
- *    click-to-expand body + thread (the related_msg_id chain — an ack/resolution
- *    groups under its parent). Filters (kind multi-select, agent, plan,
- *    free-text) are all in the URL via nuqs. Data rides the SSE-invalidation
- *    rail via `@papercusp/sync` (`dev.coordFeed`, the same observer read the
- *    high-tier `coord:feed` tool exposes); "load older" paginates by cursor.
- *    This is the fix for "Conversations only shows a small number" — it shows
- *    ALL coordination traffic, not just the question/discussion substrate.
- *
- *  - **Threads** (`conv=threads`): the conversations substrate (questions +
+ *  - **Threads** (default, `conv=threads`): the conversations substrate (questions +
  *    discussions) — the human counterpart to the agents' conversations:* tools.
  *    Reads the in-process admin-coordination dispatch (one data path, no Zero
  *    entity). Detail = seed + topics + thread + accepted answer + linked
  *    work-item + promote/reply/resolve actions.
+ *
+ *  - **Activity log** (`conv=feed`): raw coordination events for debugging,
+ *    newest-first, with day separators, grouped filters, URL-backed advanced
+ *    kind filters, `from → to` routing, a plan chip, and click-to-expand detail.
+ *    Data rides the SSE-invalidation rail via `@papercusp/sync` (`dev.coordFeed`,
+ *    the same observer read the high-tier `coord:feed` tool exposes); "load
+ *    older" paginates by cursor.
  *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only mid-edit
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
@@ -40,43 +34,25 @@ async function coord<T = Record<string, unknown>>(verb: string, body: Record<str
 }
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['feed', 'threads'] as const;
+const CONV_VIEWS = ['threads', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 export default function AdvConversationsTab() {
-  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('feed'));
+  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
+  const [, setHeaderKinds] = useQueryState('fkind', parseAsArrayOf(parseAsString).withDefault([]));
+  const openNeedsYou = () => {
+    void setHeaderKinds(['message', 'escalation']);
+    void setView('feed');
+  };
   return (
     <div className="pc-coord pc-advconv">
-      <header className="pc-advconv__hero">
-        <div className="pc-advconv__hero-copy">
-          <span className="pc-advconv__eyebrow">Fleet comms</span>
+      <header className="pc-advconv__header">
+        <div className="pc-advconv__header-copy">
           <h1>Conversations</h1>
-          <p>Live coordination traffic, agent handoffs, human asks, and durable Q&amp;A threads in one workspace view.</p>
-          <div className="pc-advconv__herochips" aria-label="Conversation surfaces">
-            <span>
-              <Radio size={11} aria-hidden />
-              Full fleet feed
-            </span>
-            <span>
-              <MessageCircle size={11} aria-hidden />
-              Durable Q&amp;A threads
-            </span>
-          </div>
+          <p>Questions, discussions, and agent messages that may need your attention.</p>
         </div>
+        <NeedsYouSummary onOpen={openNeedsYou} />
         <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'feed'}
-            className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
-            onClick={() => void setView('feed')}
-          >
-            <Radio size={13} aria-hidden />
-            <span>
-              Feed
-              <em>all envelopes</em>
-            </span>
-          </button>
           <button
             type="button"
             role="tab"
@@ -87,7 +63,20 @@ export default function AdvConversationsTab() {
             <MessageCircle size={13} aria-hidden />
             <span>
               Threads
-              <em>human questions</em>
+              <em>questions &amp; discussions</em>
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'feed'}
+            className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
+            onClick={() => void setView('feed')}
+          >
+            <Radio size={13} aria-hidden />
+            <span>
+              Activity log
+              <em>raw events</em>
             </span>
           </button>
         </div>
@@ -98,7 +87,31 @@ export default function AdvConversationsTab() {
   );
 }
 
-// ─── Feed view — the complete coordination firehose ──────────────────
+function NeedsYouSummary({ onOpen }: { onOpen: () => void }) {
+  const summary = useSyncQuery<FeedRow>({ queryName: 'dev.coordFeed', args: { limit: 100 }, staleTime: 5_000 });
+  const rows = summary.data ?? [];
+  const waitingCount = rows.filter((r) => (r.to ?? []).includes('human') || r.kind === 'escalation').length;
+  const humanCount = rows.filter((r) => (r.to ?? []).includes('human')).length;
+  const escalationCount = rows.filter((r) => r.kind === 'escalation').length;
+  const label = summary.loading && rows.length === 0
+    ? 'Checking…'
+    : waitingCount === 0
+      ? 'Nothing waiting'
+      : `${waitingCount} waiting`;
+
+  return (
+    <button type="button" className="pc-advconv__needs" onClick={onOpen}>
+      <span className="pc-advconv__needs-kicker">
+        <AlertTriangle size={12} aria-hidden />
+        Needs you
+      </span>
+      <strong>{label}</strong>
+      <em>{humanCount} human · {escalationCount} escalation</em>
+    </button>
+  );
+}
+
+// ─── Activity log — raw coordination events ──────────────────────────
 
 const FEED_KINDS = [
   'message',
@@ -113,6 +126,13 @@ const FEED_KINDS = [
   'subscribe',
   'unsubscribe',
   'contract',
+] as const;
+
+const FEED_KIND_GROUPS = [
+  { id: 'messages', label: 'Messages', description: 'Direct and broadcast messages', kinds: ['message', 'broadcast'] },
+  { id: 'handoffs', label: 'Handoffs', description: 'Work passed between agents', kinds: ['handoff'] },
+  { id: 'escalations', label: 'Escalations', description: 'Blocked work and resolutions', kinds: ['escalation', 'escalation_resolved'] },
+  { id: 'plan-events', label: 'Plan events', description: 'Plan changes and lifecycle updates', kinds: ['plan_event'] },
 ] as const;
 
 /** Kind → accent colour. `broadcast` is a synthetic UI kind (any kind with
@@ -211,6 +231,7 @@ function ToCell({ to, broadcast }: { to: string[]; broadcast: boolean }) {
 function FeedView() {
   // All filters in nuqs.
   const [kinds, setKinds] = useQueryState('fkind', parseAsArrayOf(parseAsString).withDefault([]));
+  const [advancedKinds, setAdvancedKinds] = useQueryState('fadvanced', parseAsStringEnum(['closed', 'open']).withDefault('closed'));
   const [agent, setAgent] = useQueryState('fagent', parseAsString.withDefault(''));
   const [plan, setPlan] = useQueryState('fplan', parseAsString.withDefault(''));
   const [q, setQ] = useQueryState('fq', parseAsString.withDefault(''));
@@ -261,7 +282,7 @@ function FeedView() {
     const byKind = meta?.byKind ?? {};
     const broadcastCount = rawRows.filter((r) => r.broadcast).length;
     const humanCount = rawRows.filter((r) => (r.to ?? []).includes('human')).length;
-    const escalationCount = (byKind.escalation ?? 0) + (byKind.escalation_resolved ?? 0);
+    const escalationCount = byKind.escalation ?? rawRows.filter((r) => r.kind === 'escalation').length;
     return { broadcastCount, humanCount, escalationCount };
   }, [meta, rawRows]);
 
@@ -309,6 +330,18 @@ function FeedView() {
 
   const toggleKind = (k: string) =>
     void setKinds(kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k]);
+  const toggleKindGroup = (groupKinds: readonly string[]) => {
+    const active = groupKinds.some((k) => kinds.includes(k));
+    const next = active
+      ? kinds.filter((k) => !groupKinds.includes(k))
+      : [...kinds, ...groupKinds.filter((k) => !kinds.includes(k))];
+    void setKinds(next);
+  };
+  const groupCount = (groupKinds: readonly string[]) =>
+    rawRows.filter((r) => groupKinds.some((k) => (k === 'broadcast' ? r.broadcast : r.kind === k))).length;
+  const rawKindCount = (k: string) =>
+    k === 'broadcast' ? rawRows.filter((r) => r.broadcast).length : (meta?.byKind?.[k] ?? rawRows.filter((r) => r.kind === k).length);
+  const kindLabel = (k: string) => k.replaceAll('_', ' ');
 
   const filtersActive = kinds.length > 0 || !!agent || !!plan || !!q.trim();
   const activeFilterCount = kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (q.trim() ? 1 : 0);
@@ -321,52 +354,69 @@ function FeedView() {
 
   return (
     <div className="pc-advfeed">
-      {/* Clarity bar */}
-      <div className="pc-advfeed__clarity">
-        <div className="pc-advfeed__clarity-main">
-          <Radio size={13} aria-hidden />
-          <span>
-            Every coordination envelope across the fleet — messages, broadcasts, handoffs, escalations & plan events, newest first.
-          </span>
-        </div>
-        <div className="pc-advfeed__stat">
-          <span>Matching</span>
-          <strong>{meta ? `${meta.total} matching` : head.loading ? 'loading…' : '0 matching'}</strong>
-        </div>
-        <div className="pc-advfeed__stat">
-          <span>Window</span>
-          <strong>{roots.length} shown</strong>
-        </div>
-        <div className="pc-advfeed__signals" aria-label="Feed signal summary">
-          <span><Megaphone size={11} aria-hidden /> {signalStats.broadcastCount} broadcast</span>
-          <span><UserRound size={11} aria-hidden /> {signalStats.humanCount} human</span>
-          <span><AlertTriangle size={11} aria-hidden /> {signalStats.escalationCount} escalation</span>
-        </div>
-        <button
-          type="button"
-          className="pc-coord__chip pc-advfeed__refresh"
-          aria-label="Reload feed"
-          disabled={head.fetching}
-          onClick={() => head.invalidate()}
-        >
-          <RefreshCw size={11} aria-hidden />
-        </button>
-      </div>
-
       {/* Filters — all nuqs */}
       <div className="pc-advfeed__filters">
         <div className="pc-advfeed__filterhead">
-          <span>
-            <SlidersHorizontal size={12} aria-hidden />
-            Narrow the signal
-          </span>
-          <strong>{filtersActive ? `${activeFilterCount} active` : 'unfiltered'}</strong>
+          <div>
+            <span>
+              <SlidersHorizontal size={12} aria-hidden />
+              Filter activity
+            </span>
+            <p>Raw coordination events for debugging, newest first.</p>
+          </div>
+          <div className="pc-advfeed__filtermeta">
+            <strong>{meta ? `${meta.total} matching` : head.loading ? 'loading…' : '0 matching'}</strong>
+            <span>{roots.length} shown</span>
+            <button
+              type="button"
+              className="pc-coord__chip pc-advfeed__refresh"
+              aria-label="Reload activity log"
+              disabled={head.fetching}
+              onClick={() => head.invalidate()}
+            >
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
         </div>
-        <div className="pc-coord__filters" role="group" aria-label="Kind filter">
+        <div className="pc-advfeed__needsline" aria-label="Activity summary">
+          <span><UserRound size={11} aria-hidden /> {signalStats.humanCount} to human</span>
+          <span><AlertTriangle size={11} aria-hidden /> {signalStats.escalationCount} escalation</span>
+          <span><Megaphone size={11} aria-hidden /> {signalStats.broadcastCount} broadcast</span>
+          <strong>{filtersActive ? `${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'} active` : 'No filters'}</strong>
+        </div>
+        <div className="pc-coord__filters pc-advfeed__kindgroups" role="group" aria-label="Activity category filter">
+          {FEED_KIND_GROUPS.map((g) => {
+            const active = g.kinds.some((k) => kinds.includes(k));
+            const n = groupCount(g.kinds);
+            return (
+              <button
+                key={g.id}
+                type="button"
+                className={`pc-coord__chip pc-advfeed__groupchip${active ? ' is-active' : ''}`}
+                onClick={() => toggleKindGroup(g.kinds)}
+                aria-pressed={active}
+                title={g.description}
+              >
+                {g.label}
+                {n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className={`pc-coord__chip pc-advfeed__advancedtoggle${advancedKinds === 'open' ? ' is-active' : ''}`}
+            onClick={() => void setAdvancedKinds(advancedKinds === 'open' ? 'closed' : 'open')}
+            aria-expanded={advancedKinds === 'open'}
+          >
+            Advanced / all kinds
+          </button>
+        </div>
+        {advancedKinds === 'open' && (
+          <div className="pc-coord__filters pc-advfeed__rawkinds" role="group" aria-label="Raw kind filter">
           {FEED_KINDS.map((k) => {
-            // byKind is keyed by real CoordKind; 'broadcast' is synthetic (no
-            // count — it cross-cuts every kind).
-            const n = k === 'broadcast' ? undefined : meta?.byKind?.[k];
+            // byKind is keyed by real CoordKind; 'broadcast' is synthetic and
+            // cross-cuts every kind, so count it from loaded rows.
+            const n = rawKindCount(k);
             const active = kinds.includes(k);
             return (
               <button
@@ -378,12 +428,13 @@ function FeedView() {
                 aria-pressed={active}
               >
                 <span className="pc-advfeed__kinddot" style={{ background: KIND_COLOR[k] ?? '#64748b' }} aria-hidden />
-                {k}
+                {kindLabel(k)}
                 {typeof n === 'number' && n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
               </button>
             );
           })}
-        </div>
+          </div>
+        )}
         <div className="pc-advfeed__inputs">
           <label className="pc-advfeed__field">
             <span>Agent</span>
@@ -440,11 +491,11 @@ function FeedView() {
         {head.loading && allRows.length === 0 ? (
           <p className="pc-coord__empty pc-advconv__empty">Loading the coordination feed…</p>
         ) : head.error ? (
-          <p className="pc-coord__empty pc-advconv__empty">Feed unavailable: {head.error.message}</p>
+          <p className="pc-coord__empty pc-advconv__empty">Activity log unavailable: {head.error.message}</p>
         ) : roots.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No matching traffic</strong>
-            <span>Clear a filter or broaden the search to return the fleet stream.</span>
+            <span>Clear a filter or broaden the search to return activity.</span>
           </div>
         ) : (
           grouped.map((g) => (
@@ -915,71 +966,73 @@ function AdvConvStyles() {
         gap: 12px;
         padding: 1px;
         color: var(--fg, #dceaf6);
-        background: linear-gradient(180deg, color-mix(in srgb, var(--bg-deep, #050d18), transparent 24%), transparent 220px);
+        background: var(--advconv-bg);
       }
-      .pc-advconv__hero {
+      .pc-advconv__header {
         position: relative;
-        display: flex;
-        align-items: stretch;
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) auto auto;
+        align-items: center;
         justify-content: space-between;
-        gap: 16px;
+        gap: 12px;
         flex: 0 0 auto;
-        padding: 16px;
+        padding: 12px;
         border: 1px solid var(--advconv-border);
-        border-radius: 18px;
+        border-radius: 16px;
         overflow: hidden;
-        background: linear-gradient(180deg, var(--advconv-panel-strong), color-mix(in srgb, var(--bg-1, #0b1220), transparent 16%));
+        background: var(--advconv-panel-strong);
         box-shadow: none;
       }
-      .pc-advconv__hero::after {
-        content: "";
-        position: absolute;
-        inset: auto 18px 0 18px;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, var(--advconv-border-strong), transparent);
-      }
-      .pc-advconv__hero-copy { position: relative; z-index: 1; max-width: 740px; }
-      .pc-advconv__eyebrow {
-        display: inline-flex;
-        margin-bottom: 6px;
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        color: var(--advconv-accent-strong);
-      }
-      .pc-advconv__hero h1 {
+      .pc-advconv__header-copy { position: relative; z-index: 1; min-width: 0; }
+      .pc-advconv__header h1 {
         margin: 0;
-        font-size: clamp(24px, 3.6vw, 40px);
-        line-height: 0.95;
-        letter-spacing: -0.055em;
+        font-size: clamp(22px, 3vw, 32px);
+        line-height: 1;
+        letter-spacing: -0.04em;
         color: var(--fg, #e7f7ff);
       }
-      .pc-advconv__hero p {
-        margin: 8px 0 0;
+      .pc-advconv__header p {
+        margin: 6px 0 0;
         color: var(--fg-mute, #9fb6cc);
         font-size: 13px;
         line-height: 1.45;
       }
-      .pc-advconv__herochips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 7px;
-        margin-top: 12px;
+      .pc-advconv__needs {
+        display: grid;
+        gap: 2px;
+        min-width: 158px;
+        padding: 9px 11px;
+        border-radius: 14px;
+        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b), transparent 62%);
+        background: var(--advconv-warn-soft);
+        color: var(--fg, #e7f7ff);
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
       }
-      .pc-advconv__herochips span {
+      .pc-advconv__needs:hover {
+        border-color: color-mix(in oklab, var(--warn, #f59e0b), transparent 40%);
+        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 84%);
+      }
+      .pc-advconv__needs-kicker {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        min-height: 26px;
-        padding: 3px 9px;
-        border-radius: 999px;
-        border: 1px solid var(--advconv-border);
-        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 22%);
-        color: var(--fg-dim, #b9d4e8);
-        font-size: 11px;
-        font-weight: 750;
-        box-shadow: none;
+        gap: 5px;
+        color: var(--warn, #f59e0b);
+        font-size: 10px;
+        font-weight: 850;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .pc-advconv__needs strong {
+        color: var(--fg, #e7f7ff);
+        font-size: 14px;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-advconv__needs em {
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 10px;
+        font-style: normal;
       }
       .pc-advconv .pc-coord__chip {
         transition: background-color 140ms, border-color 140ms, color 140ms;
@@ -1487,6 +1540,9 @@ function AdvConvStyles() {
         color: var(--fg-mute, #8aa3bc);
         font-size: 11px;
       }
+      .pc-advfeed__filterhead > div:first-child {
+        min-width: 0;
+      }
       .pc-advfeed__filterhead span {
         display: inline-flex;
         align-items: center;
@@ -1496,7 +1552,22 @@ function AdvConvStyles() {
         letter-spacing: 0.1em;
         text-transform: uppercase;
       }
-      .pc-advfeed__filterhead strong {
+      .pc-advfeed__filterhead p {
+        margin: 4px 0 0;
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .pc-advfeed__filtermeta {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .pc-advfeed__filtermeta strong,
+      .pc-advfeed__filtermeta span,
+      .pc-advfeed__needsline strong {
         display: inline-flex;
         align-items: center;
         min-height: 22px;
@@ -1507,6 +1578,50 @@ function AdvConvStyles() {
         color: var(--fg, #e7f7ff);
         font-size: 10px;
         font-variant-numeric: tabular-nums;
+      }
+      .pc-advfeed__filtermeta span {
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 38%);
+        color: var(--fg-mute, #9fb6cc);
+      }
+      .pc-advfeed__needsline {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding: 6px;
+        border-radius: 12px;
+        border: 1px solid color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 58%);
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 44%);
+      }
+      .pc-advfeed__needsline span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 24px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        color: var(--fg-dim, #b9d4e8);
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 34%);
+        border: 1px solid var(--advconv-border);
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .pc-advfeed__needsline strong {
+        margin-left: auto;
+      }
+      .pc-advfeed__kindgroups {
+        gap: 6px;
+      }
+      .pc-advfeed__groupchip,
+      .pc-advfeed__advancedtoggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .pc-advfeed__rawkinds {
+        padding-top: 2px;
       }
       .pc-advfeed__kindchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
       .pc-advfeed__kinddot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
@@ -1762,7 +1877,7 @@ function AdvConvStyles() {
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: var(--advconv-border-strong); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
       @media (max-width: 920px) {
-        .pc-advconv__hero { flex-direction: column; }
+        .pc-advconv__header { grid-template-columns: 1fr; }
         .pc-advconv__viewtabs { align-self: stretch; }
         .pc-advconv__viewtab { justify-content: center; }
         .pc-advconv__detailhead { flex-direction: column; }
@@ -1789,10 +1904,17 @@ function AdvConvStyles() {
         }
       }
       @media (max-width: 620px) {
-        .pc-advconv__hero { padding: 13px; border-radius: 15px; }
+        .pc-advconv__header { padding: 11px; border-radius: 15px; }
         .pc-advfeed__clarity { grid-template-columns: 1fr; }
         .pc-advfeed__stat { min-width: 0; }
         .pc-advfeed__signals { grid-template-columns: 1fr; }
+        .pc-advfeed__filterhead,
+        .pc-advfeed__filtermeta,
+        .pc-advfeed__needsline {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .pc-advfeed__needsline strong { margin-left: 0; }
         .pc-advconv__rowdate { position: static; grid-column: 2; max-width: none; }
         .pc-advconv__threads .pc-coord__row-title { padding-right: 0; }
         .pc-advfeed__inputs { flex-direction: column; }
