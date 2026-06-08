@@ -7,24 +7,24 @@ Ctrl+P commands come from lib/commands (Action Registry, browser-reflexive); age
 
 There are **two** "invokable thing" registries, and they are easy to confuse:
 
-1. **Action Registry** — `apps/operator/lib/commands/`. `CommandDef`s registered via
+1. **Action Registry** — `packages/operator-core/lib/commands/`. `CommandDef`s registered via
    `register()`. **Browser-reflexive**: they run in the tab (mutate DOM / nuqs / URL),
    `browser: 'required'|'optional'|'none'`. Surfaces: the ⌘K palette, keyboard shortcuts,
    voice, the mobile webhook. Discovery: `list({ kind:'command', agent:'palette' })`.
 
-2. **tooldef / endpoint catalog** — `defineTool()` in `apps/operator/lib/agent-tools/`
-   (+ `packages/tooldef`, `packages/agent-mcp`). **Server-side, gated, audited**. Surfaces:
+2. **tooldef / endpoint catalog** — `defineTool()` in `packages/operator-core/lib/agent-tools/`
+   (+ `libs/generic/tooldef`, `packages/agent-mcp`). **Server-side, gated, audited**. Surfaces:
    the MCP transport (`papercusp-su` + in-app agents) and HTTP routes. Discovery:
    `getCatalog()` / `listAllProjectedTools()`.
 
 They share **no** definition substrate. The only long-standing seam is
-`lib/endpoint-route/routes/agent-mcp/run-command.ts` — itself a `defineTool` route that
+`packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-command.ts` — itself a `defineTool` route that
 bridges an agent's command id to a live browser tab (`session-registry.deliver`). The
 Action Registry's `types.ts` header still claims it's "the single source of truth for
 Oracle/Pi MCP" — that's **stale**; conversational agents read the tooldef
-`mcp__agentmcp__*` catalog (`lib/operator-mcp-tools.ts`).
+`mcp__agentmcp__*` catalog (`packages/operator-core/lib/operator-mcp-tools.ts`).
 
-## What `lib/capabilities/` does
+## What `packages/operator-core/lib/capabilities/` does
 
 Plan `capability-metadata-contract-2026-05-31`. The `Capability` contract unifies the two
 **at the read/projection layer only** — it does **not** merge the definition systems (a

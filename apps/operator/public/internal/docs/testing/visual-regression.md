@@ -23,12 +23,12 @@ npm run lostpixel:update --workspace libs/generic/ui-primitives
 
 ## What's covered today
 
-| Package                      | Stories                | Baselines | Storybook port |
-| ---------------------------- | ---------------------- | --------- | -------------- |
-| `libs/ui-primitives`         | 18 across 4 components | 21 PNGs   | `:6006`        |
-| `libs/marketplace-public-ui` | 9 across 2 components  | 9 PNGs    | `:6007`        |
-| `libs/agent-chat`            | 7 across 2 components  | 7 PNGs    | `:6008`        |
-| `apps/operator`              | 10 across 3 components | 10 PNGs   | `:6009`        |
+| Package                      | Stories      | Baselines | Storybook port |
+| ---------------------------- | ------------ | --------- | -------------- |
+| `libs/generic/ui-primitives` | 6 components | 33 PNGs   | `:6006`        |
+| `libs/marketplace-public-ui` | 3 components | 14 PNGs   | `:6007`        |
+| `libs/agent-chat`            | 2 components | 7 PNGs    | `:6008`        |
+| `apps/operator`              | 3 components | 10 PNGs   | `:6009`        |
 
 ## Adding a story
 

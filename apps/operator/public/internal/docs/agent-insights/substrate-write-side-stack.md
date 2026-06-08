@@ -3,6 +3,24 @@ URL: /internal/docs/agent-insights/substrate-write-side-stack
 
 The 7-layer pattern for shipping a new Hyperbee-backed write path (substrate write helper → PG projection → HTTP wrapper → polling read hook → pure UI → client wrapper → list integration). Shipped in batch for feature_queue (P-032) and contributors (P-033) on 2026-05-25; document so the next per-table pickup can replicate without rediscovering.
 
+import { Aside } from '@astrojs/starlight/components';
+
+The **server layers (1–4)** all moved out of `apps/operator/lib/` into
+`packages/operator-core/lib/sync/hyperbee/**` and
+`packages/operator-core/lib/endpoint-route/routes/harness/**` — the
+write helpers, projections, `load-queue-membership`, and the
+`feature-queue` route still exist there and the route is still mounted.
+But the **UI layers (5–7)** named in the worked examples below —
+`useQueueMembership`, `QueueAvatarCluster`, `PullToQueueButton(Client)`,
+the `FeatureList.tsx`/`FeatureFilterChips` integration, and the
+`ContributorsTab`/`ContributorRow` surfaces — **no longer exist** in the
+tree (the operator UI moved to the Vite SPA and those write-side surfaces
+were not carried over). Treat the 7-layer shape as the still-valid
+*pattern*, but don't expect to find those exact UI files. The `app/harness/insights/`
+directory today holds the substrate-*diagnostic* components
+(`SubstrateStatusBadge`, `BootstrapProgressIndicator`, `ClaimAttemptStatsPill`, …),
+not the feature-queue write UI.
+
 ## When this applies
 
 You are adding (or wiring up) a Hyperbee-backed table that users can
@@ -19,34 +37,33 @@ Each Hyperbee write-table follows the same shape:
 ```
 ┌───────────────────────────────────────────────────────────┐
 │ 1. Substrate write helper                                  │
-│    lib/sync/hyperbee/write-<table>.ts                      │
+│    packages/operator-core/lib/sync/hyperbee/write-<table>.ts│
 │    Pure: takes BootedHarnessHandle + row, appends op.      │
 ├───────────────────────────────────────────────────────────┤
 │ 2. PG projection (existing)                                │
-│    lib/sync/hyperbee/projections/<table>.ts                │
+│    .../lib/sync/hyperbee/projections/<table>.ts            │
 │    Substrate's applyHyperbeeOpToPg fans the op to here.    │
 ├───────────────────────────────────────────────────────────┤
 │ 3. PG reader                                               │
-│    lib/sync/hyperbee/load-<table>-membership.ts            │
+│    .../lib/sync/hyperbee/load-<table>-membership.ts        │
 │    Pure: SELECT joined with `contributors` for UI.         │
 ├───────────────────────────────────────────────────────────┤
 │ 4. HTTP wrapper                                            │
-│    lib/endpoint-route/routes/harness/<table>.ts            │
+│    .../lib/endpoint-route/routes/harness/<table>.ts        │
 │    GET membership; POST per write verb.                    │
 │    substrate-off → 200 + reason='substrate-off'.           │
 ├───────────────────────────────────────────────────────────┤
 │ 5. Polling read hook                                       │
-│    app/harness/insights/use<Table>Membership.ts            │
+│    use<Table>Membership.ts (UI layer)                      │
 │    Polls every 8s; pauses when document.hidden.            │
 │    Returns {map, membersFor, isQueued, refresh}.           │
 ├───────────────────────────────────────────────────────────┤
 │ 6. Pure UI primitives                                      │
-│    app/harness/insights/<Table>AvatarCluster.tsx (read)   │
-│    app/harness/<Action>Button.tsx (write)                  │
+│    <Table>AvatarCluster.tsx (read) / <Action>Button.tsx    │
 │    No state; consumer feeds props.                         │
 ├───────────────────────────────────────────────────────────┤
 │ 7. Client wrapper                                          │
-│    app/harness/insights/<Action>ButtonClient.tsx           │
+│    <Action>ButtonClient.tsx                                │
 │    Optimistic flip + POST + revert on failure.             │
 └───────────────────────────────────────────────────────────┘
                           │
@@ -91,16 +108,16 @@ changes. The UI shows "—" before flip, real data after.
 
 What was shipped on 2026-05-25 for P-031b → P-032:
 
-1. `lib/sync/hyperbee/write-feature-queue.ts` (enqueueFeature/dequeueFeature)
-2. `lib/sync/hyperbee/projections/feature-queue.ts` (was already there)
-3. `lib/sync/hyperbee/load-queue-membership.ts` (PG joined w/ contributors)
-4. `lib/endpoint-route/routes/harness/feature-queue.ts` (3 routes)
-5. `app/harness/insights/useQueueMembership.ts`
-6. `app/harness/insights/QueueAvatarCluster.tsx` + `PullToQueueButton.tsx`
-7. `app/harness/insights/PullToQueueButtonClient.tsx`
+1. `packages/operator-core/lib/sync/hyperbee/write-feature-queue.ts` (enqueueFeature/dequeueFeature)
+2. `packages/operator-core/lib/sync/hyperbee/projections/feature-queue.ts` (was already there)
+3. `packages/operator-core/lib/sync/hyperbee/load-queue-membership.ts` (PG joined w/ contributors)
+4. `packages/operator-core/lib/endpoint-route/routes/harness/feature-queue.ts` (still mounted)
+5. `useQueueMembership.ts` — **removed** (UI layer not carried to the Vite SPA)
+6. `QueueAvatarCluster.tsx` + `PullToQueueButton.tsx` — **removed**
+7. `PullToQueueButtonClient.tsx` — **removed**
 
-* list integration: `FeatureList.tsx` toolbar (`FeatureFilterChips`)
-  * per-row column (`QueueAvatarCluster` + `PullToQueueButtonClient`).
+* list integration (`FeatureList.tsx` / `FeatureFilterChips`) — **removed**.
+  (Layers 1–4 above are real; 5–7 are historical — see the Update note at top.)
 
 Commits: `2501088c` `c9861001` `139e6a7b` `310c87e2` `6a7dee42`
 `730119af` `7397a7ce` `1240532e` `2dd0b34b`.
@@ -109,8 +126,8 @@ Commits: `2501088c` `c9861001` `139e6a7b` `310c87e2` `6a7dee42`
 
 Same shape, fewer write verbs:
 
-1. `lib/sync/hyperbee/write-contributor-row.ts` (publishContributorRow)
-2. `lib/sync/hyperbee/projections/contributors.ts` (was already there)
+1. `packages/operator-core/lib/sync/hyperbee/write-contributor-row.ts` (publishContributorRow)
+2. `packages/operator-core/lib/sync/hyperbee/projections/contributors.ts` (was already there)
 3. PG read happens directly inside step8 — no separate `load-` module
    needed because `contributors` rows go to a dedicated PG table whose
    readers already exist (`/harness/:slug/contributors` route).
@@ -158,8 +175,14 @@ proper test rig.
 
 ## What's still missing
 
-The clobber-toast subscriber side (lib/sync/hyperbee/clobber-events.ts)
-emits events on the server but has no SSE/HTTP delivery channel to
-the browser yet. When you wire that, it's an 8th layer — the
-projection writer's apply path calls `observeMergedOp` + the SSE
-projector forwards the event to a per-client EventSource.
+**Update:** the clobber-toast delivery channel has since been built.
+`packages/operator-core/lib/sync/hyperbee/clobber-events.ts` emits
+`clobber` events on the server, and
+`packages/operator-core/lib/endpoint-route/routes/harness/clobber-stream.ts`
+(`GET /api/harness/:slug/clobber-stream` → `text/event-stream`, Phase 5b
+P-035) now forwards each emission as an SSE `clobber` event to a
+browser-side `ClobberToast`. It emits all clobber events globally and
+relies on the browser-side per-row `hbKey` filter to scope what the
+user sees (per-harness filtering at the SSE side is deferred — the
+event doesn't carry the source harness slug, and the operator boots one
+harness per process today).

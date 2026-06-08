@@ -135,6 +135,7 @@ Expected fields:
     "PAPERCUSP_HARNESS_SLUG": "sheets",
     "PAPERCUSP_WORKSPACE": "default",
     "PAPERCUSP_API_BASE": "http://127.0.0.1:3070",
+    "PAPERCUSP_OPERATOR_URL": "http://127.0.0.1:3070",
     "PAPERCUSP_HOME": "/home/.../.papercusp-workspaces/default",
     "PAPERCUSP_SCRIPTS_DIR": "/home/.../apps/operator/scripts",
     "PI_CODING_AGENT_DIR": "/home/.../sheets-clone/.papercusp/pi-sessions"
@@ -162,12 +163,13 @@ tools + 36 plugin tools are exposed via `?superuser=1`:
 
 * **Read workspace state**: `harness:status`, `tasks:list`,
   `features:get`, `goals:list`, `issues:list`, `messages:inbox`.
-* **Operator surface**: `operator:scans_list`, `operator:audit`,
-  `operator:nudge`, `operator:scanner_reset`.
+* **Operator surface**: `operator:audit`, `operator:nudge`.
 * **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
-* **Spawn other agents** (Phase 9 primitive): `orchestrator.spawn`,
-  `orchestrator.poll`, `orchestrator.list_active`, `orchestrator.cancel`.
+* **Spawn / supervise other agents** (the `fleet:*` surface):
+  `fleet:spawn`, `fleet:supervise`, `fleet:cancel`, `fleet:tree`,
+  `fleet:assignments`. (The old `orchestrator.spawn` plugin was retired
+  2026-06-06 — superseded by `fleet/operator-spawn.ts`.)
 * **Plugin tools**: `repomix.pack`, `gitnexus.*`, `firecrawl.*`,
   `code2prompt.*`, `fetch_plus.*`.
 
@@ -188,13 +190,13 @@ Every call is recorded in `harness_shared.tool_invocations` with
 
 ## Where the code lives
 
-| File                                                       | Role                                                        |
-| ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `apps/operator/app/_components/ConsoleLauncherButton.tsx`  | The button + terminal icon SVG                              |
-| `apps/operator/lib/native-console.ts`                      | Renderer-side wrapper around `commands.consoleLaunch`       |
-| `apps/operator/lib/console-launcher.ts`                    | Server-side envelope builder                                |
-| `apps/operator/app/api/agent-mcp/console/resolve/route.ts` | The HTTP endpoint                                           |
-| `apps/operator/scripts/papercup-status.mjs`                | The greeting CLI shown on first line                        |
-| `apps/operator/scripts/papercup`                           | Bash dispatcher shim                                        |
-| `papercusp-desktop/src-tauri/src/native_console.rs`        | The Tauri command + per-OS spawners                         |
-| `apps/operator/lib/spawn-config.ts`                        | Shared primitives (cwd/env) between Pi pty + native console |
+| File                                                                            | Role                                                        |
+| ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `apps/operator/app/_components/ConsoleLauncherButton.tsx`                       | The button + terminal icon SVG                              |
+| `packages/operator-core/lib/native-console.ts`                                  | Renderer-side wrapper around `commands.consoleLaunch`       |
+| `packages/operator-core/lib/console-launcher.ts`                                | Server-side envelope builder (`buildConsoleEnvelope`)       |
+| `packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-resolve.ts` | The Hono `POST /api/agent-mcp/console/resolve` handler      |
+| `apps/operator/scripts/papercup-status.mjs`                                     | The greeting CLI shown on first line                        |
+| `apps/operator/scripts/papercup`                                                | Bash dispatcher shim                                        |
+| `papercusp-desktop/src-tauri/src/native_console.rs`                             | The Tauri command + per-OS spawners                         |
+| `packages/operator-core/lib/spawn-config.ts`                                    | Shared primitives (cwd/env) between Pi pty + native console |

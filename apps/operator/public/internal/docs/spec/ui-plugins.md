@@ -27,7 +27,7 @@ Phase v2 (when marketplace ships): same plugin manifest, but plugins ship as JS 
 ### 8.3 Plugin manifest (UI portion)
 
 ```
-// packages/papercusp-plugin-sdk/src/index.ts (extended)
+// packages/plugin-sdk/src/index.ts (extended) — the live interface is `Plugin`
 export interface PapercuspPlugin {
   name: string;
   version: string;
@@ -63,6 +63,19 @@ export interface HarnessUIProps {
 ```
 
 ### 8.3.1 Manifest authoring — TS source, frozen JSON output
+
+Implemented (current state): the manifest is authored
+directly as papercusp.json (validated against
+papercusp-plugin.schema.json with
+additionalProperties: false); the runtime entry point is a
+Plugin literal in index.cjs that asserts
+satisfies Plugin, so component/handler references are
+type-checked there. The defineManifest() /
+papercusp build / jsonOnly TS-source flow
+described below did not ship — it is preserved here as design
+rationale. See the
+authoring quickstart
+for the live manifest shape.
 
 The manifest is authored as TypeScript, not JSON. Component refs are
 type-checked at build time, eliminating the "componentId typo →
@@ -196,6 +209,22 @@ long-term health. Without it, "this plugin worked yesterday" becomes
 the most common bug class.
 
 ### 8.5 The hooks system (WordPress-inspired)
+
+Implemented (current state): the shipped
+PluginHookBus (in @papercusp/plugin-sdk)
+exposes addAction(event, handler),
+addFilter(event, handler), and
+emit(event, arg), gated by
+events:listen:\<name> /
+events:emit:\<name> capabilities. The substrate
+enforces the event-namespace rule (substrate-reserved prefixes —
+mission. task. feature. proposal. worker. validator.
+orchestrator. pending\_event. — are rejected; plugin events
+must be prefixed with the plugin id). The richer ordering /
+guard / slot machinery in §8.5.1–§8.5.5 below
+(named predicates, integer priority, addGuard/VETO,
+useSlot/declareAction) is design intent and
+is not in the shipped SDK.
 
 Plugins extend behaviour without modifying core, via named hooks:
 
@@ -527,6 +556,14 @@ When the marketplace ships, plugins load as iframes:
 
 Same plugin code, same DI calls — only the loader changes. CSP enforces network allowlist; iframe sandbox enforces no DOM/storage access outside the plugin.
 
+Implemented (current state): the
+@papercusp/plugin-sdk/iframe subpath has shipped, but the
+v2 sandbox model above is still design intent. The live iframe-bridge
+surface is initPapercupIframe() plus the
+usePapercupAction / usePapercupEvent /
+usePapercupQuery helpers (not a single
+connectHostApi() handshake as sketched here).
+
 ### 8.7 Two distribution channels: tarball-install vs iframe-CDN
 
 The marketplace described in §11 ships tarballs that get installed locally and run in-process with the substrate. The iframe model in §8.6 describes a different channel — CDN-hosted iframe widgets. Both will exist; they target different use cases:
@@ -561,27 +598,27 @@ iframe RPC will hit jank that no engineering inside the plugin can fix.
 ### 8.8 Iframe-host routes inside the operator app
 
 An iframe-mode dashboard tab (manifest iframeUrlConfigKey or
-iframeUrl) can point at any URL — a separate origin like
-localhost:8082 for code-server, or a route on the operator
-itself. The latter is the
+iframeUrl on a dashboardTabs\[] entry) can point at any
+URL — a separate origin like localhost:8082 for code-server, or a
+route on the operator itself. The latter is the
 iframe-host route pattern: the plugin contributes nothing
 but a manifest, and the operator app renders the actual UI at a dedicated
-route. @papercupai/pi-coding (manifest →
-[http://localhost:3055/pi](http://localhost:3055/pi)) and @papercupai/fumadocs
-(manifest → [http://localhost:3055/docs](http://localhost:3055/docs)) both follow this shape.
+route. @papercupai/fumadocs follows this shape today —
+its tab declares iframeUrlConfigKey: "docsUrl", defaulting to
+[http://localhost:3055/project-docs](http://localhost:3055/project-docs). (@papercupai/pi-coding
+originally used this pattern pointing at /pi, but has since moved
+to an inline React dock — componentRoot/componentId
+with embedMode: "inline-dock" — rather than an iframe.)
 
 Two non-obvious requirements when adding such a route:
 
 Replicate provider context. The route inherits only the
 app's root layout. Components that "just work" inside
-/harness/\* may rely on providers in
-app/harness/layout.tsx (for example
-Tooltip.Provider, HarnessZeroProvider). SSR
-will throw "Tooltip must be used within TooltipProvider"
-and Next falls back to client rendering — visible in the
-data-msg= attribute of the SSR HTML's
-\<template> tag. Replicate just the providers the
-embedded component actually uses.
+/harness/\* may rely on harness-scoped providers (for example
+Tooltip.Provider, HarnessZeroProvider) that the
+root layout doesn't supply, throwing
+"Tooltip must be used within TooltipProvider" at render.
+Replicate just the providers the embedded component actually uses.
 Strip the global chrome. The operator's root layout
 always renders the top nav, OracleDock, and Chatwoot widget. Inside an
 iframe-tab those are noise. Drop in
@@ -590,8 +627,8 @@ it adds the papercusp-chromeless body class, which
 globals.css uses to hide
 .pc-header, #chatwoot\_live\_chat\_widget, and
 \[data-oracle-dock]. Pass auto when the route
-is also meaningful standalone (e.g. /docs, where
-direct visitors should still see chrome) — it will only apply
+is also meaningful standalone (e.g. /project-docs,
+where direct visitors should still see chrome) — it will only apply
 chromeless when window\.self !== window\.top.
 
 The plugin manifest's replaces: \['\<built-in-id>'] array

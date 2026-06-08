@@ -3,13 +3,25 @@ URL: /internal/docs/agent-insights/substrate-diagnostic-stack
 
 The full flag-gated substrate boot + claim + bootstrap-progress + admin diagnostic stack. What each piece does, what URL surfaces them, and how to verify a substrate-enabled harness end-to-end.
 
+import { Aside } from '@astrojs/starlight/components';
+
+The `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` opt-in gate **was removed** — the
+Model B substrate now **always boots** in-process (verified: `in-process-status.ts`
+
+* `share-finalize.ts` only mention the var in "the gate was removed" comments;
+  no code reads `process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` anymore, and
+  `.env.local` setting it is a no-op). `substrateActive` is constant-`true` at
+  runtime; it is `false` ONLY when a test forces `forceDisabledForTest`. So the
+  diagnostic surfaces below are still real and useful, but the "set the env var
+  and restart" framing throughout this page is stale — there is no flag to flip.
+  Read the surfaces as "always-on diagnostics," not "flag-gated."
+
 ## What this is
 
-When the dogfood-v5 substrate is enabled
-(`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`) every workspace gets a per-
-harness Hyperbee + Autobase substrate running in-process. Several
-diagnostic surfaces let you verify the substrate is alive, ops are
-merging, and the orchestrator is using the distributed claim engine.
+The Model B substrate gives every workspace a per-harness Hyperbee +
+Autobase substrate running in-process. Several diagnostic surfaces let
+you verify the substrate is alive, ops are merging, and the orchestrator
+is using the distributed claim engine.
 
 The pieces are layered so each can be exercised in isolation. If you
 have to debug a substrate problem, walk the layers top-down until you
@@ -83,40 +95,43 @@ harnessSlug })`:
 
 ### 6. Substrate boot
 
-`bootHarnessSubstrate({ workspaceRoot, workspaceId, harnessSlug })`:
+`bootHarnessSubstrate({ workspaceRoot, workspaceId, harnessSlug })`
+(`packages/operator-core/lib/sync/hyperbee/boot.ts`):
 
 1. Open per-harness corestore.
 2. Build Autobase view with schema-version filter.
-3. Register all 8 per-table PG projection writers.
-4. Start `startBootstrapProgressPoller` (P-066). Polls
-   `base.view.length` every 1s and calls `recordMergedOps`.
+3. Register all per-table PG projection writers via
+   `registerAllHarnessProjections` (`projections/register-all.ts` —
+   the `buildHarnessProjections` array is the single source of truth
+   for the set; it has grown well past the original 8, so trust the
+   array, not any "N projections" comment).
+4. Start `startBootstrapProgressPoller`. Polls `base.view.length`
+   every 1s and calls `recordMergedOps`.
 
-`close()` reverses all 4 in inverse order (poller stop → autobase
-close → store close).
+`close()` reverses in inverse order (poller stop → autobase close →
+store close).
 
-Called from `instrumentation-node.ts` gated by the env var.
+Boot is invoked during the join/default-boot wiring, gated by the env var.
 
 ## End-to-end verification checklist
 
-1. Set `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` + restart operator.
-2. Open `/admin/dogfood-substrate` — top badge should be green
+1. (No flag to set — the substrate always boots.) Open
+   `/admin/dogfood-substrate` — top badge should be green
    "Substrate live (N harnesses)".
-3. Per-row bootstrap pill should appear once any ops merge.
-4. Trigger a feature claim race. The claim-audit pill should grow
+2. Per-row bootstrap pill should appear once any ops merge.
+3. Trigger a feature claim race. The claim-audit pill should grow
    `won` and (if multi-writer) `lost` counts.
-5. Pick a slug → curl `/api/harness/<slug>/claim-attempts` — rows
+4. Pick a slug → curl `/api/harness/<slug>/claim-attempts` — rows
    should match the pill.
 
-## What's gated behind the flag
+## Gating (historical — the flag is gone)
 
-Everything in this stack is wired BUT inert when
-`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` is unset:
-
-* Substrate handles never enter the boot map.
-* `attemptDistributedClaim` always returns `substrate-not-booted`.
-* `bootstrap-progress` tracker is empty (no `recordMergedOps` calls).
-* Admin page shows the empty-state copy explaining the flag.
-
-The orchestrator's legacy single-writer path is therefore the *only*
-thing that runs unless the flag is on — turning the flag off mid-run
-is safe; the orchestrator just falls back.
+**Update:** this section described the now-removed
+`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` gate. With Model B / Stage 4d the
+substrate always boots, so the "inert when unset" behavior no longer
+exists. The orchestrator still falls back to the single-writer path
+**per (workspace, harness) when a substrate handle is absent** —
+`getClaimStrategy` returns `'distributed'` only when `getBootedHandle`
+finds a booted handle, else `'single-writer'`, and `attemptDistributedClaim`
+still returns `substrate-not-booted` when the handle is missing — but
+that is now driven by boot success, not by a flag.

@@ -45,15 +45,15 @@ plugs into.
 Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four**
 test frameworks ship new tests. Everything else is being migrated out.
 
-| Framework         | File shape                     | Where                                      | Discovered by                                       |
-| ----------------- | ------------------------------ | ------------------------------------------ | --------------------------------------------------- |
-| **Vitest**        | `*.test.ts` next to source     | per-package                                | `/admin/testing` registry globs                     |
-| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                       | `harness` / domain-specific E2E sections            |
-| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                             | `cargo test --message-format=json` reporter (P-012) |
-| **LLM scenarios** | `.ts` / `.yaml`                | `apps/operator/lib/llm-testing/scenarios/` | LLM testing tab                                     |
+| Framework         | File shape                     | Where                                               | Discovered by                                       |
+| ----------------- | ------------------------------ | --------------------------------------------------- | --------------------------------------------------- |
+| **Vitest**        | `*.test.ts` next to source     | per-package                                         | `/admin/testing` registry globs                     |
+| **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                                | `harness` / domain-specific E2E sections            |
+| **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                                      | `cargo test --message-format=json` reporter (P-012) |
+| **LLM scenarios** | `.ts` / `.yaml`                | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab                                     |
 
 **Where tests appear in the UI:** drop a test file under one of the
-glob-matched paths in `apps/operator/lib/testing-domains-registry.ts`
+glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts`
 and it shows up automatically in the matching `/admin/testing` subtab
 (and the `/adv` Tests tab) — no registration step. The shared
 `<DomainTestPanel>` walks the server-side glob at every request, so
@@ -71,12 +71,13 @@ is **generated** from the registry — run `npm run gen:contract` after
 changing domains (CI's `gen:contract:check` fails if it drifted). Do not
 hand-edit the JSON.
 
-**Coverage guard (no test is invisible).** `npm run lint:tests`
-(CI-gated) fails if any canonical `*.test.ts(x)` / `*.spec.ts` matches
-**no** registry glob — i.e. would be invisible in the tab. This caught
-the 2026-06-02 audit finding that 614 of 1168 tests were orphaned. When
-it fires, widen a domain's globs (or add a domain) in the registry, then
-`npm run gen:contract`.
+**Coverage guard (no test is invisible).** `npm run lint:tests` (from
+`apps/operator`; CI-gated) fails if any canonical `*.test.ts(x)` /
+`*.spec.ts` matches **no** registry glob — i.e. would be invisible in
+the tab. This caught the 2026-06-02 audit finding that 614 of 1168
+tests were orphaned. When it fires, widen a domain's globs (or add a
+domain) in the registry (`packages/operator-core/lib/testing-domains-registry.ts`),
+then `npm run gen:contract`.
 
 **Live smokes that can't be Vitest** (need a running operator / external
 service) are surfaced via `node` / `shell` **runners** on a domain
@@ -262,7 +263,7 @@ behind a single helper.
 
 | Concern                                   | Tool                                                 | Why this one                                                                                                                                                                                                                                                                                                                                                                                                        | License          |
 | ----------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| Test runner (all layers)                  | **Vitest 3**                                         | Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode.                                                                                                                                                                                                                                                                                                                                       | MIT              |
+| Test runner (all layers)                  | **Vitest 4**                                         | Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode.                                                                                                                                                                                                                                                                                                                                       | MIT              |
 | Database for integration                  | **testcontainers-node**                              | Real Postgres; no mocking lies. \~2s startup per worker.                                                                                                                                                                                                                                                                                                                                                            | MIT              |
 | API/HTTP mocking                          | **MSW** (Mock Service Worker)                        | Intercepts at fetch boundary; same handlers in node + browser. WebSocket handlers (added 2024) cover Zero sync. Industry standard.                                                                                                                                                                                                                                                                                  | MIT              |
 | Browser / E2E                             | **Playwright**                                       | Trace viewer, Chromium + Firefox + WebKit, parallel, `--trace=on-first-retry`. Auth fixtures via `storageState`; native `toHaveScreenshot()` for ad-hoc visual diffs.                                                                                                                                                                                                                                               | Apache 2.0       |
@@ -272,7 +273,7 @@ behind a single helper.
 | Load / perf regression                    | **k6** (HTTP) + **Vitest bench** (micro)             | k6 for nightly baseline on hot paths (wholesale grid, Typesense queries); Vitest bench for `libs/papergrid` render-path micro-benchmarks.                                                                                                                                                                                                                                                                           | AGPL-3.0 / MIT   |
 | Test-data factories                       | **drizzle-seed** + **@snaplet/copycat**              | Schema-aware seeding from Drizzle definitions; deterministic fake data keyed off seeds. Closes §1.16 Q2.                                                                                                                                                                                                                                                                                                            | MIT              |
 | Public-page / ad-hoc                      | **verdict** (already adopted)                        | Token-efficient agent-driven verification of **arbitrary external web pages** (marketing site, third-party links, MDX renderer hitting an external URL). For operator-side checks use **tauri-agent-tools** instead — the operator only renders correctly inside the Tauri shell.                                                                                                                                   | —                |
-| Component testing                         | **Storybook 8 + Test addon**                         | Components in isolation, doubles as "see all components" UI; addon runs Vitest in browser.                                                                                                                                                                                                                                                                                                                          | MIT              |
+| Component testing                         | **Storybook 10 + Test addon**                        | Components in isolation, doubles as "see all components" UI; addon runs Vitest in browser.                                                                                                                                                                                                                                                                                                                          | MIT              |
 | Visual regression                         | **Lost Pixel**                                       | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in.                                                                                                                                                                                                                                                                                                                                         | MIT              |
 | React / DOM assertions                    | **@testing-library/react** + **user-event**          | Standard React testing utilities.                                                                                                                                                                                                                                                                                                                                                                                   | MIT              |
 | Property-based                            | **fast-check**                                       | For payload encoders, validators, slug rewriters — anywhere example tests undercount.                                                                                                                                                                                                                                                                                                                               | MIT              |
@@ -610,7 +611,7 @@ do not replace, the three surfaces below.
 * **Vitest UI** — `nx test <project> --ui`. Opens at `http://localhost:51204`.
   Per-project test browser, watch mode, coverage, in-browser stack
   traces. Use during local dev.
-* **Storybook 8** — `nx storybook <project>`. Component browser +
+* **Storybook 10** — `nx storybook <project>`. Component browser +
   in-browser test runner via the Test addon. Doubles as the
   see-all-components UI.
 * **Playwright HTML report** — `npx playwright show-report`. After any

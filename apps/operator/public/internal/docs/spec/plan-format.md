@@ -73,7 +73,7 @@ promote/waves policy (how the plan becomes harness features); see
 ---
 title: <Title Case sentence>
 slug: <kebab-case-slug>-<YYYY-MM-DD>   # MUST match filename stem
-status: draft | active | shipped | superseded
+status: draft | ready | active | shipped | superseded
 created: YYYY-MM-DD
 updated: YYYY-MM-DD                     # bumped on every assisted write
 owner: <email>                          # human owner; agents don't own plans
@@ -514,30 +514,29 @@ worktree, crew, recursion budget). `plans:lint` warns on every
 spawn\_child wave to prompt that justification; when in doubt, don't
 spawn.
 
-### Promoting a wave
+### Promoting waves
 
-`plans:promote \{ slug, wave \}` (policy-mode) reads the policy, builds the
-named wave's features (static defs, and/or the generative template ×
-`generate_items`), and imports them — stamping each feature's `wave`.
+`plans:promote \{ slug, all_waves: true \}` (policy-mode, the default path
+since P-044) reads the policy and promotes **every wave up front in one
+pass** — building each wave's features (static defs, and/or the generative
+template × `generate_items`) and stamping each feature's `wave`.
 `harness_slug` falls back to `target_harness`. The legacy explicit form —
 `plans:promote \{ slug, harness_slug, features:[...] \}` — still works for
-plans without a policy.
+plans without a policy, and the single-wave form `plans:promote \{ slug, wave \}`
+remains for promoting one named wave at a time.
 
-### Deterministic wave-advance
+### Cross-wave ordering (all-waves-up-front, P-044)
 
-Once a plan is `started` (`plans:start`), its waves advance
-**deterministically** — no orchestrator/LLM judgment:
-
-* A wave is **drained** when every feature in it is terminal (`passed` or
-  `deprecated`). On drain, the next wave auto-promotes; a `current_wave`
-  cursor makes it fire exactly once.
-* A **failing/stuck** feature **blocks** the wave (it can't drain) — the
-  advance stalls until a human fixes or `deprecate`s it, and the blocked
-  wave is surfaced as a harness issue.
-
-A background sweep evaluates this per started plan and launches the
-`promote` role for the next wave. The control path is mechanical — a
-deterministic drain-check, not an LLM call.
+Because all waves are promoted up front, wave ordering is **not** a runtime
+poll. A wave's `blocked_by: <prior-wave-id>` is compiled into **feature-level
+`blocked_by` edges** (`applyInterWaveEdges`): every feature in a wave is
+blocked by every feature title of the wave it depends on, so the dispatch
+frontier (P-042) alone sequences the waves — there is **no `current_wave`
+cursor and no 30s wave-advance sweep** (the per-wave advance role/poll was
+retired in P-044). A failing/stuck upstream feature simply leaves its
+downstream `blocked_by` edges unsatisfied, so dependent waves don't start
+until it's fixed or `deprecate`d. Completion-time `for_each: { from_feature }`
+generative waves stay deferred and expand on publish rather than up front.
 
 ## Tool surface
 

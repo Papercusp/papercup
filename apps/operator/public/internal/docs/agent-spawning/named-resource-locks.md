@@ -36,18 +36,27 @@ B,C release ───────────────────┘  shared
 A resource must be pre-registered in `agent_resource_registry` to be
 acquirable (`unknown_resource` otherwise) — free-form names silently fail to
 coordinate (`dev-server` vs `devserver` → no mutual exclusion). The registry
-is the one home for each lock's **rule text** and **enforcement level**.
+is the one home for each lock's **rule text** and **enforcement level**
+(the `enforcement` column: `advisory` | `checked` | `enforced`).
 `locks:list` is the authoritative discovery surface (names, rules, live
-holders, draining flag). Seeded: `dev-server` (advisory), `db-schema`
-(checked).
+holders, draining flag). Currently registered:
+
+| Resource                   | Enforcement | What it guards                                                                                                                                                  |
+| -------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev-server`               | `enforced`  | The operator dev server (`:3070` Hono + `:3055` Vite). Promoted advisory → enforced once the raw-Bash gate made `systemctl restart papercup` matchable (P-016). |
+| `db-schema`                | `checked`   | The papercusp DB schema — migrations / destructive DDL.                                                                                                         |
+| `shop`                     | `enforced`  | The shop build + `:4321` preview (stale-server e2e false-positives + concurrent dist clobbers).                                                                 |
+| `desktop-sidecar`          | `enforced`  | The papercusp-desktop sidecar / embedded-pg bundle build (the recurring 0-byte-binary clobber).                                                                 |
+| `libs-papercusp-submodule` | `advisory`  | The `libs/papercusp` submodule commit + superproject pointer bump (+ push).                                                                                     |
+| `git-sync`                 | `advisory`  | The git-sync auto-commit/push routine.                                                                                                                          |
 
 ## The enforcement dial (per resource)
 
-| Level      | What enforces it                                                                                                                         |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `advisory` | The rule (prompt) + the broadcast + `locks:list` visibility. Honor-system. Ceiling for `dev-server` (no hookable "I'm using it" action). |
-| `checked`  | A tool / `locks:check_command` actively refuses while an exclusive is in flight.                                                         |
-| `enforced` | A handler that cannot run without the lock (see below), or a `PreToolUse` hook that hard-blocks the action.                              |
+| Level      | What enforces it                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `advisory` | The rule (prompt) + the broadcast + `locks:list` visibility. Honor-system. The level for `libs-papercusp-submodule` + `git-sync` (no hookable "I'm using it" action).    |
+| `checked`  | A tool / `locks:check_command` actively refuses while an exclusive is in flight (`db-schema`).                                                                           |
+| `enforced` | A handler that cannot run without the lock (see below), or the `PreToolUse` Bash gate that hard-blocks a colliding raw command. `dev-server`, `shop`, `desktop-sidecar`. |
 
 ## Tools
 
@@ -74,13 +83,16 @@ and releases after — so a tool body cannot run without the lock.
 `withResourceLock(spec, handler)` wraps a role-gated handler. This keeps the
 borrowable, domain-free `tooldef` lib free of locks coupling (decision D-016).
 
-`locks:check_command` + the registry `match_patterns` let a `PreToolUse`
-`Bash` hook gate raw destructive commands (`systemctl restart …`, `psql -f …`)
-that bypass the wrapper tools. The matcher + verdict are shipped, but the hook
-is **not** wired into `~/.claude/settings.json` — a Bash `PreToolUse` hook
-gates *every* agent on the box, so activation is a deliberate step: add a hook
-that POSTs the command to `/api/agent-tools/locks/check_command` and denies on
-`decision === 'block'`.
+`locks:check_command` + the registry `match_patterns` back a `PreToolUse`
+`Bash` hook that gates raw destructive commands (`systemctl restart …`,
+`psql -f …`) which bypass the wrapper tools. `install-standalone-mcp.sh` now
+installs `pretooluse-bash-resource-gate.sh` and merges it as its **own**
+`PreToolUse` entry (matcher `Bash`) into `~/.claude/settings.json` — so an
+in-flight `exclusive` hold on a registered resource *blocks* a colliding raw
+restart/migrate, not just warns. It is fail-open with a local keyword
+pre-filter, so the vast majority of commands never reach the operator. This is
+what let `dev-server` (and the build resources) be `enforced` rather than
+advisory.
 
 ## Lifecycle notes
 

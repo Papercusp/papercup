@@ -18,7 +18,7 @@ intermittently-to-always until the next release deploy. Observed live
 `system:blueprint-run {blueprintId:'pot'}` wake was claimed by the green
 host, whose release tree
 had no `pot` blueprint — `fireLaunchBlueprint` threw, and (second, compounding
-bug fixed on `main` in `lib/harness/routines/claim.ts`) the old claim
+bug fixed on `main` in `packages/operator-core/lib/harness/routines/claim.ts`) the old claim
 semantics left the one-shot row ACTIVE with `next_fire_at=NULL`, which means
 "due now" — an infinite 30s refire loop until the row was deactivated by hand.
 

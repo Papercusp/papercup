@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**346 MCP tools** across **68 groups**.
+**347 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -81,6 +81,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `tasks` | 3 | `create` `get` `list` | `tasks:read` `tasks:write` |
 | `topics` | 7 | `create` `feed` `list` `merge` `subscribe` `tag` `unsubscribe` | `coord:read` `coord:write` |
 | `tui` | 1 | `dispatch` | `tui:dispatch` |
+| `turn` | 1 | `interrupt` | `turn:interrupt` |
 | `ui` | 3 | `dispatch` `get_state` `list_clients` | `ui:dispatch` `ui:read` |
 | `voice` | 5 | `agent` `channels` `join` `leave` `status` | `operator:read` `operator:write` |
 | `watch` | 1 | `create` | `coord:write` |

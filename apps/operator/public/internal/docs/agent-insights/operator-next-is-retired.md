@@ -1,7 +1,7 @@
 # Operator Next app is retired — ship UI in operator-vite only
 URL: /internal/docs/agent-insights/operator-next-is-retired
 
-The Next.js operator app at `apps/operator/app/**` no longer serves the live Tauri shell. Routes there are dead code. All new UI ships in `apps/operator-vite/src/routes/**` as TanStack-Router file routes. API routes still live in apps/operator/lib/endpoint-route/ and are mounted by bin/hono-host.ts.
+The Next.js operator app at `apps/operator/app/**` no longer serves the live Tauri shell. Routes there are dead code. All new UI ships in `apps/operator-vite/src/routes/**` as TanStack-Router file routes. API routes now live in packages/operator-core/lib/endpoint-route/ and are mounted by bin/hono-host.ts.
 
 ## What's true now
 
@@ -10,13 +10,19 @@ The Next.js operator app at `apps/operator/app/**` no longer serves the live Tau
 * `apps/operator/app/**` (Next-style `page.tsx` files) is **dead
   code**. Pages there compile in the type-checker but no request
   ever reaches them.
-* `apps/operator/lib/endpoint-route/routes/**` is **still live** —
-  these are `defineTool`-based API routes mounted into the Hono app.
-  Hitting `/api/...` from the Tauri shell hits these.
-* `apps/operator/lib/**` (loaders, pure-logic helpers, ensure
-  schemas, etc.) is **still live** — imported by the API route
-  handlers, by `instrumentation-node.ts`, and by operator-vite
-  client components via the `@/` alias.
+* `packages/operator-core/lib/endpoint-route/routes/**` is **still live** —
+  these are `defineTool`-based API routes mounted into the Hono app
+  (registered via `@papercusp/operator-core/lib/endpoint-route/register`).
+  Hitting `/api/...` from the Tauri shell hits these. (They were moved out
+  of `apps/operator/lib/endpoint-route/` into operator-core; only a vestigial
+  `__tests__/` dir remains under `apps/operator/lib/endpoint-route/`.)
+* `apps/operator/lib/**` (loaders, pure-logic helpers, plugin
+  runtime, hotkeys, notify, etc.) is **still live** — imported by
+  operator-vite client components via the `@/` alias and by route
+  handlers. (Server-side route/tool logic itself now lives in
+  `packages/operator-core/lib/**`. The old `ensure-schema.ts`
+  lazy-`CREATE TABLE` helpers are **gone** — schema is migrations-only,
+  no runtime DDL.)
 
 ## What this means for new UI
 

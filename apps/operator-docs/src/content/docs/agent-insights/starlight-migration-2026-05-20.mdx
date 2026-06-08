@@ -1,24 +1,38 @@
 ---
 title: fumadocs → Starlight migration (2026-05-20)
-description: What changed when we swapped fumadocs (Next-coupled) for Starlight (Astro, static HTML served by Next from public/). Read this before touching apps/operator-docs/, packages/docs-engine/, or the MCP docs:* tool surface.
+description: What changed when we swapped fumadocs (Next-coupled) for Starlight (Astro, static HTML served from public/). Read this before touching apps/operator-docs/, packages/docs-engine/, or the MCP docs:* tool surface. (Update — the serving host is now the Hono host's bin/host-docs.ts, not Next; Next is retired.)
 sidebar:
   order: 50
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Update: the serving host is the Hono host, not Next (Next retired)">
+This page was written in the Next era. Since then the operator's Next.js
+layer was retired (operator = Vite SPA + Hono host). The Starlight static
+site is now served by the **Hono host** via `apps/operator/bin/host-docs.ts`
+— it owns the bare-slug → `<slug>.html` resolution, the
+`Accept: text/markdown` → `<slug>.md` twin negotiation, and the
+`404.html` fallback. There is no `next.config.js` (it doesn't exist) and no
+`proxy.ts`; the "Next rewrite in `afterFiles`" gotcha below is obsolete.
+The MCP adapter, the `dist/` → `public/internal/docs/` postbuild copy, the
+`build.format: 'file'` decision, and the URL contract are all unchanged.
+</Aside>
+
 ## What changed in one paragraph
 
-We moved every internal-docs MDX page from `apps/operator/content/internal-docs/` to `apps/operator-docs/src/content/docs/` and rebuilt the surface on Astro 6 + Starlight 0.39 + starlight-llms-txt. The MCP `docs:*` tool surface (outline / get / search) keeps the same JSON shape via a new `starlightContentAdapter` in `packages/docs-engine/`. The docs site itself ships as static HTML in `apps/operator-docs/dist/`, copied into `apps/operator/public/internal/docs/` at build time so Next serves it under the existing URL contract.
+We moved every internal-docs MDX page from `apps/operator/content/internal-docs/` to `apps/operator-docs/src/content/docs/` and rebuilt the surface on Astro 6 + Starlight 0.39 + starlight-llms-txt. The MCP `docs:*` tool surface (outline / get / search) keeps the same JSON shape via a new `starlightContentAdapter` in `packages/docs-engine/`. The docs site itself ships as static HTML in `apps/operator-docs/dist/`, copied into `apps/operator/public/internal/docs/` at build time so the **Hono host** (`bin/host-docs.ts`) serves it under the existing URL contract. (A couple of stale `agent-insights/` MDX files still linger under `apps/operator/content/internal-docs/` — the move was not byte-complete, but the live source is `apps/operator-docs/src/content/docs/`.)
 
 ## The agent contract still works
 
 - `GET /internal/docs/` — Starlight HTML home.
-- `GET /internal/docs/<slug>` — HTML page (Next rewrites to `<slug>.html`).
+- `GET /internal/docs/<slug>` — HTML page (the Hono host's `host-docs.ts` resolves a bare slug to `<slug>.html`).
 - `GET /internal/docs/<slug>` with `Accept: text/markdown` — clean markdown twin (`<slug>.md`).
 - `GET /internal/docs/llms.txt` — index produced by starlight-llms-txt.
 - `GET /internal/docs/llms-full.txt` — full corpus.
 - `GET /internal/docs/llms-small.txt` — abridged corpus (new; harmless).
 
-Per-page `Accept: text/markdown` negotiation was originally dropped at the cutover and **restored separately**. `starlight-llms-txt` only emits aggregate `llms*.txt`; we restored the per-page channel by emitting `<slug>.md` twins from `apps/operator-docs/scripts/emit-md-twins.ts` (runs after `astro build`, uses `@papercusp/docs-engine`'s `renderMdxToMarkdown` + `withPreamble`). `proxy.ts` rewrites `Accept: text/markdown` on a bare slug to the static `<slug>.md`. Agents can also use the `docs:get` MCP tool (engine-side, not HTTP) or pull from `/llms-full.txt`.
+Per-page `Accept: text/markdown` negotiation was originally dropped at the cutover and **restored separately**. `starlight-llms-txt` only emits aggregate `llms*.txt`; we restored the per-page channel by emitting `<slug>.md` twins from `apps/operator-docs/scripts/emit-md-twins.ts` (runs after `astro build`, uses `@papercusp/docs-engine`'s `renderMdxToMarkdown` + `withPreamble`). The **Hono host** (`apps/operator/bin/host-docs.ts`) rewrites `Accept: text/markdown` on a bare slug to the static `<slug>.md` (this used to be `proxy.ts` under Next). Agents can also use the `docs:get` MCP tool (engine-side, not HTTP) or pull from `/llms-full.txt`.
 
 ## Where things live now
 
@@ -27,29 +41,29 @@ Per-page `Accept: text/markdown` negotiation was originally dropped at the cutov
 | MDX source | `apps/operator-docs/src/content/docs/<section>/<slug>.mdx` |
 | Astro config | `apps/operator-docs/astro.config.mjs` |
 | Build output | `apps/operator-docs/dist/` |
-| Served from | `apps/operator/public/internal/docs/` (postbuild copy) |
+| Served from | `apps/operator/public/internal/docs/` (postbuild copy), via the Hono host `apps/operator/bin/host-docs.ts` |
 | MCP docs adapter | `packages/docs-engine/src/adapters/starlight.ts` |
-| Engineering adapter selector | `apps/operator/lib/agent-tools/docs/_engineering-adapter.ts` |
+| Engineering adapter selector | `packages/operator-core/lib/agent-tools/docs/_engineering-adapter.ts` |
 | Sidebar config | per-page frontmatter `sidebar.order` (used to be `meta.json`) |
-| MCP Resources | `apps/operator/lib/agent-tools/docs/resource-{index,section}.ts` |
+| MCP Resources | `packages/operator-core/lib/agent-tools/docs/resource-{index,section}.ts` |
 
 ## Gotchas to know
 
 ### 1. `build.format: 'file'` is load-bearing
 
-Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`. We use `format: 'file'` (set in `astro.config.mjs`) which emits `dist/<slug>.html` instead. Why: Next's static-asset serving from `public/` doesn't honor directory-index trailing-slash semantics globally without setting `trailingSlash: true` site-wide (which would break every other operator route). With `.html` files at the explicit path, we add a single Next rewrite `/internal/docs/:slug+ → /internal/docs/:slug+.html` and the slug-only URL contract works without touching the rest of Next routing.
+Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`. We use `format: 'file'` (set in `astro.config.mjs`) which emits `dist/<slug>.html` instead. Why: serving the static files from `public/` without `format: 'file'` would need directory-index trailing-slash semantics. With `.html` files at the explicit path, the host resolves a bare slug to `<slug>.html` directly. (Originally this was a single Next rewrite; now `apps/operator/bin/host-docs.ts` does the bare-slug → `.html` resolution.)
 
-### 2. The Next rewrite is in `afterFiles`, not the top-level array
+### 2. (Obsolete) The Next rewrite is in `afterFiles`, not the top-level array
 
-`next.config.js` uses the OBJECT form `rewrites() { return { beforeFiles, afterFiles, fallback } }`. The docs rule must go in `afterFiles` so it runs after the Rust opt-in `beforeFiles` rules. If you grep for `return [` looking for the rewrites array, you'll miss it.
+**Obsolete — Next is retired and `next.config.js` no longer exists.** This gotcha described where the docs rewrite rule lived in the Next config object (`rewrites() { return { beforeFiles, afterFiles, fallback } }`). The slug → `.html` resolution is now done in code by the Hono host (`apps/operator/bin/host-docs.ts`), not by a Next rewrite. Disregard.
 
 ### 3. Postbuild copy is in `apps/operator-docs/package.json`
 
-The build script is `"build": "astro build && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the static copy step is skipped and Next will serve stale content. Always run `npm run build` from `apps/operator-docs/`.
+The build script is `"build": "astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the `.md`-twin emit and the static copy steps are skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
 
 ### 4. Both fumadocs setups were removed
 
-`apps/operator/source.config.ts`, `apps/operator/lib/source.ts`, `apps/operator/app/(docs)/**`, `apps/operator/app/llms.txt/`, `apps/operator/app/llms-full.txt/`, `apps/operator/app/llms.mdx/`, `apps/operator/app/api/search/` are all gone. Same paths in `apps/papercup/`. If you find references to those, they're stale; remove or update.
+`apps/operator/source.config.ts`, `apps/operator/lib/source.ts`, `apps/operator/app/(docs)/**`, `apps/operator/app/llms.txt/`, `apps/operator/app/llms-full.txt/`, `apps/operator/app/llms.mdx/`, `apps/operator/app/api/search/` are all gone. Same paths in the old `@papercup/web` app (now retired under `_retired/papercup/`). If you find references to those, they're stale; remove or update.
 
 ### 5. The `fumadocs` plugin slug is unrelated
 

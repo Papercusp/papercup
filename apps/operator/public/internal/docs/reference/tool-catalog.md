@@ -11,7 +11,7 @@ A coarse, grouped map of the MCP tool surface — one row per tool group with it
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**343 MCP tools** across **68 groups**.
+**347 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -48,7 +48,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `gym` | 2 | `judge` `signals` | `harness:read` |
 | `harness` | 14 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `plan_reviews` `status` | `harness:read` `harness:write` |
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
-| `hive` | 2 | `get` `list` | `harness:read` |
+| `hive` | 5 | `create` `dissolve` `get` `list` `update` | `harness:read` `harness:write` |
 | `hooks` | 1 | `known` | `roles:read` |
 | `improvements` | 4 | `capture` `digest` `resolve` `triage` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |
@@ -80,6 +80,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `tasks` | 3 | `create` `get` `list` | `tasks:read` `tasks:write` |
 | `topics` | 7 | `create` `feed` `list` `merge` `subscribe` `tag` `unsubscribe` | `coord:read` `coord:write` |
 | `tui` | 1 | `dispatch` | `tui:dispatch` |
+| `turn` | 1 | `interrupt` | `turn:interrupt` |
 | `ui` | 3 | `dispatch` `get_state` `list_clients` | `ui:dispatch` `ui:read` |
 | `voice` | 5 | `agent` `channels` `join` `leave` `status` | `operator:read` `operator:write` |
 | `watch` | 1 | `create` | `coord:write` |

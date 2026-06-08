@@ -31,7 +31,7 @@ driving the real catalog flow did.
    `allowedTypes={[...]}` prop passed to `<AddPanelCatalog>`. The catalog shows
    ONLY these types; this is the curated user-facing list.
 3. **Label + icon** in `app/harness/dock/AddPanelCatalog.tsx` — add entries to
-   the `LABELS` and `ICON_MAP` records (both fall back gracefully, but an
+   the `HUMAN_LABELS` and `ICON_MAP` records (both fall back gracefully, but an
    unlabelled type reads as its raw `adv:foo` id and gets the `SquareDashed`
    placeholder glyph).
 

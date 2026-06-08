@@ -3,6 +3,21 @@ URL: /internal/docs/design/operator-panel-visual-pass
 
 Detailed list of element-level visual improvements after the structural redesign. Round-3 issues that survived plus new fine-grained observations.
 
+:::caution\[Surface superseded — the card-feed operator panel became a chat thread]
+This polish pass targets `apps/operator/app/_components/OperatorPanel.tsx`
+(cited in *How I gathered this*) — the card-feed panel with its HUD
+telemetry strip, reactor orb, target-bracket card ornaments, scanline
+sweeps, Pending/Accepted/Ignored/Scans tab strip, and "Operator MCP
+v0.1.0" footer. **`OperatorPanel.tsx` is deleted.** The operator surface
+is now `OperatorChat` (a wrapper around the shared `ChatConversation`,
+`apps/operator/app/_components/OperatorChat.tsx`), where suggestions
+render inline and pending cards surface in a `PendingCardsBar`. The
+`operator-reactor` / `operator-hud-*` / `operator-entry__*` /
+`pc-operator-auto-feed` CSS still lingers in `globals.css` but is no
+longer rendered by any live component, so the element-level selectors
+below describe a retired DOM. Keep them only as historical design intent.
+:::
+
 After the structural redesign, the panel's information architecture is
 solid. This memo is a focused **visual polish pass** — element-level
 glitches, alignment / spacing / typography / color inconsistencies the

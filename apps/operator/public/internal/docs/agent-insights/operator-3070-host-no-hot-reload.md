@@ -7,8 +7,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## The trap
 
-You edit `apps/operator/lib/**` (an MCP tool, an endpoint-route handler, a
-`coordLog`/store seam), reload the operator UI, exercise the tool — and it
+You edit `packages/operator-core/lib/**` (or `apps/operator/lib/**`) — an MCP
+tool, an endpoint-route handler, a
+`coordLog`/store seam — reload the operator UI, exercise the tool — and it
 behaves like your change isn't there. It isn't: the **`:3070` Hono host**
 (`apps/operator/bin/hono-host.ts`) runs under `tsx` with **no file-watch**.
 It loaded the old module graph (including module-level singletons like
@@ -23,9 +24,23 @@ Vite SPA, not a Next dev server.)
 
 ## Restart it
 
-* **Tauri dev shell:** reload the desktop window (it respawns the host), or
-* **On the standing systemd dev box:** `systemctl --user restart papercup-dev-api.service`
-  (that unit runs `npx tsx bin/hono-host.ts` on :3070).
+On the standing dev box, `:3070` (`papercup-dev-api`) is now the **GREEN/stable**
+operator — it runs from the **separate release checkout**
+(`papercupai-workspace/papercup-release/apps/operator`), pinned to the green `main`
+branch. **Restarting it reboots the same green snapshot; your `staging` edits are
+invisible to it** until the auto-serve pipeline carries them (green-checkpoint FFs
+`main`, then release-trigger deploys). To test a server-side `staging` edit live,
+restart the **staging** operator on `:3170` instead:
+`systemctl --user restart papercup-staging-api.service` (runs `bin/hono-host.ts`
+from the staging tree at `papercup/apps/operator` with `PAPERCUSP_HONO_PORT=3170`),
+then probe `:3170`. The Tauri dev shell still spawns its own operator from the
+staging tree, so reloading the desktop window picks up staging edits there. See the
+root `CLAUDE.md` "Running the operator" section.
+
+* **Tauri dev shell:** reload the desktop window (it respawns the host from the
+  staging tree), or
+* **Staging operator on the dev box:** `systemctl --user restart papercup-staging-api.service`
+  (that unit runs `npx tsx bin/hono-host.ts` on :3170 from the staging tree).
 
 The unit name is this dev box's local supervision — not a repo invariant.
 Other setups have the Tauri shell spawn the host; restart it however it's

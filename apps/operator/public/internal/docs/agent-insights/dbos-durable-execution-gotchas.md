@@ -10,7 +10,7 @@ a workflow checkpoints each step, so a crash resumes mid-flight without re-runni
 completed work. Wiring it into the operator (`dbos-durable-jobs-2026-05-31`) surfaced
 eight non-obvious traps. Each cost real debugging time; none is in the SDK's quickstart.
 
-The bootstrap lives at `apps/operator/lib/dbos/bootstrap.ts` (`startDbos()`), gated by
+The bootstrap lives at `packages/operator-core/lib/dbos/bootstrap.ts` (`startDbos()`), gated by
 `PAPERCUSP_DBOS_ENABLE=1` (default off). Read that file alongside this page — the
 comments there cross-reference the plan's decision IDs.
 
@@ -136,10 +136,21 @@ live-integration boundary the plan stops at, not a quick extension.
 
 ***
 
-**Where this is wired:** `apps/operator/lib/dbos/` — `bootstrap.ts` (launch +
+**Where this is wired:** `packages/operator-core/lib/dbos/` — `bootstrap.ts` (launch +
 probe + flags), `orchestrator-workflow.ts` (the durable pipeline), `orchestrator-runner.ts`
-(spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers),
-`autoloop-workflow.ts` (AutoLoop as scheduled + dedup-keyed). Everything Phase-3 is
-gated by `PAPERCUSP_DBOS_ORCHESTRATOR=1`, default off, with the legacy main loop as
-the A/B fallback. Full design + decision log: the plans
+(spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers).
+Full design + decision log: the plans
 `dbos-durable-jobs-2026-05-31` and `dbos-orchestrator-durability-2026-05-31`.
+
+**Update (2026-06-06):** Two things in this footer drifted. (1) The DBOS dir moved
+from `apps/operator/lib/dbos/` to `packages/operator-core/lib/dbos/`. (2) The
+`autoloop-workflow.ts` (AutoLoop as scheduled + dedup-keyed) is **retired**
+(`autoloop-pot-operator-rebuild-2026-06-05` P-010/D-009 — it read a
+`director-config.json` enablement surface nothing wrote). (3) The Phase-3 durable
+pipeline is now the **default** orchestrator (on unless `PAPERCUSP_DBOS_ORCHESTRATOR=0`),
+and the **legacy main loop is retired** — archived to
+`libs/papercusp/_retired/orchestrator-run-loop/` on 2026-06-06; setting
+`PAPERCUSP_DBOS_ORCHESTRATOR=0` no longer reverts to it (there is no legacy loop
+left), it just registers no DBOS orchestrator at all. Gotcha #8's "leaving that
+feature to the legacy main loop" no longer applies — a parallel/branch verb now
+simply stops the durable pipeline.

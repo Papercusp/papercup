@@ -37,7 +37,8 @@ chunk) **404s**.
    **suppresses auto-reload** in dev — it kills the HMR socket and no-ops
    `location.reload` so concurrent agents saving files don't thrash your page.
    The intended recovery has always been a manual **Ctrl/⌘R**.
-2. **`lazyWithRetry`** (`lib/lazy-with-retry.ts`) retries a failed chunk import,
+2. **`lazyWithRetry`** (`packages/operator-core/lib/lazy-with-retry.ts`, re-exported
+   from `@papercusp/sync`) retries a failed chunk import,
    but `shouldAutoReloadChunkFailure` returns **false on the desktop and the
    `:3070`/`:4173` origins** — so on a chunk 404 it retries then *rejects*; it
    never force-reloads (that would violate policy #1).

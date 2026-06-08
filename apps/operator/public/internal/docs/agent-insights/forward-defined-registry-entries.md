@@ -109,7 +109,7 @@ inverted assertion answers it.
 
 ## What it looks like in the wild (this codebase)
 
-* `apps/operator/lib/sync-resolver/table-to-query-names.test.ts`
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.test.ts`
   — the canonical example. 2 entries:
   `contributorUsageEvents.byHarness` + `insightsFirstVisit.byHarness`
   for P-073 Insights tab work.
@@ -130,9 +130,9 @@ inverted assertion answers it.
 
 ## Related
 
-* `apps/operator/lib/sync-resolver/table-to-query-names.ts` —
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.ts` —
   the bridge that uses this pattern.
-* `apps/operator/lib/sync-resolver/index.ts` — the v2 registry the
+* `packages/operator-core/lib/sync-resolver/index.ts` — the v2 registry the
   bridge maps INTO.
 * [Adding a query to the sync resolver](/internal/docs/agent-insights/adding-a-sync-query)
   — when you migrate a forward-defined name, removing it from

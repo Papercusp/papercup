@@ -56,7 +56,7 @@ Capability-gated plugins§10 — Tauri-style declarative + Manifest-V3 user cons
 Routines as first-class§9 — substrate concept feeding pending\_events. Adopted (mapped onto our orchestrator).
 Secret scrubbing on export§11.1 — gitleaks regex set + harness-specific patterns. Adopted.
 "What it is NOT" discipline§14 — explicit anti-scope (below). Adopted.
-Embedded Postgres for zero-config devReference runtime detail — PGlite when `DATABASE_URL` is unset.
+Embedded Postgres for zero-config devReference runtime detail — real embedded Postgres (`@papercusp/embedded-postgres-server`) discovered via `~/.papercusp/embedded-pg.json`; `DATABASE_URL` overrides it.
 
 ### 13.4 Ideas explicitly NOT borrowed
 

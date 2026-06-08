@@ -21,10 +21,9 @@ panel.
 'use client';
 
 import { useMemo } from 'react';
-import { useQuery } from '@rocicorp/zero/react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import type { SnapshotConsolidatedRow } from '@restart/zero-harness';
-import { useSyncQuery } from '@restart/sync';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import type { SnapshotConsolidatedRow } from '@papercusp/zero-harness';
+import { useSyncQuery } from '@papercusp/sync';
 
 interface Props {
   slug: string;
@@ -32,12 +31,14 @@ interface Props {
 }
 
 export default function MySnapshotsPanel({ slug, onSelect }: Props) {
+  // `useSyncQuery<T>` types T as the ROW element; `.data` is `T[]`.
+  // `args` is a named object, not a positional array.
   const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
     queryName: 'snapshotsConsolidated.bySlug',
-    args: [slug],
+    args: { slug },
   });
 
-  const columns = useMemo<ColumnDef<SnapshotRow>[]>(() => [
+  const columns = useMemo<ColumnDef<SnapshotConsolidatedRow>[]>(() => [
     {
       key: 'when', header: 'When', width: 1.3,
       sortKey: 'ts', defaultSortDir: 'desc',
@@ -51,7 +52,7 @@ export default function MySnapshotsPanel({ slug, onSelect }: Props) {
   ], []);
 
   return (
-    <RichGrid<SnapshotRow>
+    <RichGrid<SnapshotConsolidatedRow>
       rows={rows}
       columns={columns}
       getRowId={(r) => r.snapshotId}
@@ -80,7 +81,7 @@ Migration:
 
 ```tsx
 import { useMemo } from 'react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 const columns = useMemo<ColumnDef<Item>[]>(() => [
   { key: 'id', header: 'ID', width: 1, sortKey: 'id',
@@ -103,7 +104,7 @@ return (
 
 Steps in order:
 
-1. Add `import { RichGrid, type ColumnDef } from '@restart/grid-core'`.
+1. Add `import { RichGrid, type ColumnDef } from '@papercusp/grid-core'`.
 2. Build a `columns` array, one entry per visible field. Wrap in
    `useMemo`.
 3. Replace the `.map()` block with `<RichGrid …>`.
@@ -124,11 +125,10 @@ For each existing harness, repeat. Then:
 1. Update `bin/scaffold-harness-schema.sh` so future harnesses get it.
 2. Update `libs/zero-harness/src/schema.ts` — add `new_col: string()`
    (or the right type — beware TIMESTAMPTZ).
-3. Bump `schemaVersion` in `schema.ts`.
-4. The publication already includes the table; the new column flows
+3. The publication already includes the table; the new column flows
    automatically.
-5. Restart `zero-cache-harness`.
-6. Update consumers (`useQuery` results now include `new_col`).
+4. Restart `zero-cache-harness`.
+5. Update consumers (`useSyncQuery` results now include `new_col`).
 
 ## Recipe 4: Adding a new table to all harnesses
 
@@ -141,11 +141,11 @@ Bigger lift. Steps:
      bin/scaffold-harness-schema.sh "$slug"
    done
    ```
-3. Add the table to `libs/zero-harness/src/schema.ts`.
+3. Add the table to `libs/zero-harness/src/schema.ts` (register it in the
+   `createSchema({ tables: [...] })` list).
 4. Add a query factory to `queries.ts`.
 5. Add a `slugToXxxKey` helper to `queries.ts`.
-6. Bump `schemaVersion`.
-7. Restart `zero-cache-harness`.
+6. Restart `zero-cache-harness`.
 
 ## Recipe 5: Cross-harness consolidated table
 
@@ -172,7 +172,7 @@ list).
    <name>Consolidated: () => z.query.<name>Consolidated,
    ```
 
-5. Bump schema version, restart zero-cache.
+5. Register the table in `schema.ts` and restart zero-cache.
 
 `harness_features_consolidated` is the working example to copy.
 
@@ -196,7 +196,7 @@ async function addNote() {
 }
 ```
 
-The API route writes to PG. Zero broadcasts. `useQuery` re-renders. Done.
+The API route writes to PG. Zero broadcasts. `useSyncQuery` re-renders. Done.
 
 If you want optimistic UI before the round-trip, hold the new row in
 component state and clear it when the Zero query result reflects the
@@ -247,7 +247,10 @@ const getRowBg = (row: Row) =>
 />
 ```
 
-`SnapshotsPanel.tsx` is the canonical example of this pattern.
+The live `DepartmentHarnessDashboard.tsx` → `MemoryEntriesGrid`
+(`apps/operator/app/harness/`) is a current example of RichGrid with
+selection/striping; the retired `SnapshotsPanel.tsx` shows the same
+selected-row pattern.
 
 ## Recipe 9: PG-mirrored filesystem store
 
@@ -280,8 +283,8 @@ ALTER PUBLICATION zero_harness ADD TABLE harness_shared.plugin_enables;
 matching rows, deletes orphans. This is the function every writer calls.
 
 ```ts
-// apps/operator/lib/plugin-enables-pg.ts
-import { getOrgPg } from '@restart/db-org';
+// packages/operator-core/lib/plugin-enables-pg.ts
+import { getOrgPg } from '@papercusp/db-org';
 
 export async function mirrorHarness(harness: string): Promise<void> {
   const file = await readEnabled(harness);                  // read JSON
@@ -346,8 +349,8 @@ that bypassed the operator API, or whenever you suspect drift.
 
 Reference implementations:
 
-* `apps/operator/lib/plugin-enables-pg.ts` (papercusp CLI is the writer)
-* `apps/operator/lib/plugin-configs-pg.ts` (substrate plugin loader reads JSON at runtime)
+* `packages/operator-core/lib/plugin-enables-pg.ts` (papercusp CLI is the writer)
+* `packages/operator-core/lib/plugin-configs-pg.ts` (substrate plugin loader reads JSON at runtime)
 
 ## Recipe 10: Where to put a new panel
 
@@ -356,21 +359,21 @@ Reference implementations:
 | Tabular data for one harness, shown in the harness dashboard | `apps/operator/app/harness/<Name>Panel.tsx`                                                                          |
 | Department-level dashboard panel                             | `apps/operator/app/harness/DepartmentHarnessDashboard.tsx` (extend the existing file rather than creating a new one) |
 | Cross-harness panel (global view)                            | `apps/operator/app/<route>/<Name>Panel.tsx`                                                                          |
-| Papercup-app panel (org/projects/messages)                   | `apps/papercup/app/<route>/<Name>.tsx`                                                                               |
 
-Wire it into the dashboard's tab switcher in `HarnessDashboard.tsx` or
-`DepartmentHarnessDashboard.tsx`.
+The live `apps/operator` harness UI is dock-based (`apps/operator/app/harness/[slug]/HarnessDockShell.tsx`);
+wire a new panel in as a dock panel rather than into a monolithic tab switcher.
 
 ## Reference panels
 
-When in doubt, copy the structure from one of these — they exercise the
-full stack and are kept up to date:
+When in doubt, copy the structure from one of these. The live example is
+`DepartmentHarnessDashboard`; the others now live in the **retired**
+`@papercusp/web` surface (`libs/papercusp/apps/web/app/harness/`) but still
+show the canonical RichGrid + sync wiring:
 
-* `apps/operator/app/harness/SnapshotsPanel.tsx` — small, single
-  per-harness table, sortable + per-row delete.
-* `apps/operator/app/harness/issues/IssuesList.tsx` — Zero-synced,
-  RichGrid, multi-state row, with `rowProps` legacy-class workaround.
-* `apps/operator/app/harness/ProposalsPanel.tsx` — Zero-synced with
-  inline mutation actions.
 * `apps/operator/app/harness/DepartmentHarnessDashboard.tsx` →
-  `MemoryEntriesGrid` — RichGrid embedded in a larger dashboard panel.
+  `MemoryEntriesGrid` — **live** RichGrid embedded in a larger dashboard panel.
+* `…/web/app/harness/SnapshotsPanel.tsx` — small, single per-harness table,
+  sortable + per-row delete.
+* `…/web/app/harness/issues/IssuesList.tsx` — RichGrid, multi-state row,
+  with `rowProps` legacy-class workaround.
+* `…/web/app/harness/ProposalsPanel.tsx` — inline mutation actions.

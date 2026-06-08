@@ -105,7 +105,12 @@ name, region) — different per forker, also stripped from snapshots.
 }
 ```
 
-### `generator: "<name>"`
+### `generator: "<name>"` (planned — not yet wired)
+
+The `generator` field is a design target — the fork/instantiate path does
+**not** auto-fill generated values today. Until it lands, generate these
+values inside `setup.sh` (e.g. `openssl rand -base64 32`) and record them
+with `papercusp_state_set`.
 
 Substrate auto-fills the field at fork time. Adopted from Heroku's
 [app.json env generators](https://devcenter.heroku.com/articles/app-json-schema#env);
@@ -166,9 +171,14 @@ arbitrary script env.
 
 ### `$OUTPUT_*` — your script's outputs
 
-Set via `papercusp_state_set` (see [helpers](#runtime-helpers) below).
-These are exposed to subsequent phases (e.g. `verify.sh` sees what
-`setup.sh` recorded) and to file templating.
+Set via `papercusp_state_set` (see [helpers](#runtime-helpers) below),
+which folds the value into `state.json`'s `outputs` object. The runner
+does **not** currently re-inject those values as `$OUTPUT_*` env vars on
+later phases — `teardown.sh` / `verify.sh` instead read the full state
+JSON from `$PAPERCUSP_PLUGIN_STATE`. For `papercusp_render_templates`,
+the values an output `${OUTPUT_<key>}` template sees are whatever the
+*same* script has `export`ed into its own env; the helper does not
+auto-source `state.json`.
 
 ### `$PAPERCUSP_*` — substrate
 
@@ -262,8 +272,8 @@ Available templates:
 | *(more coming)*    | *aws-stack, fly-stack, render-stack, vercel-stack* | *As they ship*                     |
 
 The `cloudflare-stack` source is the most complete worked example —
-read its [setup.sh](https://github.com/papercupai/papercusp/blob/main/plugins/cloudflare-stack/provision/setup.sh)
-and [README](https://github.com/papercupai/papercusp/blob/main/plugins/cloudflare-stack/README.md)
+read its [setup.sh](https://github.com/Papercusp/papercusp/blob/main/plugins/cloudflare-stack/provision/setup.sh)
+and [README](https://github.com/Papercusp/papercusp/blob/main/plugins/cloudflare-stack/README.md)
 side-by-side with this guide.
 
 ## Sandbox restrictions

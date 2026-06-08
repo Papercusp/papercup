@@ -11,36 +11,42 @@ Three categories per item:
 * **Gated** — wired, but never actually fires until `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`.
 * **User-driven** — requires a behavioural decision (e.g. "run a feature", "deploy Cupboard") only the user can make.
 
-Everything below is in `apps/operator/` unless noted. Routes are
-HTTP paths registered in `lib/endpoint-route/routes/index.ts`.
+Path convention below (updated post-`operator-core` extraction): UI surfaces
+(`app/**/*.tsx`, `scripts/*`) are in **`apps/operator/`**; every non-`app`
+`lib/**` path moved to **`packages/operator-core/lib/**`** (so `lib/sync/hyperbee/…`
+→ `packages/operator-core/lib/sync/hyperbee/…`, `lib/orchestrator/…`,
+`lib/harness-insights/…`, `lib/user-profile/…`, etc.). Routes are HTTP paths
+registered in `packages/operator-core/lib/endpoint-route/routes/index.ts`. The
+`instrumentation-node.ts` boot-wiring rows are **retired** (the Next.js
+instrumentation hook is gone) — see the Phase-5a note below.
 
 ## Phase 5a — Substrate boot
 
-| Status             | What                                                             | Where                                                      |
-| ------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------- |
-| Wired (flag-gated) | Boot wiring                                                      | `instrumentation-node.ts`                                  |
-| Wired              | Boot composer                                                    | `lib/sync/hyperbee/boot.ts`                                |
-| Wired              | Boot orchestrator (idempotent map, inflight races)               | `lib/sync/hyperbee/boot-all.ts`                            |
-| Wired              | Status enumerator                                                | `listBootedHandles` in `boot-all.ts`                       |
-| Wired              | Boot-history tracker (event timeline, FIFO 200-entry)            | `lib/sync/hyperbee/boot-history.ts`                        |
-| Wired              | Admin status endpoint                                            | `GET /api/admin/dogfood-substrate-status`                  |
-| Wired              | Admin boot-history endpoint                                      | `GET /api/admin/dogfood-substrate-boot-history`            |
-| Wired              | Pure-UI status pill                                              | `app/harness/insights/SubstrateStatusBadge.tsx`            |
-| Wired              | Polling client                                                   | `app/harness/insights/SubstrateStatusBadgeClient.tsx`      |
-| Wired              | Boot-history table                                               | `app/harness/insights/BootHistoryTable.tsx`                |
-| Wired              | Boot-history table client                                        | `app/harness/insights/BootHistoryTableClient.tsx`          |
-| Wired              | Admin diagnostic page (3 indicators + main table + boot-history) | `app/admin/dogfood-substrate/page.tsx`                     |
-| Wired              | Combined health verdict                                          | `lib/sync/hyperbee/health.ts`                              |
-| Wired              | Workspace summary aggregator (worst-verdict + counts)            | `lib/sync/hyperbee/summary.ts`                             |
-| Wired              | Health endpoint (returns summary + harnesses)                    | `GET /api/admin/dogfood-substrate-health`                  |
-| Wired              | Health pill                                                      | `app/harness/insights/SubstrateHealthPill.tsx`             |
-| Wired              | Health pill client                                               | `app/harness/insights/SubstrateHealthPillClient.tsx`       |
-| Wired              | Workspace summary card                                           | `app/harness/insights/SubstrateSummaryCard.tsx`            |
-| Wired              | Workspace summary card client                                    | `app/harness/insights/SubstrateSummaryCardClient.tsx`      |
-| Wired              | CLI verdict formatter (pure logic)                               | `lib/sync/hyperbee/format-cli.ts`                          |
-| Wired              | CLI script                                                       | `scripts/substrate-status.ts` (`npm run substrate:status`) |
-| Wired              | In-process composer (non-HTTP callers)                           | `lib/sync/hyperbee/in-process-status.ts`                   |
-| Gated              | Real boot succeeds                                               | only with flag on + valid workspace                        |
+| Status            | What                                                             | Where                                                                          |
+| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Wired (always-on) | Boot wiring                                                      | `apps/operator/bin/host-bootstrap.ts` (was `instrumentation-node.ts`, retired) |
+| Wired             | Boot composer                                                    | `lib/sync/hyperbee/boot.ts`                                                    |
+| Wired             | Boot orchestrator (idempotent map, inflight races)               | `lib/sync/hyperbee/boot-all.ts`                                                |
+| Wired             | Status enumerator                                                | `listBootedHandles` in `boot-all.ts`                                           |
+| Wired             | Boot-history tracker (event timeline, FIFO 200-entry)            | `lib/sync/hyperbee/boot-history.ts`                                            |
+| Wired             | Admin status endpoint                                            | `GET /api/admin/dogfood-substrate-status`                                      |
+| Wired             | Admin boot-history endpoint                                      | `GET /api/admin/dogfood-substrate-boot-history`                                |
+| Wired             | Pure-UI status pill                                              | `app/harness/insights/SubstrateStatusBadge.tsx`                                |
+| Wired             | Polling client                                                   | `app/harness/insights/SubstrateStatusBadgeClient.tsx`                          |
+| Wired             | Boot-history table                                               | `app/harness/insights/BootHistoryTable.tsx`                                    |
+| Wired             | Boot-history table client                                        | `app/harness/insights/BootHistoryTableClient.tsx`                              |
+| Wired             | Admin diagnostic page (3 indicators + main table + boot-history) | `app/admin/dogfood-substrate/page.tsx`                                         |
+| Wired             | Combined health verdict                                          | `lib/sync/hyperbee/health.ts`                                                  |
+| Wired             | Workspace summary aggregator (worst-verdict + counts)            | `lib/sync/hyperbee/summary.ts`                                                 |
+| Wired             | Health endpoint (returns summary + harnesses)                    | `GET /api/admin/dogfood-substrate-health`                                      |
+| Wired             | Health pill                                                      | `app/harness/insights/SubstrateHealthPill.tsx`                                 |
+| Wired             | Health pill client                                               | `app/harness/insights/SubstrateHealthPillClient.tsx`                           |
+| Wired             | Workspace summary card                                           | `app/harness/insights/SubstrateSummaryCard.tsx`                                |
+| Wired             | Workspace summary card client                                    | `app/harness/insights/SubstrateSummaryCardClient.tsx`                          |
+| Wired             | CLI verdict formatter (pure logic)                               | `lib/sync/hyperbee/format-cli.ts`                                              |
+| Wired             | CLI script                                                       | `scripts/substrate-status.ts` (`npm run substrate:status`)                     |
+| Wired             | In-process composer (non-HTTP callers)                           | `lib/sync/hyperbee/in-process-status.ts`                                       |
+| Gated             | Real boot succeeds                                               | only with flag on + valid workspace                                            |
 
 ## Phase 5b — Hyperbee UI integration
 
@@ -186,13 +192,17 @@ shape rather than throwing). Test seams (`_setNowForTests`,
 
 ## Gated by `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`
 
-* Substrate boot in `instrumentation-node.ts`.
+> **Update (2026-06):** This gate is **removed** — the
+> `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` opt-in was dropped in the Model-B
+> substrate rewrite (Stage 4d). The per-peer-log substrate **always boots**
+> from `apps/operator/bin/host-bootstrap.ts` now (not `instrumentation-node.ts`,
+> retired); there is no longer a "Gated" tier. The items below still describe
+> *what activity writes which rows*, but none of it is flag-gated any more.
+
+* Substrate boot in `apps/operator/bin/host-bootstrap.ts` (always-on).
 * `bootstrap-progress` records (poller only runs after boot).
 * `claim-audit` rows (only the distributed-claim path writes them).
 * Real claim races (only `attemptDistributedClaim` triggers them).
-
-Everything else stays inert and the legacy single-writer paths run
-unchanged.
 
 ## User-driven
 

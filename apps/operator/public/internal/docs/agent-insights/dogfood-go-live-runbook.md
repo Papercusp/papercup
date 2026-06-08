@@ -3,6 +3,8 @@ URL: /internal/docs/agent-insights/dogfood-go-live-runbook
 
 Step-by-step runbooks for the two remaining user-driven dogfood items. P-026 is the first end-to-end orchestrator run on a real papercup feature; P-051b is the Cupboard server deploy. Both require user creds or live UI interaction — autonomous agents cannot complete them.
 
+import { Aside } from '@astrojs/starlight/components';
+
 ## When this applies
 
 You (a human) want to drive Papercusp's dogfood plan to substantial
@@ -35,6 +37,20 @@ off to a human.
 4. **Director config is set**: `papercup/.papercusp/director-config.json`
    should have `autoLoop: true` + `autoIntervalSeconds: 60` (or
    shorter for the run).
+
+**Update (2026-06):** The `director-config.json` + `autoLoop:true` /
+`autoIntervalSeconds` cadence mechanism in pre-flight step 4 and run-sequence
+step 4 is **retired** (`autoloop-pot-operator-rebuild-2026-06-05`, P-009/P-010
+D-009). Both director-cadence loops (the legacy in-process `setInterval` ticker
+in `autoloop.ts` and its DBOS twin `dbos/autoloop-workflow.ts`) are GONE — they
+read a `director-config.json` enablement surface nothing wrote. The surviving
+cadence path is the **blueprint** one: a harness's blueprint declares
+`triggers.schedule`, `harness:create` materializes them into
+`harness_shared.routines`, and the durable DBOS `routinesTick` fires them. So
+ignore step 4 and "let autoloop pick it" — drive the feature manually
+("Start working" + a deliberate dispatch) for the first run, or schedule it via
+the blueprint. The per-`(workspace, harness, role)` fire-state still lives on
+`harness_shared.autoloop_state` (now with read `consecutive_errors` backoff).
 
 ### Run sequence
 
@@ -87,7 +103,7 @@ off to a human.
   has 175+ tables. First run may produce a noisy diff. Note in
   F-DOGFOOD-001 observations.
 * **`completion_ref` not stamping**: confirm the verifier daemon is
-  running. Check `apps/operator/lib/harness/completion-ref-verifier.ts`
+  running. Check `packages/operator-core/lib/harness/completion-ref-verifier.ts`
   * the daemon's logs.
 
 ### Then update Phase 4 plan

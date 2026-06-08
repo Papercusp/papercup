@@ -3,6 +3,27 @@ URL: /internal/docs/design/settings-feedback
 
 Concrete UX feedback across all 13 settings pages, captured live at /settings. Cross-cutting issues first, per-page detail second, prioritized fix list at the end.
 
+:::note\[Several cross-cutting fixes have since shipped]
+`/settings/*` still exists (`apps/operator/app/settings/layout.tsx`,
+served via the operator-vite `routes/settings/*`), but the rail this
+memo critiques has been redesigned — largely along these
+recommendations. Verified against the current `layout.tsx`:
+**C1 (grouping) shipped** — the rail is now grouped into "Get started",
+"Identity & devices", "Assistants", "Keys & OAuth", "App preferences",
+and "Advanced". **C3 (search) shipped** — a keyword-mapped "Search"
+input sits atop the rail. **C9 (Advanced tagging) shipped** — an
+"Advanced" group carries the diagnostic pages (`advanced: true`).
+**C2 renames partly shipped** — Oracle → "Oracle assistant", Voice →
+"Voice & speech", Agent backend → "AI backend" (Operator is "Papercup
+agent", not the suggested "Operator agent"; API keys is now "Keys &
+OAuth"). The page set also changed: the **Orchestrator** page is gone,
+and new pages were added (Setup Wizard, User preferences, Memory,
+Oh-My-Pi (omp), OMP integration, Backups), so this is no longer "13
+pages". The surviving per-page notes (Voice density, Mobile access
+device naming, Plugin runtime, etc.) still apply where those slugs
+exist; the C1/C3/C9 cross-cutting items are addressed.
+:::
+
 Captured live by walking every page in `/settings/*` against the
 running operator at `localhost:3070`. Screenshots in
 `/tmp/set-*.png`. Read alongside `app/settings/layout.tsx` and the

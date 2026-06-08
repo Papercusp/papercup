@@ -9,11 +9,11 @@ Three different needs, three different surfaces — mixing them is how the coord
 inbox became a \~360-events/6h state-replay log
 (`state-not-chat-fleet-state-2026-06-05` D-001):
 
-| You want…                                                                                  | Use                                                                                                              | Never                                                                   |
-| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| to **know** current state ("who's running / what is X doing / is anyone on plan P")        | `fleet:assignments` / `coord:presence` — one table query                                                         | scan/replay the coord inbox to derive it                                |
-| to be **notified** of a state change                                                       | the `fleet_assignment` PG NOTIFY change-feed (`lib/fleet-assignment-bus.ts`), or your scoped coord subscriptions | poll the message stream                                                 |
-| to **say** something genuinely unpredictable (a question, a design call, a SPLIT proposal) | `coord:send`                                                                                                     | encode state in prose ("DONE + tested…" — that's `work_items:complete`) |
+| You want…                                                                                  | Use                                                                                                                                     | Never                                                                   |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| to **know** current state ("who's running / what is X doing / is anyone on plan P")        | `fleet:assignments` / `coord:presence` — one table query                                                                                | scan/replay the coord inbox to derive it                                |
+| to be **notified** of a state change                                                       | the `fleet_assignment` PG NOTIFY change-feed (`packages/operator-core/lib/fleet-assignment-bus.ts`), or your scoped coord subscriptions | poll the message stream                                                 |
+| to **say** something genuinely unpredictable (a question, a design call, a SPLIT proposal) | `coord:send`                                                                                                                            | encode state in prose ("DONE + tested…" — that's `work_items:complete`) |
 
 This is the "DB is not a transport" principle pointed the other way: **the
 message bus is not a state store.**
@@ -24,7 +24,7 @@ message bus is not a state store.**
 (`coord_presence.current_plan_slug`, `plan_item_claims`, `work_items.taken_by`).
 Migration 165 unifies them at read time in **`harness_shared.fleet_assignment`**,
 read via **`fleet:assignments`** (`{ agent }` = what is X doing; `{ plan }` =
-who's on P) or `lib/fleet/assignments.ts` in code. `/api/adv/roster` serves the
+who's on P) or `packages/operator-core/lib/fleet/assignments.ts` in code. `/api/adv/roster` serves the
 same view (per-entry `claims` + top-level `orphanedClaims`).
 
 The view is **claim-primary**: a live lease whose holder crashed still surfaces
@@ -48,8 +48,8 @@ record).
 
 The auto-emits ("▶ now working on…", "✓ DONE…", "Taking X") fire *after* the
 table write (`onlyOnSuccess`) and render *from* it — they are one-directional,
-human-readable projections (`lib/coord-lifecycle/lifecycle-rules.ts`,
-`work_items/complete.ts`). Combined with Brief 28's audience scoping
+human-readable projections (`packages/operator-core/lib/coord-lifecycle/lifecycle-rules.ts`,
+`packages/operator-core/lib/agent-tools/work_items/complete.ts`). Combined with Brief 28's audience scoping
 ([coord-emit-subscription-scoping](/internal/docs/agent-insights/coord-emit-subscription-scoping)),
 they reach only watching subscribers. If you find code (or a prompt) deriving
 "who's on what" from these messages, that's the bug — point it at the view.

@@ -6,15 +6,30 @@ URL: /internal/docs/spec/project-sharing
 import { Aside } from '@astrojs/starlight/components';
 
 **Snapshots** — sharing a working harness instance (template + state) so
-other developers can fork and continue it. **v1.0** (local capture +
-restore, no marketplace) shipped: see `libs/papercusp-export-state/`,
-`papercusp snapshot {create,list,info,install}` CLI, and the §15.5/§15.6
-implementation rows in [Implementation status](/internal/docs/implementation/status).
+other developers can fork and continue it. **Local capture + restore**
+shipped (`libs/papercusp-export-state/`; the snapshot endpoint routes
+`create` / `instantiate` / `publish` / `retract` under
+`packages/operator-core/lib/endpoint-route/routes/snapshots/`; the
+`snapshots:list` / `snapshots:get` agent tools).
 
-**v1.1** (cross-machine via Gitea/Forgejo + ORAS + Cosign) and **v1.2**
-(marketplace UI) remain in design — sections 15.7 onwards describe the
-target shape. Eight rounds of architectural research and critique have
-been incorporated.
+**Cross-machine sharing also shipped — but via the in-app Cupboard, not
+the Gitea/Forgejo + ORAS + Cosign + papercuspai.com design that sections
+15.3–15.8, 15.10, 15.21–15.23 describe.** A snapshot is published to the
+Cupboard (`apps/operator-public`, Cloudflare Workers + D1) as a
+`listing_kind='snapshot'` whose tarball is **content-addressed by SHA-256**
+and stored in **R2** (`snapshots/<hash>.tar.gz`); a consumer forks it via
+`fork-from-cupboard` (`…/routes/snapshots/fork-from-cupboard.ts`). Auth is
+a **GitHub bearer** (validated against `api.github.com/user`), publisher
+trust is the GitHub repo-permission signal + an optional Ed25519
+device-pubkey ↔ login gist attestation — **not** Cosign/Sigstore/Rekor,
+`tenantId`/`tenantSecret`, or OCI manifests. There is no Gitea instance.
+
+Treat the Gitea/OCI/Cosign/ORAS material below, and the
+`papercuspai.com/snapshots` marketplace UI, as **superseded design
+history**; the redaction / capture-pass / restore-pass / migration /
+abuse-and-moderation reasoning (§15.4–15.6, §15.9, §15.11, §15.24) remains
+the conceptual reference. Eight rounds of architectural research and
+critique have been incorporated.
 
 **This is a different feature from §16 (Publishing).** Snapshots ship the
 entire working harness (DB rows + filesystem + git history) to a marketplace

@@ -3,6 +3,21 @@ URL: /internal/docs/design/marketplace-feedback
 
 Concrete UX feedback on /marketplace and its 4 tabs. Captured live against the running operator with installed templates, snapshots, and zero published plugins. Cross-cutting issues first, per-tab notes second.
 
+:::caution\[Surface superseded — the Marketplace was replaced by the Cupboard]
+The `/marketplace` UI this memo critiques no longer exists. There is no
+`app/marketplace/` directory, no `app/marketplace/layout.tsx`, no
+`MarketplaceList.tsx`, and no `/marketplace/<slug>` detail route. The
+browse/install surface is now the **Cupboard**
+(`/cupboard` → `apps/operator/app/cupboard/CupboardClient.tsx`): a
+single storefront with **kind-filter tabs** (`?kind=` nuqs param —
+All / Harnesses / Blueprints / Snapshots / Plugins / Packs / Tools),
+not the old 4-tab Overview/Templates/Plugins/Snapshots IA. A backend
+`marketplace` endpoint-route and the `@papercusp/marketplace-public-ui`
+lib still exist, but the page-level critiques below (tab strip, detail
+page, per-tab stats) describe a retired surface. Keep them only as
+historical design intent for the Cupboard rebuild.
+:::
+
 Captured live by walking
 `http://localhost:3070/marketplace?ws=default` and the four tabs
 (Overview / Templates / Plugins / Snapshots) plus a detail page.

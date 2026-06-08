@@ -13,13 +13,13 @@ P-020/P-021/D-007 (2026-05-31). This is the map.
 ## One helper, two channels, event-driven
 
 Everything funnels through **`notifyAttention()`** in
-`apps/operator/lib/attention-notify.ts`. Producers call it at the source the
+`packages/operator-core/lib/attention-notify.ts`. Producers call it at the source the
 moment a ≥high attention item appears; it fans out to two independently
 fail-safe channels (a delivery error is logged and swallowed — it never
 propagates into the producer's write path):
 
 1. **Mobile** — `notifyWorkspace(wsId, payload)` →
-   `apps/operator/lib/device-push-dispatcher.ts` → APNs/FCM to devices paired
+   `packages/operator-core/lib/device-push-dispatcher.ts` → APNs/FCM to devices paired
    in `harness_shared.mobile_push_tokens`. No-op when none are paired. `data`
    must be string-valued and `kind` a `PushKind` — the helper coerces/maps.
 2. **Desktop-native** — emits an `attention.notify` event on the sync SSE bus
@@ -52,7 +52,7 @@ see the coupling gotcha below.
 ## The importance map (what the ≥high gate includes)
 
 P-020 pushes only at importance **≥ high**. The per-kind importance lives in
-`apps/operator/lib/attention/adapters.ts`:
+`packages/operator-core/lib/attention/adapters.ts`:
 
 | Kind                   | importance                                                                      |
 | ---------------------- | ------------------------------------------------------------------------------- |

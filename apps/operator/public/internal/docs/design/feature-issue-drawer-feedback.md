@@ -3,6 +3,24 @@ URL: /internal/docs/design/feature-issue-drawer-feedback
 
 After the designer integrated round-1 feedback. Most major issues fixed. A few small new observations + one persistent gap.
 
+:::caution\[Surface superseded — historical feedback]
+This memo critiques the **right-docked peek drawer** (the
+`.h-feature-peek-drawer` / `.h-issue-sev` / `.h-issue-status` /
+`.h-feature-run-row` classes) that opened on the legacy Next
+`/harness?ws=…&project=…` page. That surface no longer exists:
+`/harness` now **redirects to `/adv`**, and the feature/issue detail
+is rendered by the dockview `DetailPanel`
+(`apps/operator/app/adv/harnesses/DetailPanel.tsx`) plus the pinnable
+`PinnedFeaturePanel` / `PinnedIssuePanel`
+(`apps/operator/app/harness/dock/`). The old drawer CSS still lingers
+in `apps/operator/app/harness/harness.css` but is no longer rendered
+by any live component. Several requests here (Recent agent runs,
+attempts) are now present in `DetailPanel`. Class-level and
+geometry-level observations below describe the retired drawer; treat
+the surviving design intent as still-useful, the cited selectors as
+stale.
+:::
+
 Captured live by clicking `F-CSV-003` (feature) and `I-0009`
 (issue) on
 `http://localhost:3070/harness?ws=default&project=sheets` at

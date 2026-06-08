@@ -66,8 +66,8 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 
 | Item                                                                                                                                                             | Why V1                                                                                                                                            |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Schema evolution**: `aliases` for both renames (`{newName: oldName}`) and removals (`{removed: null}`), walked from current installed plugin's manifest        | A single plugin version bump silently breaks every snapshot pinned to the old version                                                             |
-| **`pluginVersionPinned: true` is the default**                                                                                                                   | Pinning is the right default; alias-walk only happens on explicit "fork against latest" opt-in. Drastically reduces alias-map maintenance burden. |
+| **Schema evolution**: per-property `aliases` array for both renames (`["oldName"]`) and removals (`[null]`), walked from current installed plugin's manifest     | A single plugin version bump silently breaks every snapshot pinned to the old version                                                             |
+| **`versionPin: { mode: "exact" }` is the reproducible default** (legacy `pluginVersionPinned: true` maps to it)                                                  | Pinning is the right default; alias-walk only happens on explicit "fork against latest" opt-in. Drastically reduces alias-map maintenance burden. |
 | **`securityAdvisories` field** on marketplace catalog per-version; fork-time prompt loud when pinned version has open advisory                                   | Pinning a vulnerable version is otherwise a vulnerability vector                                                                                  |
 | **`secret`** + **`snapshotPolicy: "include" \| "strip" \| "warn-and-prompt"`** with strip default; `--include-secrets` flag at publish + per-secret confirmation | Plugin authors otherwise hardcode secrets into project files for demos, defeating the purpose                                                     |
 | **`shareable: false`** + JSON-Schema `pattern` for format validation by convention                                                                               | Format validation prevents fork-time typos in account IDs, region names, etc.                                                                     |
@@ -91,19 +91,19 @@ Public marketplace launch is V1.1+, gated on the moderation layer.
 
 ## V1.1 — improves the system, ships fast-follow
 
-| Item                                                                                                                      | Why deferred                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Phasing inversion (share-semantics PR before OAuth PR)                                                                    | Pure PR ordering, not new code                                                                                                |
-| Cost: drop field for V1, add `provision.setup.budgetCap` + AWS-Budgets helper                                             | Real feature with teeth; \~150 LOC plus per-cloud helpers. Dropping for V1 is the right call (no enforcement = theater)       |
-| `compute:exec:*` vs build-scripts docs clarification                                                                      | Pure docs; V1 substrate ships, V1.1 adds the explanatory cross-references                                                     |
-| Audit log policy formalization + browse-logs UI                                                                           | V1 ships sane defaults; V1.1 adds settings UI                                                                                 |
-| `runAt: "fork" \| "manual" \| "first-action"` for `provision.setup`                                                       | V1 always runs at fork; V1.1 adds the manual / first-action escape hatches                                                    |
-| Skip-teardown 7-day passive banner ("you have N orphan resources")                                                        | Visibility-only; not a safety gate                                                                                            |
-| github-repo dogfood (re-implement repo creation as build script)                                                          | Smaller dogfood than cloudflare-pages-hosted; exercises full stack (OAuth + share-semantics + provisioning) more economically |
-| **Marketplace moderation layer** (separate spec doc)                                                                      | V1 ships safely under vetted-publisher alpha; public marketplace launch is V1.1+ gated on moderation                          |
-| **Per-tenant OAuth multi-tenancy** (separate OAuth apps per tenant; per-tenant rate-limit budgets; tenant-scoped storage) | V1 single-tenant. Multi-tenant hosted papercusp.com is V1.1+                                                                  |
-| Cross-platform per-script paths: `setup.command.linux` / `setup.command.darwin`; bashism linter at publish time           | V1 supports single platform-agnostic command; V1.1 adds explicit per-platform with linter                                     |
-| Copy-edit: sync index.mdx vs open-questions.mdx                                                                           | Trivially fixable                                                                                                             |
+| Item                                                                                                                           | Why deferred                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Phasing inversion (share-semantics PR before OAuth PR)                                                                         | Pure PR ordering, not new code                                                                                                |
+| Cost: drop field for V1, add `provision.setup.budgetCap` + AWS-Budgets helper                                                  | Real feature with teeth; \~150 LOC plus per-cloud helpers. Dropping for V1 is the right call (no enforcement = theater)       |
+| `compute:exec:*` vs build-scripts docs clarification                                                                           | Pure docs; V1 substrate ships, V1.1 adds the explanatory cross-references                                                     |
+| Audit log policy formalization + browse-logs UI                                                                                | V1 ships sane defaults; V1.1 adds settings UI                                                                                 |
+| `runAt: "fork" \| "install" \| "first-action"` for `provision.setup` (shipped SDK enum; `"manual"` is a further design target) | V1 always runs at fork; V1.1 adds the install / first-action escape hatches                                                   |
+| Skip-teardown 7-day passive banner ("you have N orphan resources")                                                             | Visibility-only; not a safety gate                                                                                            |
+| github-repo dogfood (re-implement repo creation as build script)                                                               | Smaller dogfood than cloudflare-pages-hosted; exercises full stack (OAuth + share-semantics + provisioning) more economically |
+| **Marketplace moderation layer** (separate spec doc)                                                                           | V1 ships safely under vetted-publisher alpha; public marketplace launch is V1.1+ gated on moderation                          |
+| **Per-tenant OAuth multi-tenancy** (separate OAuth apps per tenant; per-tenant rate-limit budgets; tenant-scoped storage)      | V1 single-tenant. Multi-tenant hosted papercusp.com is V1.1+                                                                  |
+| Cross-platform per-script paths: `setup.path.linux` / `setup.path.darwin`; bashism linter at publish time                      | V1 supports a single platform-agnostic `setup.path`; V1.1 adds explicit per-platform with linter                              |
+| Copy-edit: sync index.mdx vs open-questions.mdx                                                                                | Trivially fixable                                                                                                             |
 
 **V1.1 LOC: \~500.**
 
@@ -137,7 +137,7 @@ Before V1 implementation begins, these need explicit sign-off:
 * [ ] **Cost field dropped from V1**; budget enforcement comes via real `budgetCap` helper in V1.1
 * [ ] **Audit retention defaults** (1y / 50MB cap) + `auditLogCapMb` per-plugin override + fail-loud on encrypted-locked volumes
 * [ ] **`aliases` covers both renames and removals**
-* [ ] **`pluginVersionPinned: true` is the default**; security advisories prompt loudly at fork
+* [ ] **`versionPin: { mode: "exact" }` is the reproducible default** (legacy `pluginVersionPinned: true` maps to it); security advisories prompt loudly at fork
 * [ ] **`runAt: "first-action"` synchronization contract** (action returns `setup-required`; hooks queued + replayed; webhooks 503'd) is the locked design
 * [ ] **Default for structural-vs-operational fields is `structural`**
 * [ ] **`papercusp_record_resource` helper** + plugin's `teardown.sh` as dispatcher
@@ -150,7 +150,7 @@ Before V1 implementation begins, these need explicit sign-off:
 
 Once these are checked, implementation begins. The order is:
 
-1. **PR 1** (\~600 LOC): Snapshot share-semantics + OAuth substrate + GitHub provider + `ctx.oauth.token()` helper + paste-PAT scope check + `pluginVersionPinned` + security-advisory consultation
+1. **PR 1** (\~600 LOC): Snapshot share-semantics + OAuth substrate + GitHub provider + `ctx.oauth.token()` helper + paste-PAT scope check + version pinning (`versionPin`) + security-advisory consultation
 2. **PR 2** (\~1,400–1,500 LOC): Build-script lifecycle (manifest, runner, sandbox with bwrap-bundling + smoke test, audit, recovery via PG, consent flow, cloudProvider presets, network floor, trust per-(publisher, plugin) with rotation/transfer, hook queue-and-replay, single-user-host detection, helper library) + dogfooded against the existing `cloudflare-pages-hosted` Worker deploy
 3. **PR 3** (V1.1 onward): github-repo refactored to use build scripts + `runAt` scheduling + `budgetCap` + AWS-Budgets helper + skip-teardown banner + marketplace moderation layer (separate spec)
 

@@ -18,7 +18,7 @@ Every agent LLM call assembles its system prompt from **four sections in fixed o
 
 Sources 1 and 3 are filesystem files under `apps/operator/prompts/`. Source 2 is auto-rendered from the projection registry. Source 4 is per-request data (conversation history, trigger reason, etc.).
 
-The assembly function is [`assembleRolePrompt`](#api) in `apps/operator/lib/prompt-assembly.ts`. Every chat-mode route calls it; agents spawned via `runAgentChat` get the same layering through the orchestrator's prompt-build path.
+The assembly function is [`assembleRolePrompt`](#api) in `packages/operator-core/lib/prompt-assembly.ts`. Every chat-mode route calls it; agents spawned via the orchestrator get the same layering through its prompt-build path (re-exported as `@papercusp/orchestrator/role-prompt`).
 
 ## Why a separate layer
 
@@ -97,7 +97,7 @@ to introspect the full role-filtered surface.
 
 ### Section 3b — Shared cross-role guides
 
-The orchestrator's spawn path additionally injects authored MDX from `apps/operator/content/docs/agents/` as a separate section after `<role>.tools.md`. Today this loads `finding-context.mdx` (the retrieval-surface decision tree). The page lives in the **public** docs site so humans + agents share one source; the orchestrator strips frontmatter and emits the body as another `## ...` section. See [Finding context](/docs/agents/finding-context).
+The orchestrator's spawn path additionally injects authored MDX from `apps/operator-docs/src/content/docs/agents/` as a separate `sharedGuides` section after `<role>.tools.md` (see `prompt-build.ts`). Today this loads `finding-context.mdx` (the retrieval-surface decision tree). The page lives in the docs site so humans + agents share one source; the orchestrator strips frontmatter and emits the body as another `## ...` section. See [Finding context](/internal/docs/agents/finding-context).
 
 ### Section 4 — Runtime context
 
@@ -133,7 +133,8 @@ If a rule is "the operator never raises voice prompts after midnight," put it in
 ## API
 
 ```ts
-import { assembleRolePrompt } from '@/lib/prompt-assembly';
+import { assembleRolePrompt } from '../../prompt-assembly';
+// (or, from the orchestrator re-export: '@papercusp/orchestrator/role-prompt')
 
 const { text, sections } = await assembleRolePrompt({
   role: 'operator',
@@ -193,7 +194,7 @@ When introducing a role (e.g. `documenter`):
 1. **Add the persona** — `apps/operator/prompts/documenter.persona.md` (required).
 2. **Add the playbook** if the role has cross-tool workflows — `apps/operator/prompts/documenter.tools.md` (optional but recommended).
 3. **Verify the catalog** — list the tools the role should see; ensure each has `guidance` populated in `defineTool` (otherwise the catalog falls back to description-only, which often isn't enough).
-4. **Add to the `Role` union type** — `Role` in `prompt-assembly.ts:67`.
+4. **Add to the `Role` union type** — `Role` in `prompt-assembly.ts` (the `export type Role` declaration).
 5. **Wire role-allowlist on tools** the role should call — most tools declare `roles: [...]` in their manifest.
 6. **Smoke test** — call `assembleRolePrompt({ role: 'documenter', toolNames: [...] })` and inspect `sections` to confirm all four parts populate.
 
@@ -212,9 +213,11 @@ If the role is a chat-mode driver (drives a streaming converse loop), also:
 ## File map
 
 ```
+packages/operator-core/
+└── lib/
+    └── prompt-assembly.ts                  ← the assembly module + loaders
+
 apps/operator/
-├── lib/
-│   └── prompt-assembly.ts                  ← the assembly module + loaders
 └── prompts/
     ├── operator.persona.md                 ← required
     ├── operator.converse.md                ← chat-mode rules (operator only today)

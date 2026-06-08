@@ -34,11 +34,11 @@ for the integration shape.
 * **Tool catalog** (what each agent can do): the [Action Registry](/internal/docs/agents/action-registry) — single typed source of truth with shims that emit transport-specific tool defs (MCP, ElevenLabs Conv AI, OpenAI Realtime SDK).
 * **Docs retrieval surfaces** (how agents read documentation): [Docs retrieval](/internal/docs/agents/docs-retrieval) — the `@papercusp/docs-engine` package, the three doc surfaces (public, engineering, per-harness), the context-aware `docs:*` tools, and the `cross_harness:docs_*` family for out-of-harness inspection.
 * **Audit trail**: `harness_shared.agent_actions` (full) + `harness_shared.agent_queries` (sampled). Surfaced in the harness dashboard's "Agent activity" sub-tab.
-* **Conversation memory**: `harness_shared.claude_sessions` table — voice agent picks which session a delegation lands in via auto-injected context.
+* **Conversation memory**: `harness_shared.delegates` table (read/written via `delegated-tasks`) — voice agent picks which delegated session a delegation lands in via auto-injected context. (The table kept its old `claude_sessions_*` constraint names after the rename.)
 
 When agents (or humans) build new panels, status indicators, or any
 component that reads from Postgres / the operator backend, **default to
-`useSyncQuery({queryName, args})` from `@restart/sync`**. Don't roll a
+`useSyncQuery({queryName, args})` from `@papercusp/sync`**. Don't roll a
 new `fetch + setInterval` poll, and don't open a raw `EventSource` for
 query data — both fragment the architecture and forfeit the library's
 push semantics, IDB caching, and reconnect resilience.

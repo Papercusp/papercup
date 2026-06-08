@@ -15,7 +15,7 @@ doc-comment) + the root `CLAUDE.md` deployment-model section.
 import { Aside } from '@astrojs/starlight/components';
 
 **For any new component that reads server state, default to
-`useSyncQuery({queryName, args})` from `@restart/sync`.** Don't roll a
+`useSyncQuery({queryName, args})` from `@papercusp/sync`.** Don't roll a
 new `fetch + setInterval` poll. Don't open a raw `EventSource` for
 query data.
 
@@ -47,8 +47,8 @@ sluggish."
 
 1. Add a Zero query in `libs/zero-harness/src/queries.ts`.
 2. Add `notifySyncInvalidate('queryName.variant', args, optionalRows?)`
-   from `apps/operator/lib/sync-sse.ts` at the write site (REST route or
-   chokidar watcher).
+   from `packages/operator-core/lib/sync-sse.ts` at the write site (REST
+   route or chokidar watcher).
 3. Component: `const { data } = useSyncQuery({queryName, args})`. Done.
 
 Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook).
@@ -100,14 +100,15 @@ Zero notices the change and pushes it to every connected client within
 
 ## Where each piece lives
 
-| Concern                                | Package                 | Path                                   |
-| -------------------------------------- | ----------------------- | -------------------------------------- |
-| RichGrid component + `ColumnDef` types | `@restart/grid-core`    | `libs/papergrid/src/RichGrid.tsx`      |
-| Zero schema definitions                | `@restart/zero-harness` | `libs/zero-harness/src/schema.ts`      |
-| Named-query catalog                    | `@restart/zero-harness` | `libs/zero-harness/src/queries.ts`     |
-| Zero provider for harness app          | local                   | `apps/operator/app/harness/layout.tsx` |
-| `zero-cache` process                   | systemd unit            | `zero-cache-harness.service`           |
-| Postgres database                      | server                  | `papercusp` DB on `:5432`              |
+| Concern                                | Package                   | Path                                                |
+| -------------------------------------- | ------------------------- | --------------------------------------------------- |
+| RichGrid component + `ColumnDef` types | `@papercusp/grid-core`    | `libs/generic/papergrid/grid-core/src/RichGrid.tsx` |
+| Zero schema definitions                | `@papercusp/zero-harness` | `libs/zero-harness/src/schema.ts`                   |
+| Named-query catalog                    | `@papercusp/zero-harness` | `libs/zero-harness/src/queries.ts`                  |
+| Sync hooks (`useSyncQuery`, …)         | `@papercusp/sync`         | `libs/generic/sync/src/SyncContext.ts`              |
+| Sync provider for harness app          | local                     | `apps/operator/providers/HarnessZeroProvider.tsx`   |
+| `zero-cache` process (retired)         | systemd unit              | `zero-cache-harness.service`                        |
+| Postgres database                      | server                    | `papercusp` DB on `:5432`                           |
 
 ## Reading order for new contributors
 
@@ -129,10 +130,10 @@ Zero notices the change and pushes it to every connected client within
 When the docs and the code disagree, the code wins. The docs are kept in
 sync best-effort, but the canonical references are:
 
-* `libs/papergrid/src/RichGrid.tsx` — props, `ColumnDef` shape
+* `libs/generic/papergrid/grid-core/src/RichGrid.tsx` — props, `ColumnDef` shape
 * `libs/zero-harness/src/queries.ts` — every query name and its args
 * `libs/zero-harness/src/schema.ts` — every published table and its
   Zero-side type
-* `apps/operator/app/harness/SnapshotsPanel.tsx` — a small, complete,
-  representative panel (Zero + RichGrid + sortable columns + row click +
-  per-row mutation)
+* `apps/operator/app/adv/harnesses/useHarnessData.ts` — a live consumer
+  reading the consolidated queries via `useSyncQuery` (`featuresConsolidated.bySlug`,
+  `issuesConsolidated.bySlug`, `agentRunsConsolidated.bySlug`)

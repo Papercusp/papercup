@@ -44,7 +44,7 @@ search\_path log to tell you which DB you're on; check `current_database()` /
 Live harnesses live **in** `localhost:5432/papercusp` — which is exactly
 `defaultDsn()`'s hardcoded fallback. So the divergence (ignoring `DATABASE_URL`) was
 latent: every live worker fell through to the fallback and landed in the right DB by
-coincidence. The **harness gym** (`apps/operator/lib/gym/`) is the first caller whose
+coincidence. The **harness gym** (`packages/operator-core/lib/gym/`) is the first caller whose
 target DB is a *separate* database (a dedicated gym PG, per D-018), so it was the first
 to connect to the wrong DB and surface the bug.
 
@@ -60,7 +60,7 @@ Two complementary, live-safe fixes (commit `7eb79a46d`):
    PAPERCUSP_DATABASE_URL: cfg.gymDatabaseUrl,  // pg-bootstrap (worker subprocess)
    ```
 2. **Make the spawn helper mirror the resolved DSN.** `buildInvokeOnce`
-   (`apps/operator/lib/harness-invoke-once.ts`) already set `DATABASE_URL` "so the agent
+   (`packages/operator-core/lib/harness-invoke-once.ts`) already set `DATABASE_URL` "so the agent
    hits the SAME Postgres the operator uses" — but `pg-bootstrap` doesn't read
    `DATABASE_URL`. It now also sets:
    ```ts
@@ -78,7 +78,7 @@ feeds `spawn-mcp` (the signed MCP URL), not the orchestrator's state connection.
 
 ## How it was isolated
 
-A reproduction in `lib/gym/smoke.ts` built a client with the *exact* `pg-bootstrap`
+A reproduction in `packages/operator-core/lib/gym/smoke.ts` built a client with the *exact* `pg-bootstrap`
 config (`postgres(gymUri, { max: 4, connection: { search_path } })`) and fired 8
 concurrent probes (`current_setting('search_path')` + `to_regclass('harness_features')`
 

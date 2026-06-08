@@ -17,7 +17,7 @@ Papercup (papercupai.com): the 5-director autonomous-AI-company demo install.
 
 Role
 A named agent invocation — a prompt file + an entry in the orchestrator's decision table. Always with fresh context.
-Planner, Worker, Validator, Orchestrator. (Plus user-defined roles via plugins.)
+Scoper, Architect, Worker, Validator, Orchestrator (the shipped pipeline roles — see AGENT\_ROLES in packages/agent-mcp/src/role-config.ts). Plus user-defined roles via plugins.
 
 Harness template
 A reusable recipe for spinning up a harness. One template → many concrete harness instances; each instance has its own goal, project dir, state. Templates declare their roles, default models, and the plugins they recommend.
@@ -28,8 +28,8 @@ A package that extends one or more harness instances with new capabilities — a
 @papercupai/cloudflare-pages contributes a "Publish" button; @papercupai/vscode-server contributes a code-server tab; @papercupai/slack-notifier sends a Slack message on mission.done. Multiple plugins compose per instance.
 
 Marketplace package kind
-The discriminator that tells the marketplace + CLI which install pipeline a published artifact follows. Possible values: template (default), plugin.
-Both go through the same publish + signing + retraction infrastructure; only the install handler differs.
+The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a three-kind storefront: plugin (default), pack (a runtime-less code-tool pack), and blueprint (a GitHub-repo-backed harness recipe — the term that superseded the original template).
+All three go through the same publish + signing + retraction infrastructure; only the install handler differs.
 
 Goal
 The top-level mission. Every task traces back to a goal through a parent chain. Goals can themselves nest.

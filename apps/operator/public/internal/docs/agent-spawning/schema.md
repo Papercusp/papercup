@@ -3,70 +3,91 @@ URL: /internal/docs/agent-spawning/schema
 
 The two PG tables that back the spawn primitive — `spawned_agents` (the durable mirror) and `tool_invocations_spawn_tree` (the recursive lineage view).
 
-## `harness_shared.spawned_agents` — Migration 049
+## `harness_shared.spawned_agents` — baseline (+ migrations 146, 174)
 
-One row per spawn launch. Written by the plugin; read by `poll`, `list_active`, and the Intel panel.
+One row per spawn launch — the durable nursery. Written by the spawn engine (`recordSpawn` / `finishSpawn`); read by `fleet:tree`, the concurrency-ceiling count, and the Intel panel.
+
+The table is defined in `000-baseline.sql`; the supervision columns (`session_owner` … `cancelled_at`) were added by `146-fleet-supervision.sql` and the durability columns (`heartbeat_at`) by `174-spawned-agents-heartbeat-reclaim.sql`.
 
 ```sql
 CREATE TABLE harness_shared.spawned_agents (
-  spawn_id          TEXT PRIMARY KEY,
-  workspace_id      TEXT NOT NULL,
-  harness_slug      TEXT NOT NULL,
-  parent_spawn_id   TEXT NULL,
-  parent_role       TEXT NOT NULL,
-  child_role        TEXT NOT NULL,
-  feature_id        TEXT NULL,
-  chunk_id          TEXT NULL,
-  run_id            TEXT NOT NULL,
-  status            TEXT NOT NULL,
-  started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  finished_at       TIMESTAMPTZ NULL,
-  duration_ms       BIGINT NULL,
-  exit_code         INT NULL,
-  output_tail       TEXT NULL,
-  error_message     TEXT NULL,
-  cancel_requested  BOOLEAN NOT NULL DEFAULT false
+  -- baseline columns
+  spawn_id              TEXT PRIMARY KEY,
+  workspace_id          TEXT NOT NULL,
+  harness_slug          TEXT NOT NULL,
+  parent_spawn_id       TEXT NULL,
+  parent_role           TEXT NOT NULL,
+  child_role            TEXT NOT NULL,
+  feature_id            TEXT NULL,
+  chunk_id              TEXT NULL,
+  run_id                TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  started_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at           TIMESTAMPTZ NULL,
+  duration_ms           BIGINT NULL,
+  exit_code             INT NULL,
+  output_tail           TEXT NULL,
+  error_message         TEXT NULL,
+  cancel_requested      BOOLEAN NOT NULL DEFAULT false,
+  -- 146-fleet-supervision: structured-concurrency / supervision
+  session_owner         TEXT NULL,          -- coord/lock owner (== spawn_id for fleet spawns)
+  coordination_domain   TEXT NOT NULL DEFAULT 'default',
+  plan_slug             TEXT NULL,
+  item_id               TEXT NULL,
+  restart_strategy      TEXT NOT NULL DEFAULT 'one_for_one',  -- one_for_one|one_for_all|rest_for_one
+  restart_count         INT NOT NULL DEFAULT 0,
+  restart_window_start  TIMESTAMPTZ NULL,
+  cancel_reason         TEXT NULL,
+  cancelled_at          TIMESTAMPTZ NULL,
+  -- 174-spawned-agents-heartbeat-reclaim: orphan reclaim
+  heartbeat_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
 ### Status values
 
-`running | done | failed | cancelled | reaped`
+`running | restarting | done | failed | cancelled | reaped`
+
+`running` and `restarting` are ACTIVE (counted against the concurrency ceiling); the rest are terminal. Orphaned active rows are reclaimed to `failed`; `reaped` is a legacy status no current path writes.
 
 ### Indexes
 
 ```sql
-spawned_agents_parent_idx    -- (workspace_id, parent_spawn_id) — child enumeration + recursive joins
-spawned_agents_recent_idx    -- (workspace_id, harness_slug, started_at DESC) — Intel panel feed
-spawned_agents_running_idx   -- (workspace_id, status) WHERE status='running' — reaper sweep
+spawned_agents_parent_idx           -- (workspace_id, parent_spawn_id) — child enumeration + recursive joins
+spawned_agents_recent_idx           -- (workspace_id, harness_slug, started_at DESC) — Intel panel feed
+spawned_agents_running_idx          -- (workspace_id, status) WHERE status='running'
+spawned_agents_session_owner_idx    -- (workspace_id, session_owner) — owner→spawn lookup for cancel/release (146)
+spawned_agents_active_heartbeat_idx -- (heartbeat_at) WHERE status IN ('running','restarting') — orphan-reclaim sweep (174)
 ```
+
+A check constraint (`spawned_agents_restart_strategy_chk`, added by migration 146) restricts `restart_strategy` to `one_for_one | one_for_all | rest_for_one`.
 
 ### RLS
 
-Same workspace-scoped policy as every other `harness_shared` table: reads/writes require `app.workspace_id` GUC set to match the row's `workspace_id`. The plugin sets the GUC inside its `sql.begin(...)` block on every operation.
+Same workspace-scoped policy as every other `harness_shared` table — `spawned_agents_workspace_isolation`: reads/writes require the `app.workspace_id` GUC to match the row's `workspace_id` (`USING`/`WITH CHECK (workspace_id = current_setting('app.workspace_id', true))`). The org PG client (`getOrgPg`) sets the GUC per connection on every operation.
 
 ### Lifecycle hooks on the row
 
-| When                                                 | What                                                                             |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `spawn()` allocates a record                         | `INSERT` with `status='running'`                                                 |
-| Background `invoke()` resolves                       | `UPDATE` with status, duration, exit\_code, output\_tail                         |
-| Background `invoke()` rejects                        | `UPDATE` with status='failed' (or 'cancelled' if signal aborted), error\_message |
-| `cancel()` matches in-memory                         | `UPDATE` with status='cancelled' immediately                                     |
-| `cancel()` matches PG-only                           | `UPDATE` with status='cancelled' AND cancel\_requested=true                      |
-| `list_active()` first call per workspace per process | One-shot reaper: rows still 'running' get flipped to 'reaped'                    |
+| When                                                  | What                                                                                    |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `spawnAgentInHarness` records a spawn (`recordSpawn`) | `INSERT` with `status='running'`, `session_owner`, `coordination_domain`                |
+| Background invoke resolves (`finishSpawn`)            | `UPDATE` with status (`done`/`failed`), duration, exit\_code, output\_tail              |
+| Background invoke rejects / aborts                    | `UPDATE` with status='failed' (or 'cancelled' if the signal aborted), error\_message    |
+| `fleet:cancel` subtree flip (`cancelSubtree`)         | `UPDATE` every active descendant to status='cancelled' (one txn) + release claims/locks |
+| Live host heartbeat (`heartbeatSpawns`)               | `UPDATE heartbeat_at = now()` for in-flight spawns, every 60s                           |
+| Orphan reclaim sweep (`reclaimOrphanedSpawns`)        | Stale-heartbeat active rows → `status='failed'` + reason, freeing the ceiling           |
 
-### `cancel_requested` — the v2 hook
+### `heartbeat_at` + reclaim — the durability mechanism
 
-Today the column is informational. v2 will add a watcher process that:
+A `running`/`restarting` row whose launching operator host dies would otherwise count against the concurrency ceiling forever (the old `cancel_requested` "v2 watcher" idea — a `pid` column + a SIGTERM-by-pid watcher — was never built and is superseded by this). Instead:
 
-1. Polls `WHERE cancel_requested=true AND status='running'`
-2. Finds the stored OS-level pid (would need a `pid` column added)
-3. SIGTERMs by pid
+1. The live host bumps `heartbeat_at` every `SPAWN_HEARTBEAT_INTERVAL_MS` (60s) for its in-flight spawns.
+2. A row un-heartbeated past `RECLAIM_STALE_MS` (5 min) is presumed orphaned (host dead).
+3. The reclaim sweep — opportunistic on each spawn + periodic — flips it to `status='failed'` with a reason and frees the ceiling slot (and wakes the dead child's parent).
 
-Designed for cross-restart cancel of an actively-running child whose owning operator is dead. We haven't built it because no use case has demanded it yet — most spawns finish or fail naturally; cancelling a survived-restart spawn is rare.
+`cancel_requested` survives in the schema but is informational; the reclaim path, not a pid watcher, is what un-wedges the ceiling cross-restart.
 
-## `harness_shared.tool_invocations_spawn_tree` — Migration 048
+## `harness_shared.tool_invocations_spawn_tree` — baseline view
 
 A view, not a table. Recursive CTE over `tool_invocations` joining each row to its ancestors via `parent_spawn_id`.
 
@@ -102,13 +123,13 @@ This view is **per-tool-call**, not per-spawn. Each row is one MCP tool invocati
 
 It's not the same as `spawned_agents`:
 
-|                                       | `spawned_agents`                    | `tool_invocations_spawn_tree`          |
-| ------------------------------------- | ----------------------------------- | -------------------------------------- |
-| Granularity                           | One row per spawn launch            | One row per tool call by a child agent |
-| When written                          | At `spawn()` call time + on resolve | When child makes any MCP tool call     |
-| Includes spawns that called no tools? | ✅                                   | ❌                                      |
-| Has `depth` (cross-spawn)             | ❌ (one row per spawn)               | ✅ (recursive lineage)                  |
-| Used by                               | `poll`, `list_active`, durability   | Intel panel's Spawns sub-tab           |
+|                                       | `spawned_agents`                                                                  | `tool_invocations_spawn_tree`                     |
+| ------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Granularity                           | One row per spawn launch                                                          | One row per tool call by a child agent            |
+| When written                          | At `spawn()` call time + on resolve                                               | When child makes any MCP tool call                |
+| Includes spawns that called no tools? | ✅                                                                                 | ❌                                                 |
+| Cross-spawn `depth`                   | derived at query time from `parent_spawn_id` (`getSubtree`) — not a stored column | ✅ in-view (recursive lineage)                     |
+| Used by                               | `fleet:tree`, the concurrency count, durability                                   | `intel:spawn_tree` / Intel panel's Spawns sub-tab |
 
 You query `spawned_agents` to answer "what spawns happened?". You query `tool_invocations_spawn_tree` to answer "what did each spawn DO?".
 
@@ -139,21 +160,24 @@ ORDER BY s.started_at DESC;
 
 That's the canonical "what happened to each spawn" feed.
 
-## URL plumbing — the 7 spawn params
+## URL plumbing — the spawn params
 
-When a spawn fires, the orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.json` with these query params on the operator URL:
+When a spawn fires, the orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.json` with these query params on the operator URL — and HMAC-signs them (`spawn-signing.ts`) so the dispatcher can verify the envelope:
 
-| Param          | Source                          | Purpose                                                   |
-| -------------- | ------------------------------- | --------------------------------------------------------- |
-| `workspace`    | `ctx.workspaceId`               | RLS scoping for everything                                |
-| `harness`      | `ctx.harnessSlug`               | Path resolution + telemetry attribution                   |
-| `role`         | child role                      | Tool quota windows + role gating                          |
-| `feature`      | spawn input `featureId`         | Feature attribution in tool\_invocations                  |
-| `chunk`        | spawn input `chunkId` (workers) | Worker chunk-window quotas                                |
-| `run`          | parent's `runId`                | Inherited; per-run quota windows                          |
-| `spawn`        | new `spawnId`                   | Unique per-spawn telemetry attribution                    |
-| `parent_spawn` | parent's `spawnId`              | The lineage edge — this is what makes the spawn-tree work |
+| Param          | Required | Source                          | Purpose                                                      |
+| -------------- | -------- | ------------------------------- | ------------------------------------------------------------ |
+| `harness`      | ✅        | `ctx.harnessSlug`               | Path resolution + telemetry attribution                      |
+| `workspace`    | ✅        | `ctx.workspaceId`               | RLS scoping for everything                                   |
+| `role`         | ✅        | child role                      | Tool quota windows + role gating                             |
+| `run`          | ✅        | parent's `runId`                | Inherited; per-run quota windows                             |
+| `spawn`        | ✅        | new `spawnId`                   | Unique per-spawn telemetry attribution                       |
+| `feature`      | optional | spawn input `featureId`         | Feature attribution in tool\_invocations                     |
+| `chunk`        | optional | spawn input `chunkId` (workers) | Worker chunk-window quotas                                   |
+| `parent_spawn` | optional | parent's `spawnId`              | The lineage edge — this is what makes the spawn-tree work    |
+| `client`       | optional | UI client id / spawn owner      | Default `ui:dispatch` target when invoked from a browser tab |
 
-The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework reads them in `buildHttpSpawnContext` (HTTP) / equivalent (MCP), populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row.
+(The signature also covers an `exp` expiry param; required vs optional is enforced by `parseRequestContext`.)
+
+The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework parses them in `parseRequestContext` (exported as `buildHttpSpawnContext`, `packages/agent-mcp/src/spawn-context.ts`), populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row.
 
 That's the entire mechanism. No agent code needs to know about spawning; the URL params do all the work.

@@ -102,6 +102,10 @@ GET /api/oauth/callback?provider=<p>&code=<c>&state=<s>
   → exchanges code for token
   → writes token to plugin's per-harness config[field]
   → redirects to /settings/plugins?connected=<plugin>
+
+POST /api/oauth/verify-paste
+  → hybrid mode: introspect a pasted PAT's granted scopes against the
+    plugin's required scopes (exact/superset accept, subset reject)
 ```
 
 ### State design (URL parameter, not cookie)
@@ -278,7 +282,7 @@ action handlers can also detect this state by checking
 
 Two revocation paths:
 
-1. **From the operator UI**: clicking "Disconnect" on a plugin's settings clears `config[field]` + calls the provider's revoke endpoint (best-effort) + marks the plugin as needing-auth.
+1. **From the operator UI**: clicking "Disconnect" on a plugin's settings clears `config[field]` + calls the provider's revoke endpoint (best-effort) + marks the plugin as needing-auth. (The dedicated disconnect route is not yet broken out as its own endpoint; clearing the field via the existing `PUT /api/plugins/config` path is the current mechanism.)
 2. **From the provider's UI**: user revokes papercusp's app on github.com → next API call from the plugin returns 401 → substrate marks `oauth_expired: true` → user re-clicks Connect.
 
 Either way, the plugin's own data on the provider side is preserved; only
@@ -286,17 +290,21 @@ papercusp's authorization is gone.
 
 ## Implementation
 
-| Surface                                                 | Change                                                                        | LOC   |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------- | ----- |
-| `@papercusp/plugin-sdk`                                 | Add `oauth` field to property schema.                                         | \~15  |
-| `apps/operator/app/api/oauth/start/route.ts` (new)      | Generate state, redirect to provider authorize URL.                           | \~60  |
-| `apps/operator/app/api/oauth/callback/route.ts` (new)   | Exchange code, fetch user info, write to plugin config.                       | \~100 |
-| `apps/operator/lib/oauth-providers.ts` (new)            | Provider registry (start with GitHub), token-exchange helpers, refresh logic. | \~120 |
-| `apps/operator/app/settings/plugins/page.tsx`           | Render Connect button when `oauth` is declared on a field.                    | \~50  |
-| `apps/operator/app/api/oauth/disconnect/route.ts` (new) | Clear field + best-effort provider revoke.                                    | \~40  |
+| Surface                                                                  | Change                                                                                                               | LOC   |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ----- |
+| `@papercusp/plugin-sdk`                                                  | `oauth` field on the property schema + `PluginOAuthRequirement[]` manifest entries.                                  | \~15  |
+| `packages/operator-core/lib/endpoint-route/routes/oauth/start.ts`        | Generate state, redirect to provider authorize URL.                                                                  | \~60  |
+| `packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts`     | Exchange code, fetch user info, write to plugin config.                                                              | \~100 |
+| `packages/operator-core/lib/oauth/{providers,token,state,storage-fs}.ts` | Provider registry (GitHub), token-exchange + `ctx.oauth.token()` refresh logic, HMAC state, fs-backed token storage. | \~120 |
+| `apps/operator/app/settings/plugins/page.tsx`                            | Render Connect button when `oauth` is declared on a field.                                                           | \~50  |
+| `packages/operator-core/lib/endpoint-route/routes/oauth/verify-paste.ts` | Hybrid mode — introspect a pasted PAT's scopes against the plugin's required scopes.                                 | \~40  |
 
 Total: **\~385 lines.** Slightly bigger than the share-semantics work,
-slightly smaller than build-scripts.
+slightly smaller than build-scripts. (Implemented: `ctx.oauth.token()`
+lives in `packages/operator-core/lib/oauth/token.ts`, wired from
+`plugin-host-runtime.ts`; the three `/api/oauth/*` routes and the provider
+registry are shipped. A dedicated `/api/oauth/disconnect` route is not yet
+broken out — see [Revocation](#revocation).)
 
 ## Multi-tenancy callout (V1.1)
 

@@ -13,6 +13,12 @@ This page covers two integration tracks.
 
 ## Track A — Pi as the worker-role CLI
 
+Track B (the embedded pi pane) shipped; **Track A has not**. There is no
+per-role `cliBin` field in the harness role config today — the TS
+orchestrator's `invoke.ts` resolves a single agent binary globally
+(`$AGENT_CMD ?? $CLAUDE`, default `omp -p`), not per-role. The config below is
+the proposed schema, not the current one.
+
 The smallest valuable integration. Papercusp's per-role config already supports overrides; add `cliBin` to the schema so individual roles can specify a non-default CLI.
 
 ```json
@@ -97,7 +103,7 @@ Useful flags to pass:
 
 ### Phasing
 
-The status table on [/implementation/status/#pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped](/internal/docs/implementation/status) tracks landed phases. Live in the harness dashboard at `:3055/harness/<slug>` — click the `pi` tab.
+The status table on [/implementation/status/#pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped](/internal/docs/implementation/status) tracks landed phases. Live in the harness dashboard (open a harness in the desktop shell) — click the `pi` tab.
 
 **Phase 3a — MVP terminal pane (\~1 day).** ✅ shipped.
 A new `pi` tab in the harness dashboard. Click → opens xterm.js connected to a fresh `pi` process in the harness's project directory. Keystrokes in, output out. Close tab → kill pi.
@@ -119,26 +125,36 @@ Each feature's `FeaturePeekPanel` gets an "open in pi" button → pi spawns in `
 
 ### File-level changes (Phase 3a + 3b + 3c)
 
+The original plan targeted `apps/papercusp/**`. After the operator rename the
+operator app is **`apps/operator/`** and its server routes are Hono routers
+under **`packages/operator-core/lib/endpoint-route/routes/**`**; the desktop is
+the sibling repo **`papercusp-desktop/`** (not `apps/papercusp-desktop/`). The
+harness UI was also restructured — there is no longer a `HarnessDashboard.tsx`
+/ `MainPanel` union or a `FeatureList.tsx`; the pi pane now lives in
+`PiPanel.tsx` + a multi-pane `PiTerminalsDock.tsx` (dockview-based, so the
+multi-pane / split-pane affordances the original phases deferred are present).
+The tables below give the current locations.
+
 #### New files
 
-| Path                                     | Purpose                                                                                                                                                                                   |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/papercusp/app/api/_hono/pty.ts`    | Hono router mounted at `/api/harness/:slug/pty/*`. Endpoints: `POST /spawn`, `GET /:id/stream` (SSE), `POST /:id/input`, `POST /:id/resize`, `POST /:id/kill`. In-memory `Map<id, IPty>`. |
-| `apps/papercusp/app/harness/PiPanel.tsx` | xterm.js React component (xterm + addon-fit + addon-web-links). SSE on mount, POST keystrokes on input, POST resize on container resize. Cleanup on unmount.                              |
-| `apps/papercusp/app/harness/PiPanel.css` | Pane chrome (header bar, "open new", spinner) + xterm theme matching papercusp dark colors.                                                                                               |
-| `apps/papercusp/lib/pty-bridge.ts`       | Server-side `node-pty` wrapper. `spawnPty({cwd, env, cols, rows, args})` → typed handle with `onData` / `write` / `resize` / `kill`. Centralizes lifecycle + idle cleanup.                |
+| Path                                                            | Purpose                                                                                                                                                                                                          |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/operator-core/lib/endpoint-route/routes/pty/index.ts` | Hono router mounted at `/api/harness/:slug/pty/*`. Endpoints: `POST /spawn`, `GET /:id/stream` (SSE), `POST /:id/input`, `POST /:id/resize`, `POST /:id/kill`. In-memory `Map<id, IPty>` (plus a pre-warm slot). |
+| `apps/operator/app/harness/PiPanel.tsx`                         | xterm.js React component (xterm + addon-fit + addon-web-links). SSE on mount, POST keystrokes on input, POST resize on container resize. Cleanup on unmount.                                                     |
+| `apps/operator/app/harness/PiPanel.css`                         | Pane chrome (header bar, "open new", spinner) + xterm theme matching papercusp dark colors.                                                                                                                      |
+| `packages/operator-core/lib/pty-bridge.ts`                      | Server-side `node-pty` wrapper. `spawnPty({cwd, env, cols, rows, args})` → typed handle with `onData` / `write` / `resize` / `kill`. Centralizes lifecycle + idle cleanup.                                       |
 
 #### Modified files
 
-| Path                                                | Change                                                                                                                                      |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/papercusp/package.json`                       | Add `node-pty` (or `@lydell/node-pty` for prebuilt support — research first), `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`. |
-| `apps/papercusp/app/api/[[...route]]/route.ts`      | Mount the pty router under `/api/harness/:slug/pty`.                                                                                        |
-| `apps/papercusp/app/harness/HarnessDashboard.tsx`   | Add `'pi'` to the `MainPanel` union. Tab button + icon. Render `<PiPanel slug laneId/>`. **Pattern to copy: the existing `vscode` tab.**    |
-| `apps/papercusp/app/harness/FeatureList.tsx` (3b)   | Per-feature row: "Open in pi" button. On click, sets active panel to `'pi'` and passes the feature id as `laneId`.                          |
-| `apps/papercusp/app/api/desktop/preflight/route.ts` | Add `pi` check (probe `which omp` / `omp --version`).                                                                                       |
-| `apps/papercusp-desktop/web/index.html`             | Extend `renderHint()` switch with a pi clause: install URL + recommended command.                                                           |
-| `apps/papercusp-desktop/README.md`                  | Document pi as optional prereq for the pi tab.                                                                                              |
+| Path                                                                    | Change                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/package.json`                                            | Add `node-pty` (or `@lydell/node-pty` for prebuilt support — research first), `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`.                                                                                                                 |
+| `packages/operator-core/lib/endpoint-route/routes/index.ts`             | Register the pty router (flattened into the route table) so it mounts under `/api/harness/:slug/pty`.                                                                                                                                                       |
+| `apps/operator/app/harness/PiTerminalsDock.tsx`                         | Multi-pane (dockview) container that hosts the pi/omp terminals as draggable tabs/splits; each panel mounts a `<PiPanel>`. (Replaces the original plan's `HarnessDashboard.tsx` `MainPanel`-union single-tab integration after the harness-UI restructure.) |
+| `apps/operator/app/harness/PiPanel.tsx`                                 | Per-feature "open in pi" wiring: passes the feature id as `laneId` so the pane spawns in that feature's worktree.                                                                                                                                           |
+| `packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts` | `pi` check (probes `omp`, then well-known paths `/usr/local/bin/omp`, `/opt/homebrew/bin/omp`, … for the GUI no-login-shell PATH gotcha).                                                                                                                   |
+| `papercusp-desktop/web/index.html`                                      | Extend `renderHint()` switch with a pi clause: install URL + recommended command.                                                                                                                                                                           |
+| `papercusp-desktop/README.md`                                           | Document pi as optional prereq for the pi tab.                                                                                                                                                                                                              |
 
 ### I/O protocol (HTTP/SSE)
 
@@ -161,20 +177,20 @@ Bytes are base64-encoded over JSON to keep the SSE stream uniform regardless of 
 
 ### Critical files to read first
 
-| File                                                     | Why                                                                                                     |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `apps/papercusp/app/harness/HarnessDashboard.tsx:30-130` | The `MainPanel` union, the tab rendering switch, and the `vscode` tab integration. Pi tab mirrors this. |
-| `apps/papercusp/app/api/[[...route]]/route.ts`           | Hono mount pattern. Pty router registers the same way harness/plugins routers do.                       |
-| `apps/papercusp-desktop/src-tauri/src/main.rs:33-55`     | Sidecar spawn — confirms env passes through (`PATH`, etc.) which pi needs.                              |
-| `apps/papercusp/app/api/desktop/preflight/route.ts`      | Pattern for prereq checks. Pi check copies the `claude` check exactly.                                  |
-| `apps/papercusp-desktop/web/index.html:100-130`          | `renderHint()` switch — add a pi case.                                                                  |
+| File                                                                    | Why                                                                                                                                                                |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/operator/app/harness/PiTerminalsDock.tsx` + `PiPanel.tsx`         | The current pi-pane surface — dockview multi-pane container + the xterm/SSE panel. (Supersedes the original `HarnessDashboard.tsx` `MainPanel`-union integration.) |
+| `packages/operator-core/lib/endpoint-route/routes/index.ts`             | Hono route-table assembly. The pty router registers the same way the harness/plugins routers do.                                                                   |
+| `papercusp-desktop/src-tauri/src/main.rs`                               | Sidecar spawn — confirms env passes through (`PATH`, etc.) which pi needs.                                                                                         |
+| `packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts` | Pattern for prereq checks. The `pi` check mirrors the `claude` check (plus well-known-path probing).                                                               |
+| `papercusp-desktop/web/index.html`                                      | `renderHint()` switch — the pi case.                                                                                                                               |
 
 ### Verification
 
 **Phase 3a:**
 
-1. `npm run dev:papercusp` (or full desktop build).
-2. Open `http://localhost:3055/harness/<some-slug>`.
+1. Launch the desktop shell: `cd papercusp-desktop && npm run dev` (the only supported run path; it boots the operator sidecar + webview).
+2. In the Tauri window, open a harness (`/harness/<some-slug>`).
 3. Click the new pi tab.
 4. Pi prompt appears; type `pwd` + Enter; output shows the harness's project directory.
 5. Type `exit`; pane shows "(pi exited 0)" and the spawn lifecycle cleans up (verify `pgrep -af omp` returns nothing).

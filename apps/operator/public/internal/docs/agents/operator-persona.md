@@ -29,7 +29,7 @@ Provider-agnostic persona prompt loaded at session start:
 | Legacy STT+Claude+TTS | Claude system prompt; `prepareForTTS` enforces length caps + anti-pattern stripping                                      |
 
 Source of truth: `apps/operator/prompts/operator.persona.md`. The
-runtime constant `OPERATOR_PERSONA_PROMPT` in `apps/operator/lib/operator-persona.ts`
+runtime constant `OPERATOR_PERSONA_PROMPT` in `packages/operator-core/lib/operator-persona.ts`
 mirrors the .md exactly. Edit either; running `el-agent-sync.mjs`
 pushes the .md to the EL dashboard.
 
@@ -50,23 +50,24 @@ Conv AI minutes.
 | Scan       | (caller wires)                    | (silent)                                          | —                                                                                 | (silent unless suggestions surfaced)                                                            |
 | Delegate   | `OperatorDelegationListener`      | (silent — voice already said "looking into that") | "Still researching." → "Still on it." → "Still working through it." (30s, max 3×) | "Delegate finished — details in the panel."                                                     |
 
-Templates in `apps/operator/lib/op-narration-policy.ts`. API: `announceOpStart(kind, ctx)` returns a `NarrationHandle`; `announceOpEnd(kind, ctx, handle?)` cancels pending mid timers and speaks completion. Failure narration is sober + concrete reason; never apologetic.
+Templates + policy (`OP_POLICIES`, `kickoffText`/`midText`/`completionText`) in `packages/operator-core/lib/op-narration-policy.ts`. API in `packages/operator-core/lib/voice-narration.ts`: `announceOpStart(kind, ctx)` returns a `NarrationHandle`; `announceOpEnd(kind, ctx, handle?)` cancels pending mid timers and speaks completion. Failure narration is sober + concrete reason; never apologetic.
 
 ### Backstory beats (PR 3, commit `c822ef9`)
 
-10 hand-written beats in `apps/operator/lib/op-backstory-bank.ts`:
+10 hand-written beats in `packages/operator-core/lib/op-backstory-bank.ts`:
 migration-too-big, smoke-test-lied, skipped-checkpoint, sync-in-hot-path,
 ignored-escalation, lost-work-to-replan, tests-covered-wrong-path,
 provision-timeout, first-oncall-page, query-without-index. Each has a
 trigger predicate and an eligible-mode list.
 
 **Injection**: at every EL Conv AI session-start, `buildBackstoryBlock()`
+(in `packages/operator-core/lib/voice-engines/elevenlabs-conv.ts`)
 filters the bank by current trigger context + recent-firings, picks up
 to 3, and prepends them to the `overrides.agent.prompt.prompt` block
 with "you may reference one of these if it fits naturally". The model
 picks; we don't force.
 
-**Rate limits** (`apps/operator/lib/op-backstory-state.ts`):
+**Rate limits** (`packages/operator-core/lib/op-backstory-state.ts`):
 
 * 3 fires per session (sessionStorage)
 * 30-min cooldown between fires
@@ -84,7 +85,7 @@ backstory-detected flag + prepareForTTS modifications.
 **Sources** wired:
 
 * `legacy` — `prepareForTTS` posts to `/api/agent-mcp/voice-utterance-log` after every shaped utterance
-* `elevenlabs-conv` — `/api/elevenlabs/post-call` webhook receives EL's post-call payload, logs every agent turn. Mode is heuristic-classified by `apps/operator/lib/classify-utterance-mode.ts` (apologetic > sober > wry > assertive > default precedence).
+* `elevenlabs-conv` — `/api/elevenlabs/post-call` webhook receives EL's post-call payload, logs every agent turn. Mode is heuristic-classified by `packages/operator-core/lib/classify-utterance-mode.ts` (apologetic > sober > wry > assertive > default precedence).
 
 **Drift report**: `node apps/operator/scripts/voice-persona-audit.mjs`
 queries the last 7 days, writes markdown to `docs/voice-persona-audit.md`.
@@ -97,17 +98,19 @@ Surfaces:
 
 ### Operator panel card visibility + actions (commit `97e0d6a`)
 
-The voice operator can read + act on cards in the panel via three new
+The voice operator could read + act on cards in the panel via three
 registry commands:
 
 * `panel.cards` query — returns `{count, cards}` snapshot of the feed's `visibleSuggestions`
 * `panel.dispatch-card({id})` — same effect as clicking the primary button on a card
 * `panel.dismiss-card({id})` — same effect as the dismiss button
 
-State lives on `operator-shared-state.cards` (auto-published from
-`OperatorPanel`'s `useEffect`). The panel listens for window events
-(`operator:dispatch-card` / `operator:dismiss-card`) and forwards to
-the existing local handlers.
+**Retired** (`unify-agent-launches` D-005): the `panel.*` `browser:'required'`
+CommandDefs were removed along with the operator-card panel. The
+`panel.cards` shape still survives in `operator-shared-state.ts` and the
+device-tool-resolver fixtures, but the defs are gone and `el-agent-sync.mjs`
+no longer pushes them — don't re-add them without re-registering the
+`browser:'required'` defs first.
 
 ### Cost controls
 

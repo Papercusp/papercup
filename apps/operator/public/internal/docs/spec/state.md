@@ -6,6 +6,22 @@ URL: /internal/docs/spec/state
 Each install gets its own Postgres schema (e.g., `harness_papercup`, `harness_my_app`).
 The schema is part of the substrate contract:
 
+Implementation note: this is the original per-install-schema design.
+The shipped substrate consolidated these into a single
+harness\_shared schema whose tables are keyed by
+install\_slug / workspace\_id (the
+\*\_consolidated tables + per-harness views — see
+storage-policy).
+goals and pending\_events exist with
+substantially the columns below; the iteration unit shipped as
+work\_items — a union view
+(discriminated by item\_kind) over the base tables
+harness\_features\_consolidated (feature / research-task /
+chunk) and engineer\_issues (bug / change / task) — not a
+tasks table, and there is no standalone audit /
+task\_status type by these names. The SQL below is the design
+illustration, not the live DDL.
+
 ```
 -- Each install has these tables (substrate-owned):
 

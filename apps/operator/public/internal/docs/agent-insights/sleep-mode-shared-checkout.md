@@ -3,6 +3,21 @@ URL: /internal/docs/agent-insights/sleep-mode-shared-checkout
 
 When working overnight in a shared checkout with parallel agents, every commit must be staged file-by-file with a pre-commit diff check. Skipping this WILL bundle another agent's in-flight work into your commit.
 
+:::caution\[Update 2026-06-08 — the manual-commit sections below are superseded]
+Since `git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`,
+**agents no longer `git add` / `git commit` / `git push` at all** — a background
+**git-sync** routine commits the whole shared tree (every agent's work) and pushes
+it to `origin/staging` on a schedule; from there green-checkpoint FFs `main`. The
+per-edit file-lock `PreToolUse` hook serializes concurrent edits to the same file,
+so a peer can't stomp your uncommitted work between ticks. So the "stage
+file-by-file / `git diff --cached` before every commit / commit per item / don't
+push" mechanics below **no longer apply** — there are no per-agent commits to
+leak into. Coordinate via `locks:*` + `coord:*`, not manual staging. The
+**non-git** rules in *Things to NOT do in sleep mode* / *What sleep mode is good
+for* (don't restart the user's dev server, don't make arch decisions for them,
+don't run destructive PG/branch ops, stop when safe work runs out) all still hold.
+:::
+
 ## What
 
 When the user tells you "I'm sleeping, keep working on the plan," you
@@ -59,7 +74,6 @@ Files most likely to bite (this codebase, today):
 
 * `apps/operator/docs/plans/papercusp-dogfood-v5-2026-05-23.md`
 * `apps/operator/package.json`
-* `apps/operator/lib/ensure-schema*.ts`
 * `libs/papercusp/libs/db/sql/*.sql`
 * Anything in `apps/operator/app/harness/` (paperclip's edit zone)
 

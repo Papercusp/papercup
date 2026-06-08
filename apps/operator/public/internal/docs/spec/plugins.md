@@ -10,7 +10,7 @@ Extension pointWhat it addsPlugin SDK type
 RolesNew named agent invocations the orchestrator can dispatch`RoleDefinition`
 Lifecycle hooksCode that runs before/after iteration phases (e.g. `onPostValidator`)`LifecycleHooks`
 UI (full-route)A complete React panel mounted at `/harness/&lt;slug&gt;` — see §8`UiContribution`
-API routesHTTP endpoints under `/api/plugin/&lt;name&gt;/*``ApiRoute[]`
+API routesHTTP endpoints under `/api/plugins/&lt;name&gt;/*``ApiRoute[]`
 DB schemaPostgres migrations under the plugin's own schema`SchemaMigration[]`
 RoutinesCron / webhook / API triggers that insert into `pending_events` — see §9`RoutineDefinition[]`
 
@@ -23,19 +23,19 @@ plugins. The substrate makes this dependency explicit in the
 manifest so install-time resolution can refuse incoherent
 configurations rather than fail at runtime.
 
-```typescript
-// Plugin manifest:
-export default defineManifest({
-name: 'shareholder-briefings',
-version: '1.2.0',
-requires: {
+```json
+// papercusp.json:
+{
+"name": "shareholder-briefings",
+"version": "1.2.0",
+"requires": {
 // Hard dependency — install fails if not satisfied.
-'audit-log': '^1.0',
+"audit-log": "^1.0",
 // Optional — plugin loads either way; check `api.hasPlugin('papercup')` at runtime.
-'papercup': { version: '^0.0.3', optional: true },
-},
+"papercup": { "version": "^0.0.3", "optional": true }
+}
 // ...
-});
+}
 ```
 
 Resolution at install time.
@@ -63,27 +63,33 @@ uninstalls B too, after a per-plugin confirmation) or
 `--orphan` (which leaves B installed but disabled, with a banner
 in the UI explaining why).
 
-Substrate version pinning. Independently of
+Runtime version pinning. Independently of
 plugin-to-plugin deps, every manifest declares the substrate
-semver range it was built against:
+runtime semver range it was built against, via the
+papercusp field:
 
-```typescript
-export default defineManifest({
+```json
+// papercusp.json:
+{
 // ...
-substrate: '^1.0',   // refuses to load on substrate 2.x
-});
+"papercusp": "^0.1.0"   // refuses to load outside this range
+}
 ```
 
 This is the same versioning shape as service ABI pinning
-(§8.4.1), but at the substrate level. It catches the case where
-a plugin built against substrate 1.0 is installed onto a 2.x
-substrate and would otherwise hit subtle API drift bugs.
+(§8.4.1), but at the runtime level. The loader runs
+satisfies(PAPERCUSP\_RUNTIME\_VERSION, manifest.papercusp)
+on every load and rejects out-of-range plugins, catching the case
+where a plugin built against an old runtime would otherwise hit
+subtle API drift bugs. (A separate protocol field
+pins the plugin-wire protocol — see the runtime roadmap.)
 
 ### 7.2 Plugin lifecycle states
 
 Every installed plugin is in exactly one of these states. The
-substrate persists state to \~/.papercusp/installed/\<name>/state.json
-and exposes it via papercusp status.
+substrate tracks state for plugins installed under
+\~/.papercusp/global-plugins/\<name>/ and exposes it
+via papercusp plugin list.
 
 StateMeaningHooks fire?UI mounted?
 
@@ -251,6 +257,20 @@ The inner loop for plugin authors determines whether the marketplace
 ever has third-party content. The substrate ships an opinionated
 dev mode aimed at sub-second iteration:
 
+Implemented (current state): the shipped author commands are
+papercusp plugin init \<name> \[--template \<slug>]
+(scaffold from a reference plugin — default cloudflare-stack),
+papercusp plugin lint, papercusp plugin doctor,
+and papercusp plugin watch \<slug>. The manifest is a
+papercusp.json file (not a TS file); plugins symlink into
+\~/.papercusp/global-plugins/ for local dev. The
+papercusp dev single-command hot-reload session sketched
+below is design intent — see the
+authoring quickstart
+for the current workflow and the
+runtime roadmap
+for what shipped vs. deferred.
+
 ```
 $ papercusp dev ./my-plugin
 
@@ -301,24 +321,24 @@ It does not auto-publish. Publishing is always
 Plugin SDK scaffolding.
 
 ```
-$ papercusp init my-plugin --template ui-tab
+$ papercusp plugin init my-plugin --template cloudflare-stack
 
 ==> Creating ./my-plugin/
 package.json
-papercusp.manifest.ts
-src/index.ts
-src/components/Tab.tsx
-migrations/0001_init.sql
+papercusp.json
+index.cjs
+provision/setup.sh
 README.md
-.papercuspignore
+...
 
-==> Installing dependencies (papercusp/plugin-sdk@^1)
 ==> Done. Next:
-cd my-plugin && papercusp dev .
+cd my-plugin && papercusp plugin lint
 ```
 
-Templates ship with the SDK and cover the common shapes:
-ui-tab, routine-only, role-pack,
-full-featured. Each template is itself a published
-plugin in the marketplace under papercusp/template-\*
-so the scaffold output is verifiable from source.
+papercusp plugin init copies an existing reference
+plugin (default cloudflare-stack) and rewrites every
+reference to the new slug; --template \<slug> picks
+a different starter and --from-path \<dir> forks a
+local checkout. Because the scaffold is a real first-party plugin
+under libs/papercusp/plugins/, the output is verifiable
+from source.

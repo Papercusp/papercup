@@ -17,7 +17,7 @@ All libraries below are installed in `apps/operator/package.json` and resolved t
 
 **Wrapper:** `app/harness/Tooltip.tsx` exports `<Tooltip label={...}>{trigger}</Tooltip>`. Returns the trigger unchanged when `label` is falsy. Trigger receives `asChild` so the underlying button/span keeps its DOM identity.
 
-**Provider:** Wrapped once in `app/harness/layout.tsx` with `delayDuration={150} skipDelayDuration={300}` — opens after 150ms, but consecutive tooltips open instantly within 300ms of the last close (keeps quick scans fast).
+**Provider:** Wrapped once in the Vite SPA root (`apps/operator-vite/src/routes/__root.tsx`) with `delayDuration={150} skipDelayDuration={300}` — opens after 150ms, but consecutive tooltips open instantly within 300ms of the last close (keeps quick scans fast).
 
 ## `@radix-ui/react-dialog`
 
@@ -196,7 +196,7 @@ The wrapper forwards refs and spreads all native props.
 
 **Why this one:** Same Radix family. Used in `FeatureLink.tsx` for the on-hover feature info card. If you find yourself wanting a Tooltip but with non-text content, switch to HoverCard.
 
-## `@restart/grid-core` — `RichGrid`, `GridTable`, `DataGridShell`
+## `@papercusp/grid-core` — `RichGrid`, `GridTable`, `DataGridShell`
 
 **What:** Three grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/internal/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
 
@@ -254,7 +254,7 @@ If a column's `header` is JSX, also provide `headerText: 'Plain header'` so the 
 
 **What:** Toast notification system. Lightweight, accessible, themeable.
 
-**Why this one:** Built by Emil Kowalski (same author as vaul). Replaces every `window.alert()` we used to have. Single global `<Toaster>` mount in `apps/operator/app/layout.tsx`; call `toast.success()`, `toast.error()`, or `toast.info()` from anywhere.
+**Why this one:** Built by Emil Kowalski (same author as vaul). Replaces every `window.alert()` we used to have. Single global `<Toaster>` mount in the Vite SPA root (`apps/operator-vite/src/routes/__root.tsx`); call `toast.success()`, `toast.error()`, or `toast.info()` from anywhere.
 
 **Why not `react-hot-toast` or `react-toastify`?** sonner has the cleanest API, smallest bundle, and best dark-theme defaults. `react-toastify` has a heavy CSS bundle. `react-hot-toast` is fine but the API is less pleasant.
 
@@ -432,24 +432,24 @@ return (
 
 **Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
 
-## `motion` + `@formkit/auto-animate` + `next-transition-router`
+## `motion` + `@formkit/auto-animate` (+ `gsap` for the route warp)
 
-**What:** The animation stack. Three libraries that complement each other; **use them together, not as alternatives.**
+**What:** The animation stack. Two general-purpose libraries that complement each other (**use them together, not as alternatives**), plus `gsap` for the one bespoke route-transition warp.
 
 * **`motion`** (the rebrand of `framer-motion` — same engine, same author) — the general-purpose React animation lib. WAAPI-backed since v10, so transforms run on the native compositor. \~41 KB gzip.
 * **`@formkit/auto-animate`** — purpose-built for one job: animate when children of an element are added, removed, or reordered. Drop-in via `useAutoAnimate()`. WAAPI direct, zero React re-renders. \~3 KB gzip.
-* **`next-transition-router`** — the route-transition layer we use in App Router. It coordinates internal navigations through a shared transition provider.
+* **`gsap`** — drives the single "jump-gate" route warp in `RouteTransitionProvider.tsx`. (This replaced `next-transition-router`, which was dropped in the TanStack Router migration — it serialised navigation through one in-flight transition and swallowed clicks, so on TSR it was pure overhead. The warp is now a capture-phase click listener on the two jump-gate anchors that plays a GSAP overlay; everything else navigates via plain TanStack `<Link>`.)
 
 **The rule of three** (memorize this):
 
-| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                     |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                               |
-| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result. |
-| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                   |
-| Cross-route page transitions                                                   | **`next-transition-router`** via the shared `RouteTransitionProvider`                       | Centralized control over app-wide route choreography and transition lifecycle.                                                          |
+| Need                                                                           | Reach for                                                                                   | Why                                                                                                                                                             |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modal / popover / dropdown / tab open + close                                  | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`).                                                       |
+| **List item add / remove / reorder**                                           | **`auto-animate`**                                                                          | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result.                         |
+| Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`**                                                                                | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`.                                           |
+| The one cross-route "jump-gate" warp (`/` ⇄ `/adv`)                            | **`gsap`** via `RouteTransitionProvider`                                                    | A capture-phase click listener intercepts only the two jump-gate anchors and plays the GSAP overlay; all other navigation is plain TanStack `<Link>` (instant). |
 
-**Don't use** for app UI: `gsap`, `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context. GSAP/Theatre are right for marketing scrolly pages, not app chrome.
+**Don't use** for app UI: `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context. `gsap` is in the tree but is reserved for the single jump-gate route warp above — reach for `motion` / CSS / `auto-animate` for everything else, not GSAP.
 
 **RichGrid lists are NOT auto-animate targets.** `FeatureList`, `IssuesList`, `ProposalsPanel`, and any other `RichGrid`-backed list use `useVirtualizer` — `auto-animate` would fight virtualization (animating every scroll). Animations there should target row-level data changes (status pulse, color transition) not row mount/unmount.
 

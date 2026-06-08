@@ -49,7 +49,8 @@ stores a real jsonb object — `jsonb_typeof(payload)='object'`, `payload->>'k'`
 
 ## The trap: the testcontainer client behaves OPPOSITELY
 
-The integration-test client (`apps/operator/test/_pg-helpers.ts`, used by every
+The integration-test client (`_pg-helpers.ts` — `packages/operator-core/test/_pg-helpers.ts`,
+also present at `apps/operator/test/_pg-helpers.ts`; used by every
 `*.integration.test.ts`) binds JSONB params **differently** from the operator
 runtime client — despite *identical* postgres-js config (`prepare:false`, same
 `types:{bigint}`, same postgres 3.4.9):
@@ -88,26 +89,26 @@ sections below are now historical context — **new code should use
 **Fixed 2026-06-03 (superseded by the sweep above)** — every getOrgPg-client
 jsonb write bound via `${JSON.stringify(x)}::jsonb`:
 
-* `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`)
-* `apps/operator/lib/sync/hyperbee/projections/contributors.ts` (`device_attestations`)
-* `apps/operator/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`)
-* `apps/operator/lib/sync/hyperbee/projections/usage.ts` (`payload`)
-* `apps/operator/lib/agent-governor-pg-store.ts` (`limits`)
+* `packages/operator-core/lib/sync/hyperbee/projections/issues.ts` (`notes`)
+* `packages/operator-core/lib/sync/hyperbee/projections/contributors.ts` (`device_attestations`)
+* `packages/operator-core/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`)
+* `packages/operator-core/lib/sync/hyperbee/projections/usage.ts` (`payload`)
+* `packages/operator-core/lib/agent-governor-pg-store.ts` (`limits`)
 
 The projections also gained `normalizeJsonbInput()` (a `_jsonb-input.ts` helper):
 a federated row whose jsonb arrived already-stringified (from a peer on a
 double-encoding client) is re-parsed before the write, so the CDC outbox
 round-trip stays `IS DISTINCT FROM`-stable. No-op under getOrgPg.
 
-Fixed earlier in P-070: `lib/harness/usage-events.ts`.
+Fixed earlier in P-070: `packages/operator-core/lib/harness/usage-events.ts`.
 
 **NOT affected — do NOT "fix" these to `${JSON.stringify}::jsonb`:**
 
-* `apps/operator/lib/dock-layouts.ts` and `apps/operator/lib/llm-testing/*` use a
+* `packages/operator-core/lib/dock-layouts.ts` and `packages/operator-core/lib/llm-testing/*` use a
   *fresh* `postgres()` pool (`db()` = `postgres(getHarnessAdminUrl(), {prepare:false})`),
   NOT getOrgPg. On that client `sql.json()` is CORRECT and `${JSON.stringify}::jsonb`
   double-encodes — the inverse of the getOrgPg rule. Leave their `sql.json()` as-is.
-* `apps/operator/lib/operator-rate-limit.ts` already binds correctly with
+* `packages/operator-core/lib/operator-rate-limit.ts` already binds correctly with
   `${JSON.stringify}::jsonb` (live-verified `jsonb_typeof=object`, with accumulated
   rate-limit state). A 2026-06-03 report that flagged it as a double-encode bug was a
   false positive from testing against the testcontainer client (which behaves oppositely).

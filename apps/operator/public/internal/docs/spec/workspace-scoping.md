@@ -5,6 +5,14 @@ Workspaces become a Postgres-enforced scoping key on `harness_shared.*` via sess
 
 import { Aside } from '@astrojs/starlight/components';
 
+**Largely implemented.** The pieces this amendment specifies now exist: the
+`app.workspace_id` session GUC is set across the operator (`route-workspace.ts`,
+`execute-action.ts`, …), workspace-scoped `harness_shared.*` tables carry a
+`workspace_id` column with RLS policies (defined in migrations), and the backfill
+script lives at `libs/papercusp/libs/db/scripts/backfill-workspace-id.ts`. The
+design narrative below is preserved; only the run-command form is corrected (it's
+a `tsx`-run `.ts`, not a `.mjs`).
+
 ## Why
 
 The deployed substrate is one Postgres database with per-harness schemas (`harness_<slug>`) and a cross-cutting `harness_shared` schema. The workspace concept (separate directories under `~/.papercusp-workspaces/<id>/`, registry-tracked) is enforced at the **filesystem** layer only.
@@ -102,7 +110,7 @@ Properties:
 * **Dry-runnable**: prints intended changes without applying; review before commit.
 * **Loud-fails** on rows whose workspace cannot be determined; does not default-tag. Failed rows are reported with their primary keys and the reason.
 
-Operator runs the script via `node scripts/backfill-workspace-id.mjs --dry-run` first, reviews the output, then `--apply`. After `--apply` succeeds, the column default is altered from `''` to RAISE on insert (a CHECK constraint), enforcing future correctness.
+Operator runs the script via `tsx libs/db/scripts/backfill-workspace-id.ts --dry-run` first, reviews the output, then re-runs with `--apply`. After `--apply` succeeds, the column default is altered from `''` to RAISE on insert (a CHECK constraint), enforcing future correctness.
 
 ## Hindsight bank derivation
 

@@ -7,7 +7,7 @@ How to add a new useSyncQuery name to the v2 dispatcher. ~15 LOC drizzle entry, 
 
 The operator serves `useSyncQuery({ queryName: '<name>' })` reads
 through a switch-on-name dispatcher at
-`apps/operator/lib/sync-resolver/index.ts`. Each entry is a small
+`packages/operator-core/lib/sync-resolver/index.ts`. Each entry is a small
 async function that takes validated args and returns a flat row
 array. Adding a query is purely additive — \~15 LOC, no client-side
 changes needed for the dispatcher itself.
@@ -37,7 +37,7 @@ Don't add an entry for:
 
 ### Step 1: confirm the table exists in drizzle's generated schema
 
-The dispatcher uses `@restart/db-org`'s `generated` table registry
+The dispatcher uses `@papercusp/db-org`'s `generated` table registry
 for column → camelCase conversion. Check that your table is there:
 
 ```bash
@@ -50,7 +50,7 @@ the table via `ensure-schema.ts` / a SQL migration first.
 
 ### Step 2: add a registry entry
 
-Open `apps/operator/lib/sync-resolver/index.ts`. Each entry has
+Open `packages/operator-core/lib/sync-resolver/index.ts`. Each entry has
 this shape (mirrors the legacy ZQL chain):
 
 ```ts
@@ -61,7 +61,7 @@ this shape (mirrors the legacy ZQL chain):
   }),
   resolve: async (args) => {
     const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
-    const { getOrgPg, generated } = await import('@restart/db-org');
+    const { getOrgPg, generated } = await import('@papercusp/db-org');
     const { desc, eq } = await import('drizzle-orm');
     const t = generated.yourTableNameInHarnessShared;
     const { db } = getOrgPg();
@@ -81,7 +81,7 @@ Key points:
   Bad args throw → route handler returns 400.
 * **`resolve`** returns `unknown[]` — a FLAT row array. If your
   existing data helper returns `{rows: [...]}`, unwrap it here.
-* **Dynamic `import()`** of `@restart/db-org` + `drizzle-orm` keeps
+* **Dynamic `import()`** of `@papercusp/db-org` + `drizzle-orm` keeps
   the registry module lightweight and avoids cycles. The lazy import
   is per-call but the loader caches; no perf cost in practice.
 * **`as unknown[]`** at the return — drizzle's `select()` returns
@@ -90,7 +90,7 @@ Key points:
 
 ### Step 3: add the bridge entry (P-067)
 
-Open `apps/operator/lib/sync-resolver/table-to-query-names.ts`.
+Open `packages/operator-core/lib/sync-resolver/table-to-query-names.ts`.
 Add a line in `TABLE_TO_QUERY_NAMES` mapping your PG table to the
 new queryName:
 
@@ -116,7 +116,7 @@ If multiple queries scope on the same table (e.g. `byHarness` +
 
 ### Step 4: update the registry-count assertion
 
-Open `apps/operator/lib/sync-resolver/index.test.ts`. Bump the
+Open `packages/operator-core/lib/sync-resolver/index.test.ts`. Bump the
 running-count assertion (`expect(knownQueryNamesV2()).toHaveLength(N)`)
 and add the new name to the closest batch assertion. The count
 assertion exists so future drift surfaces: a registry entry added
@@ -136,7 +136,7 @@ keeps the drift signal accurate.
 ### Step 5: verify
 
 ```bash
-cd apps/operator
+cd packages/operator-core
 npx vitest run lib/sync-resolver/    # 33+ tests
 npx tsc --noEmit                     # check for type regressions
 ```
@@ -144,7 +144,7 @@ npx tsc --noEmit                     # check for type regressions
 Optional live verification against running operator:
 
 ```bash
-curl "http://127.0.0.1:3055/api/zero-harness/rest-query?name=yourQueryName.byScope&args=$(python3 -c 'import json,urllib.parse; print(urllib.parse.quote(json.dumps({\"harnessSlug\":\"sheets\"})))')"
+curl "http://127.0.0.1:3070/api/zero-harness/rest-query?name=yourQueryName.byScope&args=$(python3 -c 'import json,urllib.parse; print(urllib.parse.quote(json.dumps({\"harnessSlug\":\"sheets\"})))')"
 ```
 
 You should see `{"rows":[...], "version":"..."}` with the expected
@@ -187,7 +187,7 @@ Some reads don't fit the registry shape:
 
 ## Related
 
-* `apps/operator/lib/sync-resolver/index.ts` — the dispatcher
-* `apps/operator/lib/sync-resolver/table-to-query-names.ts` — the P-067 bridge
+* `packages/operator-core/lib/sync-resolver/index.ts` — the dispatcher
+* `packages/operator-core/lib/sync-resolver/table-to-query-names.ts` — the P-067 bridge
 * [Adding a reactive table](/internal/docs/agent-insights/adding-a-reactive-table) — the producer side (PG trigger + `notifySyncInvalidate`)
-* `apps/operator/lib/sync-sse.ts` — the LISTEN handler + SSE fan-out
+* `packages/operator-core/lib/sync-sse.ts` — the LISTEN handler + SSE fan-out

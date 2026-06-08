@@ -70,7 +70,7 @@ ${row.metadata == null ? null : sql.json(row.metadata)}   // keep the NULL guard
 Keep the `== null ? null :` guard for nullable jsonb columns so a missing value
 stores SQL `NULL`, not a JSON `null`.
 
-Fixed sites (all in `apps/operator/lib/sync/hyperbee/projections/`):
+Fixed sites (all in `packages/operator-core/lib/sync/hyperbee/projections/`):
 `issues.notes`, `harness-features.metadata` + `.tags`, `usage.payload`,
 `contributors.device_attestations`.
 
@@ -79,7 +79,7 @@ Fixed sites (all in `apps/operator/lib/sync/hyperbee/projections/`):
 Grep for the anti-pattern before shipping a projection:
 
 ```bash
-grep -rn 'JSON.stringify.*}::jsonb' apps/operator/lib
+grep -rn 'JSON.stringify.*}::jsonb' packages/operator-core/lib
 ```
 
 Any hit is a double-encode. `revoked_pubkeys` (a native PG `text[]`, bound

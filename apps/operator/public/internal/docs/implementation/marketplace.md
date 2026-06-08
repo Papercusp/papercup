@@ -7,6 +7,21 @@ Ship state of papercuspai.com — what's live, what's planned, what's still miss
 
 import { Aside } from '@astrojs/starlight/components';
 
+This page documents the standalone **`papercuspai.com` marketplace**
+(`papercupai/papercusp-registry`, Cloudflare Pages + Tunnel + a Hono
+`marketplace-api` on `:3057`) as of the 2026-04-27 handoff. That public
+marketplace surface is **no longer the current distribution path.**
+
+What replaced it: the in-app **Cupboard** — a GitHub-backed listing service
+served by `apps/operator-public` (Cloudflare Workers + Hono + D1), with the
+desktop operator owning the listing UI. Listings span four kinds
+(`harness | blueprint | snapshot | plugin`); publish/install flow through the
+`packages/operator-core/lib/endpoint-route/routes/cupboard.ts` operator routes
+and the `apps/papercusp-publish` Worker, with agent verbs `blueprint:*`
+(`catalog`/`create`/`extend`/`validate`) and `snapshots:*` (`get`/`list`).
+Read the rest of this page as a historical record of the earlier design, not
+the current system.
+
 This page is the canonical handoff document for marketplace implementation. If a future agent or operator picks up the work, **read this in full first**. Specifically:
 
 1. The OAuth client\_secret was leaked in a chat session and **may not have been rotated yet** — check `~/.papercusp/marketplace-secrets.env` and rotate at github.com → Developer Settings → Papercusp Marketplace.

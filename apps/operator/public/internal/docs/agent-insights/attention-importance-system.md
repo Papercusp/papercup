@@ -15,7 +15,7 @@ at [plan-format §Importance](/internal/docs/spec/plan-format#importance);
 rubric in [agent-policies §18](/internal/docs/agent-policies).
 
 The Planning tab also shows a **unified attention feed**: one
-`AttentionItem` read-model (`apps/operator/lib/attention/`) that every
+`AttentionItem` read-model (`packages/operator-core/lib/attention/`) that every
 "needs the human" surface adapts into — plan items, coord escalations,
 coord messages-to-human, smoke-test failures, plans-awaiting-review. The
 `plans:attention` tool unions them (best-effort per source), grouped by

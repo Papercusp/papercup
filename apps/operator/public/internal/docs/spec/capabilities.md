@@ -216,7 +216,7 @@ HIGH-IMPACT:
 
 MEDIUM-IMPACT:
 ✓ Read and register routines
-✓ Register 5 roles: orchestrator, worker, validator, documenter, summarizer
+✓ Register 5 roles: orchestrator, worker, validator, documenter, curator
 ✓ Emit 4 plugin-defined hooks: directive-routed, proposal-accepted, budget-allocated, project-launched
 ✓ Subscribe to 2 hooks: market-signal, capability-released
 
@@ -242,10 +242,19 @@ plugin reference like `const tasks = api.tasks` does not
 cache the granted state — but reading the in-memory Set is O(1) per
 call, not a disk read.
 
-Substrate authors implementing this: keep the file as the durable
-record-of-truth (survives restart), but treat the in-memory Set as
-the runtime authority. On startup, load the file into memory; on
-revocation, update memory first, then write the file.
+Substrate authors implementing this: keep a durable record-of-truth
+(survives restart), but treat the in-memory Set as the runtime
+authority. On startup, load the durable record into memory; on
+revocation, update memory first, then persist.
+
+Implementation note: in the shipped operator the durable
+record-of-truth is Postgres — harness\_shared.plugin\_capability\_grants
+(Migration 051), not the file. The CLI consent flow (§10.3) still writes
+\~/.papercusp/granted-capabilities.json, but the operator
+treats that file as a read-only legacy fallback for installs that predate
+the PG store; runtime checks go through plugin-grants.ts's
+hasCapability(), which ANDs the manifest caps with the
+granted set from PG.
 
 ```typescript
 // User runs: papercusp permissions revoke briefings tasks:read

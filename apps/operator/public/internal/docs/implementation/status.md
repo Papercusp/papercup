@@ -5,6 +5,22 @@ Phase-by-phase ship state of the Papercusp reference runtime.
 
 import { Aside } from '@astrojs/starlight/components';
 
+This is a historical implementation-status record (Phase 1–§MHS work,
+through mid-2026). It's preserved as a dated milestone log; **the file paths
+and a few component names below are stale** after later refactors. The big
+renames to keep in mind when reading:
+
+* `apps/papercup/**` and `apps/papercusp/**` → the operator now lives at
+  **`apps/operator/`**; its Next.js `app/api/**` routes were ported to **Hono
+  routers under `packages/operator-core/lib/endpoint-route/routes/**`**.
+* Operator-side `lib/*` (e.g. `lib/plugin-host-runtime.ts`,
+  `lib/plugin-runtime.ts`) now lives under **`packages/operator-core/lib/`**.
+* The `run.sh` → TS orchestrator port shipped and its ported run-loop was
+  later **retired** (see [orchestrator-port](/internal/docs/implementation/orchestrator-port));
+  the live pipeline is the DBOS runner in `packages/operator-core/lib/dbos/`.
+* The `papercuspai.com` marketplace described in the "After all of the above"
+  table was superseded by the in-app **Cupboard** (`apps/operator-public`).
+
 The reference runtime lives in this monorepo (`papercupai/papercup`). Phase numbering matches the spec sections; some phases were split into a/b for separable shipping.
 
 ## Phase status

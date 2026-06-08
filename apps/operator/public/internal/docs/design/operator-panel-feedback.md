@@ -3,6 +3,22 @@ URL: /internal/docs/design/operator-panel-feedback
 
 Captured live after the round-2 design pass shipped. Acknowledges what landed, isolates what's still broken, flags new issues from the live state.
 
+:::caution\[Surface superseded — the card-feed operator panel became a chat thread]
+This memo critiques the `OperatorPanel.tsx` card-feed surface — the
+Pending/Accepted/Ignored/Scans tabs, the HUD telemetry strip, the
+reactor orb, the "Operator MCP v0.1.0" footer. **`OperatorPanel.tsx` is
+deleted.** The operator surface is now `OperatorChat`
+(`apps/operator/app/_components/OperatorChat.tsx`, a thin wrapper around
+the shared `ChatConversation`): a single chat thread where suggestions
+render inline and pending `ctx.askUser` cards surface in a
+`PendingCardsBar`, not the old tabbed card queue. The
+`operator-reactor` / `operator-hud-*` / `operator-entry__*` CSS still
+lingers in `globals.css` but is no longer rendered. The legacy
+`/harness?ws=…&project=…` URL now redirects to `/adv`. Several items
+here (HUD strip, version footer) are moot on the new surface; the
+remaining notes are historical design intent.
+:::
+
 Captured live by loading
 `http://localhost:3070/harness?ws=default&project=sheets`,
 opening the operator panel, and inspecting the rendered DOM.

@@ -19,6 +19,37 @@ hooks) still largely holds — the DBOS pipeline reuses `invoke.ts`, `lanes.ts`,
 and the chunk-loop — but every `main-loop.ts` / `run.sh` code reference on this
 page points at archived code. Trust the concepts, not the line numbers.
 
+**The operator-side path references on this page have also drifted.** Live
+operator code moved out of `apps/operator/lib/*` into
+`packages/operator-core/lib/*` (e.g. `expirable-registry.ts`,
+`harness-status-sweep.ts`, `expirable-registrations.ts`, `harness-fs-watcher.ts`,
+`plugin-host-runtime.ts`, `harness-registry.ts` are all under
+`packages/operator-core/lib/` now), and the monolithic Next-style
+`apps/operator/app/api/_hono/harness.ts` was retired — the harness API is now
+split into focused Hono handlers under
+`packages/operator-core/lib/endpoint-route/routes/**`, so the `harness.ts:NNN`
+line citations below no longer resolve. A few cited files
+(`identity-files-watcher.ts`, `pm-dispatch.ts`, `claude-chat-stream.ts`,
+`expert-dispatcher.ts`) no longer exist at all. Treat the directory/file
+citations on this page as conceptual landmarks, not literal paths.
+
+**The per-harness-schema storage model is also retired.** Stage 1 and the
+"State summary" section below describe provisioning a per-harness Postgres
+schema `harness_<slug>` with \~11 physical tables from a
+`002-per-harness-template.sql` template. That model was **consolidated** into
+slug-keyed shared tables under `harness_shared` (migrations 116–121,
+`harness-state-storage-unification-2026-06-01` D-007): the per-harness
+`agent_chats` / `feature_audit` / `supervisor_notes` / `directive_summaries` /
+`messages` / `executed_actions` physical tables became
+`harness_shared.*_consolidated` tables (some surfaced as auto-updatable views),
+and the per-harness `config_token` + `harness_proposals` tables were dropped
+(`token_index` and `harness_proposals_shared` are authoritative). The template
+file no longer exists, and `bin/scaffold-harness-schema.sh` still points at it
+(stale). The cross-harness slug-keyed `harness_shared` tables
+(`harness_features_consolidated`, `harness_proposals_shared`, …) are live; the
+*per-harness physical schema* (and the `harness_features_all` UNION view
+regenerated over it) is the part that's gone.
+
 This document is the **authoritative walkthrough** of how a project moves through the
 harness, traced from the actual codebase as of 2026-05-06. Earlier docs in this tree
 may be out of date; trust this one and the code references it cites.
@@ -444,7 +475,7 @@ which subscribe to the publication `zero_harness` on the `papercusp` Postgres da
 
 Most per-project text/structured artifacts have been pulled into Postgres. The on-disk file is retained as a dual-written mirror because the orchestrator subprocess (run.sh / TS main-loop) reads role contracts directly from disk per the role-prompt files in `libs/papercusp/packages/harness/prompts/`. Operator UI code reads PG.
 
-**Storage policy reference:** `/docs/system/storage-policy` documents the PG-by-default rule and the dual-write pattern.
+**Storage policy reference:** `/internal/docs/system/storage-policy` documents the PG-by-default rule and the dual-write pattern.
 
 `.papercusp/` per-project — by category:
 
@@ -498,7 +529,7 @@ The `.papercusp/config.json` notes the phase/dept/models/timeouts/smokeTest/bran
 * `~/.papercusp-workspaces/<workspaceId>/.papercusp/` — per-workspace operator state (credentials, oracle config, agent config, plugin configs, plugin data).
   * **Credentials** (operator API keys, voice creds, marketplace tokens, publish creds, trust store) are PG-canonical in `harness_shared.operator_*` tables and **encrypted at rest** via pgcrypto (Migration 027 + 028).
   * **Plugin OAuth tokens** at `~/.papercusp/harnesses/<slug>/plugin-configs/<plugin>.json` are file-canonical because the substrate plugin loader reads them synchronously and cannot decrypt; the PG mirror at `harness_shared.plugin_configs` is encrypted (Migration 039), and the on-disk file is mode 0600.
-  * **Most other operator state** (operator\_credentials, operator\_voice\_credentials, operator\_paused, oauth\_nonces, mobile\_pair\_tokens, operator\_rate\_limit, cooldown\_marks, profile state) lives in PG; see `apps/operator/content/internal-docs/system/storage-policy` for the full list.
+  * **Most other operator state** (operator\_credentials, operator\_voice\_credentials, operator\_paused, oauth\_nonces, mobile\_pair\_tokens, operator\_rate\_limit, cooldown\_marks, profile state) lives in PG; see `/internal/docs/system/storage-policy` for the full list.
 * `~/.papercusp-workspaces/registry.json` — active workspace selection (bootstrap).
 * `~/.papercusp/db-encryption-key` — symmetric key (32 random bytes, base64, mode 0600) for the pgcrypto encryption-at-rest. Override via `PAPERCUSP_DB_ENCRYPTION_KEY`.
 * `<papercuspRoot>/agent/config.json` — agent backend selection (claude-code | omp | auto), custom command, per-role model overrides; written by `/settings/agent` UI.
@@ -578,7 +609,7 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
   For harnesses that lean on `NEXT_EXPERT` etc., TS will silently drop those decisions — backend choice matters.
 * **`AGENT_BACKEND=omp` is opt-in.** Default backend is still `claude-code`. The omp routing migration is fully shipped but unverified at scale; `/settings/agent` lets you flip per-workspace.
 * **Doc files in this tree may be stale.** Several mention `features.json` as the canonical source — that's no longer true. Trust this lifecycle doc + the code over older specs.
-* **Storage policy supersedes earlier "files everywhere" wording.** As of 2026-05-07, durable mutable state defaults to Postgres; files remain only for bootstrap, code/contracts, locks/sentinels, append-only logs, and substrate-read contracts (where the orchestrator subprocess needs to read directly). See `/docs/system/storage-policy` for the full rule.
+* **Storage policy supersedes earlier "files everywhere" wording.** As of 2026-05-07, durable mutable state defaults to Postgres; files remain only for bootstrap, code/contracts, locks/sentinels, append-only logs, and substrate-read contracts (where the orchestrator subprocess needs to read directly). See `/internal/docs/system/storage-policy` for the full rule.
 * **Voice tool aliasing.** `delegate_to_claude` and `delegate_to_agent` both map to the same handler (Wave 3 of the omp migration); EL agents may reference either name.
 
 For a one-page summary of recent migrations and their commit hashes, see

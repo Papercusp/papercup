@@ -3,6 +3,25 @@ URL: /internal/docs/agent-insights/new-package-cjs-family-type-module-trap
 
 Two packaging traps that bite when you add a workspace package to the src-as-entry tooldef family. (1) Setting \"type\": \"module\" on a package that CJS siblings re-export from breaks the operator's tsx host with 'does not provide an export named X' — vitest/esbuild mask it, so unit tests stay green while the real host would fail on reload. (2) A package.json with only \"exports\" and no top-level \"main\"/\"types\" is unresolvable under classic moduleResolution: node. Both surfaced during the @papercusp/tooldef extraction.
 
+import { Aside } from '@astrojs/starlight/components';
+
+The premise of **Trap 1** no longer holds. The whole tooldef re-export chain
+moved to ESM together on 2026-06-04: `@papercusp/tooldef`, `@papercusp/tooldef-http`,
+`@papercusp/tooldef-mcp`, `@papercusp/agent-mcp`, **and** `@papercusp/chat-protocol`
+all now carry `"type": "module"`. So a new sibling should now **match the family by
+setting `"type": "module"`** — the opposite of the rule below. (The page's own
+escape hatch — "if you genuinely need ESM, move the whole re-export chain together"
+— is exactly what happened.) Note the build configs still emit CJS
+(`tsconfig.build.json`: `"module": "CommonJS"`), which is now mismatched with the
+package `"type"`; the runtime that matters is `tsx`, which honors `"type"`.
+
+**Trap 2** is also weakened: the operator + operator-core now compile under
+`"moduleResolution": "bundler"` (not classic `node`), so the `exports` map *is*
+honored. The top-level `main`/`types` belt-and-suspenders is still present and
+harmless, but the "classic node ignores exports" rationale no longer describes
+these consumers. The "verify under real `tsx`/Node, not just vitest" advice at the
+bottom still stands.
+
 When you scaffold a **new** workspace package and wire it into the
 `@papercusp/tooldef` family (src-as-entry packages — `main`/`types`/`exports`
 all point at `./src/index.ts`, consumed via a direct `node_modules/@papercusp/<pkg>`

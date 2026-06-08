@@ -43,7 +43,7 @@ Resolve the workspaces root from the explicit env the desktop passes, not from
 `homedir()`:
 
 ```ts
-// lib/workspace-registry.ts
+// packages/operator-core/lib/workspace-registry.ts
 export function workspacesRoot(): string {
   const env = process.env.PAPERCUSP_WORKSPACES_ROOT;
   if (env && env.trim()) return env;

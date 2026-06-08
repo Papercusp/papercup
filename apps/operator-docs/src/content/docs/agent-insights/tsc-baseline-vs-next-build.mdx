@@ -1,34 +1,40 @@
 ---
-title: Bare `tsc --noEmit` reports hundreds of errors that next build doesn't
-description: A direct invocation of `tsc --noEmit` against apps/operator reports ~860 pre-existing errors that `next build` handles correctly. Don't chase them; treat the count as a baseline and verify only that touched files are clean.
+title: Bare `tsc --noEmit` reports hundreds of pre-existing errors — treat them as a baseline
+description: A direct invocation of `tsc --noEmit` against apps/operator reports hundreds of pre-existing errors. Don't chase them; treat the count as a baseline and verify only that touched files are clean.
 discovered: 2026-05-20
-tags: [typescript, next, tooling, verification]
+tags: [typescript, tooling, verification]
 status: active
 sidebar:
   order: 9
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Update: Next is retired — the old `next build` framing is obsolete">
+This page was written when `next build` was the operator's real
+typechecker. **Next.js is now retired** — `apps/operator` has no
+`next build`, no `next.config.js`, and no `.next-prod/types/*`. The
+operator builds via Vite (`@papercusp/operator-vite`'s `vite build`),
+which does **not** typecheck by default, so there is no single "real
+typechecker reports zero" oracle anymore. What survives unchanged: bare
+`tsc --noEmit` against `apps/operator/` reports a large **pre-existing
+baseline** (re-measured at ~379 on 2026-06-08, down from the ~860 below;
+the count drifts as the tree changes), `--ignoreDeprecations 6.0` is
+still required, and the right move is still to **scope your check to the
+files you touched**, not the total. The per-file recipe below still works.
+</Aside>
+
 ## What
 
 Running `tsc --noEmit` directly against `apps/operator/` reports
-**~860 errors** on a clean main checkout. `next build` (which is what
-the project actually typechecks with) reports zero. The delta is real
-and persistent — `tsc` is not finding regressions, it's missing
-context.
+**hundreds of errors** on a clean checkout (~379 as of 2026-06-08;
+historically ~860). These are a real, persistent pre-existing baseline —
+`tsc` is not finding regressions, it's the accumulated debt of a tree
+that is built/bundled (Vite) rather than typecheck-gated.
 
-Two reasons:
-
-1. **Generated route types.** Next.js generates `.next-prod/types/*`
-   files during a build that the type-checker needs to see;
-   without them, every Next page/route handler that uses typed
-   `params` / `searchParams` flags TS2307. Bare `tsc` doesn't run the
-   generator.
-2. **Module-resolution scope.** Bare `tsc` walks references that
-   `next build` skips (e.g. `@bytecodealliance/jco` inside
-   `packages/plugin-loader`), and resolves them differently.
-
-The error count fluctuates by a few as other agents land changes —
-don't treat ±5 as a regression in either direction.
+The error count fluctuates as other agents land changes —
+don't treat a small delta as a regression in either direction. Establish
+the baseline, then check only your touched files against it.
 
 ## How to verify your work
 
@@ -54,9 +60,13 @@ versions deprecated.
 
 ## If you must chase the baseline
 
-Don't. Run `cd papercusp-desktop && npm run dev` (or `next build`)
-and trust its output. Bare `tsc` is a fast-but-noisy file-level
-check, not a project-correctness signal.
+Don't. Bare `tsc` is a fast-but-noisy file-level check, not a
+project-correctness signal — and since Next's typecheck-on-build is
+gone, there is no build step that will independently "report zero" to
+chase toward. Verify behavior by running the app via the Tauri dev
+shell (`cd papercusp-desktop && npm run dev`) and by the affected test
+suites (`npm run test:affected`), and confirm only that your touched
+files are `tsc`-clean against the baseline.
 
 ## Why this was costly
 

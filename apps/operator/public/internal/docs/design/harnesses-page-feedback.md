@@ -3,6 +3,23 @@ URL: /internal/docs/design/harnesses-page-feedback
 
 Concrete UX feedback on /installed/harnesses, captured live with 8 harnesses installed. Cross-cutting issues, per-defect notes, and a priority list.
 
+:::note\[Partially addressed since capture]
+The `/installed/harnesses` page still exists
+(`apps/operator/app/installed/harnesses/page.tsx`, served via the
+operator-vite route `routes/installed/harnesses.tsx`) but has changed
+since this capture. The table is now rendered by `RichGrid`
+(`@papercusp/grid-core`), **not** the hand-rolled
+`.pc-installed-harness-grid` divs the per-row notes inspect — though the
+`pc-installed-harness-*` class names survive on the cells. The State
+column now varies (`● live` vs `○ stale` for a missing dir), so the
+"always live / dead weight" framing (C2/V4) is dated. A primary
+**`+ Add harness`** button now sits top-right (C4 addressed; it opens
+the `CreateHarnessPicker`, not a marketplace link). An explicit empty
+state now ships (C7 addressed) — it links to **`/cupboard`** (the
+marketplace was replaced by the Cupboard). The grouping (C1) and
+filter/sort (C5) design opinions below are still open.
+:::
+
 Captured live by loading
 `http://localhost:3070/installed/harnesses?ws=default` against the
 running operator with **8 installed harnesses**: `sheets` (coding) +

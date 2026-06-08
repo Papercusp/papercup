@@ -5,6 +5,23 @@ Three Phase-1b federation gaps (D-008): multi-device collision, login-rename fra
 
 import { Aside } from '@astrojs/starlight/components';
 
+Limitations **#1 (multi-device collision)** and **#3 (verified-commit / Contents
+API)** below describe the **shared-repo contributor-file admission path that no
+longer exists.** It was removed in the write-free-join work
+(`non-collaborator-join-fork-pr-2026-06-02`): `two-channel-verifier.ts` now keeps
+**only** Channel 1 (the local OAuth self-attestation), and `verifyChannel2` /
+`verifyBoth` are gone. Remote admission now proves the `device_pubkey ↔
+github_user_id` binding from the **device-signed announce + attestation gist**
+(`verifyAttestation`), with **no shared-repo fetch and no upstream write at join** —
+see `packages/operator-core/lib/sync/hyperbee/verify-binding-adapter.ts`. There is
+no `ensureMyBindingPublished` / `buildSignedContributorFile` anymore; the contributor
+row is published into the harness Hyperbee/Autobase via `publishContributorRow`
+(`packages/operator-core/lib/sync/hyperbee/write-contributor-row.ts`), keyed by the
+**stable numeric `github_user_id`** — which also retires limitation **#2
+(login-rename)**, since the row is no longer keyed by the mutable login. The
+"Resolved — feature *content* federates (CDC-outbox)" section near the bottom is
+still accurate. The historical text is preserved below as the original D-008 record.
+
 Phase-1b ships bidirectional federation (decision `papercusp-phase1b-bidirectional-federation-2026-06-01`).
 Three gaps were identified, recorded as **D-008**, and intentionally left out of scope.
 This page captures each one — symptom, root cause, and fix shape — so future implementors
@@ -142,11 +159,16 @@ optional boilerplate; it is the mechanism that makes channel-2 work.
 
 ### Key source paths
 
-| File                                                        | Role                                                                                                                       |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `apps/operator/lib/identity/ensure-my-binding-published.ts` | Calls `createOrUpdateFileContents`; idempotent on no-op (same pubkey already present).                                     |
-| `apps/operator/lib/identity/contributor-file-types.ts`      | `buildSignedContributorFile` — builds + signs the body; called by `ensureMyBindingPublished`.                              |
-| `apps/operator/lib/identity/two-channel-verifier.ts`        | `verifyContributorFileSignature` — verifies the device signature on the body; separate from the commit-verification check. |
+> The files below were the channel-2 implementation as of 2026-06-01. The
+> publishing/verification surfaces have since moved: `ensure-my-binding-published.ts`
+> (and `ensureMyBindingPublished` / `buildSignedContributorFile`) no longer exist —
+> see the superseded banner at the top of this page.
+
+| File (2026-06-01)                                                       | Role                                                                                                                                                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/lib/identity/ensure-my-binding-published.ts` *(removed)* | Calls `createOrUpdateFileContents`; idempotent on no-op (same pubkey already present).                                                                                          |
+| `packages/operator-core/lib/identity/contributor-file-types.ts`         | `buildSignedContributorFile` — builds + signs the body *(this symbol was since removed; the file remains for the contributor-file types + path helpers)*.                       |
+| `packages/operator-core/lib/identity/two-channel-verifier.ts`           | `verifyContributorFileSignature` — the body-signature check *(this symbol now lives in `packages/operator-core/lib/sync/hyperbee/local-announce-identity.ts` + `announce.ts`)*. |
 
 `buildSignedContributorFile` produces the *signed body bytes* — it does not push
 anything. The API call that makes the commit GitHub-verified is in
@@ -166,7 +188,7 @@ captures every **local-origin** write to `harness_features_consolidated` /
 * NOTIFY), and a per-harness drain appends those to the device's own log, so the
   read-side projections write them into peers' Postgres. The end-to-end proof is the
   Stage-6 acceptance test
-  `apps/operator/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts`
+  `packages/operator-core/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts`
   — two peers over a real in-process swarm with two SEPARATE Postgres databases; a
   feature created on peer A genuinely lands in peer B's `harness_features_consolidated`
   (and symmetrically B→A, plus issues A→B).

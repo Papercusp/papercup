@@ -6,7 +6,7 @@ The audit (dbos-scheduler-consolidation-2026-06-03) moved every portable periodi
 The scheduler-consolidation pass ported the portable periodic jobs (harness-status
 sweep, backup orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/
 embed/completion-ref timers, test-runs prune) onto **DBOS scheduled workflows**
-(`apps/operator/lib/dbos/periodic-workflows.ts`). A set of recurring loops were
+(`packages/operator-core/lib/dbos/periodic-workflows.ts`). A set of recurring loops were
 **deliberately kept off DBOS**. If you're tempted to "finish the migration," check
 this list first — these are conscious keeps, not stragglers.
 

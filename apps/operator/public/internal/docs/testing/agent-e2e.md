@@ -98,8 +98,10 @@ npm run dev    # foregrounds 'tauri dev'; cargo build first run is ~2 min
 ```
 
 The first launch compiles the Rust shell; subsequent launches hot-load
-the Next sidecar. Wait for `dev bridge listening` to appear in the log
-before driving.
+the operator sidecar (the Vite SPA `@papercusp/operator-vite` on `:3055`
+
+* the Hono host on `:3070` — Next.js is retired). Wait for
+  `dev bridge listening` to appear in the log before driving.
 
 ### 1.2 Bridge probe
 
@@ -126,12 +128,13 @@ If multiple bridges show up, several Tauri dev instances are running
 (stale token files do **not** mean stale bridges — `kill -0 <pid>`
 each one). Pass `--pid <pid>` to subsequent commands to disambiguate.
 
-### 1.3 Stale Next cache
+### 1.3 Stale Vite cache
 
 If the Tauri sidecar log shows a JSX parse error referencing a line
-that doesn't match the on-disk file, the Next/Turbopack cache is
-stale — `rm -rf apps/operator/.next/cache` from the workspace root
-and restart the Tauri dev shell.
+that doesn't match the on-disk file, the Vite dependency cache is
+stale — `rm -rf apps/operator-vite/node_modules/.vite` and restart the
+Tauri dev shell. (Next.js is retired; there is no longer an
+`apps/operator/.next` cache.)
 
 ### 1.4 First-run paths — clear stored state
 
@@ -1268,9 +1271,10 @@ positive evidence — silence is not success.
   delta:{...}}}` — parsing top-level `content_block_delta` silently
   drops every text token. (Already handled server-side; relevant
   if you're writing a new SSE consumer.)
-* **Turbopack stale parse cache.** If a JSX parse error references a
+* **Stale Vite parse cache.** If a JSX parse error references a
   line that doesn't match the on-disk file, the cache is stale.
-  `rm -rf .next/cache` and restart.
+  `rm -rf apps/operator-vite/node_modules/.vite` and restart. (Next.js
+  is retired — there is no `.next` cache anymore.)
 * **Harness tab nav uses `?panel=`.** `panel=plugin:<id>` selects a
   plugin-contributed tab. Test these the same way as built-in tabs.
 * **`tauri-agent-tools screenshot --selector` is flaky on tiny
@@ -1341,10 +1345,14 @@ DISPLAY=:90 openbox &                            echo $! > /tmp/openbox90.pid
 # Sanity — must be the real GPU, not llvmpipe:
 DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
 # Launch the app UNDER vglrun so WebKitGTK composites on the GPU:
-( cd papercusp-desktop && DISPLAY=:90 PAPERCUSP_BRIDGE_PORT=9230 \
-    vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &
+( cd papercusp-desktop && DISPLAY=:90 \
+    vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &  echo $! > /tmp/tauri-xvfb.pid
 # wait for window
 until DISPLAY=:90 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
+# The bridge binds an EPHEMERAL port (Server::http("127.0.0.1:0") in
+# src-tauri/src/dev_bridge.rs) — there is NO PAPERCUSP_BRIDGE_PORT env var.
+# Read the real port/token from /tmp/tauri-dev-bridge-<pid>.token, or just
+# `tauri-agent-tools probe` (pass --pid to disambiguate this instance).
 WID=$(DISPLAY=:90 xdotool search --name Papercusp | head -1)
 DISPLAY=:90 xdotool type --window $WID "hello"; DISPLAY=:90 xdotool key --window $WID Return
 DISPLAY=:90 import -window $WID /tmp/shot.png    # ← now shows REAL content, not blank

@@ -3,6 +3,18 @@ URL: /internal/docs/spec/marketplace-versioning
 
 When to bump patch / minor / major on a published template or plugin manifest.
 
+import { Aside } from '@astrojs/starlight/components';
+
+This page describes the **retired** `papercusp publish` / tarball-catalog
+marketplace (see the [Distribution](/spec/distribution) banner). The live
+distribution surface is the in-app **Cupboard** (`apps/operator-public`),
+where listings are GitHub-project-backed and snapshot artifacts are
+content-addressed by tarball SHA-256 rather than carried by a
+`papercusp.json` `version` field. The semver guidance below is retained as
+design rationale for manifest/plugin versioning; the `papercusp publish`
+CLI snippet and `marketplace catalog ?version=` behavior no longer reflect
+the shipped code.
+
 Marketplace manifests follow semver with one extra rule: **manifest changes that are additive at the same major.minor require a patch bump and a re-publish**.
 
 ## Rules
@@ -45,4 +57,4 @@ The marketplace catalog returns the latest version by default. Older versions re
 
 ## Audit trail
 
-Every published version is signed (in v1.5+, with Cosign). For now, the version + `papercusp.json` SHA are recorded in the marketplace catalog so users can verify what they're installing.
+In the shipped Cupboard, publisher provenance is the GitHub repo-permission signal plus an optional **Ed25519 device-pubkey ↔ GitHub-login attestation** (a signed gist), and snapshot artifacts are content-addressed by tarball SHA-256 — not Cosign. (The original design called for Cosign signing "in v1.5+"; that was a property of the superseded Gitea/OCI marketplace.)

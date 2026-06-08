@@ -17,7 +17,7 @@ the only thing that links plans, features, tests, and the validator:
 
 * **Plan item** authors VALs as inline `[VAL-…]` sub-bullets (`Verify:` /
   `Evidence:` / `Status:` / optional `RequiresTest:`). `plans:promote` parses
-  them (`lib/agent-tools/plans/val-assertions.ts`) and writes them to PG.
+  them (`packages/operator-core/lib/agent-tools/plans/val-assertions.ts`) and writes them to PG.
 * **Feature** carries them in `claims[]` (set by `plans:promote`).
 * **Test** declares `coversVALs[]` in `.papercusp/tests.json`.
 * **Validator** resolves them by id to decide pass/fail.
@@ -54,7 +54,7 @@ the gate skips it; the validator verifies it by inspection. Default is `true`.
 ## The plan↔test link is a rollup, not a new edge
 
 There is **no** `test → plan-item` foreign key. The link is computed by joining
-through the VAL (`lib/harness-test-rollup.ts`, pure + unit-tested):
+through the VAL (`packages/operator-core/lib/harness-test-rollup.ts`, pure + unit-tested):
 
 * `/api/internal/test-snapshot` drives `harness_plan_assertions.status` from
   covering-test outcomes (`deriveAssertionStatus`) and stamps `plan_slug` /
@@ -65,19 +65,21 @@ through the VAL (`lib/harness-test-rollup.ts`, pure + unit-tested):
 * The Plans UI badge (`decoratePlanItemTestBadges`) and the harness Tests tab's
   Acceptance view render from that.
 
-Built-in/generalized tests (lint, typecheck, smoke — `generalizedRegistry` in
-`@papercusp/testing-shell`) have no `coversVALs`, so they match no assertion and
-contribute to no plan item. Only behavioral/Project tests link to plans.
+Built-in/universal tests (lint, typecheck, smoke — the `universalDomains` tier
+from `@papercusp/testing-shell`, formerly "generalized") have no `coversVALs`, so
+they match no assertion and contribute to no plan item. Only behavioral/Project
+tests link to plans.
 
 ## Where things live
 
 * **`@papercusp/testing-shell`** — `TestingShell` (left-rail + panel host),
-  `DomainTestPanel`, the `generalizedRegistry` (Built-in domains, pure data),
-  and the `TestingDataSource` interface. The lib↔operator boundary *is* the
-  generalized↔Papercusp boundary.
-* **operator** — `lib/testing-domains-registry.ts` (16 Papercusp domains +
-  registers the lib's generalized 5), the harness `/testing/*` routes, and the
-  `/adv` `AdvTestsPanel` + `AcceptancePanel`.
+  `DomainTestPanel`, the `universalDomains` registry (Built-in/Universal tier,
+  pure data — `src/registry/universal.ts`), and the `TestingDataSource`
+  interface. The lib↔operator boundary *is* the universal↔Papercusp boundary.
+* **operator** — `packages/operator-core/lib/testing-domains-registry.ts`
+  (`papercuspRegistry`, \~30 Papercusp domains, composed with the lib's universal
+  tier into `adminRegistry`), the harness `/testing/*` routes, and the `/adv`
+  `HarnessTestsView` + `AcceptancePanel`.
 
 The harness Tests tab is an `/adv` dock panel (`adv:tests`), not a
 `HarnessDashboard` tab — that monolith was deleted by the `/adv` migration.

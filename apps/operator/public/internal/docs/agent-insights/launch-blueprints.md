@@ -56,8 +56,10 @@ program — that's the "fake pipeline" over-formalization D-007 warns against.
 Program-mode is only for genuine multi-step orchestration (`vote` / `deliberate`,
 owned by `coord-ops/trigger.ts` + `startCoordProgramForEvent`).
 
-The built-in launch blueprints today: `deploy`, `merge-resolution`, `audit`,
-`scan`, `implement` (enumerated in `BUILTIN_LAUNCH_BLUEPRINTS`). They are the
+The built-in launch blueprints today: `deploy`, `scan`, `implement`,
+`merge-resolution`, `audit`, `pot`, `bee` (enumerated in
+`BUILTIN_LAUNCH_BLUEPRINTS`; `pot` + `bee` were added after this page's
+discovery date). They are the
 sibling of the program blueprints — two trigger maps coexist:
 `launchBlueprintTriggerMap()` (event → launch blueprint) and `coordOpTriggerMap()`
 (event → program blueprint).

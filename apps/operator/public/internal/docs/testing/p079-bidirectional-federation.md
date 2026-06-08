@@ -17,13 +17,13 @@ over the Model B Hyperswarm substrate. It is the gate that closes implementation
 
 Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`.
 The deterministic offline proof (module + transport, gate stubbed) already exists at
-`apps/operator/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook
+`packages/operator-core/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook
 covers what that test *can't*: the real GitHub publish→verify loop with two real
 identities.
 
 The **whole identity path** — not just the gist crux — now runs **in-process with
 two real GitHub identities** as a creds-gated acceptance test:
-`apps/operator/lib/identity/p079-live-federation.live.test.ts`
+`packages/operator-core/lib/identity/p079-live-federation.live.test.ts`
 (`P079_LIVE=1 npx vitest run p079-live-federation.live`). With both accounts authed
 on one box, "two machines" collapses to "two distinct GitHub identities", which IS
 automatable. The test stubs **nothing** on the identity path: real OAuth

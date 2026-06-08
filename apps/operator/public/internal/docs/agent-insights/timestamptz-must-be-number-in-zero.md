@@ -3,6 +3,16 @@ URL: /internal/docs/agent-insights/timestamptz-must-be-number-in-zero
 
 Postgres TIMESTAMPTZ columns serialize as epoch-ms numbers in Zero. Declaring them as string() kills the WebSocket for the entire schema; every panel using it goes blank.
 
+import { Aside } from '@astrojs/starlight/components';
+
+This pitfall only bites a **Zero (ZQL) schema** consumed by `zero-cache`.
+The shipping desktop app no longer runs zero-cache — it uses **SSE-primary**
+sync (the operator sidecar pushes invalidate/update over Postgres
+`LISTEN/NOTIFY`), and `libs/zero-harness` has 0 live ZQL importers. So this
+rule is still correct *if you touch a Zero schema*, but that surface is being
+retired; for current sync work see the Zero-free resolver path, not this. The
+schema file at `libs/zero-harness/src/schema.ts` still exists for reference.
+
 ## What
 
 Postgres `TIMESTAMPTZ` columns deserialize as **epoch-ms `number`** in

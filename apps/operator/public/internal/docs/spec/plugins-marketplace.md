@@ -5,12 +5,21 @@ URL: /internal/docs/spec/plugins-marketplace
 
 import { Aside } from '@astrojs/starlight/components';
 
-This page is the active design document for the plugin marketplace. Two rounds
-of review have been incorporated. Once primitive shapes are validated against
-the first reference plugin (vscode-server pilot, P5), sections will be folded
-into §7 (Plugin extension points), §8 (UI plugins), §10 (Capabilities), and
-§11 (Distribution), and this page will become a historical record of the v1
-design rationale.
+This page is the original design rationale for a standalone plugin marketplace.
+The plugin **distribution** model it proposes (a `kind` discriminator on
+`papercusp.json`, install-time capability consent, per-harness enable, the
+`actions` primitive, lockfiles) has shipped — but the storefront is now the
+**in-app Cupboard** (`apps/operator-public` = `@papercusp/cupboard-worker`, a
+Cloudflare Worker + D1, live at `cupboard.papercusp.com`), not a
+`papercuspai.com/marketplace/` site. The Cupboard is a single catalog with four
+listing **kinds** — `plugin` (install), `blueprint` (fork), `snapshot` (fork),
+and `harness` (join) — exposed over HTTP (`/api/cupboard/*`), with no
+`cupboard:*` MCP verbs. Plugins install to `~/.papercusp/global-plugins/<slug>/`
+and mount under `/api/plugins/<name>/`. Treat the URLs, package names
+(`papercusp-marketplace`, `papercusp-plugin-sdk`), and `~/.papercusp/installed/`
+paths below as the historical proposal's wording, not current identifiers; the
+concepts map onto the Cupboard. Read this for the *why*; see the
+[authoring quickstart](/internal/docs/spec/plugin-quickstart) for the *how* today.
 
 ## 14.0 Why this exists
 
@@ -223,7 +232,10 @@ This makes the consent prompt name what's actually being claimed:
 | `ui:harness-route:<slug>` | One full-route mount under `/harness/<slug>`          |
 | `ui:plugin-config-panel`  | Override the auto-generated config form (see §14.3.7) |
 
-The previous coarse `ui:dashboard-tab` (no id) is removed.
+The previous coarse `ui:dashboard-tab` (no id) was *proposed* for removal here.
+In the shipped SDK, the coarse no-id forms (`ui:dashboard-tab`, `ui:sidebar-item`,
+`ui:harness-route`, `ui:tui-pane`) are what landed — the per-id capability
+granularity in this section is design intent, not the current `Capability` type.
 
 ### 14.3.6 Server-runtime resource isolation
 

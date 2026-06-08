@@ -23,7 +23,12 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] implementation (6)
 - [x] design (16) — DONE
 - [x] reference (5) — DONE (role-registry/blueprint-catalog up-to-date; agent-insights-index regenerated; tool-catalog + plans-index regenerate in FINAL PASS)
-- [~] agent-insights (99) — groups done: 1-4 (pages 1-40). Drift: lib→operator-core, @restart→@papercusp, defineTool→tooldef; obsolete notes (autoloop director-cadence retired, dogfood-substrate gate removed, instrumentation-node boot retired→host-bootstrap, universalDomains rename, classifier 14 not 16). NEXT: groups 5-10 (41-99). [groups 5-6 (41-60) DONE: idempotent-pg-ensure+live-pg-regression-sentinel→superseded notes; cjs-family-trap reversed (ESM); index §18→§19; mobile→device rename; 3070 restart→staging :3170. agent-insights-index regenerated again.] NEXT: 7-10 (61-99). [7-8 (61-80) DONE: phase1b-federation + sleep-mode → superseded banners; path-join/jsonb/route-discriminator/etc operator-core paths; react-icon-map bogus import removed; scope-rename guard name fix.] NEXT: 9-10 (81-99) = FINAL agent-insights batch.
+- [x] agent-insights (99) — DONE
+
+## ✅ AUDIT COMPLETE (2026-06-08)
+All sections audited+corrected vs code. 183 content pages got committed edits (rest verified accurate). Generated refs regenerated (gen:doc-projections, exit 0). Docs rebuilt: 238 pages, 237 md twins, 820 mirror files → apps/operator/public/internal/docs. Build green. git-sync committing to staging.
+### Section markers (all done): — groups done: 1-4 (pages 1-40). Drift: lib→operator-core, @restart→@papercusp, defineTool→tooldef; obsolete notes (autoloop director-cadence retired, dogfood-substrate gate removed, instrumentation-node boot retired→host-bootstrap, universalDomains rename, classifier 14 not 16). NEXT: groups 5-10 (41-99). [groups 5-6 (41-60) DONE: idempotent-pg-ensure+live-pg-regression-sentinel→superseded notes; cjs-family-trap reversed (ESM); index §18→§19; mobile→device rename; 3070 restart→staging :3170. agent-insights-index regenerated again.] NEXT: 7-10 (61-99). [7-8 (61-80) DONE: phase1b-federation + sleep-mode → superseded banners; path-join/jsonb/route-discriminator/etc operator-core paths; react-icon-map bogus import removed; scope-rename guard name fix.] NEXT: 9-10 (81-99) = FINAL agent-insights batch. [9-10 DONE: substrate-flag-flip/-diagnostic-stack → superseded (gate removed, substrate always boots); starlight-migration + tsc-baseline-vs-next-build → Next-retired Update notes; timestamptz/zero retirement note; many operator-core path fixes.] agent-insights COMPLETE (99).
+ALL CONTENT SECTIONS DONE. Remaining: FINAL PASS (regen generated refs + rebuild served mirror).
 
 ## Per-page log
 

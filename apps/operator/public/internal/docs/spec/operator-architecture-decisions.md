@@ -7,13 +7,23 @@ import { Aside } from '@astrojs/starlight/components';
 
 The decisions on this page are not preferences — each one fixes a specific user-visible bug. Reverting any of them brings the bug back. Do not "tidy up" these patterns without first reading the **Why** clause and confirming with the user that the bug is acceptable.
 
+The decisions themselves are all still live (verified against source). Two
+locations in the cited paths have moved: most operator **libs** are now under
+`packages/operator-core/lib/*` (not `apps/operator/lib/*`) — e.g. `harness-registry.ts`,
+`validators.ts`, `papercusp-root.ts` (the home of `papercuspPath`/`papercuspRoot`),
+`operator-notes.ts`, `snapshot-discovery.ts`, `credentials.ts`, `session.ts` — and
+the operator's **HTTP routes are Hono handlers** under
+`packages/operator-core/lib/endpoint-route/routes/**`, not Next.js `app/api/.../route.ts`
+(the `apps/operator/app/api/` tree no longer exists). The `apps/operator/app/_components/*`
+and `apps/operator/app/harness/*` React components below are still at their cited paths.
+
 ## Harness-project registry: one source of truth
 
-**Rule.** All operator reads/writes of the harness-project registry go through `apps/operator/lib/harness-registry.ts` (`loadHarnessRegistry()` / `saveHarnessRegistry()`). The registry lives at `papercuspPath('registry.json')` — i.e., `<active-workspace>/.papercusp/registry.json`. Operator code MUST NOT read or write `~/.restart-harness-projects.json` directly, and MUST NOT auto-discover projects in hardcoded directories like `~/sheets-clone` or `~/Restart`.
+**Rule.** All operator reads/writes of the harness-project registry go through `packages/operator-core/lib/harness-registry.ts` (`loadHarnessRegistry()` / `saveHarnessRegistry()`). The registry lives at `papercuspPath('registry.json')` — i.e., `<active-workspace>/.papercusp/registry.json`. Operator code MUST NOT read or write `~/.restart-harness-projects.json` directly, and MUST NOT auto-discover projects in hardcoded directories like `~/sheets-clone` or `~/Restart`.
 
 **Why.** New workspaces are supposed to feel like a clean install — empty harness list, no plugins, nothing inherited from another workspace. Before this rule was enforced, the harness API merged the legacy global file `~/.restart-harness-projects.json` on top of the workspace-scoped registry, so a freshly created workspace listed every project from the user's other workspaces. The legacy global file is the CLI's concern alone (it mirrors writes there for transition compat) — the operator must ignore it.
 
-**Files it lives in.** `lib/harness-registry.ts` (helpers), and every callsite that reads/writes the registry should import from it: `app/api/_hono/{harness,plugins,pty,agent-chats,experts}.ts`, `app/api/installed/{route,prune/route}.ts`, `app/api/harness/[slug]/{file,manifest}/route.ts`, `app/api/marketplace/install/route.ts`, `app/api/plugins/[slug]/contributions/route.ts`, `app/api/plugins/invoke/route.ts`, `app/project-docs/page.tsx`, `lib/operator-notes.ts`, `lib/snapshot-discovery.ts`.
+**Files it lives in.** `packages/operator-core/lib/harness-registry.ts` (helpers), and every callsite that reads/writes the registry imports from it — the harness / plugins / pty / agent-chats / installed / marketplace-install / plugin-contributions / plugin-invoke route handlers (now Hono routes under `packages/operator-core/lib/endpoint-route/routes/**`), plus `packages/operator-core/lib/operator-notes.ts` and `packages/operator-core/lib/snapshot-discovery.ts`.
 
 ## papercuspRoot() / papercuspPath() must be called per-request
 
@@ -21,7 +31,7 @@ The decisions on this page are not preferences — each one fixes a specific use
 
 **Why.** `papercuspRoot()` invalidates its cache on `~/.papercusp-workspaces/registry.json` mtime, so the resolver tracks workspace switches automatically. But a module-load capture freezes the path at whichever workspace was active when Next first loaded that route. After a workspace switch in webapp mode (which only `location.reload()`s the browser, not the server), endpoints that captured at module load keep writing into the previous workspace's directories until a manual server restart. Desktop mode doesn't hit this because the Tauri shell restarts the process on switch.
 
-**Files where this rule was enforced and tends to regress.** `app/api/provision/run/route.ts`, `app/api/plugins/enable/route.ts`, `app/api/snapshots/{create,[id]/retract,[id]/instantiate}/route.ts`, `app/api/_hono/oracle.ts`, `app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts`, `lib/{credentials,publish-credentials,session,oauth/storage-fs}.ts`, `lib/provision/{trust-store,state-store,single-user}.ts`, `lib/plugin-{host-runtime,host,configs-pg,enables-pg,slug}.ts`.
+**Files where this rule was enforced and tends to regress.** The provision-run / plugins-enable / snapshots-create-retract-instantiate / oracle / plugin-runtime route handlers (now Hono routes under `packages/operator-core/lib/endpoint-route/routes/**`), and the libs `packages/operator-core/lib/{credentials,publish-credentials,session,oauth/storage-fs}.ts`, `packages/operator-core/lib/provision/{trust-store,state-store,single-user}.ts`, `packages/operator-core/lib/plugin-{host-runtime,host,configs-pg,enables-pg,slug}.ts`. The per-request cache + mtime-invalidation mechanism lives in `packages/operator-core/lib/papercusp-root.ts`.
 
 ## Marketplace credentials are per-workspace, with no `default` fallback
 
@@ -55,8 +65,8 @@ The decisions on this page are not preferences — each one fixes a specific use
 
 **Why.** The button looked like it would scope the Pi terminal to the feature's worktree. It didn't (except in the cold-start case). Two buttons that do similar-but-different things on the same row ("chat" creates a worker chat, "open in pi" allegedly scoped the terminal) confused users. The feature-row buttons are now: `steer` / `chat` / `edit` / `reset`. If we want feature-scoped terminals back, the right design is to spawn a *new* PiPanel pane scoped to the feature, not flip a "first-mount only" prop.
 
-## Form input validation happens at input time, via `lib/validators.ts`
+## Form input validation happens at input time, via `validators.ts`
 
-**Rule.** Operator forms with format-restricted fields (slug, semver) validate per-keystroke using the schemas in `apps/operator/lib/validators.ts` (zod). Submit buttons disable while invalid and show inline error text under each bad field. Server-side validation stays as defence-in-depth, but the user must never see a server-side validation error for a format rule the client could have caught.
+**Rule.** Operator forms with format-restricted fields (slug, semver) validate per-keystroke using the schemas in `packages/operator-core/lib/validators.ts` (zod). Submit buttons disable while invalid and show inline error text under each bad field. Server-side validation stays as defence-in-depth, but the user must never see a server-side validation error for a format rule the client could have caught.
 
 **Why.** "Invalid slug" toasts after clicking Save are a poor user experience compared to a red border + "lowercase + digits + .\_-" hint that appears as soon as the input becomes invalid. The shared `slugSchema` / `semverSchema` also keep client and server agreeing on the rule.

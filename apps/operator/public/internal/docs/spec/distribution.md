@@ -3,6 +3,32 @@ URL: /internal/docs/spec/distribution
 
 
 
+import { Aside } from '@astrojs/starlight/components';
+
+The hosted `papercuspai.com/marketplace` + `marketplace-api` (`:3057`)
+design described below — including the §11.4 "live as of 2026-04-26"
+claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and
+`tenantId`/`tenantSecret` ideas elsewhere in the spec, and the
+`papercusp publish` / `papercusp install <name>@<ver>` CLI — has been
+**superseded** by the in-app **Cupboard** (`apps/operator-public`,
+`@papercusp/cupboard-worker` — Cloudflare Workers + D1). The
+`marketplace-api`/`marketplace-site` apps are gone; the old
+`apps/papercup` reference install is retired to `_retired/papercup/`.
+
+The Cupboard is **one storefront with several listing kinds**
+(`harness` → join, `blueprint`/`snapshot` → fork, `plugin`/`pack` →
+install), keyed on the GitHub-backed project remote. Auth is a GitHub
+bearer (validated against `https://api.github.com/user`), **not**
+namespace OAuth + Ed25519-server-signing as §11.6 describes; publisher
+trust is the GitHub repo-permission signal plus an optional Ed25519
+device-pubkey ↔ login attestation (gist-bound). See
+`apps/operator-public/README.md` and the `/listings` route
+(`apps/operator-public/src/routes/listings.ts`).
+
+The sections below are **retained as design history**; treat the
+namespace-policy / federation / SBOM / webhook material as aspirational,
+not current behavior.
+
 A Papercusp install is distributable. The marketplace is a hosted catalog of harness installs (or plugins for installs), distributed as tarballs.
 
 ### 11.1 Publish (with secret scrubbing)
@@ -56,7 +82,12 @@ papercusp run
 
 ### 11.4 Live marketplace infrastructure
 
-The marketplace described in §11.1–11.3 is live at papercuspai.com/marketplace as of 2026-04-26. Architecture:
+Historical (superseded — see banner at top): the
+marketplace described in §11.1–11.3 briefly ran at
+papercuspai.com/marketplace (MVP, 2026-04-26) on the
+now-removed marketplace-api/marketplace-site
+apps. It has been replaced by the Cupboard. The architecture below is
+kept for reference only. Original architecture:
 
 ```
 papercuspai.com  (Cloudflare Pages — static Next.js export)

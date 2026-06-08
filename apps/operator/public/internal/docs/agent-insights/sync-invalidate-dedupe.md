@@ -5,15 +5,24 @@ Identical (name, args) notifies fired within 90s are silently suppressed at the 
 
 ## What
 
-`apps/operator/lib/sync-sse.ts:notifySyncInvalidate(name, args?, data?)`
-has a **90-second source-side dedupe window**. Two notifies with
-identical `(name, args, data)` fired within that window: the second
-one is silently dropped before `pg_notify` runs.
+`notifySyncInvalidate(name, args?, data?)` has a **90-second
+source-side dedupe window**. Two notifies with identical
+`(name, args, data)` fired within that window: the second one is
+silently dropped before `pg_notify` runs.
+
+The dedupe now lives in the **generic** invalidation bus
+(`libs/generic/sync/src/server/invalidation-bus.ts`, `@papercusp/sync/server`),
+not in the operator's `sync-sse.ts`. `packages/operator-core/lib/sync-sse.ts`
+is now a thin wrapper that injects the operator's PG transport into
+`createInvalidationBus()` and re-exports `notifySyncInvalidate` (=
+`bus.notifyInvalidate`) unchanged — the path moved (`apps/operator/lib/sync-sse.ts`
+→ `packages/operator-core/lib/sync-sse.ts`) and the mechanism was
+generalized, but the contract is identical.
 
 The constant:
 
 ```ts
-const DEDUPE_WINDOW_MS = 90_000;  // 90 seconds
+const DEFAULT_DEDUPE_WINDOW_MS = 90_000;  // 90 seconds (opts.dedupeWindowMs override)
 ```
 
 This sits IN the producer, before the channel write. SSE
@@ -75,21 +84,24 @@ That's not quite right: data-bearing notifies ARE dedupe'd, but
 the data hash is in the key, so a different payload bypasses.
 Identical payloads (rare but possible) still dedupe.
 
-## How the dedupe map is pinned
+## How the dedupe map lives
 
 ```ts
-const _g = globalThis as unknown as _G;
-const recentNotifies: Map<string, number> =
-  _g.__syncNotifyDedupe ?? (_g.__syncNotifyDedupe = new Map());
+const recentNotifies = new Map<string, number>();
 ```
 
-Pinned to `globalThis` so Turbopack HMR doesn't drop the Map on
-each module reload. Without this pin, every dev-mode code edit
-resets the dedupe table and the next reconcile pass fires every
-notify again — re-introducing the flicker problem in dev.
-
-Same pattern `ensure-schema.ts` uses for the same reason. When you
-add a new long-lived in-memory map, follow this idiom.
+**Update (post-generalization):** the dedupe map is now a plain
+module-scoped `Map` captured in the `createInvalidationBus()` closure
+(`libs/generic/sync/src/server/invalidation-bus.ts`). It is **no longer
+pinned to `globalThis.__syncNotifyDedupe`** — that idiom existed to
+survive Turbopack/Next HMR, and the operator no longer runs the bus
+inside the Next dev request path (operator is a Vite SPA + Hono host;
+the Hono host runs under `tsx` with no HMR). The bus is a single
+long-lived instance created once at module load, so a closure Map is
+sufficient. (A stale `delete globalThis.__syncNotifyDedupe` line still
+lingers in `sync-sse.test.ts` cleanup but is a no-op against the closure
+Map.) `ensure-schema.ts` — the other place this idiom was used — has
+since been removed entirely (schema is migrations-only now).
 
 ## The PG-trigger producer (P-018) does NOT use this dedupe
 
@@ -119,7 +131,7 @@ hitting other problems.
 
 ## Related
 
-* `apps/operator/lib/sync-sse.ts` — the implementation
+* `packages/operator-core/lib/sync-sse.ts` — operator wiring; `libs/generic/sync/src/server/invalidation-bus.ts` — the dedupe/bus implementation
 * [Adding a reactive table](/internal/docs/agent-insights/adding-a-reactive-table) — when to use `notifySyncInvalidate` vs the PG trigger
 * [Adding a query to the Zero-free sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — the consumer side
 * [Sleep-mode shared-checkout discipline](/internal/docs/agent-insights/sleep-mode-shared-checkout) — companion ops doc

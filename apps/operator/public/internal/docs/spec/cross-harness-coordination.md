@@ -58,7 +58,7 @@ Every prompt lists curl commands the agent can use:
 
 These are **operator-local reads** — no auth needed. Writes always go through `/api/admin/execute-action` with a bearer token.
 
-The curl path works because agent CLI invocations from `run.sh` and the TS orchestrator (whether `omp -p` or `claude -p`) don't restrict `--allowed-tools` — `Bash` is available by default in both backends.
+The curl path works because agent CLI invocations from the orchestrator (whether `omp -p`, `claude -p`, or `codex`) don't restrict `--allowed-tools` — `Bash` is available by default. The same reads are also exposed as first-class `cross_harness:*` MCP tools (`inbox` / `outbox` / `recent_activity` / `plans_*` / `docs_*`), which an agent can call directly without shelling out to curl. (The legacy bash `run.sh` run-loop is retired.)
 
 ## `send_message` action
 

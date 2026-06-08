@@ -57,10 +57,10 @@ consolidated tables; config/settings are workspace-owned (keyed by
 ## Default: Postgres
 
 For per-workspace single-row-per-key state, the helper is
-`apps/operator/lib/operator-state-pg.ts`:
+`packages/operator-core/lib/operator-state-pg.ts`:
 
 ```ts
-import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { readOperatorState, writeOperatorState } from '@papercusp/operator-core/lib/operator-state-pg';
 
 const cur = await readOperatorState<MyShape>('my_table');
 await writeOperatorState('my_table', { /* … */ });
@@ -74,14 +74,14 @@ Steps to add a new piece of state:
 3. Use `readOperatorState` / `writeOperatorState` / `updateOperatorState` from
    your module.
 4. If the data is sensitive (API keys, bearers, signing fingerprints), add
-   the table to `ENCRYPTED_TABLES` in `apps/operator/lib/db-encryption.ts`
+   the table to `ENCRYPTED_TABLES` in `packages/operator-core/lib/db-encryption.ts`
    and follow the cipher pattern from migration 027 + the runbook in
-   `/docs/system/credentials-encryption`.
+   `/internal/docs/system/credentials-encryption`.
 
 For compound-key tables (per-harness, per-feature, append-only audit logs),
 write a focused module that runs SQL directly via `getOrgPg()`. See
-`apps/operator/lib/operator-notes.ts` (compound key) or
-`apps/operator/lib/provision/audit-log.ts` (append-only) for examples.
+`packages/operator-core/lib/operator-notes.ts` (compound key) or
+`packages/operator-core/lib/provision/audit-log.ts` (append-only) for examples.
 
 ## Schema is migrations-only — NO runtime DDL
 
@@ -116,7 +116,7 @@ migration may assume those exist.
 **Verification:** the migration set is gated by
 `apps/operator/test/fresh-migrate.integration.test.ts` (the strict success gate:
 empty → head applies with zero skips, builds the full schema, is idempotent) and the
-`apps/operator/lib/db-tools/verify-baseline.ts` tool. Both must stay green. A new
+`packages/operator-core/lib/db-tools/verify-baseline.ts` tool. Both must stay green. A new
 migration that breaks `empty → head` fails CI loudly — there is no skip-tolerance.
 
 ## Acceptable file uses
@@ -130,7 +130,7 @@ Files are correct for these specific cases:
 | Code, scripts, templates, snapshots                                     | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
 | Harness contract artifacts read by tools running inside the harness     | `<harness>/.papercusp/config.json`, `SPEC.md`, `supervisor-notes.md`         |
 | Append-only logs at high volume where SQL log tables would dwarf state  | `.papercusp/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
-| Per-process locks via O\_EXCL                                           | `expert-dispatcher.ts` lockfiles                                             |
+| Per-process resource leases (in-process / O\_EXCL)                      | `deployment/display-allocator.ts` per-agent DISPLAY leases                   |
 | Plugin-sandbox storage (the plugin host exposes a virtual FS by design) | `plugin-host.ts` `read`/`write` API to plugins                               |
 | Per-device UX preferences that should NOT sync across devices           | voice config (per audio stack), one-time UI hint dismissals                  |
 

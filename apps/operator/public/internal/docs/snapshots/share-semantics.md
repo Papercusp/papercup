@@ -5,9 +5,9 @@ Plugins flag each configSchema field as secret (credential, stripped on snapshot
 
 import { Aside } from '@astrojs/starlight/components';
 
-* `aliases` covers renames AND removals (`null` = removed)
+* `aliases` is a per-property array covering renames AND removals (`null` = removed)
 * `snapshotPolicy: "include" \| "strip" \| "warn-and-prompt"` for secret-but-shareable cases
-* **`pluginVersionPinned: true` is the default** — snapshots fork against the exact version they were published with, eliminating most alias-walk burden
+* **`versionPin: { mode: "exact" }` is the reproducible default** — snapshots fork against the exact version they were published with, eliminating most alias-walk burden (legacy `pluginVersionPinned: true` maps to `mode: "exact"`)
 * **`securityAdvisories` field on the marketplace catalog** — fork-time substrate prompts loudly if pinned version has a known CVE
 * `shareable: false` fields use JSON-Schema `pattern` for format validation by convention
 * Tarball format change (additive `.shape.json` companions) explicitly acknowledged
@@ -22,13 +22,18 @@ fails two ways:
 1. **Credentials leak**: a plugin config containing `github_token: ghp_...` ends up in the snapshot tarball. Anyone with the tarball gets the publisher's GitHub access.
 2. **Identifiers force-share**: a plugin config containing `accountId: f896...` (the publisher's Cloudflare account) lands in the forker's plugin-config. The fork is configured to deploy to the publisher's CF account, which the forker doesn't have access to.
 
-Today's mitigation is a **pattern-based redactor** in the snapshot exporter
-(`apps/operator/lib/snapshot-config-redact.ts`) that strips fields whose
-keys match `/token|secret|api[_-]?key/i`. This is fragile:
+Today's baseline mitigation is the `uiSchema`-driven redactor in the
+snapshot exporter (`packages/operator-core/lib/snapshot-config-redact.ts`,
+`redactPluginConfig`) that replaces every field whose plugin `uiSchema`
+marks `{"ui:widget":"password"}` with `[REDACTED]`. This is fragile:
 
-* Misses non-conventional names (`webhookUrl`, `accessKey` if `key` is alone).
-* Catches legitimate non-secret fields like `enableTokenSwap`.
+* Misses any sensitive field the plugin author didn't tag as a password widget.
+* Only handles credentials — has no notion of "publisher's identifier".
 * Can't distinguish "publisher's identifier" from "config that should travel".
+
+(The key-pattern matching described below — `/token|secret|api[_-]?key/i` —
+is the *defense-in-depth fallback* that this proposal adds in `extractShape`,
+not the baseline redactor.)
 
 ## Proposal
 
@@ -233,15 +238,21 @@ The "Connect with GitHub" buttons go through the OAuth flow (see [OAuth integrat
 
 ## Implementation
 
-| Surface                                                     | Change                                                                                                                       | LOC   |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----- |
-| `@papercusp/plugin-sdk`                                     | Extend `PropertySchema` type to include `secret?: boolean`, `shareable?: boolean`, `oauth?: { provider, scopes }`.           | \~15  |
-| `libs/papercusp-export-state`                               | When packing plugin-configs, walk configSchema and apply the share-semantics filter. Generate `.shape.json` companion files. | \~80  |
-| `libs/papercusp-export-state`                               | When restoring, write redacted configs verbatim, surface `.shape.json` to the operator's fork-completion API.                | \~30  |
-| `apps/operator/app/api/snapshots/[id]/instantiate/route.ts` | Return list of missing-fields per plugin in the fork response.                                                               | \~20  |
-| `apps/operator/app/snapshots/[id]/fork/page.tsx` (new)      | The fork-completion UI shown above. Reuses `/settings/plugins`'s field renderer.                                             | \~120 |
+| Surface                                                                     | Change                                                                                                                          | LOC   |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `@papercusp/plugin-sdk`                                                     | Document field-level extensions (`secret`, `snapshotPolicy`, `shareable`, `oauth`, `aliases`) on the manifest's `configSchema`. | \~15  |
+| `packages/operator-core/lib/snapshot-shape.ts`                              | `extractShape()` — walk configSchema and apply the share-semantics filter, returning redacted config + `.shape.json` contents.  | \~80  |
+| `packages/operator-core/lib/endpoint-route/routes/snapshots/instantiate.ts` | Apply `resolveAliases()` and return list of missing-fields per plugin in the fork response.                                     | \~30  |
+| `apps/operator/app/snapshots/[id]/fork/ForkClient.tsx`                      | The fork-completion UI shown above. Reuses `/settings/plugins`'s field renderer.                                                | \~120 |
 
 Total: **\~265 lines.** Smaller than the build-script work; closer to the OAuth scope.
+
+This section has largely landed: the share-semantics filter lives in
+`packages/operator-core/lib/snapshot-shape.ts` (`extractShape` + `resolveAliases`),
+the snapshot exporter calls it from
+`packages/operator-core/lib/endpoint-route/routes/snapshots/create.ts`, the
+`.shape.json` companion is served by `routes/snapshots/shape.ts`, and the
+fork-completion UI is `apps/operator/app/snapshots/[id]/fork/ForkClient.tsx`.
 
 ## Migration story
 
@@ -274,7 +285,10 @@ plugin's `configSchema` changes between publish and fork, the substrate
 needs a deterministic way to translate old field names to new.
 
 The `aliases` field (already used in the spec for capability renames)
-extends to config-field renames *and* removals.
+extends to config-field renames *and* removals. It's a **per-property
+array** of prior names (with `null` marking removal), declared on the
+property that supersedes them — `resolveAliases()` walks the *current*
+schema's properties and remaps the forked config accordingly.
 
 ### Renames
 
@@ -285,11 +299,9 @@ extends to config-field renames *and* removals.
       "account": {
         "type": "string",
         "shareable": false,
-        "description": "GitHub user or org."
+        "description": "GitHub user or org.",
+        "aliases": ["owner"]
       }
-    },
-    "aliases": {
-      "account": "owner"
     }
   }
 }
@@ -300,8 +312,8 @@ published with `github-repo@0.1.0` ships `.shape.json` referencing
 `owner`. On fork into a `github-repo@0.2.0` install:
 
 1. Substrate reads the snapshot's `.shape.json`, finds an entry for `owner`.
-2. Substrate consults the *current installed plugin's* `configSchema.aliases`.
-3. Sees `aliases: { account: "owner" }` — translates `owner` references in `.shape.json` to `account`.
+2. Substrate consults the *current installed plugin's* `configSchema` properties.
+3. Sees the `account` property declaring `aliases: ["owner"]` — translates `owner` references to `account`.
 4. Fork-completion UI prompts for `account` (the current name), with the snapshot's metadata about it (description, validation, etc.) sourced from the new schema, not the frozen one.
 
 ### Removals
@@ -315,31 +327,30 @@ prompt for a field the new plugin doesn't read.
 {
   "configSchema": {
     "properties": {
-      "newApiKey": { "type": "string", "secret": true }
-    },
-    "aliases": {
-      "legacyApiKey": null
+      "newApiKey": { "type": "string", "secret": true },
+      "legacyApiKey": { "type": "string", "secret": true, "aliases": [null] }
     }
   }
 }
 ```
 
-`null` declares "this field was removed." On fork, `.shape.json` entries
-for `legacyApiKey` are silently dropped — the user is not prompted, and
-the plugin's runtime never sees the field. This is intentionally distinct
-from `aliases: { legacyApiKey: "newApiKey" }` (rename), where the value
-would be carried forward under the new name.
+A `null` entry in a property's `aliases` array declares "this field was
+removed" — `resolveAliases()` drops `legacyApiKey` from the forked config,
+the user is not prompted, and the plugin's runtime never sees the field.
+This is intentionally distinct from carrying the value forward under a new
+name via a rename alias (e.g. `newApiKey` declaring `aliases: ["legacyApiKey"]`).
 
 ### Combined
 
-A single `aliases` map can mix renames and removals:
+Renames and removals coexist by declaring `aliases` arrays across the
+schema's properties:
 
 ```json
 {
-  "aliases": {
-    "account": "owner",
-    "legacyApiKey": null,
-    "region": "awsRegion"
+  "properties": {
+    "account":   { "type": "string", "aliases": ["owner"] },
+    "legacyApiKey": { "type": "string", "aliases": [null] },
+    "awsRegion": { "type": "string", "aliases": ["region"] }
   }
 }
 ```
@@ -351,8 +362,9 @@ the snapshot's. This means:
 
 * A snapshot is forward-compatible automatically: as long as the new
   plugin version declares its aliases, old snapshots fork cleanly.
-* Plugin authors are responsible for keeping the alias map populated for
-  every config-field rename or removal in their plugin's lifetime.
+* Plugin authors are responsible for keeping the per-property `aliases`
+  arrays populated for every config-field rename or removal in their
+  plugin's lifetime.
 * The substrate never auto-infers aliases — explicit declarations only.
 
 If an old snapshot references a field that has neither a current
@@ -362,23 +374,26 @@ version" and the user can choose to drop it or abort the fork.
 
 ## Plugin version pinning (default-on)
 
-Snapshots pin to the exact plugin version they were published against:
+A plugin declares its restore pin policy on its manifest via `versionPin`:
 
 ```json
-// snapshot manifest
+// plugin manifest
 {
-  "plugins": {
-    "@papercupai/github-repo": {
-      "version": "0.1.0",
-      "pluginVersionPinned": true   // default
-    }
-  }
+  "name": "@papercupai/github-repo",
+  "version": "0.1.0",
+  "versionPin": { "mode": "exact" }   // 'semver' | 'exact' | 'hash'
 }
 ```
 
-The default is **pinned** — fork uses the exact version the snapshot was
-published with. The substrate doesn't walk `aliases` on a pinned fork
-because the schema is exactly the one the snapshot expects.
+`versionPin.mode` controls how a fork resolves the plugin version: `'exact'`
+restores the exact version captured (the reproducible default this section
+argues for), `'semver'` accepts any version satisfying the captured range,
+`'hash'` pins by content hash. (The legacy boolean `pluginVersionPinned: true`
+is still read for back-compat — it maps to `mode: 'exact'` — but `versionPin`
+is the current field and wins when both are set.)
+
+When the fork uses the exact captured version, the substrate doesn't walk
+`aliases` because the schema is exactly the one the snapshot expects.
 
 The user can opt into the latest available version per-plugin during
 fork ("fork against latest" toggle), in which case the substrate walks

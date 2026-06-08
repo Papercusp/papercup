@@ -51,7 +51,7 @@ can still fail-closed silently. Always check the `[swarm]` log lines (below).
 
 ## The fix: `PAPERCUSP_DHT_BOOTSTRAP` + `[swarm]` logs
 
-Both added to `apps/operator/lib/sync/hyperbee/`:
+Both added to `packages/operator-core/lib/sync/hyperbee/`:
 
 * **`PAPERCUSP_DHT_BOOTSTRAP`** (`swarm.ts`, `swarmConstructorOpts` /
   `parseDhtBootstrap`) — a comma-separated `host:port` list. When set, every peer

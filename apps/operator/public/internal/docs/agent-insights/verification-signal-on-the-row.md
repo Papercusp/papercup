@@ -84,9 +84,13 @@ wrong surface.
   the producer-side trigger that fires when columns like
   `verifier_last_error` change.
 * [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) —
-  pattern for adding new columns via `ensure-schema*.ts` if the column
-  isn't worth a full SQL migration.
-* `apps/operator/lib/harness/completion-ref-verifier.ts` — P-016's
+  the (now **superseded**) runtime `ensure-schema*.ts` add-column pattern.
+  Update: schema is migrations-only since
+  `self-contained-migration-baseline-2026-06-02` — add columns via a numbered
+  SQL migration (`107+`), never a runtime `ensureXxx()`.
+* `packages/operator-core/lib/harness/completion-ref-verifier.ts` — P-016's
   artifact, the canonical example.
-* `libs/papercusp/libs/db/sql/082-completion-ref-verifier-columns.sql` —
-  the schema additions.
+* `libs/papercusp/libs/db/sql/000-baseline.sql` — the three columns now live
+  here on `harness_features_consolidated` (the original
+  `082-completion-ref-verifier-columns.sql` was squashed into the baseline; the
+  pre-squash file is preserved at `sql/archive/082-completion-ref-verifier-columns.sql`).

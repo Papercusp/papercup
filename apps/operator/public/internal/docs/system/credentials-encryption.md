@@ -6,28 +6,31 @@ How credentials-class operator-state tables are encrypted at rest, and the runbo
 # Credentials encryption at rest
 
 Migrations `027-pgcrypto-credentials.sql` and `028-pgcrypto-drop-plaintext.sql`
-add column-level encryption-at-rest for the credentials-class operator-state
-tables. A pgcrypto-encrypted `payload_ct BYTEA` column holds the data; the
-legacy `payload JSONB` column is kept as a `'{}'::jsonb` sentinel so the
-helpers in `lib/operator-state-pg.ts` can keep INSERTing it without a
-schema-shape change for now. A future migration will drop the column.
+(now squashed into `000-baseline.sql`; the numbered files live under
+`libs/papercusp/libs/db/sql/archive/`) add column-level encryption-at-rest for
+the credentials-class operator-state tables. A pgcrypto-encrypted
+`payload_ct BYTEA` column holds the data; the legacy `payload JSONB` column is
+kept as a `'{}'::jsonb` sentinel so the helpers in
+`packages/operator-core/lib/operator-state-pg.ts` can keep INSERTing it without
+a schema-shape change for now. A future migration will drop the column.
 
 ## Tables encrypted
 
-The set lives in `apps/operator/lib/db-encryption.ts` as `ENCRYPTED_TABLES`:
+The set lives in `packages/operator-core/lib/db-encryption.ts` as `ENCRYPTED_TABLES`:
 
 * `operator_credentials` — generic API credentials
 * `operator_voice_credentials` — OpenAI / ElevenLabs / Cartesia / Deepgram keys
 * `operator_marketplace_token` — marketplace publish service tokens
 * `operator_publish_credentials` — R2 access keys (when populated)
 * `operator_trust_store` — publisher signing-key fingerprints + rotation log
+* `operator_search_provider_credentials` — OMP `web_search` provider API keys (Migration 047)
 
-All five are also excluded from the `zero_harness` publication (no WS
+All six are also excluded from the `zero_harness` publication (no WS
 broadcast). The encrypted-at-rest layer is defense-in-depth on top of that.
 
 ## Key sourcing
 
-`getDbEncryptionKey()` in `lib/db-encryption.ts` resolves in order:
+`getDbEncryptionKey()` in `packages/operator-core/lib/db-encryption.ts` resolves in order:
 
 1. **`process.env.PAPERCUSP_DB_ENCRYPTION_KEY`** — deploy-time override.
    Anything in this env var is passed verbatim to `pgp_sym_encrypt`. Use a
@@ -88,7 +91,7 @@ OLD_KEY=$(cat ~/.papercusp/db-encryption-key)
 
 # 2. Re-encrypt every row in every encrypted table.
 PGURL='postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp'
-for tbl in operator_credentials operator_voice_credentials operator_marketplace_token operator_publish_credentials operator_trust_store; do
+for tbl in operator_credentials operator_voice_credentials operator_marketplace_token operator_publish_credentials operator_trust_store operator_search_provider_credentials; do
   psql "$PGURL" -v ON_ERROR_STOP=1 -c "
     UPDATE harness_shared.$tbl
     SET payload_ct = pgp_sym_encrypt(pgp_sym_decrypt(payload_ct, '$OLD_KEY'), '$NEW_KEY')
@@ -112,13 +115,13 @@ step 2 errored mid-loop and rolled back.
 
 ## Adding a table to the encrypted set
 
-1. Add the table name to `ENCRYPTED_TABLES` in `lib/db-encryption.ts`.
+1. Add the table name to `ENCRYPTED_TABLES` in `packages/operator-core/lib/db-encryption.ts`.
 2. Write a new migration that adds `payload_ct BYTEA` to the table and
    encrypts existing rows (cf. 027 + the runtime backfill loop pattern).
 3. Add a follow-up migration that wipes the plaintext payload (cf. 028).
 
-The `lib/operator-state-pg.ts` helpers branch on `ENCRYPTED_TABLES.has(table)`
-automatically — no per-table code change required.
+The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on
+`ENCRYPTED_TABLES.has(table)` automatically — no per-table code change required.
 
 ## What's NOT done (deliberate)
 

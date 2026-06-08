@@ -3,6 +3,23 @@ URL: /internal/docs/agent-insights/substrate-flag-flip-runbook
 
 Step-by-step procedure for flipping PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1, what to expect at each stage, how to verify success, and how to roll back cleanly if something goes wrong.
 
+import { Aside } from '@astrojs/starlight/components';
+
+The `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` opt-in gate **was removed** with the
+Model B substrate rewrite — the substrate now **always boots** in-process and
+no code reads the env var (it survives only in "the gate was removed" comments
+in `in-process-status.ts` / `share-finalize.ts`, and setting it in `.env.local`
+is a no-op). This whole "set the env var → restart → verify the flag took
+effect → roll back by unsetting it" procedure is therefore **obsolete**. What
+is still real and useful below: the diagnostic surfaces (`substrate:status`
+CLI, `/admin/dogfood-substrate`, `/api/admin/dogfood-substrate-health`,
+`/api/harness/<slug>/claim-attempts`, the boot-history table) and the
+boot-error troubleshooting table — read those as "verify the always-on
+substrate," not "verify the flag." (Note: step 5's `<HarnessChromeHeaderBadges>`
+component does not exist; the live pills are `SubstrateHealthPill` /
+`BootstrapProgressIndicator` in `app/harness/insights/`.) For the current
+diagnostic walkthrough see [Substrate diagnostic stack](/internal/docs/agent-insights/substrate-diagnostic-stack).
+
 ## Before you start
 
 * This is a **one-process toggle** — restart the operator after editing the env var. It is not picked up live.

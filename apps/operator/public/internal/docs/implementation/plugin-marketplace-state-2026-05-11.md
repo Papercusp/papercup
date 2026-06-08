@@ -10,6 +10,20 @@ roadmap of new runtimes built on top of this (WASM, daemon, iframe),
 see `papercup-native/docs/ts-plugin-system-v1-plan.md` — owned by
 `@plugin` agent (Rust runtime).
 
+Preserved as the 2026-05-11 milestone. Reading it today, note:
+
+* The operator is now **`apps/operator/`** and its `app/api/**` routes were
+  ported to **Hono routers under `packages/operator-core/lib/endpoint-route/routes/**`**;
+  `apps/operator/lib/*` (e.g. `plugin-host-runtime.ts`, `plugin-grants.ts`)
+  now lives under **`packages/operator-core/lib/`**. The Next route paths in
+  the tables below are stale.
+* The `localhost:3057` / `papercuspai.com` marketplace-api was superseded by
+  the in-app **Cupboard** (`apps/operator-public`, CF Workers + Hono + D1).
+* The "use git worktrees for non-main work" hard rule is **reversed** under
+  the current model: the shared tree stays on `staging` and you do **not**
+  branch/worktree — concurrency is serialized by the `locks:*` + `coord:*`
+  systems. See the repo `CLAUDE.md` "Branch discipline" section.
+
 ## TL;DR
 
 Three publishable kinds (`plugin`, `template`, `snapshot`) share one marketplace pipeline. Operator at `localhost:3055` serves the install/discover surface; marketplace-api at `localhost:3057` is the registry. Plugins run in-process under a two-tier capability check (manifest ∩ user-granted). Tests cover every helper and DB-backed function shipped in this session.

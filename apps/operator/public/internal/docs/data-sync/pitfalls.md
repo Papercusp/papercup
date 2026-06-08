@@ -6,14 +6,26 @@ Specific failure modes that have silently broken every panel in a schema. Read b
 These are catalogued because each one cost real time. If a panel is
 behaving wrong, work down this list before you start changing code.
 
+:::note\[Some entries are zero-cache–era]
+Zero / zero-cache / ZQL is on the retirement path — the shipping desktop app
+uses **SSE-primary** sync (the operator sidecar pushes invalidate/update over
+Postgres `LISTEN/NOTIFY`); **zero-cache is not run**. The zero-cache–specific
+items below (publication membership, port collisions, replication slots, the
+`SchemaVersionNotSupported` cache) are kept as historical reference. The
+RichGrid / `useSyncQuery` / `rowProps` gotchas (#1, #4, #8) are current and
+still apply.
+:::
+
 ## 1. `render: (row) =>` instead of `render: ({ row }) =>`
 
 **Symptom**: every cell in the column renders blank or shows
 `[object Object]`.
 
 **Why**: `ColumnDef.render` is called with a context object
-`{ row, index }`, not the row itself. TypeScript accepts both
-signatures because the context structurally satisfies many row shapes.
+`{ row, rowIndex, rowBg, isSelected }`, not the row itself. TypeScript
+accepts both signatures because the context structurally satisfies many
+row shapes. (Same gotcha applies to `rowProps` and `cellStyle`, which also
+receive this ctx.)
 
 **Fix**: destructure `{ row }` from the argument.
 
@@ -56,7 +68,7 @@ fails → `QueryInternals` mismatch.
 **Fix**: symlink the inner copy to the workspace root.
 
 ```bash
-cd apps/papercusp
+cd apps/<name>
 rm -rf node_modules/@rocicorp/zero
 ln -s ../../../node_modules/@rocicorp/zero node_modules/@rocicorp/zero
 ```
@@ -73,26 +85,30 @@ collapsed.
 returns a `className` that has its own `display: grid`, the two
 grids fight.
 
-**Fix**: override with inline `style: { display: 'block' }`.
+**Fix**: override with inline `style: { display: 'block' }`. (`rowProps`
+receives the cell-render ctx — destructure `{ row }` if you need it.)
 
 ```tsx
-rowProps={(row) => ({
+rowProps={({ row }) => ({
   className: 'h-issue',
   style: { display: 'block' },
 })}
 ```
 
-## 5. Forgot to bump `schemaVersion`
+## 5. Schema change not reflected on clients
 
 **Symptom**: you changed `schema.ts` (added a column, renamed one,
 changed a type), restarted `zero-cache`, and clients still see the old
 shape — or worse, throw `SchemaVersionNotSupported`.
 
-**Why**: clients cache the schema. Without a version bump they reuse
-the old cached schema even though the server sent a new one.
+**Why**: clients cache the schema and the cache wasn't invalidated.
 
-**Fix**: bump the `schemaVersion` constant in
-`libs/zero-harness/src/schema.ts`. Every change is a bump.
+> **Historical.** Older `@rocicorp/zero` carried an explicit `schemaVersion`
+> constant you bumped on every change. The current schema
+> (`libs/zero-harness/src/schema.ts` → `createSchema({ tables: [...] })`)
+> has **no** `schemaVersion` field — that knob is gone. A change there is
+> registered by adding/editing the table in the `tables` list and restarting
+> zero-cache; if a stale shape persists, clear the client's cached schema.
 
 ## 6. Forgot to add the table to the Postgres publication
 
@@ -129,33 +145,45 @@ unit. The current allocation is:
 | 4850 | harness change-streamer         |
 | 4847 | shop change-streamer (override) |
 
-## 8. `useQuery` outside the provider
+## 8. Sync hook outside the provider
 
-**Symptom**: SSR error: "useZero must be within a ZeroProvider."
+**Symptom**: a panel using `useSyncQuery` shows no data and never loads —
+`data` is `undefined`, `loading` is `false`. Or, if you used
+`useSyncPrefetch` / `useSyncContext` instead, a thrown
+`useSyncQuery must be used within a <SyncProvider>`.
 
-**Why**: a server-component or a client-component rendered above the
-`HarnessZeroProvider` wrapper is calling `useQuery`.
+**Why**: the component is mounted above the `SyncProvider` wrapper.
+`useSyncQuery` is **tolerant** — outside a provider it returns
+`{ data: undefined, loading: false, error: null }` instead of throwing (so
+chrome rendered at the root layout doesn't crash). The throwing variants are
+`useSyncContext` and `useSyncPrefetch`.
 
-**Fix**: ensure your panel is a client component (`'use client'`) and is
-mounted inside the provider tree. Check
-`apps/operator/app/harness/layout.tsx` for the wrapping.
-
-If you need a query outside the harness layout's tree, mount a separate
-provider — but prefer keeping data-fetching panels inside the harness
-layout.
+**Fix**: ensure your panel is mounted inside the provider tree. In the
+operator the provider is `RootSyncProvider` (which wraps
+`HarnessZeroProvider`), mounted near the root layout, so most components are
+already inside it — see `apps/operator/app/_components/RootSyncProvider.tsx`.
+If a panel renders above it, hoist the provider or branch on the empty result
+and supply your own fallback (REST poll, prefetch cache).
 
 ## 9. JSON ledger out of sync with PG
 
-**Symptom**: `loadProjects()` returns rows that don't match what the UI
+> **Historical.** The `projects` JSON-ledger and its
+> `loadProjects()`/`saveProjects()` accessors have been **removed** — the
+> functions no longer exist in the tree, and the `apps/papercup` projects
+> surface they backed was retired. Kept as a cautionary pattern.
+
+**Symptom**: a PG-backed accessor returns rows that don't match what the UI
 shows (or vice versa).
 
-**Why**: prior to the JSON-ledger retirement, both PG and JSON were
-sources of truth. Some old code paths wrote to one and not the other.
+**Why**: a "PG mirror" pattern where a JSON file is primary and PG is
+best-effort — both were sources of truth and some code paths wrote to one
+and not the other; the file always drifts ahead.
 
-**Fix**: PG is canonical. The JSON file is now a derived snapshot
-(`derivedFromPg: true`). If you find code writing to the JSON
-directly, route it through `loadProjects()`/`saveProjects()` (PG-backed
-with in-memory cache + bulk upsert).
+**Fix**: PG is canonical. Do not adopt the file-primary / PG-mirror pattern
+for app-level state — go full PG (the storage-policy rule). If you must keep
+a file authoritative for a real reason, drive every writer through one mirror
+helper plus a backfill/drift-recovery script (see the cookbook's
+*PG-mirrored filesystem store* recipe).
 
 ## 10. dev:web vs dev:operator confusion
 

@@ -11,6 +11,25 @@ Rust, C++, or anything else with a UI.
 Earlier discussion lived in chat; this doc is the canonical spec
 for the build.
 
+> **Implementation status (partial — kept as the canonical spec).** The spine
+> shipped: lifecycle fields + gate + `needsDesign` heuristic in
+> `packages/operator-core/lib/design-phase.ts` (`DesignStatus = 'pending' |
+> 'accepted' | 'ignored'`, `computeNeedsDesign`, `assertDesignGate`); the PG
+> tables `harness_shared.harness_design_phase` + `harness_design_artifacts`; the
+> UI IR JSON Schema (`design-ir/schema.ts`); the designer prompt + DESIGN\_SPEC
+> resolution (`design-spec/`); the first ecosystem adapter
+> (`design-adapter-react-tailwind/` — `registry` / `tokens` / `codeEmit`); the
+> Design tab (`apps/operator/app/design/[slug]/DesignDashboard.tsx`, behind the
+> `papercusp-design` V1 feature flag — `FLAGS.DESIGN`, default off); and a
+> subset of the §15 MCP surface as
+> **`design-phase:*`** tools (`list_tokens`, `read_token`, `search_registry`,
+> `get_registry_component`, `record_review` — note the `design-phase:` prefix +
+> snake\_case, not the camelCase names drafted in §15). The token pipeline shipped
+> on **Style Dictionary v4** (see [design tokens](/internal/docs/design/tokens)),
+> not Terrazzo. Everything else (the six panes, tldraw, Lost Pixel, the
+> Plotly/raw/chart sub-IRs, the non-React adapters, the reviewer/crit loop,
+> mock-input + export adapters) remains aspirational.
+
 ***
 
 # 1. Why a phase, not a tag

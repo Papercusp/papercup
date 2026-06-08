@@ -109,10 +109,12 @@ auth changes.
 
 ## See also
 
-* `apps/operator/lib/identity/octokit-client.ts` — the canonical
+* `packages/operator-core/lib/identity/octokit-client.ts` — the canonical
   wrapper in this repo. Uses both `before('request')` for auth and
-  `wrap('request')` for 401-retry.
-* `apps/operator/lib/identity/gh-token.ts` — the token cache the
+  `wrap('request')` for 401-retry. (The repo now pins `@octokit/rest ^22`;
+  the v7 `auth:`-shape break this page documents persists unchanged in v22,
+  so the `before('request')` fix is still the right one.)
+* `packages/operator-core/lib/identity/gh-token.ts` — the token cache the
   Octokit wrapper consumes (see also [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/)
   for the pattern of placing helpers ahead of their primary consumer).
 * [Octokit migration guide v6→v7](https://github.com/octokit/octokit.js/blob/main/CHANGELOG.md) —

@@ -5,6 +5,21 @@ Unit tests can't catch CREATE TABLE typos, missing CHECK constraints, or PG-side
 
 import { Aside } from '@astrojs/starlight/components';
 
+:::caution\[Update: the dogfood-ensure example is gone; the principle lives on as the fresh-migrate gate]
+The concrete subject of this page — `ensure-schema-dogfood.ts`,
+`ensureAllDogfoodTables()`, `DOGFOOD_REACTIVE_TABLES`, and
+`apps/operator/scripts/verify-dogfood-schema.ts` — has been **removed**
+(plan `self-contained-migration-baseline-2026-06-02`). Schema is now
+migrations-only (`libs/papercusp/libs/db/sql/000-baseline.sql` + `107+`
+incrementals), so there is no runtime ensure module to pair a verifier with.
+The *general principle* (boot real PG → apply the DDL → assert the resulting
+schema) is now realized by the **`empty → head` gate**:
+`apps/operator/test/fresh-migrate.integration.test.ts` +
+`packages/operator-core/lib/db-tools/verify-baseline.ts` (zero
+skip-tolerance). Read the examples below as the historical pattern; for DDL
+changes today, that integration test is the sentinel.
+:::
+
 ## The gap unit tests can't fill
 
 `ensure-schema-dogfood.ts` has \~600 lines of `CREATE TABLE IF NOT
@@ -124,11 +139,13 @@ ensure-schema, migration files, trigger function definitions.
 
 ## See also
 
-* `apps/operator/scripts/verify-dogfood-schema.ts` — the canonical
-  example. 13 tables, 80+ columns, 16 CHECK constraints verified
-  in \~2s.
+* `apps/operator/scripts/verify-dogfood-schema.ts` — **removed** (see the
+  Update banner); was the canonical example.
+* `apps/operator/test/fresh-migrate.integration.test.ts` +
+  `packages/operator-core/lib/db-tools/verify-baseline.ts` — the current
+  `empty → head` schema gate that replaces it.
 * `apps/operator/scripts/verify-trigger-consolidation.mjs` — sibling
-  pattern for trigger behavior (vs DDL shape).
+  pattern for trigger behavior (vs DDL shape); still present.
 * [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) —
   the module-side pattern this sentinel verifies.
 * [`pg-migrations-dollar-quote`](/internal/docs/agent-insights/pg-migrations-dollar-quote/) —

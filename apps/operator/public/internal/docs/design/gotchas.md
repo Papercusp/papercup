@@ -62,13 +62,11 @@ Approved content-disclosure `<details>` sites:
 * `app/settings/api-keys/page.tsx` — provider help text
 * `app/settings/user/memory/page.tsx` — embed-mode help
 * `app/settings/voice/page.tsx` — debug precedence matrix
-* `app/_components/OperatorPanel.tsx` — directive-body preview inside suggestion cards
 * `app/_components/LazyDetails.tsx` — explicit lazy-mount wrapper, by design
 * `app/harness/dock/PinnedIssuePanel.tsx` — JSON-notes dump + body sections
 * `app/harness/dock/PinnedFeaturePanel.tsx` — JSON-metadata + notes dumps
 * `app/dev/_components/SessionsTab.tsx` — transcript JSON dump
 * `app/dev/_components/TablesTab.tsx` — table-row JSON dumps
-* `app/admin/testing/_components/LlmTab.tsx` — LLM request/response dump
 * `app/_components/SetupWizard/StepAutoUpdate.tsx` — release-notes prose
 
 A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
@@ -83,9 +81,9 @@ The carve-out is narrow: native checkboxes that legitimately can't be wrapped (m
 
 ## Floating widgets that pin to a viewport corner are NOT centered Modals
 
-A few surfaces — `OperatorPanel` (the Deck) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, framer-motion `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
+A few surfaces — the Deck (`OperatorChatSidebar`, the fixed-left full-height `.operator-panel` chat) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, `motion` `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
 
-For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat OperatorPanel and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
+For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat the Deck and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
 
 ## Radix Select doesn't allow empty-string values
 
@@ -199,11 +197,18 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 * Inverted re-use of swept names: `--text-1`, `--text-2`, `--text-3`, `--pc-*`
 * Starlight tokens in operator code: `--sl-color-*`
 
-**If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `papercup/design-tokens/` via `pnpm tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
+**If you legitimately need a new token:** define it in `app/_semantic.css` (regenerated from `design-tokens/` via `npm run tokens`) or in `app/globals.css :root` for a one-off semantic alias. Don't add it to the runtime allowlist unless a framework genuinely sets it at runtime.
 
 ## Migration anti-patterns
 
 Things we did wrong during the migration and had to back out — don't repeat:
+
+*Historical note: the operator has since migrated off Next.js/Turbopack to a
+Vite SPA (TanStack Router) + Hono host. The Turbopack-, `.next/`-, and
+`next/dynamic()`-specific items below are kept as migration history; they no
+longer describe the live build (use Vite's own dynamic-import / lazy patterns
+now), but the non-Next items (the regex/stack-walker and the Radix
+`data-state` one) still apply.*
 
 * **Don't write a Python regex that captures `.+?` between `<div>` tags.** Self-closing `<div/>` tags throw off the depth counter. Use a stack-based walker that distinguishes `<div ... />` from `<div ...>`.
 

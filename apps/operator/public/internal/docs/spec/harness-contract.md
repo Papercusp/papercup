@@ -15,10 +15,18 @@ Every role invocation is a fresh LLM call with no prior conversation. The system
 
 ### 3.3 Named decisions, named roles
 
-Each role's output is one of a small set of structured decisions. The orchestrator chooses
-between `NEXT_WORKER`, `NEXT_VALIDATOR`, plugin-defined verbs (`NEXT_NARRATOR`, …),
-`DONE`, `ESCALATE`. The validator sets each task's status to{' '}
+Each role's output is one of a small set of structured decisions. The per-harness decider role
+(the director in the coding blueprint) chooses between `NEXT_WORKER`, `NEXT_VALIDATOR`,
+blueprint-declared verbs (`NEXT_ARCHITECT`, `NEXT_SCOPER`, …),
+`DONE`, `ESCALATE`, `IDLE`. The validator sets each task's status to{' '}
 `passed` or `failing`. No free-form "what should I do next?" — every iteration ends with a decision verb.
+
+Implemented. The decision vocabulary is `DECISION_VERBS` in
+`libs/papercusp/packages/orchestrator/src/decision-parse.ts`; each blueprint maps its verbs to actions in
+its `spine.edges` (`libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml`), interpreted by the
+pure `deriveNext` (`.../src/blueprint/derive-next.ts`). The global orchestrator
+(`packages/operator-core/lib/dbos/orchestrator-loop.ts`) is the deterministic code selector that starts a
+durable per-feature pipeline; the LLM decider that emits these verbs is the per-feature `director` role.
 
 ### 3.4 Append-only audit
 
@@ -35,6 +43,10 @@ Paperclip; structurally enforced rather than prompt-injected.
 
 Workers acquire tasks via Postgres `FOR UPDATE SKIP LOCKED`. Multiple workers running in parallel each get
 a different task atomically. Tasks have an `expires_at` on checkout for orphan recovery.
+
+Implemented. Atomic checkout lives in `packages/operator-core/lib/work-items.ts`
+(`FOR UPDATE SKIP LOCKED`); the work-item table is `harness_shared.harness_features_consolidated`, which
+carries `taken_by` / `taken_at` / `expires_at` plus the `parent_id` / `goal_id` lineage columns (§3.5).
 
 ### 3.7 Hard-stop budget enforcement
 

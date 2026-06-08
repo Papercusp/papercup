@@ -42,9 +42,11 @@ There is no root vitest project-map, so:
   That's the real CI path — so add a `"test": "vitest run"` script and verify
   with **`cd libs/foo && npm test`**, not a root `vitest run`.
 
-Caveat: if the lib pins its **own** vitest (e.g. `libs/flags` has
-`vitest: ^3`), `cd libs/flags && npx vitest` picks that local v3 and dies with
-*"Vitest failed to find the runner"* against the v4 `@papercusp/test-config`
-setup. Either run those from root (they collect under v4) or bump the lib to
-vitest 4. Libs with **no** local vitest (marketplace-public-ui, plugin-sdk)
-resolve the root-hoisted v4 and are unaffected.
+Caveat: if a lib pins its **own** vitest at a *different major* than the
+v4 `@papercusp/test-config` setup, `cd lib && npx vitest` picks that local
+version and dies with *"Vitest failed to find the runner"*. (This bit
+`libs/flags` when it pinned `vitest: ^3`; it has since been bumped to
+`vitest: ^4.1.7`, so flags is no longer an example of the trap.) Either run a
+mismatched lib from root (it collects under v4) or bump it to vitest 4. Libs
+with **no** local vitest (marketplace-public-ui, plugin-sdk) resolve the
+root-hoisted v4 and are unaffected.

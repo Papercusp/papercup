@@ -3,6 +3,21 @@ URL: /internal/docs/design/proposals-tab-feedback
 
 After the designer integrated round-1 feedback. Acknowledges what shipped (almost everything), flags the two items still pending, and adds a few polish notes.
 
+:::caution\[Surface superseded — the proposals queue+detail UI is not currently rendered]
+This memo critiques the proposals queue + detail surface
+(`.h-proposal-detail`, the `proposals-sidebar` / `proposal-detail`
+panes) on the legacy Next `/harness?…&panel=proposals` page. That URL now
+**redirects to `/adv`**, and the full queue+detail UI no longer ships:
+the dock only registers a `view:proposals` **SamplePanel stub** (see
+`apps/operator/app/harness/dock/sample-panels.tsx` — "Real
+implementations replace these as the corresponding feature panels are
+extracted from HarnessDashboard"). The `h-proposals.css`
+(`.h-proposal-detail`) survives but is no longer rendered by any live
+component. Treat the notes below as historical design intent for a
+proposals panel that has yet to be re-extracted; the cited selectors and
+the 6,806px detail-pane bug (V3.r2) describe the retired surface.
+:::
+
 Captured live at
 `http://localhost:3070/harness?ws=default&project=sheets&panel=proposals`
 on the same workspace as round 1, now with **9 proposals** in the

@@ -19,6 +19,16 @@ Once, at install activation; or when the goal materially changes
 `goals`, install spec
 `tasks` (initial breakdown), `validation_contract`
 
+Implementation note: in the shipped Papercup pipeline the
+single "Planner" role above is realized as two roles — Scoper
+(scope + acceptance) followed by Architect (technical
+breakdown). The canonical role ids live in AGENT\_ROLES
+(packages/agent-mcp/src/role-config.ts): the pipeline is
+scoper → architect → worker → validator → reviewer → debugger →
+documenter → curator, plus the cross-cutting orchestrator,
+operator, and oracle roles. There is no
+planner role id today.
+
 Worker
 Every iteration with a `todo`/`failing` task
 `tasks`, `issues`, `worker_log`, parent goal lineage
@@ -37,6 +47,15 @@ One decision verb (above)
 Roles are defined by prompt files, not code. Improvements compound without a deploy, branches are mergeable, and the cache key (the prompt content) is stable for a given role-version.
 
 ### 4.1 Install shapes — which roles a given install must implement
+
+Design spec — not yet implemented as written. The shipped substrate
+configures harnesses through blueprints (see
+blueprint:create / blueprint:catalog and the
+@papercusp/orchestrator/blueprint package), which declare their
+roles, tier, spine model, triggers, and dispatch policy directly. There is no
+defineManifest helper and no shape enum
+(iterative/scheduled/reactive/passive)
+in code today; the section below is the original role-requirement design.
 
 Not every install runs an iterative plan-then-build loop. A pure
 scheduling install (cron + alerting, no goals) has no use for a

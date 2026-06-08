@@ -50,8 +50,8 @@ case: "tell me when a row changed") but not for *request/response*
 ## How to apply
 
 * **Cross-app communication**: HTTP (with a typed endpoint via
-  `defineTool` or `defineEndpoint`) or in-process call. SSE for
-  streaming.
+  `defineTool`, which also produces the route projection) or in-process
+  call. SSE for streaming.
 * **Persist outcomes to PG** after the call returns. PG holds the
   authoritative state, not the message itself.
 * **`pg_notify` is OK** for "wake up and re-read state" patterns —

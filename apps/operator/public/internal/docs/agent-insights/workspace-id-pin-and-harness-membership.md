@@ -5,7 +5,7 @@ A host-wide PAPERCUSP_WORKSPACE_ID env pins activeWorkspaceId() above registry.c
 
 ## The trap
 
-`activeWorkspaceId()` (`lib/workspace-registry.ts`) resolves in three steps:
+`activeWorkspaceId()` (`packages/operator-core/lib/workspace-registry.ts`) resolves in three steps:
 
 ```
 1. request-scoped  — currentRequestWorkspaceId()  (x-papercusp-workspace header → ALS)
@@ -19,7 +19,7 @@ agent, a durable-pipeline dispatcher). But the `:3070` hono-host is inherently
 is set on *that* host, it pins **every non-request path** to one workspace:
 
 * background work and the operator brain,
-* the **spawn envelope** (`console-launcher.ts` sets `PAPERCUSP_HOME = papercuspPath()`,
+* the **spawn envelope** (`packages/operator-core/lib/console-launcher.ts` sets `PAPERCUSP_HOME = papercuspPath()`,
   which resolves against the pinned workspace),
 * the **harness-list / features** tools whenever a request didn't stamp
   `x-papercusp-workspace`.
@@ -67,7 +67,7 @@ FROM harness_shared.harness_registry ORDER BY workspace_id;
 ```
 
 The harness LIST a workspace shows = its own row's `projects[]`. Membership ops
-live in `lib/harness-membership.ts` (`workspacesForHarness`,
+live in `packages/operator-core/lib/harness-membership.ts` (`workspacesForHarness`,
 `addHarnessToWorkspace`, …) + `POST /harness/:slug/membership`. **Caveat:** until
 Phase 2 of `harnesses-across-workspaces` lands, `resolveProject(slug)` resolves
 against the *active* workspace only — so a harness registered in a non-active
