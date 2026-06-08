@@ -1,11 +1,25 @@
 /**
- * AdvConversationsTab — the /adv "Conversations" tab. Two views (nuqs `?conv=`):
+ * AdvConversationsTab — the /adv "Conversations" tab. It surfaces EVERY type of
+ * communication the workspace produces, across five views (nuqs `?conv=`):
  *
  *  - **Threads** (default, `conv=threads`): the conversations substrate (questions +
  *    discussions) — the human counterpart to the agents' conversations:* tools.
  *    Reads the in-process admin-coordination dispatch (one data path, no Zero
  *    entity). Detail = seed + topics + thread + accepted answer + linked
  *    work-item + promote/reply/resolve actions.
+ *
+ *  - **Agent chats** (`conv=agentchats`): the multi-turn agent chat SESSIONS
+ *    (scoper/architect/worker/… transcripts, with tokens + cost) from
+ *    `agent_chats_consolidated` — the bulk of real agent communication, which the
+ *    per-harness `agent-chats` panel surfaced only one harness at a time. Left rail
+ *    lists sessions (harness/role filters); detail renders the full transcript.
+ *
+ *  - **Messages** (`conv=messages`): work-item-scoped agent↔agent messages
+ *    (messages:send / messages:inbox) from `messages_consolidated` — from → to,
+ *    kind, subject/body, status, click-to-expand.
+ *
+ *  - **Operator** (`conv=operator`): the human↔operator chat sessions from
+ *    `operator_conversations` — title/status/summary, click-to-expand.
  *
  *  - **Activity log** (`conv=feed`): raw coordination events for debugging,
  *    newest-first, with day separators, grouped filters, URL-backed advanced
@@ -14,13 +28,17 @@
  *    the same observer read the high-tier `coord:feed` tool exposes); "load
  *    older" paginates by cursor.
  *
+ * The Threads/Feed views read the admin-coordination dispatch; the three new views
+ * read the global communication-surface dispatch (`/api/admin/comms/:kind/:verb`,
+ * see routes/admin/comms.ts) since those tables had no global view before.
+ *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only mid-edit
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, ArrowUpRight, CheckCircle2, MessageCircle, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -33,8 +51,40 @@ async function coord<T = Record<string, unknown>>(verb: string, body: Record<str
   return (await res.json()) as T;
 }
 
+// The global communication-surface reads (agent chats / operator chats / work-item
+// messages) the coordination dispatch doesn't cover — see routes/admin/comms.ts.
+async function comms<T = Record<string, unknown>>(kind: string, verb: string, body: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch(`/api/admin/comms/${kind}/${verb}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  });
+  return (await res.json()) as T;
+}
+
+// agent-chat / operator timestamps are bigint epoch-ms; coord/message ones are ISO
+// strings. Normalise either to a display string.
+function fmtTs(v: string | number | null | undefined): string {
+  if (v == null) return '';
+  const d = new Date(typeof v === 'number' ? v : v);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function fmtRel(v: string | number | null | undefined): string {
+  if (v == null) return '—';
+  const t = typeof v === 'number' ? v : Date.parse(v);
+  if (Number.isNaN(t)) return '—';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['threads', 'feed'] as const;
+const CONV_VIEWS = ['threads', 'agentchats', 'messages', 'operator', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 export default function AdvConversationsTab() {
@@ -69,6 +119,45 @@ export default function AdvConversationsTab() {
           <button
             type="button"
             role="tab"
+            aria-selected={view === 'agentchats'}
+            className={`pc-advconv__viewtab${view === 'agentchats' ? ' is-active' : ''}`}
+            onClick={() => void setView('agentchats')}
+          >
+            <Bot size={13} aria-hidden />
+            <span>
+              Agent chats
+              <em>pipeline transcripts</em>
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'messages'}
+            className={`pc-advconv__viewtab${view === 'messages' ? ' is-active' : ''}`}
+            onClick={() => void setView('messages')}
+          >
+            <Mail size={13} aria-hidden />
+            <span>
+              Messages
+              <em>agent ↔ agent</em>
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'operator'}
+            className={`pc-advconv__viewtab${view === 'operator' ? ' is-active' : ''}`}
+            onClick={() => void setView('operator')}
+          >
+            <UserRound size={13} aria-hidden />
+            <span>
+              Operator
+              <em>your chats</em>
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={view === 'feed'}
             className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
             onClick={() => void setView('feed')}
@@ -81,7 +170,17 @@ export default function AdvConversationsTab() {
           </button>
         </div>
       </header>
-      {view === 'feed' ? <FeedView /> : <ThreadsView />}
+      {view === 'feed' ? (
+        <FeedView />
+      ) : view === 'agentchats' ? (
+        <AgentChatsView />
+      ) : view === 'messages' ? (
+        <MessagesView />
+      ) : view === 'operator' ? (
+        <OperatorView />
+      ) : (
+        <ThreadsView />
+      )}
       <AdvConvStyles />
     </div>
   );
@@ -943,6 +1042,349 @@ function ThreadsView() {
   );
 }
 
+// ─── Agent chats — the per-feature/per-role multi-turn transcripts ──────
+
+interface AgentChatRow {
+  id: string;
+  harness_slug: string | null;
+  role: string | null;
+  feature_id: string | null;
+  title: string | null;
+  created_at: number;
+  archived_at: number | null;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost_usd_cents: number;
+  turns: number;
+}
+interface AgentChatTurn { ts?: string; role?: string; content?: unknown }
+interface AgentChatDetail extends AgentChatRow { transcript?: AgentChatTurn[] }
+
+function turnText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (typeof p === 'string' ? p : p && typeof p === 'object' && 'text' in p ? String((p as { text: unknown }).text) : JSON.stringify(p)))
+      .join('\n');
+  }
+  return content == null ? '' : JSON.stringify(content);
+}
+
+function AgentChatsView() {
+  const [harness, setHarness] = useQueryState('acharness', parseAsString.withDefault(''));
+  const [role, setRole] = useQueryState('acrole', parseAsString.withDefault(''));
+  const [sel, setSel] = useQueryState('chat', parseAsString);
+  const [list, setList] = useState<AgentChatRow[]>([]);
+  const [detail, setDetail] = useState<AgentChatDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    const r = await comms<{ items?: AgentChatRow[] }>('agent-chats', 'list', {
+      limit: 500,
+      ...(harness ? { harness } : {}),
+      ...(role ? { role } : {}),
+    });
+    setList(r.items ?? []);
+    setLoading(false);
+  }, [harness, role]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    if (!sel) {
+      setDetail(null);
+      return;
+    }
+    void (async () => {
+      const r = await comms<{ chat?: AgentChatDetail }>('agent-chats', 'get', { id: sel });
+      setDetail(r.chat ?? null);
+    })();
+  }, [sel]);
+
+  const harnesses = useMemo(() => [...new Set(list.map((c) => c.harness_slug).filter(Boolean))].sort() as string[], [list]);
+  const roles = useMemo(() => [...new Set(list.map((c) => c.role).filter(Boolean))].sort() as string[], [list]);
+
+  return (
+    <div className="pc-coord__split pc-advconv__threads">
+      <aside className="pc-coord__rail">
+        <div className="pc-advconv__railhead">
+          <span>Agent chat sessions</span>
+          <strong>{loading ? '…' : list.length}</strong>
+        </div>
+        {harnesses.length > 0 && (
+          <div className="pc-coord__filters" role="tablist" aria-label="Harness filter">
+            <button type="button" className={`pc-coord__chip${!harness ? ' is-active' : ''}`} onClick={() => void setHarness('')}>all</button>
+            {harnesses.map((h) => (
+              <button key={h} type="button" className={`pc-coord__chip${harness === h ? ' is-active' : ''}`} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</button>
+            ))}
+            <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
+        )}
+        {roles.length > 0 && (
+          <div className="pc-coord__filters" role="tablist" aria-label="Role filter">
+            <button type="button" className={`pc-coord__chip${!role ? ' is-active' : ''}`} onClick={() => void setRole('')}>all roles</button>
+            {roles.map((r) => (
+              <button key={r} type="button" className={`pc-coord__chip${role === r ? ' is-active' : ''}`} onClick={() => void setRole(role === r ? '' : r)}>{r}</button>
+            ))}
+          </div>
+        )}
+        {loading ? (
+          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+        ) : list.length === 0 ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
+            <strong>No agent chats</strong>
+            <span>No multi-turn agent chat sessions match the current filter.</span>
+          </div>
+        ) : (
+          list.map((c) => (
+            <button key={c.id} type="button" className={`pc-coord__row${sel === c.id ? ' is-active' : ''}`} onClick={() => void setSel(c.id)}>
+              <span className="pc-advconv__threadtop">
+                <span className="pc-coord__kind">{c.role ?? 'agent'}</span>
+                {c.archived_at ? <span className="pc-advconv__statepill pc-advconv__statepill--closed">archived</span> : null}
+              </span>
+              <span className="pc-coord__row-title">{c.title ?? c.id}</span>
+              <span className="pc-coord__row-meta">
+                {c.harness_slug ?? 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
+              </span>
+              <span className="pc-advconv__rowdate">{fmtTs(c.created_at)}</span>
+            </button>
+          ))
+        )}
+      </aside>
+      <section className="pc-coord__detail">
+        {!detail ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
+            <Bot size={22} aria-hidden />
+            <strong>Select a chat</strong>
+            <span>Open an agent chat session to read its full transcript.</span>
+          </div>
+        ) : (
+          <article className="pc-coord__card">
+            <header className="pc-advconv__detailhead">
+              <div>
+                <p className="pc-advconv__detailkicker">
+                  <span className="pc-coord__kind">{detail.role ?? 'agent'}</span>
+                  {detail.feature_id ? <span className="pc-advconv__statepill">{detail.feature_id}</span> : null}
+                </p>
+                <h2>{detail.title ?? detail.id}</h2>
+              </div>
+              <div className="pc-advconv__detailstats" aria-label="Chat metadata">
+                <span>{detail.harness_slug ?? 'workspace'}</span>
+                <span><strong>{(detail.transcript ?? []).length}</strong> turns</span>
+                <span>${((detail.total_cost_usd_cents ?? 0) / 100).toFixed(2)} · {(detail.total_input_tokens ?? 0) + (detail.total_output_tokens ?? 0)} tok</span>
+              </div>
+            </header>
+            <ol className="pc-coord__thread pc-advconv__transcript">
+              {(detail.transcript ?? []).map((t, i) => (
+                <li key={i} className={`pc-advconv__turn pc-advconv__turn--${t.role ?? 'unknown'}`}>
+                  <span className="pc-advconv__postmeta">
+                    <strong>{t.role ?? 'unknown'}</strong>
+                    {t.ts ? <span>{fmtTs(t.ts)}</span> : null}
+                  </span>
+                  <p>{turnText(t.content)}</p>
+                </li>
+              ))}
+              {(detail.transcript ?? []).length === 0 && (
+                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
+                  <strong>Empty transcript</strong>
+                  <span>This chat session has no recorded turns.</span>
+                </li>
+              )}
+            </ol>
+          </article>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─── Messages — work-item-scoped agent↔agent messages ──────────────────
+
+interface MsgRow {
+  id: string;
+  harness_slug: string | null;
+  from_slug: string;
+  to_slug: string | null;
+  to_role: string | null;
+  kind: string;
+  subject: string | null;
+  body: string | null;
+  status: string;
+  created_at: string;
+  from_feature_id: string | null;
+  to_feature_id: string | null;
+}
+
+function MessagesView() {
+  const [list, setList] = useState<MsgRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useQueryState('msg', parseAsString);
+  const reload = useCallback(async () => {
+    setLoading(true);
+    const r = await comms<{ items?: MsgRow[] }>('messages', 'list', { limit: 500 });
+    setList(r.items ?? []);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <div className="pc-advfeed">
+      <div className="pc-advfeed__filters">
+        <div className="pc-advfeed__filterhead">
+          <div>
+            <span><Mail size={12} aria-hidden /> Agent messages</span>
+            <p>Work-item-scoped messages between agents (messages:send / inbox).</p>
+          </div>
+          <div className="pc-advfeed__filtermeta">
+            <strong>{loading ? 'loading…' : `${list.length} messages`}</strong>
+            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload messages" disabled={loading} onClick={() => void reload()}>
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="pc-advfeed__stream">
+        {loading && list.length === 0 ? (
+          <p className="pc-coord__empty pc-advconv__empty">Loading messages…</p>
+        ) : list.length === 0 ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
+            <strong>No messages</strong>
+            <span>No agent-to-agent messages recorded.</span>
+          </div>
+        ) : (
+          list.map((m) => {
+            const hasDetail = !!m.body || !!m.from_feature_id || !!m.to_feature_id || !!m.harness_slug;
+            return (
+              <div key={m.id} className={`pc-advfeed__item${open === m.id ? ' is-open' : ''}`}>
+                <div className="pc-advfeed__row">
+                  <span className="pc-advfeed__time" title={m.created_at}>{fmtTs(m.created_at)}</span>
+                  <span className="pc-advfeed__badge">{m.kind}</span>
+                  <span className="pc-advfeed__route">
+                    <span className="pc-advfeed__from">{m.from_slug}</span>
+                    <span className="pc-advfeed__to">→ {m.to_slug ?? m.to_role ?? '∅'}</span>
+                  </span>
+                  <button type="button" className="pc-advfeed__summary" onClick={() => void setOpen(open === m.id ? null : m.id)} aria-expanded={open === m.id} title={hasDetail ? 'Expand' : undefined}>
+                    {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
+                  </button>
+                  {m.status && <span className="pc-advconv__statepill">{m.status}</span>}
+                  <span className="pc-advfeed__rel">{fmtRel(m.created_at)}</span>
+                </div>
+                {open === m.id && hasDetail && (
+                  <div className="pc-advfeed__detail">
+                    {m.body && (
+                      <div className="pc-advfeed__bodycard">
+                        <strong>Body</strong>
+                        <p className="pc-advfeed__body">{m.body}</p>
+                      </div>
+                    )}
+                    {(m.from_feature_id || m.to_feature_id) && (
+                      <div className="pc-advfeed__kv">
+                        <strong>work-item</strong>
+                        <span>{m.from_feature_id ?? '—'} → {m.to_feature_id ?? '—'}</span>
+                      </div>
+                    )}
+                    {m.harness_slug && (
+                      <div className="pc-advfeed__kv">
+                        <strong>harness</strong>
+                        <span>{m.harness_slug}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Operator — the human↔operator chat sessions ────────────────────────
+
+interface OpConvRow {
+  id: string;
+  harness_slug: string | null;
+  title: string | null;
+  status: string | null;
+  started_at: number;
+  ended_at: number | null;
+  summary_text: string | null;
+  has_audio: boolean;
+}
+
+function OperatorView() {
+  const [list, setList] = useState<OpConvRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useQueryState('opc', parseAsString);
+  const reload = useCallback(async () => {
+    setLoading(true);
+    const r = await comms<{ items?: OpConvRow[] }>('operator', 'list', { limit: 500 });
+    setList(r.items ?? []);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <div className="pc-advfeed">
+      <div className="pc-advfeed__filters">
+        <div className="pc-advfeed__filterhead">
+          <div>
+            <span><UserRound size={12} aria-hidden /> Operator chats</span>
+            <p>Your conversations with the operator.</p>
+          </div>
+          <div className="pc-advfeed__filtermeta">
+            <strong>{loading ? 'loading…' : `${list.length} chats`}</strong>
+            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload operator chats" disabled={loading} onClick={() => void reload()}>
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="pc-advfeed__stream">
+        {loading && list.length === 0 ? (
+          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+        ) : list.length === 0 ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
+            <strong>No operator chats</strong>
+            <span>No human↔operator conversations recorded.</span>
+          </div>
+        ) : (
+          list.map((c) => (
+            <div key={c.id} className={`pc-advfeed__item${open === c.id ? ' is-open' : ''}`}>
+              <div className="pc-advfeed__row">
+                <span className="pc-advfeed__time" title={String(c.started_at)}>{fmtTs(c.started_at)}</span>
+                <span className="pc-advfeed__badge">{c.status ?? 'chat'}</span>
+                <button type="button" className="pc-advfeed__summary" onClick={() => void setOpen(open === c.id ? null : c.id)} aria-expanded={open === c.id}>
+                  {c.title || c.summary_text?.slice(0, 90) || <em className="pc-advfeed__nosum">(untitled)</em>}
+                </button>
+                {c.has_audio && <span className="pc-advconv__statepill">audio</span>}
+                <span className="pc-advfeed__rel">{fmtRel(c.started_at)}</span>
+              </div>
+              {open === c.id && c.summary_text && (
+                <div className="pc-advfeed__detail">
+                  <div className="pc-advfeed__bodycard">
+                    <strong>Summary</strong>
+                    <p className="pc-advfeed__body">{c.summary_text}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Styles ──────────────────────────────────────────────────────────
 
 function AdvConvStyles() {
@@ -1486,6 +1928,32 @@ function AdvConvStyles() {
       .pc-advconv__postmeta span {
         font-variant-numeric: tabular-nums;
         color: var(--fg-mute, #7f9bb4);
+      }
+
+      /* Agent-chat transcript — role-differentiated turns */
+      .pc-advconv__transcript {
+        gap: 9px;
+      }
+      .pc-advconv__turn p {
+        margin: 4px 0 0;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--fg, #d7e7f4);
+      }
+      .pc-advconv__turn--user::before {
+        background: var(--accent-strong, #7dd3fc) !important;
+      }
+      .pc-advconv__turn--assistant::before {
+        background: #6ee7b7 !important;
+      }
+      .pc-advconv__turn--system::before {
+        background: var(--fg-mute, #8aa3bc) !important;
+      }
+      .pc-advconv__turn--system p {
+        color: var(--fg-mute, #9fb6cd);
+        font-style: italic;
       }
 
       /* Feed */

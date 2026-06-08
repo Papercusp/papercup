@@ -1,0 +1,98 @@
+// @vitest-environment node
+/**
+ * psu-pty-host.test.ts — pure-logic unit tests for the managed-pty host
+ * (turn-lifecycle-control Phase 3, P-012/P-013). The real-pty round-trip
+ * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  sanitizeKey,
+  socketPathFor,
+  metaPathFor,
+  encodeControl,
+  decodeControl,
+  controlBytes,
+  makeIdleGate,
+  PSU_PTY_DIR,
+} from '../scripts/psu-pty-host.mjs';
+
+describe('sanitizeKey', () => {
+  it('passes SID-shaped ids through unchanged', () => {
+    expect(sanitizeKey('su-a4bf457e-6f4a-4ee1-8682-8da0749c701b')).toBe(
+      'su-a4bf457e-6f4a-4ee1-8682-8da0749c701b',
+    );
+  });
+  it('escapes path-traversal + separators (no escaping the dir)', () => {
+    expect(sanitizeKey('su/../../etc/passwd')).toBe('su_.._.._etc_passwd');
+    expect(sanitizeKey('a b\tc')).toBe('a_b_c');
+  });
+  it('bounds length + tolerates empty/undefined', () => {
+    expect(sanitizeKey('x'.repeat(500)).length).toBe(200);
+    expect(sanitizeKey('')).toBe('unknown');
+    // @ts-expect-error exercising the undefined path
+    expect(sanitizeKey(undefined)).toBe('unknown');
+  });
+});
+
+describe('socketPathFor / metaPathFor', () => {
+  it('derive sibling .sock / .json paths under PSU_PTY_DIR', () => {
+    expect(socketPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.sock`);
+    expect(metaPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.json`);
+  });
+});
+
+describe('control wire protocol (v1)', () => {
+  it('turn envelope → idle-gated, CR-terminated turn', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
+    expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true });
+    expect(controlBytes(d)).toBe('hello\r');
+  });
+  it('raw envelope → immediate, verbatim bytes (force interrupt)', () => {
+    const d = decodeControl(encodeControl({ mode: 'raw', data: '' })); // Ctrl-C
+    expect(d).toEqual({ mode: 'raw', data: '', gated: false });
+    expect(controlBytes(d)).toBe('');
+  });
+  it('Esc force interrupt round-trips', () => {
+    expect(controlBytes(decodeControl(encodeControl({ mode: 'raw', data: '' })))).toBe('');
+  });
+  it('a non-envelope payload is a legacy idle-gated turn (psupty back-compat)', () => {
+    const d = decodeControl('just some text');
+    expect(d).toEqual({ mode: 'turn', data: 'just some text', gated: true });
+    expect(controlBytes(d)).toBe('just some text\r');
+  });
+  it('an unknown/garbage JSON object falls back to a legacy turn', () => {
+    const d = decodeControl('{"v":2,"mode":"weird"}');
+    expect(d.mode).toBe('turn');
+    expect(d.gated).toBe(true);
+  });
+});
+
+describe('makeIdleGate (P-013 mid-keystroke safety)', () => {
+  it('is idle immediately when nothing was ever typed', () => {
+    const g = makeIdleGate({ idleMs: 100, now: () => 1000 });
+    expect(g.remainingIdleMs(1000)).toBe(0);
+  });
+  it('reports the remaining wait right after a keystroke, then idle', () => {
+    let t = 1000;
+    const g = makeIdleGate({ idleMs: 100, now: () => t });
+    g.touch(); // typed at t=1000
+    expect(g.remainingIdleMs(1000)).toBe(100); // must wait the full window
+    expect(g.remainingIdleMs(1050)).toBe(50); // halfway
+    expect(g.remainingIdleMs(1100)).toBe(0); // window elapsed → idle
+    expect(g.remainingIdleMs(1200)).toBe(0); // stays idle
+  });
+  it('waitIdle resolves immediately when already idle', async () => {
+    const g = makeIdleGate({ idleMs: 50, capMs: 1000 });
+    const r = await g.waitIdle();
+    expect(r.deferred).toBe(false);
+  });
+  it('waitIdle defers a write while typing continues, bounded by capMs', async () => {
+    // Tiny idle window + tiny cap: never goes idle (we keep "typing" via a clock
+    // that always advances less than idleMs since the last touch) → cap fires.
+    let t = 0;
+    const g = makeIdleGate({ idleMs: 1_000_000, capMs: 30, now: () => (t += 10) });
+    const r = await g.waitIdle();
+    expect(r.deferred).toBe(true);
+    expect(r.reason).toBe('idle-cap');
+  });
+});

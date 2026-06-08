@@ -14,6 +14,8 @@ import {
   suLaunchArgs,
   agentInvalidForRole,
   suWrapperExtraArgs,
+  usePtyHost,
+  PTY_DEFAULT_ON,
   AGENTS,
   NO_PLAN,
 } from '../scripts/psu-launcher.mjs';
@@ -468,5 +470,36 @@ describe('claudeStoreHasSession (a tracked adv row alone does not prove resumabi
   it('false for a missing store dir or empty id', () => {
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
     expect(claudeStoreHasSession('', { home })).toBe(false);
+  });
+});
+
+describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 3)', () => {
+  const tty = { isTTY: true };
+  const notTty = { isTTY: false };
+
+  it('is OFF by default (opt-in until the feel-check flips PTY_DEFAULT_ON)', () => {
+    // Guards the live fleet: psu-launcher is exec'd directly, so the default
+    // launch path must stay the plain inherit spawn until proven.
+    expect(PTY_DEFAULT_ON).toBe(false);
+    expect(usePtyHost({ env: {}, stdin: tty, stdout: tty })).toBe(false);
+  });
+
+  it('opt-in via PAPERCUSP_PSU_PTY=1 enables it for an interactive TTY', () => {
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
+  });
+
+  it('needs a real TTY on BOTH ends (no bridge without a terminal)', () => {
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: notTty, stdout: tty })).toBe(false);
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: notTty })).toBe(false);
+  });
+
+  it('PAPERCUSP_PSU_NO_PTY=1 is an always-wins kill switch', () => {
+    expect(
+      usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1', PAPERCUSP_PSU_NO_PTY: '1' }, stdin: tty, stdout: tty }),
+    ).toBe(false);
+  });
+
+  it('PAPERCUSP_PSU_PTY=0 explicitly disables even if the default later flips on', () => {
+    expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '0' }, stdin: tty, stdout: tty })).toBe(false);
   });
 });

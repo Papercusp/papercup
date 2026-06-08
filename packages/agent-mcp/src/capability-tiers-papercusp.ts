@@ -61,6 +61,12 @@ const EXACT: Record<string, CapabilityTier> = {
   'messages:write': 'medium',
   'routines:write': 'medium',
   'proposals:write': 'medium',
+  // turn:interrupt (turn-lifecycle-control D-008): end a peer's CURRENT turn.
+  // Operator-mediated + universal (any agent → any peer), so it sits at the
+  // coord-write tier — reachable by all COORD_ROLES, no bearer. The forceful
+  // half is governed by the tool's own reason/audit/storm-limit/critical-section
+  // guardrails (D-009), NOT by tier gating.
+  'turn:interrupt': 'medium',
   'hindsight:recall': 'medium',
   'search:read': 'medium',
   // High — secrets, outbound network, cross-plugin reads, audit, dispatch wildcards

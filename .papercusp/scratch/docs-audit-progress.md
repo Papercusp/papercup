@@ -23,7 +23,7 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] implementation (6)
 - [~] design (16)
 - [ ] reference (5) — GENERATED (tool-catalog.md by scripts/gen-doc-tool-catalog.ts) — REGENERATE don't hand-edit; also re-confirm spec/plugin-quickstart here
-- [ ] agent-insights (98)
+- [ ] agent-insights (99) — peer added always-armed-inbox-wake.mdx mid-session (P-021); include it
 
 ## Per-page log
 

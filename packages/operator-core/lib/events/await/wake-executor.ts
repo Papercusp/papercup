@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
+import { findLiveHost, injectIntoHost } from './psu-pty-discovery';
 import type { DeliveryWork, WakeOutcome } from './types';
 
 /** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the
@@ -205,6 +206,11 @@ export interface ExecuteWakeDeps {
   presence?: typeof getPresence;
   alive?: (pid: number | null) => boolean;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
+   *  psu-hosted managed-pty session's control socket. The operator can't see it
+   *  via findPty — the pty lives in the psu process (D-006). */
+  findPsuHost?: typeof findLiveHost;
+  injectPsuHost?: typeof injectIntoHost;
 }
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
@@ -215,6 +221,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
   const presence = deps.presence ?? getPresence;
   const alive = deps.alive ?? pidAlive;
+  const findPsuHost = deps.findPsuHost ?? findLiveHost;
+  const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
 
   try {
     const handle = d.wakeHandle;
@@ -258,6 +266,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     const text = wakeTurnText(d);
+
+    // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
+    // session hosts its pty + control socket in the psu PROCESS (D-006), so our
+    // findPty can't see it and the pid logic below would PARK it (or worse,
+    // resume a concurrent second client). A live psu-pty host is the
+    // authoritative "alive + injectable" signal — self-validating (host pid alive
+    // + socket present) — so inject the wake turn in place; on any miss fall
+    // through to the normal channels.
+    const psuHost = findPsuHost(d.subscriberId);
+    if (psuHost) {
+      const ok = await injectPsuHost(psuHost.sock, { mode: 'turn', data: text });
+      if (ok) return { kind: 'delivered', channel: 'psu-socket-inject' };
+    }
 
     if (isAlive && pidKnown) {
       // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions)

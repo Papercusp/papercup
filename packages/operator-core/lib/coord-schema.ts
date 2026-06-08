@@ -58,6 +58,9 @@ export const COORD_LEGEND: Record<string, LegendEntry> = {
   subscribe: { glyph: '.', name: 'subscribe' },
   unsubscribe: { glyph: '.', name: 'unsubscribe' },
   contract: { glyph: '~', name: 'contract' },
+  // turn-lifecycle-control Phase 4 (P-019): interrupt = wake's dual. A
+  // cooperative turn:interrupt — wrap up at a safe checkpoint + end your turn.
+  yield: { glyph: '|', name: 'yield — a peer asks you to wrap up + end your turn (turn:interrupt)' },
 };
 
 /** The default glyph for an unknown line type (defensive — never throws). */

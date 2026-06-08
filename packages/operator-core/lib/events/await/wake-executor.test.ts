@@ -117,6 +117,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     presence: vi.fn(async () => livePresence) as never,
     alive: vi.fn(() => true),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
+    // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
+    findPsuHost: vi.fn(() => null) as never,
+    injectPsuHost: vi.fn(async () => true) as never,
     ...over,
   };
 }
@@ -261,6 +264,40 @@ describe('executeWake — the liveness ladder', () => {
     const out = await executeWake(work({ wakeHandle: advHandle() }), deps());
     expect(out).toMatchObject({ kind: 'park' });
     expect((out as { reason: string }).reason).toContain('alive');
+  });
+
+  it('live psu-pty host → inject the wake turn into its control socket (channel psu-socket-inject)', async () => {
+    // turn-lifecycle-control Phase 3 P-014: a live interactive psu session the
+    // operator can't see via findPty (its pty is in the psu process) is woken in
+    // place via its discovered control socket — NOT parked, NOT a concurrent resume.
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/su-abc.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        // even if findPty would match, the psu host is checked FIRST (it's the
+        // authoritative live-injectable signal).
+        findPty: vi.fn(() => ({ id: 'pty-7' })) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [sock, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    expect(sock).toBe('/tmp/psu-pty/su-abc.sock');
+    expect(msg.mode).toBe('turn');
+    expect(msg.data).toContain('lock:grant:t-1');
+  });
+
+  it('psu host present but the socket inject FAILS → falls through to the normal channels (park)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/dead.sock' })) as never,
+        injectPsuHost: vi.fn(async () => false) as never, // socket died mid-attempt
+      }),
+    );
+    // findPty defaults to null + alive → "alive but not an injectable managed pty" park.
+    expect(out).toMatchObject({ kind: 'park' });
   });
 
   it('exited claude with a native id → DETACHED headless `-p` turn (never a pty — a TTY stdin makes `-p` hang)', async () => {

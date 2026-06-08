@@ -76,6 +76,7 @@ export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' |
  *  another wake for the same subscriber (no turn spent — unify-watch-primitive P-005). */
 export type WakeChannel =
   | 'pty-inject'
+  | 'psu-socket-inject'
   | 'resume'
   | 'resume-headless'
   | 'plan-run-resume'
@@ -86,6 +87,7 @@ export type WakeChannel =
  *  subscriber's `last_woken_at` for the floor. 'inbox'/'coalesced' do NOT burn a turn. */
 export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'pty-inject',
+  'psu-socket-inject',
   'resume',
   'resume-headless',
   'plan-run-resume',

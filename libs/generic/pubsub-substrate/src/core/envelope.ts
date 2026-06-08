@@ -23,7 +23,10 @@ export type CoordKind =
   | 'escalation'
   | 'escalation_resolved'
   | 'contract'
-  | 'plan_event';
+  | 'plan_event'
+  // turn-lifecycle-control Phase 4 (P-016/P-019): a cooperative turn:interrupt
+  // yield — "wrap up + end your turn". The dual of a wake.
+  | 'yield';
 
 export interface CoordEnvelope {
   /** ISO-8601 UTC. */

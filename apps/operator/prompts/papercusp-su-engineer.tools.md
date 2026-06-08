@@ -728,12 +728,17 @@ add a scenario when a new SU failure mode shows up.
   `bootstrap-role` (the role's own `<role>.md` prompt + a signed role-scoped
   MCP URL), **not** the SU `bootstrap-su` path or this engineer playbook.
 - **Don't raw-SQL `harness_features` / `engineer_issues` or other schema-canonical
-  tables.** Work-item state flows through the `work_items:*` verbs
-  (`set_state`/`claim`/`link`/…) — and *feature-pipeline* state advances through
-  the pipeline roles (validator/reviewer/…), not a direct SU write (agent-facing
-  hand-off is `messages:send`, work_item-scoped via `to_feature_id`). The
-  documented verbs emit audit rows + sync invalidation (SSE / `pg_notify`); raw
-  SQL doesn't.
+  tables, and don't hand-roll a feature-state write.** Work-item state flows
+  through the `work_items:*` verbs (`set_state`/`claim`/`link`/…). But
+  *feature-pipeline* state is **not yours to flip directly**: to mark a feature
+  (`F-NNN`) passed / failed / etc., **hand off via `messages:send`
+  (work_item-scoped via `to_feature_id`) and let the pipeline roles
+  (validator / reviewer / …) advance it** — there is no `features:update`, and
+  `work_items:set_state` is for *work-items* (`WI-NNN`), **not** for flipping a
+  feature. Don't reach for the workarounds the missing verb tempts: no raw SQL /
+  `psql`, no `UPDATE harness_features … SET`, and **don't point the session at the
+  `:3070`/`:3170` operator endpoints to mutate** harness state. The documented
+  verbs emit audit rows + sync invalidation (SSE / `pg_notify`); raw SQL doesn't.
 - **Don't default to polling for live updates — push.** When the operator
   must push events to the app, the default is a push transport keyed to the
   deployment: **IPC events on desktop** (co-located Tauri↔sidecar,

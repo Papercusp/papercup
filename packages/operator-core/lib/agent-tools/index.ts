@@ -161,6 +161,7 @@ import './dev/event_emitter';
 import './dev/processes';
 import './dev/session_detail';
 import './processes/kill';
+import './turn/interrupt';
 import './dev/omp_session';
 
 import './flags/list';
