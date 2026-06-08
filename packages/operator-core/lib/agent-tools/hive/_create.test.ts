@@ -29,7 +29,10 @@ beforeEach(() => {
       registry.projects = reg.projects.map((p) => ({ ...p }));
     },
   }));
-  vi.doMock('../../scaffold-harness-schema', () => ({ scaffoldHarnessSchema: () => scaffoldImpl() }));
+  vi.doMock('../../scaffold-harness-schema', () => ({
+    scaffoldHarnessSchema: () => scaffoldImpl(),
+    dropHarnessSchema: async () => {},
+  }));
   vi.doMock('../../blueprint/materialize-triggers', () => ({ materializeBlueprintTriggers: async () => [] }));
   vi.doMock('../blueprint/_resolve', () => ({
     resolveAndValidate: () => ({

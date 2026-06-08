@@ -20,7 +20,7 @@ All four go through the same `dispatchProjectedTool` in `libs/generic/tooldef/sr
 
 The catch-all routes are stupidly simple:
 
-1. `apps/operator/app/api/plugins/[...path]/route.ts` receives the request
+1. `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` receives the request (the Hono host catch-all — migrated off the retired Next.js `app/api/plugins/[...path]/route.ts`)
 2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
 3. Validates the HTTP method against the manifest's `expose.http.methods` (default `['POST']`) — if not allowed, 405
 4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver). If no `run` param/header was supplied, a fresh `runId` is generated server-side so `ctx.askUser` / `ctx.publishState` can install — they gate on `workspaceId + runId`. SSE callers had this since T2.2; the JSON path got parity in the pass-9 audit.
@@ -34,7 +34,7 @@ The streaming path is the same except step 7 — when `Accept: text/event-stream
 
 Slightly more involved because we use `mcp-handler` as a transport library.
 
-1. `apps/operator/app/api/[transport]/route.ts` is a `createMcpHandler` server with `tools/list`, `tools/call`, `resources/list`, `prompts/list` etc.
+1. `packages/operator-core/lib/endpoint-route/routes/transport/index.ts` (Hono `/api/:transport`, migrated off the retired Next.js `app/api/[transport]/route.ts`) wires a `createMcpHandler` server with `tools/list`, `tools/call`, `resources/list`, `prompts/list` etc.
 2. `tools/list` iterates `listMcpProjections(role)` — projection registry filtered by the calling role from URL params. Returns `{ name, description, inputSchema }` for every visible tool.
 3. `tools/call` looks up by `lookupByMcpName(name)`, builds a `UnifiedToolContext` (similar to HTTP, but the spawn context comes from the URL on the SSE connection), and calls `dispatchProjectedTool`.
 4. The dispatcher returns; the MCP SDK serializes the result into the JSON-RPC envelope.
@@ -203,14 +203,15 @@ The MCP transport dual-fires when `name === 'progress'`: every `ctx.emit('progre
 
 ### Reserved event names
 
-The framework reserves these wire-level names; the `defineTool` `events` generic refuses them at compile time:
+The framework reserves these wire-level names (`RESERVED_EVENT_NAMES` in `tool-projection.ts`); the `defineTool` `events` generic refuses them at compile time (`UserEvents<T>`) and `registerProjectedTool` re-checks at register time so JSON-manifest plugins also fail loudly:
 
 - `done` — framework auto-emits when the handler returns (payload: ToolResult content array).
-- `progress` — reserved for the `ctx.progress` alias shape.
-- `heartbeat` — `@restart/sse` emits every 15s for keepalive.
+- `heartbeat` — `@papercusp/sse` emits every 15s for keepalive.
 - `result` — pre-2026-05-12 legacy terminal name; reserved for collision avoidance.
+- `chunk` — framework auto-emits when the handler returns a result carrying an `outputRef` (large-output scratch ref).
+- `card` — framework-emitted `ctx.askUser` card payloads; cards ride the state channel, so reserving the name keeps a plugin from intercepting another tool's askUser flow (see [Cards](#cards-interactive-mid-run-prompts) below).
 
-`error` is intentionally *not* reserved: the framework auto-emits `event: error` on handler throw, but a handler may also `ctx.emit('error', { message })` mid-stream for non-fatal errors. The canonical case is `runAgentChat` yielding `{type:'error'}` events that don't terminate the stream.
+`progress` and `error` are intentionally *not* reserved. `progress` is user-emittable via the `ctx.progress(pct, msg)` sugar, which itself routes through `ctx.emit('progress', ...)` — tools declare a schema for it so the wire kind is inferred. The framework auto-emits `event: error` on handler throw, but a handler may also `ctx.emit('error', { message })` mid-stream for non-fatal errors. The canonical case is `runAgentChat` yielding `{type:'error'}` events that don't terminate the stream.
 
 ### Discoverability
 
@@ -266,7 +267,7 @@ The user's click `POST`s to `/api/operator/conversations/:id/card-response`; the
 
 The wire-level event name `'card'` is reserved at `registerProjectedTool` (`libs/generic/tooldef/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
 
-Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `libs/generic/tooldef/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
+Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `libs/generic/tooldef/src/{card-correlator,state-channel,workspace-lifecycle}.ts` (the `askUser` ctx wrapper itself lives in the `ctx-bindings` step of `dispatch-stack.ts`) + `packages/operator-core/lib/endpoint-route/routes/operator/{state-snapshot,card-response,run-cancel}.ts` (the wire paths are still `/api/operator/state-snapshot` and `/api/operator/conversations/:id/{card-response,run-cancel}`).
 
 ## Result formats — token-efficient serialization
 
@@ -314,7 +315,7 @@ The signing scheme defends against prompt-injected workers rewriting URL params.
 
 ### Desktop IPC: webview is in-boundary
 
-The desktop Tauri app uses a fourth transport — endpoint IPC over a Unix domain socket (Linux/macOS) or named pipe (Windows). The Tauri webview opens a `Channel<T>` through Rust to the Node sidecar's IPC server; the round-trip skips localhost HTTP entirely. See [`apps/operator/lib/endpoint-ipc/PROTOCOL.md`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/endpoint-ipc/PROTOCOL.md) for the wire format.
+The desktop Tauri app uses a fourth transport — endpoint IPC over a Unix domain socket (Linux/macOS) or named pipe (Windows). The Tauri webview opens a `Channel<T>` through Rust to the Node sidecar's IPC server (`libs/generic/ipc-endpoint-server/src/server.ts`); the round-trip skips localhost HTTP entirely. See [`packages/operator-core/lib/endpoint-ipc/PROTOCOL.md`](https://github.com/papercupai/papercup/blob/main/packages/operator-core/lib/endpoint-ipc/PROTOCOL.md) for the wire format.
 
 IPC calls **skip HMAC signature verification**. The trust boundary is different from the signed-URL HTTP path:
 

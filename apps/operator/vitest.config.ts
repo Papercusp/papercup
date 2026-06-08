@@ -5,15 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Custom reporter (P-010) writes per-file results to
-// harness_shared.test_runs. Fail-soft per D-007 — never throws.
-// Opt-out via PAPERCUSP_DISABLE_TEST_RUNS_REPORTER=1 (used by the
-// reporter's own tests to avoid infinite recursion).
-const reportersExtra: Array<string | [string, Record<string, unknown>]> =
-  process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER === '1'
-    ? []
-    : [resolve(__dirname, 'test/reporters/admin-test-runs-reporter.ts')];
-
+// The admin test-runs reporter (the /admin/testing status chips) is AUTO-WIRED by
+// defineVitestConfig — no per-config wiring needed. This mergeConfig only carries
+// the apps/operator-specific resolve alias below.
 export default mergeConfig(
   defineVitestConfig({
     layer: 'unit',
@@ -23,11 +17,6 @@ export default mergeConfig(
     setupFiles: [resolve(__dirname, 'vitest-shims/resize-observer.ts')],
   }),
   {
-    test: {
-      // mergeConfig array-merge appends, so the base reporter list is
-      // preserved and the admin reporter runs alongside it.
-      reporters: reportersExtra,
-    },
     resolve: {
       alias: {
         // `server-only` is a Next.js sentinel package: importing it from

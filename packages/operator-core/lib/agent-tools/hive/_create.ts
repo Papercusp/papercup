@@ -128,11 +128,10 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     });
 
     // 3. Provision the harness PG schema (the inverse of dissolve's schema drop).
-    const { scaffoldHarnessSchema } = await import('../../scaffold-harness-schema');
+    const { scaffoldHarnessSchema, dropHarnessSchema } = await import('../../scaffold-harness-schema');
     await scaffoldHarnessSchema(opts.slug);
     undo.push(async () => {
-      const { sql } = getOrgPg();
-      await sql.unsafe(`DROP SCHEMA IF EXISTS harness_${opts.slug} CASCADE`).catch(() => {});
+      await dropHarnessSchema(opts.slug).catch(() => {});
     });
 
     // 4. Write the git-canonical blueprint file (the pot blueprint).

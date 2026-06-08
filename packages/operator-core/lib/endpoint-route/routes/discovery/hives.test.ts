@@ -45,7 +45,7 @@ const fakeDeps = (): HiveDirectoryDeps => ({
 });
 
 const call = async (url: string) => {
-  const res = (await hivesRoute.handler(new Request(url) as never)) as Response;
+  const res = (await hivesRoute.handler(new Request(url) as never, {} as never)) as Response;
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 

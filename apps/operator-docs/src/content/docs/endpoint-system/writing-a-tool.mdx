@@ -12,13 +12,14 @@ sidebar:
 
 Before writing any code, decide which shape your tool needs:
 
-### Built-in (`packages/agent-mcp/src/tools/**`)
+### Built-in (`packages/operator-core/lib/agent-tools/**`)
 
 Use when **the tool needs a real authenticated principal**. Bearer token in the request → resolved to a principal with workspace ID and a capability set. The wrapper throws `UnauthorizedToolError` (HTTP 401) if no principal is present.
 
+- Most built-ins live in `packages/operator-core/lib/agent-tools/<group>/<verb>.ts`; the smaller read-side set lives in `packages/agent-mcp/src/tools/**`.
 - Used today by: dashboard-only operations (settings reads/writes, credentials, marketplace tokens, budget, preferences)
 - **Agents cannot call built-ins** today — agents pass URL spawn context, not a bearer token. If you make a tool a built-in, the dashboard sees it; agents do not.
-- Auto-projected by `defineTool({ name, capability, schema, handler })`. No manifest, no plugin folder.
+- Auto-projected by `defineTool({ name, capability, args, handler })`. No manifest, no plugin folder.
 
 ### Plugin (`libs/papercusp/plugins/<name>/`)
 

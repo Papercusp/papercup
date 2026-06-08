@@ -2,7 +2,8 @@
  * hive:dissolve unwinds the hive (hive-tool-namespace-2026-06-08 P-009, D-005/
  * D-006). PG-free: the readers/teardown primitives are mocked; asserts the
  * orchestration — clears the Queen wake, cancels every LIVE bee (dead skipped),
- * deregisters the home harness, and only drops the schema when asked.
+ * deregisters the home harness, and only drops the schema (via dropHarnessSchema,
+ * which sanitizes the slug) when asked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -14,7 +15,7 @@ type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ te
 let cancelCalls: string[];
 let clearWakeCalls: string[];
 let deregCalls: string[];
-let unsafeCalls: string[];
+let dropSchemaCalls: string[];
 let bees: Array<{ holderAlive: boolean; agentId: string | null; harnessSlug: string | null }>;
 
 beforeEach(() => {
@@ -22,7 +23,7 @@ beforeEach(() => {
   cancelCalls = [];
   clearWakeCalls = [];
   deregCalls = [];
-  unsafeCalls = [];
+  dropSchemaCalls = [];
   bees = [
     { holderAlive: true, agentId: 's-bee-a', harnessSlug: 'h' },
     { holderAlive: true, agentId: 's-bee-b', harnessSlug: 'h' },
@@ -50,6 +51,11 @@ beforeEach(() => {
       clearWakeCalls.push(slug);
     },
   }));
+  vi.doMock('../../scaffold-harness-schema', () => ({
+    dropHarnessSchema: async (slug: string) => {
+      dropSchemaCalls.push(slug);
+    },
+  }));
   vi.doMock('../../harness-membership', () => ({
     removeHarnessFromWorkspace: async (_ws: string, slug: string) => {
       deregCalls.push(slug);
@@ -59,7 +65,7 @@ beforeEach(() => {
   vi.doMock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: () => true }));
   vi.doMock('@papercusp/db-org', async (importOriginal) => ({
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-    getOrgPg: () => ({ sql: { unsafe: async (q: string) => { unsafeCalls.push(q); } } }),
+    getOrgPg: () => ({ sql: {} }),
   }));
 });
 
@@ -69,6 +75,7 @@ afterEach(() => {
     '../../fleet/assignments',
     '../../fleet/nursery',
     '../../pot/wake',
+    '../../scaffold-harness-schema',
     '../../harness-membership',
     '../../fleet/operator-spawn',
     '@papercusp/db-org',
@@ -88,7 +95,7 @@ describe('hive:dissolve', () => {
     expect(deregCalls).toEqual(['h']);
     expect(res.deregistered).toBe(true);
     expect(res.schemaDropped).toBe(false);
-    expect(unsafeCalls).toEqual([]);
+    expect(dropSchemaCalls).toEqual([]);
   });
 
   it('requires confirm:true', async () => {
@@ -98,13 +105,13 @@ describe('hive:dissolve', () => {
     expect(res.error).toBe('confirm_required');
   });
 
-  it('drops the schema when dropSchema:true', async () => {
+  it('drops the schema via dropHarnessSchema when dropSchema:true', async () => {
     const tool = (await import('./dissolve')).default as unknown as Tool;
     const res = parse(
       await tool.handler({ slug: 'h', confirm: true, dropSchema: true, workspace: 'default' }, ROOT_CTX),
     );
     expect(res.ok).toBe(true);
     expect(res.schemaDropped).toBe(true);
-    expect(unsafeCalls.some((q) => /DROP SCHEMA IF EXISTS harness_h/.test(q))).toBe(true);
+    expect(dropSchemaCalls).toEqual(['h']); // sanitized name handled inside dropHarnessSchema
   });
 });

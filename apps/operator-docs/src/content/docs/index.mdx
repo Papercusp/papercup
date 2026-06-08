@@ -19,7 +19,7 @@ Papercusp specifies:
 
 ## Status
 
-Pre-1.0. Most foundational phases have shipped (postgres schema, plugin SDK + loader, capability framework, substrate runtime, routine ticker, server-side contribution surface). The big remaining piece is **Phase 6b** — UI render of plugin contributions plus the Backstage-style DI runtime.
+Pre-1.0. Most foundational phases have shipped — including **Phase 6b** (UI render of plugin contributions plus the Backstage-style DI runtime, shipped 2026-04-29) — alongside the postgres schema, plugin SDK + loader, capability framework, substrate runtime, routine ticker, and server-side contribution surface.
 
 See the [implementation status table](/internal/docs/implementation/status) for the canonical state.
 
@@ -32,6 +32,6 @@ See the [implementation status table](/internal/docs/implementation/status) for 
 
 ## How this doc is published
 
-This is a Fumadocs site embedded as the `(docs)` route group in `apps/papercusp` of the Restart monorepo (`apps/papercusp/content/docs/`). Served at `/docs` on the papercusp host (`http://localhost:3055/docs`). Intentionally separate from the Restart platform docs (`apps/web/content/docs/`) and the Papercup harness docs (`apps/papercup/content/docs/`) — the spec evolves independently of the reference apps that consume it. (Pre-2026-04-27 it was a standalone Astro Starlight site at `apps/papercusp-spec/`.)
+This is an [Astro Starlight](https://starlight.astro.build) site at `apps/operator-docs/src/content/docs/`. Running `npm run build` from `apps/operator-docs` compiles it to `dist/` with `base: '/internal/docs'`, emits per-page `.md` twins, then `scripts/postbuild-copy.sh` mirrors `dist/` into `apps/operator/public/internal/docs/`. The operator serves it statically at `/internal/docs` on its Hono host (`http://localhost:3070/internal/docs`) — reachable only while the Tauri dev shell is running. (It was previously a Fumadocs site; the emit-md-twins step preserves the old per-page `.md` HTTP surface.)
 
 After v1.0 freeze, the canonical spec moves to its own repo.

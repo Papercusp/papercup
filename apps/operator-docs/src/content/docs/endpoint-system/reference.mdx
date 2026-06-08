@@ -132,19 +132,19 @@ Null window means no quota check (and no telemetry insert path that requires the
 | Projection registry (3 Maps) | `libs/generic/tooldef/src/tool-projection.ts` |
 | Built-in `defineTool` + auto-projection | `libs/generic/tooldef/src/define-tool.ts` |
 | Plugin loader + `registerPluginTools` | `packages/plugin-loader/src/index.ts` |
-| Plugin host + lifecycle | `apps/operator/lib/plugin-host-runtime.ts` |
-| HTTP catch-all (plugins) | `apps/operator/app/api/plugins/[...path]/route.ts` |
-| HTTP catch-all (built-ins) | `apps/operator/app/api/agent-tools/[...path]/route.ts` |
-| MCP transport (both pipelines) | `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts` |
+| Plugin host + lifecycle | `packages/operator-core/lib/plugin-host-runtime.ts` |
+| HTTP catch-all (plugins) | `packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` |
+| HTTP catch-all (built-ins) | `packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts` |
+| MCP transport (both pipelines) | `packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts` |
 | Dispatcher (gates + record) | `libs/generic/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`) |
 | HTTP request → context builder | `libs/generic/tooldef-http/src/http-projection.ts` |
 | Replay buffer (Last-Event-ID resume) | `libs/generic/tooldef/src/replay-buffer.ts` |
 | Spawn-mcp `.mcp.json` writer | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` |
 | Per-spawn URL → ctx parser | `packages/agent-mcp/src/spawn-context.ts` |
-| Host deps (PG quota/telemetry, policies) | `apps/operator/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
-| Shared subprocess + secret impls | `apps/operator/lib/plugin-spawn-impl.ts` |
-| Harness path resolver (PG-backed) | `apps/operator/lib/resolve-harness-paths.ts` |
-| IPC adapter (Unix socket / named pipe) | `packages/ipc-endpoint-server/` + `apps/operator/lib/endpoint-ipc/` |
+| Host deps (PG quota/telemetry, policies) | `packages/operator-core/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
+| Shared subprocess + secret impls | `packages/operator-core/lib/plugin-spawn-impl.ts` |
+| Harness path resolver (PG-backed) | `packages/operator-core/lib/resolve-harness-paths.ts` |
+| IPC adapter (Unix socket / named pipe) | `libs/generic/ipc-endpoint-server/` + `packages/operator-core/lib/endpoint-ipc/` |
 
 ### Cards + state channel (bespoke-card-improvements arc)
 
@@ -152,13 +152,13 @@ Null window means no quota check (and no telemetry insert path that requires the
 |---|---|
 | State channel (per-run snapshot map + subscribers) | `libs/generic/tooldef/src/state-channel.ts` |
 | Card correlator (PENDING map + deferred lifecycle) | `libs/generic/tooldef/src/card-correlator.ts` |
-| `ctx.askUser` install + abort race | `libs/generic/tooldef/src/ask-user.ts` (+ install site in `dispatch-projected.ts`) |
+| `ctx.askUser` state machine + install | `libs/generic/tooldef/src/card-correlator.ts` (+ install site in `dispatch-stack.ts`) |
 | Workspace-switch lifecycle hook | `libs/generic/tooldef/src/workspace-lifecycle.ts` |
-| State-snapshot SSE route | `apps/operator/app/api/operator/state-snapshot/route.ts` |
-| Card-response endpoint | `apps/operator/app/api/operator/conversations/[id]/card-response/route.ts` |
-| Run-cancel endpoint | `apps/operator/app/api/operator/conversations/[id]/run-cancel/route.ts` |
-| Workspace-switch endpoint (fires lifecycle hook) | `apps/operator/app/api/workspaces/switch/route.ts` |
-| Rate-limit bucket (30 RPS per session user) | `apps/operator/lib/card-response-rate-limit.ts` |
+| State-snapshot SSE route | `packages/operator-core/lib/endpoint-route/routes/operator/state-snapshot.ts` |
+| Card-response endpoint | `packages/operator-core/lib/endpoint-route/routes/operator/card-response.ts` |
+| Run-cancel endpoint | `packages/operator-core/lib/endpoint-route/routes/operator/run-cancel.ts` |
+| Workspace-switch endpoint (fires lifecycle hook) | `packages/operator-core/lib/endpoint-route/routes/workspaces/switch.ts` |
+| Rate-limit bucket (30 RPS per session user) | `packages/operator-core/lib/card-response-rate-limit.ts` |
 | Client-side state-snapshot hook | `apps/operator/lib/use-state-snapshots.ts` |
 | Client-side card renderers (radio/checkbox/text/date/slider) | `apps/operator/app/_components/chat/{AskChoiceCard,InputCard,PendingCardsBar,LocalCardHost}.tsx` |
 | `askUserLocal` client transport | `apps/operator/lib/chat-cards/ask-user-local.ts` |
@@ -168,15 +168,14 @@ Null window means no quota check (and no telemetry insert path that requires the
 | Concern | Module |
 |---|---|
 | Search-provider key reader (orchestrator-side) | `libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts` |
-| Search-provider key reader (operator-side) | `apps/operator/lib/search-provider-credentials.ts` |
-| Telemetry schema | `libs/papercusp/libs/db/sql/046-tool-invocations.sql` |
-| Telemetry — `event_count` column | `libs/papercusp/libs/db/sql/066-tool-invocations-event-count.sql` |
-| Search-provider keys schema | `libs/papercusp/libs/db/sql/047-operator-search-provider-credentials.sql` |
-| `system:operator` `chat:write` backfill | `libs/papercusp/libs/db/sql/067-operator-chat-write-cap.sql` |
-| Read-only catalog page | `app/(docs)/internal/settings/plugins/tools/page.tsx` (and `/settings/plugins/tools`) |
-| Host status / refresh endpoint | `apps/operator/app/api/plugins/host/refresh/route.ts` |
-| Tool catalog endpoint | `apps/operator/app/api/plugins/tools/route.ts` |
-| Provision system principals | `apps/operator/app/api/agent-mcp/provision/route.ts` (calls `provisionSystemPrincipal` in `packages/agent-mcp/src/provisioning.ts`) |
+| Search-provider key reader (operator-side) | `packages/operator-core/lib/search-provider-credentials.ts` |
+| Telemetry schema (`harness_shared.tool_invocations`, incl. `event_count`) | `libs/papercusp/libs/db/sql/000-baseline.sql` (the old `046`/`066` migrations were squashed into the baseline; see `self-contained-migration-baseline-2026-06-02`) |
+| Search-provider keys schema (`operator_search_provider_credentials`) | `libs/papercusp/libs/db/sql/000-baseline.sql` (squashed from old `047`) |
+| `system:operator` `chat:write` backfill | `libs/papercusp/libs/db/sql/000-baseline.sql` (squashed from old `067`) |
+| Read-only catalog page | `apps/operator/app/settings/plugins/tools/page.tsx` (served at `/settings/plugins/tools`) |
+| Host status / refresh endpoint | `packages/operator-core/lib/endpoint-route/routes/plugins/host-refresh.ts` |
+| Tool catalog endpoint | `packages/operator-core/lib/endpoint-route/routes/plugins/tools.ts` |
+| Provision system principals | `packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts` (calls `provisionSystemPrincipal` in `packages/agent-mcp/src/provisioning.ts`) |
 
 ## URL spawn params
 

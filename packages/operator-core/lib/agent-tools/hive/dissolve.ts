@@ -23,6 +23,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { listFleetAssignments } from '../../fleet/assignments';
 import { cancelSubtree } from '../../fleet/nursery';
 import { clearPotTimeWake } from '../../pot/wake';
+import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
 import { resolveHive } from './_resolve';
 
@@ -130,7 +131,7 @@ export default defineTool({
     // 4. Optional schema drop (default keep).
     if (args.dropSchema) {
       try {
-        await sql.unsafe(`DROP SCHEMA IF EXISTS harness_${hive.slug} CASCADE`);
+        await dropHarnessSchema(hive.slug);
         steps.schemaDropped = true;
       } catch (e) {
         steps.schemaDropped = false;

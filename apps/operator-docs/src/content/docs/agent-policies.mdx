@@ -8,7 +8,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Every external agent reads this first">
 This page is binding for every agent reached via `papercusp-su` —
 Claude Code, OMP, Codex, Gemini, anything else. The engineer-
-collaborator playbook (`papercusp-su.tools.md`) is *how* to work;
+collaborator playbook (`papercusp-su-<profile>.tools.md`) is *how* to work;
 this page is *what's allowed*. Where this page conflicts with a
 workflow in tools.md, this page wins.
 </Aside>
@@ -236,13 +236,13 @@ for 'fix typo in comment'; I want to do 'refactor entire auth module';
 should I wait or pivot?" — both intents in one sentence.
 
 See the [`locks:*` tool reference](#) and the engineer-collaborator
-playbook (`papercusp-su.tools.md`) for the full workflow.
+playbook (`papercusp-su-<profile>.tools.md`) for the full workflow.
 
 ## 9. Confirm before destructive actions
 
 Admin tier bypasses role checks, so destructive verbs are reachable
 from your shell. **Confirm out loud before any write-side tool call**
-(`features:update`, `panel_dispatch_card` at tier-high, scanner
+(`flags:set`, `panel_dispatch_card` at tier-high, scanner
 resets, mutating a harness, dropping a table, force-pushing).
 
 A "yes" from an earlier turn does **not** carry across topics —
@@ -290,7 +290,7 @@ The repo has settled on a few patterns. Follow them; don't fork.
 | New durable state | Postgres, via `operator-state-pg.ts` or `getOrgPg()` | JSON files, module-scoped `Map`s | [Storage policy](/internal/docs/system/storage-policy) |
 | UI state (tabs, panels open, selections, filters) | `nuqs` (`useQueryState`) | `useState` for anything user-meaningful | tools.md |
 | A modal / drawer / select / checkbox / tooltip | The wrapper from `app/harness/` | Hand-rolled `<div role="dialog">`, native `<select>`, `title=` on actions | [Design — library guide](/internal/docs/design) |
-| A tabular list | `RichGrid` / `GridTable` / `DataGridShell` from `@restart/grid-core` | Hand-rolled `<table>` | [Design — library guide](/internal/docs/design) |
+| A tabular list | `RichGrid` / `GridTable` / `DataGridShell` from `@papercusp/grid-core` | Hand-rolled `<table>` | [Design — library guide](/internal/docs/design) |
 | A form | RHF + zod for single-submit; `useDebouncedSave` for auto-save | Mixing the two; rolling your own state machine | [Design — library guide](/internal/docs/design) §7 |
 | A new tool callable by agents | `defineTool` (built-in) or plugin manifest, pick via decision rule | Bypassing the projection registry | [Writing a tool](/internal/docs/endpoint-system/writing-a-tool) |
 | Cross-app messaging | HTTP / SSE / in-process call, then persist to PG | Polling PG as a transport | tools.md "DB is not a transport" |
@@ -357,7 +357,8 @@ Specifically:
 - **After editing this page, a `papercusp-su-<profile>.tools.md` base
   playbook, or a `papercusp-su.<client>.md` overlay**, re-run
   `install-standalone-mcp.sh` to re-render the per-client playbooks and
-  refresh the `omp-su` / `claude-su` / `codex-su` wrappers. (See
+  refresh the `psu` launcher (the old `omp-su` / `claude-su` / `codex-su`
+  wrappers are retired — `psu` assembles playbook + MCP + flags per launch). (See
   [Superuser mode → Per-client wrappers](/internal/docs/endpoint-system/superuser-mode#per-client-wrappers-and-playbooks).)
 
 ## 16. Commits, branches, PRs
@@ -412,8 +413,9 @@ Update docs when:
 2. Draft the doc change as part of the same PR as the code change.
    Doc edits are 30 seconds in the right PR and a separate task in
    a wrong one.
-3. Pair the page with `meta.json` updates if you're adding a new
-   page — sidebar order matters.
+3. Set the page's `sidebar.order` frontmatter (and, for a new
+   section, its `astro.config.mjs` sidebar entry) if you're adding a
+   new page — sidebar order matters.
 4. If the dev server is running, hit `/docs/<section>/<slug>` and
    confirm the render before merging.
 
@@ -430,8 +432,9 @@ written via `plans:*` tools** (markdown rendered on demand; the
 This is the canonical home for any non-trivial design document,
 implementation plan, RFC, or proposal that has been reviewed or is
 awaiting review. Format spec at
-`/internal/docs/spec/plan-format`; plan tracking spec at
-[`agent-plan-tracking-2026-05-20.md`](/internal/docs/plans/agent-plan-tracking-2026-05-20).
+`/internal/docs/spec/plan-format`; plan tracking spec is the
+`agent-plan-tracking-2026-05-20` plan itself
+(`plans:get { slug: 'agent-plan-tracking-2026-05-20' }`).
 
 Drop a plan here when any of these apply:
 
@@ -534,7 +537,7 @@ the plan; lint exempts legacy files so day-one CI is green.
 
 **An "agent insight" is a hard-won, non-obvious fact about this
 codebase that any future agent would benefit from knowing.** Insights
-live at `apps/operator/content/internal-docs/agent-insights/<slug>.mdx` and are
+live at `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` and are
 part of the rendered engineering reference site at `/internal/docs/agent-insights`.
 
 ### When to write one
@@ -614,9 +617,9 @@ hour, write it; the next agent will thank you.
 Before any non-trivial investigation, in cheap-to-expensive order:
 
 1. **Agent insights** — `docs:outline` and `docs:get` for the
-   `agent-insights/` section (§18). Cheap; often answers "is this a
+   `agent-insights/` section (§19). Cheap; often answers "is this a
    known gotcha?"
-2. **Plans** — `plans:*` tools over PG (`harness_shared.harness_plans`) (§17).
+2. **Plans** — `plans:*` tools over PG (`harness_shared.harness_plans`) (§18).
    Authoritative for "what were we trying to do?" and "what did we
    decide?"
 3. **Search the wikis** — `search:fulltext` for keyword;

@@ -66,27 +66,33 @@ projected onto the MCP catalog. `tools/list` never sees it; an agent
 cannot call it. That guarantee is what keeps plumbing out of the agent
 surface.
 
-`defineRoute`, the name route files import, is a re-export of
-`defineTool` (Phase E6, `endpoint-unification-2026-05-21`) — the name
-survives only as an ergonomic signal ("this is plumbing").
+Route files import `defineTool` directly — the former `defineRoute`
+alias was **removed** when the primitives were unified (Phase E6,
+`endpoint-unification-2026-05-21`). A route is *declared* with
+`defineTool` and *mounted* host-side by `registerRoute`
+(`packages/operator-core/lib/endpoint-route/`).
 
-### `mobile: true` — one flag for the paired phone
+### Paired-phone routes — `auth: { kind: ['device'] }` + `cors`
 
-A route reachable from the paired phone sets one flag:
+A route reachable from the paired phone declares the device-JWT auth
+gate and opts into cross-origin reachability — there is no implicit
+folding:
 
 ```ts
 defineTool({
-  method: 'POST', path: '/mobile/heartbeat',
-  auth: { kind: ['mobile'] },        // gate on the device-JWT principal
-  mobile: true,                      // CORS allowlist + folds 'mobile' into auth.kind
-  handler(req, ctx) { /* ctx.principal is the mobile device */ },
+  method: 'POST', path: '/device/heartbeat',
+  auth: { kind: ['device'] },        // gate on the device-JWT principal
+  cors: true,                        // CORS allowlist (paired-device + tauri + localhost)
+  handler(req, ctx) { /* ctx.principal is the device */ },
 });
 ```
 
-`mobile: true` mounts the shared mobile-CORS middleware and folds
-`'mobile'` into an explicit `auth.kind` allowlist. Built-in tools are
-reachable from the phone for free — the device JWT is a bearer token,
-and the `/api/agent-tools/*` catch-all resolves it like any other.
+`cors: true` mounts the shared CORS middleware (OPTIONS preflight +
+headers); `auth: { kind: ['device'] }` makes the route-stack reject
+anything that doesn't resolve to a device principal. Paired-phone
+routes live under `/api/device/*`. Built-in tools are reachable from
+the phone for free — the device JWT is a bearer token, and the
+`/api/agent-tools/*` catch-all resolves it like any other.
 
 ## Two channels at a glance
 

@@ -108,7 +108,7 @@ describe('two-peer directory flow (single-process proxy for the multi-peer gate)
     const b = peerB(a.pubkey);
     const [frame] = await a.dir.buildOwnedAnnounces();
     // Re-sign A's body with the attacker's key but keep A's claimed pubkey.
-    const { sign: _drop, ...body } = frame;
+    const { sig: _drop, ...body } = frame;
     const { hiveAnnounceSigningBytes } = await import('./sync/hyperbee/hive-announce');
     const forged = {
       ...body,
@@ -118,35 +118,15 @@ describe('two-peer directory flow (single-process proxy for the multi-peer gate)
     expect(res.reason).toBe('bad-signature-or-stale');
   });
 
-  it('A re-announce with a newer ts updates B’s record (LWW); an older one is ignored', async () => {
+  it('B applies LWW across re-announces — a same/older-ts re-feed is superseded, not re-applied', async () => {
     const a = peerA();
     const b = peerB(a.pubkey);
     const [v1] = await a.dir.buildOwnedAnnounces();
-    await b.ingestAnnounce(v1);
-    // A edits its hive title + re-announces with a newer ts (advance A's clock).
-    a.dir.registerLocalHive({
-      hiveId: 'ash',
-      title: 'Ash Hive v2',
-      description: 'renamed',
-      memberTopics: ['a'.repeat(64)],
-      visibility: 'public',
-      createdAt: NOW - 86_400_000,
-      ownerGithubLogin: 'alice',
-      ownerGithubUserId: 4242,
-      ownerDevicePubkey: a.pubkey,
-      attestationGistId: 'gist-alice',
-    });
-    // Build the v2 frame at a later clock by re-deps — simplest: bump via a manual ts.
-    const [v2raw] = await a.dir.buildOwnedAnnounces();
-    const v2 = { ...v2raw, ts: v1.ts + 1000 };
-    // Re-sign v2 at the new ts so it verifies.
-    const { sign: _s, ...v2body } = v2;
-    const { hiveAnnounceSigningBytes } = await import('./sync/hyperbee/hive-announce');
-    // We need A's private key; rebuild via a fresh peer won't match. Instead assert
-    // the LWW guard with the SAME-signed v1 re-fed (older/equal ts → superseded).
-    const again = await b.ingestAnnounce(v1);
-    expect(again).toEqual({ accepted: false, reason: 'superseded' });
-    expect(b.listDiscoveredHives()[0].title).toBe('Ash Hive'); // unchanged
-    void v2body;
+    expect((await b.ingestAnnounce(v1)).accepted).toBe(true);
+    // The same frame arriving again (gossip duplicate / a stale re-broadcast) is
+    // dropped by the ts guard — B's record is not churned.
+    expect(await b.ingestAnnounce(v1)).toEqual({ accepted: false, reason: 'superseded' });
+    expect(b.listDiscoveredHives()).toHaveLength(1);
+    expect(b.listDiscoveredHives()[0].title).toBe('Ash Hive');
   });
 });
