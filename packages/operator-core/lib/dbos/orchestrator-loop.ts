@@ -80,6 +80,7 @@ import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import type { Issue } from '../harness/issue-types';
 import { ensureFeaturePipeline } from './orchestrator-start';
+import { workItemClaimLeaseEnabled, leaseFeatureForExecutor } from '../work-item-claim-lease-wiring';
 import { getFeatureBlockers } from './feature-blockers-edges';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 
@@ -610,7 +611,17 @@ export async function dispatchOneHarness(
     // becomes ready again. Best-effort; never sinks dispatch.
     if (!overCostCap) await raiseOrClearStuckSignal(slug, workspaceId, stuck).catch(() => {});
     const started: string[] = [];
+    // P-007/P-008 (decentralized-dispatch-scaling, flag-gated default-OFF): demote the
+    // orchestrator from SOLE global dispatcher to one Swarm's executor — computeFrontier
+    // still decides ELIGIBILITY (blocked-by/priority/readiness), but each ready feature is
+    // gated on the per-Hive lease so cross-Swarm exactly ONE Swarm runs it (DBOS
+    // workflow-id dedup stays the LOCAL exactly-once guard, D-006). Flag-off → no gate
+    // (this loop is byte-identical to before). The gate is fail-open (helper never throws).
+    const executorLeaseOn = workItemClaimLeaseEnabled();
     for (const fid of toStart) {
+      if (executorLeaseOn && !(await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid }))) {
+        continue; // another Swarm holds the Hive lease for this feature — it runs it
+      }
       // Pass the tick's own workspaceId so the pipeline pins THIS workspace rather
       // than the volatile active one (which can differ from the harness's home).
       const r = await ensureFeaturePipeline(slug, fid, workspaceId);

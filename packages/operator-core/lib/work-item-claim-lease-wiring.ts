@@ -22,6 +22,8 @@
 import { activeWorkspaceId } from './workspace-registry';
 import { hiveHomeSlugForHarness } from './hive-federation';
 import { acquireClaim } from './work-item-claims';
+import { getBootedHarness } from './sync/hyperbee/boot-all';
+import { resolveMyPubkey } from './orchestrator/distributed-claim';
 
 /** The owner's ratification switch (D-007 / P-001). Default OFF. */
 export function workItemClaimLeaseEnabled(): boolean {
@@ -59,4 +61,51 @@ export async function leaseClaimedWorkItem(opts: {
     intent: 'work-stealing claim (claim_next)',
   });
   return res.ok;
+}
+
+/**
+ * The orchestrator-side (per-Swarm executor) lease gate — decentralized-dispatch-scaling
+ * P-007/P-008. Before the DBOS executor dispatches a READY feature (eligibility still
+ * decided by computeFrontier), acquire the per-Hive lease so that cross-Swarm exactly ONE
+ * Swarm runs it: the lease is the cross-machine exactly-once gate, with DBOS workflow-id
+ * dedup remaining the LOCAL guard (D-006 — the orchestrator is demoted from sole global
+ * dispatcher to one Swarm's executor that work-steals).
+ *
+ * Owner = THIS Swarm's device pubkey so two Swarms are DISTINCT holders (a shared owner
+ * would both "win" the acquire's own-extend clause). Returns whether this Swarm may run
+ * the feature.
+ *
+ * FAIL-OPEN (D-007): any resolution / authority / PG error → returns true so dispatch
+ * proceeds. The lease gate must NEVER wedge the live dispatcher; a rare cross-Swarm
+ * double-run (e.g. a lease that lapses mid-pipeline) is the tolerate-and-reconcile case
+ * (work-item-claim-reconcile, P-005). A generous TTL covers a long pipeline.
+ */
+export async function leaseFeatureForExecutor(opts: {
+  workspaceId: string;
+  harness: string;
+  featureId: string;
+}): Promise<boolean> {
+  try {
+    const booted = getBootedHarness(opts.workspaceId, opts.harness);
+    const owner = (booted ? resolveMyPubkey(booted) : null) ?? `swarm-local:${opts.harness}`;
+    let hiveSlug: string | null = null;
+    try {
+      hiveSlug = await hiveHomeSlugForHarness(opts.workspaceId, opts.harness);
+    } catch {
+      hiveSlug = null;
+    }
+    const res = await acquireClaim({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harness,
+      workItemId: opts.featureId,
+      hiveSlug,
+      owner,
+      holderPubkey: owner,
+      intent: 'executor dispatch (orchestrator)',
+      ttlSec: 7200,
+    });
+    return res.ok;
+  } catch {
+    return true; // fail-open — never let the lease gate wedge the live dispatcher
+  }
 }
