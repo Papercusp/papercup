@@ -34,6 +34,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { routeToAuthorityForHive, type LockAuthorityDeps } from '../lock-authority';
+import { routeFileLockOp } from '../file-lock-routing';
 import { setPeerRpcTransport, __resetPeerRpcTransportForTests } from '../peer-rpc-transport';
 import { HttpPeerRpcTransport } from '../http-peer-rpc-transport';
 import {
@@ -230,5 +231,58 @@ describe('two-instance HIVE authority serialization over loopback', () => {
     );
     expect(r.via).toBe('local-authority');
     expect(localStore.held.get('apps/only.ts')).toBe('solo');
+  });
+
+  // ── The PRODUCTION file-claim entry point (su-30045's routeFileLockOp, P-009) ──
+  // The cases above drive routeToAuthorityForHive directly; these prove the SAME
+  // cross-Swarm serialization through routeFileLockOp — the wrapper the live
+  // locks:acquire hot-path cutover will call — so a Hive MEMBER harness's file
+  // claims (domain → harness → home Hive) serialize at the Hive authority. Reuses
+  // the outer describe's loopback authority server (a nested describe inherits its
+  // beforeAll/afterEach hooks).
+  describe('via routeFileLockOp — the production file-claim entry point', () => {
+    const HIVE_DOMAIN = '/repos/member-checkout'; // a repo root = coordination_domain
+
+    /** Acquire `path` via the production wrapper: domain → 'member-harness' → home
+     *  Hive 'my-hive' → the Hive authority. skipRemotePeersFastPath forces authority
+     *  routing (the no-remote-peers short-circuit is unit-tested by su-30045's
+     *  file-lock-routing-hive.test.ts; here we prove serialization once routed). */
+    async function fileLockAcquire(selfPubkey: string, owner: string, path: string) {
+      return routeFileLockOp<LockResult>(
+        HIVE_DOMAIN,
+        {
+          local: async (): Promise<LockResult> => ({ granted: false }),
+          remote: { kind: 'lock.acquire', payload: { owner, path }, decode: (raw): LockResult => raw as LockResult },
+        },
+        {
+          now: () => NOW,
+          resolveSelf: async () => ({ githubUserId: 9, devicePubkey: selfPubkey }),
+          domainToHarnessSlug: () => 'member-harness',
+          harnessToHiveSlug: () => 'my-hive',
+          fetchHivePresenceRows: async () => HIVE_ROSTER,
+          skipRemotePeersFastPath: true,
+        },
+      );
+    }
+
+    it('two Swarms of one Hive contend for one file → the Hive authority grants exactly one', async () => {
+      const a = await fileLockAcquire('swarm-mmm', 'laptop', 'apps/x.ts');
+      const c = await fileLockAcquire('swarm-zzz', 'cloud', 'apps/x.ts');
+      // Both routed through the remote Hive authority via the production wrapper.
+      expect(a.via).toBe('remote-authority');
+      expect(c.via).toBe('remote-authority');
+      // The Hive authority serialized two DIFFERENT Swarms' file claims (D-009: a
+      // Hive member's file locks serialize at the HIVE authority, not the harness).
+      expect(a.value).toEqual({ granted: true, owner: 'laptop' });
+      expect(c.value).toEqual({ granted: false, heldBy: 'laptop' });
+      expect(authorityStore.held.get('apps/x.ts')).toBe('laptop');
+    });
+
+    it('different files from different Swarms both grant (no false contention)', async () => {
+      const a = await fileLockAcquire('swarm-mmm', 'laptop', 'apps/a.ts');
+      const c = await fileLockAcquire('swarm-zzz', 'cloud', 'apps/b.ts');
+      expect((a.value as { granted: boolean }).granted).toBe(true);
+      expect((c.value as { granted: boolean }).granted).toBe(true);
+    });
   });
 });
