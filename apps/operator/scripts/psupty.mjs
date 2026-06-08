@@ -43,6 +43,7 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  chmodSync,
 } from 'node:fs';
 import net from 'node:net';
 
@@ -63,7 +64,17 @@ shell, \`psupty inject\` writes a turn (+ Enter) into the live session — what 
 operator wake does. Ctrl-C is forwarded to the child (quit the child to exit).`;
 
 function ensureDir() {
-  mkdirSync(SOCK_DIR, { recursive: true });
+  // Owner-only (0700). The control socket inside this dir lets a connector
+  // inject keystrokes into a live agent — which runs with permissions bypassed,
+  // so an injected line is effectively command execution as this user. 0700 on
+  // the dir blocks any other local UID from even traversing to the socket;
+  // chmodSync fixes a dir created before this hardening landed.
+  mkdirSync(SOCK_DIR, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(SOCK_DIR, 0o700);
+  } catch {
+    /* best-effort on a pre-existing dir */
+  }
 }
 function pidAlive(pid) {
   try {
@@ -213,7 +224,17 @@ function cmdHost(argv) {
     conn.on('error', () => {});
   });
   server.on('error', (e) => process.stderr.write(`psupty: control socket error: ${e.message}\n`));
-  server.listen(sock);
+  // Tight umask around bind so the socket node is never even briefly
+  // world-accessible between creation and chmod, then pin it 0600 (owner-only).
+  const prevUmask = process.umask(0o077);
+  server.listen(sock, () => {
+    try {
+      chmodSync(sock, 0o600);
+    } catch {
+      /* best-effort */
+    }
+    process.umask(prevUmask);
+  });
 
   // Brief banner (an alt-screen TUI like claude will clear it — `psupty list`
   // and the inject hint remain available from another shell).

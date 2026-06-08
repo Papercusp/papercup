@@ -81,7 +81,7 @@ vi.mock('vditor', () => ({ default: MockVditor }));
 vi.mock('vditor/dist/index.css', () => ({}));
 
 // Import AFTER the mocks are registered.
-import { MarkdownEditor, expandWikiLinks } from '../MarkdownEditor';
+import { MarkdownEditor, MarkdownPreview, expandWikiLinks } from '../MarkdownEditor';
 
 beforeEach(() => {
   instances.length = 0;
@@ -174,5 +174,18 @@ describe('expandWikiLinks — pure helper', () => {
   it('leaves text without wiki syntax unchanged and tolerates null/undefined', () => {
     expect(expandWikiLinks('plain text')).toBe('plain text');
     expect(expandWikiLinks(undefined as unknown as string)).toBe('');
+  });
+});
+
+describe('MarkdownPreview — readable frontmatter/code styling', () => {
+  it('adds the shared preview class and readable YAML/frontmatter CSS', async () => {
+    const { container } = render(<MarkdownPreview value={'---\ntitle: Demo\n---\n\n# Demo'} />);
+
+    await waitFor(() => expect(MockVditor.preview).toHaveBeenCalled());
+    expect(container.querySelector('.pc-md-preview')).toBeTruthy();
+    const styles = Array.from(container.querySelectorAll('style')).map((el) => el.textContent ?? '').join('\n');
+    expect(styles).toContain('code.language-yaml');
+    expect(styles).toContain('var(--fg, #e7f7ff)');
+    expect(styles).toContain('var(--border-strong');
   });
 });

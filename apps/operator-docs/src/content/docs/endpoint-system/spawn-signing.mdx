@@ -220,18 +220,22 @@ Run them before promoting any change to the signing pipeline.
 ## File map
 
 ```
-apps/operator/lib/spawn-signing.ts                       — sign/verify/rotate/log
-apps/operator/lib/ensure-schema.ts                       — table DDL
-apps/operator/app/api/[transport]/route.ts               — verifier wired into tryBuildSpawnContext
-apps/operator/app/api/admin/spawn-signing/rotate/route.ts — POST: rotate + bump cache
-apps/operator/app/api/admin/spawn-signing/failures/route.ts — GET: audit read
-apps/operator/scripts/rotate-spawn-signing-key.mjs       — CLI wrapper
-apps/operator/docs/spawn-signing-threat-model.md         — long-form threat model
-apps/operator/__tests__/integration/spawn-signing-e2e.mjs
-apps/operator/__tests__/integration/mint-roundtrip.mjs
-apps/operator/__tests__/integration/admin-rotate.mjs
+packages/operator-core/lib/spawn-signing.ts                                 — sign/verify/rotate/log
+packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts  — verifier wired into tryBuildSpawnContext
+packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-rotate.ts    — POST: rotate + bump cache
+packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-failures.ts  — GET: audit read
+apps/operator/scripts/rotate-spawn-signing-key.mjs                          — CLI wrapper
+apps/operator/docs/spawn-signing-threat-model.md                            — long-form threat model
+packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts
+packages/operator-core/lib/__tests__/mint-roundtrip.integration.test.ts
+packages/operator-core/lib/__tests__/admin-rotate.integration.test.ts
+packages/operator-core/lib/__tests__/admin-failures.integration.test.ts
 
 libs/papercusp/packages/orchestrator/src/spawn-mcp.ts   — writeSignedSpawnMcp (mint side)
 libs/papercusp/packages/orchestrator/src/invoke.ts       — calls writeSignedSpawnMcp on every spawn
-libs/papercusp/packages/orchestrator/src/branch-iso.ts   — chmod 0700 per-spawn worktree
 ```
+
+(The `operator_secrets` + `spawn_sig_verification_failures` tables are
+defined by SQL migrations under `libs/papercusp/libs/db/sql/`, not by
+runtime DDL — the old `ensure-schema.ts` lazy-`CREATE TABLE` path was
+removed.)

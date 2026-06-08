@@ -14,13 +14,13 @@ Tools can declare a `modality` field stating which surfaces they're meaningful f
 ```ts
 defineTool({
   name: 'tasks:list',
-  // modality omitted → defaults to ['text']
+  // modality omitted → defaults to ['text', 'voice']
   args: TaskListArgs,
   handler: async (input, ctx) => { … },
 });
 ```
 
-A tool without a declared modality is text-only. It will not appear in the tools catalog rendered for voice surfaces.
+A tool without a declared modality is available from **both** surfaces — it appears in the catalog rendered for text *and* for voice. (An earlier text-only default silently emptied the voice catalog for every tool that didn't opt in, so the default was flipped to `['text', 'voice']`.)
 
 ## Declaring a voice-capable tool
 
@@ -39,15 +39,15 @@ The catalog renderer will include this tool in both text and voice surfaces.
 
 ```ts
 defineTool({
-  name: 'chat:ask_choice',
-  modality: ['text'],  // optional but documents intent
-  // Buttons are invisible to a voice user — voice catalogs drop this.
-  args: AskChoiceArgs,
+  name: 'some:button_only_tool',
+  modality: ['text'],  // REQUIRED to keep it out of voice — the default is both
+  // This drops the tool from voice catalogs.
+  args: SomeArgs,
   handler: async (input, ctx) => { … },
 });
 ```
 
-This makes the carve-out explicit. Without it, the same default-to-text behavior applies, but documenting `modality: ['text']` signals to plugin authors that the tool was deliberately scoped.
+This is a **real** carve-out, not just documentation: because the default is `['text', 'voice']`, a tool that should never reach a voice surface must declare `modality: ['text']` — otherwise it shows up in voice catalogs too.
 
 ## What the framework does NOT do
 
@@ -65,7 +65,7 @@ The "narration" model from the original Phase 4 plan was a poor fit for the EL C
 The browser opens a WebRTC session to EL's hosted Conv AI agent (Claude Haiku via BYO-LLM). When the agent decides to "ask the operator," the EL SDK invokes our `ask_operator` clientTool handler in the browser:
 
 ```ts
-// apps/operator/lib/voice-engines/elevenlabs-conv.ts
+// packages/operator-core/lib/voice-engines/elevenlabs-conv.ts
 tools.ask_operator = async (params) => askOperatorViaSse(params);
 ```
 
@@ -87,8 +87,8 @@ The operator brain (Claude Sonnet 4.x running our prompt) wraps voice-mode repli
 |---|---|---|
 | `<say>spoken text</say>` | TTS body. Required for voice turns. | Client (`askOperatorViaSse`) extracts the body and returns to EL. |
 | `<set_mode>active\|passive</set_mode>` | Lifecycle hint. | Server + client (`operator-converse-tags.ts`). |
-| `<sleep>30</sleep>` | "Stay silent for N seconds." | Server + client. |
-| `<spawn role="..." feature="..." />` | Server-side orchestrator dispatch. | Server (`parseOperatorTurn`); never returned to EL. |
+| `<sleep duration_minutes="N" reason="…">` | "Stay silent for N minutes" (capped at 1 day). | Server + client. |
+| `<spawn role="..." harness="..." feature="..." chunk="..." extras="K=V" />` | Server-side orchestrator dispatch. | Server (`parseOperatorTurn`); never returned to EL. |
 
 ## Sanitizer
 
@@ -117,11 +117,11 @@ ctx.askUser({
 
 Gating (audit5+): the `operator-converse` SSE only forwards `state-snapshot` events when `body.modality === 'voice'`, and only forwards snapshots with at least one openCard carrying `fallbackText`. This avoids cross-conversation leak (a text turn's card would otherwise be spoken in a concurrent voice turn) and keeps state-shaped tools (`ctx.publishState` without cards) off the voice path.
 
-Today `chat:ask_choice` is `modality: ['text']` so it never reaches voice via the catalog. The `fallbackText` plumbing is for **future voice-capable card tools**. Voice still can't *send* a structured `/card-response` payload — that requires intent extraction the framework doesn't do today. The user must click the card via the chat surface to actually respond.
+`chat:ask_choice` is available from **both** surfaces — it declares no `modality`, so it defaults to `['text', 'voice']`. On a voice turn its `fallbackText` (the question + options) is spoken, and by default the user still clicks the card on the chat surface to answer. A single-select card that sets `voiceAnswerable: true` (e.g. the silence-nudge "Ready" card) goes further: the client-side `voice-card-router` matches the user's spoken pick against the option labels/ids and submits it via `/card-response` — so voice **can** now answer those cards hands-free (gated by the `cardAnsweringEnabled` voice preference). Multi-select and non-`voiceAnswerable` cards still require a click.
 
 ## See also
 
 - [Transports](./transports.mdx) — how typed events project across HTTP / MCP / IPC
 - [Spike memo](./../plans/voice-modality-spike-2026-05-13.md) — why the original "ctx.narrate" design didn't fit
-- `apps/operator/lib/voice-engines/elevenlabs-conv.ts` — the integration source
-- `apps/operator/lib/operator-converse-tags.ts` — the tag parser
+- `packages/operator-core/lib/voice-engines/elevenlabs-conv.ts` — the integration source
+- `packages/operator-core/lib/operator-converse-tags.ts` — the tag parser

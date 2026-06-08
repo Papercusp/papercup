@@ -174,4 +174,4 @@ The planned `/harness/<slug>?tab=intel` page reads `tool_invocations` for the fo
 - **Diff** — `code2prompt.diff` results linked from feature panel
 - **Graph** — gitnexus query/context/impact (when the GitNexus bridge ships)
 
-The current schema supports all of these without modification. Adding query views over the table (e.g. a per-feature spawn tree CTE) is the work, not new tables.
+The current schema supports all of these without modification — and some already shipped: the `tool_invocations_spawn_tree` and `tool_invocations_artifacts` views back the Spawns / Pack / Diff data, with read routes under `packages/operator-core/lib/endpoint-route/routes/harness/` (`intel-spawn-tree.ts`, `intel-artifacts.ts`). The remaining work is query views, not new tables.

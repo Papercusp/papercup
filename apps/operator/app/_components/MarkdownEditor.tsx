@@ -271,19 +271,43 @@ export function MarkdownPreview({
           .pc-md-outline a { color: #aaa; text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
           .pc-md-outline a:hover { color: #fff; background: #232E37; }
           .pc-md-preview, .pc-md-preview pre, .pc-md-preview code { background-color: #19232A !important; }
+          ${markdownPreviewReadableCodeCss}
         `}</style>
       </div>
     );
   }
 
   return (
-    <div
-      ref={ref}
-      className={`vditor-reset ${className ?? ''}`}
-      style={{ background: '#19232A', color: '#e6e6e6', ...style }}
-    />
+    <>
+      <div
+        ref={ref}
+        className={`vditor-reset pc-md-preview ${className ?? ''}`}
+        style={{ background: '#19232A', color: '#e6e6e6', ...style }}
+      />
+      <style>{markdownPreviewReadableCodeCss}</style>
+    </>
   );
 }
+
+const markdownPreviewReadableCodeCss = `
+  .pc-md-preview :is(pre, pre code) {
+    background: color-mix(in srgb, var(--bg-popover, #0d1829), transparent 6%) !important;
+    color: var(--fg, #e7f7ff) !important;
+  }
+  .pc-md-preview pre {
+    border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32)) !important;
+    border-radius: 12px !important;
+  }
+  .pc-md-preview :is(code.language-yaml, code.language-yml, code.language-frontmatter, pre code:first-child) {
+    color: var(--fg, #e7f7ff) !important;
+  }
+  .pc-md-preview :is(.hljs-attr, .hljs-attribute, .hljs-keyword, .hljs-meta) {
+    color: var(--accent-strong, #7dd3fc) !important;
+  }
+  .pc-md-preview :is(.hljs-string, .hljs-literal, .hljs-number) {
+    color: var(--fg-dim, #b9d4e8) !important;
+  }
+`;
 
 const outlinePanelStyle: React.CSSProperties = {
   // Override Vditor's default `.vditor-outline { display: none }` — outlineRender
