@@ -7,7 +7,6 @@ import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-
 import { useLexicon } from '@/lib/useLexicon';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
-import HarnessWelcomeEmptyState from './HarnessWelcomeEmptyState';
 import HiveMemberRail from './HiveMemberRail';
 import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
@@ -199,13 +198,7 @@ export default function HarnessesWorkspace() {
             />
             <div className="pc-adv-harnesses__dock">
               {dockSlug ? (
-                <>
-                  <HarnessesDock slug={dockSlug} />
-                  {/* No-work-yet onboarding welcome (spec-md-ui-deprecation-cleanup
-                      P-005 / D-003) — overlays the dock until the harness has a
-                      started plan or an eligible feature, or is dismissed. */}
-                  <HarnessWelcomeEmptyState slug={dockSlug} />
-                </>
+                <HarnessesDock slug={dockSlug} />
               ) : (
                 <div className="pc-adv-harnesses__empty">
                   {projectsError ? (
