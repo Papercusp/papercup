@@ -67,7 +67,9 @@ function fakeDirDeps(): HiveDirectoryDeps {
 }
 
 function fakeSwarm() {
-  let handler: ((s: unknown) => void) | null = null;
+  // Real Hyperswarm is an EventEmitter — multiple topic joins each add a
+  // 'connection' listener, so the fake keeps an ARRAY (one per joined topic).
+  const handlers: Array<(s: unknown) => void> = [];
   const joined: Buffer[] = [];
   return {
     swarm: {
@@ -77,14 +79,16 @@ function fakeSwarm() {
       },
       leave() {},
       on(_e: 'connection', l: (s: unknown) => void) {
-        handler = l;
+        handlers.push(l);
       },
-      off() {
-        handler = null;
+      off(_e: 'connection', l: (s: unknown) => void) {
+        const i = handlers.indexOf(l);
+        if (i >= 0) handlers.splice(i, 1);
       },
     },
     connect() {
-      handler?.({});
+      // One connection fans out to every topic's listener (each opens its channel).
+      for (const h of [...handlers]) h({});
     },
     joined,
   };
@@ -150,6 +154,55 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       dir,
     });
     expect(announce).toHaveBeenCalledWith('pub');
+    await wiring.stop();
+  });
+
+  it('joins the invite topic for an owned invite hive (a SECOND topic beyond global)', async () => {
+    const f = fakeSwarm();
+    const dir = new HiveDirectory(fakeDirDeps());
+    const wiring = await wireHiveDirectoryAtBoot({
+      swarm: f.swarm,
+      keychainId: 'kc',
+      owner: ownerIdentity(),
+      ownedHives: [meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: 'sekret' })],
+      dir,
+    });
+    // Two distinct 32-byte topics joined: the global directory + the invite topic.
+    expect(f.joined).toHaveLength(2);
+    expect(f.joined[0].equals(f.joined[1])).toBe(false);
+    await wiring.stop();
+  });
+
+  it('an invite hive announces ONLY on its invite topic, never the global one (no leak)', async () => {
+    const f = fakeSwarm();
+    const dir = new HiveDirectory(fakeDirDeps());
+    const wiring = await wireHiveDirectoryAtBoot({
+      swarm: f.swarm,
+      keychainId: 'kc',
+      owner: ownerIdentity(),
+      ownedHives: [
+        meta({ hiveId: 'pub', visibility: 'public' }),
+        meta({ hiveId: 'inv', visibility: 'invite', inviteSecret: 'sekret' }),
+      ],
+      dir,
+    });
+    // muxers[0] = the GLOBAL topic channel (first joined); pair it.
+    f.connect();
+    muxers[0].pair();
+    await new Promise((r) => setTimeout(r, 0));
+    const globalIds = muxers[0].sent.map((s) => (s as { hive_id: string }).hive_id);
+    expect(globalIds).toContain('pub'); // public goes to the global topic
+    expect(globalIds).not.toContain('inv'); // the invite hive does NOT leak to global
+    await wiring.stop();
+  });
+
+  it('joinInviteTopic (invitee side) joins an additional topic from a received secret', async () => {
+    const f = fakeSwarm();
+    const dir = new HiveDirectory(fakeDirDeps());
+    const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+    expect(f.joined).toHaveLength(1); // just the global topic
+    await wiring.joinInviteTopic('an-invite-secret');
+    expect(f.joined).toHaveLength(2); // + the invite topic
     await wiring.stop();
   });
 });

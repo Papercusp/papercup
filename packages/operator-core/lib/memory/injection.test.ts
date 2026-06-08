@@ -135,10 +135,11 @@ describe('buildMemoryContextBlock', () => {
       userId: 'u-123', workspaceId: 'ws-7', harnessSlugs: ['papercup'], queryContext: 'foo',
     });
     // One user pull (limit 6) + one harness pull (per-pool limit 3) —
-    // never a `workspace:*` scope.
+    // never a `workspace:*` scope. Both pulls carry the inject relevance floor
+    // (injectMinScore() default 0.42) — the no-LLM-in-the-loop quality gate.
     expect(b.search.mock.calls).toEqual([
-      ['foo', { scope: 'u-123', limit: 6 }],
-      ['foo', { scope: ['harness:papercup'], limit: 3 }],
+      ['foo', { scope: 'u-123', limit: 6, minScore: 0.42 }],
+      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.42 }],
     ]);
   });
 

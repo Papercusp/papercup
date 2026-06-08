@@ -45,39 +45,72 @@ export interface WireHiveDirectoryOpts {
 }
 
 export interface HiveDirectoryWiring {
+  /** The global directory-topic swarm handle. */
   handle: DirectorySwarmHandle;
+  /** Join an invite-scoped directory topic from a received invite secret (the
+   *  invitee side). Idempotent. */
+  joinInviteTopic(inviteSecret: string): Promise<void>;
   stop(): Promise<void>;
 }
 
 export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Promise<HiveDirectoryWiring> {
   const dir = opts.dir ?? getHiveDirectory();
   const globalTopic = deriveDirectoryTopic();
-  const globalTopicHex = hiveTopicAsHex(globalTopic);
 
-  // 1. Join the global directory topic; inbound frames → verified-only ingest;
-  //    a freshly-paired peer is sent our owned announces.
-  const handle = await joinDirectorySwarm({
-    swarm: opts.swarm,
-    topic: globalTopic,
-    onAnnounce: (frame) => dir.ingestAnnounce(frame),
-    getOwnAnnounces: () => dir.buildOwnedAnnounces(),
-  });
+  // One DirectorySwarm handle per joined topic (the global directory topic + one
+  // per owned invite hive's invite-secret topic). Keyed by topic hex so the
+  // transport can route an announce to exactly its topic.
+  const handles = new Map<string, DirectorySwarmHandle>();
 
-  // 2. Wire the swarm broadcast as the directory's transport. Global → broadcast;
-  //    invite topics aren't joined yet → log + skip (never silently drop).
-  setHiveDirectoryTransport(async (topicHex, frame) => {
-    if (topicHex === globalTopicHex) {
-      handle.broadcast(frame);
-    } else {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[hive-directory] invite-topic transport not wired yet (topic ${topicHex.slice(0, 8)}…); ` +
-          `announce for hive ${frame.hive_id} was not broadcast`,
-      );
+  // Join a topic idempotently. `getOwnAnnounces` is SCOPED to this topic so a
+  // global-topic peer only ever sees PUBLIC hives and an invite-topic peer only
+  // that invite's hive(s) — an invite hive never leaks onto the global topic.
+  const joinTopic = async (topic: Buffer): Promise<DirectorySwarmHandle> => {
+    const hex = hiveTopicAsHex(topic);
+    const existing = handles.get(hex);
+    if (existing) return existing;
+    const h = await joinDirectorySwarm({
+      swarm: opts.swarm,
+      topic,
+      onAnnounce: (frame) => dir.ingestAnnounce(frame),
+      getOwnAnnounces: () => dir.buildOwnedAnnounces({ topicHex: hex }),
+    });
+    handles.set(hex, h);
+    return h;
+  };
+
+  // 1. The global directory topic (public hives).
+  const handle = await joinTopic(globalTopic);
+
+  // 1b. Each owned INVITE hive's invite topic, so its announce has a transport
+  //     AND we hear other announces on that invite topic.
+  for (const hive of opts.ownedHives ?? []) {
+    if (hive.visibility === 'invite' && hive.inviteSecret) {
+      try {
+        await joinTopic(deriveInviteTopic(hive.inviteSecret));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[hive-directory] failed to join invite topic for ${hive.hiveId}: ${e instanceof Error ? e.message : e}`);
+      }
     }
+  }
+
+  // 2. Transport routes a frame to ITS topic's handle. An unknown topic (an
+  //    invite hive added after boot) is lazily joined first — the hex is the
+  //    32-byte topic, so it round-trips to a Buffer. Never silently dropped.
+  setHiveDirectoryTransport(async (topicHex, frame) => {
+    let h = handles.get(topicHex);
+    if (!h) {
+      try {
+        h = await joinTopic(Buffer.from(topicHex, 'hex'));
+      } catch {
+        /* fall through — h stays undefined */
+      }
+    }
+    if (h) h.broadcast(frame);
   }, opts.keychainId);
 
-  // 3. Register + announce owned hives (transport is set, so public hives go out).
+  // 3. Register + announce owned hives (transport is set, so public + invite go out).
   for (const hive of opts.ownedHives ?? []) {
     try {
       await publishHiveToDirectory(dir, hive, opts.owner);
@@ -92,10 +125,17 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
 
   return {
     handle,
+    /** Join an invite-scoped directory topic from a received invite secret (the
+     *  invitee side — a "follow invite link" action calls this so the invite
+     *  hive's announce is ingested + listed). Idempotent. */
+    async joinInviteTopic(inviteSecret: string): Promise<void> {
+      await joinTopic(deriveInviteTopic(inviteSecret));
+    },
     async stop() {
       stopTimer();
       dir.stopReannounce();
-      await handle.close();
+      await Promise.all([...handles.values()].map((h) => h.close().catch(() => {})));
+      handles.clear();
     },
   };
 }

@@ -319,6 +319,14 @@ export function runBootstrap(): void {
       const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
       await applyPendingMigrationsAtBoot();
 
+      // Best-effort embedder warm-up (memory-backend-improve-and-hybrid P-004a):
+      // fire one throwaway memory search so the user's first turn doesn't pay the
+      // embedder cold-start. Detached (never awaited) and fully self-contained —
+      // warmMemoryEmbedder swallows every error, so it can't affect boot.
+      void import('@papercusp/operator-core/lib/memory/warm')
+        .then(({ warmMemoryEmbedder }) => warmMemoryEmbedder())
+        .catch(() => {});
+
       // The dogfood PG schema + change-notify/capture triggers are defined
       // entirely by migrations (000-baseline + 107/108), now applied above (or
       // by the embedded-pg boot) — no runtime schema-ensure here. Flip the

@@ -28,7 +28,12 @@ import {
 // the source of truth so an operator-cap change doesn't drift this test again.
 const OP_BASELINE = BLUEPRINT_ROLE_CAPS.operator ?? [];
 const SEEDED_OPERATOR = ['harness:read', 'audit:read', 'chat:write'];
-const EXPECTED_DEFAULT_OPERATOR = [...new Set([...SEEDED_OPERATOR, ...OP_BASELINE])].sort();
+// Every role-scoped caller also gets the universal read-only tool-discovery cap:
+// agent_tools:list is declared ALL_ROLES + requirePrincipal:false and every
+// pipeline-role persona instructs calling `agent_tools:list { asRole }`. See the
+// grant in role-principal-caps.ts (loadRoleCapabilities).
+const UNIVERSAL_CAPS = ['agent_tools:read'];
+const EXPECTED_DEFAULT_OPERATOR = [...new Set([...SEEDED_OPERATOR, ...OP_BASELINE, ...UNIVERSAL_CAPS])].sort();
 
 let sql: postgres.Sql;
 let dbName: string;
@@ -78,9 +83,12 @@ describe('loadRoleCapabilities (least-privilege)', () => {
     expect([...caps].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
-  it('returns an EMPTY set for a pipeline role with no system principal (worker)', async () => {
+  it('returns ONLY the universal tool-discovery cap for a pipeline role with no system principal (worker)', async () => {
     const caps = await loadRoleCapabilities(sql, 'default', 'worker');
-    expect(caps.size).toBe(0); // capability-gated built-ins correctly stay denied
+    // Pre-change this was the empty set. Now every role-scoped caller gets the
+    // read-only agent_tools:read introspection cap — and NOTHING else for a bare
+    // pipeline role (workflow-gated built-ins still correctly denied).
+    expect([...caps].sort()).toEqual([...UNIVERSAL_CAPS].sort());
   });
 
   it('is workspace-isolated — the PROVISIONED delta does not leak across workspaces', async () => {
@@ -123,10 +131,10 @@ describe('synthesizeDispatchPrincipal', () => {
     expect([...p.capabilities].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
-  it('a pipeline role (no system principal) gets an EMPTY cap-set — capability-gated built-ins stay denied', async () => {
+  it('a pipeline role (no system principal) gets ONLY the universal tool-discovery cap — workflow built-ins stay denied', async () => {
     const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'worker', isSuperuser: false });
     expect(p.slug).toBe('system:worker');
-    expect(p.capabilities.size).toBe(0);
+    expect([...p.capabilities].sort()).toEqual([...UNIVERSAL_CAPS].sort());
   });
 
   it('superuser keeps an empty cap-set (it relies on gateBypass.capability, not loaded caps)', async () => {
