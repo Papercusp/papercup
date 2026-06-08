@@ -896,6 +896,25 @@ impl OperatorClient {
             .collect())
     }
 
+    /// The P2P hive directory — verified hives announced on the well-known
+    /// directory topic (`GET /api/discovery/hives`, p2p-hive-directory P-006).
+    pub async fn discovered_hives(&self) -> Result<Vec<crate::models::DiscoveredHiveRow>> {
+        let v = self.get_json("/api/discovery/hives").await?;
+        let resp: crate::models::DiscoveredHivesResponse =
+            serde_json::from_value(v).context("parse discovered-hives response")?;
+        Ok(resp.rows)
+    }
+
+    /// Join one member harness of a discovered hive (`POST /api/harness/join-link`).
+    /// The joiner's GitHub identity + device keychain are resolved server-side.
+    pub async fn join_hive_link(&self, slug: &str, harness_link_url: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/harness/join-link",
+            serde_json::json!({ "slug": slug, "harnessLinkUrl": harness_link_url }),
+        )
+        .await
+    }
+
     /// Whole-fleet assignments — every bee's ranked work-list in one call
     /// (`fleet:assignments {}` with NO `agent` filter). Drives the default Swarm
     /// dossier (pui-dock-consolidation-2026-06-07 #2 "show all tasks from the

@@ -435,8 +435,17 @@ async fn run<B: Backend>(
             }
             Action::FetchHives => {
                 // The federated p2p roster for the Hives tab — fetched off the
-                // UI thread → Event::Hives (pui-hives-tab-2026-06-07).
+                // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
+                // the P2P directory fetch (p2p-hive-directory P-006) so entering
+                // the tab populates both the live roster + the browseable hives.
                 tokio::spawn(fetch_hives(tx.clone()));
+                tokio::spawn(fetch_hive_directory(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::JoinHive { slug, links } => {
+                // Join every member harness of a discovered hive (P-006): POST each
+                // link to /api/harness/join-link off the UI thread → Notify/Error.
+                tokio::spawn(join_hive(slug, links, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::DocsAction { action, doc_id } => {
@@ -2107,6 +2116,49 @@ async fn fetch_hives(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Error(format!("hives: {e}")));
         }
     }
+}
+
+/// Fetch the P2P hive directory (`GET /api/discovery/hives`) and emit
+/// `Event::HiveDirectory` — the Hives tab's browseable directory list
+/// (p2p-hive-directory P-006). Best-effort: a fetch failure keeps the prior list.
+async fn fetch_hive_directory(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    match client.discovered_hives().await {
+        Ok(rows) => {
+            let _ = tx.send(Event::HiveDirectory(rows));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("hive-directory: {e}")));
+        }
+    }
+}
+
+/// Join every member harness of a discovered hive (p2p-hive-directory P-006):
+/// POST each link to `/api/harness/join-link`. Emits one `Notify` summarising
+/// how many succeeded (best-effort per link).
+async fn join_hive(slug: String, links: Vec<String>, tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        let _ = tx.send(Event::Error("join: operator unreachable".to_string()));
+        return;
+    };
+    let mut ok = 0usize;
+    for (i, link) in links.iter().enumerate() {
+        let member_slug = format!("{slug}-{i}");
+        match client.join_hive_link(&member_slug, link).await {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("join {member_slug}: {e}")));
+            }
+        }
+    }
+    let _ = tx.send(Event::Notify(models::Notif {
+        level: "info".to_string(),
+        message: format!("hive {slug}: joined {ok}/{} member harness(es)", links.len()),
+        harness: None,
+        ts: None,
+    }));
 }
 
 /// Fetch the whole-fleet assignments (`fleet:assignments`, no agent filter) and

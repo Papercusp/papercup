@@ -70,34 +70,56 @@ function moduleStatus(m: TestModule): TestRunRow['status'] {
   }
 }
 
-async function tryGetPg(): Promise<{
-  sql: ReturnType<typeof import('postgres')['default']> | null;
-} | null> {
-  try {
-    const pg = (await import('postgres')).default;
-    const url =
-      process.env.HARNESS_ADMIN_DATABASE_URL ??
-      process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
-      'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-    // 1s connect timeout per D-007 fail-soft.
-    const sql = pg(url, {
-      max: 1,
-      connect_timeout: 1,
-      idle_timeout: 1,
-      max_lifetime: 5,
-      onnotice: () => {},
-      // Silence postgres internal warnings — the reporter MUST stay quiet.
-    });
-    return { sql } as unknown as {
-      sql: ReturnType<typeof import('postgres')['default']> | null;
-    };
-  } catch (e) {
-    if (process.env.PAPERCUSP_DEBUG_REPORTER) {
-      const fs = await import('node:fs');
-      fs.appendFileSync('/tmp/_rep_dbg', `${new Date().toISOString()} tryGetPg-fail: ${e instanceof Error ? e.message : String(e)}
-`);
+type PgHandle = { sql: ReturnType<typeof import('postgres')['default']> } | null;
+
+// ONE shared pg client reused for EVERY per-file insert across the whole run,
+// memoized as a PROMISE so the fire-and-forget per-file inserts (onTestModuleEnd)
+// can't race into creating multiple clients. The original design opened a fresh
+// short-lived client per file; at scale that exhausted PG's connection slots —
+// operator-core runs ~950 files, and on a box near max_connections a DB-touching
+// test (adv-roster's listPendingWorkbenchLaunches) then hit "no connection slots",
+// which logged a warn that vitest-fail-on-console turned into a failure. Closed in
+// onTestRunEnd/onExit.
+let _pgPromise: Promise<PgHandle> | undefined;
+
+function tryGetPg(): Promise<PgHandle> {
+  if (_pgPromise) return _pgPromise;
+  _pgPromise = (async (): Promise<PgHandle> => {
+    try {
+      const pg = (await import('postgres')).default;
+      const url =
+        process.env.HARNESS_ADMIN_DATABASE_URL ??
+        process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+        'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+      // Tiny long-lived pool (≤2 conns) reused for the run. 1s connect timeout
+      // per D-007 fail-soft. No idle/lifetime churn — closed explicitly at end.
+      const sql = pg(url, {
+        max: 2,
+        connect_timeout: 1,
+        onnotice: () => {},
+        // Silence postgres internal warnings — the reporter MUST stay quiet.
+      });
+      return { sql };
+    } catch (e) {
+      if (process.env.PAPERCUSP_DEBUG_REPORTER) {
+        const fs = await import('node:fs');
+        fs.appendFileSync('/tmp/_rep_dbg', `${new Date().toISOString()} tryGetPg-fail: ${e instanceof Error ? e.message : String(e)}\n`);
+      }
+      return null;
     }
-    return null;
+  })();
+  return _pgPromise;
+}
+
+async function closeSharedPg(): Promise<void> {
+  const p = _pgPromise;
+  _pgPromise = undefined;
+  if (!p) return;
+  try {
+    const handle = await p;
+    if (handle?.sql) await handle.sql.end({ timeout: 2 });
+  } catch {
+    /* swallow — D-007 */
   }
 }
 
@@ -184,6 +206,8 @@ export default class AdminTestRunsReporter implements Reporter {
       ]);
     } catch {
       /* swallow — D-007 */
+    } finally {
+      await closeSharedPg();
     }
   }
 
@@ -195,9 +219,11 @@ export default class AdminTestRunsReporter implements Reporter {
       ]);
     } catch {
       /* swallow — D-007 */
+    } finally {
+      await closeSharedPg();
     }
   }
 }
 
-// Each insertRow opens its own short-lived pg client; nothing to close
-// at exit beyond awaiting pending inserts.
+// All inserts share ONE pg client (see tryGetPg), closed in onTestRunEnd/onExit
+// after the pending inserts settle.

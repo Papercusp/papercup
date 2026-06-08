@@ -449,6 +449,34 @@ pub struct CupboardListingsResponse {
     pub listings: Vec<CupboardListing>,
 }
 
+/// One discovered hive from `GET /api/discovery/hives` (p2p-hive-directory P-006).
+/// The verified, browseable directory listing the Hives tab renders + joins.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiscoveredHiveRow {
+    #[serde(rename = "hiveId", default)]
+    pub hive_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub visibility: String,
+    /// Full papercusp://harness?... join links per member harness (one-click join).
+    #[serde(rename = "memberLinks", default)]
+    pub member_links: Vec<String>,
+    #[serde(rename = "memberCount", default)]
+    pub member_count: u32,
+}
+
+/// `GET /api/discovery/hives` response envelope.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiscoveredHivesResponse {
+    #[serde(default)]
+    pub rows: Vec<DiscoveredHiveRow>,
+}
+
 // NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
 // (ActivityEvent/ActivityResponse) were removed with the tab (D-004b) — the
 // Fleet tab's `ActivityRow` (agent_activity) is the live activity surface.

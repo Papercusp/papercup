@@ -122,13 +122,14 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
         rows[0],
     );
 
-    if groups.is_empty() {
+    if groups.is_empty() && app.hive_directory.is_empty() {
         // The single-box reality until real peers announce: honest empty state.
         f.render_widget(
             Paragraph::new(
                 "no remote hives in the p2p swarm yet — this hive flies solo\n\n\
                  A hive appears here once another Papercusp install joins the\n\
-                 substrate and its announce lands in shared_presence.",
+                 substrate (live roster), or announces a public hive on the\n\
+                 directory topic (browse + join with J).",
             )
             .wrap(Wrap { trim: false })
             .style(Theme::panel())
@@ -168,16 +169,79 @@ pub fn draw_hives(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    // Body layout: the browseable DIRECTORY (p2p-hive-directory P-006) on top
+    // when non-empty, the live presence roster below. When the directory is
+    // empty we hand the whole body to the roster (the pre-P-006 behavior).
+    let (dir_area, roster_area) = if app.hive_directory.is_empty() {
+        (None, rows[1])
+    } else if groups.is_empty() {
+        (Some(rows[1]), Rect { height: 0, ..rows[1] })
+    } else {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[1]);
+        (Some(split[0]), split[1])
+    };
+
+    if let Some(area) = dir_area {
+        draw_directory(f, app, area);
+    }
+
+    if roster_area.height > 0 {
+        let mut state = ListState::default();
+        state.select(Some(app.hive_sel.min(groups.len().saturating_sub(1))));
+        let body = crate::ui::block_with_header(
+            f,
+            roster_area,
+            Theme::block(
+                Line::from(format!(" p2p swarm — {} live ", groups.len())),
+                groups.is_empty(),
+            ),
+            &format!("    {:<19}{:<12}{:<34}{}", "machine", "user", "doing", "harnesses"),
+        );
+        let list = List::new(items)
+            .style(Theme::panel())
+            .highlight_style(Theme::selected())
+            .highlight_symbol("> ");
+        f.render_stateful_widget(list, body, &mut state);
+    }
+}
+
+/// Render the browseable hive DIRECTORY (p2p-hive-directory P-006): each verified
+/// discovered hive (title · owner · N harnesses · visibility), `J` to join the
+/// first joinable one. A topic-only hive (no member links) shows "topics-only".
+fn draw_directory(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .hive_directory
+        .iter()
+        .map(|h| {
+            let joinable = if h.member_links.is_empty() {
+                Span::styled("  topics-only", Theme::dim())
+            } else {
+                Span::styled("  ⮐ J to join", Theme::info())
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {:<24} ", trunc(&h.title, 24))),
+                Span::styled(format!("@{:<14}", trunc(&h.owner, 14)), Theme::dim()),
+                Span::raw(format!("{:<28}", trunc(&h.description, 28))),
+                Span::styled(format!("{} harness ", h.member_count), Theme::info()),
+                joinable,
+            ]))
+        })
+        .collect();
     let mut state = ListState::default();
-    state.select(Some(app.hive_sel.min(groups.len().saturating_sub(1))));
+    if !app.hive_directory.is_empty() {
+        state.select(Some(app.hive_dir_sel.min(app.hive_directory.len() - 1)));
+    }
     let body = crate::ui::block_with_header(
         f,
-        rows[1],
+        area,
         Theme::block(
-            Line::from(format!(" p2p swarm — {} hives ", groups.len())),
+            Line::from(format!(" hive directory — {} to join (J) ", app.hive_directory.len())),
             true,
         ),
-        &format!("    {:<19}{:<12}{:<34}{}", "machine", "user", "doing", "harnesses"),
+        &format!(" {:<25}{:<15}{:<28}{}", "hive", "owner", "description", "harnesses"),
     );
     let list = List::new(items)
         .style(Theme::panel())

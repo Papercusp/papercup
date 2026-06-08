@@ -142,6 +142,9 @@ pub enum Event {
     /// The federated p2p roster for the Hives tab (pui-hives-tab-2026-06-07) —
     /// every remote peer announced into `shared_presence`, via `coord:presence`.
     Hives(Vec<crate::models::PresenceRow>),
+    /// The P2P hive directory (p2p-hive-directory P-006) — verified hives
+    /// announced on the directory topic, via `GET /api/discovery/hives`.
+    HiveDirectory(Vec<crate::models::DiscoveredHiveRow>),
     /// The active Hive lexicon pack, fetched once at startup
     /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
     LexiconPack(LexiconPackPayload),

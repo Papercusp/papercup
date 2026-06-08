@@ -199,6 +199,9 @@ pub enum Action {
     /// Fetch the federated p2p roster for the Hives tab
     /// (pui-hives-tab-2026-06-07) → `Event::Hives`.
     FetchHives,
+    /// Join every member harness of a discovered hive (p2p-hive-directory P-006):
+    /// POST each `links` entry to `/api/harness/join-link`. `slug` is the hive id.
+    JoinHive { slug: String, links: Vec<String> },
     /// Watch-pane chat (pui-dock-agent-stack): send the composer draft to the
     /// watched bee via coord:message-agent → `Event::BeeMessageSent`.
     SendBeeMessage { to: String, body: String },
@@ -885,6 +888,11 @@ pub struct App {
     /// Hives tab (pui-hives-tab-2026-06-07): the federated p2p roster (raw
     /// shared_presence rows; grouped per-machine at render) + the list cursor.
     pub hives: Vec<crate::models::PresenceRow>,
+    /// The P2P hive directory (p2p-hive-directory P-006) — discovered hives to
+    /// browse + join, via `GET /api/discovery/hives`. `hive_dir_sel` is the
+    /// selected directory row (for the Join CTA).
+    pub hive_directory: Vec<crate::models::DiscoveredHiveRow>,
+    pub hive_dir_sel: usize,
     pub hive_sel: usize,
     pub memories: Vec<crate::models::MemoryEntry>,
     pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
@@ -1188,6 +1196,8 @@ impl App {
             plugin_config: None,
             hives: Vec::new(),
             hive_sel: 0,
+            hive_directory: Vec::new(),
+            hive_dir_sel: 0,
             memories: Vec::new(),
             memory_hits: None,
             memory_sel: 0,
@@ -3026,6 +3036,14 @@ impl App {
                 self.hives = rows;
                 Action::Render
             }
+            Event::HiveDirectory(rows) => {
+                // The P2P hive directory landed (p2p-hive-directory P-006).
+                self.hive_directory = rows;
+                if self.hive_dir_sel >= self.hive_directory.len() {
+                    self.hive_dir_sel = self.hive_directory.len().saturating_sub(1);
+                }
+                Action::Render
+            }
             Event::BeeOutput {
                 owner,
                 offset,
@@ -4048,6 +4066,25 @@ impl App {
                 {
                     return self.refetch_conversations();
                 }
+                Action::Render
+            }
+            // Hives tab (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
+            // POST each of its member links to /api/harness/join-link. Picks the
+            // first JOINABLE directory hive (one carrying full member links); a
+            // topic-only hive lists fine but can't be one-click-joined.
+            KeyCode::Char('J') if self.tab == Tab::Hives => {
+                if let Some(h) = self.hive_directory.iter().find(|h| !h.member_links.is_empty()) {
+                    self.status = format!("joining hive {}…", h.title);
+                    return Action::JoinHive {
+                        slug: h.hive_id.clone(),
+                        links: h.member_links.clone(),
+                    };
+                }
+                self.status = if self.hive_directory.is_empty() {
+                    "no hives in the directory yet".to_string()
+                } else {
+                    "discovered hives published topics only — a full join link is required".to_string()
+                };
                 Action::Render
             }
             // Plugins tab (D-007/D-014): in Panes focus, Enter launches the
