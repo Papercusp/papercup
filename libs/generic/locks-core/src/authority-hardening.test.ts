@@ -11,7 +11,7 @@ import {
   staleWindowMs,
   type AuthorityRecord,
   type HardeningTiming,
-} from '../authority-hardening';
+} from './authority-hardening';
 
 const T: HardeningTiming = { heartbeatMs: 1000 }; // stale 3000, grace 1000, cooldown 2000
 

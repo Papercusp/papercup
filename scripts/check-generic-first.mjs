@@ -44,6 +44,19 @@ const IO_COUPLING_PKGS = new Set([
 // buffering, …) rather than a generic algorithm it implements.
 const ALLOW = new Set([
   'packages/operator-core/lib/voice-engines/elevenlabs-mse.ts', // "backpressure" = MSE audio buffering, app-specific
+  // generalize-libs-to-generic (cont.) 2026-06-08 (su-3911d): heuristic false positives from
+  // lint:generic-first:all — the concept keyword is incidental, not an algorithm the file implements.
+  'packages/operator-core/lib/harness/waves.ts', // "topological" = a comment word; this is promote-policy wave control over the papercusp feature-status vocabulary (passed/failing/validating/…), not a generic sort
+  'packages/operator-core/lib/operator-converse-tags.ts', // "nursery" = a comment ref to the spawn path; this is the operator-converse turn-tag parser (<say>/<spawn>/<report> + session hooks) — app protocol, imports @papercusp/chat-protocol
+  'packages/operator-core/lib/sync/hyperbee/swarm-guard.ts', // "rate limiter" = it already delegates the generic part to @papercusp/rate-limit; the rest is Hyperswarm-specific Noise-key/IP firewall + ban-list logic
+  // generalize-libs-to-generic (cont.) 2026-06-08 (su-9bac3): a TRUE positive consciously kept app-local.
+  // detectDependencyCycle IS a real Kahn cycle detector, but it's ~40 lines, single-use (one caller:
+  // harness/features.ts), and entangled with the domain resolveBlockedByRefs (FeatureRef id/title resolution)
+  // in this one file — extracting it isn't worth minting a new libs/generic workspace (npm-install +
+  // shared package-lock churn) for a tiny single-use core, and no existing generic graph lib fits it.
+  // Revisit if a generic graph-algorithms lib emerges or a second caller appears. (authority-hardening,
+  // the one clean-home extract this pass, DID move → @papercusp/locks-core.)
+  'packages/operator-core/lib/feature-deps.ts',
 ]);
 
 /**

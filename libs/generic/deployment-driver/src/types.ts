@@ -68,6 +68,13 @@ export interface DeploymentConfig {
    * resolves, never the secret itself, so configs are safe to persist/federate.
    */
   credentialRef?: string;
+  /**
+   * Logical id of the account whose `credentialRef` this is (cloud-deployment-layer
+   * Phase 7, P-019/P-020). When the host runs an account pool, deploy-time selection
+   * stamps this alongside `credentialRef`; the frame exports it so its rate governor
+   * keys per-account. A label, not a secret. Absent ⇒ unpooled / a single account.
+   */
+  accountId?: string;
   /** Opt-in frame desktop capability (virtual X displays for GUI agents). */
   desktop?: boolean | DesktopConfig;
   /** Provider-specific extras a driver narrows + validates (e.g. Latitude project id). */
@@ -130,6 +137,10 @@ export interface FrameBootstrapInput {
   env?: Record<string, string>;
   /** Local path to the credential bundle to stage on the frame (e.g. a Claude sub). */
   credentialsLocalPath?: string;
+  /** Logical id of the account this frame's credential belongs to — exported on the
+   *  frame as `PAPERCUSP_ACCOUNT_ID` so its rate governor buckets per-account (P-019).
+   *  A label, not a secret; omit for an unpooled single-account frame. */
+  accountId?: string;
   /** Local path to a long-lived OAuth token file (`claude setup-token` output) to
    *  stage on the frame and export as `CLAUDE_CODE_OAUTH_TOKEN` — the headless
    *  alternative to a `.credentials.json` bundle (no refresh-rotation races,

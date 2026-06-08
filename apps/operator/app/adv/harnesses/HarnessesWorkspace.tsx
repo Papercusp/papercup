@@ -9,10 +9,11 @@ import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcomeEmptyState from './HarnessWelcomeEmptyState';
 import HiveMemberRail from './HiveMemberRail';
+import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
-import { groupByHive } from './harness-hive-groups';
+import { groupByHive, type HiveGroup } from './harness-hive-groups';
 import './adv-dock.css';
 
 export interface AdvProjectEntry {
@@ -59,6 +60,10 @@ export default function HarnessesWorkspace() {
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
   const [projects, setProjects] = useState<AdvProjectEntry[]>([]);
+  // P-021: the registry now groups hive→members SERVER-side; prefer that field so
+  // the all-mode cards stop re-inferring the grouping client-side. Falls back to
+  // the shared `groupByHive` (same module) for an older payload without `hives`.
+  const [serverHives, setServerHives] = useState<HiveGroup<AdvProjectEntry>[] | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -66,8 +71,9 @@ export default function HarnessesWorkspace() {
     try {
       const r = await fetch('/api/harness/projects/lite');
       if (!r.ok) throw new Error(`projects/lite ${r.status}`);
-      const j = (await r.json()) as { projects: AdvProjectEntry[] };
+      const j = (await r.json()) as { projects: AdvProjectEntry[]; hives?: HiveGroup<AdvProjectEntry>[] };
       setProjects(j.projects);
+      setServerHives(j.hives ?? null);
       setProjectsError(null);
     } catch (e) {
       setProjectsError((e as Error).message);
@@ -101,7 +107,8 @@ export default function HarnessesWorkspace() {
   );
 
   // All-mode (P-003): every hive in the workspace, grouped by root subtree.
-  const groups = useMemo(() => groupByHive(projects), [projects]);
+  // Prefer the SERVER grouping (P-021); fall back to the shared client compute.
+  const groups = useMemo(() => serverHives ?? groupByHive(projects), [serverHives, projects]);
 
   // Drop a stale `?harness=` when the shell selector switches `?slug=` to a
   // different hive (the value no longer names a member). Guarded inside
@@ -144,6 +151,16 @@ export default function HarnessesWorkspace() {
   const hiveLabel = t('pot');
   const hivesLabel = t('pot', { plural: true });
 
+  // The hive header strip (P-022) — the selected hive's face. Shown for a real
+  // multi-member hive or a formal kind:'hive' home; a solo non-hive harness
+  // renders no header (zero regression, same gate the member rail uses).
+  const hiveRoot = useMemo(() => projects.find((p) => p.slug === slug) ?? null, [projects, slug]);
+  const showHiveHeader = !!slug && (members.length > 1 || hiveRoot?.harness_kind === 'hive');
+  const headerMembers = useMemo(
+    () => members.map((m) => ({ slug: m.slug, hasState: livenessBySlug[m.slug] ?? false })),
+    [members, livenessBySlug],
+  );
+
   return (
     <div className="pc-adv-harnesses pc-adv-dock">
       {allMode ? (
@@ -156,6 +173,16 @@ export default function HarnessesWorkspace() {
         />
       ) : (
         <>
+          {/* The hive header strip (P-022) — the selected hive's face above the
+              member surface. Gated so a solo non-hive harness is byte-identical. */}
+          {showHiveHeader && (
+            <HiveHeaderStrip
+              hiveSlug={slug}
+              hiveKind={hiveRoot?.harness_kind ?? null}
+              isShared={hiveRoot?.is_shared}
+              members={headerMembers}
+            />
+          )}
           {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
               (`?harness=` resolved against the hive's members), not the raw hive
               `?slug=` — so a hive with several member harnesses shows the picked

@@ -91,6 +91,9 @@ export async function buildDeployBootstrapInput(
     ports: env?.ports,
     env: env?.env,
     ...resolveCredential(config.credentialRef),
+    // P-019: carry the bound account id to the frame so its rate governor keys
+    // per-account (exported as PAPERCUSP_ACCOUNT_ID by the bootstrap).
+    accountId: config.accountId,
     runtimeTarballLocalPath: resolveRuntimeTarball(config),
     instanceConfigJson,
   };

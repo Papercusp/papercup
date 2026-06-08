@@ -2,33 +2,33 @@
  * POST /api/admin/substrate/revoke-contributor
  *
  * Plan: non-collaborator-join-fork-pr-2026-06-02 D-001 (supersedes the old
- * substrate-revocation-v2 branch-delete design).
+ * substrate-revocation-v2 branch-delete design) + shared-hive-federation-2026-06-08
+ * P-006 (the Hive-scope generalization).
  *
- * OWNER action: revoke a bad-actor contributor by adding their device pubkeys
- * to the harness revocation set (the owner's own contributor-row
- * `revoked_pubkeys`, which federates and is honored by every peer's
- * `read-admission` union). The contributor is dropped from live federation on
- * the next admission re-verify. (The old branch-delete is a no-op in the
- * write-free model — admission is gated on the attestation gist, not a branch.)
+ * OWNER action: revoke a bad-actor contributor by adding their device pubkeys to a
+ * revocation set (the owner's own row's `revoked_pubkeys`, which federates and is
+ * honored by every peer's `read-admission` union). The contributor is dropped from
+ * live federation on the next admission re-verify. (The old branch-delete is a
+ * no-op in the write-free model — admission is gated on the attestation gist.)
  *
- * Only a repo admin may invoke this endpoint (enforced via the `repos.get`
- * admin-check in the core — and the `auth: { trust: ['verified', 'trusted'] }`
- * gate at the operator level).
+ * Two scopes (exactly one of `harnessSlug` / `hiveSlug`):
+ *   - `harnessSlug` — revoke from ONE shared harness. Authority = repo-admin token.
+ *   - `hiveSlug`    — revoke from the WHOLE Hive's federation at once (P-006).
+ *                     Authority = the Swarm that holds the Hive private key.
  *
- * Auth: `{ trust: ['verified', 'trusted'] }` — same gate as the sibling
- * admin substrate endpoints. Admin-only.
+ * Auth: `{ trust: ['verified', 'trusted'] }` — same gate as the sibling admin
+ * substrate endpoints. Admin-only.
  *
- * Core logic is `handleRevokeContributor(input, deps)` (deps injected)
- * so it's unit-testable without a live GitHub / substrate.
+ * Core logic is `handleRevokeContributor(input, deps)` (deps injected) so it's
+ * unit-testable without a live GitHub / substrate / Hive key.
  *
  * Status-code mapping:
- *   ok:true              → 200 (revokedPubkeys + live)
- *   not_admin            → 403 (caller's gh token is not a repo admin)
- *   no_context           → 404 (harness not shared / gh not authed)
- *   no_target            → 404 (target has no device pubkeys — nothing to revoke)
- *   bad input            → 400 (missing/invalid fields, non-int githubUserId)
- *   github_error         → 502 (upstream GitHub API failure)
- *   revoke_failed        → 500 (substrate publish of the revocation failed)
+ *   ok:true                          → 200 (revokedPubkeys + live)
+ *   harness: not_admin               → 403 · no_context → 404 · no_target → 404
+ *            github_error            → 502 · revoke_failed → 500
+ *   hive:    not_owner               → 403 · no_owner_identity → 400 · no_owner_row → 404
+ *            no_target               → 404 · bad_target → 400 · revoke_failed → 500
+ *   bad input                        → 400
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
@@ -36,24 +36,38 @@ import {
   revokeContributorViaGithub,
   type RevokeContributorSeams,
 } from '../../../sync/hyperbee/revoke-contributor';
+import {
+  revokeHiveContributor,
+  type RevokeHiveContributorResult,
+} from '../../../hive-revoke-contributor';
 
 // ─── injectable core ──────────────────────────────────────────────────────────
 
 export interface RevokeContributorEndpointInput {
   workspaceId: string;
-  harnessSlug: string;
+  /** Harness scope (provide exactly one of harnessSlug / hiveSlug). */
+  harnessSlug?: string;
+  /** Hive scope — revoke from the whole Hive's federation (P-006). */
+  hiveSlug?: string;
   githubUserId: number;
 }
 
 export interface RevokeContributorEndpointDeps {
   revoke: (
-    input: RevokeContributorEndpointInput,
+    input: { workspaceId: string; harnessSlug: string; githubUserId: number },
     seams?: RevokeContributorSeams,
   ) => ReturnType<typeof revokeContributorViaGithub>;
+  /** Hive-scope revoke (P-006). Defaults to the real `revokeHiveContributor`. */
+  revokeHive?: (input: {
+    workspaceId: string;
+    hiveHomeSlug: string;
+    githubUserId: number;
+  }) => ReturnType<typeof revokeHiveContributor>;
 }
 
 const realDeps: RevokeContributorEndpointDeps = {
   revoke: (input) => revokeContributorViaGithub(input),
+  revokeHive: (input) => revokeHiveContributor(input),
 };
 
 function parseBody(body: unknown): RevokeContributorEndpointInput | { error: string } {
@@ -64,9 +78,12 @@ function parseBody(body: unknown): RevokeContributorEndpointInput | { error: str
 
   const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
   const harnessSlug = typeof b.harnessSlug === 'string' ? b.harnessSlug.trim() : '';
+  const hiveSlug = typeof b.hiveSlug === 'string' ? b.hiveSlug.trim() : '';
 
   if (!workspaceId) return { error: 'workspaceId is required and must be a non-empty string' };
-  if (!harnessSlug) return { error: 'harnessSlug is required and must be a non-empty string' };
+  if (!!harnessSlug === !!hiveSlug) {
+    return { error: 'provide exactly one of harnessSlug (harness scope) or hiveSlug (Hive scope)' };
+  }
 
   // githubUserId must be a positive integer.
   const rawId = b.githubUserId;
@@ -77,14 +94,93 @@ function parseBody(body: unknown): RevokeContributorEndpointInput | { error: str
     };
   }
 
-  return { workspaceId, harnessSlug, githubUserId: rawId };
+  return hiveSlug
+    ? { workspaceId, hiveSlug, githubUserId: rawId }
+    : { workspaceId, harnessSlug, githubUserId: rawId };
+}
+
+/** Map a Hive-scope revoke result to its HTTP response (P-006). */
+function hiveResponse(result: RevokeHiveContributorResult): Response {
+  if (result.ok) return Response.json(result);
+  switch (result.code) {
+    case 'not_owner':
+      return Response.json(
+        {
+          error:
+            'Only the Swarm that holds the Hive private key may revoke a contributor Hive-wide',
+          code: result.code,
+        },
+        { status: 403 },
+      );
+    case 'no_owner_identity':
+      return Response.json(
+        {
+          error: 'Could not resolve the local owner GitHub identity (gh not authenticated)',
+          code: result.code,
+        },
+        { status: 400 },
+      );
+    case 'no_owner_row':
+      return Response.json(
+        {
+          error: 'The owner has no hive_members row — join the Hive before revoking',
+          code: result.code,
+          detail: result.detail,
+        },
+        { status: 404 },
+      );
+    case 'no_target':
+      return Response.json(
+        {
+          error:
+            'The target contributor has no known device pubkeys in this Hive — nothing to revoke',
+          code: result.code,
+        },
+        { status: 404 },
+      );
+    case 'bad_target':
+      return Response.json(
+        { error: 'githubUserId must be a positive integer', code: result.code, detail: result.detail },
+        { status: 400 },
+      );
+    case 'revoke_failed':
+      return Response.json(
+        {
+          error: 'Failed to publish the Hive revocation to the substrate',
+          code: result.code,
+          detail: result.detail,
+        },
+        { status: 500 },
+      );
+    default: {
+      const _never: never = result;
+      return Response.json({ error: 'unexpected error', detail: String(_never) }, { status: 500 });
+    }
+  }
 }
 
 export async function handleRevokeContributor(
   input: RevokeContributorEndpointInput,
   deps: RevokeContributorEndpointDeps = realDeps,
 ): Promise<Response> {
-  const result = await deps.revoke(input);
+  // ── Hive scope (P-006) ──
+  if (input.hiveSlug) {
+    const revokeHive = deps.revokeHive ?? realDeps.revokeHive!;
+    return hiveResponse(
+      await revokeHive({
+        workspaceId: input.workspaceId,
+        hiveHomeSlug: input.hiveSlug,
+        githubUserId: input.githubUserId,
+      }),
+    );
+  }
+
+  // ── Harness scope (unchanged) ──
+  const result = await deps.revoke({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug!,
+    githubUserId: input.githubUserId,
+  });
 
   if (result.ok) {
     return Response.json(result);

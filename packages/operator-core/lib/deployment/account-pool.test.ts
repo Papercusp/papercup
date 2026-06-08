@@ -1,0 +1,201 @@
+/**
+ * Unit tests for the pure account-pool core (cloud-deployment-layer Phase 7,
+ * P-019/P-020/P-021). No PG / governor / deploy IO — pure value transforms.
+ * Run: cd packages/operator-core && npx vitest run account-pool
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  emptyPool,
+  registerAccount,
+  removeAccount,
+  getAccount,
+  accountByCredentialRef,
+  bindAccount,
+  unbindAccount,
+  recordAccountPenalty,
+  recordAccountReset,
+  isAvailable,
+  isSustainedlyLimited,
+  selectAccountByHeadroom,
+  decideScaleOut,
+  AccountPoolError,
+  DEFAULT_SCALE_POLICY,
+  type AccountPool,
+} from './account-pool';
+
+const T0 = 1_000_000_000_000; // a fixed epoch-ms base
+const MIN = 60_000;
+
+function poolOf(...ids: string[]): AccountPool {
+  let p = emptyPool();
+  ids.forEach((id, i) => (p = registerAccount(p, { id, credentialRef: `token:~/.papercusp/${id}` }, T0 + i)));
+  return p;
+}
+
+describe('registerAccount', () => {
+  it('appends a fresh account with empty bindings + zeroed rate state', () => {
+    const p = registerAccount(emptyPool(), { id: 'acct-1', credentialRef: 'token:~/t', label: 'main' }, T0);
+    const a = getAccount(p, 'acct-1')!;
+    expect(a).toMatchObject({ id: 'acct-1', credentialRef: 'token:~/t', label: 'main', addedAt: T0, boundTo: [] });
+    expect(a.rate).toEqual({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 });
+  });
+
+  it('is idempotent on a repeat id — updates credentialRef/label, preserves bindings + rate', () => {
+    let p = registerAccount(emptyPool(), { id: 'acct-1', credentialRef: 'token:~/old' }, T0);
+    p = bindAccount(p, 'acct-1', 'harness-a');
+    p = recordAccountPenalty(p, 'acct-1', T0 + MIN, { pausedUntil: T0 + 5 * MIN });
+    p = registerAccount(p, { id: 'acct-1', credentialRef: 'token:~/new', label: 'renamed' }, T0 + 99);
+    const a = getAccount(p, 'acct-1')!;
+    expect(p.accounts).toHaveLength(1);
+    expect(a.credentialRef).toBe('token:~/new');
+    expect(a.label).toBe('renamed');
+    expect(a.boundTo).toEqual(['harness-a']);
+    expect(a.rate.pausedUntil).toBe(T0 + 5 * MIN);
+  });
+
+  it('rejects ids containing the bucket-key delimiters or empty credentialRef', () => {
+    expect(() => registerAccount(emptyPool(), { id: 'a:b', credentialRef: 'x' }, T0)).toThrow(AccountPoolError);
+    expect(() => registerAccount(emptyPool(), { id: 'a@b', credentialRef: 'x' }, T0)).toThrow(AccountPoolError);
+    expect(() => registerAccount(emptyPool(), { id: 'ok', credentialRef: '  ' }, T0)).toThrow(/credentialRef/);
+  });
+});
+
+describe('remove / lookup / bind / unbind', () => {
+  it('removeAccount drops it', () => {
+    const p = removeAccount(poolOf('a', 'b'), 'a');
+    expect(p.accounts.map((x) => x.id)).toEqual(['b']);
+  });
+
+  it('accountByCredentialRef reverse-looks-up', () => {
+    const p = poolOf('a', 'b');
+    expect(accountByCredentialRef(p, 'token:~/.papercusp/b')?.id).toBe('b');
+    expect(accountByCredentialRef(p, 'nope')).toBeUndefined();
+  });
+
+  it('bind is idempotent; unbind removes the slug from whichever account holds it', () => {
+    let p = poolOf('a', 'b');
+    p = bindAccount(bindAccount(p, 'a', 'h1'), 'a', 'h1'); // double-bind = one entry
+    expect(getAccount(p, 'a')!.boundTo).toEqual(['h1']);
+    p = bindAccount(p, 'b', 'h2');
+    p = unbindAccount(p, 'h1');
+    expect(getAccount(p, 'a')!.boundTo).toEqual([]);
+    expect(getAccount(p, 'b')!.boundTo).toEqual(['h2']);
+  });
+});
+
+describe('recordAccountPenalty + window rolling', () => {
+  it('opens a window of 1, then increments inside the window', () => {
+    let p = poolOf('a');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
+    expect(getAccount(p, 'a')!.rate).toMatchObject({ penaltyCount: 1, windowStartedAt: T0, lastPenaltyAt: T0 });
+    p = recordAccountPenalty(p, 'a', T0 + 2 * MIN, { pausedUntil: T0 + 3 * MIN });
+    expect(getAccount(p, 'a')!.rate).toMatchObject({ penaltyCount: 2, windowStartedAt: T0 });
+  });
+
+  it('a penalty past the window opens a fresh count', () => {
+    let p = poolOf('a');
+    p = recordAccountPenalty(p, 'a', T0, {});
+    p = recordAccountPenalty(p, 'a', T0 + DEFAULT_SCALE_POLICY.windowMs + 1, {});
+    expect(getAccount(p, 'a')!.rate.penaltyCount).toBe(1);
+    expect(getAccount(p, 'a')!.rate.windowStartedAt).toBe(T0 + DEFAULT_SCALE_POLICY.windowMs + 1);
+  });
+
+  it('pausedUntil advances monotonically (never shortened by a later, nearer penalty)', () => {
+    let p = poolOf('a');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
+    p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 2 * MIN });
+    expect(getAccount(p, 'a')!.rate.pausedUntil).toBe(T0 + 10 * MIN);
+  });
+
+  it('a penalty for an unknown id is a no-op', () => {
+    const p = recordAccountPenalty(poolOf('a'), 'ghost', T0, { pausedUntil: T0 + MIN });
+    expect(getAccount(p, 'a')!.rate.penaltyCount).toBe(0);
+  });
+
+  it('recordAccountReset clears the rate state', () => {
+    let p = recordAccountPenalty(poolOf('a'), 'a', T0, { pausedUntil: T0 + 10 * MIN });
+    p = recordAccountReset(p, 'a');
+    expect(getAccount(p, 'a')!.rate).toEqual({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 });
+  });
+});
+
+describe('isAvailable / isSustainedlyLimited', () => {
+  it('isAvailable reflects the pause window', () => {
+    let p = recordAccountPenalty(poolOf('a'), 'a', T0, { pausedUntil: T0 + 5 * MIN });
+    expect(isAvailable(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
+    expect(isAvailable(getAccount(p, 'a')!, T0 + 6 * MIN)).toBe(true);
+  });
+
+  it('a long pause (≥ longPauseMs ahead) is sustained immediately', () => {
+    const p = recordAccountPenalty(poolOf('a'), 'a', T0, { pausedUntil: T0 + 31 * MIN });
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0)).toBe(true);
+  });
+
+  it('threshold penalties within the window is sustained; below it is not', () => {
+    let p = poolOf('a');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
+    p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 2 * MIN });
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + MIN)).toBe(false); // 2 < 3
+    p = recordAccountPenalty(p, 'a', T0 + 2 * MIN, { pausedUntil: T0 + 3 * MIN });
+    expect(isSustainedlyLimited(getAccount(p, 'a')!, T0 + 2 * MIN)).toBe(true); // 3 ≥ 3
+  });
+});
+
+describe('selectAccountByHeadroom (P-020)', () => {
+  it('returns undefined when the pool is empty / all excluded / all paused', () => {
+    expect(selectAccountByHeadroom(emptyPool(), T0)).toBeUndefined();
+    expect(selectAccountByHeadroom(poolOf('a'), T0, { exclude: ['a'] })).toBeUndefined();
+    const paused = recordAccountPenalty(poolOf('a'), 'a', T0, { pausedUntil: T0 + 10 * MIN });
+    expect(selectAccountByHeadroom(paused, T0 + MIN)).toBeUndefined();
+  });
+
+  it('skips paused accounts and picks an available one', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 10 * MIN });
+    expect(selectAccountByHeadroom(p, T0 + MIN)!.id).toBe('b');
+  });
+
+  it('prefers the least-recently-penalized available account', () => {
+    let p = poolOf('a', 'b');
+    // both available now, but b was penalized more recently
+    p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 1 }); // pause already elapsed by T0+MIN
+    expect(selectAccountByHeadroom(p, T0 + MIN)!.id).toBe('a');
+  });
+
+  it('preferUnbound spreads load to a fresh account', () => {
+    let p = poolOf('a', 'b');
+    p = bindAccount(p, 'a', 'h1'); // a bound; a was added first so without preferUnbound it'd tie-break to... fewest bindings = b
+    expect(selectAccountByHeadroom(p, T0, { preferUnbound: true })!.id).toBe('b');
+  });
+});
+
+describe('decideScaleOut (P-021)', () => {
+  it('not-sustained when the exhausted account has not crossed the threshold', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
+    const d = decideScaleOut(p, 'a', T0 + 30_000);
+    expect(d).toEqual({ provision: false, reason: 'not-sustained' });
+  });
+
+  it('provisions a fresh account when sustained + a fresh one exists', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 31 * MIN }); // long pause = sustained
+    const d = decideScaleOut(p, 'a', T0);
+    expect(d).toEqual({ provision: true, account: expect.objectContaining({ id: 'b' }) });
+  });
+
+  it('no-fresh-account when sustained but every other account is paused too', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 31 * MIN });
+    p = recordAccountPenalty(p, 'b', T0, { pausedUntil: T0 + 20 * MIN });
+    const d = decideScaleOut(p, 'a', T0);
+    expect(d).toEqual({ provision: false, reason: 'no-fresh-account' });
+  });
+
+  it('requireSustained:false provisions even on a single penalty (the manual-trigger path)', () => {
+    let p = poolOf('a', 'b');
+    p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + MIN });
+    const d = decideScaleOut(p, 'a', T0 + 30_000, { requireSustained: false });
+    expect(d).toMatchObject({ provision: true, account: { id: 'b' } });
+  });
+});

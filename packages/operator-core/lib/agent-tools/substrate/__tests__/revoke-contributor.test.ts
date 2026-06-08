@@ -11,11 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const VALID = { workspaceId: 'ws1', harnessSlug: 'papercup', githubUserId: 12345 };
 
-beforeEach(() => vi.resetModules());
-afterEach(() => vi.doUnmock('../../../sync/hyperbee/revoke-contributor'));
+const VALID_HIVE = { workspaceId: 'ws1', hiveSlug: 'acme-hive', githubUserId: 12345 };
 
-async function loadTool(revokeContributorViaGithub = vi.fn()) {
+beforeEach(() => vi.resetModules());
+afterEach(() => {
+  vi.doUnmock('../../../sync/hyperbee/revoke-contributor');
+  vi.doUnmock('../../../hive-revoke-contributor');
+});
+
+async function loadTool(revokeContributorViaGithub = vi.fn(), revokeHiveContributor = vi.fn()) {
   vi.doMock('../../../sync/hyperbee/revoke-contributor', () => ({ revokeContributorViaGithub }));
+  vi.doMock('../../../hive-revoke-contributor', () => ({ revokeHiveContributor }));
   const { default: tool } = await import('../revoke-contributor');
   return tool;
 }
@@ -57,5 +63,38 @@ describe('substrate:revoke_contributor tool', () => {
     const tool = await loadTool(vi.fn(async () => result));
     const res = await tool.handler(VALID);
     expect(JSON.parse(res.content[0].text)).toEqual(result);
+  });
+
+  // ── P-006: Hive-scope generalization ──────────────────────────────────────
+  it('args schema accepts a Hive-scoped invocation (hiveSlug instead of harnessSlug)', async () => {
+    const tool = await loadTool();
+    expect(tool.args.safeParse(VALID_HIVE).success).toBe(true);
+  });
+
+  it('args schema rejects BOTH harnessSlug and hiveSlug (exactly one scope)', async () => {
+    const tool = await loadTool();
+    expect(
+      tool.args.safeParse({ ...VALID, hiveSlug: 'acme-hive' }).success,
+    ).toBe(false);
+  });
+
+  it('args schema rejects NEITHER harnessSlug nor hiveSlug (a scope is required)', async () => {
+    const tool = await loadTool();
+    expect(tool.args.safeParse({ workspaceId: 'ws1', githubUserId: 12345 }).success).toBe(false);
+  });
+
+  it('Hive scope delegates to revokeHiveContributor (NOT the harness revoke)', async () => {
+    const harnessRevoke = vi.fn();
+    const hiveResult = { ok: true, revokedPubkeys: ['pk1', 'pk2'], live: false };
+    const hiveRevoke = vi.fn(async () => hiveResult);
+    const tool = await loadTool(harnessRevoke, hiveRevoke);
+    const res = await tool.handler(VALID_HIVE);
+    expect(hiveRevoke).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      hiveHomeSlug: 'acme-hive',
+      githubUserId: 12345,
+    });
+    expect(harnessRevoke).not.toHaveBeenCalled();
+    expect(JSON.parse(res.content[0].text)).toEqual(hiveResult);
   });
 });

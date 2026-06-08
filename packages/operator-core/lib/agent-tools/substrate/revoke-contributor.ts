@@ -1,51 +1,85 @@
 /**
- * substrate:revoke_contributor — MCP tool for OWNER-revocation of another contributor.
+ * substrate:revoke_contributor — OWNER-revocation of another contributor, at
+ * HARNESS scope or HIVE scope.
  *
  * Plan: non-collaborator-join-fork-pr-2026-06-02 D-001 (supersedes the old
- * substrate-revocation-v2 branch-delete design).
+ * substrate-revocation-v2 branch-delete design) + shared-hive-federation-2026-06-08
+ * P-006 (the Hive-scope generalization).
  *
- * OWNER action: revoke a bad-actor contributor by adding their device pubkeys to
- * the harness revocation set (the owner's own contributor-row `revoked_pubkeys`,
- * which federates and is honored by every peer's `read-admission` union). The
- * contributor is dropped from live federation on the next admission re-verify.
- * Replaces the old branch-delete, which is a no-op in the write-free model
- * (admission is gated on the attestation gist, not a repo branch).
+ * OWNER action: revoke a bad-actor contributor by adding their device pubkeys to a
+ * revocation set (the owner's own row's `revoked_pubkeys`, which federates and is
+ * honored by every peer's `read-admission` union). The contributor is dropped from
+ * live federation on the next admission re-verify. Replaces the old branch-delete,
+ * which is a no-op in the write-free model (admission is gated on the attestation
+ * gist, not a repo branch).
  *
- * Requires repo-admin GitHub token (the harness-owner authority gate).
+ * Two scopes (provide exactly one):
+ *   - `harnessSlug` — revoke from ONE shared harness's federation (the per-harness
+ *     revoked set; authority = repo-admin GitHub token).
+ *   - `hiveSlug` — revoke from the WHOLE Hive (all its harnesses' federation) in one
+ *     action — the "join the Hive once, revoke from the Hive once" symmetry (P-006).
+ *     Authority = the Swarm that HOLDS the Hive private key (keypair-native, not
+ *     gh-repo-admin — a Hive may be repo-less).
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { revokeContributorViaGithub } from '../../sync/hyperbee/revoke-contributor';
+import { revokeHiveContributor } from '../../hive-revoke-contributor';
 
 export default defineTool({
   name: 'substrate:revoke_contributor',
   profile: 'engineer',
   description:
-    "OWNER action: revoke another contributor from a shared harness by adding their device pubkeys to the harness revocation set (revoked_pubkeys). Every peer honors it on the next admission re-verify and drops them from live federation. Requires repo-admin token.",
+    "OWNER action: revoke another contributor by adding their device pubkeys to a revocation set. Scope is per-HARNESS (`harnessSlug`) or per-HIVE (`hiveSlug` — revokes from the whole Hive's federation at once, P-006). Every peer honors it on the next admission re-verify and drops them from live federation. Harness scope requires a repo-admin token; Hive scope requires holding the Hive key.",
   capability: 'intel:write',
   guidance: {
-    when: "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to the harness revocation set (requires repo-admin token). Every peer drops them on its next admission re-verify. Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared harness's federation entirely.",
+    when: "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to a revocation set. Pass `harnessSlug` to drop them from ONE harness's federation (repo-admin token), or `hiveSlug` to drop them from the WHOLE Hive's federation in one action (P-006 — requires this Swarm to hold the Hive key). Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared federation entirely.",
     notWhen:
-      'Revoking your OWN device — use `substrate:revoke_self_device` instead. Also not when the token does not have GitHub admin permissions on the shared repo.',
+      'Revoking your OWN device — use `substrate:revoke_self_device` instead. For harness scope, not when the token lacks GitHub admin on the shared repo. For Hive scope, not when this Swarm does not hold the Hive private key (only the owning Swarm may revoke Hive-wide).',
     chaining:
-      "Resolve the contributor's githubUserId from the Contributors tab, `dev:dogfood_substrate_status`, or `harness:membership` first — githubUserId is the stable numeric GitHub user id, not the login.",
+      "Resolve the contributor's githubUserId from the Contributors tab, `dev:dogfood_substrate_status`, `harness:membership`, or `hive:get` first — githubUserId is the stable numeric GitHub user id, not the login.",
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'debugger', 'architect'],
-  args: z.object({
-    workspaceId: z.string().min(1).describe('The workspace ID the harness belongs to.'),
-    harnessSlug: z.string().min(1).describe('The harness slug to revoke the contributor from.'),
-    githubUserId: z
-      .number()
-      .int()
-      .positive()
-      .describe(
-        'The NUMERIC GitHub user id of the contributor to revoke (e.g. 12345). This is the stable id, not the login string. Their device pubkeys are added to the harness revocation set.',
-      ),
-  }),
+  args: z
+    .object({
+      workspaceId: z.string().min(1).describe('The workspace ID the harness/Hive belongs to.'),
+      harnessSlug: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('HARNESS-scoped revoke: the harness slug. Provide EITHER harnessSlug OR hiveSlug.'),
+      hiveSlug: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "HIVE-scoped revoke: the Hive's home slug — revokes the contributor from the WHOLE Hive's federation (all its harnesses) at once (P-006). Provide EITHER harnessSlug OR hiveSlug.",
+        ),
+      githubUserId: z
+        .number()
+        .int()
+        .positive()
+        .describe(
+          'The NUMERIC GitHub user id of the contributor to revoke (e.g. 12345). This is the stable id, not the login string. Their device pubkeys are added to the revocation set.',
+        ),
+    })
+    .refine((a) => !!a.harnessSlug !== !!a.hiveSlug, {
+      message: 'Provide exactly one of harnessSlug (harness scope) or hiveSlug (Hive scope).',
+    }),
   async handler(args) {
-    const result = await revokeContributorViaGithub(args);
+    const result = args.hiveSlug
+      ? await revokeHiveContributor({
+          workspaceId: args.workspaceId,
+          hiveHomeSlug: args.hiveSlug,
+          githubUserId: args.githubUserId,
+        })
+      : await revokeContributorViaGithub({
+          workspaceId: args.workspaceId,
+          harnessSlug: args.harnessSlug!,
+          githubUserId: args.githubUserId,
+        });
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };

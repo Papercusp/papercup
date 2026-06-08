@@ -118,4 +118,54 @@ describe('handleRevokeContributor', () => {
       githubUserId: 99,
     });
   });
+
+  // ── P-006: Hive-scope revoke ──────────────────────────────────────────────
+  const HIVE_INPUT: RevokeContributorEndpointInput = {
+    workspaceId: 'ws1',
+    hiveSlug: 'acme-hive',
+    githubUserId: 12345,
+  };
+
+  it('Hive scope: 200 on success (delegates to revokeHive, not the harness revoke)', async () => {
+    const revoke = vi.fn();
+    const revokeHive = vi.fn(async () => ({
+      ok: true as const,
+      revokedPubkeys: ['ed25519:k1', 'ed25519:k2'],
+      live: false,
+    }));
+    const res = await handleRevokeContributor(HIVE_INPUT, { revoke, revokeHive });
+    expect(res.status).toBe(200);
+    expect((await res.json()).revokedPubkeys).toEqual(['ed25519:k1', 'ed25519:k2']);
+    expect(revokeHive).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      hiveHomeSlug: 'acme-hive',
+      githubUserId: 12345,
+    });
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it('Hive scope: 403 on not_owner (only the Hive-key holder may revoke)', async () => {
+    const revokeHive = vi.fn(async () => ({ ok: false as const, code: 'not_owner' as const }));
+    const res = await handleRevokeContributor(HIVE_INPUT, { revoke: vi.fn(), revokeHive });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('not_owner');
+  });
+
+  it('Hive scope: 404 on no_owner_row (owner must join the Hive first)', async () => {
+    const revokeHive = vi.fn(async () => ({
+      ok: false as const,
+      code: 'no_owner_row' as const,
+      detail: 'no row',
+    }));
+    const res = await handleRevokeContributor(HIVE_INPUT, { revoke: vi.fn(), revokeHive });
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('no_owner_row');
+  });
+
+  it('Hive scope: 404 on no_target', async () => {
+    const revokeHive = vi.fn(async () => ({ ok: false as const, code: 'no_target' as const }));
+    const res = await handleRevokeContributor(HIVE_INPUT, { revoke: vi.fn(), revokeHive });
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('no_target');
+  });
 });
