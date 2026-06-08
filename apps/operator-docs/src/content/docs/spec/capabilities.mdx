@@ -311,7 +311,7 @@ papercup@0.0.1 requests these permissions:
 
   MEDIUM-IMPACT:
   ✓ Read and register routines
-  ✓ Register 5 roles: orchestrator, worker, validator, documenter, summarizer
+  ✓ Register 5 roles: orchestrator, worker, validator, documenter, curator
   ✓ Emit 4 plugin-defined hooks: directive-routed, proposal-accepted, budget-allocated, project-launched
   ✓ Subscribe to 2 hooks: market-signal, capability-released
 
@@ -346,10 +346,21 @@ Approve all? [Y/n/per-line]: y
       </p>
 
       <p>
-        Substrate authors implementing this: keep the file as the durable
-        record-of-truth (survives restart), but treat the in-memory Set as
-        the runtime authority. On startup, load the file into memory; on
-        revocation, update memory first, then write the file.
+        Substrate authors implementing this: keep a durable record-of-truth
+        (survives restart), but treat the in-memory Set as the runtime
+        authority. On startup, load the durable record into memory; on
+        revocation, update memory first, then persist.
+      </p>
+
+      <p>
+        <em>Implementation note: in the shipped operator the durable
+        record-of-truth is Postgres — <code>harness_shared.plugin_capability_grants</code>
+        (Migration 051), not the file. The CLI consent flow (§10.3) still writes
+        <code>~/.papercusp/granted-capabilities.json</code>, but the operator
+        treats that file as a read-only legacy fallback for installs that predate
+        the PG store; runtime checks go through <code>plugin-grants.ts</code>'s
+        <code>hasCapability()</code>, which ANDs the manifest caps with the
+        granted set from PG.</em>
       </p>
 
       ```typescript

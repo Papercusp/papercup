@@ -29,6 +29,17 @@ sidebar:
             <td>`tasks` (initial breakdown), `validation_contract`</td>
           </tr>
           <tr>
+            <td colspan="4"><em>Implementation note: in the shipped Papercup pipeline the
+            single "Planner" role above is realized as two roles — <strong>Scoper</strong>
+            (scope + acceptance) followed by <strong>Architect</strong> (technical
+            breakdown). The canonical role ids live in <code>AGENT_ROLES</code>
+            (<code>packages/agent-mcp/src/role-config.ts</code>): the pipeline is
+            scoper → architect → worker → validator → reviewer → debugger →
+            documenter → curator, plus the cross-cutting <code>orchestrator</code>,
+            <code>operator</code>, and <code>oracle</code> roles. There is no
+            <code>planner</code> role id today.</em></td>
+          </tr>
+          <tr>
             <td><strong>Worker</strong></td>
             <td>Every iteration with a `todo`/`failing` task</td>
             <td>`tasks`, `issues`, `worker_log`, parent goal lineage</td>
@@ -58,6 +69,17 @@ sidebar:
 ### 4.1 Install shapes — which roles a given install must implement
 
 
+
+      <p>
+        <em>Design spec — not yet implemented as written.</em> The shipped substrate
+        configures harnesses through <strong>blueprints</strong> (see
+        <code>blueprint:create</code> / <code>blueprint:catalog</code> and the
+        <code>@papercusp/orchestrator/blueprint</code> package), which declare their
+        roles, tier, spine model, triggers, and dispatch policy directly. There is no
+        <code>defineManifest</code> helper and no <code>shape</code> enum
+        (<code>iterative</code>/<code>scheduled</code>/<code>reactive</code>/<code>passive</code>)
+        in code today; the section below is the original role-requirement design.
+      </p>
 
       <p>
         Not every install runs an iterative plan-then-build loop. A pure

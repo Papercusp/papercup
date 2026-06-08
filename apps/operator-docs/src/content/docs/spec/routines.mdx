@@ -8,6 +8,21 @@ sidebar:
         A routine is a <em>scheduled or triggered event source</em>. Routines insert into `pending_events`; the orchestrator decides what to do with them.
       </p>
 
+      <aside>
+        <strong>Implemented (with evolution).</strong> The routines engine shipped as a durable DBOS scheduled
+        workflow (`packages/operator-core/lib/dbos/routines-workflow.ts`) reading the
+        `harness_shared.routines` table (the schema below). The default tick is `*/30 * * * * *` (every 30s,
+        skip-missed) with a concurrency-4 fire queue. A routine's `target_role` now dispatches one of two ways:
+        `system:<action>` runs a registered handler inline (the live `system:git-sync`,
+        `system:green-checkpoint`, `system:release-trigger`, `system:blueprint-run`, … actions —
+        `packages/operator-core/lib/harness/routines/register-system-actions.ts`), and an agent role spawns that
+        role via the harness invoke route. The legacy "routine → `pending_events` → orchestrator" hop is retired
+        for cron routines: a cron routine fires its action directly. The per-plugin/system cost caps and the
+        `audit.routine_fires` / `audit.system_pressure` telemetry tables in §9.4 below are <em>design intent</em> —
+        the shipped fire telemetry is the autoloop `recordFire` / `checkFireGate` error-backoff
+        (`packages/operator-core/lib/autoloop.ts`), not a dedicated `audit` schema.
+      </aside>
+
       
 
 ```

@@ -8,6 +8,19 @@ sidebar:
         Papercusp uses a <strong>centralized orchestrator</strong> rather than per-agent heartbeats. Why:
       </p>
 
+      <aside>
+        <strong>Implemented (with evolution).</strong> The single all-deciding LLM "orchestrator" role of this
+        design shipped as a <em>split</em>: the orchestrator is now the deterministic <em>code</em> selector
+        (`packages/operator-core/lib/dbos/orchestrator-loop.ts`) that starts a durable per-feature pipeline, and the
+        per-feature LLM decider keeps the distinct name <code>director</code> (the legacy
+        `prompts/orchestrator.md` is archived under `_archived/`). External events still land in
+        `harness_shared.pending_events` (NOTIFY/LISTEN via `pending-events-listener.ts`), but the scheduled-tick
+        path is the DBOS <strong>routines engine</strong> (see §9): a cron routine now fires the
+        `system:blueprint-run` action directly rather than enqueuing a `pending_events` row for the orchestrator to
+        consume. The decision verbs below are real (`NEXT_WORKER`, `NEXT_VALIDATOR`, …); each blueprint declares its
+        own vocabulary in `spine.edges`.
+      </aside>
+
       <ul>
         <li><strong>No wasted wakeups</strong> — only the orchestrator polls. The other agents stay asleep until summoned.</li>
         <li><strong>Centralized auditing</strong> — every decision is one orchestrator output you can trace.</li>

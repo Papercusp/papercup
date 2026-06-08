@@ -9,6 +9,24 @@ sidebar:
         The schema is part of the substrate contract:
       </p>
 
+      <p>
+        <em>Implementation note: this is the original per-install-schema design.
+        The shipped substrate consolidated these into a single
+        <code>harness_shared</code> schema whose tables are keyed by
+        <code>install_slug</code> / <code>workspace_id</code> (the
+        <code>*_consolidated</code> tables + per-harness views — see
+        <a href="/internal/docs/system/storage-policy">storage-policy</a>).
+        <code>goals</code> and <code>pending_events</code> exist with
+        substantially the columns below; the iteration unit shipped as
+        <strong><code>work_items</code></strong> — a union <em>view</em>
+        (discriminated by <code>item_kind</code>) over the base tables
+        <code>harness_features_consolidated</code> (feature / research-task /
+        chunk) and <code>engineer_issues</code> (bug / change / task) — not a
+        <code>tasks</code> table, and there is no standalone <code>audit</code> /
+        <code>task_status</code> type by these names. The SQL below is the design
+        illustration, not the live DDL.</em>
+      </p>
+
       
 
 ```

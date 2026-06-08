@@ -114,6 +114,18 @@ NOTE: real baseline SQL path = libs/papercusp/libs/db/sql/000-baseline.sql (arch
 - implementation/pi-integration: EDITS — apps/papercusp→apps/operator + operator-core pty paths; Track A flagged aspirational; desktop shell run cmd.
 MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOICE_CHANNELS (12th flag).
 
+### Batch 6 (spec b1: 10 pages) — DONE
+- spec/plan-format: EDITS — +ready status; wave-advance rewritten (P-044 blocked_by edges, no current_wave cursor). Very accurate.
+- spec/vocabulary: EDITS — kind values template→plugin/pack/blueprint; planner role removed.
+- spec/roles: EDITS (aspirational) — planner=scoper→architect note; §4.1 install shapes flagged not-implemented (blueprints instead).
+- spec/capabilities: EDITS — durable record = PG plugin_capability_grants not file; summarizer role cut→curator.
+- spec/state: EDITS (aspirational) — per-install-schema consolidated to harness_shared; work_items is a union VIEW not tasks table.
+- spec/harness-contract: EDITS — orchestrator→director decision role; DECISION_VERBS; implemented notes.
+- spec/orchestrator: EDITS — LLM orchestrator split into orchestrator-loop + director; cron fires system:blueprint-run directly.
+- spec/operator-v5: EDITS — operator-core paths; Hono routes; superseded modules; OperatorChat not OperatorPanel.
+- spec/operator-architecture-decisions: EDITS — path-drift Aside; rules still hold; operator-core/Hono paths.
+- spec/routines: EDITS — routines-workflow DBOS engine; system:* actions; audit.* tables aspirational.
+
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.
 - Possible code bug: askOperatorViaSse POSTs without modality:'voice' so voice card-forwarding gate may never fire.

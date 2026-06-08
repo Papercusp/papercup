@@ -12,8 +12,35 @@ button. It scans the workspace, surfaces up to ~5 next-action suggestions
 per scan, and dispatches the safe ones automatically while routing the
 risky ones for explicit user approval.
 
-This page documents the v5 architecture (May 2026). For the design
-rationale + decisions, see the v5 plan checked into `/tmp/operator-features-plan-v5.md`.
+This page documents the v5 architecture (May 2026).
+
+<Aside type="caution" title="Partly superseded — verify against source">
+The v5 **data layer** still ships and is accurate: the 3-variant suggestion
+union + tier resolver (`packages/operator-core/lib/operator-suggestion-schema.ts`,
+`resolveActualTier` / `clampSuggestion`), the substrate tier table
+(`packages/plugin-sdk/src/tier-table.json` + `lookupTier` in `tier-table.ts`),
+plugin-tier resolution (`operator-plugin-tier.ts`), plugin-authored suggestions
+(`operator-plugin-suggestions.ts` + the `contributeOperatorSuggestions` hook in
+`@papercusp/plugin-sdk`), budget / rate-limit / trigger-state / fuzzy-dedup /
+ack-latency / standing-candidates / message-status / audit / preferences modules,
+and the two PG tables (`harness_shared.operator_scan_locks`,
+`harness_shared.operator_dismissed_cards`).
+
+Two things have moved or been superseded since this page was written, so treat the
+lower sections as design-of-record rather than a live file map:
+- **Paths moved.** Operator libs are now under `packages/operator-core/lib/operator-*.ts`
+  (prefixed `operator-`), not `apps/operator/lib/operator-*`. The HTTP routes are
+  Hono handlers under `packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-*.ts`
+  (+ `routes/operator/`), not Next.js `app/api/.../route.ts`. Migrations `014`/`015`
+  are squashed into `libs/papercusp/libs/db/sql/000-baseline.sql` (incrementals now
+  start at `107`).
+- **Scan/card pipeline + UI superseded.** The standalone SSE-scan concierge with an
+  `OperatorPanel` / `OperatorBackgroundScanner` and modules like `suggestion-parser`,
+  `scan-lock`, `idle-snapshot`, `card-reconstruction`, `last-scan`, `dismissed-cache`
+  no longer exist as named files; the operator is now a **converse/chat** surface
+  (`OperatorChat.tsx`, `OperatorConversationProvider.tsx`) and runs as a privileged
+  blueprint (the `pot`, `kind: 'hive'` — see the Pot/operator-as-blueprint spec).
+</Aside>
 
 ## Pipeline at a glance
 
@@ -119,7 +146,7 @@ consumer doesn't need a backfill.
 
 The substrate-owned `prompt-system.md` (tier rules, schema,
 anti-patterns) ships as a TypeScript export
-(`apps/operator/lib/operator-prompt-system.ts`) so it survives Turbopack
+(`packages/operator-core/lib/operator-prompt-system.ts`) so it survives
 bundling and can't be edited from the UI.
 
 ## Server-side policies
@@ -188,13 +215,14 @@ npx tsx apps/operator/scripts/audit-prefs.ts purge --before 2026-01-01
 
 ## Migrations
 
-| File | Adds |
+| Table | Adds |
 |---|---|
-| `014-operator-scan-locks.sql` | `harness_shared.operator_scan_locks` (multi-tab dedup) |
-| `015-operator-dismissed-cards.sql` | `harness_shared.operator_dismissed_cards` (multi-machine sync) |
+| `harness_shared.operator_scan_locks` | multi-tab dedup (PK `workspace_id`, `expires_at`) |
+| `harness_shared.operator_dismissed_cards` | multi-machine dismissed-card sync (PK `(workspace_id, card_id)`) |
 
-Both are RLS-scoped to `app.workspace_id` per the standard substrate
-pattern. Both are idempotent — safe to re-run.
+Both ship in the squashed `libs/papercusp/libs/db/sql/000-baseline.sql`
+(the original `014`/`015` increments were folded into the baseline). Both
+are RLS-scoped to `app.workspace_id` per the standard substrate pattern.
 
 ## What's NOT in v5 (and why)
 
@@ -207,45 +235,41 @@ pattern. Both are idempotent — safe to re-run.
 
 ## Module map
 
+Live modules (`packages/operator-core/lib/operator-*.ts`). Entries marked
+**(superseded)** were named in the original v5 design but no longer exist as
+files — the scan/card pipeline they implemented was folded into the
+converse/chat operator + the `pot` blueprint (see the caution box above).
+
 ```
-apps/operator/lib/operator-*
-  prompt-system.ts          ← substrate prompt as TS export (read-only)
-  prompt.ts                 ← assembles substrate + user + prefs
-  preferences.ts            ← preferences.md parser + writer
-  suggestion-schema.ts      ← Zod 3-variant union + tier resolver
-  suggestion-parser.ts      ← parse SSE → enrich → de-dup
-  classifier               (in suggestion-parser.ts: deriveAutoDispatch)
-  budget.ts                 ← daily cap + spend
-  scan-lock.ts              ← PG row, 60s TTL
-  rate-limit.ts             ← per-workspace + 503 breaker (in-process)
-  idle-snapshot.ts          ← trigger-state-fingerprint cache
-  trigger-state.ts          ← {events, projects, inbox} digest
-  audit.ts                  ← writes to harness_shared.audit_log
-  last-scan.ts              ← scan snapshot writer/reader
-  card-reconstruction.ts    ← merges last-scan + audit + dismissed
-  message-status.ts         ← polls papercup_shared.messages.status
-  ack-latency.ts            ← median ack latency per harness
-  fuzzy-dedup.ts            ← Levenshtein on normalized titles
-  plugin-tier.ts            ← walks Plugin.tierMap (substrate-protected)
-  plugin-suggestions.ts     ← gathers contributeOperatorSuggestions
-  dismissed-cache.ts        ← file + PG cooldown (multi-machine)
-  standing-candidates.ts    ← detector for auto-upgrade prompts
+packages/operator-core/lib/operator-*
+  operator-prompt-system.ts    ← substrate prompt as TS export (read-only)
+  operator-prompt.ts           ← assembles substrate + user + prefs
+  operator-preferences.ts      ← preferences.md parser + writer
+  operator-suggestion-schema.ts ← Zod 3-variant union + resolveActualTier/clampSuggestion
+  operator-budget.ts           ← daily cap + spend
+  operator-rate-limit.ts       ← per-workspace + 503 breaker (in-process)
+  operator-trigger-state.ts    ← {events, projects, inbox} digest
+  operator-audit.ts            ← writes to harness_shared.audit_log
+  operator-message-status.ts   ← polls papercup_shared.messages.status
+  operator-ack-latency.ts      ← median ack latency per harness
+  operator-fuzzy-dedup.ts      ← Levenshtein on normalized titles
+  operator-plugin-tier.ts      ← walks Plugin.tierMap (substrate-protected)
+  operator-plugin-suggestions.ts ← gathers contributeOperatorSuggestions
+  operator-standing-candidates.ts ← detector for auto-upgrade prompts
+  (superseded) suggestion-parser / scan-lock / idle-snapshot /
+               card-reconstruction / last-scan / dismissed-cache
 
-apps/operator/app/api/agent-mcp/operator-*
-  scan/route.ts             ← SSE pipeline (the spine)
-  config/route.ts           ← prompt-user + preferences read/write
-  budget/route.ts
-  preferences/route.ts      ← list/append/remove
-  standing-approvals/route.ts
-  audit/route.ts
-  last-scan/route.ts        ← reconstruction merge
-  trigger-state/route.ts
-  message-status/route.ts
-  ack-latency/route.ts
-  dismissed/route.ts
+Hono route handlers (packages/operator-core/lib/endpoint-route/routes/)
+  agent-mcp/operator-config.ts          ← prompt-user + preferences read/write
+  agent-mcp/operator-budget.ts
+  agent-mcp/operator-preferences.ts     ← list/append/remove
+  agent-mcp/operator-standing-approvals.ts
+  agent-mcp/operator-audit.ts
+  agent-mcp/operator-trigger-state.ts
+  agent-mcp/operator-message-status.ts
+  agent-mcp/operator-dispatch.ts
+  operator/card-response.ts, operator/state-snapshot.ts, …
 
-apps/operator/app/_components/
-  OperatorPanel.tsx
-  OperatorBackgroundScanner.tsx
-  operator-shared-state.ts  ← module-scoped state shared with the scanner
+apps/operator/app/_components/ (operator UI — now converse/chat, not a scan panel)
+  OperatorChat.tsx, OperatorConversationProvider.tsx, OperatorActionLog.tsx, …
 ```

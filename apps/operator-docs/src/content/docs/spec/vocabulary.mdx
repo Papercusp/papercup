@@ -26,7 +26,7 @@ sidebar:
           <tr>
             <td><strong>Role</strong></td>
             <td>A named agent invocation — a <em>prompt file</em> + an entry in the orchestrator's decision table. Always with fresh context.</td>
-            <td>Planner, Worker, Validator, Orchestrator. (Plus user-defined roles via plugins.)</td>
+            <td>Scoper, Architect, Worker, Validator, Orchestrator (the shipped pipeline roles — see <code>AGENT_ROLES</code> in <code>packages/agent-mcp/src/role-config.ts</code>). Plus user-defined roles via plugins.</td>
           </tr>
           <tr>
             <td><strong>Harness template</strong></td>
@@ -40,8 +40,8 @@ sidebar:
           </tr>
           <tr>
             <td><strong>Marketplace package <code>kind</code></strong></td>
-            <td>The discriminator that tells the marketplace + CLI which install pipeline a published artifact follows. Possible values: <code>template</code> (default), <code>plugin</code>.</td>
-            <td>Both go through the same publish + signing + retraction infrastructure; only the install handler differs.</td>
+            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a three-kind storefront: <code>plugin</code> (default), <code>pack</code> (a runtime-less code-tool pack), and <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original <code>template</code>).</td>
+            <td>All three go through the same publish + signing + retraction infrastructure; only the install handler differs.</td>
           </tr>
           <tr>
             <td><strong>Goal</strong></td>
