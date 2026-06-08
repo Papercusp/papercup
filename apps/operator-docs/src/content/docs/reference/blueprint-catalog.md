@@ -12,13 +12,14 @@ sidebar:
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (13 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 concrete + 2 abstract).
 
 ## Built-in blueprints
 
 | Blueprint | Extends | Work item | Decider | Dispatch | Roles | Description |
 |---|---|---|---|---|---|---|
 | `audit` | base | audit-task (`AUD`) | auditor | inherited | 1 | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it. |
+| `bee` | single-agent | task (`BEE`) | bee | inherited | 1 | Launch one generic Hive worker (the `bee` role) — a plain implementation agent the Queen places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/bee.md. A bee is kind:'harness' (NOT a hive). |
 | `coding` | base | feature (`F`) | director | concurrency 4, plan-order | 11 | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa). |
 | `deliberate` | base | decision (`DLIB`) | — | inherited | 0 | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split. |
 | `deploy` | single-agent | deploy-run (`DEP`) | release-manager | inherited | 1 | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet. |
@@ -26,7 +27,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (13 con
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
-| `pot` | base | pot-wake (`POT`) | operator | inherited | 1 | The Pot operator — the user's single judgment surface over the fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the blackboard, creates/supervises harnesses from blueprints, curates what the user sees, and declares its next wake before sleeping. |
+| `pot` | base | pot-wake (`POT`) | operator | inherited | 2 | The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation). |
 | `research` | base | research-task (`R`) | research-director | concurrency 1 | 4 | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less. |
 | `review` | base | review-task (`RV`) | review-director | inherited | 4 | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report. |
 | `scan` | single-agent | scan-run (`SCAN`) | scanner | inherited | 1 | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog. |
@@ -57,6 +58,16 @@ The G2 user-protection gate: a read-only adversarial auditor screens a remote-au
 Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints.
 
 - **Version:** 0.1.0
+
+### `bee`
+
+Launch one generic Hive worker (the `bee` role) — a plain implementation agent the Queen places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/bee.md. A bee is kind:'harness' (NOT a hive).
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `task` (id prefix `BEE`)
+- **Spine decider:** `bee` (maxTurns 80)
+- **Roles (1):** `bee`
 
 ### `coding`
 
@@ -135,14 +146,14 @@ A migration/codemod harness: a migration-director drives a discoverer (find all 
 
 ### `pot`
 
-The Pot operator — the user's single judgment surface over the fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the blackboard, creates/supervises harnesses from blueprints, curates what the user sees, and declares its next wake before sleeping.
+The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation).
 
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `pot-wake` (id prefix `POT`)
 - **Spine decider:** `operator` (maxTurns 50)
 - **Planner:** inline
-- **Roles (1):** `operator`
+- **Roles (2):** `operator`, `queen`
 
 ### `research`
 

@@ -27,6 +27,8 @@ import {
   readPotWakeState,
   type PotEventSubscription,
 } from '../../pot/wake';
+import { resolveHivePubkey } from '../../hive-identity';
+import { getHiveByPubkey } from '../../hive-store';
 
 /** The `harness_kind` marker a hive's home harness carries in the registry. */
 export const HIVE_KIND = 'hive';
@@ -55,6 +57,15 @@ export interface HiveDescriptor {
    * downstream code keys on `slug` today and gains `hiveId` for free later.
    */
   hiveId?: string;
+  /**
+   * The Hive's first-class identity: its raw-32 base64 Ed25519 PUBLIC key
+   * (shared-hive-federation-2026-06-08 P-002). This is the dial-able id and the
+   * federation topic key (P-003, deriveHiveFederationTopic). Minted on
+   * hive:create and lazy-backfilled on first resolve; undefined only when identity
+   * backfill failed (e.g. the keychain is unavailable). The secret never leaves
+   * the owning Swarm's keychain.
+   */
+  pubkey?: string;
   deployment: DeploymentConfig;
   deployed: boolean;
   wake: HiveWakeView;
@@ -90,13 +101,18 @@ async function buildWakeView(
 /** Pure: project a registry entry + its wake view into the descriptor. Exported
  *  so the shaping is unit-testable without PG (mirrors fleet/assignments' pure
  *  selectors). */
-export function describeHive(p: ProjectEntry, wake: HiveWakeView): HiveDescriptor {
+export function describeHive(
+  p: ProjectEntry,
+  wake: HiveWakeView,
+  pubkey?: string,
+): HiveDescriptor {
   const hiveId = frameHiveId(p);
   return {
     slug: p.slug,
     path: p.path,
     kind: HIVE_KIND,
     ...(hiveId ? { hiveId } : {}),
+    ...(pubkey ? { pubkey } : {}),
     deployment: p.deployment ?? { target: 'local' },
     deployed: Boolean(p.deploymentFrame),
     wake,
@@ -135,13 +151,21 @@ export async function resolveHive(
 ): Promise<HiveDescriptor | null> {
   const ws = workspaceId ?? activeWorkspaceId();
   const reg = await loadHarnessRegistry(ws);
-  const p = reg.projects.find(
+  let p = reg.projects.find(
     (x) => isHiveProject(x) && (x.slug === idOrSlug || frameHiveId(x) === idOrSlug),
   );
+  // Forward-compat: a Hive is addressable by its pubkey identity, not just its
+  // home-slug (D-002). When the id is neither a slug nor a frame id, resolve the
+  // pubkey -> home-slug via the entity table.
+  if (!p) {
+    const byKey = await getHiveByPubkey(ws, idOrSlug);
+    if (byKey) p = reg.projects.find((x) => isHiveProject(x) && x.slug === byKey.homeSlug);
+  }
   if (!p) return null;
   const { sql } = getOrgPg();
   const wake = await buildWakeView(sql, p.slug, ws);
-  return describeHive(p, wake);
+  const pubkey = await resolveHivePubkey(ws, p.slug);
+  return describeHive(p, wake, pubkey);
 }
 
 /** Every hive (kind:'hive' project) in the workspace, resolved. */
@@ -153,7 +177,8 @@ export async function listHives(workspaceId?: string): Promise<HiveDescriptor[]>
   const { sql } = getOrgPg();
   const out: HiveDescriptor[] = [];
   for (const p of hives) {
-    out.push(describeHive(p, await buildWakeView(sql, p.slug, ws)));
+    const pubkey = await resolveHivePubkey(ws, p.slug);
+    out.push(describeHive(p, await buildWakeView(sql, p.slug, ws), pubkey));
   }
   return out;
 }

@@ -16,12 +16,16 @@ type Entry = { slug: string; path: string; harness_kind?: string; [k: string]: u
 let registry: { projects: Entry[] };
 let scaffoldImpl: () => Promise<void>;
 let tmpParent: string;
+let ensureCalls: Array<[string, string]>;
+let deleteHiveCalls: Array<[string, string]>;
 
 beforeEach(() => {
   vi.resetModules();
   registry = { projects: [] };
   scaffoldImpl = async () => {};
   tmpParent = mkdtempSync(join(tmpdir(), 'hive-create-test-'));
+  ensureCalls = [];
+  deleteHiveCalls = [];
 
   vi.doMock('../../harness-registry', () => ({
     loadHarnessRegistry: async () => ({ projects: registry.projects.map((p) => ({ ...p })) }),
@@ -41,6 +45,20 @@ beforeEach(() => {
       blueprint: { id: 'pot', version: '0', knobs: { requiresRepo: false }, dependencies: {} },
     }),
   }));
+  // The first-class Hive identity mint (PG + keychain) is mocked — this test is
+  // PG-free; the keypair->store->topic seam is covered by its own integration test.
+  vi.doMock('../../hive-identity', () => ({
+    ensureHiveIdentity: async (ws: string, slug: string) => {
+      ensureCalls.push([ws, slug]);
+      return { record: {}, created: true };
+    },
+  }));
+  vi.doMock('../../hive-store', () => ({
+    deleteHive: async (ws: string, slug: string) => {
+      deleteHiveCalls.push([ws, slug]);
+      return true;
+    },
+  }));
 });
 
 afterEach(() => {
@@ -48,6 +66,8 @@ afterEach(() => {
   vi.doUnmock('../../scaffold-harness-schema');
   vi.doUnmock('../../blueprint/materialize-triggers');
   vi.doUnmock('../blueprint/_resolve');
+  vi.doUnmock('../../hive-identity');
+  vi.doUnmock('../../hive-store');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -65,6 +85,9 @@ describe('createHiveHarness', () => {
     expect(entry).toBeTruthy();
     expect(entry?.harness_kind).toBe('hive'); // the gap-closer
     expect(existsSync(join(res.path!, '.papercusp', 'blueprint.yaml'))).toBe(true);
+    // The Hive's first-class identity (Ed25519 keypair + entity row) is minted as
+    // part of create (shared-hive-federation P-002).
+    expect(ensureCalls).toEqual([['default', 'test-hive']]);
   });
 
   it('rolls back fully when schema provisioning fails — no orphan entry or dir', async () => {
@@ -77,6 +100,10 @@ describe('createHiveHarness', () => {
     expect(res.error).toBe('create_failed');
     expect(registry.projects.find((p) => p.slug === 'rollback-hive')).toBeUndefined();
     expect(existsSync(join(tmpParent, 'rollback-hive'))).toBe(false);
+    // Identity was minted (step 2b) then rolled back (deleteHive) when the later
+    // schema step failed — no orphan hives row.
+    expect(ensureCalls).toEqual([['default', 'rollback-hive']]);
+    expect(deleteHiveCalls).toEqual([['default', 'rollback-hive']]);
   });
 
   it('refuses a duplicate slug before any side effect', async () => {
@@ -86,5 +113,6 @@ describe('createHiveHarness', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toBe('slug_exists');
     expect(existsSync(join(tmpParent, 'dup'))).toBe(false);
+    expect(ensureCalls).toEqual([]); // no identity minted on the early reject
   });
 });

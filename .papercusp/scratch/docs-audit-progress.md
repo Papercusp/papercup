@@ -156,6 +156,17 @@ MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOI
 - spec/compared: EDITS — real embedded PG not PGlite.
 - spec/why, what-not, open-questions: ACCURATE (philosophy).
 
+### Batch 9 (design feedback docs, 8) — DONE
+- design/feature-issue-drawer-feedback: BANNER — peek drawer retired → dockview DetailPanel.
+- design/harnesses-page-feedback: NOTE — now RichGrid; +Add harness + empty state shipped.
+- design/marketplace-feedback: BANNER — superseded by Cupboard /cupboard ?kind= tabs.
+- design/mobile-operator-feedback: BANNER — apps/operator-mobile gone → native papercup-rust-mobile.
+- design/operator-panel-feedback: BANNER — OperatorPanel.tsx deleted → OperatorChat.
+- design/operator-panel-visual-pass: BANNER — same OperatorPanel retirement.
+- design/proposals-tab-feedback: BANNER — /harness→/adv redirect; proposals now SamplePanel stub.
+- design/settings-feedback: NOTE — grouping/search/advanced shipped; Orchestrator page removed.
+NOTE: design system+plan agent (index,tokens,libraries,gotchas,design-phase-plan,scanner-role-plan,operator-card-lifecycle-plan,delegate-async-plan) hit transient "Not logged in" after 66 tool calls — partial edits left; RE-RUNNING.
+
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.
 - Possible code bug: askOperatorViaSse POSTs without modality:'voice' so voice card-forwarding gate may never fire.

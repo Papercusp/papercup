@@ -304,6 +304,7 @@ import adminLlmTestsScenarios from './admin/llm-tests-scenarios';
 import adminPlans from './admin/plans';
 import adminCoord from './admin/coord';
 import adminCoordination from './admin/coordination';
+import adminComms from './admin/comms';
 import adminInbox from './admin/inbox';
 import adminLocksQueue from './admin/locks-queue';
 import adminDogfoodSubstrateStatus from './admin/dogfood-substrate-status';
@@ -696,6 +697,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminPlans as AnyRoute[]),
   ...flatten(adminCoord as AnyRoute[]),
   ...flatten(adminCoordination as AnyRoute[]),
+  ...flatten(adminComms as AnyRoute[]),
   ...flatten(adminInbox as AnyRoute[]),
   ...flatten(adminLocksQueue as AnyRoute),
   ...flatten(adminDogfoodSubstrateStatus as AnyRoute[]),

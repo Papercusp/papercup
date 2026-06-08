@@ -12,7 +12,7 @@ sidebar:
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (19 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (37 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (20 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (38 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -30,6 +30,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `curator` | ✓ | You are the **CURATOR** in an autonomous coding harness. |
 | `operator` | — | chat/runtime surface — no spawn persona |
 | `oracle` | — | chat/runtime surface — no spawn persona |
+| `bee` | ✓ | Bee (generic Hive worker) — You are a **bee** — a generic implementation agent in the Hive, placed and woken by |
 | `orchestrator` | — | chat/runtime surface — no spawn persona |
 | `promote` | ✓ | Promote agent — You promote a plan's `## Promote` policy into the harness as features — **all |
 | `security-reviewer` | ✓ | You are the **SECURITY-REVIEW EXPERT** for this harness. |

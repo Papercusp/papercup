@@ -14,6 +14,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { groupByAgent, listFleetAssignments } from '../../fleet/assignments';
 import { listWorkItems } from '../../work-items';
 import { resolveHive } from './_resolve';
+import { hiveFederationTopicHex } from '../../hive-identity';
 
 export default defineTool({
   name: 'hive:get',
@@ -78,6 +79,10 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             hive,
+            // The hive's substrate federation topic (hex), derived from its pubkey
+            // identity (shared-hive-federation P-003). null until the identity row
+            // exists. The swarm-join call-site swap is the Phase-1 boundary.
+            federationTopic: hive.pubkey ? hiveFederationTopicHex(hive.pubkey) : null,
             fleet: {
               bees,
               live: bees.filter((b) => b.alive).length,

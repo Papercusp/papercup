@@ -127,6 +127,25 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       );
     });
 
+    // 2b. Mint the Hive's first-class identity — a per-Hive Ed25519 keypair (secret
+    //     in the OS keychain) + the entity row in PG (shared-hive-federation P-002;
+    //     the pubkey is the dial-able id + federation topic key, P-003). Best-effort:
+    //     a transient keychain/PG hiccup must not fail an otherwise-good create —
+    //     resolveHive lazy-backfills the identity on first read. On success, push the
+    //     undo so a later-step failure rolls the entity row back too.
+    try {
+      const { ensureHiveIdentity } = await import('../../hive-identity');
+      await ensureHiveIdentity(ws, opts.slug);
+      undo.push(async () => {
+        const { deleteHive } = await import('../../hive-store');
+        await deleteHive(ws, opts.slug).catch(() => {});
+      });
+    } catch (e) {
+      console.warn(
+        `[hive:create] hive identity mint failed (${opts.slug}); resolveHive will lazy-backfill it: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
     // 3. Provision the harness PG schema (the inverse of dissolve's schema drop).
     const { scaffoldHarnessSchema, dropHarnessSchema } = await import('../../scaffold-harness-schema');
     await scaffoldHarnessSchema(opts.slug);
