@@ -326,6 +326,10 @@ import './work_items/promote';
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
 import './work_items/claim_next';
 import './work_items/observe';
+// The Queen's co-location lever (hive-coordination-model P-002): stamp a work-item's
+// swarm_affinity so tightly-coupled work co-locates on one Swarm; honored by claim_next
+// under the per-Hive claim lease.
+import './work_items/co_locate';
 // Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
 // decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
 import './work_items/register-claim-authority-ops';

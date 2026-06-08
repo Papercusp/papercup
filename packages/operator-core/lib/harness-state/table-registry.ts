@@ -157,6 +157,16 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // item_id), folded to the generated fed_key for capture. The leased CLAIM
   // (plan_item_claims) is authority-mediated and is NOT here (never federated).
   'plan_item_assignments',
+  // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
+  // state over the peer-log (projections/hive-settings.ts). Keyed (workspace_id,
+  // harness_slug = the Hive home, setting_key) → workspace-owned + peer-log; rides
+  // the Hive-pubkey topic (P-004).
+  'hive_settings',
+  // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
+  // (hive_members — the Hive-grain analog of contributors) federates across the Hive's
+  // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,
+  // github_user_id) → workspace-owned + peer-log.
+  'hive_members',
 ];
 
 /**

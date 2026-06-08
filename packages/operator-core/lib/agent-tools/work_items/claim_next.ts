@@ -14,6 +14,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimNextWorkItem, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
+import { localSwarmId } from '../../fleet/swarm-identity';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -37,18 +39,25 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const assignee = args.assignee ?? ident.ownerId;
+    // P-002 co-location lever: under the per-Hive claim lease, honor each item's
+    // swarm_affinity by passing THIS Swarm's id — the claim then skips work affined to
+    // another Swarm and prefers work affined to us. Flag OFF (default) ⇒ swarmId omitted
+    // ⇒ affinity-blind, claim is byte-identical to before.
+    const leaseOn = workItemClaimLeaseEnabled();
+    const swarmId = leaseOn ? localSwarmId(activeWorkspaceId(), args.harness) : undefined;
     const wi = await claimNextWorkItem({
       harness: args.harness,
       assignee,
       kind: args.kind,
       states: args.states,
+      swarmId,
     });
     // P-004 / D-002 (D-007 hybrid), flag-gated default-OFF: once the owner ratifies
     // (PAPERCUSP_WORKITEM_CLAIM_LEASE=1), the local SKIP-LOCKED claim is arbitrated by
     // the per-Hive authority lease. On a single box this is a no-op (authority = self);
     // cross-Swarm, only one Swarm wins the Hive lease — the loser releases its local
     // claim so the item returns to the backlog (work-stealing across machines).
-    if (wi && workItemClaimLeaseEnabled()) {
+    if (wi && leaseOn) {
       const leased = await leaseClaimedWorkItem({ harness: args.harness, workItemId: wi.id, owner: assignee });
       if (!leased) {
         await releaseWorkItem(wi.id, { harness: args.harness });

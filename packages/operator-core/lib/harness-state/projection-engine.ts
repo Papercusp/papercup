@@ -50,6 +50,12 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // (projections/plan-item-assignments.ts → plan_item_assignments). The leased CLAIM
   // table is authority-mediated and is intentionally NOT a peer-log table.
   'item-assignments': 'plan_item_assignments',
+  // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate over the
+  // peer-log (projections/hive-settings.ts → hive_settings; tableTag 'hive-settings-by-key').
+  'hive-settings-by-key': 'hive_settings',
+  // shared-hive-federation-2026-06-08 (P-006): per-Hive admission federates over the
+  // peer-log (projections/hive-members.ts → hive_members).
+  'hive-members': 'hive_members',
 };
 
 export interface PeerLogConsistency {

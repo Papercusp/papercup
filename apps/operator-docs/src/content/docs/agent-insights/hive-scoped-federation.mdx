@@ -137,6 +137,14 @@ the cross-machine teeth grow in once presence federation populates remote Swarms
 `routeFileLockOp`) and `hive-two-peer-federation.test.ts` (Track A content + Track
 B presence federate A→B over the Hive topic on real Hyperswarm).
 
+The *truly cross-machine* proof is layered (the plan's P-011): the substrate
+holepunch + bidirectional merge is proven on REAL separate machines
+(`packaged-two-instance-federation-merge`), and the Hive-federation logic is proven
+at local parity here — but the combined "one Hive over two physical machines" run is
+owner-gated paid infra, because **same-host holepunch does not complete at the raw
+hyperswarm level for ANY topology** (`vm-federation-separate-machine-proof`), so it
+genuinely needs two separate boxes.
+
 ## Key files
 
 | Concern | File |
@@ -149,4 +157,6 @@ B presence federate A→B over the Hive topic on real Hyperswarm).
 | Membership producers | `agent-tools/hive/_add-member.ts`, `agent-tools/harness/create-hive-membership.ts` |
 
 See also: `substrate-write-side-stack`, `workspace-id-pin-and-harness-membership`,
-`phase1b-federation-limitations`, and the plan `shared-hive-federation-2026-06-08`.
+`phase1b-federation-limitations`, `vm-federation-separate-machine-proof` (why
+cross-machine needs two physical boxes), `packaged-two-instance-federation-merge`
+(the cross-machine substrate proof), and the plan `shared-hive-federation-2026-06-08`.

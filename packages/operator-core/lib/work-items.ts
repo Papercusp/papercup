@@ -633,6 +633,15 @@ export interface ClaimNextFilter {
   kind?: FeatureFamilyKind;
   /** Claimable states (default ['todo']). */
   states?: string[];
+  /**
+   * THIS Swarm's id (hive-coordination-model P-002, the co-location lever). When set,
+   * the claim HONORS each item's `swarm_affinity`: work affined to a DIFFERENT Swarm is
+   * skipped, and work affined to THIS Swarm is preferred over unaffined work. The caller
+   * passes this ONLY when the per-Hive claim lease is active
+   * (`PAPERCUSP_WORKITEM_CLAIM_LEASE=1`); omitted (the single-instance default) the claim
+   * is byte-identical to before — oldest-first, affinity ignored.
+   */
+  swarmId?: string;
 }
 
 /**
@@ -647,6 +656,10 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const states = filter.states ?? ['todo'];
+  // Co-location affinity (P-002): only when the caller passes its Swarm id (it does so
+  // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
+  // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
+  // byte-identical to the pre-P-002 claim.
   const rows = await sql<FeatureRowDb[]>`
     UPDATE harness_shared.harness_features_consolidated
        SET taken_by = ${filter.assignee}, taken_at = now(), updated_ts = ${Date.now()}
@@ -659,7 +672,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
           AND (taken_by IS NULL OR taken_by = '')
           AND status = ANY(${states}::text[])
-        ORDER BY created_ts ASC
+          AND ${filter.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
+        ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : sql``} created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
@@ -700,6 +714,56 @@ export async function releaseWorkItem(id: string, opts: { harness?: string } = {
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+/* ── Co-location affinity (hive-coordination-model P-002) ──────────────────────────
+ * The Queen's co-location lever: stamp/read a work-item's `swarm_affinity` (the Swarm
+ * device-pubkey its tightly-coupled work should run on). Feature-family only — the
+ * issue-family table has no affinity (bugs/changes aren't placed by the Queen). The
+ * value is honored by claimNextWorkItem only under the per-Hive claim lease (P-002).
+ */
+export interface SwarmAffinityResult {
+  id: string;
+  harness: string | null;
+  /** The affinity now stored — a Swarm id, or null when cleared / no affinity. */
+  swarmAffinity: string | null;
+}
+
+/** Set (or clear, with `swarm: null`) a feature-family work-item's Swarm affinity. */
+export async function setWorkItemSwarmAffinity(
+  id: string,
+  swarm: string | null,
+  opts: { harness?: string } = {},
+): Promise<SwarmAffinityResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') {
+    // Issue-family items aren't Queen-placed; no affinity column to set.
+    return { id, harness: wi.harness, swarmAffinity: null };
+  }
+  const { sql } = getOrgPg();
+  const rows = await sql<{ swarm_affinity: string | null }[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET swarm_affinity = ${swarm}, updated_ts = ${Date.now()}
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+    RETURNING swarm_affinity`;
+  if (!rows[0]) return null;
+  return { id, harness: wi.harness, swarmAffinity: rows[0].swarm_affinity };
+}
+
+/** Read a feature-family work-item's current Swarm affinity (null when none / issue-family). */
+export async function getWorkItemSwarmAffinity(
+  id: string,
+  opts: { harness?: string } = {},
+): Promise<SwarmAffinityResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') return { id, harness: wi.harness, swarmAffinity: null };
+  const { sql } = getOrgPg();
+  const rows = await sql<{ swarm_affinity: string | null }[]>`
+    SELECT swarm_affinity FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id} LIMIT 1`;
+  return { id, harness: wi.harness, swarmAffinity: rows[0]?.swarm_affinity ?? null };
 }
 
 export interface ReorderWorkItemResult {
