@@ -29,7 +29,7 @@ import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
-import { seedCorpus, getCasesByVariant, type TaskVariant, type CorpusCase } from './corpus';
+import { seedCorpus, type TaskVariant, type CorpusCase, type Rubric } from './corpus';
 import { createMetricsCollector } from './collectors';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
 import { makeBeeRunInstance, liveBeeRunDeps, makeLiveBeeTraceLoaders } from './bee-instance';
@@ -51,6 +51,8 @@ export interface Gen0Args {
   capUsd: number;
   casesPerVariant: number;
   repeats: number;
+  /** Restrict to a CSV subset of variants (e.g. a 1-bee smoke); null = all four. */
+  variants: string[] | null;
   workspaceId: string | null;
   harness: string | null;
   timeoutMs: number;
@@ -75,6 +77,12 @@ export function parseGen0Args(argv: string[]): Gen0Args {
     capUsd: num(get('cap'), 50),
     casesPerVariant: Math.max(1, Math.floor(num(get('cases'), 1))),
     repeats: Math.max(1, Math.floor(num(get('repeats'), 1))),
+    variants: (() => {
+      const raw = get('variants');
+      if (!raw) return null;
+      const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      return list.length ? list : null;
+    })(),
     workspaceId: get('workspace') ?? null,
     harness: get('harness') ?? null,
     timeoutMs: num(get('timeout-ms'), 600_000),
@@ -217,7 +225,11 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     await assertSchema(sql);
     await seedCorpus(sql);
 
-    const corpus: CorpusCase[] = VARIANTS.flatMap((v) => getCasesByVariant(v).slice(0, args.casesPerVariant));
+    const variants = args.variants ? VARIANTS.filter((v) => args.variants!.includes(v)) : VARIANTS;
+    if (variants.length === 0) {
+      throw new Error(`--variants matched none of the corpus variants; valid: ${VARIANTS.join(', ')}`);
+    }
+    const corpus: CorpusCase[] = variants.flatMap((v) => getCasesByVariant(v).slice(0, args.casesPerVariant));
     const spec = buildManifest(workspaceId);
     const config: BeekeeperConfig = {
       instanceSpec: spec,

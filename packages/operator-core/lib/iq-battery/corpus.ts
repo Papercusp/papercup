@@ -11,7 +11,7 @@ export const TaskVariant = z.enum([
 
 export type TaskVariant = z.infer<typeof TaskVariant>;
 
-export const GroundTruthSchema = z.record(z.unknown());
+export const GroundTruthSchema = z.record(z.string(), z.unknown());
 
 export const RubricSchema = z.object({
   dimensions: z.array(z.object({
@@ -897,8 +897,8 @@ export async function seedCorpus(sql: postgres.Sql): Promise<void> {
           ${caseData.variant},
           ${caseData.title},
           ${caseData.prompt},
-          ${caseData.groundTruth},
-          ${caseData.rubric},
+          ${JSON.stringify(caseData.groundTruth)}::jsonb,
+          ${JSON.stringify(caseData.rubric)}::jsonb,
           ${index},
           ${now},
           ${now}

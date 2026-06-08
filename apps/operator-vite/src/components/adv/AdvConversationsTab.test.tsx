@@ -173,7 +173,7 @@ describe('AdvConversationsTab — simplified design', () => {
     render(<AdvConversationsTab />);
 
     const search = screen.getByLabelText('Free-text search');
-    expect(search).toHaveAttribute('type', 'search');
+    expect(search.getAttribute('type')).toBe('search');
     expect(search.closest('label')?.className).toContain('pc-advfeed__field--search');
     expect(search.closest('label')?.className).not.toContain('pc-advfeed__field--wide');
   });

@@ -36,6 +36,13 @@ describe('parseGen0Args', () => {
     expect(a.repeats).toBe(1);
     expect(a.capUsd).toBe(50); // fell back to default
   });
+
+  it('parses --variants into a CSV subset (null when absent)', () => {
+    expect(parseGen0Args([]).variants).toBeNull();
+    expect(parseGen0Args(['--variants=fix-injected-bug']).variants).toEqual(['fix-injected-bug']);
+    expect(parseGen0Args(['--variants=fix-injected-bug, build-spec']).variants).toEqual(['fix-injected-bug', 'build-spec']);
+    expect(parseGen0Args(['--variants=']).variants).toBeNull();
+  });
 });
 
 describe('makeSpend — hard cap', () => {
