@@ -1,0 +1,193 @@
+/**
+ * Ideator fan-out tests (P-004, D-004). Roster construction is pure; execution
+ * runs against a FAKE injected llmCall (no network) — the gym:judge test pattern.
+ * Pins: forced-diversity floor + weighted extras, grounding (refs intersected
+ * with the digest), failure isolation, malformed-output rejection.
+ */
+import { describe, it, expect } from 'vitest';
+import type { CorpusDigest, ScoutLlmCall } from '../types';
+import { CREATIVE_LENSES } from '../types';
+import {
+  allocateExtraIdeators,
+  buildIdeatorRoster,
+  parseIdeasPayload,
+  runIdeators,
+} from '../ideators';
+
+const digest: CorpusDigest = {
+  headline: 'coordination overhead',
+  recurringFriction: [{ summary: 'lock contention', ref: 'wi:F-1' }],
+  timeTokenSinks: [{ summary: 're-exploration', ref: 'wi:F-2' }],
+  chronicDeferrals: [{ summary: 'mem0 deferred', ref: 'plan:mem' }],
+  capabilityGaps: [{ summary: 'no cross-Hive search', ref: 'wi:F-3' }],
+};
+
+/** A fake llmCall that records its calls and returns a scripted payload. */
+function fakeLlm(
+  reply: (opts: Parameters<ScoutLlmCall>[0], callIndex: number) => { text?: string; json?: unknown; cost?: number },
+): { call: ScoutLlmCall; calls: Array<Parameters<ScoutLlmCall>[0]> } {
+  const calls: Array<Parameters<ScoutLlmCall>[0]> = [];
+  const call: ScoutLlmCall = async (opts) => {
+    const idx = calls.length;
+    calls.push(opts);
+    const r = reply(opts, idx);
+    return { text: r.text ?? '', json: r.json, costUsd: r.cost ?? 0, inputTokens: 10, outputTokens: 20 };
+  };
+  return { call, calls };
+}
+
+describe('buildIdeatorRoster — forced-diversity floor (D-004)', () => {
+  it('defaults to one ideator per lens, in lens order', () => {
+    const roster = buildIdeatorRoster();
+    expect(roster).toHaveLength(4);
+    expect(roster.map((s) => s.lens)).toEqual([...CREATIVE_LENSES]);
+    expect(roster.every((s, i) => s.globalIndex === i)).toBe(true);
+  });
+
+  it('only the analogical slot is primed with a distant domain', () => {
+    const roster = buildIdeatorRoster();
+    expect(roster.find((s) => s.lens === 'analogical')?.seedDomain).toBeDefined();
+    expect(roster.find((s) => s.lens === 'reframing')?.seedDomain).toBeUndefined();
+  });
+
+  it('perLens > 1 rotates analogical through distinct distant domains', () => {
+    const roster = buildIdeatorRoster({ perLens: 3 });
+    expect(roster).toHaveLength(12);
+    const analog = roster.filter((s) => s.lens === 'analogical');
+    expect(analog).toHaveLength(3);
+    const domains = analog.map((s) => s.seedDomain?.key);
+    expect(new Set(domains).size).toBe(3); // intra-lens diversity
+  });
+
+  it('lensWeights ADD extras but never drop a lens below the floor', () => {
+    const roster = buildIdeatorRoster({
+      perLens: 1,
+      lensWeights: { analogical: 3, reframing: 1 },
+      extraIdeatorBudget: 4,
+    });
+    const counts = Object.fromEntries(CREATIVE_LENSES.map((l) => [l, 0]));
+    for (const s of roster) counts[s.lens]++;
+    // base 1 each + extras 3:1 over budget 4 → analogical 1+3, reframing 1+1, others floor 1
+    expect(counts['analogical']).toBe(4);
+    expect(counts['reframing']).toBe(2);
+    expect(counts['first-principles']).toBe(1);
+    expect(counts['constraint-removal']).toBe(1);
+  });
+
+  it('ignores weights when no extra budget is given', () => {
+    const roster = buildIdeatorRoster({ lensWeights: { analogical: 10 } });
+    expect(roster).toHaveLength(4); // pure floor, weights inert
+  });
+});
+
+describe('allocateExtraIdeators', () => {
+  it('distributes exactly `total` by largest-remainder', () => {
+    const out = allocateExtraIdeators([...CREATIVE_LENSES], { analogical: 1, reframing: 1, 'first-principles': 1 }, 4);
+    const sum = Object.values(out).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(4);
+    expect(out['constraint-removal']).toBe(0); // zero weight → no extras
+  });
+
+  it('gives nothing when there is no weight signal', () => {
+    const out = allocateExtraIdeators([...CREATIVE_LENSES], {}, 5);
+    expect(Object.values(out).every((v) => v === 0)).toBe(true);
+  });
+
+  it('returns zeros for non-positive totals', () => {
+    const out = allocateExtraIdeators([...CREATIVE_LENSES], { analogical: 1 }, 0);
+    expect(Object.values(out).every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe('parseIdeasPayload', () => {
+  it('reads an {ideas:[...]} object from json', () => {
+    expect(parseIdeasPayload({ ideas: [{ title: 't' }] }, '')).toHaveLength(1);
+  });
+  it('reads a bare array', () => {
+    expect(parseIdeasPayload([{ title: 't' }], '')).toHaveLength(1);
+  });
+  it('falls back to fenced JSON text', () => {
+    const text = '```json\n{"ideas":[{"title":"t"}]}\n```';
+    expect(parseIdeasPayload(undefined, text)).toHaveLength(1);
+  });
+  it('extracts an embedded object from prose', () => {
+    const text = 'Here you go: {"ideas":[{"title":"t"}]} hope that helps';
+    expect(parseIdeasPayload(undefined, text)).toHaveLength(1);
+  });
+  it('returns [] on garbage', () => {
+    expect(parseIdeasPayload(undefined, 'no json here')).toEqual([]);
+  });
+});
+
+describe('runIdeators', () => {
+  const oneIdeaPerCall = (refs: string[]) => ({
+    json: {
+      ideas: [
+        { title: 'idea', body: 'a body long enough', mechanism: 'the mechanism', addressesPatternRefs: refs },
+      ],
+    },
+    cost: 0.01,
+  });
+
+  it('runs one ideator per lens, tags lens from the slot, assigns unique ids', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    const res = await runIdeators(digest, { llmCall: call });
+    expect(calls).toHaveLength(4);
+    expect(res.ideas).toHaveLength(4);
+    expect(res.ideas.map((i) => i.lens).sort()).toEqual([...CREATIVE_LENSES].sort());
+    expect(new Set(res.ideas.map((i) => i.id)).size).toBe(4); // unique ids
+    expect(res.costUsd).toBeCloseTo(0.04, 5);
+    expect(res.perLensCounts['analogical']).toBe(1);
+  });
+
+  it('uses four DISTINCT system prompts (forced diversity at execution)', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    await runIdeators(digest, { llmCall: call });
+    const systems = calls.map((c) => c.system);
+    expect(new Set(systems).size).toBe(4);
+  });
+
+  it('grounds ideas: keeps only refs that exist in the digest', async () => {
+    const { call } = fakeLlm(() => oneIdeaPerCall(['wi:F-1', 'bogus-ref', 'wi:F-2']));
+    const res = await runIdeators(digest, { llmCall: call });
+    for (const idea of res.ideas) {
+      expect(idea.addressesPatternRefs).toEqual(['wi:F-1', 'wi:F-2']); // 'bogus-ref' filtered
+    }
+  });
+
+  it('stamps the analogical idea with the slot-assigned seed domain', async () => {
+    const { call } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    const res = await runIdeators(digest, { llmCall: call });
+    const analog = res.ideas.find((i) => i.lens === 'analogical');
+    expect(analog?.seedDomain).toBeTruthy();
+  });
+
+  it('drops malformed ideas (missing required fields)', async () => {
+    const { call } = fakeLlm(() => ({
+      json: { ideas: [{ title: 'only title' }, { title: 't', body: 'b', mechanism: 'm', addressesPatternRefs: [] }] },
+    }));
+    const res = await runIdeators(digest, { llmCall: call });
+    // each ideator returns 2 raw, 1 valid → 4 ideators × 1 = 4 kept
+    expect(res.ideas).toHaveLength(4);
+    expect(res.ideators.every((info) => info.raw === 2 && info.produced === 1)).toBe(true);
+  });
+
+  it('isolates a failed ideator without sinking the batch', async () => {
+    const { call } = fakeLlm((_opts, idx) => {
+      if (idx === 1) throw new Error('model exploded');
+      return oneIdeaPerCall(['wi:F-1']);
+    });
+    const res = await runIdeators(digest, { llmCall: call });
+    expect(res.ideas).toHaveLength(3); // 4 ideators, 1 failed
+    const failed = res.ideators.filter((i) => !i.ok);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].error).toContain('model exploded');
+  });
+
+  it('passes a thinking budget through to the llmCall when set', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    await runIdeators(digest, { llmCall: call, thinkingBudgetTokens: 2000 });
+    expect(calls[0].thinkingBudgetTokens).toBe(2000);
+    expect(calls[0].maxTokens).toBe(2000 + 4096);
+  });
+});

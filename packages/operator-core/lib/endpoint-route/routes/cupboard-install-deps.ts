@@ -33,11 +33,11 @@ export default defineTool({
   path: '/cupboard/install-deps',
   auth: 'public',
   timeoutSec: 180,
-  guidance: {
-    when: 'Closing the install loop: resolve a blueprint\'s (or an explicit set of) tool/pack/plugin dependencies to their Cupboard listings and INSTALL them — the deliberate one-click "install missing deps" action.',
-    notWhen: 'Installing a single known plugin/pack by listing — cupboard:install-plugin. Just CHECKING what is missing without installing — the harness:create dep gate already reports installable deps.',
-    chaining: 'harness:create returns `installable` deps → cupboard:install-deps { blueprintId, harness } → re-run harness:create (now satisfied). Or pass autoInstallDeps:true to harness:create to do both in one call.',
-  },
+  // Close the install loop: resolve a blueprint's (or an explicit set of)
+  // tool/pack/plugin deps to their Cupboard listings and INSTALL them — the
+  // deliberate one-click "install missing deps" action (the harness:create gate
+  // only REPORTS installable deps; autoInstallDeps:true does both in one call).
+  // (HTTP-route defineTools carry no `guidance` block — that's MCP-tool only.)
   async handler(req) {
     let body: {
       deps?: { tools?: unknown; packs?: unknown; plugins?: unknown };

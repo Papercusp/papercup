@@ -1,0 +1,292 @@
+/**
+ * Scout lens registry (P-004, D-004) — the forced-diversity engine.
+ *
+ * A single "be creative" prompt regresses to the median idea. Novelty comes from
+ * structurally forcing each ideator away from the mode: N ideators, each a
+ * *distinct* {@link CreativeLens}, the analogical lens additionally seeded with a
+ * *distant domain* so even multiple analogical ideators diverge. This file owns:
+ *
+ *  - {@link LENS_REGISTRY} — the four lenses + their generative stances.
+ *  - {@link DISTANT_DOMAINS} — the priming pool for the analogical lens.
+ *  - {@link buildIdeatorPrompt} — pure (system, user) construction per ideator.
+ *  - {@link flattenDigest} / {@link renderDigest} — the grounded substrate the
+ *    ideators read (each pattern carries a `ref` the idea must cite).
+ *
+ * Everything here is pure + deterministic (no LLM, no clock) so the
+ * anti-mode-collapse property is unit-tested directly: distinct lenses ⇒
+ * pairwise-distinct system prompts; distinct distant domains ⇒ distinct prompts.
+ */
+import type { CorpusDigest, CreativeLens, MetaPattern, MetaPatternCategory } from './types';
+import { CREATIVE_LENSES } from './types';
+
+/** A distant domain + the one-line mechanism it offers, used to prime analogical ideation. */
+export interface DistantDomain {
+  key: string;
+  /** How this domain solves a structurally-general problem — the transplant source. */
+  prime: string;
+}
+
+/**
+ * The distant-domain priming pool (D-004). The plan names immune systems,
+ * markets, ant colonies, and CPU schedulers explicitly; the rest widen the
+ * search so repeated analogical cycles keep finding fresh transplants.
+ */
+export const DISTANT_DOMAINS: readonly DistantDomain[] = [
+  {
+    key: 'immune-systems',
+    prime:
+      'distinguishes self from non-self, builds durable memory of past threats, and mounts a graduated, escalating response while tolerating the benign — with no central controller.',
+  },
+  {
+    key: 'markets',
+    prime:
+      'allocate scarce resources through decentralized price signals; local actors reacting to one number make surplus and shortage self-correct.',
+  },
+  {
+    key: 'ant-colony-stigmergy',
+    prime:
+      'coordinate through environmental traces (pheromone gradients) that evaporate over time — indirect coordination among memoryless agents that still converges on short paths.',
+  },
+  {
+    key: 'cpu-schedulers',
+    prime:
+      'multiplex many jobs over few cores via priority, aging to prevent starvation, preemption, and work-stealing across per-core queues.',
+  },
+  {
+    key: 'ecology-food-webs',
+    prime:
+      'keep a system stable through redundancy and keystone species; energy flows through trophic levels and diversity buffers shocks.',
+  },
+  {
+    key: 'memory-consolidation-sleep',
+    prime:
+      'replays the day offline, compresses episodic events into durable schemas, and prunes the unimportant — separating capture from consolidation.',
+  },
+  {
+    key: 'epidemiology-contagion',
+    prime:
+      'models spread via R0, super-spreaders, and herd immunity; ring-fencing and contact-tracing contain an outbreak before it saturates.',
+  },
+  {
+    key: 'control-theory-feedback',
+    prime:
+      'holds a setpoint with PID feedback — proportional/integral/derivative terms damp oscillation and reject disturbance without manual tuning each step.',
+  },
+  {
+    key: 'mycelial-networks',
+    prime:
+      'route nutrients across a forest through a fungal mesh, reinforcing productive links and rerouting around damage — a self-healing logistics fabric.',
+  },
+  {
+    key: 'jazz-improvisation',
+    prime:
+      'produces novel coherent output in real time from a shared harmonic frame, trading the lead, and "comping" to support whoever is soloing.',
+  },
+] as const;
+
+/** A lens definition: its label and the generative stance that makes it distinct. */
+export interface LensDef {
+  lens: CreativeLens;
+  label: string;
+  /** The lens-specific creative stance — the divergent core of the system prompt. */
+  stance: string;
+  /** Whether this lens is primed with a distant domain (only `analogical`). */
+  usesDistantDomain: boolean;
+}
+
+/**
+ * The four lenses (D-004). Each stance is *structurally* different so the
+ * ideators explore different regions of idea-space and cannot collapse to the
+ * same median proposal.
+ */
+export const LENS_REGISTRY: Record<CreativeLens, LensDef> = {
+  analogical: {
+    lens: 'analogical',
+    label: 'Analogical transfer',
+    usesDistantDomain: true,
+    stance: [
+      'Map a solution from a DISTANT domain onto a Hive bottleneck.',
+      'You are primed with one distant domain (below). Study HOW that domain solves a',
+      'structurally similar problem, then transplant the *mechanism* — not the surface',
+      'vocabulary — onto a specific friction in the digest. The leap is the transplant:',
+      'name the structural correspondence explicitly, then the Hive mechanism it implies.',
+    ].join(' '),
+  },
+  'first-principles': {
+    lens: 'first-principles',
+    label: 'First-principles redesign',
+    usesDistantDomain: false,
+    stance: [
+      'Ignore how the Hive does this TODAY. Take the underlying goal a friction or gap',
+      'in the digest is really serving, and derive the ideal mechanism from scratch —',
+      'as if nothing existed yet. Reason from the goal backward to the simplest design',
+      'that would achieve it, unconstrained by the current architecture. The leap is the',
+      'gap between the from-scratch ideal and what exists.',
+    ].join(' '),
+  },
+  reframing: {
+    lens: 'reframing',
+    label: 'Reframing / problem-finding',
+    usesDistantDomain: false,
+    stance: [
+      'Do NOT solve the stated problems. Find the REAL constraint nobody named.',
+      'For a cluster of frictions in the digest, ask what single deeper constraint',
+      'generates them all — reframe what the actual bottleneck is. The best ideas',
+      'redefine the problem so the original symptoms dissolve. Output the reframing',
+      'plus the idea it unlocks.',
+    ].join(' '),
+  },
+  'constraint-removal': {
+    lens: 'constraint-removal',
+    label: 'Constraint removal',
+    usesDistantDomain: false,
+    stance: [
+      'Identify a load-bearing ASSUMPTION in how the Hive currently operates (one the',
+      'digest reveals everyone treats as fixed), then imagine it were FALSE. What',
+      'becomes possible that is impossible today? Propose the idea that assumption was',
+      'silently blocking. The leap is naming the assumption and the capability its',
+      'removal unlocks.',
+    ].join(' '),
+  },
+};
+
+/**
+ * Collapse a {@link CorpusDigest} into one flat list of patterns, stamping each
+ * with the category lane it came from. Used both to render the grounded prompt
+ * and to validate an idea's `addressesPatternRefs` against real refs.
+ */
+export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
+  const lanes: Array<[MetaPatternCategory, MetaPattern[]]> = [
+    ['recurring-friction', digest.recurringFriction ?? []],
+    ['time-token-sink', digest.timeTokenSinks ?? []],
+    ['chronic-deferral', digest.chronicDeferrals ?? []],
+    ['capability-gap', digest.capabilityGaps ?? []],
+  ];
+  const out: MetaPattern[] = [];
+  for (const [category, patterns] of lanes) {
+    for (const p of patterns) {
+      out.push({ ...p, category: p.category ?? category });
+    }
+  }
+  return out;
+}
+
+/** The set of valid refs in a digest (for grounding an idea's citations). */
+export function digestRefSet(digest: CorpusDigest): Set<string> {
+  return new Set(flattenDigest(digest).map((p) => p.ref));
+}
+
+/** Human-readable category label for the rendered prompt. */
+function categoryLabel(c: MetaPatternCategory): string {
+  switch (c) {
+    case 'recurring-friction':
+      return 'Recurring friction';
+    case 'time-token-sink':
+      return 'Time / token sink';
+    case 'chronic-deferral':
+      return 'Chronic deferral';
+    case 'capability-gap':
+      return 'Capability gap';
+  }
+}
+
+/**
+ * Render the digest as the grounded substrate for an ideator's user prompt:
+ * each meta-pattern as a line tagged with its category and its `ref` (which the
+ * ideator must cite in `addressesPatternRefs`). Deterministic ordering.
+ */
+export function renderDigest(digest: CorpusDigest): string {
+  const lines: string[] = [];
+  if (digest.headline) lines.push(`State of the Hive: ${digest.headline}`, '');
+  const flat = flattenDigest(digest);
+  if (flat.length === 0) {
+    lines.push('(no meta-patterns surfaced this cycle)');
+    return lines.join('\n');
+  }
+  for (const p of flat) {
+    const cat = p.category ? categoryLabel(p.category) : 'Pattern';
+    const detail = p.detail ? ` — ${p.detail}` : '';
+    lines.push(`- [${cat}] (ref: ${p.ref}) ${p.summary}${detail}`);
+  }
+  return lines.join('\n');
+}
+
+/** Inputs to building one ideator's prompt. */
+export interface BuildIdeatorPromptInput {
+  lens: CreativeLens;
+  digest: CorpusDigest;
+  /** The distant domain this analogical ideator is primed with (required iff usesDistantDomain). */
+  seedDomain?: DistantDomain;
+  /** Max ideas this ideator should return (default 3). */
+  maxIdeas?: number;
+}
+
+/**
+ * Build the (system, user) prompt for one ideator. Pure + deterministic. The
+ * system encodes the shared Scout framing + the lens's distinct stance + the
+ * strict JSON output contract; the user carries the grounded digest. Distinct
+ * lenses (and distinct distant domains) yield distinct system prompts — the
+ * anti-mode-collapse invariant the tests pin.
+ */
+export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: string; user: string } {
+  const def = LENS_REGISTRY[input.lens];
+  const maxIdeas = input.maxIdeas ?? 3;
+
+  const system: string[] = [
+    'You are a SCOUT — an autonomous ideator for the Hive, a multi-agent coding platform that improves itself.',
+    'Your job is the deliberate creative LEAP: broad, novel ideas that day-to-day work never surfaces.',
+    '',
+    `## Your lens: ${def.label}`,
+    def.stance,
+  ];
+
+  if (def.usesDistantDomain) {
+    const dom = input.seedDomain;
+    system.push(
+      '',
+      '## Your primed distant domain',
+      dom
+        ? `${dom.key}: ${dom.prime}`
+        : '(no domain assigned — pick one genuinely distant from software and name it)',
+    );
+  }
+
+  system.push(
+    '',
+    '## Rules',
+    '- Do NOT propose the obvious, incremental, or already-tried. Each idea must be a genuine leap through your lens.',
+    '- GROUND every idea in the Hive\'s real history: cite the `ref`(s) of the digest meta-pattern(s) it addresses in `addressesPatternRefs`. An idea that grounds in nothing will be rejected downstream.',
+    '- State the concrete `mechanism` — HOW it would work. No hand-waving.',
+    '- Diverge: prefer one strong unexpected idea over three safe ones.',
+    '',
+    '## Output',
+    `Return ONLY a JSON object (no prose, no code fences), at most ${maxIdeas} ideas:`,
+    '{"ideas":[{"title":"<short>","body":"<what it is and why it could matter>","mechanism":"<how it works>","addressesPatternRefs":["<ref>",...]' +
+      (def.usesDistantDomain ? ',"seedDomain":"<the domain key you transplanted>"' : '') +
+      '}]}',
+  );
+
+  const user: string[] = [
+    '## The state of the Hive (your grounded substrate)',
+    'Each line is a cross-corpus meta-pattern with a `ref` to drill back. Anchor your leaps to these.',
+    '',
+    renderDigest(input.digest),
+  ];
+
+  return { system: system.join('\n'), user: user.join('\n') };
+}
+
+/**
+ * Assign a distant domain to the i-th analogical ideator, rotating the pool so
+ * repeated analogical ideators in one cycle each get a *different* domain
+ * (preserving intra-lens diversity). `order` overrides the pool for determinism
+ * in tests.
+ */
+export function assignDistantDomain(index: number, order: readonly DistantDomain[] = DISTANT_DOMAINS): DistantDomain {
+  return order[index % order.length];
+}
+
+/** The default ideator roster: one ideator per lens (the four-way divergence). */
+export function defaultLensRoster(): readonly CreativeLens[] {
+  return CREATIVE_LENSES;
+}

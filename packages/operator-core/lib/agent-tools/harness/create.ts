@@ -52,6 +52,10 @@ export default defineTool({
       folderName: z.string().min(1).optional().describe('New folder name (with parentDir)'),
       blueprintId: z.string().min(1).optional().describe('A blueprint to extend — resolved local → installed → built-in (e.g. coding/base/research or a Cupboard-installed id)'),
       blueprint: z.record(z.string(), z.unknown()).optional().describe('An inline blueprint object (alternative to blueprintId)'),
+      autoInstallDeps: z
+        .boolean()
+        .optional()
+        .describe('When the blueprint declares deps that are not installed but are installable from the Cupboard, INSTALL them (transitively) before the gate instead of failing. Opt-in (default false). Code-tool packs install globally; runtime-plugin capability grants for this harness are a separate cupboard:install-deps {harness} call. tool-distribution-discovery D-002.'),
       deployment: DeploymentConfigSchema.optional().describe('Where this harness\'s execution plane runs — a sibling to the blueprint (cloud-deployment-layer D-001). Omit ⇒ {target:"local"}. e.g. {target:"latitude",region:"NYC",kind:"vm"}.'),
       hive: z
         .string()
@@ -146,6 +150,34 @@ export default defineTool({
         depCheck = validateBlueprintDependencies(
           { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
           depHostSetsFromCatalog(catalog),
+        );
+      }
+      // Auto-install the installable deps before the gate (tool-distribution-discovery
+      // D-002): when opted in, resolve each Cupboard-installable tool/pack/plugin to its
+      // listing and install it (transitively, via the shared install IO) so a blueprint
+      // whose only unmet deps live in the Cupboard just works — instead of hard-failing.
+      // Opt-in only: silent installs on every create would surprise.
+      const anyInstallable =
+        depCheck.installable.tools.length > 0 ||
+        depCheck.installable.packs.length > 0 ||
+        depCheck.installable.plugins.length > 0;
+      if (args.autoInstallDeps && anyInstallable) {
+        const { resolveAndInstallDeps } = await import('../../cupboard/resolve-and-install');
+        const { installCupboardUnitFromListing } = await import('../../cupboard/install-io');
+        await resolveAndInstallDeps(
+          { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
+          {
+            deriveCatalog: () => derivePackCatalog({}),
+            installUnit: (u) => installCupboardUnitFromListing(u),
+          },
+        );
+        // Re-validate against the post-install catalog; the gate below now passes
+        // if the installs satisfied the previously-installable deps.
+        const after = await derivePackCatalog({});
+        cupboardReachable = after.cupboardReachable;
+        depCheck = validateBlueprintDependencies(
+          { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
+          depHostSetsFromCatalog(after),
         );
       }
       // Tools with NO known provider are a hard gate (the in-process catalog is
