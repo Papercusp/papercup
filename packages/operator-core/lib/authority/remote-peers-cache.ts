@@ -18,7 +18,7 @@
  * tiny federation-onset latency for hot-path cheapness, safely.
  */
 
-import { lockAuthorityFor, type LockAuthorityDeps } from './lock-authority';
+import { lockAuthorityFor, lockAuthorityForHive, type AuthorityResolution, type LockAuthorityDeps } from './lock-authority';
 
 export interface RemotePeersCacheDeps extends LockAuthorityDeps {
   /** Cache TTL in ms. Default 5000. */
@@ -44,23 +44,51 @@ export async function hasRemotePeers(
   harnessSlug: string,
   deps: RemotePeersCacheDeps = {},
 ): Promise<boolean> {
+  return cachedHasRemotePeer(harnessSlug, () => lockAuthorityFor(harnessSlug, deps), deps);
+}
+
+/**
+ * The Hive analog (P-009): true iff the shared HIVE has at least one live remote
+ * Swarm — the fast-path guard for routing a Hive member's file-locks to the Hive
+ * authority. Same TTL cache, namespaced by `hive:<slug>` so it can't collide with
+ * a harness key.
+ */
+export async function hasRemoteHivePeers(
+  hiveSlug: string,
+  deps: RemotePeersCacheDeps = {},
+): Promise<boolean> {
+  return cachedHasRemotePeer(`hive:${hiveSlug}`, () => lockAuthorityForHive(hiveSlug, deps), deps);
+}
+
+/** Shared TTL-cached "is there a live remote peer?" over any scope's resolution. */
+async function cachedHasRemotePeer(
+  cacheKey: string,
+  resolve: () => Promise<AuthorityResolution>,
+  deps: RemotePeersCacheDeps,
+): Promise<boolean> {
   const now = (deps.now ?? Date.now)();
-  const cached = _cache.get(harnessSlug);
+  const cached = _cache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.value;
 
-  const resolution = await lockAuthorityFor(harnessSlug, deps);
+  const resolution = await resolve();
   // A remote peer exists iff there is a live candidate that isn't just self-alone.
   const value = resolution.liveCount > 0 && !(resolution.isSelf && resolution.liveCount === 1);
   const ttlMs = deps.ttlMs ?? DEFAULT_TTL_MS;
-  _cache.set(harnessSlug, { value, expiresAt: now + ttlMs });
+  _cache.set(cacheKey, { value, expiresAt: now + ttlMs });
   return value;
 }
 
 /** Invalidate the cache for one harness (or all) — call when presence changes
- *  materially (a peer joins/leaves) to pick it up before the TTL. */
+ *  materially (a peer joins/leaves) to pick it up before the TTL. Pass a
+ *  `hive:<slug>` key to invalidate a Hive entry. */
 export function invalidateRemotePeers(harnessSlug?: string): void {
   if (harnessSlug) _cache.delete(harnessSlug);
   else _cache.clear();
+}
+
+/** Invalidate a Hive's remote-peers cache entry. */
+export function invalidateRemoteHivePeers(hiveSlug: string): void {
+  _cache.delete(`hive:${hiveSlug}`);
 }
 
 /** Test-only: reset the cache. */

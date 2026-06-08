@@ -9,7 +9,7 @@ import {
   lockAuthorityFor,
   lockAuthorityForHive,
   routeToAuthorityForHive,
-} from './lock-authority';
+} from '../lock-authority';
 
 const NOW = 1_000_000_000_000;
 const row = (pk: string, ageMs = 0) => ({ device_pubkey: pk, github_user_id: 1, machine_label: pk, last_seen_ms: NOW - ageMs });

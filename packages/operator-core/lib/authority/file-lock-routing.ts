@@ -38,16 +38,22 @@
 
 import {
   routeToAuthority,
+  routeToAuthorityForHive,
   type AuthorityOp,
   type LockAuthorityDeps,
   type RouteResult,
 } from './lock-authority';
-import { hasRemotePeers, type RemotePeersCacheDeps } from './remote-peers-cache';
+import { hasRemotePeers, hasRemoteHivePeers, type RemotePeersCacheDeps } from './remote-peers-cache';
 
 /** Resolve a `coordination_domain` (repo realpath) to its harness slug, or null. */
 export type DomainToHarnessSlug = (domain: string) => string | null;
 
+/** Resolve a harness slug to its home HIVE slug, or null when the harness is not a
+ *  Hive member (P-009). When non-null, the file-lock authority is the HIVE's. */
+export type HarnessToHiveSlug = (harnessSlug: string) => string | null;
+
 let _domainResolver: DomainToHarnessSlug | null = null;
+let _hiveResolver: HarnessToHiveSlug | null = null;
 
 /**
  * Register the domain→harness resolver at boot. The operator wires this to its
@@ -68,9 +74,31 @@ export function getDomainToHarnessSlug(): DomainToHarnessSlug {
   return _domainResolver ?? defaultDomainToHarnessSlug;
 }
 
+/**
+ * Register the harness→Hive resolver at boot (P-009). The operator wires it to its
+ * harness registry (ProjectEntry.hive_slug — a member harness's home Hive). Until
+ * registered, the default returns null → every harness uses HARNESS-scoped authority
+ * (the pre-Hive behavior, unchanged).
+ */
+export function configureFileLockHiveResolver(fn: HarnessToHiveSlug | null): void {
+  _hiveResolver = fn;
+}
+
+/** The default: no harness is a Hive member → harness-scoped authority. */
+function defaultHarnessToHiveSlug(_harnessSlug: string): string | null {
+  return null;
+}
+
+/** The currently-registered harness→Hive resolver, or the non-Hive default. */
+export function getHarnessToHiveSlug(): HarnessToHiveSlug {
+  return _hiveResolver ?? defaultHarnessToHiveSlug;
+}
+
 export interface FileLockRoutingDeps extends LockAuthorityDeps, RemotePeersCacheDeps {
   /** Override the domain→harness mapping (tests). */
   domainToHarnessSlug?: DomainToHarnessSlug;
+  /** Override the harness→Hive mapping (tests). */
+  harnessToHiveSlug?: HarnessToHiveSlug;
   /** Skip the cached remote-peers fast-path (tests / force authority routing). */
   skipRemotePeersFastPath?: boolean;
 }
@@ -98,15 +126,29 @@ export async function routeFileLockOp<T>(
     // defer to. Run locally (single box / unmanaged repo).
     return { value: await op.local(), via: 'local-authority' };
   }
-  // Hot-path guard: when the harness has NO live remote peers (the common case —
-  // a single box), skip the authority resolution entirely and run locally. The
-  // answer is cached (remote-peers-cache) so the per-edit lock hook pays a cached
-  // boolean, not a shared_presence query. A stale "no peers" only costs a missed
-  // serialization (fail-open, D-004) for up to the cache TTL after a peer appears.
-  if (!deps.skipRemotePeersFastPath && !(await hasRemotePeers(harnessSlug, deps))) {
+
+  // P-009: when this harness federates within a shared Hive, its file-claim locks
+  // serialize at the HIVE's authority (one authority across all the Hive's Swarms),
+  // not the harness's. Default resolver returns null → harness scope (unchanged).
+  const hiveSlug = (deps.harnessToHiveSlug ?? getHarnessToHiveSlug())(harnessSlug);
+  const scope: { kind: 'hive' | 'harness'; key: string } = hiveSlug
+    ? { kind: 'hive', key: hiveSlug }
+    : { kind: 'harness', key: harnessSlug };
+
+  // Hot-path guard: when the scope has NO live remote peers (the common case — a
+  // single box), skip authority resolution entirely and run locally. The answer is
+  // cached (remote-peers-cache) so the per-edit lock hook pays a cached boolean, not
+  // a shared_presence query. A stale "no peers" only costs a missed serialization
+  // (fail-open, D-004) for up to the cache TTL after a peer appears.
+  const hasPeers =
+    scope.kind === 'hive' ? hasRemoteHivePeers(scope.key, deps) : hasRemotePeers(scope.key, deps);
+  if (!deps.skipRemotePeersFastPath && !(await hasPeers)) {
     return { value: await op.local(), via: 'local-authority' };
   }
-  return routeToAuthority(harnessSlug, op, deps);
+
+  return scope.kind === 'hive'
+    ? routeToAuthorityForHive(scope.key, op, deps)
+    : routeToAuthority(scope.key, op, deps);
 }
 
 export const _testing = { defaultDomainToHarnessSlug };
