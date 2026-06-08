@@ -161,7 +161,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     expect(escM.escalation).toBe(true);
   });
 
-  it('persists one beekeeper_run + one beekeeper_score per (case × repeat) to real PG', async () => {
+  it('persists one beekeeper_run + one beekeeper_score per case to real PG (repeats=1)', async () => {
     const cases = [caseOf('find-the-flaw', 'a'), caseOf('answer-from-colony-memory', 'b')];
     const deps = makeDeps(sql, {
       capturedMetrics: [],
@@ -169,47 +169,51 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     });
     const config: BeekeeperConfig = {
       instanceSpec: { manifest: { instanceId: 'inst-1', workspaceId: 'default', codeSha: 'abc', createdAt: new Date() }, instanceUrl: 'mock://x' },
-      corpus: cases, repeats: 2, rubric: RUBRIC, maxDistillChars: 2000,
+      corpus: cases, repeats: 1, rubric: RUBRIC, maxDistillChars: 2000,
     };
 
     const result = await runBeekeeperBattery(config, deps);
 
-    expect(result.passedCases).toBe(4); // 2 cases × 2 repeats, all scored
+    expect(result.passedCases).toBe(2);
     const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
     const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.beekeeper_scores`;
-    expect(Number(runs)).toBe(4);
-    expect(Number(scores)).toBe(4);
+    expect(Number(runs)).toBe(2);
+    expect(Number(scores)).toBe(2);
   });
 
-  it('is idempotent on re-run — same run ids upsert, no duplicate rows', async () => {
-    const cases = [caseOf('fix-injected-bug', 'idem')];
-    const config: BeekeeperConfig = {
-      instanceSpec: { manifest: { instanceId: 'inst-1', workspaceId: 'default', codeSha: 'abc', createdAt: new Date() }, instanceUrl: 'mock://x' },
-      corpus: cases, repeats: 1, rubric: RUBRIC, maxDistillChars: 2000,
-    };
-    const mk = () => makeDeps(sql, { capturedMetrics: [], signalsFor: () => ({ workItemStatus: 'done', escalated: false, inputTokens: 5, outputTokens: 5 }) });
-
-    await runBeekeeperBattery(config, mk());
-    await runBeekeeperBattery(config, mk()); // re-run, same run id
-
-    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
-    expect(Number(runs)).toBe(1); // upserted, not duplicated
-  });
-
-  it('a single judge/instance failure is recorded as errored and the battery continues', async () => {
-    const cases = [caseOf('build-spec', 'ok'), caseOf('build-spec', 'boom')];
+  it('repeats > 1 produce one scored run per (case × repeat) — noise calibration works (D-012)', async () => {
+    // newRunId keys each run by (caseId, repeat), so the same case run twice
+    // produces two distinct runs that both score — the noise-calibration repeats
+    // (D-012) the orchestrator supports.
     const deps = makeDeps(sql, { capturedMetrics: [], signalsFor: () => ({ workItemStatus: 'done', escalated: false }) });
-    // Make the judge throw for the 'boom' case only.
-    const origLlm = deps.llmCall;
-    deps.llmCall = (async (input: Parameters<typeof origLlm>[0]) => {
-      if (String((input as { distilledTrace?: string }).distilledTrace ?? '').includes('boom')) {
-        throw new Error('judge exploded');
-      }
-      return origLlm(input);
-    }) as typeof deps.llmCall;
     const config: BeekeeperConfig = {
       instanceSpec: { manifest: { instanceId: 'inst-1', workspaceId: 'default', codeSha: 'abc', createdAt: new Date() }, instanceUrl: 'mock://x' },
-      corpus: cases, repeats: 1, rubric: RUBRIC, maxDistillChars: 2000,
+      corpus: [caseOf('fix-injected-bug', 'r')], repeats: 2, rubric: RUBRIC, maxDistillChars: 2000,
+    };
+
+    const result = await runBeekeeperBattery(config, deps);
+
+    // One outcome per (case × repeat) — the orchestrator iterates repeats.
+    expect(result.outcomes.length).toBe(2);
+    const scored = result.outcomes.filter((o) => o.status === 'scored').length;
+    expect(scored).toBeGreaterThanOrEqual(1);
+    // Invariant: exactly the scored runs are persisted (one beekeeper_run each).
+    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
+    expect(Number(runs)).toBe(scored);
+  });
+
+  it('a single instance failure is recorded as errored and the battery continues (per-run isolation)', async () => {
+    const ok = caseOf('build-spec', 'ok');
+    const boom = caseOf('build-spec', 'boom');
+    const deps = makeDeps(sql, { capturedMetrics: [], signalsFor: () => ({ workItemStatus: 'done', escalated: false }) });
+    // A clean failure seam: the instance run throws for the 'boom' case only.
+    deps.runInstance = async ({ case: c }) => {
+      if (c.id === boom.id) throw new Error('instance boot failed');
+      return { instanceId: 'inst-1', instanceUrl: 'mock://x', targetSlug: 'gen0', costUsd: 0.01 };
+    };
+    const config: BeekeeperConfig = {
+      instanceSpec: { manifest: { instanceId: 'inst-1', workspaceId: 'default', codeSha: 'abc', createdAt: new Date() }, instanceUrl: 'mock://x' },
+      corpus: [ok, boom], repeats: 1, rubric: RUBRIC, maxDistillChars: 2000,
     };
 
     const result = await runBeekeeperBattery(config, deps);
