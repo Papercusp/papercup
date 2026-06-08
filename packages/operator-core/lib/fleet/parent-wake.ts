@@ -56,23 +56,19 @@ export async function wakeParentOnChildDeath(
       return { parentWoken: false };
     }
 
-    // Fetch the parent spawn to get the parent's session_owner (ownerId)
-    const parentRows = await sql<SpawnRecord[]>`
-      SELECT spawn_id, parent_spawn_id, workspace_id, session_owner, status,
-             error_message, output_tail, exit_code
-        FROM harness_shared.spawned_agents
-       WHERE spawn_id = ${spawn.parent_spawn_id} AND workspace_id = ${workspaceId}`;
+    // The parent's coord owner id IS `parent_spawn_id` — wake it DIRECTLY.
+    //
+    // Do NOT look the parent up in spawned_agents to read its session_owner:
+    // a fleet-spawned parent sets `sessionOwner = spawnId` (so the lookup was a
+    // no-op identity), but a HIVE/Queen parent (launched via the invoke route
+    // with bpkind=hive) has NO spawned_agents row at all — it lives in
+    // adv_sessions, keyed by coord_owner_id == this `parent_spawn_id`. The old
+    // lookup therefore found 0 rows and silently dropped the wake for EVERY
+    // Queen placement (Stage-B finding, 2026-06-07: a reclaimed bee left the
+    // Queen asleep forever). `parent_spawn_id` is the coord owner in both cases,
+    // and wakeRecipients keys on the owner's inbox-wake — so fire it straight.
+    const parentOwnerId = spawn.parent_spawn_id;
 
-    if (parentRows.length === 0) {
-      return { parentWoken: false };
-    }
-
-    const parent = parentRows[0];
-    if (!parent.session_owner) {
-      return { parentWoken: false };
-    }
-
-    // Fire the parent's inbox-wake with a death notice
     const deathNotice = `Child spawn ${spawnId} reached terminal status: ${childStatus}`;
     const payload = {
       childSpawnId: spawnId,
@@ -82,7 +78,7 @@ export async function wakeParentOnChildDeath(
       exitCode: spawn.exit_code,
     };
 
-    const result = await wakeRecipients([parent.session_owner], {
+    const result = await wakeRecipients([parentOwnerId], {
       summary: deathNotice,
       payload,
       source: 'spawn-finish',
@@ -92,7 +88,7 @@ export async function wakeParentOnChildDeath(
     return {
       parentWoken: result.woken > 0,
       parentSpawnId: spawn.parent_spawn_id,
-      parentOwnerId: parent.session_owner,
+      parentOwnerId,
     };
   } catch (err) {
     // Best-effort: log but don't throw. The spawn's terminal status is already

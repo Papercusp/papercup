@@ -57,20 +57,19 @@ beforeEach(async () => {
 });
 
 describe('wakeParentOnChildDeath (EI-108)', () => {
-  it('wakes the parent when a child reaches terminal status', async () => {
-    // Setup: parent and child spawns
-    await insertSpawn('parent-s1', null, 'p-owner', { status: 'running' });
+  it('wakes the parent (by parent_spawn_id == coord owner) when a child reaches terminal status', async () => {
+    // The child carries parent_spawn_id; that IS the parent's coord owner id.
     await insertSpawn('child-s1', 'parent-s1', 'child-owner', { status: 'done' });
 
     const result = await wakeParentOnChildDeath(db.sql, 'child-s1', WS, 'done');
 
     expect(result.parentWoken).toBe(true);
     expect(result.parentSpawnId).toBe('parent-s1');
-    expect(result.parentOwnerId).toBe('p-owner');
+    expect(result.parentOwnerId).toBe('parent-s1');
 
-    // Verify wakeRecipients was called with the parent's ownerId
+    // Verify wakeRecipients was called with the parent's coord owner id directly.
     expect(wakeRecipients).toHaveBeenCalledWith(
-      ['p-owner'],
+      ['parent-s1'],
       expect.objectContaining({
         summary: expect.stringContaining('child-s1'),
         source: 'spawn-finish',
@@ -79,8 +78,25 @@ describe('wakeParentOnChildDeath (EI-108)', () => {
     );
   });
 
+  it('wakes a HIVE/Queen parent that has NO spawned_agents row (the EI-108 hive-parent bug fix)', async () => {
+    // A Queen launched via the invoke route (bpkind=hive) lives in adv_sessions,
+    // NOT spawned_agents — but her bee's parent_spawn_id == her coord owner id.
+    // The old code looked the parent up in spawned_agents, found nothing, and
+    // dropped the wake; the fix wakes parent_spawn_id directly. Note: we insert
+    // ONLY the child here (no parent row at all).
+    await insertSpawn('bee-of-queen', 's-queen-coord-owner', 'bee-of-queen', { status: 'failed' });
+
+    const result = await wakeParentOnChildDeath(db.sql, 'bee-of-queen', WS, 'failed');
+
+    expect(result.parentWoken).toBe(true);
+    expect(result.parentOwnerId).toBe('s-queen-coord-owner');
+    expect(wakeRecipients).toHaveBeenCalledWith(
+      ['s-queen-coord-owner'],
+      expect.objectContaining({ source: 'spawn-finish' }),
+    );
+  });
+
   it('includes death notice details in the payload', async () => {
-    await insertSpawn('parent-s2', null, 'p-owner-2', { status: 'running' });
     await insertSpawn('child-s2', 'parent-s2', 'child-owner', {
       status: 'failed',
       errorMessage: 'test error',
@@ -91,7 +107,7 @@ describe('wakeParentOnChildDeath (EI-108)', () => {
     await wakeParentOnChildDeath(db.sql, 'child-s2', WS, 'failed');
 
     expect(wakeRecipients).toHaveBeenCalledWith(
-      ['p-owner-2'],
+      ['parent-s2'],
       expect.objectContaining({
         payload: {
           childSpawnId: 'child-s2',
@@ -120,25 +136,6 @@ describe('wakeParentOnChildDeath (EI-108)', () => {
     expect(wakeRecipients).not.toHaveBeenCalled();
   });
 
-  it('does not wake when parent does not exist', async () => {
-    await insertSpawn('child-s3', 'nonexistent-parent', 'child-owner', { status: 'done' });
-
-    const result = await wakeParentOnChildDeath(db.sql, 'child-s3', WS, 'done');
-
-    expect(result.parentWoken).toBe(false);
-    expect(wakeRecipients).not.toHaveBeenCalled();
-  });
-
-  it('does not wake when parent has no session_owner', async () => {
-    await insertSpawn('parent-s4', null, null, { status: 'running' }); // no session_owner
-    await insertSpawn('child-s4', 'parent-s4', 'child-owner', { status: 'done' });
-
-    const result = await wakeParentOnChildDeath(db.sql, 'child-s4', WS, 'done');
-
-    expect(result.parentWoken).toBe(false);
-    expect(wakeRecipients).not.toHaveBeenCalled();
-  });
-
   it('supports all terminal statuses: failed, cancelled, done', async () => {
     const statuses = ['failed', 'cancelled', 'done'];
 
@@ -147,14 +144,13 @@ describe('wakeParentOnChildDeath (EI-108)', () => {
       const parentId = `parent-${status}`;
       const childId = `child-${status}`;
 
-      await insertSpawn(parentId, null, 'p-owner', { status: 'running' });
       await insertSpawn(childId, parentId, 'child-owner', { status });
 
       const result = await wakeParentOnChildDeath(db.sql, childId, WS, status);
 
       expect(result.parentWoken).toBe(true);
       expect(wakeRecipients).toHaveBeenCalledWith(
-        ['p-owner'],
+        [parentId],
         expect.objectContaining({ summary: expect.stringContaining(status) }),
       );
     }
