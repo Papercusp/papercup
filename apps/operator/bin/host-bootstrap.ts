@@ -289,7 +289,16 @@ export function runBootstrap(): void {
   // plans ~100k times (a 102 GB substrate_outbox, 2026-06-08). Default ON; the
   // staging systemd unit sets PAPERCUSP_BACKGROUND_WORKERS=0 to be request-only.
   // The release operator (:3070) + the desktop have no override → stay ON.
-  const backgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS !== '0';
+  //
+  // Activation without a unit edit: the explicit flag wins when set; otherwise
+  // default ON everywhere EXCEPT the dev-box staging operator, which already sets
+  // PAPERCUSP_HONO_PORT=3170 and is request-only by design (the release operator
+  // on :3070 owns the shared-DB background machinery). Production ships the
+  // desktop app with no :3170, so this branch defaults ON there — correct.
+  const backgroundWorkers =
+    process.env.PAPERCUSP_BACKGROUND_WORKERS != null
+      ? process.env.PAPERCUSP_BACKGROUND_WORKERS !== '0'
+      : process.env.PAPERCUSP_HONO_PORT !== '3170';
   if (!backgroundWorkers) {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',

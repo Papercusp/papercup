@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, ArrowUpRight, CheckCircle2, MessageCircle, RefreshCw, Radio, Megaphone, Send, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CheckCircle2, MessageCircle, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -293,6 +293,7 @@ function FeedView() {
     void setKinds(kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k]);
 
   const filtersActive = kinds.length > 0 || !!agent || !!plan || !!q.trim();
+  const activeFilterCount = kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (q.trim() ? 1 : 0);
   const clearFilters = () => {
     void setKinds([]);
     void setAgent('');
@@ -336,6 +337,13 @@ function FeedView() {
 
       {/* Filters — all nuqs */}
       <div className="pc-advfeed__filters">
+        <div className="pc-advfeed__filterhead">
+          <span>
+            <SlidersHorizontal size={12} aria-hidden />
+            Narrow the signal
+          </span>
+          <strong>{filtersActive ? `${activeFilterCount} active` : 'unfiltered'}</strong>
+        </div>
         <div className="pc-coord__filters" role="group" aria-label="Kind filter">
           {FEED_KINDS.map((k) => {
             // byKind is keyed by real CoordKind; 'broadcast' is synthetic (no
@@ -359,29 +367,41 @@ function FeedView() {
           })}
         </div>
         <div className="pc-advfeed__inputs">
-          <input
-            className="pc-advfeed__input"
-            placeholder="agent (from or to)…"
-            value={agent}
-            onChange={(e) => void setAgent(e.target.value)}
-            aria-label="Filter by agent"
-          />
-          <input
-            className="pc-advfeed__input"
-            placeholder="plan slug…"
-            value={plan}
-            onChange={(e) => void setPlan(e.target.value)}
-            aria-label="Filter by plan slug"
-          />
-          <input
-            className="pc-advfeed__input pc-advfeed__input--wide"
-            placeholder="search text…"
-            value={q}
-            onChange={(e) => void setQ(e.target.value)}
-            aria-label="Free-text search"
-          />
+          <label className="pc-advfeed__field">
+            <span>Agent</span>
+            <input
+              className="pc-advfeed__input"
+              placeholder="from or to…"
+              value={agent}
+              onChange={(e) => void setAgent(e.target.value)}
+              aria-label="Filter by agent"
+            />
+          </label>
+          <label className="pc-advfeed__field">
+            <span>Plan</span>
+            <input
+              className="pc-advfeed__input"
+              placeholder="plan slug…"
+              value={plan}
+              onChange={(e) => void setPlan(e.target.value)}
+              aria-label="Filter by plan slug"
+            />
+          </label>
+          <label className="pc-advfeed__field pc-advfeed__field--wide">
+            <span>
+              <Search size={10} aria-hidden />
+              Search
+            </span>
+            <input
+              className="pc-advfeed__input pc-advfeed__input--wide"
+              placeholder="summary, body, event…"
+              value={q}
+              onChange={(e) => void setQ(e.target.value)}
+              aria-label="Free-text search"
+            />
+          </label>
           {filtersActive && (
-            <button type="button" className="pc-coord__chip" onClick={clearFilters}>
+            <button type="button" className="pc-coord__chip pc-advfeed__clear" onClick={clearFilters}>
               clear
             </button>
           )}
@@ -1404,10 +1424,42 @@ function AdvConvStyles() {
         display: flex;
         flex-direction: column;
         gap: 8px;
-        padding: 10px;
+        padding: 11px;
         border-radius: 16px;
-        background: rgba(7, 17, 28, 0.66);
+        background:
+          radial-gradient(circle at 0% 0%, rgba(236, 72, 153, 0.08), transparent 36%),
+          rgba(7, 17, 28, 0.66);
         border: 1px solid rgba(125, 211, 252, 0.12);
+      }
+      .pc-advfeed__filterhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 1px 2px 2px;
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 11px;
+      }
+      .pc-advfeed__filterhead span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #e0f2fe;
+        font-weight: 850;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .pc-advfeed__filterhead strong {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(236, 72, 153, 0.2);
+        background: rgba(236, 72, 153, 0.08);
+        color: #fbcfe8;
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
       }
       .pc-advfeed__kindchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
       .pc-advfeed__kinddot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
@@ -1415,14 +1467,34 @@ function AdvConvStyles() {
         font-variant-numeric: tabular-nums; font-size: 10px; opacity: 0.8;
         background: rgba(255,255,255,0.08); border-radius: 6px; padding: 0 4px; margin-left: 2px;
       }
-      .pc-advfeed__inputs { display: flex; gap: 6px; flex-wrap: wrap; }
+      .pc-advfeed__inputs { display: flex; gap: 7px; flex-wrap: wrap; align-items: flex-end; }
+      .pc-advfeed__field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1 1 150px;
+        min-width: 130px;
+      }
+      .pc-advfeed__field > span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--fg-mute, #7890a8);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .pc-advfeed__field--wide { flex: 2 1 260px; }
       .pc-advfeed__input {
+        width: 100%;
         background: rgba(3, 7, 18, 0.42); color: var(--fg, #e7f7ff);
         border: 1px solid var(--advconv-border);
-        border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 12px; min-width: 130px;
+        border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 12px; min-width: 0;
       }
       .pc-advfeed__input--wide { flex: 1 1 200px; }
       .pc-advfeed__input:focus { outline: 2px solid rgba(56,189,248,0.34); outline-offset: 1px; }
+      .pc-advfeed__clear { min-height: 32px; }
       .pc-advfeed__scopebar {
         display: flex;
         align-items: center;
@@ -1679,7 +1751,8 @@ function AdvConvStyles() {
         .pc-advconv__rowdate { position: static; grid-column: 2; max-width: none; }
         .pc-advconv__threads .pc-coord__row-title { padding-right: 0; }
         .pc-advfeed__inputs { flex-direction: column; }
-        .pc-advfeed__input { width: 100%; }
+        .pc-advfeed__field { width: 100%; }
+        .pc-advfeed__clear { width: 100%; justify-content: center; }
         .pc-advfeed__row {
           grid-template-columns: auto minmax(0, 1fr);
           gap: 6px;
