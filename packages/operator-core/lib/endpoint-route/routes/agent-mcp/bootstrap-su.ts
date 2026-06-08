@@ -302,7 +302,6 @@ const post = defineTool({
         workspaceId: workspace,
         slug: harnessSlug,
         operatorBaseUrl: new URL(req.url).origin,
-        mode: 'shell',
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);

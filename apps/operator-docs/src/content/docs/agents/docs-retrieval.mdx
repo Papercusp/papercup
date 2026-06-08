@@ -13,8 +13,8 @@ How an agent finds documentation in Papercusp. One engine, three surfaces, conte
 
 | Surface | URL prefix | Filesystem | Who reads it |
 |---|---|---|---|
-| **Public Papercusp docs** | `/docs` | `apps/operator/content/docs/` | Humans browsing the docs site (currently placeholder pending authoring) |
-| **Engineering reference** | `/internal/docs` | `apps/operator/content/internal-docs/` | This page lives here. Engineering material — endpoint-system, plugins, agents, etc. Loopback-gated. |
+| **Public Papercusp docs** | `/docs` | `apps/papercusp-docs/src/content/docs/` (Starlight) | Humans browsing the public docs site |
+| **Engineering reference** | `/internal/docs` | `apps/operator-docs/src/content/docs/` (Starlight) | This page lives here. Engineering material — endpoint-system, plugins, agents, etc. Loopback-gated. |
 | **Per-harness docs** | (no public URL; `/project-docs?harness=<slug>`) | `<projectPath>/docs/` + state files | Each harness's own SPEC, AGENTS, plans, `.papercusp/{knowledge,supervisor-notes,validation-contract}.md` |
 
 There's no "public surface for agents." Agents see *either* engineering reference *or* a specific harness — never the human-facing public site.
@@ -32,8 +32,9 @@ getDocs(source, args, ctx)        → GetResult       (batch, heading-slice, 50K
 searchDocs(source, args, ctx)     → SearchResult    (title×4, desc×2, body×1)
 
 // Adapters
-fumadocsAdapter(source, opts)     → DocSource       // wraps a fumadocs loader
+starlightContentAdapter(opts)     → DocSource       // walks a Starlight content tree on disk
 harnessFsAdapter(projectPath)     → DocSource       // walks <projectPath>/docs/ + state files
+genericFsAdapter(root, opts)      → DocSource       // walks an arbitrary markdown/MDX dir
 
 // Cache
 RunCache<T>                       // per-run LRU keyed by runId ?? spawnId
@@ -61,8 +62,8 @@ withPreamble(body, meta)          → '# title\nURL: ...\n\n' + body
 ### `docs:*` — context-aware
 Three tools (`outline`, `get`, `search`). The handler resolves the adapter from `ctx.harnessSlug`:
 
-- **Inside a harness** (worker, scoper, validator, etc. spawned with `?harness=<slug>`) → returns *that harness's* docs via `harnessFsAdapter`
-- **Outside a harness** (SU, operator, oracle, documenter) → returns *Papercusp engineering reference* via `fumadocsAdapter(internalSource)`
+- **Inside a harness** (worker, scoper, validator, etc. spawned with `?harness=<slug>`) → returns *that harness's* docs via `genericFsAdapter(<projectPath>/docs)`
+- **Outside a harness** (SU, operator, oracle, documenter) → returns *Papercusp engineering reference* via the `engineeringAdapter` (`starlightContentAdapter` over `apps/operator-docs/src/content/docs/`, defined in `_engineering-adapter.ts`)
 
 ```ts
 // Both callers use the same tool. Source picked by context.
