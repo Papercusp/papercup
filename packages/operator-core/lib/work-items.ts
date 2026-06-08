@@ -673,7 +673,11 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           AND (taken_by IS NULL OR taken_by = '')
           AND status = ANY(${states}::text[])
           AND ${filter.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
-        ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : sql``} created_ts ASC
+        -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
+        -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
+        -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first
+        -- (anti-starvation). Flag OFF ⇒ plain oldest-first, byte-identical to before.
+        ORDER BY ${filter.swarmId ? sql`(swarm_affinity = ${filter.swarmId}) DESC NULLS LAST, feature_order ASC NULLS LAST,` : sql``} created_ts ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )

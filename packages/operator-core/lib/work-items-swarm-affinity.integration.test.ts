@@ -37,6 +37,7 @@ const HFC_DDL = `
     item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
     taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
     swarm_affinity text,
+    feature_order integer,
     ts bigint, created_ts bigint, updated_ts bigint,
     PRIMARY KEY (harness_slug, feature_id))`;
 
