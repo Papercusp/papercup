@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import { wirePresenceAnnounceForHarness } from '../wire-presence';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { deriveHiveFederationTopic } from '../derive-swarm-topic';
@@ -256,22 +257,126 @@ describe('Shared Hive federation — two Swarms of one Hive over REAL Hyperswarm
 });
 
 /**
- * Track B (file-lock authority federation) — GATED on su-02ae39's P-008
- * presence-announce PUBLISHER. The authority LOGIC is already proven over
- * loopback HTTP in
- * `authority/__tests__/two-instance-hive-authority.integration.test.ts`
- * (su-73a60, 7 cases). This placeholder is the LIVE-presence layer on THIS
- * 2-peer substrate harness: each peer announces presence carrying `hive_slug`
- * (the data-carry landed by su-14214), the Hive lock authority elects across the
- * live Swarm roster, and a file claim on A routes to the authority on B. su-73a60
- * fills this in once the publisher lands (events:await presence-publisher).
+ * Track B (presence federation — the LIVE layer) — UNBLOCKED: su-30045 landed the
+ * P-008 presence-announce PUBLISHER (wire-presence.ts → boot-all.ts). This proves
+ * the publisher end-to-end on THIS 2-peer substrate: peer A's presence announce
+ * (carrying `hive_slug`) federates to peer B over the Hive topic, so a remote
+ * Swarm's liveness is visible cross-Swarm — exactly the roster the per-Hive lock
+ * authority (lockAuthorityForHive, P-009) elects over.
+ *
+ * Proof boundary (same as Track A): TRANSPORT only — `applyOverride` captures the
+ * merged op, so the projection→shared_presence→lockAuthorityForHive(PG) hop is NOT
+ * exercised here (that chain is covered by projections/presence + su-73a60's
+ * injected-presence authority E2E `authority/__tests__/two-instance-hive-authority`).
+ * Together they close the cross-Swarm Track B claim.
  */
-describe.skip('Shared Hive federation — Track B file-lock authority over live presence (P-011, gated on P-008 publisher)', () => {
-  it.skip('elects the Hive authority across live Swarms + serializes a cross-Swarm file claim', () => {
-    // Pending su-02ae39's presence-announce publisher (P-008): boot both peers as
-    // above, drive each peer's presence-announce loop (buildPresenceAnnounceOp with
-    // hive_slug = the Hive home slug), federate presence over the Hive topic, then
-    // assert lockAuthorityForHive(hiveSlug) on A sees B's Swarm + a file claim
-    // routes to the single Hive authority. See su-73a60's authority-logic E2E.
-  });
+describe('Shared Hive federation — Track B presence federates over the Hive topic (P-011, P-008 publisher landed)', () => {
+  it(
+    "federates a Swarm's presence announce (carrying hive_slug) to the other Swarm over the Hive topic",
+    async () => {
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+
+      const hivePubkey = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
+      const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
+      const workspaceId = 'ws-hive-presence-test';
+      const harnessSlug = 'acme-rd';
+      const hiveSlug = 'acme-hive';
+
+      const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
+      const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
+      const swarmA = makeSwarm(testnet.bootstrap);
+      const swarmB = makeSwarm(testnet.bootstrap);
+      const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+      const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+      const rootA = makeWorkspaceRoot('hivepres-A-');
+      const rootB = makeWorkspaceRoot('hivepres-B-');
+
+      const handleA = await bootHarnessSubstrate({
+        workspaceRoot: rootA,
+        workspaceId,
+        harnessSlug,
+        swarmBinding: binding,
+        swarmOverride: swarmA,
+        verifyBindingOverride: async () => 'verified',
+        applyOverride: applyA,
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idA.override,
+      });
+      cleanups.push(async () => {
+        await handleA.close();
+        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug });
+      });
+
+      const handleB = await bootHarnessSubstrate({
+        workspaceRoot: rootB,
+        workspaceId,
+        harnessSlug,
+        swarmBinding: binding,
+        swarmOverride: swarmB,
+        verifyBindingOverride: async () => 'verified',
+        applyOverride: applyB,
+        mergePollMs: 0,
+        pendingRetryMs: 0,
+        loadRevokedOverride: async () => new Set(),
+        announceIdentityOverride: idB.override,
+      });
+      cleanups.push(async () => {
+        await handleB.close();
+        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug });
+      });
+
+      expect(handleA.swarm!.topicHex).toBe(deriveHiveFederationTopic(hivePubkey).toString('hex'));
+
+      // Drive peer A's REAL presence PUBLISHER (the P-008 wiring): it resolves the
+      // Hive slug once, stamps it onto the announce, and appends A's presence op to
+      // A's own log. Injected identity + a no-tick timer → exactly one deterministic
+      // announce (we call tickOnce ourselves).
+      const loopA = await wirePresenceAnnounceForHarness(handleA, {
+        resolveIdentity: async () => ({
+          githubUserId: 4242,
+          machineLabel: 'machine-A',
+          devicePubkey: idA.devicePubkey,
+        }),
+        resolveHiveSlug: async () => hiveSlug,
+        setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
+      });
+      expect(loopA, 'publisher should start for a swarmed harness').not.toBeNull();
+      await loopA!.tickOnce();
+
+      // THE PROOF: A's presence announce crosses to peer B over the Hive topic,
+      // carrying hive_slug — so a remote Swarm's liveness (the lock-authority
+      // roster the Hive authority elects over) is visible cross-Swarm.
+      const gotPresence = await pollUntil(
+        async () => {
+          await handleB.mergeNow();
+          return applyB.mock.calls.find(
+            (c) => c[0].table === 'presence' && c[0].hbKey === '4242/machine-A',
+          )?.[0];
+        },
+        { timeoutMs: 20_000, intervalMs: 250 },
+      );
+
+      expect(gotPresence, "peer B never received peer A's presence over the Hive topic").toBeTruthy();
+      expect(gotPresence).toMatchObject({
+        table: 'presence',
+        hbKey: '4242/machine-A',
+        value: {
+          device_pubkey: idA.devicePubkey,
+          github_user_id: 4242,
+          machine_label: 'machine-A',
+          hive_slug: hiveSlug, // the P-008/P-009 carry — what lockAuthorityForHive scopes by
+        },
+      });
+    },
+    35_000,
+  );
 });
