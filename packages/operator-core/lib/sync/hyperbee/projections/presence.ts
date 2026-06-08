@@ -31,6 +31,14 @@ export interface SharedPresenceRow {
   current_view: string | null;
   last_seen_at: number;            // epoch ms
   schema_version: number;
+  /** The harness's home Hive slug (shared-hive-federation-2026-06-08 P-008/P-009),
+   *  or null for a non-Hive harness. Denormalizes the membership onto each
+   *  presence row so the per-Hive lock authority can scope by Hive
+   *  (lockAuthorityForHive's `WHERE hive_slug=?`, mig 187) without a registry join
+   *  on the hot path. Optional on DECODE so pre-P-008 peer-log rows (which lack
+   *  it) still validate; the presence publisher stamps it (resolved via
+   *  hiveHomeSlugForHarness) at announce time. */
+  hive_slug?: string | null;
 }
 
 export interface PresenceProjectionOpts {
@@ -56,7 +64,9 @@ export function isSharedPresenceRow(input: unknown): input is SharedPresenceRow 
     (r.intent === null || typeof r.intent === 'string') &&
     (r.current_view === null || typeof r.current_view === 'string') &&
     typeof r.last_seen_at === 'number' && Number.isFinite(r.last_seen_at) &&
-    typeof r.schema_version === 'number' && Number.isInteger(r.schema_version)
+    typeof r.schema_version === 'number' && Number.isInteger(r.schema_version) &&
+    // hive_slug is optional (absent on pre-P-008 rows) + nullable (non-Hive harness).
+    (r.hive_slug === undefined || r.hive_slug === null || typeof r.hive_slug === 'string')
   );
 }
 
@@ -75,18 +85,19 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.shared_presence
       (workspace_id, harness_slug, github_user_id, machine_label, device_pubkey,
-       intent, current_view, last_seen_at, schema_version, fed_ts)
+       intent, current_view, last_seen_at, schema_version, hive_slug, fed_ts)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.machine_label},
        ${row.device_pubkey}, ${row.intent}, ${row.current_view},
        to_timestamp(${row.last_seen_at} / 1000.0),
-       ${row.schema_version}, ${fedTs})
+       ${row.schema_version}, ${row.hive_slug ?? null}, ${fedTs})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, machine_label) DO UPDATE SET
       device_pubkey = EXCLUDED.device_pubkey,
       intent = EXCLUDED.intent,
       current_view = EXCLUDED.current_view,
       last_seen_at = EXCLUDED.last_seen_at,
       schema_version = EXCLUDED.schema_version,
+      hive_slug = EXCLUDED.hive_slug,
       fed_ts = EXCLUDED.fed_ts
     -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
     WHERE shared_presence.fed_ts IS NULL

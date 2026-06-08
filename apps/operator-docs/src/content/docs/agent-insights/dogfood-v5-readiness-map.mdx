@@ -16,14 +16,20 @@ Three categories per item:
 - **Gated** — wired, but never actually fires until `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`.
 - **User-driven** — requires a behavioural decision (e.g. "run a feature", "deploy Cupboard") only the user can make.
 
-Everything below is in `apps/operator/` unless noted. Routes are
-HTTP paths registered in `lib/endpoint-route/routes/index.ts`.
+Path convention below (updated post-`operator-core` extraction): UI surfaces
+(`app/**/*.tsx`, `scripts/*`) are in **`apps/operator/`**; every non-`app`
+`lib/**` path moved to **`packages/operator-core/lib/**`** (so `lib/sync/hyperbee/…`
+→ `packages/operator-core/lib/sync/hyperbee/…`, `lib/orchestrator/…`,
+`lib/harness-insights/…`, `lib/user-profile/…`, etc.). Routes are HTTP paths
+registered in `packages/operator-core/lib/endpoint-route/routes/index.ts`. The
+`instrumentation-node.ts` boot-wiring rows are **retired** (the Next.js
+instrumentation hook is gone) — see the Phase-5a note below.
 
 ## Phase 5a — Substrate boot
 
 | Status | What | Where |
 | ------ | ---- | ----- |
-| Wired (flag-gated) | Boot wiring | `instrumentation-node.ts` |
+| Wired (always-on) | Boot wiring | `apps/operator/bin/host-bootstrap.ts` (was `instrumentation-node.ts`, retired) |
 | Wired | Boot composer | `lib/sync/hyperbee/boot.ts` |
 | Wired | Boot orchestrator (idempotent map, inflight races) | `lib/sync/hyperbee/boot-all.ts` |
 | Wired | Status enumerator | `listBootedHandles` in `boot-all.ts` |
@@ -191,13 +197,17 @@ shape rather than throwing). Test seams (`_setNowForTests`,
 
 ## Gated by `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`
 
-- Substrate boot in `instrumentation-node.ts`.
+> **Update (2026-06):** This gate is **removed** — the
+> `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` opt-in was dropped in the Model-B
+> substrate rewrite (Stage 4d). The per-peer-log substrate **always boots**
+> from `apps/operator/bin/host-bootstrap.ts` now (not `instrumentation-node.ts`,
+> retired); there is no longer a "Gated" tier. The items below still describe
+> *what activity writes which rows*, but none of it is flag-gated any more.
+
+- Substrate boot in `apps/operator/bin/host-bootstrap.ts` (always-on).
 - `bootstrap-progress` records (poller only runs after boot).
 - `claim-audit` rows (only the distributed-claim path writes them).
 - Real claim races (only `attemptDistributedClaim` triggers them).
-
-Everything else stays inert and the legacy single-writer paths run
-unchanged.
 
 ## User-driven
 

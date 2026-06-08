@@ -16,8 +16,10 @@ Two things to know before you touch the harness **Tests** tab (`/adv` →
 
 ## The domain nav is HARNESS-owned data, not an operator registry
 
-`/admin/testing` reads `adminRegistry` (5 generalized + 16 Papercusp domains)
-from `apps/operator/lib/testing-domains-registry.ts` — operator-internal code.
+`/admin/testing` reads `adminRegistry` (the 8-domain Universal tier — formerly
+"generalized" — plus ~30 Papercusp domains, i.e. `[...operatorUniversal,
+...papercuspRegistry]`) from
+`packages/operator-core/lib/testing-domains-registry.ts` — operator-internal code.
 The **harness** Tests tab does NOT import that. Each harness declares its own
 test domains in its contract surface:
 
@@ -28,8 +30,10 @@ test domains in its contract surface:
 served by `GET /api/harness/:slug/testing/domains`
 (`endpoint-route/routes/harness/testing.ts` → `loadHarnessDomains(root)`). A
 harness that declares **no** file falls back to the generic
-`harnessTestingRegistry` (Built-in *generalized* tier + Acceptance). The
-frontend fetches that route for its nav; it does not import a static registry.
+`harnessTestingRegistry` (Built-in *Universal* tier + Acceptance —
+`[...universalDomains, ACCEPTANCE_DOMAIN]`, in
+`packages/operator-core/lib/harness-testing-registry.ts`). The frontend fetches
+that route for its nav; it does not import a static registry.
 
 <Aside type="caution" title="Don't special-case a harness in operator code">
 The wrong fix (rejected) was `isSelfHarness(slug) ? adminRegistry : …` wired
@@ -42,14 +46,15 @@ tests) lives. To give a harness more domains, write its
 
 The **papercup dogfood harness** (its worktree IS the operator repo) ships a
 `.papercusp/testing-domains.json` **generated from `adminRegistry`** (so there's
-no hand-maintained drift) — that's why its Tests tab shows all 22 domains while
-a generic harness shows the sparse generalized tier + Acceptance. Regenerate it
-the same way (load `adminRegistry` + the Acceptance domain, serialize) if the
-domains change. Note the generalized tier's `test-runs`/`ai` are `admin-suite`
-runners that are non-functional in the harness data-source, and
-`live`/`chaos`/`routes` glob operator-internal paths — so for a *non-papercup*
-harness the Built-in tier is mostly empty; that's expected, not a bug. Default
-the nav to the first non-`generalized` (content-bearing) tab.
+no hand-maintained drift) — that's why its Tests tab shows the full
+`adminRegistry` set while a generic harness shows the sparse Universal tier +
+Acceptance. Regenerate it the same way (load `adminRegistry` + the Acceptance
+domain, serialize) if the domains change. Note that several Universal-tier
+domains are `admin-suite` runners that are non-functional in the harness
+data-source, and others (`live-web`/`chaos-web`/`routes`) glob operator-internal
+paths — so for a *non-papercup* harness the Built-in tier is mostly empty;
+that's expected, not a bug. Default the nav to the first non-`universal`
+(content-bearing) tab.
 
 ## Harness endpoints resolve against `reg.current` — your curl can hit the wrong workspace
 

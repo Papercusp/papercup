@@ -39,7 +39,8 @@ The inbox emitter is two pure functions:
 
 - `attentionItemToCardSpec(item)` maps an `AttentionItem` → `AskChoiceArgs`.
   `item.actions[]` is the single source of truth (so the adapter in
-  `lib/attention/adapters.ts` must emit the *complete* set — see the gotcha).
+  `packages/operator-core/lib/attention/adapters.ts` must emit the *complete*
+  set — see the gotcha).
 - `resolveAttentionAction(item, optionId)` dispatches a **terminal** pick to the
   item's existing backend helper (`resolveEscalation` / `ackCoordMessage` /
   `setItemStatus`) via the `/api/admin/coord/:verb` proxy — no new route, because

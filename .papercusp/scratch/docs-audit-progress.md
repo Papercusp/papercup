@@ -23,7 +23,7 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] implementation (6)
 - [x] design (16) — DONE
 - [x] reference (5) — DONE (role-registry/blueprint-catalog up-to-date; agent-insights-index regenerated; tool-catalog + plans-index regenerate in FINAL PASS)
-- [~] agent-insights (99) — groups done: 1-2 (pages 1-20). Dominant drift: lib→operator-core, @restart→@papercusp, defineTool→libs/generic/tooldef; obsolete notes (runtime-ensure→migrations, Fleet OS sandbox default-on). NEXT: groups 3-10 (21-99).
+- [~] agent-insights (99) — groups done: 1-4 (pages 1-40). Drift: lib→operator-core, @restart→@papercusp, defineTool→tooldef; obsolete notes (autoloop director-cadence retired, dogfood-substrate gate removed, instrumentation-node boot retired→host-bootstrap, universalDomains rename, classifier 14 not 16). NEXT: groups 5-10 (41-99).
 
 ## Per-page log
 

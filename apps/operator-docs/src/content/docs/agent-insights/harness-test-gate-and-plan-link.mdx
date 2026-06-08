@@ -73,20 +73,22 @@ through the VAL (`packages/operator-core/lib/harness-test-rollup.ts`, pure + uni
   Acceptance view render from that.
 
 <Aside type="note" title="No-VAL tests stay harness-level">
-Built-in/generalized tests (lint, typecheck, smoke — `generalizedRegistry` in
-`@papercusp/testing-shell`) have no `coversVALs`, so they match no assertion and
-contribute to no plan item. Only behavioral/Project tests link to plans.
+Built-in/universal tests (lint, typecheck, smoke — the `universalDomains` tier
+from `@papercusp/testing-shell`, formerly "generalized") have no `coversVALs`, so
+they match no assertion and contribute to no plan item. Only behavioral/Project
+tests link to plans.
 </Aside>
 
 ## Where things live
 
 - **`@papercusp/testing-shell`** — `TestingShell` (left-rail + panel host),
-  `DomainTestPanel`, the `generalizedRegistry` (Built-in domains, pure data),
-  and the `TestingDataSource` interface. The lib↔operator boundary *is* the
-  generalized↔Papercusp boundary.
-- **operator** — `lib/testing-domains-registry.ts` (16 Papercusp domains +
-  registers the lib's generalized 5), the harness `/testing/*` routes, and the
-  `/adv` `AdvTestsPanel` + `AcceptancePanel`.
+  `DomainTestPanel`, the `universalDomains` registry (Built-in/Universal tier,
+  pure data — `src/registry/universal.ts`), and the `TestingDataSource`
+  interface. The lib↔operator boundary *is* the universal↔Papercusp boundary.
+- **operator** — `packages/operator-core/lib/testing-domains-registry.ts`
+  (`papercuspRegistry`, ~30 Papercusp domains, composed with the lib's universal
+  tier into `adminRegistry`), the harness `/testing/*` routes, and the `/adv`
+  `HarnessTestsView` + `AcceptancePanel`.
 
 The harness Tests tab is an `/adv` dock panel (`adv:tests`), not a
 `HarnessDashboard` tab — that monolith was deleted by the `/adv` migration.

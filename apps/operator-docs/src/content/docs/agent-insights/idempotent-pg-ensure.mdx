@@ -8,6 +8,24 @@ sidebar:
   order: 19
 ---
 
+:::caution[Superseded: runtime-DDL ensures are removed]
+This runbook documents the lazy-`CREATE TABLE`-at-runtime pattern that has
+since been **removed** (plan `self-contained-migration-baseline-2026-06-02`).
+Schema is now **migrations-only**: one squashed
+`libs/papercusp/libs/db/sql/000-baseline.sql` + idempotent incrementals
+(`107+`). The `ensure-schema.ts` / `ensure-schema-dogfood.ts` files no longer
+exist, and there is no `ensureMyTable` / `ensureAllDogfoodTables` family — to
+change the schema, **add a migration**, never an `ensureXxx()` / inline
+`CREATE TABLE` in runtime code (see `/internal/docs/system/storage-policy`).
+The only surviving piece is the `globalThis`-pinned-flag idea, which now lives
+in `packages/operator-core/lib/sync/hyperbee/boot-gate.ts` purely as a
+projection **boot-readiness gate** (`globalThis.__papercuspEnsureFlags` with
+`sql_migrations_complete` / `runtime_ensure_complete`) — not for table
+creation. The prose below is preserved for the historical pattern + the
+still-true PG idempotency facts (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT
+EXISTS`, the flag-after-await discipline).
+:::
+
 ## What
 
 The operator creates several `harness_shared` tables at runtime
@@ -184,12 +202,14 @@ appear later when scaffold runs. Re-throw any other error.
 
 ## Related
 
-- `apps/operator/lib/ensure-schema-dogfood.ts` — recent example,
-  12 ensure-fns + batch helper + the graceful-skip P-019 pattern.
-- `apps/operator/lib/ensure-schema.ts` — original ~1860-line file
-  with the same pattern. Don't edit it for new tables — add a new
-  sibling file instead.
-- `apps/operator/lib/sync-sse.ts` — uses the same `globalThis`
-  pin pattern for the 90s dedupe map.
+- `apps/operator/lib/ensure-schema-dogfood.ts` and
+  `apps/operator/lib/ensure-schema.ts` — **removed** (see the Superseded
+  banner above); schema now lives entirely in
+  `libs/papercusp/libs/db/sql/`.
+- `packages/operator-core/lib/sync/hyperbee/boot-gate.ts` — the surviving
+  `globalThis`-pinned-flag pattern, now a projection boot-readiness gate
+  (`globalThis.__papercuspEnsureFlags`).
+- `packages/operator-core/lib/sync-sse.ts` (was `apps/operator/lib/`) — SSE
+  bus; dedupe + payload cap now live in the bus.
 - [pg-migrations-dollar-quote](/internal/docs/agent-insights/pg-migrations-dollar-quote)
   — the migration-file side of PG DDL hazards.

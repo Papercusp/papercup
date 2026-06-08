@@ -27,7 +27,7 @@ Each insight answers three questions in three short sections:
 
 ## Contributing
 
-See [Agent policies §18](/internal/docs/agent-policies#18-agent-insights) for
+See [Agent policies §19](/internal/docs/agent-policies#19-agent-insights) for
 the full rule. Short version:
 
 - Write one when you discover a non-obvious fact (PG quirk, library
@@ -37,5 +37,8 @@ the full rule. Short version:
 - Keep it short — three sections, under 50 lines total.
 
 If something is obsolete, set `status: superseded` or `retired` in
-the frontmatter (don't delete the file). The index hides retired
-entries.
+the frontmatter (don't delete the file) and add an "Update:/Superseded:"
+note in the body. Entries stay in the sidebar and the generated
+[insights index](/internal/docs/reference/agent-insights-index) regardless
+of status — the index surfaces `status` as a column rather than hiding
+non-active pages.

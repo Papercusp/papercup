@@ -83,11 +83,20 @@ export interface PresenceIdentity {
   devicePubkey: string;
 }
 
-/** Build the SharedPresenceRow value for an announce. */
+/**
+ * Build the SharedPresenceRow value for an announce.
+ *
+ * `hiveSlug` (shared-hive-federation P-008/P-009) is the harness's home Hive slug
+ * — the publisher resolves it once via hiveHomeSlugForHarness and threads it here
+ * so each federated presence row carries it for the per-Hive lock authority.
+ * Defaults null (a non-Hive harness, or a caller that hasn't wired Hive scope yet)
+ * — additive + back-compat.
+ */
 export function buildPresenceAnnounceRow(
   identity: PresenceIdentity,
   state: PresenceState,
   nowMs: number,
+  hiveSlug: string | null = null,
 ): SharedPresenceRow {
   return {
     harness_slug: state.harnessSlug,
@@ -98,6 +107,7 @@ export function buildPresenceAnnounceRow(
     current_view: state.currentView,
     last_seen_at: nowMs,
     schema_version: PRESENCE_SCHEMA_VERSION,
+    hive_slug: hiveSlug,
   };
 }
 
@@ -108,8 +118,9 @@ export function buildPresenceAnnounceOp(
   identity: PresenceIdentity,
   state: PresenceState,
   nowMs: number,
+  hiveSlug: string | null = null,
 ): LocalWriteOp {
-  const value = buildPresenceAnnounceRow(identity, state, nowMs);
+  const value = buildPresenceAnnounceRow(identity, state, nowMs, hiveSlug);
   return {
     type: 'put',
     table: 'presence',

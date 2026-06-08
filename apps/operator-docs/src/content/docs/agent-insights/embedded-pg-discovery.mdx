@@ -19,9 +19,11 @@ writes its connection info to:
 ```
 
 Agents and the webapp resolve the connection via
-`getHarnessAdminUrl()` (from `libs/papercusp/libs/db/src/connection.ts`),
-which reads this file. The port is **not** stable — it can shift
-between boots, machines, and Papercusp installs.
+`getHarnessAdminUrl()` (from `packages/operator-core/lib/embedded-pg-discovery.ts`;
+the generic resolver is `resolvePgUrl` in `libs/generic/embedded-pg-discovery`),
+which reads this file. `getHarnessPg(slug)` (per-harness scoped) lives in
+`libs/papercusp/libs/db/src/connection.ts`. The port is **not** stable — it can
+shift between boots, machines, and Papercusp installs.
 
 ## Why it matters
 
@@ -44,11 +46,11 @@ away"). Don't assume it'll be there.
 
 - **Always resolve PG connections through `getHarnessAdminUrl()`**
   (admin role) or `getHarnessPg(slug)` (per-harness scoped).
-- **For shell scripts**, read the JSON directly:
+- **For shell scripts**, read the JSON directly. The discovery file holds a
+  single resolved DSN under `.url` (the resolver reads `parsed.url`), so feed it
+  straight to psql:
   ```bash
-  PORT=$(jq -r .port ~/.papercusp/embedded-pg.json)
-  PGHOST=$(jq -r .host ~/.papercusp/embedded-pg.json)
-  psql -h "$PGHOST" -p "$PORT" -U papercusp papercusp
+  psql "$(jq -r .url ~/.papercusp/embedded-pg.json)"
   ```
 - **Never write a config file** that bakes a PG port at install time.
   Resolve at runtime.

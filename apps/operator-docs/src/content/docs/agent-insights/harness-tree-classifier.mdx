@@ -15,7 +15,7 @@ When you point the harness-creation flow at an existing git repo
 directory looking for nested `.git` entries and decides whether each
 one becomes a sub-harness, a separate root harness, or part of the
 parent. The classifier lives at
-`apps/operator/lib/harness/classify-tree.ts` (papercusp-dogfood-v5
+`packages/operator-core/lib/harness/classify-tree.ts` (papercusp-dogfood-v5
 P-007).
 
 There are **five outcomes**, ordered by precedence:
@@ -72,18 +72,19 @@ classifier fires and a single decision is made for that subtree.
 
 ## Real-world layout (papercup itself)
 
-papercup has:
+papercup has (after the 2026-05-31 borrowable-submodule regroup under
+`libs/generic/` + the `test-config`/`testing-shell` promotions):
 - 1 tree root: the papercup repo at `/home/marsh-office/papercupai-workspace/papercup`
-- 9 submodules under `libs/`: `agent-chat`, `git-graph`, `papercup-db`, `papercup-shared`, `papercusp`, `papergrid`, `sync`, `ui-primitives`, `zero-harness`
-- 7 plain dirs under `libs/`: `flags`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth`, `sse`, `test-config`
+- 7 direct-child submodules under `libs/`: `agent-chat`, `papercup-db`, `papercup-shared`, `papercusp`, `test-config`, `testing-shell`, `zero-harness` (the formerly-direct `git-graph`/`papergrid`/`sync`/`ui-primitives` submodules now live under `libs/generic/`)
+- 7 plain dirs under `libs/`: `flags`, `generic`, `holepunch-spike`, `host-platform`, `marketplace-public-ui`, `papercusp-export-state`, `papercusp-publish-auth` (`generic/` itself is plain at depth 0 — it holds the regrouped borrowable submodules below it)
 - Many worktrees in siblings of the papercup repo (`papercup-backup`, `papercup-design-migration`, etc.) — those are detected if a future walk starts above papercup, but the classifier never confuses them for new harnesses.
 
-Total `libs/` count: 16 dirs (9 + 7), exactly what the test asserts
-against:
+Total direct `libs/` count: 14 dirs (7 submodules + 7 plain), exactly what the
+test asserts against:
 
 ```ts
-// apps/operator/lib/harness/classify-tree.test.ts
-it('classifies papercup\'s real libs/ as 9 submodules + 7 plain dirs', ...)
+// packages/operator-core/lib/harness/classify-tree.test.ts
+it('matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)', ...)
 ```
 
 ## When you touch this code
@@ -101,8 +102,8 @@ it('classifies papercup\'s real libs/ as 9 submodules + 7 plain dirs', ...)
 
 ## Related
 
-- `apps/operator/lib/harness/classify-tree.ts` — the classifier
-- `apps/operator/lib/harness/register-papercup.ts` — uses
+- `packages/operator-core/lib/harness/classify-tree.ts` — the classifier
+- `packages/operator-core/lib/harness/register-papercup.ts` — uses
   `detectPapercupRoot` (same shape) to find the papercup repo for
   Phase 4 dogfood self-registration
 - v5 plan §2 — the architectural treatment of harness hierarchy
