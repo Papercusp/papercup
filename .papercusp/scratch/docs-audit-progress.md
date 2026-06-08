@@ -12,12 +12,12 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] agent-spawning (8)
 - [x] data-sync (7)
 - [ ] spec (45)
-- [~] system (5)
-- [~] build-system (7)
+- [x] system (5)
+- [x] build-system (7)
 - [~] snapshots (7)
-- [ ] testing (4)
-- [ ] security (2)
-- [ ] plugins (1)
+- [~] testing (4)
+- [~] security (2)
+- [~] plugins (1)
 - [ ] posthog (2)
 - [ ] desktop (3)
 - [ ] implementation (6)
@@ -74,6 +74,21 @@ Dominant drift: Next.js app/api → Hono endpoint-route routes; apps/operator/li
 - data-sync/pitfalls: EDITS — RichGrid ctx shape; no schemaVersion; useSyncQuery no-throw; loadProjects gone.
 - data-sync/richgrid: EDITS (heavy) — ColumnDef/CellRenderContext signatures; controlled sort; virtualMode; expandedRowKey(s).
 NOTE: data-sync section already carries a retirement banner (zero-cache retired); kept it.
+
+### Batch 3 (system + build-system) — DONE  [throttle note: 2-agent concurrency is sustainable; 3+ trips infra rate limit]
+NOTE: real baseline SQL path = libs/papercusp/libs/db/sql/000-baseline.sql (archive/ alongside). Native PG db `papercusp` IS live on :5432 (no _native_backup rename).
+- system/storage-policy: EDITS — operator-state-pg import path; expert-dispatcher.ts lockfile→display-allocator.ts; /internal/docs link.
+- system/credentials-encryption: EDITS — ENCRYPTED_TABLES 5→6 (+operator_search_provider_credentials); operator-core paths.
+- system/lifecycle: EDITS — expanded caution Aside (operator-core paths, harness.ts split into Hono routes dead, per-harness-schema retired); links.
+- system/tool-packs: ACCURATE.
+- system/blueprint-distribution: EDITS — added blueprint:catalog to source map.
+- build-system/index: EDITS — removed false next.config.js/app-dead claims; sidecar is single serve.mjs (not 5); admin 4 sections; operator-core path.
+- build-system/architecture: EDITS (heaviest) — retired Next-standalone → SP1-C5 serve.mjs sidecar model; bundle layout; bundled_path_env; discovery files; native PG live.
+- build-system/layers: EDITS — operator-core path prefixes.
+- build-system/admin-commands: EDITS — operator-core path; SSE shapes; SSH syntax; rebuild-3070 host; packaged-build section.
+- build-system/verification: EDITS — port finder ss/next-server→operator.json; flag defaults (snapshots TRUE); FAIL signals.
+- build-system/privacy-audit: EDITS — scanner is REGEX phx_/phc_ not 6 literal strings; FLAG_DEFAULTS; .app/sidecar layout.
+- build-system/vms: EDITS — pcusp-fedbr0→papercusp-fedbr0; no engines field; bundled_path_env; node v24 runtime. Flag: win10-vm torn down (env, not doc).
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

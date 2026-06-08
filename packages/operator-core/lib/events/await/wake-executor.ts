@@ -27,13 +27,64 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import type { DeliveryWork, WakeOutcome } from './types';
+
+/** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the
+ *  conversation id `codex exec resume <uuid>` wants. */
+const CODEX_ROLLOUT_UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+/**
+ * Recover a codex session's conversation UUID from its per-session CODEX_HOME —
+ * the newest `<home>/sessions/**​/rollout-*-<uuid>.jsonl` (turn-lifecycle-control
+ * P-009). codex doesn't take a forced `--session-id`, so tracked rows carry no
+ * native id; recovering it lets a wake `resume <uuid> <prompt>` resolve EXACTLY
+ * this session with two positionals — avoiding the `resume --last <prompt>`
+ * clap ambiguity where the prompt would be read as the session id. null if none.
+ */
+export function findCodexRolloutSessionId(codexHome: string): string | null {
+  let best: { id: string; mtime: number } | null = null;
+  const walk = (dir: string): void => {
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(p);
+        continue;
+      }
+      const m = e.name.match(CODEX_ROLLOUT_UUID_RE);
+      if (!m) continue;
+      let mtime = 0;
+      try {
+        mtime = statSync(p).mtimeMs;
+      } catch {
+        /* ignore */
+      }
+      if (!best || mtime > best.mtime) best = { id: m[1], mtime };
+    }
+  };
+  walk(join(codexHome, 'sessions'));
+  return best?.id ?? null;
+}
+
+/** The per-session CODEX_HOME bootstrap-su/psu minted for a tracked codex
+ *  session, keyed by the adv-session row id (`writeSuCodexHome`). */
+export function codexHomeForAdvSession(advSessionId: number): string {
+  return join(
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR || join(homedir(), '.papercusp', 'su-codex-homes'),
+    `session-${advSessionId}`,
+  );
+}
 
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
@@ -115,10 +166,28 @@ export function resumeCommandFor(handle: {
     };
   }
   if (handle.agent === 'codex') {
-    // codex resume needs the per-session CODEX_HOME bootstrap-su minted at
-    // launch; re-deriving it here is not yet wired (P-004 deferral, visible
-    // in the delivery row) — degrade to park/inbox.
-    return null;
+    // Headless single-turn resume (codex 0.137 `exec resume <uuid> <prompt>`):
+    // runs the wake turn to completion in the session's CODEX_HOME (set by
+    // executeWake from the adv-session id) and exits, leaving the session
+    // updated for the next wake — the codex counterpart of claude's
+    // `--resume … -p`. `sessionId` is the conversation UUID executeWake
+    // recovered from the rollout; without it we degrade to park/inbox (a bare
+    // `--last <prompt>` would have clap read the prompt as the session id).
+    // Bypass flags mirror the interactive su resume. (turn-lifecycle-control
+    // P-009 / D-004.)
+    if (!handle.sessionId) return null;
+    return {
+      bin: 'codex',
+      args: [
+        'exec',
+        '--dangerously-bypass-hook-trust',
+        '--dangerously-bypass-approvals-and-sandbox',
+        'resume',
+        handle.sessionId,
+        wakeText,
+      ],
+      promptViaPty: false,
+    };
   }
   return null;
 }
@@ -207,10 +276,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     // Channel 2: process gone → resume.
+    const resumeAgent = fresh?.agent ?? handle.agent;
+    // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
+    // id, exactly as bootstrap-su/psu minted it) and needs the conversation
+    // UUID recovered from that home's rollout — codex carries no native id on
+    // the row (turn-lifecycle-control P-009/P-010).
+    let codexHome: string | null = null;
+    let codexSessionId: string | null = null;
+    if (resumeAgent === 'codex') {
+      const home = codexHomeForAdvSession(handle.advSessionId);
+      if (existsSync(home)) {
+        codexHome = home;
+        codexSessionId = (fresh?.sessionId ?? handle.sessionId) || findCodexRolloutSessionId(home);
+      }
+    }
     const resume = resumeCommandFor(
       {
-        agent: fresh?.agent ?? handle.agent,
-        sessionId: fresh?.sessionId ?? handle.sessionId,
+        agent: resumeAgent,
+        sessionId: resumeAgent === 'codex' ? codexSessionId : (fresh?.sessionId ?? handle.sessionId),
         ompThreadId: fresh?.ompThreadId ?? handle.ompThreadId,
         coordOwnerId: fresh?.coordOwnerId ?? null,
       },
@@ -245,6 +328,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       );
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
     }
+    // codex finds the session's history + baked superuser MCP only inside its
+    // per-session CODEX_HOME — point the resumed `codex exec resume` at it
+    // (turn-lifecycle-control P-009).
+    if (codexHome) env.CODEX_HOME = codexHome;
 
     const spawnDetached =
       deps.spawnDetached ??
@@ -259,15 +346,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         return child.pid ?? null;
       });
 
-    // A claude resume is HEADLESS one-turn (`-p`, set in resumeCommandFor) — it
-    // must run DETACHED with stdio:'ignore', NOT in a managed pty. In a pty
-    // claude's stdin is a TTY, so `-p` waits for interactive input instead of
-    // consuming the positional prompt and exiting — the process hangs alive,
-    // never runs the turn, and "delivered:resume" is a lie (Stage-B finding,
-    // 2026-06-07: every pty resume sat idle 2+ min; the manual non-tty `-p`
-    // ran one turn and exited). The pty path stays for omp/interactive
+    // A claude (`-p`) or codex (`exec resume`) resume is HEADLESS one-turn (set
+    // in resumeCommandFor) — it must run DETACHED with stdio:'ignore', NOT in a
+    // managed pty. In a pty claude's stdin is a TTY, so `-p` waits for
+    // interactive input instead of consuming the positional prompt and exiting —
+    // the process hangs alive, never runs the turn, and "delivered:resume" is a
+    // lie (Stage-B finding, 2026-06-07: every pty resume sat idle 2+ min; the
+    // manual non-tty `-p` ran one turn and exited). codex `exec` is likewise
+    // non-interactive single-turn. The pty path stays for omp/interactive
     // injection (promptViaPty), where a live TTY is the whole point.
-    if (resume.bin === 'claude' && !resume.promptViaPty) {
+    if ((resume.bin === 'claude' || resume.bin === 'codex') && !resume.promptViaPty) {
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env });
       if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
       return { kind: 'error', error: 'headless resume spawn failed' };

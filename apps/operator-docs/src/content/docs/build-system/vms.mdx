@@ -12,7 +12,7 @@ sidebar:
 | **macOS Sonoma** (x86_64) | `qemu-system-x86_64 ... mac_hdd_ng.img` | `2222` | SPICE on `127.0.0.1:5930` | `~/papercupai/papercusp-desktop` |
 | **Windows 10** | `qemu-system-x86_64 ... win10.img` | `2223` | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop` |
 | **Linux test** `clean` (Ubuntu 24.04) | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224` | SPICE on `127.0.0.1:5932` | n/a — installs the packaged `.deb` (no checkout) |
-| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `pcusp-fedbr0` (via `bin/vm-federation.sh`) | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934` | n/a — two-machine federation testing |
+| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `papercusp-fedbr0` (via `bin/vm-federation.sh`) | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934` | n/a — two-machine federation testing |
 
 The **Mac** and **Windows** VMs exist only to *produce* their platform's Tauri bundle. The **Linux test** VM is different in kind — it *consumes* the built `.deb`, fresh-installing it on a pristine Ubuntu to validate the shipped artifact (and to act as a separate machine for federation testing). Day-to-day operator dev (`:3055`) and Linux builds still run entirely on the host.
 
@@ -76,7 +76,7 @@ bin/vm-federation.sh --vms=2 --no-reset --skip-install    # fast iteration (reus
 ```
 
 - **Network (D-016):** every fed VM keeps its slirp NIC (internet/SSH/SPICE) and gets a
-  **second** NIC on host bridge `pcusp-fedbr0` (`10.77.0.0/24`, host `10.77.0.1`) with a
+  **second** NIC on host bridge `papercusp-fedbr0` (`10.77.0.0/24`, host `10.77.0.1`) with a
   static guest IP — no dnsmasq/NAT. The host runs a `hyperdht/testnet` advertised on the
   bridge IP; both VMs set `PAPERCUSP_DHT_BOOTSTRAP` to it → deterministic discovery over a
   real hop. `--net=socket` is a rootless dual-NIC fallback (qemu socket L2, exactly two VMs).
@@ -185,7 +185,7 @@ The Linux host (~40-50 GB free typical) doesn't hit ENOSPC during builds but the
 
 ## Node version pinning
 
-Both VMs run **nvm + Node 22.21.1**. The papercup workspace requires `node >=22.18.0 <23` via `package.json` `engines`. Node 20 hangs / errors during `npm install`.
+Both VMs run **nvm + Node 22** for the build-time `npm install` + `tauri build`. (This is separate from the *bundled* runtime that ships inside the artifact — `bin/build-desktop-sidecar.sh` vendors Node **v24** into `sidecar/bin/node`.) Node 20 hangs / errors during `npm install`.
 
 ```sh
 # In either VM:
@@ -201,7 +201,7 @@ The workspace's peer-dep tree has unresolvable conflicts that make `npm install`
 
 ## Mac VM environment quirks
 
-- **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_node()` returns the shipped Node binary's absolute path and ALL 5 sidecar spawns use it. **If you add a new sidecar**, ditto.
+- **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_path_env()` builds a `PATH` with the shipped `sidecar/bin/` (node/omp/gh) prepended, and every node-based spawn (the `serve.mjs` sidecar + `code-server`) runs through it. **If you add a new spawn**, route it through the same helper.
 - **Gatekeeper**: the DMG is unsigned. First launch will be blocked. The install-mac-dmg `/admin` command strips quarantine via `xattr -dr com.apple.quarantine /Applications/Papercusp.app`. If launching by hand, you'll need to do this too.
 
 ## Windows VM crashes routinely

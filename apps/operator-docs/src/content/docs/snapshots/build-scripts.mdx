@@ -694,8 +694,8 @@ If `setup` fails partway through:
 
 ## Teardown semantics
 
-`papercusp plugin uninstall <name> [--harness <slug>]` triggers `teardown` if
-declared. The flow:
+`papercusp plugin uninstall <slug> [--purge-grants]` (which walks every
+harness the plugin is enabled in) triggers `teardown` if declared. The flow:
 
 ```text
 Uninstall @papercupai/aws-lambda from harness `my-store`

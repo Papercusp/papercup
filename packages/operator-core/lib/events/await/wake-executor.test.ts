@@ -2,10 +2,49 @@
  * wake-executor.test.ts — the liveness ladder, pure (injected deps, no PG)
  * (await-event-primitive-2026-06-05 P-006, D-003/D-009).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { executeWake, resumeCommandFor, wakeTurnText, type ExecuteWakeDeps } from './wake-executor';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  codexHomeForAdvSession,
+  executeWake,
+  findCodexRolloutSessionId,
+  resumeCommandFor,
+  wakeTurnText,
+  type ExecuteWakeDeps,
+} from './wake-executor';
 import { PtyError } from '../../pty-bridge';
 import type { DeliveryWork, WakeHandle } from './types';
+
+// A per-session codex home (session-42) with two rollouts; the newer UUID wins.
+const ROLLOUT_UUID = '019ea541-e6ed-71c2-bc67-aa25b5164ec5';
+let CODEX_HOMES_DIR = '';
+let prevCodexHomesEnv: string | undefined;
+
+beforeAll(() => {
+  CODEX_HOMES_DIR = mkdtempSync(join(tmpdir(), 'wake-codex-'));
+  const sessionsDir = join(CODEX_HOMES_DIR, 'session-42', 'sessions', '2026', '06', '07');
+  mkdirSync(sessionsDir, { recursive: true });
+  const oldRollout = join(sessionsDir, 'rollout-2026-06-07T10-00-00-00000000-0000-0000-0000-000000000000.jsonl');
+  const newRollout = join(sessionsDir, `rollout-2026-06-07T23-23-40-${ROLLOUT_UUID}.jsonl`);
+  writeFileSync(oldRollout, '{}');
+  writeFileSync(newRollout, '{}');
+  utimesSync(oldRollout, new Date('2026-06-01'), new Date('2026-06-01'));
+  utimesSync(newRollout, new Date('2026-06-07'), new Date('2026-06-07'));
+  prevCodexHomesEnv = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+  process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = CODEX_HOMES_DIR;
+});
+
+afterAll(() => {
+  if (prevCodexHomesEnv === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+  else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = prevCodexHomesEnv;
+  try {
+    rmSync(CODEX_HOMES_DIR, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+});
 
 function work(overrides: Partial<DeliveryWork> = {}): DeliveryWork {
   return {
@@ -155,8 +194,22 @@ describe('resumeCommandFor', () => {
     expect(r!.promptViaPty).toBe(true);
   });
 
-  it('codex: not yet resumable (per-session CODEX_HOME not re-derivable)', () => {
-    expect(resumeCommandFor({ agent: 'codex', sessionId: 'sid', ompThreadId: null }, 'WAKE')).toBeNull();
+  it('codex: headless `exec resume <uuid> <prompt>` when the conversation id is known', () => {
+    const r = resumeCommandFor({ agent: 'codex', sessionId: ROLLOUT_UUID, ompThreadId: null }, 'WAKE');
+    expect(r!.bin).toBe('codex');
+    expect(r!.args).toEqual([
+      'exec',
+      '--dangerously-bypass-hook-trust',
+      '--dangerously-bypass-approvals-and-sandbox',
+      'resume',
+      ROLLOUT_UUID,
+      'WAKE',
+    ]);
+    expect(r!.promptViaPty).toBe(false);
+  });
+
+  it('codex: null without a conversation id (executeWake recovers it; null → park)', () => {
+    expect(resumeCommandFor({ agent: 'codex', sessionId: null, ompThreadId: null }, 'WAKE')).toBeNull();
   });
 
   it('unknown client: null', () => {
