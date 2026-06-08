@@ -15,11 +15,13 @@ import type { ScoutIdeaView, SeedDistantResult } from './gym-bridge';
 import {
   classifyProposal,
   decideRoutes,
+  decisionsToProvenance,
   deriveSlugStem,
   proposalTitle,
   proposalToGymView,
   routeProposals,
   type RouterPorts,
+  type RoutingDecision,
 } from './router';
 
 /* ── fixtures ─────────────────────────────────────────────────────────── */
@@ -259,9 +261,53 @@ describe('routeProposals', () => {
   });
 });
 
-/* ── provenance ───────────────────────────────────────────────────────── */
-// Per-idea lens provenance is derived by the CYCLE (cycle.ts deriveProvenance →
-// ScoutCycleResult.provenance), not the router (a fused proposal carries no lens;
-// only the cycle holds the ideas). The router stays lens-free; routeProposals'
-// decisions carry sourceIdeaIds + routedRef so the cycle can derive without
-// re-joining. Provenance behaviour is covered by cycle.test.ts (cb4b9).
+/* ── decisionsToProvenance (→ P-013) ──────────────────────────────────── */
+// The per-idea expansion primitive the CYCLE calls with its own lens resolver
+// (cb4b9's cycle.ts imports this → ScoutCycleResult.provenance → su-80be9's
+// recordRoutedIdea). Router stays lens-free; the cycle supplies lensOf.
+
+describe('decisionsToProvenance', () => {
+  const lensOf = (id: string) =>
+    (({ ia: 'analogical', ib: 'reframing' }) as Record<string, 'analogical' | 'reframing'>)[id];
+
+  it('expands one routed proposal into one provenance row per source idea (every lens attributed)', () => {
+    const decisions: RoutingDecision[] = [
+      {
+        proposalId: 'p1',
+        sourceIdeaIds: ['ia', 'ib'],
+        rail: 'plan',
+        reason: 'x',
+        followedHint: true,
+        title: 'T',
+        routedRef: 'plan:foo-2026-06-08',
+      },
+    ];
+    const prov = decisionsToProvenance(decisions, lensOf, { cycleId: 'cyc-1', routedAt: '2026-06-08T00:00:00.000Z' });
+    expect(prov).toHaveLength(2);
+    expect(prov.map((p) => p.lens).sort()).toEqual(['analogical', 'reframing']);
+    expect(prov.every((p) => p.rail === 'plan' && p.routedRef === 'plan:foo-2026-06-08')).toBe(true);
+    expect(prov.every((p) => p.cycleId === 'cyc-1' && p.title === 'T')).toBe(true);
+    expect(prov.map((p) => p.ideaId).sort()).toEqual(['ia', 'ib']);
+  });
+
+  it('skips undispatched decisions and unresolvable lenses', () => {
+    const decisions: RoutingDecision[] = [
+      { proposalId: 'p1', sourceIdeaIds: ['ia'], rail: 'gym', reason: 'x', followedHint: true }, // no routedRef
+      { proposalId: 'p2', sourceIdeaIds: ['ia', 'unknown'], rail: 'gym', reason: 'x', followedHint: true, routedRef: 'gym:p2' },
+    ];
+    const prov = decisionsToProvenance(decisions, lensOf);
+    // p1 skipped (no routedRef); p2 keeps only 'ia' (lens resolved), 'unknown' dropped.
+    expect(prov).toHaveLength(1);
+    expect(prov[0]).toMatchObject({ ideaId: 'ia', lens: 'analogical', rail: 'gym', routedRef: 'gym:p2' });
+  });
+
+  it('round-trips routeProposals output into provenance', async () => {
+    const proposals = [fixtureProposal({ id: 'rp', routeHint: 'improvement', sourceIdeaIds: ['ia'] })];
+    const { ports } = makeFakePorts();
+    const { decisions } = await routeProposals(proposals, ports);
+    const prov = decisionsToProvenance(decisions, lensOf, { cycleId: 'c' });
+    expect(prov).toEqual([
+      { ideaId: 'ia', lens: 'analogical', rail: 'improvement', routedRef: 'wi:EI-1', cycleId: 'c', title: proposalTitle(proposals[0]) },
+    ]);
+  });
+});

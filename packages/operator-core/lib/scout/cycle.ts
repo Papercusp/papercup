@@ -44,7 +44,7 @@ import type {
   ScoutLlmCall,
 } from './types';
 import type { CorpusEntry } from './critique-core';
-import { decisionsToProvenance, type RoutingDecision } from './router';
+import type { RoutingDecision } from './router';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -159,6 +159,43 @@ export function selectSurvivors(scored: ScoredIdea[]): ScoredIdea[] {
 }
 
 /**
+ * Expand the per-proposal routing decisions into per-idea lens provenance rows
+ * (P-013 / D-009) — the canonical {@link RoutedIdeaProvenance} su-80be9's
+ * `recordRoutedIdea` ledger persists. A {@link Proposal} fuses several ideas, so
+ * EVERY contributing lens earns attribution for the routed artifact's outcome.
+ * Decisions that never dispatched (`routedRef` unset) and source ideas whose lens
+ * can't be resolved are skipped — there is nothing to attribute. The cycle owns
+ * this expansion because it (not the router) holds the ideas → lens mapping.
+ */
+export function deriveProvenance(
+  routed: readonly RoutingDecision[],
+  ideas: readonly Idea[],
+  cycleId?: string,
+): RoutedIdeaProvenance[] {
+  const lensById = new Map(ideas.map((i) => [i.id, i.lens]));
+  const out: RoutedIdeaProvenance[] = [];
+  for (const d of routed) {
+    if (!d.routedRef) continue;
+    // Defensive: a decision missing sourceIdeaIds (an incomplete edge/mock path —
+    // the real router always sets it, router.ts) yields no attribution rather than
+    // crashing the whole cycle (matches the skip-non-attributable philosophy below).
+    for (const ideaId of d.sourceIdeaIds ?? []) {
+      const lens = lensById.get(ideaId);
+      if (!lens) continue;
+      out.push({
+        ideaId,
+        lens,
+        rail: d.rail,
+        routedRef: d.routedRef,
+        ...(cycleId ? { cycleId } : {}),
+        ...(d.title ? { title: d.title } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Run one full Scout cycle. Prompt-free: the only input is `deps` (an injected
  * LLM call + step ports); there is NO human-input parameter and the cycle never
  * prompts a human — autonomy is structural (D-010). Returns the digest, the
@@ -245,14 +282,9 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   }
 
   // 5. Route + dispatch each proposal once (P-007); expand to per-idea lens
-  //    provenance (P-013) via ce4bd's canonical adapter + a resolver over our ideas.
+  //    provenance (P-013) over our ideas (the cycle holds the idea→lens map).
   const routed = await deps.route(proposals);
-  const lensById = new Map(ideas.map((i) => [i.id, i.lens]));
-  const provenance = decisionsToProvenance(
-    routed,
-    (ideaId) => lensById.get(ideaId),
-    deps.cycleId ? { cycleId: deps.cycleId } : {},
-  );
+  const provenance = deriveProvenance(routed, ideas, deps.cycleId);
 
   return finish('completed', {
     digest,

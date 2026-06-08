@@ -1,0 +1,151 @@
+/**
+ * cycle-deps.ts — production wiring of the Scout cycle (hive-creative-ideation-2026-06-08).
+ *
+ * `buildScoutCycleDeps` assembles the concrete {@link ScoutCycleDeps} that
+ * `runScoutCycle` (cycle.ts) drives — binding each injected port to its real
+ * step module, mirroring `corpus-digest-deps.ts` / `router-deps.ts`. su-80be9's
+ * `system:scout-cycle` action calls it: `buildScoutCycleDeps(opts) →
+ * runScoutCycle(deps) → result.{routed,provenance,costUsd}`.
+ *
+ * THREE deps are irreducibly injected (a slug alone can't produce them in a pure
+ * lib), so the action/scheduler supplies them:
+ *  - `llmCall` — the real meridian LLM client (the gym:judge pattern);
+ *  - `createPlanDraft` — the ctx-bound `plans:new` draft creator (plans:new needs
+ *    operator ctx for the write-lock + revision + plan-event — the honest seam);
+ *  - `archive` — su-8075f's gym QD `ArchivePort` for the gym rail (P-010/P-012).
+ *
+ * Everything else (the digest readers, the novelty corpus, the ideator/critic/
+ * recombine/route wiring) is assembled here. The readers are overridable so this
+ * is unit-testable without PG/LLM.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  synthesizeStateOfHive,
+  type StateOfHiveReaders,
+  type SynthesizeOptions,
+} from './corpus-digest';
+import { buildStateOfHiveReaders } from './corpus-digest-deps';
+import { runIdeators } from './ideators';
+import { critiqueIdeas } from './critics';
+import { recombineProposals } from './recombine';
+import { routeProposals, type RouterPorts } from './router';
+import {
+  buildCapturePort,
+  buildGymDispatchPort,
+  buildPlansNewPort,
+  type CapturePortOptions,
+  type PlanDraftCreator,
+} from './router-deps';
+import type { ArchivePort } from './gym-bridge';
+import { CREATIVE_LENSES, type CreativeLens } from './types';
+import type { CorpusEntry } from './critique-core';
+import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
+
+export interface BuildScoutCycleDepsOptions {
+  /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
+  harnessSlug: string;
+  /** Real meridian LLM client (the gym:judge pattern); the action/scheduler supplies it. */
+  llmCall: ScoutCycleDeps['llmCall'];
+  /** Ctx-bound `plans:new` draft creator (the broad rail) — the action supplies it. */
+  createPlanDraft: PlanDraftCreator;
+  /** su-8075f's gym QD archive (the testable rail's seed target, P-012/D-008). */
+  archive: ArchivePort;
+  /** Per-cycle limits (D-010). */
+  limits?: ScoutCycleLimits;
+  /** Opaque cycle id (provenance grouping). */
+  cycleId?: string;
+  /** Override the state-of-Hive digest readers (tests). Default: prod `buildStateOfHiveReaders()`. */
+  stateOfHiveReaders?: StateOfHiveReaders;
+  /** Options forwarded to `synthesizeStateOfHive` (e.g. `nowMs`/`perCategory`). */
+  digestOptions?: SynthesizeOptions;
+  /** Override the search-first novelty corpus reader (tests). Default: prod plans + decisions. */
+  noveltyCorpus?: () => Promise<CorpusEntry[]>;
+  /** Capture-port options for the concrete rail (default scope = `harness:<slug>`, filed as the Queen). */
+  captureOptions?: CapturePortOptions;
+}
+
+/**
+ * Map a per-cycle ideator budget to an ideator roster. A budget below the lens
+ * count runs only the first N lenses (one ideator each); at/above it, the default
+ * one-per-lens roster runs. Never silences below one lens (D-004 floor).
+ */
+export function rosterForBudget(maxIdeators?: number): { lenses?: readonly CreativeLens[] } {
+  if (maxIdeators == null || maxIdeators >= CREATIVE_LENSES.length) return {};
+  return { lenses: CREATIVE_LENSES.slice(0, Math.max(1, Math.floor(maxIdeators))) };
+}
+
+/**
+ * Production search-first novelty corpus: prior plans (what's been designed) +
+ * their ratified decisions (settled judgments) — the substrate the novelty critic
+ * dedupes a fresh idea against (D-005, "reject the already-tried"). Defensive: a
+ * failed query yields an empty corpus (the critic then leans on the LLM skeptic),
+ * never a crashed cycle. Workspace-global on purpose — an idea must be novel vs the
+ * whole Hive's history (D-003), not just one harness's.
+ */
+export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
+  const out: CorpusEntry[] = [];
+  try {
+    const { sql } = getOrgPg();
+    const plans = await sql<{ plan_slug: string; title: string | null; status: string | null }[]>`
+      SELECT plan_slug, title, status
+        FROM harness_shared.harness_plans
+       WHERE archived = false
+       ORDER BY updated DESC NULLS LAST
+       LIMIT 500`;
+    for (const p of plans) {
+      out.push({
+        ref: `plan:${p.plan_slug}`,
+        kind: 'plan',
+        text: p.title?.trim() || p.plan_slug.replace(/-/g, ' '),
+        ...(p.status ? { state: p.status } : {}),
+      });
+    }
+    const decisions = await sql<{ plan_slug: string; id: string | null; title: string | null }[]>`
+      SELECT p.plan_slug, d->>'id' AS id, d->>'title' AS title
+        FROM harness_shared.harness_plans p,
+             jsonb_array_elements(COALESCE(p.decisions, '[]'::jsonb)) AS d
+       WHERE d->>'title' IS NOT NULL
+       LIMIT 1000`;
+    for (const r of decisions) {
+      if (!r.title) continue;
+      out.push({ ref: `${r.plan_slug}#${r.id ?? ''}`, kind: 'decision', text: r.title });
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[scout/cycle-deps] readNoveltyCorpus failed:', err instanceof Error ? err.message : err);
+  }
+  return out;
+}
+
+/**
+ * Assemble the production {@link ScoutCycleDeps}. The router's three dispatch
+ * ports are wired from `router-deps` (the broad rail through the injected ctx-bound
+ * creator; the testable rail through su-8075f's archive; the concrete rail through
+ * the real `captureImprovement`, harness-scoped). Each LLM step takes the
+ * recorder-wrapped call `runScoutCycle` passes in.
+ */
+export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycleDeps {
+  const routerPorts: RouterPorts = {
+    plansNew: buildPlansNewPort(opts.createPlanDraft),
+    gymDispatch: buildGymDispatchPort(opts.archive),
+    capture: buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
+  };
+
+  const readers = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
+  const noveltyCorpus = opts.noveltyCorpus ?? readNoveltyCorpus;
+
+  return {
+    llmCall: opts.llmCall,
+    limits: opts.limits,
+    cycleId: opts.cycleId,
+    readCorpus: () => synthesizeStateOfHive(readers, opts.digestOptions),
+    readNoveltyCorpus: noveltyCorpus,
+    ideate: async (digest, ctx) =>
+      (await runIdeators(digest, { llmCall: ctx.llmCall, ...rosterForBudget(ctx.maxIdeators) })).ideas,
+    critique: async (ideas, ctx) =>
+      (await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall })).critiques,
+    recombine: async (scored, ctx) =>
+      (await recombineProposals(scored, { llmCall: ctx.llmCall })).proposals,
+    route: async (proposals) => (await routeProposals(proposals, routerPorts)).decisions,
+  };
+}

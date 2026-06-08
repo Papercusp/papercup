@@ -15,8 +15,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { CREATIVE_LENSES } from './types';
-import type { Proposal, ScoutExperiment } from './types';
+import type { Proposal, ScoredIdea, ScoutExperiment } from './types';
 import type { CorpusEntry } from './critique-core';
+import type { RoutingDecision } from './router';
+import { runScoutCycle, selectSurvivors, type ScoutCycleDeps, type ScoutCyclePorts } from './cycle';
+import { validateProposal } from './recombine';
 import {
   FIXTURE_PATTERN_REFS,
   digestRefs,
@@ -202,9 +205,121 @@ describe('Scout-loop invariants (P-009): grounded · non-duplicate · bettable �
     });
   });
 
-  describe('full Scout cycle (wires when runScoutCycle/scout/cycle.ts — P-008 — lands)', () => {
-    it.todo(
-      'runScoutCycle({ llmCall: fake, ...ports }) → every proposal isGrounded + isNonDuplicate + isBettable, and ranWithoutHumanPrompt({ llmCalls: fake.count(), humanPrompts: 0 })',
-    );
+  describe('full Scout cycle — the invariants hold over real runScoutCycle output (su-cb4b9, P-008 seam)', () => {
+    const NOVELTY_CORPUS: CorpusEntry[] = [
+      { ref: 'idea:gym-archive', kind: 'idea', text: 'add a MAP-Elites diversity archive over the gym candidates' },
+    ];
+
+    /**
+     * A complete-cycle deps that emits one GROUNDED, BETTABLE, NOVEL proposal —
+     * realistic ports (mirroring cycle.test.ts) so we assert the P-009 invariants
+     * over the REAL `runScoutCycle` output, not a hand-built proposal. Every
+     * LLM-touching port goes through the injected fake (the no-human-prompt
+     * substrate); there is no human-input port — autonomy is structural.
+     */
+    function makeLiveDeps(): { deps: ScoutCycleDeps; fake: ReturnType<typeof makeFakeScoutLlm> } {
+      const fake = makeFakeScoutLlm({ costUsd: 0.01 });
+      const ports: ScoutCyclePorts = {
+        readCorpus: async () => fixtureCorpusDigest(),
+        readNoveltyCorpus: async () => NOVELTY_CORPUS,
+        ideate: async (_digest, ctx) => {
+          await ctx.llmCall({ model: 'm', messages: [{ role: 'user', content: 'ideate' }], responseFormat: 'json' });
+          return fixtureIdeasAllLenses(); // grounded, spans every lens
+        },
+        critique: async (ins, ctx) => {
+          await ctx.llmCall({ model: 'm', messages: [{ role: 'user', content: 'critique' }], responseFormat: 'json' });
+          return ins.map(
+            (idea): ScoredIdea => ({ idea, novelty: 0.82, feasibility: 0.7, noveltyMatches: [], verdict: 'keep', notes: 'novel + feasible' }),
+          );
+        },
+        recombine: async (scored, ctx) => {
+          await ctx.llmCall({ model: 'm', messages: [{ role: 'user', content: 'recombine' }], responseFormat: 'json' });
+          return [
+            {
+              id: 'P-live-1',
+              framing: 'agents waste turns hand-retrying lock-blocked edits under contention',
+              mechanism: 'register a wake on grant + yield the turn via events:await; never spin on a held lock',
+              whyNew: 'no prior plan wired wake-on-grant yield into the edit-block path; today it spins',
+              bet: 'removes retry-thrash and frees the turn for other work under contention',
+              cheapExperiment: {
+                hypothesis: 'wake-on-grant yield removes hand-retry thrash with no added latency',
+                method: 'A/B the re-queue path over 50 real lock-blocks in a shadow run',
+                falsifiableSignal: 'p50 edit-to-land latency regresses, or hand-retries > 0',
+              },
+              sourceIdeaIds: selectSurvivors(scored).map((s) => s.idea.id),
+              routeHint: 'gym',
+              addressesPatternRefs: ['plan:lock-contention-2026-06-01'],
+            },
+          ];
+        },
+        route: async (proposals) =>
+          proposals.map(
+            (p): RoutingDecision => ({
+              proposalId: p.id,
+              sourceIdeaIds: [...p.sourceIdeaIds],
+              rail: 'gym',
+              reason: 'testable-small → gym',
+              followedHint: true,
+              title: p.framing,
+              routedRef: `gym:${p.id}`,
+            }),
+          ),
+      };
+      return { deps: { ...ports, llmCall: fake.call }, fake };
+    }
+
+    it('every proposal the cycle emits is grounded + non-duplicate + bettable + well-formed, with NO human prompt', async () => {
+      const { deps, fake } = makeLiveDeps();
+      const r = await runScoutCycle(deps);
+
+      expect(r.stop).toBe('completed');
+      expect(r.proposals.length).toBeGreaterThanOrEqual(1);
+
+      // forced diversity over the cycle's ACTUAL ideas
+      expect(hasForcedDiversity(r.ideas)).toBe(true);
+      expect(distinctLenses(r.ideas).size).toBe(CREATIVE_LENSES.length);
+
+      const refs = digestRefSet(r.digest);
+      for (const p of r.proposals) {
+        expect(isGrounded(p, refs)).toBe(true); // refs ⊆ digest (D-003)
+        expect(validateProposal(p).ok).toBe(true); // D-006 well-formed (su-d1170's gate, reused)
+        expect(isBettable(p)).toBe(true); // experiment substantive (P-009's stricter check)
+        expect(isNonDuplicate(proposalNoveltyText(p), NOVELTY_CORPUS)).toBe(true);
+      }
+
+      // no-human-prompt (D-010): the cycle did real generative work through the
+      // injected fake LLM and there is NO human-input port (runScoutCycle takes
+      // only `deps`). calls > 0 confirms it actually ran the model.
+      expect(r.calls.length).toBeGreaterThan(0);
+      expect(fake.count()).toBe(r.calls.length);
+      expect(ranWithoutHumanPrompt({ llmCalls: r.calls.length, humanPrompts: 0 })).toBe(true);
+    });
+
+    it('the bettable invariant has teeth at the cycle level — a non-falsifiable proposal is caught', async () => {
+      // GUARD (not vacuous): if a buggy recombine emitted a proposal whose
+      // experiment isn't actually falsifiable, P-009 fails loudly.
+      const { deps } = makeLiveDeps();
+      const bad: ScoutCycleDeps = {
+        ...deps,
+        recombine: async (scored, ctx) => {
+          await ctx.llmCall({ model: 'm', messages: [{ role: 'user', content: 'recombine' }], responseFormat: 'json' });
+          return [
+            {
+              id: 'P-bad',
+              framing: 'a real framing of the problem',
+              mechanism: 'a plausible-sounding mechanism',
+              whyNew: 'asserted novelty',
+              bet: 'the upside',
+              cheapExperiment: { hypothesis: 'it will help', method: 'ship it', falsifiableSignal: 'tbd' },
+              sourceIdeaIds: selectSurvivors(scored).map((s) => s.idea.id),
+              addressesPatternRefs: ['plan:lock-contention-2026-06-01'],
+            },
+          ];
+        },
+      };
+      const r = await runScoutCycle(bad);
+      expect(r.proposals.length).toBeGreaterThanOrEqual(1);
+      expect(r.proposals.every(isBettable)).toBe(false); // the invariant catches the non-falsifiable experiment
+    });
   });
 });

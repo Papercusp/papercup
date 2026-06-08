@@ -23,12 +23,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { runScoutCycle } from './cycle';
-import type { ScoutCycleDeps, RouteDecision } from './cycle';
+import type { ScoutCycleDeps } from './cycle';
 import { routeProposals } from './router';
-import type { RouterPorts, PlanDraftRequest, CaptureRequest, ScoutIdeaView } from './router';
+import type { RouterPorts, PlanDraftRequest, CaptureRequest, RoutingDecision } from './router';
 import { shouldRunScoutCycle } from './cadence';
 import type { ScoutCadenceState } from './cadence';
-import type { SeedDistantResult } from './gym-bridge';
+import type { SeedDistantResult, ScoutIdeaView } from './gym-bridge';
 import type { Idea, Proposal, ScoredIdea } from './types';
 import {
   makeFakeScoutLlm,
@@ -141,15 +141,10 @@ function makeCycleDeps(over: {
       await ctx.llmCall({ model: 'm', messages: [{ role: 'user', content: 'recombine' }], responseFormat: 'json' });
       return proposals;
     },
-    // REAL router, adapted to the cycle's RouteDecision shape.
-    route: async (props): Promise<RouteDecision[]> => {
+    // REAL router as the route port — the cycle consumes router's RoutingDecision[] directly.
+    route: async (props): Promise<RoutingDecision[]> => {
       const result = await routeProposals(props, routerPorts);
-      return result.decisions.map((d) => ({
-        proposalId: d.proposalId,
-        rail: d.rail,
-        routedRef: d.routedRef ?? '',
-        reason: d.reason,
-      }));
+      return result.decisions;
     },
   };
   return { deps, fakeLlm };

@@ -25,17 +25,17 @@
  *     (the gym:judge / corpus-digest-deps pattern), so {@link routeProposals}
  *     unit-tests with fakes — no PG, no LLM, no tool calls, no real writes.
  *
- * Provenance is NOT persisted or derived here: the router emits typed,
- * lens-free {@link RoutingDecision}s (carrying `sourceIdeaIds` + `routedRef`).
- * The cycle (`cycle.ts`) holds the ideas, so it owns the per-idea lens
- * attribution (`deriveProvenance` → `ScoutCycleResult.provenance`), which
- * su-80be9 persists at the scheduler boundary (`recordRoutedIdea` →
+ * Provenance is not persisted here, but the per-idea EXPANSION primitive is:
+ * {@link decisionsToProvenance} turns the lens-free decisions into P-013's
+ * {@link RoutedIdeaProvenance} rows (one per source idea). The cycle (`cycle.ts`)
+ * holds the ideas, so it calls it with a `lensOf` resolver over its own ideas;
+ * su-80be9's scheduler then persists the result (`recordRoutedIdea` →
  * `harness_shared.scout_routed_ideas`). Production port wiring lives in
  * `router-deps.ts`.
  */
 
-import type { Proposal } from './types';
-import type { RoutedRail } from './outcome-feedback';
+import type { CreativeLens, Proposal } from './types';
+import type { RoutedIdeaProvenance, RoutedRail } from './outcome-feedback';
 import type { ScoutIdeaView, SeedDistantResult } from './gym-bridge';
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -293,15 +293,54 @@ export async function routeProposals(
   return { decisions, byRail, ...(gymSeed ? { gymSeed } : {}), failed };
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ * Provenance expansion (→ P-013)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** Resolve a source idea's creative lens (P-004 Idea.lens) for attribution (D-009). */
+export type LensResolver = (ideaId: string) => CreativeLens | undefined;
+
+export interface ProvenanceContext {
+  /** The Scout cycle this routing belongs to (P-013 grouping). */
+  cycleId?: string;
+  /** ISO timestamp the routing ran (injected for determinism). */
+  routedAt?: string;
+}
+
 /**
- * NOTE — provenance derivation lives in the CYCLE, not here. A recombined
- * {@link Proposal} fuses several ideas (`sourceIdeaIds`) and carries no lens; only
- * the cycle holds the ideas, so it owns the per-idea lens attribution
- * (`cycle.ts` `deriveProvenance` → `ScoutCycleResult.provenance`, consumed by
- * P-013's `recordRoutedIdea`). The router deliberately stays lens-free: it emits
- * {@link RoutingDecision}s carrying `sourceIdeaIds` + `routedRef` so the cycle can
- * derive provenance without re-joining (cb4b9 routing-seam reconciliation, P-014).
+ * Expand the dispatched decisions into P-013's {@link RoutedIdeaProvenance} ledger
+ * rows — ONE per source idea, so every lens that recombined into a routed proposal
+ * earns attribution for the outcome (D-009). The router is lens-free; the CYCLE
+ * holds the ideas, so it calls this with a `lensOf` resolver over its own ideas
+ * (`cycle.ts` → `ScoutCycleResult.provenance`), and su-80be9's scheduler persists
+ * the rows (`recordRoutedIdea`). A decision with no `routedRef` (never dispatched),
+ * or a source idea whose lens can't be resolved, is skipped — there is nothing to
+ * attribute.
  */
+export function decisionsToProvenance(
+  decisions: readonly RoutingDecision[],
+  lensOf: LensResolver,
+  ctx: ProvenanceContext = {},
+): RoutedIdeaProvenance[] {
+  const out: RoutedIdeaProvenance[] = [];
+  for (const d of decisions) {
+    if (!d.routedRef) continue;
+    for (const ideaId of d.sourceIdeaIds) {
+      const lens = lensOf(ideaId);
+      if (!lens) continue;
+      out.push({
+        ideaId,
+        lens,
+        rail: d.rail,
+        routedRef: d.routedRef,
+        ...(ctx.cycleId ? { cycleId: ctx.cycleId } : {}),
+        ...(d.title ? { title: d.title } : {}),
+        ...(ctx.routedAt ? { routedAt: ctx.routedAt } : {}),
+      });
+    }
+  }
+  return out;
+}
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
