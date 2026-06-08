@@ -51,7 +51,10 @@ const WS = 'default';
 const HARNESS = 'h1';
 const HIVE = 'hive-a';
 
-function base(over: Record<string, unknown> = {}) {
+// Generic over `T` so the literal fields the caller supplies (workItemId/owner/claimId/…)
+// stay VISIBLE in the return type — a `Record<string, unknown>` param would erase them and
+// make tsc think AcquireOpts/HeartbeatClaimParams's required fields are missing (su-d2b62).
+function base<T extends object>(over: T) {
   return { workspaceId: WS, harnessSlug: HARNESS, hiveSlug: HIVE, ...over };
 }
 
@@ -64,7 +67,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db?.end?.();
+  await db?.cleanup();
 });
 
 beforeEach(async () => {

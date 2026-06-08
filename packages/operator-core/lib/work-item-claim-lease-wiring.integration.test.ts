@@ -48,7 +48,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
 });
-afterAll(async () => { await db?.end?.(); });
+afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   resetWorkItemClaimAuthority();
   await db.sql`DELETE FROM harness_shared.work_item_claims`;
