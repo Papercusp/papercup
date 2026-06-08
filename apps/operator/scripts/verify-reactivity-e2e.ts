@@ -20,12 +20,8 @@
  *
  * Exits 0 on pass; 1 on any timeout or assertion failure.
  */
-import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
-
-const MIGRATION_PATH =
-  '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/078-emit-change-notify.sql';
 
 // Resolve via embedded-pg discovery (env → ~/.papercusp/embedded-pg.json →
 // native fallback). Native PG `papercusp` was renamed `papercusp_legacy`, so
@@ -132,10 +128,20 @@ async function main(): Promise<void> {
   let failureReason = '';
   let sse: SseClient | null = null;
   try {
-    // STEP 1: apply migration 078 (idempotent).
-    const sql078 = readFileSync(MIGRATION_PATH, 'utf-8');
-    await sql.unsafe(sql078);
-    console.log('[e2e] migration 078 applied (or no-op if already present)');
+    // STEP 1: the emit_change_notify() trigger function is part of the baseline
+    // schema (000-baseline.sql), applied on operator boot. The migration squash
+    // (self-contained-migration-baseline-2026-06-02) folded the old standalone
+    // 078-emit-change-notify.sql into the baseline, so there's no file to re-apply
+    // — verify the function exists instead (fail loudly if the baseline is missing).
+    const [{ exists }] = await sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'harness_shared' AND p.proname = 'emit_change_notify'
+      ) AS exists`;
+    if (!exists) {
+      throw new Error('harness_shared.emit_change_notify() missing — baseline schema not applied?');
+    }
+    console.log('[e2e] emit_change_notify() present (baseline schema)');
 
     // STEP 2: create the throwaway test table.
     await sql.unsafe(`
