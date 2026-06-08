@@ -17,9 +17,13 @@
  *   - `system:p2p-perf-tier1` (nightly) + `system:p2p-perf-tier2` (weekly) —
  *     p2p-performance-suite-2026-06-07 P-014. Advisory bench runs; findings
  *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
+ *   - `system:scout-cycle` — hive-creative-ideation-2026-06-08 P-008 (the Scout
+ *     autonomous-ideation cadence; D-010). Self-gates on idle/friction + budget;
+ *     seeded INACTIVE (seed-scout-routine.ts), bring-up human-gated.
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
 import './improvement-actions';
 import './p2p-perf-actions';
+import '../../scout/register-scout-action';
