@@ -160,8 +160,13 @@ export async function spawnInvokeOnce(
   /** Optional abort: when the signal fires, the child is SIGTERM'd (then SIGKILL
    *  after a grace period). Lets a caller (e.g. fleet:cancel via the operator
    *  spawn engine, EI-40) actually STOP the running agent, not just flip its row.
-   *  Omitted by the pipeline runner / finalizer, which never abort mid-run. */
-  opts?: { signal?: AbortSignal; timeoutMs?: number },
+   *  Omitted by the pipeline runner / finalizer, which never abort mid-run.
+   *  `resultPath`: when set, invoke-once tees its output here and appends the
+   *  `__INVOCATION_DONE__` sentinel on exit — for a BACKGROUND caller that
+   *  fire-and-forgets the spawn and polls the result FILE for completion (the
+   *  scoper). Routing such a caller here (rather than a private raw spawn) is
+   *  what keeps the scoper governed by the one chokepoint (P-008 / D-013). */
+  opts?: { signal?: AbortSignal; timeoutMs?: number; resultPath?: string },
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
   // child via env-transport (workspace PG is canonical; config.json is the
@@ -207,6 +212,7 @@ export async function spawnInvokeOnce(
       role,
       extras,
       extraEnv: resolvedExtraEnv,
+      resultPath: opts?.resultPath,
     });
 
     // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →

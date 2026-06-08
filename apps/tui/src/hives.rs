@@ -334,4 +334,43 @@ mod tests {
         assert!(text.contains("gh:111"));
         assert!(text.contains("papercup"));
     }
+
+    #[test]
+    fn renders_the_hive_directory_with_join_affordances() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let render = |app: &App| -> String {
+            let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+            term.draw(|f| draw_hives(f, app, f.area())).unwrap();
+            term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+        };
+        let mut app = App::new();
+        app.hive_directory = vec![
+            crate::models::DiscoveredHiveRow {
+                hive_id: "ash".into(),
+                title: "Ash Hive".into(),
+                description: "shop migration".into(),
+                owner: "alice".into(),
+                visibility: "public".into(),
+                member_links: vec!["papercusp://harness?topic=a".into()],
+                member_count: 1,
+            },
+            crate::models::DiscoveredHiveRow {
+                hive_id: "topic-only".into(),
+                title: "Topic Hive".into(),
+                description: String::new(),
+                owner: "bob".into(),
+                visibility: "public".into(),
+                member_links: vec![],
+                member_count: 2,
+            },
+        ];
+        let text = render(&app);
+        // The directory section + both hives render; the joinable one shows the
+        // Join affordance, the link-less one shows topics-only.
+        assert!(text.contains("hive directory"));
+        assert!(text.contains("Ash Hive"));
+        assert!(text.contains("@alice"));
+        assert!(text.contains("J to join"));
+        assert!(text.contains("topics-only"));
+    }
 }

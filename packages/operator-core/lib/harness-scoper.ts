@@ -12,16 +12,23 @@
  * Ported off the legacy `bash -c 'source <(awk ... run.sh); invoke scoper'`
  * shell-out onto the TS orchestrator's `invoke-once.ts` (run.sh retirement).
  */
-import { mkdirSync } from 'node:fs';
-import { spawnInvokeOnceBackground } from './governed-background-spawn';
+import { mkdirSync, appendFileSync } from 'node:fs';
 import { loadHarnessKnobs } from '@papercusp/orchestrator';
 import { join } from 'node:path';
 import { harnessDir } from './harness-core';
 import { type ProjectEntry } from './harness-registry';
-import { harnessPackageDir } from './harness-paths';
-import { buildInvokeOnce } from './harness-invoke-once';
 import { instanceConfigEnv } from './deployment/instance-config';
 import { activeWorkspaceId } from './workspace-registry';
+
+/**
+ * Wall-clock bound on a background scoper run now routed through the chokepoint.
+ * The old detached spawn was effectively unbounded (its 30-min governor wait
+ * gated only the permit, not the run), so keep a generous 30-min ceiling: a big
+ * proposal/replan scan is never truncated, but a genuinely hung scoper can't
+ * hold a slot forever. (The pipeline scoper runs under the 10-min
+ * INVOKE_TIMEOUT_MS default; a manual proposal scan can legitimately run longer.)
+ */
+const SCOPER_INVOKE_TIMEOUT_MS = 30 * 60_000;
 
 /**
  * Resolve scoper.outputMode from the blueprint knob `scoper.outputMode`
@@ -58,19 +65,51 @@ export async function invokeScoperBackground(
   try {
     instEnv = await instanceConfigEnv(project.slug, activeWorkspaceId());
   } catch { /* spawn proceeds with blueprint defaults */ }
-  const { command, args, env } = buildInvokeOnce({
-    projectDir: project.path,
-    stateDir,
-    harnessDir: harnessPackageDir(),
-    role: 'scoper',
-    extras: [`MODE=${mode}`, `OUTPUT_MODE=${outputMode}`],
-    resultPath, // invoke-once tees output here + appends __INVOCATION_DONE__
-    extraEnv: { SCOPER_INVOCATION_ID: invocationId, SCOPER_OUTPUT_MODE: outputMode, ...instEnv },
-  });
-  // Fire-and-forget detached spawn, governed (RB-012): paced through the shared governor
-  // when PAPERCUSP_AGENT_GOVERNOR=1 so a background scoper doesn't pile onto a pipeline
-  // burst; flag OFF = the legacy synchronous detached spawn. The result is polled via
-  // resultPath's __INVOCATION_DONE__ sentinel (no child handle needed).
-  spawnInvokeOnceBackground({ command, args, cwd: project.path, env, resultPath });
+  const extras = [`MODE=${mode}`, `OUTPUT_MODE=${outputMode}`];
+  const extraEnv: Record<string, string> = {
+    SCOPER_INVOCATION_ID: invocationId,
+    SCOPER_OUTPUT_MODE: outputMode,
+    ...instEnv,
+  };
+  // Route the background scoper through the ONE chokepoint (spawnInvokeOnce) —
+  // P-008 / D-013 — instead of a private buildInvokeOnce + raw detached
+  // child_process.spawn (the off-chokepoint bypass the Phase-0 audit found). It
+  // now shares the chokepoint's governor pacing (per-role backend/model bucket),
+  // the config-env + display lease seam, and group-kill-on-timeout. Still
+  // fire-and-forget: the caller polls `resultPath` for the __INVOCATION_DONE__
+  // sentinel, so we `void` the promise and hold no child handle.
+  //
+  // LAZY import (mirrors the /invoke route, D-012): orchestrator-runner registers
+  // the DBOS workflow graph at module load, so an EAGER import would drag those
+  // process-global registrations into harness-scoper's import graph and crash any
+  // route test that re-imports it under vi.resetModules. Cached after first scope.
+  const { spawnInvokeOnce } = await import('./dbos/orchestrator-runner');
+  void spawnInvokeOnce(project.path, 'scoper', extras, extraEnv, {
+    resultPath,
+    timeoutMs: SCOPER_INVOKE_TIMEOUT_MS,
+  })
+    .then((r) => {
+      // invoke-once appends the sentinel itself when it actually runs; a PRE-spawn
+      // bail (governor permit timeout / aborted-before-start) never does, leaving
+      // the file-poller hanging — so end the poll ourselves. Idempotent: a
+      // duplicate sentinel after the child's own is harmless (the poller stops at
+      // the first). Preserves the old governed-background-spawn permit-bail end.
+      if (r.exitCode !== 0) {
+        try {
+          appendFileSync(
+            resultPath,
+            `\n[scoper-spawn] invocation failed (exit ${r.exitCode}): ${(r.stderr || 'unknown').slice(0, 500)}\n__INVOCATION_DONE__\n`,
+          );
+        } catch { /* the poller times out on its own otherwise */ }
+      }
+    })
+    .catch((err) => {
+      try {
+        appendFileSync(
+          resultPath,
+          `\n[scoper-spawn] invocation error: ${err instanceof Error ? err.message : String(err)}\n__INVOCATION_DONE__\n`,
+        );
+      } catch { /* best-effort */ }
+    });
   return { invocationId };
 }
