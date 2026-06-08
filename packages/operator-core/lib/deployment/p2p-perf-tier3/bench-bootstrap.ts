@@ -125,7 +125,15 @@ export function buildBenchBootstrap(opts: BenchBootstrapOpts): BenchBootstrapRes
     // fail a bench install (same survival rule as frame-bootstrap.ts).
     `tar xzf ${shq(opts.runtimeTarballRemotePath)} -C ${shq(runtimeDir)}`,
     `rm -f ${shq(opts.runtimeTarballRemotePath)} # free ~200MB once extracted`,
-    `cd ${shq(runtimeDir)} && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund --legacy-peer-deps)`,
+    // --ignore-scripts: the bench peer only imports the hyperbee substrate, whose
+    // native deps (sodium-native, udx-native, rocksdb-native) ALL ship prebuilds
+    // that node-gyp-build resolves at require-time — no compile needed (the same
+    // way the desktop bundles them). Skipping install scripts ALSO skips building
+    // deps the bench never imports — notably @rocicorp/zero-sqlite3, whose
+    // from-source sqlite3 amalgamation compile fails on a stock cloud image
+    // (Hetzner cpx31, 2026-06-08) and would otherwise abort the whole install. A
+    // measurement peer needs no Zero; building it was incidental dep-tree fallout.
+    `cd ${shq(runtimeDir)} && (npm ci --no-audit --no-fund --ignore-scripts || npm install --no-audit --no-fund --legacy-peer-deps --ignore-scripts)`,
     // No `npm run build`: peer-child.ts runs under `node --import tsx` directly,
     // exactly as the Tier-1 child-driver spawns it locally.
     `echo ${shq('bench runtime ready at ' + runtimeDir)}`,
