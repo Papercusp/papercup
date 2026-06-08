@@ -26,6 +26,16 @@ export interface ProjectEntry {
   /** Department slug for harness_kind='department' projects (e.g. "business"). */
   department_slug?: string;
   /**
+   * The home Hive this harness belongs to, for shared-Hive federation
+   * (shared-hive-federation-2026-06-08 P-004). A MEMBER harness sets this to its
+   * Hive's home slug so its substrate federates over the HIVE topic (the Hive
+   * pubkey), with `harness_slug` staying the within-Hive component scope (D-003:
+   * change only the topic key). A `harness_kind:'hive'` harness is its own Hive's
+   * home and needs no `hive_slug`. Absent ⇒ not a Hive member (federates via
+   * gh/local, or stays local-only).
+   */
+  hive_slug?: string;
+  /**
    * Where this harness's execution plane runs (`cloud-deployment-layer-2026-06-06`
    * P-003). A sibling to the blueprint (D-001), supplied at instantiation and
    * persisted here in workspace PG. Absent ⇒ `{ target: 'local' }` (every existing

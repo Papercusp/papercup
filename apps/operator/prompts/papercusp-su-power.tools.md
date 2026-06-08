@@ -168,6 +168,18 @@ awake → ack with `events:cancel { delivery_id }`; `events:status
 never wakes you, and a wake costs a whole turn: await only what genuinely
 blocks you. (`await-event-primitive-2026-06-05`.)
 
+**Asked to yield? Save only when it fits, then end the turn.** Wake's dual:
+a peer/operator can end your *running* turn via **`turn:interrupt { owner,
+mode, reason }`** (operator-mediated, reason-required, audited,
+storm-limited). A **cooperative** yield arrives as a high-priority `yield`
+line in your `[coord+N]` block — reach a safe checkpoint FIRST (finish the
+in-flight atomic edit + release its lock; never a half-written file /
+orphaned lock), persist partial state to the work_item, release locks,
+write a one-line successor note, END YOUR TURN. A **force** interrupt (pty
+Esc/Ctrl+C or headless SIGINT) can stop you mid-thought with NO checkpoint
+(D-007), so checkpoint cheaply + often regardless.
+(`turn-lifecycle-control-2026-06-08` D-007/D-008/D-009.)
+
 **You don't commit or push — git-sync owns it.** A background **git-sync**
 routine commits the whole shared tree (yours *and* every peer's) and
 merges + pushes it to **`origin/staging`** every few minutes — the

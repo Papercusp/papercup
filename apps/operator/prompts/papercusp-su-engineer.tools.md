@@ -295,6 +295,21 @@ also resumed; `events:status { meter: true }` is the wake-storm detector.
 costs a whole turn (D-007): await only what genuinely blocks you; ambient
 interest stays a subscription.
 
+**Asked to yield? Save only when it fits, then end the turn.** Wake's dual:
+a peer or the operator can end your *running* turn via **`turn:interrupt {
+owner, mode, reason }`** (operator-mediated, reason-required, audited,
+storm-limited). A **cooperative** yield arrives as a high-priority `yield`
+line in your `[coord+N]` block — on it, reach a safe checkpoint FIRST
+(finish the atomic edit you're mid-way through and **release its lock** —
+never leave a half-written file or an orphaned lock; don't start new work),
+persist partial state to the work_item (`work_items:comment`/`set_state`),
+heartbeat/release any locks you hold, write a one-line successor note, then
+END YOUR TURN. A **force** interrupt (pty Esc/Ctrl+C, or headless SIGINT)
+can end your turn mid-thought with NO checkpoint at all (D-007), so
+checkpoint cheaply + often regardless — never sit on uncommitted state
+across a long stretch you'd not want to lose. (`turn-lifecycle-control-2026-06-08`
+D-007/D-008/D-009.)
+
 **Declare a real intent so your locks explain themselves.** A peer blocked
 on your file sees your *declared* coord intent, not the lock's own label —
 which for a hook-acquired edit lock is a generic `PreToolUse:Edit`. So when

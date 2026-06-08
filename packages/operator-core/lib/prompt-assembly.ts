@@ -47,6 +47,7 @@ import {
 } from '@papercusp/result-encoding';
 import { renderCoordLegend } from './coord-schema';
 import { renderFrictionTripwire } from './harness/improvements/friction-markers';
+import { renderYieldPolicy } from './turn-yield-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -390,6 +391,18 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (frictionTripwire) {
     parts.push(frictionTripwire);
     sections.push({ name: 'friction-tripwire', chars: frictionTripwire.length });
+  }
+
+  // Yield policy (turn-lifecycle-control P-017, D-007/D-009) — the dual of the
+  // friction trip-wire: the cooperative-yield behavior in the SHARED base every
+  // operator-launched role inherits (on a turn:interrupt yield, checkpoint →
+  // persist partial state → release locks → successor note → end the turn).
+  // Sourced from the one YIELD_POLICY constant (orchestrator) so this base, the
+  // spawned-bee base, and the su playbook can't desync.
+  const yieldPolicy = renderYieldPolicy();
+  if (yieldPolicy) {
+    parts.push(yieldPolicy);
+    sections.push({ name: 'yield-policy', chars: yieldPolicy.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

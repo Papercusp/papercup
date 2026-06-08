@@ -71,6 +71,33 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
       return Response.json({ chat: rows[0] ?? null });
     }
 
+    // ── deliberation threads — coord:thread / deliberate / vote posts, attached
+    //    to an issue or a conversation (coord_threads + coord_thread_posts) ──
+    if (kind === 'threads' && verb === 'list') {
+      const rows = await sql`
+        SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
+               created_at, last_post_at, post_count
+          FROM harness_shared.coord_threads
+         ORDER BY last_post_at DESC NULLS LAST, created_at DESC NULLS LAST
+         LIMIT ${limit}`;
+      return Response.json({ items: rows });
+    }
+    if (kind === 'threads' && verb === 'get') {
+      const threadId = String(body.thread_id ?? body.id ?? '');
+      const [thread, posts] = await Promise.all([
+        sql`SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
+                   created_at, last_post_at, post_count
+              FROM harness_shared.coord_threads
+             WHERE thread_id = ${threadId} LIMIT 1`,
+        sql`SELECT id, author_id, body, created_at, harness_slug
+              FROM harness_shared.coord_thread_posts
+             WHERE thread_id = ${threadId}
+             ORDER BY created_at ASC NULLS LAST
+             LIMIT 1000`,
+      ]);
+      return Response.json({ thread: thread[0] ?? null, posts });
+    }
+
     // ── operator conversations — the human↔operator chats ──
     if (kind === 'operator' && verb === 'list') {
       const rows = await sql`

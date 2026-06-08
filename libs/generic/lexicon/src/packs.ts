@@ -72,9 +72,11 @@ export const CLASSIC_PACK: BrandPack = {
 export const THE_HIVE_PACK: BrandPack = {
   id: 'the-hive',
   // Admin/debug display name = the flag-on product brand. Kept as "The Swarm"
-  // (P-008 "Product name decision", branding.mdx) — D-007 reassigns the *domain*
-  // term "swarm" (→ a deployment unit) but does not rename the brand. The
-  // brand-name question (The Swarm vs The Hive) is an open owner decision.
+  // (P-008 "Product name decision" + the committed theswarm.dev domain / site /
+  // CF project). The brand name is an OPEN owner decision — D-005 recorded "The
+  // Hive" and D-007 reassigns "swarm" to a deployment unit, but the external
+  // domain/email commitments make this the owner's call (the-hive-lexicon D-008).
+  // Do NOT rename without it. (Independent of the Fleet→Colony term, which shipped.)
   label: 'The Swarm',
   terms: THE_HIVE_TERMS,
 };

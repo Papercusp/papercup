@@ -135,17 +135,29 @@ export function getBootedHarness(
 }
 
 /**
- * Default swarm-binding resolver — reads `.papercusp/shared.json` from
- * the harness's project directory (PG-canonical via
- * `resolveHarnessPaths`) and returns a `gh:<repository_id>` binding
- * when present. Errors swallow to `null` so a missing/corrupt config
- * never blocks the boot loop.
+ * Default swarm-binding resolver. Precedence:
+ *   1. shared-hive-federation P-004 — if the harness is the home of a SHARED
+ *      (directory-published) Hive, federate over the Hive PUBKEY topic
+ *      (`resolveHiveSwarmBinding` → `{ kind: 'hive', hive_pubkey }`). This is the
+ *      federation re-key: the Hive id, not the harness slug, is the topic key.
+ *   2. else read `.papercusp/shared.json` (PG-canonical via `resolveHarnessPaths`)
+ *      and return a `gh:<repository_id>` binding when present.
+ *   3. else `null` (private / local-only — no swarm join).
+ * Errors swallow to `null` so a missing/corrupt config never blocks the boot loop.
  */
 export async function defaultResolveSwarmBinding(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<SwarmBinding | null> {
   try {
+    // (1) A SHARED Hive's harness federates over the Hive pubkey topic, replacing
+    // the per-harness gh/local topic (D-001/D-003). A non-hive or local-only
+    // harness returns null here and falls through to the gh-binding path unchanged.
+    const { resolveHiveSwarmBinding } = await import('../../hive-federation');
+    const hiveBinding = await resolveHiveSwarmBinding(workspaceId, harnessSlug);
+    if (hiveBinding) return hiveBinding;
+
+    // (2) Existing per-harness gh binding from a committed shared.json.
     const { resolveHarnessPaths } = await import('../../resolve-harness-paths');
     const { projectDir } = await resolveHarnessPaths(harnessSlug, workspaceId);
     if (projectDir.startsWith('/tmp/papercusp-unresolved/')) return null;

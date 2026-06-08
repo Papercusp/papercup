@@ -318,3 +318,15 @@ describe('assembleRolePrompt — friction trip-wire (self-learning-central P-001
     expect(tripwire).not.toMatch(/validator|reviewer/);
   });
 });
+
+describe('assembleRolePrompt — yield policy (turn-lifecycle-control P-017, D-007/D-009)', () => {
+  it('injects the cooperative-yield policy into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Yielding on request (turn-lifecycle control)');
+    expect(out.text).toContain('turn:interrupt');
+    expect(out.text).toContain('Save only when it fits');
+    expect(out.sections.some((s) => s.name === 'yield-policy')).toBe(true);
+  });
+});

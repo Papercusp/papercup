@@ -15,7 +15,7 @@
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 
 // nuqs: every useQueryState call needs the adapter context — stub each param to
 // a stable [value, noop]. The component reads `conv` (view), the activity filters
@@ -28,6 +28,13 @@ const nuqsState: Record<string, unknown> = {
   fplan: '',
   fq: '',
   fmsg: null,
+  // the new communication views' selection/filter params
+  thread: null,
+  acharness: '',
+  acrole: '',
+  chat: null,
+  msg: null,
+  opc: null,
 };
 vi.mock('nuqs', () => ({
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
@@ -133,6 +140,12 @@ beforeEach(() => {
   nuqsState.fplan = '';
   nuqsState.fq = '';
   nuqsState.fmsg = null;
+  nuqsState.thread = null;
+  nuqsState.acharness = '';
+  nuqsState.acrole = '';
+  nuqsState.chat = null;
+  nuqsState.msg = null;
+  nuqsState.opc = null;
   mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
   vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ conversations: [] }) })));
 });
@@ -241,5 +254,191 @@ describe('AdvConversationsTab — simplified design', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
     expect(screen.getByText(/Load older/i)).toBeTruthy();
+  });
+});
+
+// ─── The unified communication views (every type, not just coord threads) ──────
+//
+// the-conversations-tab-surfaces-every-comm-type: the tab gained three views that
+// read the global communication-surface dispatch (/api/admin/comms/:kind/:verb):
+// agent chats, work-item messages, and operator chats. These guard the new views
+// against render-time crashes the typecheck can't catch and assert each one
+// surfaces its data.
+
+/** Stub fetch to answer the comms dispatch by URL, everything else empty. */
+function stubComms(byUrl: Record<string, unknown>) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      const match = Object.keys(byUrl).find((frag) => url.includes(frag));
+      return { json: async () => (match ? byUrl[match] : { conversations: [] }) };
+    }),
+  );
+}
+
+describe('AdvConversationsTab — unified communication views', () => {
+  it('exposes a view tab for every communication type', () => {
+    render(<AdvConversationsTab />);
+    expect(screen.getByRole('tab', { name: /Threads/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Deliberations/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Agent chats/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Messages/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Operator/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
+  });
+
+  it('Deliberations view lists threads and opens its posts', async () => {
+    nuqsState.conv = 'deliberations';
+    nuqsState.thread = 'th-1';
+    stubComms({
+      '/comms/threads/list': {
+        items: [
+          {
+            thread_id: 'th-1',
+            parent_kind: 'issue',
+            parent_ref: 'ISS-7',
+            title: 'memory-watchdog recycles the host',
+            created_by: 'oracle',
+            harness_slug: 'papercup',
+            created_at: new Date().toISOString(),
+            last_post_at: new Date().toISOString(),
+            post_count: 2,
+          },
+        ],
+      },
+      '/comms/threads/get': {
+        thread: {
+          thread_id: 'th-1',
+          parent_kind: 'issue',
+          parent_ref: 'ISS-7',
+          title: 'memory-watchdog recycles the host',
+          created_by: 'oracle',
+          harness_slug: 'papercup',
+          created_at: new Date().toISOString(),
+          last_post_at: new Date().toISOString(),
+          post_count: 2,
+        },
+        posts: [
+          { id: 1, author_id: 'oracle', body: 'the host recycles every 12m', created_at: new Date().toISOString(), harness_slug: 'papercup' },
+          { id: 2, author_id: 'worker', body: 'looks like the watchdog threshold', created_at: new Date().toISOString(), harness_slug: 'papercup' },
+        ],
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('the host recycles every 12m')).toBeTruthy();
+    expect(screen.getByText('looks like the watchdog threshold')).toBeTruthy();
+  });
+
+  it('Agent chats view lists sessions and opens a transcript', async () => {
+    nuqsState.conv = 'agentchats';
+    stubComms({
+      '/comms/agent-chats/list': {
+        items: [
+          {
+            id: 'chat-1',
+            harness_slug: 'papercup',
+            role: 'worker',
+            feature_id: 'F-042',
+            title: 'implement the auth refactor',
+            created_at: Date.now() - 3_600_000,
+            archived_at: null,
+            total_input_tokens: 1200,
+            total_output_tokens: 800,
+            total_cost_usd_cents: 34,
+            turns: 6,
+          },
+        ],
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('implement the auth refactor')).toBeTruthy();
+    // role badge + per-row meta render
+    expect(screen.getAllByText('worker').length).toBeGreaterThan(0);
+    expect(screen.getByText(/6 turns/i)).toBeTruthy();
+  });
+
+  it('Agent chats view renders the selected transcript turns', async () => {
+    nuqsState.conv = 'agentchats';
+    nuqsState.chat = 'chat-1';
+    stubComms({
+      '/comms/agent-chats/list': { items: [] },
+      '/comms/agent-chats/get': {
+        chat: {
+          id: 'chat-1',
+          harness_slug: 'papercup',
+          role: 'worker',
+          feature_id: 'F-042',
+          title: 'implement the auth refactor',
+          created_at: Date.now(),
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost_usd_cents: 0,
+          transcript: [
+            { ts: new Date().toISOString(), role: 'user', content: 'start the refactor' },
+            { ts: new Date().toISOString(), role: 'assistant', content: 'on it — opening the module' },
+          ],
+        },
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('start the refactor')).toBeTruthy();
+    expect(screen.getByText('on it — opening the module')).toBeTruthy();
+  });
+
+  it('Messages view lists work-item agent messages', async () => {
+    nuqsState.conv = 'messages';
+    stubComms({
+      '/comms/messages/list': {
+        items: [
+          {
+            id: 'msg-1',
+            harness_slug: 'papercup',
+            from_slug: 'architect',
+            to_slug: 'worker',
+            to_role: null,
+            kind: 'handoff',
+            subject: 'pick up the UI work',
+            body: 'the scoping is done, your turn',
+            status: 'delivered',
+            created_at: new Date().toISOString(),
+            from_feature_id: 'F-042',
+            to_feature_id: 'F-042',
+          },
+        ],
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('pick up the UI work')).toBeTruthy();
+    expect(screen.getByText('architect')).toBeTruthy();
+    expect(screen.getByText('→ worker')).toBeTruthy();
+  });
+
+  it('Operator view lists human↔operator chats', async () => {
+    nuqsState.conv = 'operator';
+    stubComms({
+      '/comms/operator/list': {
+        items: [
+          {
+            id: 'opc-1',
+            harness_slug: null,
+            title: 'review the conversations tab',
+            status: 'ended',
+            started_at: Date.now() - 7_200_000,
+            ended_at: Date.now() - 7_000_000,
+            summary_text: 'discussed surfacing every comm type',
+            has_audio: false,
+          },
+        ],
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('review the conversations tab')).toBeTruthy();
+  });
+
+  it('each new view degrades to an empty state with no data', async () => {
+    nuqsState.conv = 'agentchats';
+    stubComms({ '/comms/agent-chats/list': { items: [] } });
+    render(<AdvConversationsTab />);
+    await waitFor(() => expect(screen.getByText(/No agent chats/i)).toBeTruthy());
   });
 });

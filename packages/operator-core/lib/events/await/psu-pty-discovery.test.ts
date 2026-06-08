@@ -3,11 +3,17 @@
  * managed-pty control socket (turn-lifecycle-control Phase 3, P-014).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
-import { findLiveHost, injectIntoHost, sanitizeKey } from './psu-pty-discovery';
+import {
+  findLiveHost,
+  injectIntoHost,
+  interruptViaPty,
+  sanitizeKey,
+  PSU_PTY_DIR,
+} from './psu-pty-discovery';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -96,5 +102,44 @@ describe('injectIntoHost', () => {
   it('resolves false when the socket does not exist', async () => {
     const ok = await injectIntoHost(join(tmpDir(), 'absent.sock'), { mode: 'turn', data: 'x' }, 500);
     expect(ok).toBe(false);
+  });
+});
+
+describe('interruptViaPty (Phase 4 pty-force leg)', () => {
+  // interruptViaPty reads the REAL PSU_PTY_DIR (no dir param), so set up a live
+  // host there under a unique throwaway ownerId, then clean it up.
+  it('injects a raw Ctrl-C / Esc into a live host; false when no host', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-force-test-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+    const meta = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+    const recv: string[] = [];
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
+    });
+    await new Promise<void>((r) => server.listen(sock, r));
+    writeFileSync(
+      meta,
+      JSON.stringify({ ownerId, advSessionId: null, pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 }),
+    );
+    cleanups.push(() => {
+      server.close();
+      for (const p of [sock, meta]) if (existsSync(p)) unlinkSync(p);
+    });
+
+    // no live host → false (caller falls back to headless SIGINT)
+    expect(await interruptViaPty('su-no-such-owner-xyz')).toBe(false);
+
+    // sigint default = Ctrl-C, raw + immediate
+    expect(await interruptViaPty(ownerId)).toBe(true);
+    // esc variant
+    expect(await interruptViaPty(ownerId, 'esc')).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(2);
+    expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'raw', data: '\x03' });
+    expect(JSON.parse(recv[1])).toEqual({ v: 1, mode: 'raw', data: '\x1b' });
   });
 });

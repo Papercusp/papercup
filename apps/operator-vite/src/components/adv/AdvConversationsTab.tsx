@@ -8,6 +8,11 @@
  *    entity). Detail = seed + topics + thread + accepted answer + linked
  *    work-item + promote/reply/resolve actions.
  *
+ *  - **Deliberations** (`conv=deliberations`): the threaded coord:thread /
+ *    deliberate / vote discussions (`coord_threads` + `coord_thread_posts`),
+ *    attached to an issue or a conversation. Left rail lists threads; detail
+ *    renders the discussion posts in order.
+ *
  *  - **Agent chats** (`conv=agentchats`): the multi-turn agent chat SESSIONS
  *    (scoper/architect/worker/… transcripts, with tokens + cost) from
  *    `agent_chats_consolidated` — the bulk of real agent communication, which the
@@ -38,7 +43,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -84,7 +89,7 @@ function fmtRel(v: string | number | null | undefined): string {
 }
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['threads', 'agentchats', 'messages', 'operator', 'feed'] as const;
+const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'operator', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 export default function AdvConversationsTab() {
@@ -114,6 +119,19 @@ export default function AdvConversationsTab() {
             <span>
               Threads
               <em>questions &amp; discussions</em>
+            </span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'deliberations'}
+            className={`pc-advconv__viewtab${view === 'deliberations' ? ' is-active' : ''}`}
+            onClick={() => void setView('deliberations')}
+          >
+            <MessagesSquare size={13} aria-hidden />
+            <span>
+              Deliberations
+              <em>threaded discussions</em>
             </span>
           </button>
           <button
@@ -172,6 +190,8 @@ export default function AdvConversationsTab() {
       </header>
       {view === 'feed' ? (
         <FeedView />
+      ) : view === 'deliberations' ? (
+        <DeliberationsView />
       ) : view === 'agentchats' ? (
         <AgentChatsView />
       ) : view === 'messages' ? (
@@ -1035,6 +1055,131 @@ function ThreadsView() {
                 </div>
               </div>
             )}
+          </article>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─── Deliberations — coord:thread / deliberate / vote posts on an entity ────
+
+interface ThreadRow {
+  thread_id: string;
+  parent_kind: string | null;
+  parent_ref: string | null;
+  title: string | null;
+  created_by: string | null;
+  harness_slug: string | null;
+  created_at: string;
+  last_post_at: string | null;
+  post_count: number;
+}
+interface ThreadPost { id: number; author_id: string | null; body: string | null; created_at: string; harness_slug: string | null }
+
+function DeliberationsView() {
+  const [sel, setSel] = useQueryState('thread', parseAsString);
+  const [list, setList] = useState<ThreadRow[]>([]);
+  const [posts, setPosts] = useState<ThreadPost[]>([]);
+  const [head, setHead] = useState<ThreadRow | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    const r = await comms<{ items?: ThreadRow[] }>('threads', 'list', { limit: 500 });
+    setList(r.items ?? []);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useEffect(() => {
+    if (!sel) {
+      setPosts([]);
+      setHead(null);
+      return;
+    }
+    void (async () => {
+      const r = await comms<{ thread?: ThreadRow | null; posts?: ThreadPost[] }>('threads', 'get', { thread_id: sel });
+      setHead(r.thread ?? null);
+      setPosts(r.posts ?? []);
+    })();
+  }, [sel]);
+
+  return (
+    <div className="pc-coord__split pc-advconv__threads">
+      <aside className="pc-coord__rail">
+        <div className="pc-advconv__railhead">
+          <span>Deliberation threads</span>
+          <strong>{loading ? '…' : list.length}</strong>
+          <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => void reload()}>
+            <RefreshCw size={11} aria-hidden />
+          </button>
+        </div>
+        {loading ? (
+          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+        ) : list.length === 0 ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
+            <strong>No deliberations</strong>
+            <span>No coord:thread / deliberate / vote discussions recorded.</span>
+          </div>
+        ) : (
+          list.map((t) => (
+            <button key={t.thread_id} type="button" className={`pc-coord__row${sel === t.thread_id ? ' is-active' : ''}`} onClick={() => void setSel(t.thread_id)}>
+              <span className="pc-advconv__threadtop">
+                <span className="pc-coord__kind">{t.parent_kind ?? 'thread'}</span>
+                {t.parent_ref ? <span className="pc-advconv__statepill">{t.parent_ref}</span> : null}
+              </span>
+              <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
+              <span className="pc-coord__row-meta">
+                {t.harness_slug ?? 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
+                {t.created_by ? ` · ${t.created_by}` : ''}
+              </span>
+              <span className="pc-advconv__rowdate">{fmtTs(t.last_post_at ?? t.created_at)}</span>
+            </button>
+          ))
+        )}
+      </aside>
+      <section className="pc-coord__detail">
+        {!head ? (
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
+            <MessagesSquare size={22} aria-hidden />
+            <strong>Select a deliberation</strong>
+            <span>Open a thread to read its discussion posts.</span>
+          </div>
+        ) : (
+          <article className="pc-coord__card">
+            <header className="pc-advconv__detailhead">
+              <div>
+                <p className="pc-advconv__detailkicker">
+                  <span className="pc-coord__kind">{head.parent_kind ?? 'thread'}</span>
+                  {head.parent_ref ? <span className="pc-advconv__statepill">{head.parent_ref}</span> : null}
+                </p>
+                <h2>{head.title ?? head.thread_id}</h2>
+              </div>
+              <div className="pc-advconv__detailstats" aria-label="Thread metadata">
+                <span>{head.harness_slug ?? 'workspace'}</span>
+                <span><strong>{posts.length}</strong> posts</span>
+              </div>
+            </header>
+            <ol className="pc-coord__thread pc-advconv__transcript">
+              {posts.map((p) => (
+                <li key={p.id} className="pc-advconv__turn">
+                  <span className="pc-advconv__postmeta">
+                    <strong>{p.author_id ?? 'unknown'}</strong>
+                    <span>{fmtTs(p.created_at)}</span>
+                  </span>
+                  <p>{p.body ?? ''}</p>
+                </li>
+              ))}
+              {posts.length === 0 && (
+                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
+                  <strong>No posts</strong>
+                  <span>This thread has no recorded posts.</span>
+                </li>
+              )}
+            </ol>
           </article>
         )}
       </section>

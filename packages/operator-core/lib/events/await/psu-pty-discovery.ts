@@ -107,3 +107,26 @@ export function injectIntoHost(
     if (typeof t.unref === 'function') t.unref();
   });
 }
+
+/**
+ * Force-interrupt a live psu-hosted INTERACTIVE session by injecting a control
+ * byte into its pty (turn-lifecycle-control Phase 4 pty-force leg, D-007). The
+ * byte lands IMMEDIATELY (raw mode bypasses the wake idle-gate) — the
+ * mid-thinking Ctrl-C semantics force requires. `'sigint'` = Ctrl-C (\x03,
+ * ends the current turn, session stays resumable); `'esc'` = Esc (\x1b, the
+ * claude/omp TUI's stop-generating key).
+ *
+ * Returns false when the owner has NO live psu-pty host — the caller
+ * (`turn:interrupt`) then falls back to headless SIGINT on the resolved pid.
+ * Authorization, attribution, audit + storm-limit are the operator-mediated
+ * `turn:interrupt` tool's job (D-008); this is the dumb transport leg.
+ */
+export async function interruptViaPty(
+  ownerId: string,
+  key: 'sigint' | 'esc' = 'sigint',
+): Promise<boolean> {
+  const host = findLiveHost(ownerId);
+  if (!host) return false;
+  const data = key === 'esc' ? '\x1b' : '\x03';
+  return injectIntoHost(host.sock, { mode: 'raw', data });
+}

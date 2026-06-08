@@ -9,7 +9,7 @@
  *    writes a successor note, then ends its turn (persona P-017). The polite
  *    default — DEFERS if the target is in a critical section (holds file locks).
  *  - force: end the turn NOW, mid-thinking. A managed-pty session gets a Ctrl+C
- *    inject over its control socket (Phase-3 psu-pty host contract); a headless
+ *    inject over its control socket (Phase-3 `interruptViaPty`); a headless
  *    spawn gets SIGINT to the session pid (the `-p`/`exec` turn ends but the
  *    session stays resumable by id — the TURN ends, not the agent).
  *
@@ -20,7 +20,6 @@
  * confused or looping agent cannot halt the fleet (D-009).
  */
 
-import net from 'node:net';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -29,6 +28,7 @@ import { sendMessage } from '../coordination/messages';
 import { shortHandle } from '../../coord-schema';
 import { COORD_ROLES } from '../coordination/roles';
 import { latestAdvSessionByCoordOwner } from '../../adv-sessions';
+import { interruptViaPty } from '../../events/await/psu-pty-discovery';
 import { readIdentity } from '../locks/identity';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 
@@ -228,53 +228,6 @@ async function liveSessionPid(owner: string): Promise<number | null> {
   return s.pid != null && pidAlive(s.pid) ? s.pid : null;
 }
 
-/**
- * Force-interrupt a managed-pty session by writing a raw Ctrl+C envelope to its
- * control socket (Phase-3 psu-pty host contract: `{v:1,mode:'raw',data:''}`
- * bypasses the wake idle-gate and writes the byte verbatim). The discovery
- * helper `findLiveHost(owner)` is added with the Phase-3 wake channel; until it
- * lands this dynamic import misses and force falls back to headless SIGINT — so
- * there is ZERO build-order coupling between this tool and Phase 3.
- */
-async function ptyForceInterrupt(owner: string): Promise<boolean> {
-  try {
-    const mod = (await import('../../events/await/psu-pty-discovery').catch(() => null)) as
-      | { findLiveHost?: (owner: string) => Promise<{ sock?: string } | null> }
-      | null;
-    const findLiveHost = mod?.findLiveHost;
-    if (typeof findLiveHost !== 'function') return false;
-    const host = await findLiveHost(owner);
-    const sock = host?.sock;
-    if (!sock) return false;
-    return await new Promise<boolean>((resolve) => {
-      let done = false;
-      const finish = (v: boolean) => {
-        if (!done) {
-          done = true;
-          resolve(v);
-        }
-      };
-      const c = net.createConnection(sock, () => {
-        c.write(JSON.stringify({ v: 1, mode: 'raw', data: '' }), (e) => {
-          c.end();
-          finish(!e);
-        });
-      });
-      c.on('error', () => finish(false));
-      setTimeout(() => {
-        try {
-          c.destroy();
-        } catch {
-          /* ignore */
-        }
-        finish(false);
-      }, 2000);
-    });
-  } catch {
-    return false;
-  }
-}
-
 export default defineTool({
   name: 'turn:interrupt',
   description:
@@ -340,7 +293,8 @@ export default defineTool({
       },
       recentInterrupts: recentInterruptCount,
       liveSessionPid,
-      ptyForce: ptyForceInterrupt,
+      // Phase-3 seam: Ctrl+C into a live managed-pty session, else false → SIGINT.
+      ptyForce: (owner) => interruptViaPty(owner, 'sigint'),
       sigint: (pid) => {
         try {
           process.kill(pid, 'SIGINT');
