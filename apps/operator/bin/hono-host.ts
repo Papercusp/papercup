@@ -19,6 +19,7 @@ import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
+import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 
 // Resilience guard: when an MCP/SSE client disconnects mid-stream, the
 // `mcp-handler` dependency's response adapter enqueues onto an already-closed
@@ -77,7 +78,7 @@ process.env.PORT = String(port);
 // that degraded agent-mcp routes to 12-30s while /api/health stayed fast).
 startEventLoopLagMonitor();
 
-serve({ fetch: handler, port, hostname }, (info) => {
+const server = serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);
 
   // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
@@ -87,3 +88,35 @@ serve({ fetch: handler, port, hostname }, (info) => {
   const pinWarning = workspacePinWarning();
   if (pinWarning) console.warn(pinWarning);
 });
+
+// Bounded-RSS self-recycle: the host leaks retained heap under fleet load
+// (~0.2 GB/min, no plateau); past ~4 GB the GC pauses stall the event loop and
+// intermittently break MCP mounts / invokes / health (2026-06-07). Recycle at a
+// high-water mark BELOW the stall zone — drain in-flight HTTP, then exit; the
+// systemd unit's `Restart=always` (RestartSec=5s) brings up a fresh low-RSS
+// process. The PAPERCUSP_* env knobs let an operator tune/disable without a
+// redeploy. See lib/memory-watchdog.ts.
+if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
+  const limitMb = Number(process.env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB) || 3200;
+  startMemoryWatchdog({
+    rssLimitMb: limitMb,
+    onTrip: ({ rssMb }) => {
+      console.warn(
+        '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',
+        { rssMb, rssLimitMb: limitMb },
+      );
+      // Stop accepting new connections; give in-flight work a bounded window,
+      // then exit so a fresh process boots. Hard-exit backstop if drain hangs.
+      const hardExit = setTimeout(() => process.exit(0), 8000);
+      hardExit.unref?.();
+      try {
+        (server as { close?: (cb?: () => void) => void }).close?.(() => {
+          clearTimeout(hardExit);
+          process.exit(0);
+        });
+      } catch {
+        process.exit(0);
+      }
+    },
+  });
+}
