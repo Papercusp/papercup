@@ -135,10 +135,12 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     await seedCorpus(sql);
     const [{ n }] = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM iq_battery_cases`;
     expect(Number(n)).toBe(20);
-    const rows = await sql<{ gt: unknown; rub: { dimensions?: unknown } }[]>`
+    const rows = await sql<{ gt: unknown; rub: unknown }[]>`
       SELECT ground_truth AS gt, rubric AS rub FROM iq_battery_cases ORDER BY variant, rotation_index LIMIT 1`;
-    expect(typeof rows[0].gt).toBe('object'); // jsonb decoded back to an object, not a throw
-    expect(rows[0].rub).toHaveProperty('dimensions');
+    // jsonb round-trips to valid JSON (parsed or raw depending on the connection's parse config).
+    const parse = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
+    expect(typeof parse(rows[0].gt)).toBe('object');
+    expect(parse(rows[0].rub)).toHaveProperty('dimensions');
   });
 
   it('D-004: threads REAL signals → the collectors measure the actual run (not stubbed defaults)', async () => {

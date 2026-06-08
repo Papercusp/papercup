@@ -205,13 +205,26 @@ async function loadSeededCorpus(
        ORDER BY rotation_index
        LIMIT ${casesPerVariant}`;
     for (const r of rows) {
+      // jsonb may arrive parsed (object) or raw (string) depending on the pool's parse config —
+      // normalize so groundTruth/rubric are always objects.
+      const asObj = (v: unknown, dflt: unknown): unknown => {
+        if (v == null) return dflt;
+        if (typeof v === 'string') {
+          try {
+            return JSON.parse(v);
+          } catch {
+            return dflt;
+          }
+        }
+        return v;
+      };
       corpus.push({
         id: r.id,
         variant: r.variant as TaskVariant,
         title: r.title,
         prompt: r.prompt,
-        groundTruth: r.ground_truth ?? {},
-        rubric: (r.rubric ?? { dimensions: [] }) as Rubric,
+        groundTruth: asObj(r.ground_truth, {}) as Record<string, unknown>,
+        rubric: asObj(r.rubric, { dimensions: [] }) as Rubric,
         rotationIndex: r.rotation_index,
         createdAt: new Date(),
       });
