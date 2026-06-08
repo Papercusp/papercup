@@ -53,8 +53,10 @@ export interface DiscoveredHive {
   ownerGithubLogin: string;
   ownerGithubUserId: number;
   ownerDevicePubkey: string;
-  /** Member harness swarm-topics (hex) — a joiner runs join-shared-harness per topic. */
+  /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
   memberTopics: string[];
+  /** Full join links per member harness, when the hive carries them (one-click join). */
+  memberLinks?: string[];
   visibility: HiveVisibility;
   /** Epoch-ms the hive was created (from the announce). */
   createdAt: number;
@@ -72,6 +74,8 @@ export interface LocalHiveDescriptor {
   title: string;
   description: string;
   memberTopics: string[];
+  /** Full join links per member harness (one-click join), when known. */
+  memberLinks?: string[];
   visibility: HiveVisibility;
   createdAt: number;
   ownerGithubLogin: string;
@@ -172,6 +176,7 @@ export class HiveDirectory {
       ownerGithubUserId: frame.owner_github_user_id,
       ownerDevicePubkey: frame.owner_device_pubkey,
       memberTopics: [...frame.member_topics],
+      ...(frame.member_links ? { memberLinks: [...frame.member_links] } : {}),
       visibility: frame.visibility,
       createdAt: frame.created_at,
       announcedTs: frame.ts,
@@ -247,6 +252,7 @@ export class HiveDirectory {
       owner_device_pubkey: desc.ownerDevicePubkey,
       attestation_gist_id: desc.attestationGistId,
       member_topics: [...desc.memberTopics],
+      ...(desc.memberLinks ? { member_links: [...desc.memberLinks] } : {}),
       visibility: desc.visibility,
       created_at: desc.createdAt,
       ts: this.nowMs(),

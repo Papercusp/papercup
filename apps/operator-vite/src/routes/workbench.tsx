@@ -4,6 +4,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { HarnessDock } from '@/app/harness/dock/HarnessDock';
 import { registerWorkbenchPanels } from '@/app/harness/dock/workbench-panels';
 import { registerWorkbenchVoicePanel } from '../components/workbench/WorkbenchVoicePanel';
+import { registerWorkbenchHiveDirectoryPanel } from '../components/workbench/WorkbenchHiveDirectoryPanel';
 import { onDockApiBind, listPanels, setPanelParams } from '@/app/harness/dock/dock-actions';
 
 /**
@@ -42,6 +43,7 @@ function WorkbenchPage() {
   useEffect(() => {
     registerWorkbenchPanels();
     registerWorkbenchVoicePanel();
+    registerWorkbenchHiveDirectoryPanel();
   }, []);
 
   // Harness list for the header picker. Default the selection to the first

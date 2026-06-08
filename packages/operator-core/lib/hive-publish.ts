@@ -26,8 +26,10 @@ export interface HiveDirectoryMeta {
   /** public = announce to the global topic; invite = invite-scoped topic only;
    *  private = never announce. Default for a directory-created hive: public. */
   visibility: HiveVisibility;
-  /** Member harness swarm-topics (hex) — the join targets a peer runs join-shared-harness on. */
+  /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
   memberTopics: string[];
+  /** Full `papercusp://harness?...` join links per member harness (one-click join). */
+  memberLinks?: string[];
   /** Epoch-ms the hive was created (stable; for display + ordering). */
   createdAt: number;
   /** Required when visibility === 'invite' — the secret whose topic invitees join. */
@@ -71,6 +73,7 @@ export async function publishHiveToDirectory(
     title: meta.title,
     description: meta.description,
     memberTopics: [...meta.memberTopics],
+    ...(meta.memberLinks ? { memberLinks: [...meta.memberLinks] } : {}),
     visibility: meta.visibility,
     createdAt: meta.createdAt,
     ownerGithubLogin: owner.githubLogin,

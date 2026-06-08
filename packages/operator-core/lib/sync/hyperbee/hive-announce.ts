@@ -49,11 +49,20 @@ export interface HiveAnnounceBody {
   /** P-011 device-attestation gist id (the channel-2 anchor a browser verifies). */
   attestation_gist_id: string;
   /**
-   * The hive's member harness swarm-topics (hex), so a joiner can run
-   * `join-shared-harness` per member harness. Empty for a hive with no shared
-   * harnesses yet. Order-significant in the canonical bytes.
+   * The hive's member harness swarm-topics (hex) — the DISPLAY signal (how many
+   * harnesses, the topic identities). Empty for a hive with no shared harnesses
+   * yet. Order-significant in the canonical bytes.
    */
   member_topics: string[];
+  /**
+   * Full `papercusp://harness?...` join links per member harness (topic + the
+   * GitHub repo binding). OPTIONAL + additive: a topic hex alone cannot form a
+   * valid join link (join-shared-harness needs the repo id), so a hive that
+   * wants ONE-CLICK join carries the full links here; a topic-only announce is
+   * still browseable but its Join surfaces "link required". Order-significant;
+   * included in the canonical signing bytes only when present (like `nonce`).
+   */
+  member_links?: string[];
   /** Directory visibility — `public` announces to the global topic; `invite` to an
    *  invite-scoped topic only. (`private` never announces, so it never appears on
    *  the wire — included for completeness/round-trip.) */
@@ -98,6 +107,9 @@ export function hiveAnnounceSigningBytes(body: HiveAnnounceBody): Buffer {
     created_at: body.created_at,
     ts: body.ts,
   };
+  // member_links + nonce are optional → included only when present, so an
+  // announce that omits them signs the exact bytes earlier versions did.
+  if (Array.isArray(body.member_links)) ordered.member_links = body.member_links;
   if (typeof body.nonce === 'string') ordered.nonce = body.nonce;
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
@@ -143,6 +155,8 @@ export function verifyHiveAnnounce(
       typeof frame.attestation_gist_id !== 'string' ||
       !Array.isArray(frame.member_topics) ||
       frame.member_topics.some((t) => typeof t !== 'string') ||
+      (frame.member_links !== undefined &&
+        (!Array.isArray(frame.member_links) || frame.member_links.some((l) => typeof l !== 'string'))) ||
       !isHiveVisibility(frame.visibility) ||
       typeof frame.created_at !== 'number' ||
       typeof frame.sig !== 'string'

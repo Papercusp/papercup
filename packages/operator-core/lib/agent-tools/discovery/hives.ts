@@ -21,8 +21,10 @@ export interface DiscoveredHiveRow {
   description: string;
   owner: string;
   visibility: 'public' | 'invite';
-  /** Member harness topics (hex) — the join targets. */
+  /** Member harness topics (hex) — the display signal. */
   memberTopics: string[];
+  /** Full join links per member harness (one-click join), when the hive carries them. */
+  memberLinks: string[];
   /** Number of member harnesses a join would run join-shared-harness for. */
   memberCount: number;
   createdAt: number;
@@ -58,6 +60,7 @@ export default defineTool({
       owner: h.ownerGithubLogin,
       visibility: h.visibility === 'invite' ? 'invite' : 'public',
       memberTopics: h.memberTopics,
+      memberLinks: h.memberLinks ?? [],
       memberCount: h.memberTopics.length,
       createdAt: h.createdAt,
       lastSeenMs: h.lastSeenMs,

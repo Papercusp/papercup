@@ -35,8 +35,10 @@ export default defineTool({
     title: z.string().min(1).max(200),
     description: z.string().max(2000).default(''),
     visibility: z.enum(HIVE_VISIBILITIES as unknown as [string, ...string[]]).default('public'),
-    /** Member harness swarm-topics (hex) a joiner runs join-shared-harness on. */
+    /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
     memberTopics: z.array(z.string().min(1)).max(64).optional(),
+    /** Full papercusp://harness?... join links per member harness (one-click join). */
+    memberLinks: z.array(z.string().min(1)).max(64).optional(),
     /** Required for visibility:invite — the secret whose topic invitees join. */
     inviteSecret: z.string().min(1).optional(),
     /** Epoch-ms created stamp (defaults to now on first create). */
@@ -49,6 +51,7 @@ export default defineTool({
       description: args.description ?? '',
       visibility: args.visibility as HiveDirectoryMeta['visibility'],
       memberTopics: args.memberTopics ?? [],
+      ...(args.memberLinks ? { memberLinks: args.memberLinks } : {}),
       createdAt: args.createdAt ?? Date.now(),
       ...(args.inviteSecret ? { inviteSecret: args.inviteSecret } : {}),
     };
