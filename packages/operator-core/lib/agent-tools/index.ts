@@ -69,9 +69,12 @@ import './discovery/set_hive';
 import './pot/declare_wake';
 import './pot/wake';
 import './pot/status';
-// hive-tool-namespace-2026-06-08 — local hive lifecycle (read surface first):
+// hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
 import './hive/get';
+import './hive/create';
+import './hive/dissolve';
+import './hive/update';
 import './chat/ask_choice';
 import './search/fulltext';
 import './search/semantic';
