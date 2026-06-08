@@ -78,6 +78,12 @@ export interface BuildLoopDepsConfig {
   recordProposal?: (rec: LoopProposalRecord) => Promise<void>;
   /** Live QD-archive recorder (makeLoopArchiveRecorder) — feeds each variant to the MAP-Elites archive (P-010). */
   recordArchive?: (rec: ArchiveCandidateRecord) => Promise<void>;
+  /**
+   * Live QD novelty signal (P-011): a frontier member's distance-from-archive. Pair with
+   * `config.qualityDiversity` to bias parent selection toward sparse niches (novelty search).
+   * Build both this and `recordArchive` from one `makeLoopQdSeams(...)` so they share an archive.
+   */
+  noveltyForVariant?: (variantId: string) => Promise<number>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -246,6 +252,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     },
     recordProposal: cfg.recordProposal,
     recordArchive: cfg.recordArchive,
+    noveltyForVariant: cfg.noveltyForVariant,
     newVariantId: (cycle) => `cand-c${cycle}`,
     now,
     sleep,

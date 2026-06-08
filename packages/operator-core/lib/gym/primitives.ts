@@ -288,4 +288,4 @@ export {
   type CoverageStat,
 } from './qd/archive';
 export { PgArchiveStore } from './qd/archive-store-pg';
-export { makeLoopArchiveRecorder, makeGymArchive } from './qd/archive-recorder';
+export { makeLoopArchiveRecorder, makeLoopQdSeams, makeGymArchive } from './qd/archive-recorder';

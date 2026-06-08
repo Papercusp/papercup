@@ -35,7 +35,7 @@ import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { runOptimizationLoop } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
-import { makeLoopArchiveRecorder } from './qd/archive-recorder';
+import { makeLoopQdSeams } from './qd/archive-recorder';
 import { readPoolAggregates } from './read-api';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
@@ -63,6 +63,11 @@ const BUDGET_USD = process.env.GYM_LOOP_BUDGET_USD ? Number(process.env.GYM_LOOP
 const REAL_AGENT_CMD = process.env.GYM_LOOP_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
 // The proposer is decorrelated from the judge model (D-015) — judge is opus-4-8, proposer sonnet.
 const PROPOSER_MODEL = process.env.GYM_LOOP_PROPOSER_MODEL ?? 'claude-sonnet-4-6';
+// P-011 (D-008): quality-diversity parent selection blends distance-from-archive novelty into the
+// loop's parent pick. 0 ⇒ legacy fitness-only selection; default 0.3 = a modest blend (fitness
+// still dominates). It only steers WHICH frontier member is mutated next — the accept gates are
+// untouched — so enabling it cannot regress candidate quality. Tunable per run.
+const NOVELTY_WEIGHT = Math.min(1, Math.max(0, Number(process.env.GYM_LOOP_NOVELTY_WEIGHT ?? 0.3)));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (m: string) => process.stdout.write(`[gym-loop] ${m}\n`);
@@ -129,7 +134,7 @@ async function main(): Promise<void> {
   let gymSql: postgres.Sql | undefined;
   let controlSql: postgres.Sql | undefined;
   let ok = false;
-  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', maxCycles: MAX_CYCLES, repeats: REPEATS, budgetUsd: BUDGET_USD, harnessSlug: SLUG };
+  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', maxCycles: MAX_CYCLES, repeats: REPEATS, budgetUsd: BUDGET_USD, harnessSlug: SLUG, noveltyWeight: NOVELTY_WEIGHT };
 
   try {
     // 1. Dedicated gym DB (execution data).
@@ -184,6 +189,9 @@ async function main(): Promise<void> {
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
     const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
     const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: WS });
+    // P-010/P-011 (D-008): the QD record + novelty seams over ONE live archive (+ a shared
+    // variantId→descriptor cache), so noveltyForVariant's reads see recordArchive's writes.
+    const qdSeams = makeLoopQdSeams(controlSql, { workspaceId: WS, harnessSlug: SLUG });
     const deps = buildLoopDeps({
       gymSql,
       ports,
@@ -203,7 +211,9 @@ async function main(): Promise<void> {
       // Human-gated (D-020): the loop records proposals for review; the human promotes via gym:accept.
       recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: WS, harnessSlug: SLUG }),
       // P-010 (D-008): feed each evaluated variant into the QD novelty/diversity archive.
-      recordArchive: makeLoopArchiveRecorder(controlSql, { workspaceId: WS, harnessSlug: SLUG }),
+      recordArchive: qdSeams.recordArchive,
+      // P-011 (D-008): the distance-from-archive novelty signal for QD parent selection.
+      noveltyForVariant: qdSeams.noveltyForVariant,
     });
 
     // 6. Mark autoloop running, run the loop, then settle the status.
@@ -221,6 +231,9 @@ async function main(): Promise<void> {
         budgetUsd: BUDGET_USD,
         proposerModel: PROPOSER_MODEL,
         autoPromote: false,
+        // P-011 (D-008): quality-diversity parent selection when a novelty weight is set (>0);
+        // unset ⇒ the loop falls back to legacy fitness-headroom selection (unchanged).
+        ...(NOVELTY_WEIGHT > 0 ? { qualityDiversity: { noveltyWeight: NOVELTY_WEIGHT } } : {}),
       },
       deps,
     );
