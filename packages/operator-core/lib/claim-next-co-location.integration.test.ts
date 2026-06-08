@@ -1,0 +1,152 @@
+/**
+ * claim-next-co-location.integration.test.ts — cross-Swarm CO-LOCATION end-to-end
+ * (hive-coordination-model-2026-06-08 P-002/P-003, "verify across >=2 Swarms").
+ *
+ * TWO Swarms of one Hive draw from ONE shared work-item backlog. With the per-Hive
+ * claim lease active, co-location holds: each Swarm claims the work AFFINED to it (+
+ * shared unaffined work), and NEVER steals work affined to the other Swarm. This is
+ * the scenario-level proof on top of the unit-level affinity tests
+ * (work-items-swarm-affinity.integration.test.ts) and the authority-serialization
+ * proof (work-item-claims-two-instance.integration.test.ts) — both cited, not
+ * duplicated. Federation TRANSPORT across real machines is proven separately
+ * (shared-hive-federation P-011, Hetzner cross-machine).
+ *
+ * Two layers are exercised:
+ *   1. claimNextWorkItem({swarmId}) — the SELECT-side affinity filter (each Swarm sees
+ *      only its own + unaffined work), against a shared PG.
+ *   2. the work_items:claim_next HANDLER — that, under PAPERCUSP_WORKITEM_CLAIM_LEASE,
+ *      it derives THIS Swarm's id from localSwarmId and threads it in (so affinity
+ *      engages in the real tool path), and is affinity-blind when the flag is off.
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+
+const H = 'h1';
+const SWARM_A = 'pubkey-aaaa';
+const SWARM_B = 'pubkey-bbbb';
+
+const HFC_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
+    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
+    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
+    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
+    swarm_affinity text, feature_order integer, assignee_rank integer, rank_writer text,
+    rank_updated_at timestamptz, ts bigint, created_ts bigint, updated_ts bigint,
+    PRIMARY KEY (harness_slug, feature_id))`;
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('./workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
+// localSwarmId is mutable per simulated Swarm — the handler reads it under the flag.
+const whoami = vi.hoisted(() => ({ swarm: 'local' as string }));
+vi.mock('./fleet/swarm-identity', () => ({
+  LOCAL_SWARM: 'local',
+  localSwarmId: () => whoami.swarm,
+}));
+// Isolate the affinity behavior from the authority RPC: the lease GRANTS locally (the
+// authority-serialization path is proven by work-item-claims-two-instance). We toggle
+// the flag itself via the env in each test.
+vi.mock('./work-item-claim-lease-wiring', async () => {
+  const actual = await vi.importActual<typeof import('./work-item-claim-lease-wiring')>('./work-item-claim-lease-wiring');
+  return { ...actual, leaseClaimedWorkItem: async () => true };
+});
+vi.mock('./agent-tools/coordination/identity', async () => {
+  const actual = await vi.importActual<typeof import('./agent-tools/coordination/identity')>('./agent-tools/coordination/identity');
+  return { ...actual, resolveAgentIdentity: () => ({ ownerId: 'agent', ownerLabel: 'agent', source: 'omp-hook-session', workspaceId: 'default', userId: null }) };
+});
+
+const wi = await import('./work-items');
+const claimNextTool = (await import('./agent-tools/work_items/claim_next')).default;
+let db: FreshPgDb;
+
+async function seed(id: string, opts: { affinity?: string | null; createdTs?: number } = {}) {
+  await db.sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, item_kind, status, swarm_affinity, workspace_id, created_ts, updated_ts)
+    VALUES (${H}, ${id}, 'feature', 'todo', ${opts.affinity ?? null}, 'default', ${opts.createdTs ?? 0}, 0)`;
+}
+
+/** Drive the real claim_next HANDLER as a given Swarm. */
+async function handlerClaim(swarm: string, owner: string): Promise<string | null> {
+  whoami.swarm = swarm;
+  const res = await (
+    claimNextTool as unknown as {
+      handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
+    }
+  ).handler({ harness: H, assignee: owner }, { log() {}, workspaceId: 'default', role: 'worker' });
+  const parsed = JSON.parse(res.content[0].text);
+  return parsed.ok ? parsed.workItem.id : null;
+}
+
+beforeAll(async () => {
+  db = await createFreshPgDb('claim-next-coloc');
+  h.sql = db.sql;
+  await db.sql.unsafe(HFC_DDL);
+});
+afterAll(async () => { await db?.cleanup(); });
+beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_features_consolidated`; });
+afterEach(() => { delete process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE; whoami.swarm = 'local'; });
+
+describe('two Swarms partition one backlog by co-location affinity (claimNextWorkItem)', () => {
+  it('each Swarm drains its OWN affined work + shared unaffined, never the other Swarm\'s', async () => {
+    await seed('F-A1', { affinity: SWARM_A, createdTs: 10 });
+    await seed('F-B1', { affinity: SWARM_B, createdTs: 20 });
+    await seed('F-U', { affinity: null, createdTs: 30 }); // shared, either may take
+    await seed('F-A2', { affinity: SWARM_A, createdTs: 40 });
+
+    // Swarm A drains until it has nothing left it's allowed to claim.
+    const aClaims: string[] = [];
+    for (;;) {
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'a', swarmId: SWARM_A });
+      if (!got) break;
+      aClaims.push(got.id);
+    }
+    // Swarm B drains what remains.
+    const bClaims: string[] = [];
+    for (;;) {
+      const got = await wi.claimNextWorkItem({ harness: H, assignee: 'b', swarmId: SWARM_B });
+      if (!got) break;
+      bClaims.push(got.id);
+    }
+
+    // A took its affined items (+ the shared unaffined, which it reached first); it
+    // NEVER took F-B1. B took its affined item; it NEVER took an A-affined item.
+    expect(aClaims).toEqual(expect.arrayContaining(['F-A1', 'F-A2']));
+    expect(aClaims).not.toContain('F-B1');
+    expect(bClaims).toContain('F-B1');
+    expect(bClaims).not.toContain('F-A1');
+    expect(bClaims).not.toContain('F-A2');
+    // Every item got claimed exactly once across the two Swarms.
+    expect([...aClaims, ...bClaims].sort()).toEqual(['F-A1', 'F-A2', 'F-B1', 'F-U']);
+  });
+
+  it('a Swarm with ONLY the other Swarm\'s affined work available claims nothing', async () => {
+    await seed('F-B1', { affinity: SWARM_B });
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'a', swarmId: SWARM_A })).toBeNull();
+  });
+});
+
+describe('work_items:claim_next handler — flag gates the co-location affinity', () => {
+  it('with the lease ON, the handler threads localSwarmId so affinity engages', async () => {
+    process.env.PAPERCUSP_WORKITEM_CLAIM_LEASE = '1';
+    await seed('F-B1', { affinity: SWARM_B, createdTs: 10 }); // older, but B's
+    await seed('F-A1', { affinity: SWARM_A, createdTs: 20 }); // newer, A's
+    // Swarm A's handler must skip the older B-affined item and take its own.
+    expect(await handlerClaim(SWARM_A, 'a')).toBe('F-A1');
+  });
+
+  it('with the lease OFF (default), the handler is affinity-blind (oldest-first)', async () => {
+    await seed('F-B1', { affinity: SWARM_B, createdTs: 10 }); // older, B's
+    await seed('F-A1', { affinity: SWARM_A, createdTs: 20 });
+    // No flag ⇒ swarmId not threaded ⇒ affinity ignored ⇒ oldest wins even though it's B's.
+    expect(await handlerClaim(SWARM_A, 'a')).toBe('F-B1');
+  });
+});
