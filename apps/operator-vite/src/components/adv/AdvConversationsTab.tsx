@@ -47,26 +47,33 @@ export default function AdvConversationsTab() {
   const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('feed'));
   return (
     <div className="pc-coord pc-advconv">
-      <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === 'feed'}
-          className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
-          onClick={() => void setView('feed')}
-        >
-          <Radio size={13} aria-hidden /> Feed
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === 'threads'}
-          className={`pc-advconv__viewtab${view === 'threads' ? ' is-active' : ''}`}
-          onClick={() => void setView('threads')}
-        >
-          <MessageCircle size={13} aria-hidden /> Threads
-        </button>
-      </div>
+      <header className="pc-advconv__hero">
+        <div className="pc-advconv__hero-copy">
+          <span className="pc-advconv__eyebrow">Fleet comms</span>
+          <h1>Conversations</h1>
+          <p>Live coordination traffic, agent handoffs, human asks, and durable Q&amp;A threads in one workspace view.</p>
+        </div>
+        <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'feed'}
+            className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
+            onClick={() => void setView('feed')}
+          >
+            <Radio size={13} aria-hidden /> Feed
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'threads'}
+            className={`pc-advconv__viewtab${view === 'threads' ? ' is-active' : ''}`}
+            onClick={() => void setView('threads')}
+          >
+            <MessageCircle size={13} aria-hidden /> Threads
+          </button>
+        </div>
+      </header>
       {view === 'feed' ? <FeedView /> : <ThreadsView />}
       <AdvConvStyles />
     </div>
@@ -283,13 +290,20 @@ function FeedView() {
     <div className="pc-advfeed">
       {/* Clarity bar */}
       <div className="pc-advfeed__clarity">
-        <Radio size={13} aria-hidden />
-        <span>
-          Every coordination envelope across the fleet — messages, broadcasts, handoffs, escalations & plan events, newest first.
-        </span>
-        <span className="pc-advfeed__count">
-          {meta ? `${meta.total} matching` : head.loading ? 'loading…' : '0'}
-        </span>
+        <div className="pc-advfeed__clarity-main">
+          <Radio size={13} aria-hidden />
+          <span>
+            Every coordination envelope across the fleet — messages, broadcasts, handoffs, escalations & plan events, newest first.
+          </span>
+        </div>
+        <div className="pc-advfeed__stat">
+          <span>Matching</span>
+          <strong>{meta ? `${meta.total} matching` : head.loading ? 'loading…' : '0 matching'}</strong>
+        </div>
+        <div className="pc-advfeed__stat">
+          <span>Window</span>
+          <strong>{roots.length} shown</strong>
+        </div>
         <button
           type="button"
           className="pc-coord__chip pc-advfeed__refresh"
@@ -609,8 +623,12 @@ function ThreadsView() {
   const canPromote = !!detail && detail.state !== 'closed' && !detail.promoted_issue_id;
 
   return (
-    <div className="pc-coord__split">
+    <div className="pc-coord__split pc-advconv__threads">
       <aside className="pc-coord__rail">
+        <div className="pc-advconv__railhead">
+          <span>Question &amp; discussion threads</span>
+          <strong>{loading ? '…' : visible.length}</strong>
+        </div>
         <div className="pc-coord__filters" role="tablist" aria-label="State filter">
           {CONV_STATES.map((s) => (
             <button key={s} type="button" className={`pc-coord__chip${state === s ? ' is-active' : ''}`} onClick={() => void setState(s)}>
@@ -754,28 +772,91 @@ function AdvConvStyles() {
   return (
     <style>{`
       .pc-advconv {
-        --advconv-accent: #7dd3fc;
-        --advconv-accent-strong: #38bdf8;
-        --advconv-accent-soft: rgba(125, 211, 252, 0.1);
+        --advconv-bg: #07111c;
+        --advconv-panel: rgba(10, 23, 37, 0.78);
+        --advconv-panel-strong: rgba(14, 31, 50, 0.92);
+        --advconv-border: rgba(125, 211, 252, 0.16);
+        --advconv-border-strong: rgba(125, 211, 252, 0.28);
+        --advconv-accent: #38bdf8;
+        --advconv-accent-strong: #ec4899;
+        --advconv-accent-soft: rgba(56, 189, 248, 0.12);
+        --advconv-glow: rgba(236, 72, 153, 0.18);
         height: 100%;
         min-height: 0;
         display: flex;
         flex-direction: column;
+        gap: 12px;
+        padding: 1px;
+        color: var(--fg, #dceaf6);
+        background:
+          radial-gradient(circle at 8% -10%, rgba(56, 189, 248, 0.18), transparent 28%),
+          radial-gradient(circle at 92% 0%, rgba(236, 72, 153, 0.16), transparent 30%),
+          linear-gradient(180deg, rgba(8, 19, 32, 0.38), rgba(8, 19, 32, 0));
       }
-      .pc-advconv .pc-coord__chip { transition: background-color 120ms, border-color 120ms, color 120ms; }
+      .pc-advconv__hero {
+        position: relative;
+        display: flex;
+        align-items: stretch;
+        justify-content: space-between;
+        gap: 16px;
+        flex: 0 0 auto;
+        padding: 16px;
+        border: 1px solid var(--advconv-border);
+        border-radius: 18px;
+        overflow: hidden;
+        background:
+          linear-gradient(135deg, rgba(14, 31, 50, 0.96), rgba(9, 18, 31, 0.74)),
+          radial-gradient(circle at 80% 20%, rgba(236, 72, 153, 0.22), transparent 34%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 55px rgba(0, 0, 0, 0.22);
+      }
+      .pc-advconv__hero::after {
+        content: "";
+        position: absolute;
+        inset: auto 18px 0 18px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.45), rgba(236, 72, 153, 0.4), transparent);
+      }
+      .pc-advconv__hero-copy { position: relative; z-index: 1; max-width: 740px; }
+      .pc-advconv__eyebrow {
+        display: inline-flex;
+        margin-bottom: 6px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #67e8f9;
+      }
+      .pc-advconv__hero h1 {
+        margin: 0;
+        font-size: clamp(24px, 3.6vw, 40px);
+        line-height: 0.95;
+        letter-spacing: -0.055em;
+        color: #f5fbff;
+      }
+      .pc-advconv__hero p {
+        margin: 8px 0 0;
+        color: var(--fg-mute, #9fb6cc);
+        font-size: 13px;
+        line-height: 1.45;
+      }
       .pc-advconv .pc-coord__chip {
-        border-color: var(--border, rgba(125, 211, 252, 0.18));
+        transition: background-color 140ms, border-color 140ms, color 140ms, transform 140ms;
+      }
+      .pc-advconv .pc-coord__chip {
+        border-color: var(--advconv-border);
+        background: rgba(255, 255, 255, 0.02);
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-advconv .pc-coord__chip:hover:not(:disabled) {
-        border-color: rgba(125, 211, 252, 0.38);
+        border-color: var(--advconv-border-strong);
         background: var(--advconv-accent-soft);
         color: var(--fg, #e7f7ff);
+        transform: translateY(-1px);
       }
       .pc-advconv .pc-coord__chip.is-active {
-        border-color: rgba(56, 189, 248, 0.48);
-        background: rgba(56, 189, 248, 0.16);
-        color: var(--fg, #e7f7ff);
+        border-color: rgba(56, 189, 248, 0.46);
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(236, 72, 153, 0.1));
+        color: #f5fbff;
       }
       .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; grid-column: 1 / -1; }
       .pc-advconv__refresh { margin-left: auto; display: inline-flex; align-items: center; }
@@ -791,31 +872,176 @@ function AdvConvStyles() {
       .pc-advconv__reply textarea:focus { outline: 2px solid rgba(56, 189, 248, 0.34); outline-offset: 2px; }
 
       /* View tabs */
-      .pc-advconv__viewtabs { display: flex; gap: 6px; padding: 0 0 8px; flex: 0 0 auto; }
+      .pc-advconv__viewtabs {
+        position: relative;
+        z-index: 1;
+        align-self: flex-start;
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        background: rgba(3, 7, 18, 0.42);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      }
       .pc-advconv__viewtab {
         display: inline-flex; align-items: center; gap: 6px;
-        padding: 5px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
-        border: 1px solid var(--border, rgba(125,211,252,0.18));
-        background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer;
-        transition: background-color 120ms, border-color 120ms, color 120ms;
+        padding: 7px 13px; border-radius: 999px; font-size: 12px; font-weight: 750;
+        border: 1px solid transparent;
+        background: transparent; color: var(--fg-mute, #8aa3bc); cursor: pointer;
+        transition: background-color 140ms, border-color 140ms, color 140ms, transform 140ms;
       }
-      .pc-advconv__viewtab:hover { color: var(--fg, #e7f7ff); border-color: rgba(125,211,252,0.38); }
-      .pc-advconv__viewtab.is-active { background: rgba(56,189,248,0.16); border-color: rgba(56,189,248,0.48); color: var(--fg, #e7f7ff); }
+      .pc-advconv__viewtab:hover { color: #f5fbff; transform: translateY(-1px); }
+      .pc-advconv__viewtab.is-active {
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.28), rgba(236, 72, 153, 0.18));
+        border-color: rgba(125, 211, 252, 0.28);
+        color: #fff;
+        box-shadow: 0 10px 28px rgba(56, 189, 248, 0.12);
+      }
 
       /* Threads split fills the remaining height */
       .pc-advconv .pc-coord__split { flex: 1 1 auto; min-height: 0; }
+      .pc-advconv__threads {
+        grid-template-columns: minmax(280px, 390px) minmax(0, 1fr);
+        gap: 12px;
+      }
+      .pc-advconv__threads .pc-coord__rail,
+      .pc-advconv__threads .pc-coord__detail {
+        max-height: none;
+        min-height: 0;
+        border: 1px solid var(--advconv-border);
+        border-radius: 16px;
+        background: var(--advconv-panel);
+        backdrop-filter: blur(12px);
+      }
+      .pc-advconv__threads .pc-coord__rail {
+        padding: 10px;
+        gap: 8px;
+      }
+      .pc-advconv__threads .pc-coord__detail {
+        border-left: 1px solid var(--advconv-border);
+        padding: 14px;
+      }
+      .pc-advconv__railhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 4px 2px 8px;
+        color: var(--fg-mute, #9fb6cc);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .pc-advconv__railhead strong {
+        display: inline-flex;
+        min-width: 28px;
+        justify-content: center;
+        border-radius: 999px;
+        padding: 2px 7px;
+        color: #e0f2fe;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.2);
+      }
+      .pc-advconv__threads .pc-coord__row {
+        position: relative;
+        grid-template-columns: auto 1fr;
+        padding: 10px 11px;
+        border-radius: 12px;
+        border-color: rgba(255, 255, 255, 0.04);
+        background: rgba(255, 255, 255, 0.025);
+        transition: background-color 140ms, border-color 140ms, transform 140ms;
+      }
+      .pc-advconv__threads .pc-coord__row:hover {
+        background: rgba(125, 211, 252, 0.07);
+        border-color: var(--advconv-border);
+        transform: translateX(2px);
+      }
+      .pc-advconv__threads .pc-coord__row.is-active {
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.13), rgba(236, 72, 153, 0.08));
+        border-color: rgba(56, 189, 248, 0.36);
+        box-shadow: inset 3px 0 0 var(--advconv-accent);
+      }
+      .pc-advconv__threads .pc-coord__card {
+        min-height: 100%;
+        padding: 6px;
+      }
+      .pc-advconv__threads .pc-coord__card header {
+        padding: 4px 0 10px;
+        border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+      }
+      .pc-advconv__threads .pc-coord__card header h2 {
+        font-size: clamp(20px, 3vw, 30px);
+        line-height: 1;
+        letter-spacing: -0.04em;
+      }
+      .pc-advconv__threads .pc-coord__thread li {
+        border-left-color: rgba(56, 189, 248, 0.26);
+        background: rgba(255, 255, 255, 0.025);
+        border-radius: 0 10px 10px 0;
+        padding: 9px 10px;
+      }
 
       /* Feed */
       .pc-advfeed { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
       .pc-advfeed__clarity {
-        display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto auto;
+        align-items: stretch;
+        gap: 8px;
+        flex: 0 0 auto;
         font-size: 12px; color: var(--fg-mute, #9fb6cc);
-        padding: 8px 10px; border-radius: 8px;
-        background: var(--advconv-accent-soft); border: 1px solid rgba(125,211,252,0.16);
+        padding: 10px;
+        border-radius: 16px;
+        background: var(--advconv-panel);
+        border: 1px solid var(--advconv-border);
+        backdrop-filter: blur(12px);
       }
-      .pc-advfeed__clarity > span:first-of-type { flex: 1 1 auto; }
-      .pc-advfeed__count { font-variant-numeric: tabular-nums; color: var(--fg, #cfe8ff); font-weight: 600; }
-      .pc-advfeed__filters { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; }
+      .pc-advfeed__clarity-main {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(236, 72, 153, 0.06));
+        border: 1px solid rgba(125, 211, 252, 0.12);
+      }
+      .pc-advfeed__clarity-main span { min-width: 0; }
+      .pc-advfeed__stat {
+        min-width: 102px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 2px;
+        padding: 7px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .pc-advfeed__stat span {
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--fg-mute, #7890a8);
+      }
+      .pc-advfeed__stat strong {
+        color: #f5fbff;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-advfeed__filters {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 16px;
+        background: rgba(7, 17, 28, 0.66);
+        border: 1px solid rgba(125, 211, 252, 0.12);
+      }
       .pc-advfeed__kindchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
       .pc-advfeed__kinddot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
       .pc-advfeed__kindn {
@@ -824,19 +1050,34 @@ function AdvConvStyles() {
       }
       .pc-advfeed__inputs { display: flex; gap: 6px; flex-wrap: wrap; }
       .pc-advfeed__input {
-        background: var(--bg-popover, #0d1829); color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border, rgba(125,211,252,0.2));
-        border-radius: 7px; padding: 5px 9px; font: inherit; font-size: 12px; min-width: 130px;
+        background: rgba(3, 7, 18, 0.42); color: var(--fg, #e7f7ff);
+        border: 1px solid var(--advconv-border);
+        border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 12px; min-width: 130px;
       }
       .pc-advfeed__input--wide { flex: 1 1 200px; }
       .pc-advfeed__input:focus { outline: 2px solid rgba(56,189,248,0.34); outline-offset: 1px; }
 
-      .pc-advfeed__stream { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+      .pc-advfeed__stream {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 6px 2px 12px;
+      }
       .pc-advfeed__daysep {
         position: sticky; top: 0; z-index: 1;
         font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-        color: var(--fg-mute, #6f87a0); padding: 8px 4px 4px;
-        background: linear-gradient(var(--bg, #081320), rgba(8,19,32,0.85));
+        color: var(--fg-mute, #7890a8); padding: 7px 2px 2px;
+        background: linear-gradient(var(--advconv-bg), rgba(7,17,28,0.78));
+      }
+      .pc-advfeed__daysep span {
+        display: inline-flex;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(125, 211, 252, 0.08);
+        border: 1px solid rgba(125, 211, 252, 0.12);
       }
       .pc-advfeed__item { border-radius: 7px; }
       .pc-advfeed__item.is-open { background: rgba(125,211,252,0.05); }
@@ -844,12 +1085,24 @@ function AdvConvStyles() {
         width: 100%; display: grid;
         grid-template-columns: auto auto minmax(120px, 1fr) minmax(0, 2fr) auto auto auto;
         align-items: center; gap: 8px; text-align: left;
-        padding: 5px 8px; background: transparent;
+        padding: 9px 10px;
+        background: rgba(255, 255, 255, 0.026);
         font-size: 12px; color: var(--fg, #dceaf6);
-        border-radius: 7px;
+        border: 1px solid rgba(255, 255, 255, 0.045);
+        border-radius: 13px;
+        transition: background-color 140ms, border-color 140ms, transform 140ms, box-shadow 140ms;
       }
-      .pc-advfeed__row:hover { background: rgba(125,211,252,0.07); }
-      .pc-advfeed__time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--fg-mute, #6f87a0); }
+      .pc-advfeed__row:hover {
+        background: rgba(125, 211, 252, 0.075);
+        border-color: rgba(125, 211, 252, 0.18);
+        transform: translateX(2px);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+      }
+      .pc-advfeed__item.is-open .pc-advfeed__row {
+        border-color: rgba(56, 189, 248, 0.28);
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(236, 72, 153, 0.055));
+      }
+      .pc-advfeed__time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--fg-mute, #7890a8); }
       .pc-advfeed__badge {
         font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 5px;
         border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent);
@@ -874,14 +1127,24 @@ function AdvConvStyles() {
       .pc-advfeed__summary:hover { color: #fff; }
       .pc-advfeed__nosum { color: var(--fg-mute, #5f7488); }
       .pc-advfeed__planchip {
-        font-size: 10px; padding: 1px 6px; border-radius: 5px; white-space: nowrap;
+        font-size: 10px; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
         border: 1px solid rgba(94,234,212,0.4); color: #5eead4; background: rgba(94,234,212,0.08);
         cursor: pointer; font: inherit;
       }
       .pc-advfeed__planchip:hover { background: rgba(94,234,212,0.16); }
       .pc-advfeed__replyn { font-size: 10px; color: var(--fg-mute, #8aa3bc); white-space: nowrap; }
       .pc-advfeed__rel { font-size: 10px; color: var(--fg-mute, #6f87a0); white-space: nowrap; font-variant-numeric: tabular-nums; }
-      .pc-advfeed__detail { padding: 4px 12px 10px 40px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+      .pc-advfeed__detail {
+        margin: 0 8px 4px 36px;
+        padding: 9px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+        border-left: 2px solid rgba(56, 189, 248, 0.24);
+        background: rgba(3, 7, 18, 0.28);
+        border-radius: 0 12px 12px 0;
+      }
       .pc-advfeed__body { white-space: pre-wrap; color: var(--fg, #dceaf6); margin: 0; line-height: 1.5; }
       .pc-advfeed__kv { color: var(--fg-mute, #9fb6cc); margin: 0; }
       .pc-advfeed__kv strong { color: var(--fg, #cfe8ff); }
@@ -895,6 +1158,49 @@ function AdvConvStyles() {
       }
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: rgba(125,211,252,0.4); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
+      @media (max-width: 920px) {
+        .pc-advconv__hero { flex-direction: column; }
+        .pc-advconv__viewtabs { align-self: stretch; }
+        .pc-advconv__viewtab { justify-content: center; flex: 1 1 0; }
+        .pc-advfeed__clarity { grid-template-columns: 1fr 1fr; }
+        .pc-advfeed__clarity-main { grid-column: 1 / -1; }
+        .pc-advfeed__refresh { justify-content: center; }
+        .pc-advconv__threads { grid-template-columns: 1fr; }
+        .pc-advconv__threads .pc-coord__rail { max-height: 34vh; }
+        .pc-advfeed__row {
+          grid-template-columns: auto auto minmax(0, 1fr) auto;
+        }
+        .pc-advfeed__summary {
+          grid-column: 3 / -1;
+        }
+        .pc-advfeed__planchip,
+        .pc-advfeed__replyn,
+        .pc-advfeed__rel {
+          grid-column: auto;
+        }
+      }
+      @media (max-width: 620px) {
+        .pc-advconv__hero { padding: 13px; border-radius: 15px; }
+        .pc-advfeed__clarity { grid-template-columns: 1fr; }
+        .pc-advfeed__stat { min-width: 0; }
+        .pc-advfeed__inputs { flex-direction: column; }
+        .pc-advfeed__input { width: 100%; }
+        .pc-advfeed__row {
+          grid-template-columns: auto minmax(0, 1fr);
+          gap: 6px;
+        }
+        .pc-advfeed__time,
+        .pc-advfeed__badge,
+        .pc-advfeed__route,
+        .pc-advfeed__summary,
+        .pc-advfeed__planchip,
+        .pc-advfeed__replyn,
+        .pc-advfeed__rel {
+          grid-column: auto;
+        }
+        .pc-advfeed__summary { grid-column: 1 / -1; }
+        .pc-advfeed__detail { margin-left: 8px; }
+      }
     `}</style>
   );
 }
