@@ -618,6 +618,15 @@ export async function dispatchOneHarness(
     // workflow-id dedup stays the LOCAL exactly-once guard, D-006). Flag-off → no gate
     // (this loop is byte-identical to before). The gate is fail-open (helper never throws).
     const executorLeaseOn = workItemClaimLeaseEnabled();
+    // Keep this Swarm's IN-FLIGHT leases alive (P-007/P-008 lease lifecycle): re-acquire
+    // each owned (PENDING/ENQUEUED) feature's lease — same owner re-extends `expires_ts`
+    // (the acquire's own-extend clause), so a long-running pipeline's lease doesn't lapse
+    // mid-run and get stolen by another Swarm. Best-effort + fail-open; flag-off → skipped.
+    if (executorLeaseOn) {
+      for (const fid of owned) {
+        await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid }).catch(() => {});
+      }
+    }
     for (const fid of toStart) {
       if (executorLeaseOn && !(await leaseFeatureForExecutor({ workspaceId, harness: slug, featureId: fid }))) {
         continue; // another Swarm holds the Hive lease for this feature — it runs it

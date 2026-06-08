@@ -28,9 +28,19 @@ type Step =
   | 'picker'
   | 'new-local'
   | 'existing-local'
+  | 'new-hive'
   | 'github-url-stub'
   | 'harness-link-stub'
   | 'share-offer';
+
+/**
+ * The creation fork (harnesses-tab-hive-model D-005 / P-010). `standalone` and
+ * `into-hive` share the same "how to add" entry cards — the only difference is
+ * whether the create stamps a membership edge to the selected hive (P-011).
+ * `new-hive` is its own form (stand up a kind:'hive' home). The toggle only
+ * offers `into-hive` when a hive scope is actually selected.
+ */
+type CreateMode = 'standalone' | 'into-hive';
 
 interface CreateResult {
   ok: boolean;
@@ -143,7 +153,7 @@ function ErrorBanner({ message }: { message: string }) {
 
 // ── Entry 1 form — new local directory ────────────────────────────────────
 
-function NewLocalForm({ onBack, onSuccess }: { onBack: () => void; onSuccess: (slug: string) => void }) {
+function NewLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const slugRef = useRef<HTMLInputElement>(null);
@@ -165,7 +175,9 @@ function NewLocalForm({ onBack, onSuccess }: { onBack: () => void; onSuccess: (s
       const res = await fetch('/api/harness/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, parentDir, folderName }),
+        // `hive` (P-011): when adding into the selected hive, the route stamps
+        // the membership edge to that scope (formal hive_slug / legacy parent_slug).
+        body: JSON.stringify({ slug, parentDir, folderName, ...(hive ? { hive } : {}) }),
       });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -209,7 +221,7 @@ function NewLocalForm({ onBack, onSuccess }: { onBack: () => void; onSuccess: (s
 
 // ── Entry 3 form — existing local repo ────────────────────────────────────
 
-function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSuccess: (slug: string) => void }) {
+function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const slugRef = useRef<HTMLInputElement>(null);
@@ -229,7 +241,8 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
       const res = await fetch('/api/harness/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, path }),
+        // `hive` (P-011): stamps the membership edge to the selected hive scope.
+        body: JSON.stringify({ slug, path, ...(hive ? { hive } : {}) }),
       });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -279,6 +292,74 @@ function ExistingLocalForm({ onBack, onSuccess }: { onBack: () => void; onSucces
         <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
       </Label>
       <SubmitRow busy={busy} label="Add harness" onBack={onBack} />
+    </form>
+  );
+}
+
+// ── New-hive form — stand up a kind:'hive' home (the Queen/pot blueprint) ──
+
+function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hiveLabel: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const slugRef = useRef<HTMLInputElement>(null);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const slug = slugRef.current?.value.trim() ?? '';
+    if (!slug) {
+      setError('A slug is required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/harness/hives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug }),
+      });
+      if (!res.ok) {
+        const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setError(body.error || `Could not create ${hiveLabel.toLowerCase()}.`);
+        setBusy(false);
+        return;
+      }
+      const data = (await res.json()) as { ok: boolean; project: { slug: string } };
+      toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`);
+      onSuccess(data.project.slug);
+    } catch (err: unknown) {
+      setError((err as Error).message ?? 'Network error');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void handleSubmit(e)}>
+      <BackBtn onBack={onBack} />
+      <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>New {hiveLabel.toLowerCase()} from blueprint</h2>
+      {error && <ErrorBanner message={error} />}
+      <div
+        style={{
+          background: 'var(--bg-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          padding: '10px 12px',
+          marginBottom: 16,
+          fontSize: 12.5,
+          lineHeight: 1.5,
+          color: 'var(--fg-dim)',
+        }}
+      >
+        <span style={{ marginRight: 6 }}>👑</span>
+        Stands up a new {hiveLabel.toLowerCase()} home running the <strong style={{ color: 'var(--fg)' }}>pot</strong> blueprint —
+        a Queen that surveys the work frontier and places it onto a fleet of bees. You can add member harnesses into it afterward.
+      </div>
+      <Label>
+        <FieldLabel>{hiveLabel} slug</FieldLabel>
+        <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
+        <HintText>Lowercase, hyphens OK. The home harness slug for the new {hiveLabel.toLowerCase()}.</HintText>
+      </Label>
+      <SubmitRow busy={busy} label={`Create ${hiveLabel.toLowerCase()}`} onBack={onBack} />
     </form>
   );
 }
@@ -364,13 +445,78 @@ const SECTIONS: {
   },
 ];
 
-function PickerStep({ onSelect }: { onSelect: (step: Step) => void }) {
+/**
+ * The creation fork toggle (D-005 / P-010): New hive · Add to <hive> · Standalone.
+ * "Add to <hive>" only appears when a hive scope is selected.
+ */
+function ForkToggle({
+  mode,
+  onMode,
+  onNewHive,
+  hiveScope,
+  hiveLabel,
+}: {
+  mode: CreateMode;
+  onMode: (m: CreateMode) => void;
+  onNewHive: () => void;
+  hiveScope: string | null;
+  hiveLabel: string;
+}) {
+  const lower = hiveLabel.toLowerCase();
+  const btn = (active: boolean): React.CSSProperties => ({
+    flex: 1,
+    padding: '7px 10px',
+    fontSize: 12.5,
+    fontWeight: active ? 600 : 500,
+    background: active ? 'var(--accent)' : 'var(--bg-2)',
+    color: active ? 'var(--accent-ink, #051827)' : 'var(--fg-dim)',
+    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+    borderRadius: 6,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  });
+  return (
+    <div role="tablist" aria-label="Creation mode" style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+      <button type="button" role="tab" onClick={onNewHive} style={btn(false)} title={`Stand up a new ${lower} home running the Queen blueprint`}>
+        👑 New {lower}
+      </button>
+      {hiveScope && (
+        <button type="button" role="tab" aria-selected={mode === 'into-hive'} onClick={() => onMode('into-hive')} style={btn(mode === 'into-hive')} title={`Add the new harness into ${hiveScope}`}>
+          Add to {hiveScope}
+        </button>
+      )}
+      <button type="button" role="tab" aria-selected={mode === 'standalone'} onClick={() => onMode('standalone')} style={btn(mode === 'standalone')} title="A standalone harness with no hive membership">
+        Standalone
+      </button>
+    </div>
+  );
+}
+
+function PickerStep({
+  onSelect,
+  mode,
+  onMode,
+  hiveScope,
+  hiveLabel,
+}: {
+  onSelect: (step: Step) => void;
+  mode: CreateMode;
+  onMode: (m: CreateMode) => void;
+  hiveScope: string | null;
+  hiveLabel: string;
+}) {
+  const intoHive = mode === 'into-hive' && hiveScope;
   return (
     <div>
-      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a harness</h2>
-      <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)' }}>
-        Choose how to add a new harness to this workspace.
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a {hiveLabel.toLowerCase() === 'hive' ? 'harness' : 'harness'}</h2>
+      <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--fg-dim)' }}>
+        {intoHive
+          ? <>New harnesses will be added into <code>{hiveScope}</code>.</>
+          : 'Choose how to add a new harness to this workspace.'}
       </p>
+      <ForkToggle mode={mode} onMode={onMode} onNewHive={() => onSelect('new-hive')} hiveScope={hiveScope} hiveLabel={hiveLabel} />
       {SECTIONS.map((section) => (
         <div key={section.heading} style={{ marginBottom: 18 }}>
           <div style={{ marginBottom: 10 }}>
@@ -431,12 +577,26 @@ function PickerStep({ onSelect }: { onSelect: (step: Step) => void }) {
 interface CreateHarnessPickerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called after a harness is successfully created/added. */
-  onCreated?: (slug: string) => void;
+  /**
+   * Called after a harness is successfully created/added. `opts.hive` names the
+   * hive the new harness was added INTO (add-into-hive mode, P-011) so the caller
+   * can land it as the focused member; absent ⇒ a standalone / new-hive root.
+   */
+  onCreated?: (slug: string, opts?: { hive?: string }) => void;
+  /**
+   * The currently-selected hive scope (`?slug=`), if any (harnesses-tab-hive-model
+   * P-010/P-011). When set, the picker offers "Add to <hive>" and defaults to it;
+   * the add-into-hive create stamps the membership edge to this scope.
+   */
+  hiveScope?: string | null;
+  /** Lexicon label for a hive (D-006 — the parent passes the resolved term). Default "Hive". */
+  hiveLabel?: string;
 }
 
-export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHarnessPickerProps) {
+export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope = null, hiveLabel = 'Hive' }: CreateHarnessPickerProps) {
   const [step, setStep] = useState<Step>('picker');
+  // Default into-hive when a hive is selected (the common case from the tab).
+  const [mode, setMode] = useState<CreateMode>(hiveScope ? 'into-hive' : 'standalone');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   // Names the provisional owner in the ShareWizard's P-069d first-share
@@ -445,13 +605,22 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
 
   const handleClose = () => {
     setStep('picker');
+    setMode(hiveScope ? 'into-hive' : 'standalone');
     setCreatedSlug(null);
     setShareOpen(false);
     onOpenChange(false);
   };
 
+  // The membership scope passed to a create when adding into the selected hive.
+  const memberHive = mode === 'into-hive' && hiveScope ? hiveScope : undefined;
+
   const handleSuccess = (slug: string) => {
-    onCreated?.(slug);
+    // A new-hive create is a root, not a member; standalone/into-hive carry the
+    // membership scope so the caller can focus the new member (P-011). Keep the
+    // single-arg call for the standalone path (back-compat with existing callers).
+    const createdInto = step === 'new-hive' ? undefined : memberHive;
+    if (createdInto) onCreated?.(slug, { hive: createdInto });
+    else onCreated?.(slug);
     setCreatedSlug(slug);
     setStep('share-offer');
   };
@@ -480,9 +649,12 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
           color: 'var(--fg, #e8e8ea)',
         }}
       >
-        {step === 'picker' && <PickerStep onSelect={setStep} />}
-        {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} />}
-        {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} />}
+        {step === 'picker' && (
+          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} />
+        )}
+        {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
+        {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
+        {step === 'new-hive' && <NewHiveForm onBack={goBack} onSuccess={handleSuccess} hiveLabel={hiveLabel} />}
         {step === 'github-url-stub' && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
         {step === 'harness-link-stub' && (
           <EntryHarnessLinkForm

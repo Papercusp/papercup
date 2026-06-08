@@ -34,12 +34,40 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-function renderPicker(props?: { onCreated?: (slug: string) => void }) {
+function renderPicker(props?: {
+  onCreated?: (slug: string, opts?: { hive?: string }) => void;
+  hiveScope?: string | null;
+  hiveLabel?: string;
+}) {
   const onOpenChange = vi.fn();
   const result = render(
-    <CreateHarnessPicker open onOpenChange={onOpenChange} onCreated={props?.onCreated} />,
+    <CreateHarnessPicker
+      open
+      onOpenChange={onOpenChange}
+      onCreated={props?.onCreated}
+      hiveScope={props?.hiveScope ?? null}
+      hiveLabel={props?.hiveLabel ?? 'Hive'}
+    />,
   );
   return { ...result, onOpenChange };
+}
+
+/** Route fetch by URL so the viewer fetch is harmless + the create returns ok. */
+function mockCreateOk(project: { slug: string; path: string }, extra: Record<string, unknown> = {}) {
+  mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('/api/viewer')) return new Response(JSON.stringify({}), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, project, ...extra }), { status: 200 });
+  });
+}
+
+/** The body of the most recent non-viewer POST the picker fired. */
+function lastCreateBody(): Record<string, unknown> {
+  const call = mockFetch.mock.calls.find((c) => {
+    const url = typeof c[0] === 'string' ? c[0] : (c[0] as URL).toString();
+    return !url.includes('/api/viewer');
+  });
+  return JSON.parse((call?.[1] as RequestInit).body as string) as Record<string, unknown>;
 }
 
 // ── P-012a — picker renders 4 entry cards ─────────────────────────────────
@@ -230,5 +258,79 @@ describe('P-012e — Coming-soon stubs', () => {
     await user.click(screen.getByText('GitHub URL'));
     await user.click(screen.getByText('← Back'));
     screen.getByRole('heading', { name: 'Add a harness' });
+  });
+});
+
+// ── P-010/P-011 — the creation fork (D-005) ────────────────────────────────
+
+describe('P-010 — creation fork toggle', () => {
+  it('with a hive scope, offers New-hive + Add-to-<hive> + Standalone and defaults into-hive', () => {
+    renderPicker({ hiveScope: 'acme', hiveLabel: 'Hive' });
+    screen.getByRole('tab', { name: /New hive/ });
+    const addBtn = screen.getByRole('tab', { name: 'Add to acme' });
+    screen.getByRole('tab', { name: 'Standalone' });
+    // Default into-hive → the "added into <hive>" hint + selected toggle.
+    expect(addBtn.getAttribute('aria-selected')).toBe('true');
+    screen.getByText('acme');
+  });
+
+  it('without a hive scope, there is no Add-to button and standalone is the default', () => {
+    renderPicker({ hiveScope: null });
+    expect(screen.queryByRole('tab', { name: /^Add to/ })).toBeNull();
+    screen.getByRole('tab', { name: /New hive/ });
+    expect(screen.getByRole('tab', { name: 'Standalone' }).getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('P-011 — add into hive stamps the membership', () => {
+  it('into-hive mode sends `hive` in the create body + reports the membership to onCreated', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'web', path: '/tmp/web' }, { membership: { hive: 'acme', edge: 'hive_slug' } });
+    renderPicker({ onCreated, hiveScope: 'acme' });
+    // Default mode is into-hive; go straight to the existing-local form.
+    await user.click(screen.getByText('Existing local repo'));
+    await user.type(screen.getByPlaceholderText('my-project'), 'web');
+    await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/web');
+    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('web', { hive: 'acme' }));
+    expect(lastCreateBody()).toMatchObject({ slug: 'web', path: '/tmp/web', hive: 'acme' });
+  });
+
+  it('switching to Standalone drops the membership (no `hive` in the body, single-arg onCreated)', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'solo', path: '/tmp/solo' });
+    renderPicker({ onCreated, hiveScope: 'acme' });
+    await user.click(screen.getByRole('tab', { name: 'Standalone' }));
+    await user.click(screen.getByText('Existing local repo'));
+    await user.type(screen.getByPlaceholderText('my-project'), 'solo');
+    await user.type(screen.getByPlaceholderText('/home/user/projects/my-project'), '/tmp/solo');
+    await user.click(screen.getByRole('button', { name: 'Add harness' }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('solo'));
+    expect(lastCreateBody().hive).toBeUndefined();
+  });
+});
+
+describe('P-010 — new hive from blueprint', () => {
+  it('clicking New-hive opens the hive form and posts to /api/harness/hives (no membership)', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    mockCreateOk({ slug: 'newhive', path: '/tmp/newhive' }, { hive: true });
+    renderPicker({ onCreated, hiveScope: 'acme', hiveLabel: 'Hive' });
+    await user.click(screen.getByRole('tab', { name: /New hive/ }));
+    screen.getByRole('heading', { name: /New hive from blueprint/ });
+    await user.type(screen.getByPlaceholderText('my-hive'), 'newhive');
+    await user.click(screen.getByRole('button', { name: /Create hive/ }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('newhive'));
+    expect(
+      mockFetch.mock.calls.some((c) => {
+        const url = typeof c[0] === 'string' ? c[0] : (c[0] as URL).toString();
+        return url === '/api/harness/hives';
+      }),
+    ).toBe(true);
   });
 });

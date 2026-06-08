@@ -112,13 +112,19 @@ export default function HarnessesWorkspace() {
   }, [members, harness, setHarness]);
 
   const handleCreated = useCallback(
-    (newSlug: string) => {
+    (newSlug: string, opts?: { hive?: string }) => {
       void refreshProjects();
-      void setSlug(newSlug);
-      // A freshly created harness becomes the focused member of its hive.
-      void setHarness(null);
+      if (opts?.hive && opts.hive === slug) {
+        // Added INTO the current hive (P-011): land the new member focused in the
+        // rail — keep `?slug=` on the hive, set `?harness=` to the new member.
+        void setHarness(newSlug);
+      } else {
+        // A new hive / standalone harness becomes the focused scope.
+        void setSlug(newSlug);
+        void setHarness(null);
+      }
     },
-    [refreshProjects, setSlug, setHarness],
+    [refreshProjects, setSlug, setHarness, slug],
   );
 
   // Drill from an all-mode card into one member (D-003). Writes are SEQUENTIAL
@@ -224,6 +230,8 @@ export default function HarnessesWorkspace() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={handleCreated}
+        hiveScope={slug || null}
+        hiveLabel={hiveLabel}
       />
 
       <style>{`

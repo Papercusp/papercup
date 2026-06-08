@@ -353,6 +353,44 @@ const create = defineTool({
   },
 });
 
+/**
+ * P-010 (harnesses-tab-hive-model) — "new hive from blueprint": stand up a new
+ * Hive home (a `kind:'hive'` harness running the pot/Queen blueprint). The thin
+ * HTTP face over the canonical `createHiveHarness` primitive (hive-tool-namespace
+ * `hive:create`) so the CreateHarnessPicker's new-hive mode reaches it without an
+ * MCP round-trip — reuses the team's transactional provision (no duplication).
+ */
+const createHive = defineTool({
+  method: 'POST',
+  path: '/harness/hives',
+  auth: 'public',
+  async handler(req) {
+    let body: { slug?: string; parentDir?: string; wakeInSeconds?: number } = {};
+    try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
+    const slug = String(body.slug ?? '').trim();
+    if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
+      return Response.json({ error: 'a valid lowercase slug is required', code: 'invalid_slug' }, { status: 400 });
+    }
+    const { createHiveHarness } = await import('../../../agent-tools/hive/_create');
+    const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const res = await createHiveHarness({
+      slug,
+      workspaceId: activeWorkspaceId(),
+      parentDir: typeof body.parentDir === 'string' && body.parentDir.trim() ? body.parentDir.trim() : undefined,
+      wakeInSeconds: typeof body.wakeInSeconds === 'number' ? body.wakeInSeconds : undefined,
+    });
+    if (!res.ok) {
+      const status = res.error === 'slug_exists' || res.error === 'dest_exists' ? 409 : 400;
+      return Response.json({ error: res.message, code: res.error }, { status });
+    }
+    // Bust the registry caches so the new Hive home appears in the selector + grouping.
+    const g = globalThis as LiteGlobals;
+    delete g[__liteKey];
+    __projectsCache.expires = 0;
+    return Response.json({ ok: true, project: { slug: res.slug, path: res.path }, hive: true, waked: res.waked });
+  },
+});
+
 const remove = defineTool({
   method: 'DELETE',
   path: '/harness/projects/:slug',
@@ -561,4 +599,4 @@ export function isSafeSubHarnessSlug(slug: string): boolean {
   return true;
 }
 
-export default [lite, list, create, remove, scanSubharnesses, registerSubs];
+export default [lite, list, create, createHive, remove, scanSubharnesses, registerSubs];
