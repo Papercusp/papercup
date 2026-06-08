@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import crypto from 'crypto';
+import type postgres from 'postgres';
 
 export const TaskVariant = z.enum([
   'fix-injected-bug',
@@ -856,4 +858,54 @@ export function getNextCase(variant: TaskVariant): CorpusCase | null {
 
 export function getCasesByVariant(variant: TaskVariant): CorpusCase[] {
   return AllCases.filter((c) => c.variant === variant) as unknown as CorpusCase[];
+}
+
+function generateStableCaseId(variant: string, title: string, index: number): string {
+  const hash = crypto.createHash('sha256').update(`${variant}|${title}|${index}`).digest('hex');
+  const uuidBytes = Buffer.alloc(16);
+  for (let i = 0; i < 16; i++) {
+    uuidBytes[i] = parseInt(hash.substr(i * 2, 2), 16);
+  }
+  return (
+    uuidBytes.toString('hex', 0, 4) +
+    '-' +
+    uuidBytes.toString('hex', 4, 6) +
+    '-' +
+    uuidBytes.toString('hex', 6, 8) +
+    '-' +
+    uuidBytes.toString('hex', 8, 10) +
+    '-' +
+    uuidBytes.toString('hex', 10, 16)
+  );
+}
+
+export async function seedCorpus(sql: postgres.Sql): Promise<void> {
+  const now = new Date().toISOString();
+  const variantCounts: Record<string, number> = {};
+
+  for (const caseData of AllCases) {
+    variantCounts[caseData.variant] = (variantCounts[caseData.variant] ?? 0) + 1;
+    const index = variantCounts[caseData.variant] - 1;
+    const caseId = generateStableCaseId(caseData.variant, caseData.title, index);
+
+    await sql`
+      INSERT INTO iq_battery_cases
+        (id, variant, title, prompt, ground_truth, rubric, rotation_index, created_at, updated_at)
+      VALUES
+        (
+          ${caseId},
+          ${caseData.variant},
+          ${caseData.title},
+          ${caseData.prompt},
+          ${caseData.groundTruth},
+          ${caseData.rubric},
+          ${index},
+          ${now},
+          ${now}
+        )
+      ON CONFLICT (id) DO UPDATE SET
+        updated_at = ${now},
+        rotation_index = EXCLUDED.rotation_index
+    `;
+  }
 }
