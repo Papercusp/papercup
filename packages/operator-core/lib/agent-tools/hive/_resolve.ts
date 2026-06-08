@@ -87,7 +87,10 @@ async function buildWakeView(
   };
 }
 
-function describe(p: ProjectEntry, wake: HiveWakeView): HiveDescriptor {
+/** Pure: project a registry entry + its wake view into the descriptor. Exported
+ *  so the shaping is unit-testable without PG (mirrors fleet/assignments' pure
+ *  selectors). */
+export function describeHive(p: ProjectEntry, wake: HiveWakeView): HiveDescriptor {
   const hiveId = frameHiveId(p);
   return {
     slug: p.slug,
@@ -98,6 +101,27 @@ function describe(p: ProjectEntry, wake: HiveWakeView): HiveDescriptor {
     deployed: Boolean(p.deploymentFrame),
     wake,
   };
+}
+
+/** Pure: distinct live agents per harness slug, from raw fleet-assignment rows —
+ *  the per-hive count `hive:list` shows, extracted so it unit-tests without PG. */
+export function liveAgentCountByHarness(
+  rows: ReadonlyArray<{ holderAlive: boolean; harnessSlug: string | null; agentId: string | null }>,
+): Map<string, number> {
+  const byHarness = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (r.holderAlive && r.harnessSlug && r.agentId) {
+      let s = byHarness.get(r.harnessSlug);
+      if (!s) {
+        s = new Set<string>();
+        byHarness.set(r.harnessSlug, s);
+      }
+      s.add(r.agentId);
+    }
+  }
+  const out = new Map<string, number>();
+  for (const [h, s] of byHarness) out.set(h, s.size);
+  return out;
 }
 
 /**
@@ -117,7 +141,7 @@ export async function resolveHive(
   if (!p) return null;
   const { sql } = getOrgPg();
   const wake = await buildWakeView(sql, p.slug, ws);
-  return describe(p, wake);
+  return describeHive(p, wake);
 }
 
 /** Every hive (kind:'hive' project) in the workspace, resolved. */
@@ -129,7 +153,7 @@ export async function listHives(workspaceId?: string): Promise<HiveDescriptor[]>
   const { sql } = getOrgPg();
   const out: HiveDescriptor[] = [];
   for (const p of hives) {
-    out.push(describe(p, await buildWakeView(sql, p.slug, ws)));
+    out.push(describeHive(p, await buildWakeView(sql, p.slug, ws)));
   }
   return out;
 }

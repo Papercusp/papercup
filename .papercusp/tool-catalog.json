@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 330,
+  "count": 343,
   "tools": [
     {
       "name": "actions:recent",
@@ -725,7 +725,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Deciding WHICH blueprint shape fits a piece of work before creating a harness — the Pot operator's first stop (decomposable features → coding, investigation → research, parallel codemod → migration, a decision → vote/deliberate). Also the discovery surface for what launch blueprints exist.",
@@ -754,7 +755,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Authoring a brand-new blueprint shape from scratch (rare — usually you extend `coding`/`base`/`research`). Returns validated canonical YAML.",
@@ -783,7 +785,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.",
@@ -812,7 +815,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.",
@@ -886,7 +890,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve.",
@@ -915,7 +920,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You have a conversation_id (from coord:ask, conversations:list, or an inbox notice) and want the full thread.",
@@ -944,7 +950,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode.",
@@ -973,7 +980,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.",
@@ -1002,7 +1010,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread. For a question that wants an answer, use coord:ask instead.",
@@ -1031,7 +1040,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature.",
@@ -1060,7 +1070,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again.",
@@ -1089,7 +1100,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) a coord message — closes the loop for the sender.",
@@ -1117,7 +1129,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You have a question and want the fastest correct answer without needlessly interrupting a peer. Always include topics so a miss reaches the right people. For a harness-specific question pass harness.",
@@ -1146,11 +1159,42 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You need the owner's (human's) input on a decision and can wait briefly, but want to proceed (e.g. fall through to a vote) if they don't respond in time.",
         "notWhen": "A peer question or a knowledge lookup — use coord:ask (knowledge-first: searches existing knowledge, then routes to topic subscribers). A blocking decision that MUST have a human answer — use coord:escalate (severity: blocker)."
+      }
+    },
+    {
+      "name": "coord:await-inbox",
+      "http": {
+        "path": "/api/agent-tools/coord/await-inbox",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Idle end-of-turn scaffold: register a STANDING wake watch on YOUR OWN inbox so a later coord:send {wake:true} to you re-invokes you, then end your turn (sleep). Call this exactly when your work-list is drained / you are awaiting direction — not while you still have work. Sugar over watch:create on your inbox-wake key (the deliver-and-wake rendezvous). Returns the watch id + your inbox-wake key.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "You are idle at end-of-turn — work-list empty or blocked, awaiting the Queen / a peer to send you something. Register the watch, then END YOUR TURN. You are re-invoked when work/direction arrives via coord:send {wake:true}.",
+        "notWhen": "You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer's artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.",
+        "chaining": "coord:await-inbox → end your turn. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel."
       }
     },
     {
@@ -1174,7 +1218,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Starting a distinct piece of work, so other agents see what you have taken on.",
@@ -1202,7 +1247,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A consequential decision where the owner might already have an answer, but you want an automatic fallback to a vote and a curated escalation rather than blocking.",
@@ -1230,7 +1276,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.",
@@ -1259,7 +1306,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A decision you should not make alone, a blocker that requires human input, or a risky operation that needs explicit confirmation.",
@@ -1287,11 +1335,41 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Showing the human inbox; diagnostics; checking your own past escalations.",
         "notWhen": "A specific msg_id you already have — there is no escalation read-by-id tool yet; coord:escalations + filter is enough at current volumes."
+      }
+    },
+    {
+      "name": "coord:feed",
+      "http": {
+        "path": "/api/agent-tools/coord/feed",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since_ts/before_ts time window. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag.",
+      "capabilities": [
+        "audit:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
+        "notWhen": "For YOUR addressed messages use coord:inbox; for open human escalations use coord:escalations; for live \"who is active\" use coord:presence. coord:feed is the read-everything firehose, not a working inbox."
       }
     },
     {
@@ -1315,7 +1393,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.",
@@ -1343,7 +1422,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Diagnostics — \"who handed what to whom?\" or \"what handoffs to me are still open?\".",
@@ -1371,7 +1451,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
@@ -1399,7 +1480,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You (or the human via the inbox) want to message the agent that owns a specific work-item — start a durable, scoped thread with them about that item.",
@@ -1428,7 +1510,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to show which plans changed since the agent last read. Also ad-hoc, to review recent plan activity.",
@@ -1456,7 +1539,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "\"Who else is working right now, and on what?\" — before starting work that might overlap.",
@@ -1484,7 +1568,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on an open escalation.",
@@ -1499,7 +1584,7 @@
           "POST"
         ]
       },
-      "description": "Send a message to other coordination agents. `to` is a list of ownerIds; use [\"*\"] to broadcast, [\"human\"] to surface to the user. Returns the assigned msg_id.",
+      "description": "Send a message to other coordination agents. `to` is a list of ownerIds; use [\"*\"] to broadcast, [\"human\"] to surface to the user. By default the message is INJECTED (lands in the recipient's inbox, seen on their next natural turn — cheap, no token cost). Pass `wake:true` to ALSO re-invoke a SLEEPING recipient now (deliver-and-wake) — targeted to exactly the addressees, never a broadcast. Returns the assigned msg_id.",
       "capabilities": [
         "coord:write"
       ],
@@ -1512,11 +1597,12 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
-        "when": "Sharing context with another agent — \"I just finished X, the next step is Y\", or asking a question, or handing off a piece of work.",
-        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock."
+        "when": "Sharing context with another agent — \"I just finished X, the next step is Y\", or asking a question, or handing off a piece of work. Use wake:true ONLY when the recipient is idle/asleep and must act now (a Queen placing work onto a sleeping bee); a running recipient already sees the inject mid-turn, so wake is wasted on it.",
+        "notWhen": "For an in-conversation reply to the human, just speak. For locking a file, use locks:acquire — coord:send is async/eventual, not a lock. Don't set wake:true for routine/ambient notes — a wake is a billable turn (unify-watch D-002: inject is the default, wake is the deliberate opt-in)."
       }
     },
     {
@@ -1540,7 +1626,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You want the full conversation around a coord message (replies, acks, resolutions).",
@@ -1569,6 +1656,7 @@
         "operator",
         "documenter",
         "curator",
+        "bee",
         "voter",
         "advocate"
       ],
@@ -1598,7 +1686,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You face a genuinely uncertain, consequential choice between named options and want a diverse, anti-correlated read before committing — instead of deciding alone or escalating raw.",
@@ -1626,7 +1715,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries.",
@@ -1654,7 +1744,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Turn end — the OMP coordination extension records how far you read this turn.",
@@ -1669,7 +1760,7 @@
           "POST"
         ]
       },
-      "description": "Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId. A debug aid for confirming how the coordination layer sees this agent.",
+      "description": "Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.",
       "capabilities": [
         "coord:read"
       ],
@@ -1682,7 +1773,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Debugging identity — \"what ownerId am I?\" before relying on lock or message behaviour.",
@@ -1944,6 +2036,23 @@
       }
     },
     {
+      "name": "curation:change-feed",
+      "http": {
+        "path": "/api/agent-tools/curation/change-feed",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Change Feed — a derived projection over completion records (work-item completions, gym proposals, plan runs). Summaries reference the originals (rationale:feed pattern). One calm rollup per tick, drill-down on demand. Filter by harness or user-requested work.",
+      "capabilities": [
+        "curation:read"
+      ],
+      "guidance": {
+        "when": "You want to see recent changes across the fleet (what work finished, what proposals landed) without a replicated log. Pass userRequestedOnly to see only user-facing changes; harness to scope to one project.",
+        "notWhen": "For the raw fleet signals use curation:feed. For historical audit of all changes use the underlying work-items / coord-event-log directly."
+      }
+    },
+    {
       "name": "curation:feed",
       "http": {
         "path": "/api/agent-tools/curation/feed",
@@ -2055,7 +2164,7 @@
           "POST"
         ]
       },
-      "description": "Deploy a harness's execution plane to its configured cloud frame: provision the machine, bootstrap the runtime (own loop + own embedded-pg), join it as a federated peer. The harness must have been created with a non-local `deployment` (e.g. {target:'latitude'}). Returns {ok, frame}.",
+      "description": "Deploy a harness's execution plane to its configured cloud frame: provision the machine, bootstrap the runtime (own loop + own embedded-pg), join it as a federated peer. The harness must have been created with a non-local `deployment` (e.g. {target:'latitude'}). Set `deployment.desktop` (true | {displays,geometry}) for a GUI-capable frame: one Xvfb display per agent slot, agents get a leased DISPLAY. Returns {ok, frame}.",
       "capabilities": [
         "harness:write"
       ],
@@ -2068,12 +2177,13 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.",
         "notWhen": "A local harness (no cloud deployment). Tearing one down — deploy:teardown. Checking status — deploy:status.",
-        "chaining": "harness:create { …, deployment:{target:\"latitude\",…} } → deploy:harness { slug } → deploy:status / deploy:teardown."
+        "chaining": "harness:create { …, deployment:{target:\"latitude\", desktop:true, …} } → deploy:harness { slug } → deploy:status / deploy:teardown."
       }
     },
     {
@@ -2097,7 +2207,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.",
@@ -2126,7 +2237,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Checking where a harness runs (local vs which cloud frame) and the frame's reachable host."
@@ -2153,7 +2265,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.",
@@ -2181,7 +2294,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model."
@@ -2671,6 +2785,40 @@
       }
     },
     {
+      "name": "discovery:hives",
+      "http": {
+        "path": "/api/agent-tools/discovery/hives",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Browse the P2P hive directory — the verified hives this peer has seen announced on the well-known directory topic (title · description · owner · member harnesses). Best-effort gossip: joining a listed hive still runs the full admission/attestation flow. Feeds the pui apiary-pane + the desktop HiveDirectoryPanel.",
+      "capabilities": [
+        "discovery:read"
+      ],
+      "guidance": {
+        "when": "You want to see hives available to join across the P2P network (the browse list behind the apiary pane / HiveDirectoryPanel).",
+        "notWhen": "To list the workspace-local deployed hive frames (hiveControlFrames) use the harness/hive surfaces. To actually join a listed hive, run the join-shared-harness flow per member topic."
+      }
+    },
+    {
+      "name": "discovery:set_hive",
+      "http": {
+        "path": "/api/agent-tools/discovery/set_hive",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create or edit a hive's P2P directory listing — title, description, and visibility (public = announce to the global directory; invite = invite-scoped topic only; private = never announced). Saves the metadata to the workspace registry and announces it per visibility so peers can browse + join it.",
+      "capabilities": [
+        "discovery:write"
+      ],
+      "guidance": {
+        "when": "You want to publish a hive to the P2P directory so other peers can discover + join it, or edit an existing listing (title/description/visibility).",
+        "notWhen": "To deploy a hive’s execution frames use deploy:hive. To browse OTHERS’ hives use discovery:hives. Setting visibility:private withdraws a hive from the directory (it stops being re-announced; peers age it out via TTL)."
+      }
+    },
+    {
       "name": "docs:get",
       "http": {
         "path": "/api/agent-tools/docs/get",
@@ -3077,7 +3225,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3093,7 +3242,7 @@
           "POST"
         ]
       },
-      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness joined in). Surfaces orphaned claims (live lease, dead holder = abandoned work) and declared-but-unclaimed intents.",
+      "description": "The canonical \"who's on what\" query: per-agent presence + plan-item claims + work-item claims unified (claim-primary, holder liveness joined in). Each live agent carries its ordered work-list — `doing` (head-of-line), `queued` (items in rank order), `load` (work-item count) — the externalized per-bee TodoWrite the Queen reads for placement (load → warm-inject vs fresh slot; head-of-line → evict judgment; the ordered plan → affinity). Surfaces orphaned claims (live lease, dead holder = abandoned work) and declared-but-unclaimed intents.",
       "capabilities": [
         "work_items:read"
       ],
@@ -3106,13 +3255,45 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Answering \"who's running / what is agent X doing / is anyone on plan P / is that work actually being worked\". This is the state query — use it instead of scanning coord:inbox or replaying lifecycle messages.",
+        "when": "Answering \"who's running / what is agent X doing / what is X's ordered work-list / how loaded is X / is anyone on plan P\". This is the state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.",
         "notWhen": "You want to be notified of future changes (subscribe the fleet_assignment change-feed / your coord subscriptions) or you need full message history (coord:inbox).",
         "chaining": "fleet:assignments { plan } → see an orphaned claim → work_items:release / plan_items:release to free it, or coord:send the holder. fleet:assignments { agent } before messaging an agent about its work."
+      }
+    },
+    {
+      "name": "fleet:bee_mail",
+      "http": {
+        "path": "/api/agent-tools/fleet/bee_mail",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read one bee's coordination mail by ownerId: its INBOX (messages addressed to it, or broadcast) and its OUTBOX (messages it sent). The observer view behind the bee-dossier dock pane — distinct from coord:inbox, which reads YOUR own inbox. Read-only; no heartbeat.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Rendering the bee-dossier pane, or inspecting what a specific bee has received/sent without being that bee.",
+        "notWhen": "Reading YOUR own inbox (use coord:inbox — it also heartbeats your presence). Deriving fleet state / who is on what (use fleet:assignments).",
+        "chaining": "fleet:selected_bee {} (poll the selection) → fleet:bee_mail { owner_id } + fleet:assignments { agent: owner_id } for the full dossier."
       }
     },
     {
@@ -3136,13 +3317,44 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "A human/operator aborts a unit of work, or a supervisor tears down a doomed subtree. Cancels the named spawn AND all its descendants transitively, freeing their locks + work-item/plan-item claims immediately.",
         "notWhen": "To cancel a single leaf with no children — that is the same call with a leaf spawn_id, but prefer it when you specifically mean the whole subtree.",
         "chaining": "fleet:tree (inspect the subtree) → fleet:cancel { spawn_id }."
+      }
+    },
+    {
+      "name": "fleet:drain",
+      "http": {
+        "path": "/api/agent-tools/fleet/drain",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Signal a running bee to gracefully wind down (checkpoint, release locks/claims, return work-list, exit). Distinct from fleet:cancel (hard kill). The bee can cooperate or request deferral (propose/dispose). The Queen waits bounded time before reclaiming the slot. Returns immediately; the drain is async.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "You (the Queen) want to reclaim a bee slot: the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give the bee a chance to hand off cleanly.",
+        "notWhen": "The bee is actively running a high-priority task (let it finish naturally). Or if immediate slot reclaim is critical (use fleet:cancel). Or if the bee is unresponsive (use fleet:cancel after a timeout).",
+        "chaining": "fleet:drain { bee_id } → (later, bounded) fleet:assignments { agent: bee_id } (check if the bee has released its slot) → fleet:spawn { role: \"bee\", brief: ... } (spawn fresh)."
       }
     },
     {
@@ -3166,12 +3378,44 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Seeding or tuning fleet backpressure (the curator owns this). scope_key examples: \"global\", \"harness:papercup\", \"user:alice\", \"role:worker\".",
         "chaining": "fleet:governor { op:\"set_bucket\", scope_key:\"global\", capacity, refill_per_sec } → fleet:admit per spawn."
+      }
+    },
+    {
+      "name": "fleet:selected_bee",
+      "http": {
+        "path": "/api/agent-tools/fleet/selected_bee",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Get or set the ephemeral \"selected bee\" for the bee-dossier dock pane. With no args, RETURNS the currently selected bee (the bee pane polls this). With `select`, PUBLISHES the selection (the swarm/Fleet pane calls this when its cursor moves). In-memory, per-workspace, non-durable — a transport between the two pui dock processes, never persisted.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Driving the desktop chat dock's bee-dossier pane: the swarm pane sets the selection on cursor move; the bee pane reads it to know which bee to render.",
+        "notWhen": "You want durable assignment state or \"who is on what\" — use fleet:assignments. This holds only the transient UI selection.",
+        "chaining": "Fleet pane: fleet:selected_bee { select: { owner_id } } on cursor move. Bee pane: fleet:selected_bee {} (poll) → fleet:assignments { agent } + fleet:bee_mail { owner_id } for the dossier."
       }
     },
     {
@@ -3195,7 +3439,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3225,7 +3470,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3255,7 +3501,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3343,7 +3590,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
@@ -3372,7 +3620,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
@@ -3401,7 +3650,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.",
@@ -3459,7 +3709,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.",
@@ -3635,7 +3886,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
@@ -3917,6 +4169,68 @@
       }
     },
     {
+      "name": "hive:get",
+      "http": {
+        "path": "/api/agent-tools/hive/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The full state of one hive: its home harness + deployment + wake schedule (scheduled?, next/last fire, event subscriptions), its live bees with {doing, queued, load}, and its todo-work frontier depth. Composes resolveHive + fleet:assignments + work_items — the one call for \"how is hive X doing\".",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.",
+        "notWhen": "A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
+        "chaining": "hive:list to find the slug; pot:wake to fire the Queen now; pot:declare-wake to change the cadence; hive:dissolve to tear it down."
+      }
+    },
+    {
+      "name": "hive:list",
+      "http": {
+        "path": "/api/agent-tools/hive/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The workspace-local hives (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one hive in depth use hive:get.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want the workspace-local hives (the Pots) and their wake/load at a glance.",
+        "notWhen": "Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One hive in depth — hive:get.",
+        "chaining": "hive:get { slug } to drill into one; hive:create to add one; hive:dissolve to tear one down."
+      }
+    },
+    {
       "name": "hooks:known",
       "http": {
         "path": "/api/agent-tools/hooks/known",
@@ -3967,6 +4281,7 @@
         "operator",
         "documenter",
         "curator",
+        "bee",
         "scanner"
       ],
       "profile": "engineer",
@@ -3984,7 +4299,7 @@
           "POST"
         ]
       },
-      "description": "Triage the captured papercusp-improvement backlog: scores + dedups every improvement work-unit and splits it into the auto-eligible lane (kind=bug, no protected surface) vs the human-review queue. Read-only — surfaces the queue, implements nothing.",
+      "description": "Triage the captured papercusp-improvement backlog: scores + dedups every improvement work-unit and splits it into the auto-eligible lane (kind=bug, no protected surface) vs the human-review queue. Read-only — surfaces the queue, implements nothing. (P-010) Supports per-Hive scope filtering.",
       "capabilities": [
         "coord:read"
       ],
@@ -3997,11 +4312,12 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view.",
+        "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Hive's ideas.",
         "notWhen": "You want one improvement in full — issues:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.",
         "chaining": "improvements:digest → issues:get / issues:claim on a queued item → fix it self/inline (or improvements:capture to add more)."
       }
@@ -4027,13 +4343,45 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "You finished working a dispatched/claimed improvement (usually as the implement worker). Fixed + tests green → outcome fixed with the evidence. Could not make it work → could-not-fix with what you tried. The fix would touch a protected surface (operator-core safety / deploy machinery / a migration) or needs judgment → needs-human.",
         "notWhen": "You only want to comment progress — issues:comment. You are closing a non-improvement issue — issues:close. The item was never captured (no EI/WI id) — improvements:capture it first if it is worth tracking.",
         "chaining": "improvements:digest → (dispatch/claim) → implement + test → improvements:resolve { id, outcome, summary, testsRun }."
+      }
+    },
+    {
+      "name": "improvements:triage",
+      "http": {
+        "path": "/api/agent-tools/improvements/triage",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Queen-turn triage: read the scored improvements:digest and type-route each idea (product→place, process→gate/gym). Updates idea lifecycle state with the Queen's decision. (P-010) Supports per-Hive scope filtering. (P-012) Routes product-ideas to target project, process/prompt-ideas to papercusp gate.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen's judgment. (P-010) Pass harnessSlug to triage a specific Hive's ideas. (P-012) Type-routing: product→place as work-item in target; process/prompt→papercusp gate/gym.",
+        "notWhen": "You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.",
+        "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas."
       }
     },
     {
@@ -4057,7 +4405,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Operator inbox PASS — run FIRST each wake over the Decisions tier: re-tier an attention item after reading it (downgrade noise, escalate something a worker under-flagged, confirm/resolve a real decision), always recording the why in `note`. Leave the inbox clean before sleeping.",
@@ -4121,7 +4470,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4151,7 +4501,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4180,7 +4531,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4209,7 +4561,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4239,7 +4592,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4269,7 +4623,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4298,7 +4653,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4328,7 +4684,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4358,7 +4715,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4387,7 +4745,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4417,7 +4776,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4446,7 +4806,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4476,12 +4837,43 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "Refine an issue you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it.",
         "notWhen": "Resolving it (issues:close), adding a note (issues:comment), or routing it to a topic (issues:tag)."
+      }
+    },
+    {
+      "name": "lexicon:active_pack",
+      "http": {
+        "path": "/api/agent-tools/lexicon/active_pack",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The active brand pack's full term→label map (every term key → singular/plural forms) plus the pack id. Resolved via the server-side lexicon twin so the `papercusp-the-hive` flag is respected. The single source of truth for any non-React/non-server surface (e.g. the Rust pui) that needs the live lexicon without duplicating the packs.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A client outside the React/server lexicon wiring (the pui TUI, a CLI) needs the active term labels; fetch once at startup and re-fetch on a flag change if a push rail exists.",
+        "notWhen": "You are in React (use the useLexicon hook) or server code (import term() from the lexicon module) — those resolve in-process."
       }
     },
     {
@@ -5809,7 +6201,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "At the start of a session that should act as a named agent — e.g. you were told \"you are builder-1, go to your items\". Adopt the name, then plan_items:my_items.",
@@ -5838,7 +6231,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\".",
@@ -5867,7 +6261,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You are about to begin work on an item (yours via assignment, or pulled from the pool).",
@@ -5896,7 +6291,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You are picking up a plan item to work it — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item).",
@@ -5925,7 +6321,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op.",
@@ -5954,7 +6351,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You want to help on a shared plan owned by another user — join, then pull unassigned items.",
@@ -5983,7 +6381,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You are done helping on a shared plan.",
@@ -6012,7 +6411,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You were told to work on your assigned items — read them here, then claim the next idle one.",
@@ -6041,7 +6441,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You finished (or are pausing) work on an item you claimed and want to free the live grip.",
@@ -6070,7 +6471,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Deciding what to pick up, or auditing who holds what on a plan.",
@@ -6099,7 +6501,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "An assignment is no longer wanted — reassigning to nobody, or freeing an item back to the pool.",
@@ -6524,7 +6927,7 @@
           "POST"
         ]
       },
-      "description": "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
+      "description": "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Always emits a `plan_event` of kind=promoted.",
       "capabilities": [
         "coord:write"
       ],
@@ -6538,12 +6941,14 @@
         "operator",
         "documenter",
         "curator",
+        "bee",
         "promote"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.",
-        "notWhen": "Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled."
+        "notWhen": "Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled. ANTI-OVER-SPAWN (D-001, promote-spawn-child-harness): a `spawn_child` wave is justified ONLY when the work crosses a repo/worktree boundary or needs its own lifecycle/done-definition — same-repo sub-work stays as plain features in the current harness (the dispatcher already runs feature pipelines concurrently; a child harness buys no extra parallelism, only overhead). When in doubt, do NOT spawn.",
+        "chaining": "spawn_child waves: re-run with apply:false first — the preview lists the child slug, seed plan, and feature count with zero side effects. A partially-failed spawn (see `spawned_children[].warnings`) is retried by simply re-promoting (idempotent: scaffold/seed/import/start all upsert or no-op)."
       }
     },
     {
@@ -7003,7 +7408,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "An item's status changes — picking up (todo→wip), completing (wip→done), gating on a human (→needs-human), or recording external blockage (→blocked).",
@@ -7192,7 +7598,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7222,7 +7629,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7251,7 +7659,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7419,7 +7828,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Before working in a subsystem (e.g. `coordination-substrate`), to load the rationale behind it — why it is the way it is — without searching everything.",
@@ -7448,7 +7858,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "To backfill the rationale index (kind:\"all\") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.",
@@ -7851,7 +8262,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "No existing topic fits a relevance area you (and likely others) will want to follow. Keep the slug to a word or two; the description to one sentence.",
@@ -7879,7 +8291,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind.",
@@ -7908,7 +8321,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "At the start of work, to see the shared topic taxonomy before tagging/subscribing — and to prefer an existing topic over creating a near-duplicate (D-004).",
@@ -7937,7 +8351,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.",
@@ -7965,7 +8380,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet.",
@@ -7994,7 +8410,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic.",
@@ -8023,7 +8440,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise.",
@@ -8335,7 +8753,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8364,7 +8783,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8394,7 +8814,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8410,7 +8831,7 @@
           "POST"
         ]
       },
-      "description": "Finish a work-item with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts the completion notification from the fields — you spend no tokens narrating. Optionally also transitions the item to a terminal `state`.",
+      "description": "Finish a work-item with a STRUCTURED completion record (what landed / migrations / tests / deferred-set) instead of a hand-written coord:send prose dump. The system renders + broadcasts the completion notification from the fields — you spend no tokens narrating. Optionally also transitions the item to a terminal `state`. Returns a `reflect` step (the self-learning friction prompt) to act on once, now.",
       "capabilities": [
         "work_items:write"
       ],
@@ -8423,13 +8844,14 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "You finished a work-item / plan-item / brief. Fill in the structured completion fields (summary, whatLanded, migrations, tests, deferred) — do NOT also coord:send a prose summary; this emits it.",
         "notWhen": "For a contextual aside that is not a completion (a question, a design note), use coord:send. To only change state without a completion record, use work_items:set_state.",
-        "chaining": "work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed."
+        "chaining": "work_items:claim → … → work_items:complete { id, completion }. The completion auto-emits to coord:inbox; no coord:send needed. Then read the returned `reflect` step (self-learning loop): if any friction marker bit you during this unit of work, file it once via improvements:capture — else capture nothing."
       }
     },
     {
@@ -8453,7 +8875,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8483,7 +8906,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8512,7 +8936,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8541,7 +8966,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8570,7 +8996,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8599,7 +9026,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8629,12 +9057,44 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
         "when": "You claimed a work-item but are no longer working it.",
         "chaining": "work_items:claim → … → work_items:release."
+      }
+    },
+    {
+      "name": "work_items:reorder",
+      "http": {
+        "path": "/api/agent-tools/work_items/reorder",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Move a work-item to a position (`rank`, 0-based, 0 = head-of-line) within its assignee's ordered work-list — peers shift down to make room. This is the externalized per-agent queue the Queen reads for placement decisions. `writer`='bee' (default) for a bee resequencing its own list; `writer`='queen' for a Queen overlay (inject/rebalance) — the propose/dispose audit.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are a bee resequencing your own work-list (move a just-discovered task up, push a blocked one down) OR the Queen injecting/rebalancing a bee's queue. Claim the item first — rank is per-assignee.",
+        "notWhen": "You only want to START an item (work_items:claim) or change its lifecycle state (work_items:set_state). Reorder changes ORDER, not ownership or state.",
+        "chaining": "work_items:claim (take it) → work_items:reorder (place it in your list) → fleet:assignments { agent } to see the ordered queue. The Queen: fleet:assignments (read load + head-of-line) → work_items:reorder { writer:\"queen\" }."
       }
     },
     {
@@ -8658,7 +9118,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8687,7 +9148,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8716,7 +9178,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8745,7 +9208,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {

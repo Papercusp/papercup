@@ -29,6 +29,7 @@ describe('InboxCardActions', () => {
         { option_id: 'a', label: 'Resolve' },
         { option_id: 'b', label: 'Escalate' },
       ],
+      at: 0,
     };
     render(<InboxCardActions options={[opt({ id: 'a', label: 'Resolve' })]} answered={answered} onResponse={() => {}} />);
     expect(screen.getByText('✓ Resolve · Escalate')).toBeTruthy();
