@@ -42,6 +42,29 @@ const registerAwait = vi.fn(async (input: { eventKey: string; once?: boolean; mi
   firedReason: null,
   cancelledAt: null,
 }));
+// coord:await-inbox is now an annotation over the always-armed watch (D-005):
+// it routes through armInboxWake → upsertInboxWakeAwait (NOT registerAwait), so
+// the store mock must export the upsert seam that arm path actually calls.
+const upsertInboxWakeAwait = vi.fn(
+  async (input: { eventKey: string; minSleepSec?: number | null; note?: string | null }) => ({
+    id: 77,
+    eventKey: input.eventKey,
+    once: false,
+    minSleepSec: input.minSleepSec ?? null,
+    workspaceId: 'ws',
+    subscriberId: 'su-self',
+    policy: 'wake' as const,
+    note: input.note ?? null,
+    wakeHandle: null,
+    timeoutBehavior: 'expire' as const,
+    expiresTs: null,
+    createdAt: new Date().toISOString(),
+    firedAt: null,
+    firedReason: null,
+    cancelledAt: null,
+  }),
+);
+const cancelInboxWakeAwaits = vi.fn(async () => 0);
 const startAwaitSweeper = vi.fn();
 const captureWakeHandleForOwner = vi.fn(async () => ({ handle: null, note: 'no tracked session — inbox-degraded' }));
 
@@ -51,6 +74,8 @@ vi.mock('../../../events/await/engine', () => ({
 }));
 vi.mock('../../../events/await/store', () => ({
   registerAwait: (input: { eventKey: string }) => registerAwait(input),
+  upsertInboxWakeAwait: (input: { eventKey: string }) => upsertInboxWakeAwait(input),
+  cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),
@@ -138,8 +163,51 @@ describe('coord:send', () => {
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(out(res).wake).toMatchObject({ targets: [], woken: 0 });
+    // No live targets ⇒ NOT a wake-into-the-void: the warning is gated on
+    // targets.length > 0 (a broadcast that wakes no one is by design, not a gap).
+    expect(out(res).wake.warning).toBeUndefined();
     // the broadcast message is still in the inbox (delivery is unaffected)
     expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it('wake:true to a live target that wakes NO ONE returns the woken:0 warning (P-007/D-010)', async () => {
+    // The addressee is a concrete agent (a real target), but nothing is
+    // listening on its inbox-wake key — emitAwaitedEvent fires and resolves
+    // woken:0. This is the exact su-d96e6 gap: the wake degraded to a plain
+    // inbox inject and used to return a silent ok:true. P-007 surfaces it.
+    emitAwaitedEvent.mockResolvedValueOnce({
+      ok: true as const,
+      key: inboxWakeKey('su-bee-1'),
+      woken: 0,
+      notified: [] as string[],
+      msgId: null,
+    });
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1'], summary: 'go', wake: true }),
+      ctx,
+    );
+    // the wake was attempted on the right key…
+    const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
+    expect(keys).toEqual([inboxWakeKey('su-bee-1')]);
+    const { wake } = out(res);
+    // …but woke no one, so the result is a target with woken:0 AND a warning.
+    expect(wake.targets).toEqual(['su-bee-1']);
+    expect(wake.woken).toBe(0);
+    expect(typeof wake.warning).toBe('string');
+    expect(wake.warning).toMatch(/no live wake-watch|no session was re-invoked/i);
+    // the message is still durably in the inbox (the wake is the only no-op).
+    expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it('wake:true that DOES wake an await returns NO warning (woken>0 control, P-007/D-010)', async () => {
+    // default mock returns woken:1 per emit → two targets ⇒ woken:2, no warning.
+    const res = await coordSend.handler(
+      parse(coordSend, { to: ['su-bee-1', 'su-bee-2'], summary: 'go', wake: true }),
+      ctx,
+    );
+    const { wake } = out(res);
+    expect(wake).toMatchObject({ targets: ['su-bee-1', 'su-bee-2'], woken: 2 });
+    expect(wake.warning).toBeUndefined();
   });
 });
 
@@ -170,28 +238,29 @@ describe('coord:message-agent', () => {
   }, 15_000);
 });
 
-describe('coord:await-inbox (P-041 idle-bee scaffold)', () => {
+describe('coord:await-inbox (D-005 idle annotation over the always-armed watch)', () => {
   beforeEach(() => {
-    registerAwait.mockClear();
+    upsertInboxWakeAwait.mockClear();
     startAwaitSweeper.mockClear();
   });
 
-  it('arms a STANDING wake watch on the caller\'s OWN inbox-wake key', async () => {
+  it('refreshes the STANDING wake watch on the caller\'s OWN inbox-wake key (via the always-arm upsert)', async () => {
     const res = await awaitInbox.handler(parse(awaitInbox, { note: 'drained' }), ctx);
     expect(startAwaitSweeper).toHaveBeenCalled();
-    expect(registerAwait).toHaveBeenCalledTimes(1);
-    const input = registerAwait.mock.calls[0][0];
+    // D-005: routes through armInboxWake → upsertInboxWakeAwait (the idempotent
+    // standing-row upsert), NOT the old registerAwait insert.
+    expect(upsertInboxWakeAwait).toHaveBeenCalledTimes(1);
+    const input = upsertInboxWakeAwait.mock.calls[0][0];
     expect(input.eventKey).toBe(inboxWakeKey('su-self')); // own key — the rendezvous
-    expect(input.once).toBe(false); // standing — survives idle→woken→idle
     expect(input.minSleepSec).toBeGreaterThan(0); // floored against burst sends
     const body = out(res);
     expect(body.ok).toBe(true);
     expect(body.inbox_wake_key).toBe(inboxWakeKey('su-self'));
-    expect(body.watch).toMatchObject({ wake: true, once: false });
+    expect(body.watch).toMatchObject({ wake: true, once: false }); // standing — survives idle→woken→idle
   });
 
   it('honours an explicit min_sleep_sec floor', async () => {
     await awaitInbox.handler(parse(awaitInbox, { min_sleep_sec: 5 }), ctx);
-    expect(registerAwait.mock.calls[0][0].minSleepSec).toBe(5);
+    expect(upsertInboxWakeAwait.mock.calls[0][0].minSleepSec).toBe(5);
   });
 });

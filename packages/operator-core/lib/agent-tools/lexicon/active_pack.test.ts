@@ -47,7 +47,8 @@ describe('lexicon:active_pack', () => {
     const out = await callTool();
     expect(out.packId).toBe('the-hive');
     expect(out.terms.pot).toEqual({ one: 'Hive', other: 'Hives' });
-    expect(out.terms.fleet.one).toBe('Swarm');
+    // D-007: live agents → Colony (Swarm reassigned to the deployment unit).
+    expect(out.terms.fleet.one).toBe('Colony');
     expect(out.terms.operator.one).toBe('Sentinel Bee');
     expect(out.terms.brain.one).toBe('Queen');
     expect(out.terms.human.one).toBe('Keeper');

@@ -49,7 +49,7 @@ sidebar:
       
 
 ```
-// packages/papercusp-plugin-sdk/src/index.ts (extended)
+// packages/plugin-sdk/src/index.ts (extended) — the live interface is `Plugin`
 export interface PapercuspPlugin {
   name: string;
   version: string;
@@ -91,6 +91,21 @@ export interface HarnessUIProps {
 ### 8.3.1 Manifest authoring — TS source, frozen JSON output
 
 
+
+      <p>
+        <em>Implemented (current state):</em> the manifest is authored
+        directly as <code>papercusp.json</code> (validated against
+        <code>papercusp-plugin.schema.json</code> with
+        <code>additionalProperties: false</code>); the runtime entry point is a
+        <code>Plugin</code> literal in <code>index.cjs</code> that asserts
+        <code>satisfies Plugin</code>, so component/handler references are
+        type-checked there. The <code>defineManifest()</code> /
+        <code>papercusp build</code> / <code>jsonOnly</code> TS-source flow
+        described below did not ship — it is preserved here as design
+        rationale. See the
+        <a href="/internal/docs/spec/plugin-quickstart">authoring quickstart</a>
+        for the live manifest shape.
+      </p>
 
       <p>
         The manifest is authored as TypeScript, not JSON. Component refs are
@@ -264,6 +279,24 @@ export default defineManifest({
 ### 8.5 The hooks system (WordPress-inspired)
 
 
+
+      <p>
+        <em>Implemented (current state):</em> the shipped
+        <code>PluginHookBus</code> (in <code>@papercusp/plugin-sdk</code>)
+        exposes <code>addAction(event, handler)</code>,
+        <code>addFilter(event, handler)</code>, and
+        <code>emit(event, arg)</code>, gated by
+        <code>events:listen:&lt;name&gt;</code> /
+        <code>events:emit:&lt;name&gt;</code> capabilities. The substrate
+        enforces the event-namespace rule (substrate-reserved prefixes —
+        <code>mission. task. feature. proposal. worker. validator.
+        orchestrator. pending_event.</code> — are rejected; plugin events
+        must be prefixed with the plugin id). The richer ordering /
+        guard / slot machinery in §8.5.1–§8.5.5 below
+        (named predicates, integer priority, <code>addGuard</code>/<code>VETO</code>,
+        <code>useSlot</code>/<code>declareAction</code>) is design intent and
+        is <strong>not</strong> in the shipped SDK.
+      </p>
 
       <p>
         Plugins extend behaviour without modifying core, via named hooks:
@@ -673,6 +706,16 @@ export default defineManifest({
         Same plugin code, same DI calls — only the loader changes. CSP enforces network allowlist; iframe sandbox enforces no DOM/storage access outside the plugin.
       </p>
 
+      <p>
+        <em>Implemented (current state):</em> the
+        <code>@papercusp/plugin-sdk/iframe</code> subpath has shipped, but the
+        v2 sandbox model above is still design intent. The live iframe-bridge
+        surface is <code>initPapercupIframe()</code> plus the
+        <code>usePapercupAction</code> / <code>usePapercupEvent</code> /
+        <code>usePapercupQuery</code> helpers (not a single
+        <code>connectHostApi()</code> handshake as sketched here).
+      </p>
+
       
 
 ### 8.7 Two distribution channels: tarball-install vs iframe-CDN
@@ -723,28 +766,28 @@ export default defineManifest({
 ### 8.8 Iframe-host routes inside the operator app
 
 <p>An iframe-mode dashboard tab (manifest <code>iframeUrlConfigKey</code> or
-<code>iframeUrl</code>) can point at any URL — a separate origin like
-<code>localhost:8082</code> for code-server, or a route on the operator
-itself. The latter is the
+<code>iframeUrl</code> on a <code>dashboardTabs[]</code> entry) can point at any
+URL — a separate origin like <code>localhost:8082</code> for code-server, or a
+route on the operator itself. The latter is the
 <strong>iframe-host route</strong> pattern: the plugin contributes nothing
 but a manifest, and the operator app renders the actual UI at a dedicated
-route. <code>@papercupai/pi-coding</code> (manifest →
-<code>http://localhost:3055/pi</code>) and <code>@papercupai/fumadocs</code>
-(manifest → <code>http://localhost:3055/docs</code>) both follow this shape.</p>
+route. <code>@papercupai/fumadocs</code> follows this shape today —
+its tab declares <code>iframeUrlConfigKey: "docsUrl"</code>, defaulting to
+<code>http://localhost:3055/project-docs</code>. (<code>@papercupai/pi-coding</code>
+originally used this pattern pointing at <code>/pi</code>, but has since moved
+to an inline React dock — <code>componentRoot</code>/<code>componentId</code>
+with <code>embedMode: "inline-dock"</code> — rather than an iframe.)</p>
 
 <p>Two non-obvious requirements when adding such a route:</p>
 
 <ol>
   <li><strong>Replicate provider context.</strong> The route inherits only the
       app's root layout. Components that "just work" inside
-      <code>/harness/*</code> may rely on providers in
-      <code>app/harness/layout.tsx</code> (for example
-      <code>Tooltip.Provider</code>, <code>HarnessZeroProvider</code>). SSR
-      will throw <code>"Tooltip must be used within TooltipProvider"</code>
-      and Next falls back to client rendering — visible in the
-      <code>data-msg=</code> attribute of the SSR HTML's
-      <code>&lt;template&gt;</code> tag. Replicate just the providers the
-      embedded component actually uses.</li>
+      <code>/harness/*</code> may rely on harness-scoped providers (for example
+      <code>Tooltip.Provider</code>, <code>HarnessZeroProvider</code>) that the
+      root layout doesn't supply, throwing
+      <code>"Tooltip must be used within TooltipProvider"</code> at render.
+      Replicate just the providers the embedded component actually uses.</li>
   <li><strong>Strip the global chrome.</strong> The operator's root layout
       always renders the top nav, OracleDock, and Chatwoot widget. Inside an
       iframe-tab those are noise. Drop in
@@ -753,8 +796,8 @@ route. <code>@papercupai/pi-coding</code> (manifest →
       <code>globals.css</code> uses to hide
       <code>.pc-header</code>, <code>#chatwoot_live_chat_widget</code>, and
       <code>[data-oracle-dock]</code>. Pass <code>auto</code> when the route
-      is <em>also</em> meaningful standalone (e.g. <code>/docs</code>, where
-      direct visitors should still see chrome) — it will only apply
+      is <em>also</em> meaningful standalone (e.g. <code>/project-docs</code>,
+      where direct visitors should still see chrome) — it will only apply
       chromeless when <code>window.self !== window.top</code>.</li>
 </ol>
 

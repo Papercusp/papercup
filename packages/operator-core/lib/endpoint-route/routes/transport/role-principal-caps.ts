@@ -42,22 +42,47 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'plans:read',
     'routines:write',
   ],
-  // The generic Hive worker (local-hive-orchestration D-003 / P-011): a plain
-  // implementation agent the Queen places ranked work + a brief onto. A BROAD
-  // but deliberately NON-operator cap set — broader than a pipeline role
-  // (it owns its sequencing + can spin up a structured subharness for harder
-  // work, D-017) yet WITHOUT the Queen-only privileges:
+  // The generic Hive worker (local-hive-orchestration D-003 / P-011; expanded by
+  // bee-capability-expansion-2026-06-08): a plain implementation agent the Queen
+  // places ranked work + a brief onto. A BROAD but deliberately NON-operator cap
+  // set — broader than a pipeline role (it owns its sequencing + can spin up a
+  // structured subharness for harder work, D-017) yet WITHOUT the Queen-only
+  // privileges. The goal is bee == psu *engineering* parity (D-005): the bee
+  // inherits the worker engineering surface; the Queen-bee adds placement/steering.
   //   - work_items read/write  → maintain + publish its ordered work-list (P-020/P-021)
-  //   - coord read/write       → declare-intent, send, and coord:await-inbox at idle (P-041)
+  //   - coord read/write       → declare-intent, send, coord:await-inbox at idle (P-041);
+  //                              ALSO improvements:capture + issues:create/list/get
+  //                              (those gate on coord:read/write + COORD_ROLES — bee is a
+  //                              COORD_ROLE, so issue/idea read+create already resolve)
   //   - harness read/write     → blueprint:catalog/validate + harness:create a kind:'harness'
   //                              subharness for structured work (a bee may, a hive may not nest)
-  //   - plans/docs/search read → ground its work against plans + docs + the index
+  //   - plans read/write       → ground its work against plans AND author/edit them
+  //                              (D-005, owner-ratified: full plan-authoring parity with psu)
+  //   - docs read/write        → ground against docs + write harness_docs/insights (D-001)
+  //   - search read            → the fulltext + semantic index
   //   - memory read/write      → durable cross-turn learnings
   //   - tasks read/write       → its own task scaffolding
-  // Deliberately NOT granted: routines:write (self-wake scheduling is the Queen's
-  // placement axis), curation:* / activity:report / operator:* / autoloop:* (brain-
-  // only judgment surfaces). Least-privilege, workspace-agnostic; unions with any
-  // provisioned row.
+  //   - intel read             → the dev-diagnostics surface (dev:service_health/build_status/
+  //                              processes/activity, flags:get, dogfood_substrate_status, …)
+  //                              + the intel:artifacts / intel:spawn_tree reads (D-001)
+  //   - locks read/write       → explicit multi-file holds, locks:queue/list, db:check_drift (D-001)
+  //   - issues read            → the papercusp://harness/issues MCP resource (the issues:* TOOLS
+  //                              already resolve via coord:read above) (D-001)
+  // Deliberately NOT granted (D-002 — these stay Queen-only; the Queen is a kind:'hive'
+  // bee that holds them): routines:write (self-wake scheduling = the Queen's placement
+  // axis), curation:* / activity:report / operator:* / autoloop:* / processes:kill /
+  // secrets:* / backup:* / plugins:write / discovery:write / hive:* / gym:* (brain-only
+  // judgment + admin + placement surfaces). Least-privilege, workspace-agnostic; unions
+  // with any provisioned row.
+  //
+  // ⚠ TWO-GATE REALITY (bee-capability-expansion-2026-06-08 audit): a capability here is
+  // NECESSARY but NOT SUFFICIENT to call a tool. The dispatch stack (libs/generic/tooldef
+  // dispatch-stack.ts) runs an independent `role-allowlist` gate FIRST: a tool that
+  // declares `agentRoles` is callable only by a role in that list, regardless of caps. The
+  // intel/locks/docs:write tools each declare an agentRoles list that historically EXCLUDED
+  // bee — so these caps unlock the surface only once `bee` is ALSO added to those tools'
+  // agentRoles (the COORD_ROLES-gated tools — coord:*, issues:*, improvements:capture — already
+  // admit bee). See the plan's Phase-2 boundary for the allowlist co-edit.
   bee: [
     'harness:read',
     'harness:write',
@@ -66,12 +91,18 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'coord:read',
     'coord:write',
     'plans:read',
+    'plans:write', // bee-capability-expansion D-005 (owner-ratified): plan-authoring parity with psu
     'docs:read',
+    'docs:write', // bee-capability-expansion D-001: harness_docs:record + insight writing
     'search:read',
     'memory:read',
     'memory:write',
     'tasks:read',
     'tasks:write',
+    'intel:read', // bee-capability-expansion D-001: the dev-diagnostics surface
+    'locks:read', // bee-capability-expansion D-001: locks:queue/list, db:check_drift
+    'locks:write', // bee-capability-expansion D-001: explicit multi-file holds
+    'issues:read', // bee-capability-expansion D-001: the papercusp://harness/issues resource
   ],
 };
 

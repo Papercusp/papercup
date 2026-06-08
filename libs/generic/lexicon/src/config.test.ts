@@ -27,7 +27,7 @@ describe('configureLexicon / ambient resolution', () => {
     expect(isLexiconConfigured()).toBe(true);
     expect(activePackId()).toBe('the-hive');
     expect(term('pot')).toBe('Hive');
-    expect(term('fleet', { plural: true })).toBe('Swarms');
+    expect(term('fleet', { plural: true })).toBe('Colonies');
   });
 
   it('reflects a live selector change (flag flip)', () => {

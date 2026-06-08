@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import { parseAsString, useQueryState } from 'nuqs';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcomeEmptyState from './HarnessWelcomeEmptyState';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
+import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
 import './adv-dock.css';
 
 export interface AdvProjectEntry {
@@ -14,6 +15,12 @@ export interface AdvProjectEntry {
   path: string;
   hasState: boolean;
   hasSpec: boolean;
+  // projects/lite also carries the hive-grouping fields (P-012): parent_slug
+  // + harness_kind drive the member axis, is_shared the rail badge. Optional
+  // so older payloads / fixtures stay valid.
+  parent_slug?: string | null;
+  harness_kind?: string | null;
+  is_shared?: boolean;
 }
 
 /**
@@ -29,7 +36,13 @@ export interface AdvProjectEntry {
  * optionally chain into ShareWizard via the picker's own follow-up.
  */
 export default function HarnessesWorkspace() {
+  // `?slug=` is the HIVE / root scope (owned by the shell selector). The new
+  // `?harness=` axis is the MEMBER focus within that hive — which member's
+  // dock is open. Nullable: unset means "use the hive's default member"
+  // (D-001). Only this tab reads `?harness=`, so `?slug=` semantics stay
+  // untouched everywhere else (P-001).
   const [slug, setSlug] = useQueryState('slug', parseAsString.withDefault(''));
+  const [harness, setHarness] = useQueryState('harness', parseAsString);
   const [projects, setProjects] = useState<AdvProjectEntry[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -50,25 +63,52 @@ export default function HarnessesWorkspace() {
     void refreshProjects();
   }, [refreshProjects]);
 
+  // The hive's members (root first, then parent_slug children) and the
+  // focused member the dock should render. Pure logic in ./harness-axis so
+  // it's unit-tested + shared with the member rail (P-002).
+  const members = useMemo(() => hiveMembers(projects, slug || null), [projects, slug]);
+  const focusedMember = useMemo(
+    () => resolveFocusedMember({ members, urlHarness: harness }),
+    [members, harness],
+  );
+  // The harness the dock + meta line target: the focused member, falling back
+  // to the hive root while projects/lite is still loading (members empty) so
+  // the common solo case mounts instantly with no flash.
+  const dockSlug = focusedMember ?? (slug || null);
+
+  // Drop a stale `?harness=` when the shell selector switches `?slug=` to a
+  // different hive (the value no longer names a member). Guarded inside
+  // isHarnessParamStale on members-loaded so a valid deep link isn't cleared
+  // before projects/lite arrives.
+  useEffect(() => {
+    if (isHarnessParamStale(members, harness)) void setHarness(null);
+  }, [members, harness, setHarness]);
+
   const handleCreated = useCallback(
     (newSlug: string) => {
       void refreshProjects();
       void setSlug(newSlug);
+      // A freshly created harness becomes the focused member of its hive.
+      void setHarness(null);
     },
-    [refreshProjects, setSlug],
+    [refreshProjects, setSlug, setHarness],
   );
 
   return (
     <div className="pc-adv-harnesses pc-adv-dock">
-      <HarnessTopBar slug={slug} />
+      {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
+          (`?harness=` resolved against the hive's members), not the raw hive
+          `?slug=` — so a hive with several member harnesses shows the picked
+          one. Solo harnesses resolve dockSlug === slug (zero regression). */}
+      <HarnessTopBar slug={dockSlug ?? ''} />
       <div className="pc-adv-harnesses__dock">
-        {slug ? (
+        {dockSlug ? (
           <>
-            <HarnessesDock slug={slug} />
+            <HarnessesDock slug={dockSlug} />
             {/* No-work-yet onboarding welcome (spec-md-ui-deprecation-cleanup
                 P-005 / D-003) — overlays the dock until the harness has a
                 started plan or an eligible feature, or is dismissed. */}
-            <HarnessWelcomeEmptyState slug={slug} />
+            <HarnessWelcomeEmptyState slug={dockSlug} />
           </>
         ) : (
           <div className="pc-adv-harnesses__empty">

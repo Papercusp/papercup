@@ -9,7 +9,7 @@ out-of-range plugins, and how authors should structure plugins to make
 upgrades cheap.
 
 The current runtime version lives at `PAPERCUSP_RUNTIME_VERSION` in
-`@papercusp/plugin-sdk` (today: **0.1.0**). Plugins declare a compatible
+`@papercusp/plugin-sdk` (today: **0.1.1**). Plugins declare a compatible
 range via the `papercusp` field in their manifest:
 
 ```json

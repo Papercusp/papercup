@@ -41,6 +41,12 @@ they don't drift back in:
 
 ## Migration notes
 
+> The numbered migrations referenced below (051, 054, 055) were historical
+> incrementals; they are now squashed into the frozen `000-baseline.sql`
+> dump (plan `self-contained-migration-baseline-2026-06-02`). The tables they
+> created — `harness_shared.{plugin_capability_grants,plugin_kv,plugin_reload_state}`
+> — live in the baseline today. Don't expect to find `051-*.sql` on disk.
+
 - Migration 051 must run before the operator boots with B-tier code, or
   every action invocation will be denied (manifest-only Tier-1 still
   allows them, but Tier-2 returns empty grants → `false`). The boot

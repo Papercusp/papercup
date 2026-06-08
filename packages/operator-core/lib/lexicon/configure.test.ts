@@ -24,7 +24,7 @@ describe('server lexicon twin', () => {
     expect(activeServerPackId()).toBe('the-hive');
     expect(term('pot')).toBe('Hive');
     expect(term('cupboard')).toBe('Comb');
-    expect(term('fleet', { plural: true })).toBe('Swarms');
+    expect(term('fleet', { plural: true })).toBe('Colonies');
   });
 
   it('flips back to classic when the flag is turned off', async () => {

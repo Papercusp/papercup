@@ -5,6 +5,18 @@ sidebar:
   order: 20
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note">
+This page documents the role-config-driven `scaffold_harness` / `send_message`
+substrate verbs (live in `packages/operator-core/lib/execute-action.ts`). The
+newer agent-authorable way to create a harness is the `harness:create` MCP tool,
+which instantiates a **blueprint** rather than a marketplace template — see
+[spawning-harnesses](/internal/docs/spec/harness-spawning) and the `blueprint:*`
+tools. Cross-harness messaging is also exposed read-side via the `cross_harness:*`
+tools (`inbox` / `outbox` / `recent_activity` / `plans_*` / `docs_*`).
+</Aside>
+
 A harness is "spawning-capable" if at least one of its roles has `scaffold_harness` and/or `send_message` in its `allowedActions`. There's nothing template-specific about this — `papercup-org` is just the first one that uses it.
 
 ## Role config
@@ -36,9 +48,9 @@ Inside `<harness>/.papercusp/config.json`:
 
 ## Bearer token & auth
 
-When the harness is scaffolded, a `harness_token` is written into `.papercusp/config.json` (mode 0600). All `executeAction` calls — whether from the substrate's `process_actions_block` (run.sh) or from a hook script — read the token from this file and send it as `Authorization: Bearer <token>`.
+When the harness is scaffolded, a `harness_token` is written into `.papercusp/config.json` (mode 0600) and mirrored into the authoritative `harness_shared.token_index` (the per-harness `config_token` table was retired — migration 121). All `executeAction` calls read the token and send it as `Authorization: Bearer <token>`.
 
-The executor derives the caller identity from the token. **Body-supplied `from` or `callingHarness` fields are rejected on mismatch**; `parent_slug` on `scaffold_harness` is never body-controlled. See [auth-and-identity](/internal/docs/spec/auth-and-identity).
+The executor (`deriveCallerFromBearer` / `validateIdentityFields` in `packages/operator-core/lib/execute-action.ts`) derives the caller identity from the token by looking it up in `harness_shared.token_index`. **Body-supplied `from` or `callingHarness` fields are rejected on mismatch** (`403 identity_mismatch`); `parent_slug` on `scaffold_harness` is never body-controlled (`400 parent_slug_not_caller_controlled`). See [auth-and-identity](/internal/docs/spec/auth-and-identity).
 
 ## Tier 3 substrate context
 
@@ -64,8 +76,10 @@ Any role with `send_message` in `allowedActions` can post to any harness:
   "reason": "<≥10 chars explaining why; placeholders flagged>" }
 ```
 
-The receiver's prompt-build automatically includes pending messages from its `parent_slug` in the "Recent supervisor messages" section (Step 4.6 — bounded inbox). At end of an iteration that ended in DONE / NEXT_*, the substrate auto-acknowledges consumed messages. ESCALATE / REVIEW iterations leave them pending.
+The receiver's prompt-build automatically includes pending messages from its `parent_slug` in a bounded "Recent supervisor messages" section. On a "happy progression" decision (DONE / NEXT_*) the substrate auto-acknowledges the consumed messages; ESCALATE / REVIEW leave them pending so a redirect re-surfaces the original. See [cross-harness-coordination](/internal/docs/spec/cross-harness-coordination) for the full decision set.
 
 ## Completion hook
 
-If a harness has `parent_slug` set, the substrate's built-in `afterDone` hook fires automatically when the loop reaches DONE, posting a `kind: "Completion"` message back to the parent. No template authoring needed. Override per-harness by writing your own `<harness>/.papercusp/hooks/afterDone.sh`.
+If a harness has `parent_slug` set (read from `harness_shared.projects.parent_slug` in PG — `.papercusp/config.json` is no longer a live config source), the substrate's built-in `afterDone` step posts a `kind: "Completion"` message back to the parent's inbox. No template authoring needed.
+
+In the per-feature DBOS pipeline this is `notifyParentOnDone` (`packages/operator-core/lib/dbos/notify-parent-done.ts`), invoked by the orchestrator finalize step. It fires on a feature's DONE finalize **only once the harness's feature queue has drained** — i.e. no other feature remains non-terminal (`passed`/`deprecated`) — so the parent is notified at mission completion, not once per feature. (The legacy bash `run.sh` run-loop is retired.) Override per-harness by writing your own `<harness>/.papercusp/hooks/afterDone.sh`, which still takes precedence over the builtin.

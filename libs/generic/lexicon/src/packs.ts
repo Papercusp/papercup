@@ -2,8 +2,9 @@
  * The shipped brand packs.
  *
  * `classic` reproduces today's user-facing terminology (flag off = no visual
- * change). `the-hive` is the approved Swarm/Hive lexicon (plan
- * the-hive-lexicon-2026-06-06 D-002). Term *keys* are brand-neutral; only the
+ * change). `the-hive` is the approved bee lexicon (plan
+ * the-hive-lexicon-2026-06-06 D-002, as revised by D-007: Fleet→Colony,
+ * Swarm = the deployment-to-instance unit). Term *keys* are brand-neutral; only the
  * labels here change. Internal identifiers (code, DB columns, MCP tool names,
  * repos) are NEVER driven by this map — it is presentation only (D-001).
  *
@@ -32,7 +33,11 @@ const CLASSIC_TERMS: Record<TermKey, { one: string; other: string }> = {
 
 const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   pot: { one: 'Hive', other: 'Hives' },
-  fleet: { one: 'Swarm', other: 'Swarms' },
+  // Canon (owner revision 2026-06-08, the-hive-lexicon D-007 supersedes the
+  // D-002 Fleet→Swarm row): the live collective of working agents is the
+  // **Colony**. "Swarm" is reassigned to the deployment-to-instance unit (a
+  // Hive runs 1..N Swarms) — see the `node` term below.
+  fleet: { one: 'Colony', other: 'Colonies' },
   // Canon (owner revision 2026-06-07, supersedes the-hive-lexicon D-002 row):
   // the BRAIN — the persistent engineer session that places + supervises bees —
   // IS the Queen (matches the fleet's own Queen-dispatcher concept, e.g.
@@ -44,7 +49,12 @@ const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   human: { one: 'Keeper', other: 'Keepers' },
   chunk: { one: 'Cell', other: 'Cells' },
   cupboard: { one: 'Comb', other: 'Combs' },
-  node: { one: 'Frame', other: 'Frames' },
+  // Canon (the-hive-lexicon D-007): a **Swarm** is a deployment of a Hive to a
+  // single machine/instance — the machine-bound unit. The earlier
+  // machine/region-node → "Frame" mapping collapses into Swarm. No UI surface
+  // yet (the cloud-deployment Swarm work owns that); reserved here so the term
+  // has a home and is never confused with the live-agent Colony (fleet).
+  node: { one: 'Swarm', other: 'Swarms' },
   substrate: { one: 'Hive Mind', other: 'Hive Minds' },
   // Kept names (D-002): blueprint + harness stay as-is across packs.
   blueprint: { one: 'Blueprint', other: 'Blueprints' },
@@ -61,7 +71,7 @@ export const CLASSIC_PACK: BrandPack = {
 
 export const THE_HIVE_PACK: BrandPack = {
   id: 'the-hive',
-  label: 'The Swarm',
+  label: 'The Hive',
   terms: THE_HIVE_TERMS,
 };
 

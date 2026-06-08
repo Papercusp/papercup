@@ -14,7 +14,7 @@ sidebar:
           <tr><td><strong>Roles</strong></td><td>New named agent invocations the orchestrator can dispatch</td><td>`RoleDefinition`</td></tr>
           <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs before/after iteration phases (e.g. `onPostValidator`)</td><td>`LifecycleHooks`</td></tr>
           <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
-          <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugin/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
+          <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugins/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
           <tr><td><strong>DB schema</strong></td><td>Postgres migrations under the plugin's own schema</td><td>`SchemaMigration[]`</td></tr>
           <tr><td><strong>Routines</strong></td><td>Cron / webhook / API triggers that insert into `pending_events` — <strong>see §9</strong></td><td>`RoutineDefinition[]`</td></tr>
         </tbody>
@@ -37,19 +37,19 @@ sidebar:
         configurations rather than fail at runtime.
       </p>
 
-      ```typescript
-// Plugin manifest:
-export default defineManifest({
-  name: 'shareholder-briefings',
-  version: '1.2.0',
-  requires: {
+      ```json
+// papercusp.json:
+{
+  "name": "shareholder-briefings",
+  "version": "1.2.0",
+  "requires": {
     // Hard dependency — install fails if not satisfied.
-    'audit-log': '^1.0',
+    "audit-log": "^1.0",
     // Optional — plugin loads either way; check `api.hasPlugin('papercup')` at runtime.
-    'papercup': { version: '^0.0.3', optional: true },
-  },
+    "papercup": { "version": "^0.0.3", "optional": true }
+  }
   // ...
-});
+}
 ```
 
       <p><strong>Resolution at install time.</strong></p>
@@ -79,22 +79,27 @@ Continue? [Y/n]: y
       `--orphan` (which leaves B installed but disabled, with a banner
       in the UI explaining why).</p>
 
-      <p><strong>Substrate version pinning.</strong> Independently of
+      <p><strong>Runtime version pinning.</strong> Independently of
       plugin-to-plugin deps, every manifest declares the substrate
-      semver range it was built against:</p>
+      runtime semver range it was built against, via the
+      <code>papercusp</code> field:</p>
 
-      ```typescript
-export default defineManifest({
+      ```json
+// papercusp.json:
+{
   // ...
-  substrate: '^1.0',   // refuses to load on substrate 2.x
-});
+  "papercusp": "^0.1.0"   // refuses to load outside this range
+}
 ```
 
       <p>
         This is the same versioning shape as service ABI pinning
-        (§8.4.1), but at the substrate level. It catches the case where
-        a plugin built against substrate 1.0 is installed onto a 2.x
-        substrate and would otherwise hit subtle API drift bugs.
+        (§8.4.1), but at the runtime level. The loader runs
+        <code>satisfies(PAPERCUSP_RUNTIME_VERSION, manifest.papercusp)</code>
+        on every load and rejects out-of-range plugins, catching the case
+        where a plugin built against an old runtime would otherwise hit
+        subtle API drift bugs. (A separate <code>protocol</code> field
+        pins the plugin-wire protocol — see the runtime roadmap.)
       </p>
 
       
@@ -105,8 +110,9 @@ export default defineManifest({
 
       <p>
         Every installed plugin is in exactly one of these states. The
-        substrate persists state to <code>~/.papercusp/installed/&lt;name&gt;/state.json</code>
-        and exposes it via <code>papercusp status</code>.
+        substrate tracks state for plugins installed under
+        <code>~/.papercusp/global-plugins/&lt;name&gt;/</code> and exposes it
+        via <code>papercusp plugin list</code>.
       </p>
 
       <table>
@@ -333,6 +339,20 @@ export default defineManifest({
         dev mode aimed at sub-second iteration:
       </p>
 
+      <p><em>Implemented (current state):</em> the shipped author commands are
+      <code>papercusp plugin init &lt;name&gt; [--template &lt;slug&gt;]</code>
+      (scaffold from a reference plugin — default <code>cloudflare-stack</code>),
+      <code>papercusp plugin lint</code>, <code>papercusp plugin doctor</code>,
+      and <code>papercusp plugin watch &lt;slug&gt;</code>. The manifest is a
+      <code>papercusp.json</code> file (not a TS file); plugins symlink into
+      <code>~/.papercusp/global-plugins/</code> for local dev. The
+      <code>papercusp dev</code> single-command hot-reload session sketched
+      below is design intent — see the
+      <a href="/internal/docs/spec/plugin-quickstart">authoring quickstart</a>
+      for the current workflow and the
+      <a href="/internal/docs/spec/plugin-runtime-roadmap">runtime roadmap</a>
+      for what shipped vs. deferred.</p>
+
       ```
 $ papercusp dev ./my-plugin
 
@@ -387,26 +407,26 @@ $ papercusp dev ./my-plugin
       <p><strong>Plugin SDK scaffolding.</strong></p>
 
       ```
-$ papercusp init my-plugin --template ui-tab
+$ papercusp plugin init my-plugin --template cloudflare-stack
 
 ==> Creating ./my-plugin/
     package.json
-    papercusp.manifest.ts
-    src/index.ts
-    src/components/Tab.tsx
-    migrations/0001_init.sql
+    papercusp.json
+    index.cjs
+    provision/setup.sh
     README.md
-    .papercuspignore
+    ...
 
-==> Installing dependencies (papercusp/plugin-sdk@^1)
 ==> Done. Next:
-    cd my-plugin && papercusp dev .
+    cd my-plugin && papercusp plugin lint
 ```
 
       <p>
-        Templates ship with the SDK and cover the common shapes:
-        <code>ui-tab</code>, <code>routine-only</code>, <code>role-pack</code>,
-        <code>full-featured</code>. Each template is itself a published
-        plugin in the marketplace under <code>papercusp/template-*</code>
-        so the scaffold output is verifiable from source.
+        <code>papercusp plugin init</code> copies an existing reference
+        plugin (default <code>cloudflare-stack</code>) and rewrites every
+        reference to the new slug; <code>--template &lt;slug&gt;</code> picks
+        a different starter and <code>--from-path &lt;dir&gt;</code> forks a
+        local checkout. Because the scaffold is a real first-party plugin
+        under <code>libs/papercusp/plugins/</code>, the output is verifiable
+        from source.
       </p>

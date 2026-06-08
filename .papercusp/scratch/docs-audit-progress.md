@@ -126,6 +126,20 @@ MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOI
 - spec/operator-architecture-decisions: EDITS — path-drift Aside; rules still hold; operator-core/Hono paths.
 - spec/routines: EDITS — routines-workflow DBOS engine; system:* actions; audit.* tables aspirational.
 
+### Batch 7 (spec b2: plugin + spawning/coord clusters, 12) — DONE
+- spec/plugins: EDITS — /api/plugins/* prefix; papercusp.json not defineManifest; papercusp/protocol version fields; global-plugins dir.
+- spec/plugin-quickstart: VERIFIED CLEAN (agent treated as context — RE-CONFIRM in reference batch).
+- spec/plugin-migration: EDITS — runtime version 0.1.0→0.1.1.
+- spec/plugin-runtime-roadmap: EDITS — migrations squashed note.
+- spec/ui-plugins: EDITS (aspirational) — plugin-sdk path; iframe exports; pi inline-dock; fumadocs /project-docs.
+- spec/plugins-marketplace: EDITS — superseded by Cupboard banner; ui:dashboard-tab no-id IS shipped.
+- spec/harness-spawning: EDITS — scaffold_harness live; depth guard; token_index not config_token; no SPEC.md write; views not physical tables.
+- spec/spawning-harnesses: EDITS — harness:create/blueprint Aside; notifyParentOnDone DBOS drain-based.
+- spec/spawnable-templates: EDITS — requires is metadata not enforced; workspace-aware path; blueprint supersession note.
+- spec/scaffold-failure-recovery: EDITS — removed SPEC.md case; token_index recovery; PG registry not JSON.
+- spec/cross-harness-coordination: EDITS — Aside run.sh→codex + cross_harness:* tools; Tier-3 endpoints verified live.
+- spec/workspace-scoping: EDITS — largely shipped Aside; backfill script tsx path.
+
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.
 - Possible code bug: askOperatorViaSse POSTs without modality:'voice' so voice card-forwarding gate may never fire.

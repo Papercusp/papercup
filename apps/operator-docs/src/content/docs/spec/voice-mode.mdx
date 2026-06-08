@@ -81,7 +81,7 @@ No external service is required. STT and TTS run entirely in the browser.
 - `apps/operator/app/settings/voice/page.tsx` — settings (wake word, rate, per-role voice picker, Test).
 - `packages/operator-core/lib/voice-node/operator-voice-session.ts` — the shared realtime-session **host** (below); `operator-voice-host.ts` boots it.
 - `packages/operator-core/lib/voice-node/operator-voice-bus.ts` — the typed session-bus codec (frame block `0x10–0x1F`).
-- `apps/operator-vite/src/lib/voice/desktop-operator-voice-client.ts` — the desktop webview's bus client.
+- `apps/operator-vite/src/lib/voice/desktop-voice-channel-client.ts` — the desktop webview's bus client.
 - `apps/tui/src/voice_convai.rs` + `apps/tui/src/operator_voice_bus.rs` — the pui's bus client + Rust codec.
 
 ## Shared realtime session — desktop + tui on ONE EL/operator session

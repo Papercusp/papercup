@@ -110,6 +110,63 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('something:read')).toBe(true); // from the row
     expect(caps.has('coord:write')).toBe(true); // from the baseline
   });
+
+  // bee-capability-expansion-2026-06-08 (P-002 / D-001 / D-005): the generic Hive
+  // worker `bee` carries the worker ENGINEERING surface. This is the CAPABILITY half
+  // of the boundary (necessary, not sufficient — the agentRoles allowlist is the
+  // independent co-gate, asserted empirically in the dispatch-stack boundary test).
+  describe("bee — the worker engineering cap set", () => {
+    test('grants the engineering caps added by the expansion (incl. plans:write, D-005)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      for (const c of [
+        // pre-existing worker surface
+        'harness:read',
+        'harness:write',
+        'work_items:read',
+        'work_items:write',
+        'coord:read',
+        'coord:write',
+        'plans:read',
+        'docs:read',
+        'search:read',
+        'memory:read',
+        'memory:write',
+        'tasks:read',
+        'tasks:write',
+        // added by bee-capability-expansion
+        'intel:read',
+        'locks:read',
+        'locks:write',
+        'docs:write',
+        'issues:read',
+        'plans:write',
+      ]) {
+        expect(caps.has(c), `bee missing ${c}`).toBe(true);
+      }
+    });
+
+    test('does NOT grant the Queen-only capabilities (D-002)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'bee');
+      // Placement / steering / admin / judgment surfaces stay with the Queen
+      // (a kind:'hive' bee). These are withheld at the CAPABILITY layer — the
+      // bee never holds the cap, so the capability-check gate denies regardless
+      // of any allowlist.
+      for (const c of [
+        'operator:converse',
+        'autoloop:write',
+        'routines:write',
+        'curation:read',
+        'processes:kill',
+        'activity:report',
+        'secrets:read',
+        'backup:write',
+        'plugins:write',
+        'discovery:write',
+      ]) {
+        expect(caps.has(c), `bee should NOT have ${c}`).toBe(false);
+      }
+    });
+  });
 });
 
 describe('effectiveDispatchWorkspace — EI-30 superuser per-call workspace', () => {

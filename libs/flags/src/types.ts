@@ -37,8 +37,9 @@ export const FLAGS = {
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
   // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
   // unchanged, D-001). OFF (default) = the `classic` Papercusp pack = V1 ship
-  // state; ON = the `the-hive` bee pack (Pot→Hive, Fleet→Swarm, Operator→Queen,
-  // …). Fully reversible presentation switch; @papercusp/lexicon resolves it.
+  // state; ON = the `the-hive` bee pack (Pot→Hive, Fleet→Colony, Queen=brain,
+  // Swarm = a deployment-to-instance unit; D-007). Fully reversible presentation
+  // switch; @papercusp/lexicon resolves it.
   THE_HIVE: "papercusp-the-hive",
 } as const;
 

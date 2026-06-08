@@ -30,21 +30,23 @@ describe('resolveTerm', () => {
   });
 
   it('accepts an explicit BrandPack object', () => {
-    expect(resolveTerm(THE_HIVE_PACK, 'fleet')).toBe('Swarm');
+    expect(resolveTerm(THE_HIVE_PACK, 'fleet')).toBe('Colony');
     expect(resolveTerm(CLASSIC_PACK, 'fleet')).toBe('Fleet');
   });
 
-  it('applies the bee lexicon (D-002) across all renamed terms', () => {
+  it('applies the bee lexicon (D-002, revised by D-007) across all renamed terms', () => {
     const t = lexiconFor('the-hive');
     expect(t('pot')).toBe('Hive');
-    expect(t('fleet')).toBe('Swarm');
+    // D-007: live agents are the Colony (was Swarm); Swarm is reassigned to
+    // the deployment-to-instance unit (the `node` term).
+    expect(t('fleet')).toBe('Colony');
     expect(t('operator')).toBe('Sentinel Bee');
     expect(t('brain')).toBe('Queen');
     expect(t('contributor')).toBe('Bee');
     expect(t('human')).toBe('Keeper');
     expect(t('chunk')).toBe('Cell');
     expect(t('cupboard')).toBe('Comb');
-    expect(t('node')).toBe('Frame');
+    expect(t('node')).toBe('Swarm');
     expect(t('substrate')).toBe('Hive Mind');
     expect(t('signal')).toBe('Waggle');
   });
