@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hostThroughPty } from './psu-pty-host.mjs';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
@@ -595,12 +596,32 @@ async function pickFeature(workspace, harness, need) {
   return picked === NO_FEATURE ? null : picked;
 }
 
-function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
-  const child = spawn(wrapperBin, args, {
-    cwd,
-    env: { ...process.env, ...envelopeEnv },
-    stdio: 'inherit',
-  });
+/**
+ * Should this interactive launch run through the managed-pty host
+ * (turn-lifecycle-control Phase 3, P-012)? Pure — exported for tests.
+ *
+ * Rollout gate. `PAPERCUSP_PSU_NO_PTY=1` is an always-wins kill switch.
+ * Otherwise the default is `PTY_DEFAULT_ON`; until the P-015 feel-check is
+ * confirmed it's opt-IN via `PAPERCUSP_PSU_PTY=1` so the default launch path
+ * stays byte-identical for the live fleet (psu-launcher is exec'd directly — an
+ * edit hits every agent's next launch). Needs a real TTY on both ends (we bridge
+ * raw mode); a non-TTY launch (the brain dock pane, --no-picker scripts) keeps
+ * the plain inherit spawn, which is correct — there's no terminal to bridge.
+ */
+export const PTY_DEFAULT_ON = false; // TODO(P-012): flip true once the feel-check passes
+export function usePtyHost({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+  if (env.PAPERCUSP_PSU_NO_PTY === '1') return false;
+  const enabled =
+    env.PAPERCUSP_PSU_PTY === '1' ? true : env.PAPERCUSP_PSU_PTY === '0' ? false : PTY_DEFAULT_ON;
+  if (!enabled) return false;
+  return !!(stdin.isTTY && stdout.isTTY);
+}
+
+/** The original plain launch: inherit the user's stdio straight into the child.
+ *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
+ *  start. */
+function spawnInherit({ wrapperBin, args = [], cwd, env }) {
+  const child = spawn(wrapperBin, args, { cwd, env, stdio: 'inherit' });
   child.on('error', (e) => {
     console.error(`psu: failed to launch ${wrapperBin}: ${e.message}`);
     console.error(`psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`);
@@ -610,6 +631,43 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
     if (signal) process.kill(process.pid, signal);
     else process.exit(code ?? 0);
   });
+}
+
+function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
+  const env = { ...process.env, ...envelopeEnv };
+  // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
+  // through a managed pty + owner-only control socket so the operator can inject
+  // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking
+  // it. The discovery key is the coord ownerId (PAPERCUSP_SID); without one the
+  // operator can't find the socket, so we keep the plain launch.
+  const ownerId = env.PAPERCUSP_SID || null;
+  if (ownerId && usePtyHost({ env })) {
+    try {
+      hostThroughPty({
+        command: wrapperBin,
+        args,
+        cwd,
+        env,
+        ownerId,
+        advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+        onExit: (code) => process.exit(code ?? 0),
+      }).catch((e) => {
+        // The pty was already spawned (the promise only rejects on an unforeseen
+        // bridge error); don't double-spawn — surface + exit non-zero.
+        process.stderr.write(`psu: managed-pty host error: ${e?.message ?? e}\n`);
+        process.exit(1);
+      });
+      return;
+    } catch (e) {
+      // Synchronous failure = the pty never started (node-pty load / spawn). Safe
+      // to fall back to the plain inherit launch.
+      process.stderr.write(
+        `psu: managed-pty host unavailable (${e?.message ?? e}); using a plain launch. ` +
+          `Set PAPERCUSP_PSU_NO_PTY=1 to silence.\n`,
+      );
+    }
+  }
+  spawnInherit({ wrapperBin, args, cwd, env });
 }
 
 function fmtAge(iso) {
