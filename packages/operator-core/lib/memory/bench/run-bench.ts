@@ -21,6 +21,7 @@ import {
   ClaudeFileMemoryBackend,
   Mem0Backend,
   NoopBackend,
+  HybridBackend,
   invalidateMemoryClient,
   type MemoryBackend,
 } from '@papercusp/memory';
@@ -48,7 +49,7 @@ import {
 import { ROUNDTRIP_SPECS } from './roundtrip-specs';
 
 export const BENCH_SCOPE = 'bench';
-export type BenchBackendName = 'mem0' | 'claude-file' | 'noop';
+export type BenchBackendName = 'mem0' | 'claude-file' | 'noop' | 'hybrid';
 
 export interface BenchRunOptions {
   /** Which backends to bench (default all three). */
@@ -137,6 +138,45 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
       },
       embeds: false,
       extractionOnRemember: false,
+    };
+  }
+  if (name === 'hybrid') {
+    // The hybrid fuses a LEXICAL leg (claude-file temp dir — exact-id) and a
+    // COSINE leg (mem0 over the bench PG schema — paraphrase). HybridBackend
+    // write-throughs each seed to BOTH legs, so the standard seedCorpus path
+    // populates both; search then fuses (cosine-gated RRF + the FP floor).
+    setupBenchMemoryHost();
+    const pg = await benchPgClient();
+    await ensureBenchSchema(pg);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-bench-hybrid-'));
+    const make = () =>
+      new HybridBackend(
+        new ClaudeFileMemoryBackend({ memoryDir: dir, createIfMissing: true }),
+        new Mem0Backend(),
+      );
+    return {
+      backend: make(),
+      reinstantiate: () => {
+        invalidateMemoryClient(); // rebuild the mem0 client over the same PG store
+        return make();
+      },
+      cleanup: async () => {
+        if (!keep) {
+          await dropBenchSchema(pg);
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+        await pg.end();
+        invalidateMemoryClient();
+      },
+      reach: {
+        'readable from codex/omp/operator/memory-tab':
+          'yes — canonical writes land in PG (cosine leg); the lexical claude-file leg is a write-through projection for exact-id recall',
+        'concurrent multi-agent writes': 'yes — PG row-per-fact (canonical); lexical projection is best-effort per-file',
+        'restart survival': 'yes — Postgres (canonical) + plain files (projection)',
+        requires: 'PG + pgvector + embedder key (cosine leg); nothing for the lexical leg',
+      },
+      embeds: true,
+      extractionOnRemember: true,
     };
   }
   return {
@@ -281,7 +321,7 @@ export async function runBench(opts: BenchRunOptions = {}): Promise<BenchRunRepo
   const corpus = loadCorpusFixture(corpusVersion);
   const goldFixture = loadGoldSetFixture(goldVersion);
   const gold = goldFixture.queries;
-  const backends = opts.backends ?? (['mem0', 'claude-file', 'noop'] as BenchBackendName[]);
+  const backends = opts.backends ?? (['mem0', 'claude-file', 'hybrid', 'noop'] as BenchBackendName[]);
   const notes: string[] = [];
 
   const cards: BackendScorecard[] = [];

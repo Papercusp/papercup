@@ -340,7 +340,7 @@ export async function runJudgedTier(opts: JudgedTierOptions): Promise<JudgedTier
   const goldVersion = opts.goldVersion ?? 'v1';
   const judgeModel = opts.judgeModel ?? JUDGED_TIER_JUDGE_MODEL;
   const makeCtx = opts.makeCtx ?? makeBackendCtx;
-  const backends = opts.backends ?? (['mem0', 'claude-file', 'noop'] as BenchBackendName[]);
+  const backends = opts.backends ?? (['mem0', 'claude-file', 'hybrid', 'noop'] as BenchBackendName[]);
   const doubleScoreN = opts.doubleScoreN ?? 5;
 
   const corpus = loadCorpusFixture(corpusVersion);
