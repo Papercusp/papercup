@@ -83,7 +83,7 @@ export default function HiveWorkspaceCards({ groups, onDrill, onCreate }: HiveWo
                     <li key={m.slug}>
                       <button
                         type="button"
-                        data-testid={`hive-card-member-${m.slug}`}
+                        data-testid={`hive-member-${m.slug}`}
                         className="pc-hive-cards__member"
                         title={m.slug}
                         onClick={() => onDrill(g.root.slug, m.slug)}

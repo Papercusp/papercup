@@ -40,9 +40,9 @@ The library set documented here was chosen, installed, and applied across the ha
 | Icons | `lucide-react` | `import { ChevronRight } from 'lucide-react'` |
 | Single-submit form (one Submit button, atomic persist) | `react-hook-form` + `zod` (or `ajv` for plugin schemas) | `useFormWith(schema)` + `<FormField>` + `<SubmitButton>` from `@/lib/forms` |
 | Per-field auto-save settings page (no Submit button) | Independent `useState` + debounced save | `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx` |
-| Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | `@restart/grid-core` `RichGrid` | `<RichGrid<Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId />` |
-| Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | `@restart/grid-core` `GridTable` | `<GridTable headers data columnTypes={{ qty: 'stepper' }} />` |
-| 5000+ rows of mostly-scalar data, performance is the constraint | `@restart/grid-core` `DataGridShell` (canvas) | `<DataGridShell headers data formatters />` |
+| Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | `@papercusp/grid-core` `RichGrid` | `<RichGrid<Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId />` |
+| Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | `@papercusp/grid-core` `GridTable` | `<GridTable headers data columnTypes={{ qty: 'stepper' }} />` |
+| 5000+ rows of mostly-scalar data, performance is the constraint | `@papercusp/grid-core` `DataGridShell` (canvas) | `<DataGridShell headers data formatters />` |
 
 ## Hard rules
 
@@ -121,7 +121,7 @@ Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px b
 
 ## Grids — `RichGrid` vs `GridTable` vs `DataGridShell`
 
-Three grid components in `@restart/grid-core`. Pick by what your cells need to do, not by row count alone.
+Three grid components in `@papercusp/grid-core`. Pick by what your cells need to do, not by row count alone.
 
 | Use… | When | Cell style | Virtualization | Examples |
 |---|---|---|---|---|
@@ -164,13 +164,13 @@ Authoring style differs:
 2. Do you need pills / icons / hover cards / action buttons / per-row expand? → `RichGrid`
 3. Do you have 5000+ rows where scrolling perf is the bottleneck? → `DataGridShell`
 
-If you're tempted by both #2 and #3, you're in the wrong place — that's the `@restart/bloom-grid` use case (search-driven catalog with rich cells).
+If you're tempted by both #2 and #3, you're in the wrong place — that's the `@papercusp/bloom-grid` use case (search-driven catalog with rich cells).
 
 ### Critical gotcha for `RichGrid`
 
 The render signature is **`render: ({ row }) =>`** — destructure. Writing `render: (row) =>` *looks* like it works but actually receives the cell context object, so `row.name` etc. silently come back `undefined`. This bites every new contributor at least once.
 
-For full sort, virtualization, multi-row expand, and theme-token reference, see [`libs/papergrid/grid-core/README.md`](https://github.com/...) — the canonical grid docs.
+For full sort, virtualization, multi-row expand, and theme-token reference, see [`libs/generic/papergrid/grid-core/README.md`](https://github.com/...) — the canonical grid docs.
 
 ## Where to look for examples
 
@@ -192,10 +192,10 @@ For full sort, virtualization, multi-row expand, and theme-token reference, see 
 | Radix Checkbox in grid render | `FeatureList.tsx`, `ProposalsPanel.tsx` |
 | Radix Checkbox indeterminate | `ProposalsPanel.tsx` (select-all checkbox) |
 | Sonner toast.success / toast.error | `PhaseTabs.tsx`, `DepartmentHarnessDashboard.tsx` |
-| `useFormWith` + Zod (single-submit form) | `app/login/page.tsx`, `app/settings/oracle/page.tsx`, `app/settings/api-keys/page.tsx` |
+| `useFormWith` + Zod (single-submit form) | `app/login/page.tsx`, `app/settings/oracle/OracleClient.tsx`, `app/settings/api-keys/page.tsx` |
 | `useDebouncedSave` (per-field settings) | `app/settings/voice/page.tsx`, `app/settings/backups/page.tsx`, `app/settings/operator/page.tsx` |
 | `useForm` + `makeAjvResolver` (plugin JSON Schema) | `app/harness/HarnessDashboard.tsx` (PluginConfigEditor), `app/settings/plugins/page.tsx` |
-| `Controller` for non-native widgets (MarkdownEditor, etc.) | `app/settings/oracle/page.tsx` |
+| `Controller` for non-native widgets (MarkdownEditor, etc.) | `app/settings/oracle/OracleClient.tsx` |
 | Radix Collapsible (per-row state) | `CheckpointBanner.tsx` |
 | Radix Collapsible (replacing `<details>`) | `DepartmentHarnessDashboard.tsx` |
 | `RichGrid` with sort + multi-row expand | `FeatureList.tsx`, `ProposalsPanel.tsx` |

@@ -3,6 +3,22 @@ title: Mobile operator app — feature + design feedback
 description: Captured live against http://localhost:1420/operator (paired to localhost:3070). Two sections — features for the feature agent, design for the design agent — independently actionable.
 ---
 
+:::caution[Surface superseded — the web mobile app was replaced by a native rebuild]
+This memo critiques the old Tauri-WebView mobile app (`apps/operator-mobile`,
+loaded at `localhost:1420`) and cites paths like
+`apps/operator-mobile/src/screens/Operator.tsx` and
+`apps/operator/lib/mobile-operator-actions.ts`. **Neither exists anymore** —
+the `apps/operator-mobile` app and the `mobile-operator-actions.ts` helper are
+gone. Mobile was revived as a **native** app (`papercup-rust-mobile`, Android +
+iOS, a separate repo; see the plan `mobile-apps-revival-redesign-2026-06-05`)
+with a redesigned IA: five **Inbox-first** tabs — **Inbox / Operator / Plans /
+Fleet / Settings** — replacing the old Operator/Harness/Running/Inbox/Settings
+set. The standalone suggestion-card feed is retired; cards now render inline as
+actionable chat bubbles in the Operator thread, and the old "Running" tab was
+folded into "Fleet". Treat the feature/design observations below as historical
+design intent against a surface that no longer ships in this form.
+:::
+
 Captured live by loading the mobile app at `localhost:1420`, pairing
 against `localhost:3070`, and walking all five tabs (Operator,
 Harness, Running, Inbox, Settings). Screenshots in `/tmp/mob-*.png`.
