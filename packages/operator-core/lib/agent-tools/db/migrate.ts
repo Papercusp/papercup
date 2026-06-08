@@ -53,7 +53,7 @@ export default defineTool({
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 60,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     file: z.string().min(1).describe('Absolute path to the .sql migration file to apply.'),
     confirm: z.boolean().optional(),

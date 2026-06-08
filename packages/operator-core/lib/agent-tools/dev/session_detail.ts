@@ -20,7 +20,7 @@ export default defineTool({
     notWhen: `For the SESSION LIST, use \`dev:sessions\` first.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     spawnId: z.string().min(1),
   }),

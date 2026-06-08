@@ -210,7 +210,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   modality: ['text'],
   timeoutSec: 30,
   args: argsSchema,

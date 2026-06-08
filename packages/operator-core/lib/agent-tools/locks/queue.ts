@@ -31,7 +31,7 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     paths: z.array(z.string()).optional(),
     owner: z.string().optional(),

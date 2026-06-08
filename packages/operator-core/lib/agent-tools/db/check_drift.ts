@@ -29,7 +29,7 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({}),
   async handler() {
     const d = await checkMigrationDrift();

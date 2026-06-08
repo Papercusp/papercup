@@ -152,10 +152,14 @@ function hiveResponse(result: RevokeHiveContributorResult): Response {
         },
         { status: 500 },
       );
-    default: {
-      const _never: never = result;
-      return Response.json({ error: 'unexpected error', detail: String(_never) }, { status: 500 });
-    }
+    default:
+      // All six failure codes are handled above; `RevokeHiveContributorResult`'s
+      // failure is a single object with a union `code` (not a discriminated union),
+      // so no `never`-exhaustiveness guard applies — return a defensive 500.
+      return Response.json(
+        { error: 'unexpected Hive revoke error', code: result.code, detail: result.detail },
+        { status: 500 },
+      );
   }
 }
 

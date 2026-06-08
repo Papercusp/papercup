@@ -65,7 +65,9 @@ type StateTable =
   // Migration 164 — P2P voice-channel registry (holepunch-voice-channels P-007/D-011):
   | 'operator_voice_channels'
   // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
-  | 'hive_directory_cache';
+  | 'hive_directory_cache'
+  // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
+  | 'operator_account_pool';
 
 /**
  * Read the single row for the active workspace, or null if missing.

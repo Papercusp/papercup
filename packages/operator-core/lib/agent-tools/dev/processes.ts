@@ -22,7 +22,7 @@ export default defineTool({
     notWhen: `For ACTIVE spawns, use \`orchestrator.list_active\`. For delegates, use \`delegates:list\`. dev:processes is the unified diagnostic view.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     kinds: z.array(z.enum(KIND_ENUM)).optional(),
   }),

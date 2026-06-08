@@ -55,7 +55,7 @@ export default defineTool({
   // exclusive wait can block up to max_drain_sec; bump past it with margin.
   timeoutSec: MAX_WAIT_SEC + 30,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     resource: z.string().min(1).max(200),
     mode: z.enum(['shared', 'exclusive']),

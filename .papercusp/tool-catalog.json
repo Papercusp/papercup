@@ -1,7 +1,152 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 346,
+  "count": 352,
   "tools": [
+    {
+      "name": "accounts:list",
+      "http": {
+        "path": "/api/agent-tools/accounts/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the Queen's account pool: each account's id/label/credentialRef, the member harness slugs bound to it, and its rate-limit projection (pausedUntil / penaltyCount). Returns {ok, accounts}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Seeing which accounts the Queen can draw from and what each is bound to.",
+        "notWhen": "Wanting live headroom + sustained-limit flags — accounts:status."
+      }
+    },
+    {
+      "name": "accounts:register",
+      "http": {
+        "path": "/api/agent-tools/accounts/register",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Register (or update) a Claude account in the Queen's account pool. `credentialRef` is mounted on a frame at deploy time: `token:<path>` (a `claude setup-token` OAuth token) | `file:<path>` / absolute / `~` (a `.credentials.json` bundle) — a REFERENCE, never the secret. Re-registering an existing id updates its credentialRef/label, preserving bindings + rate state. Returns {ok, account}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Adding a Claude subscription the Queen can deploy Swarms onto (each account has its own rate limits). Build the pool before deploying a Hive that should spread across accounts.",
+        "notWhen": "Setting the operator API key (operator:credentials). A one-off local run (no deploy).",
+        "chaining": "accounts:register (×N) → deploy:hive { members, swarm } (binds an account per member by headroom) → accounts:status."
+      }
+    },
+    {
+      "name": "accounts:remove",
+      "http": {
+        "path": "/api/agent-tools/accounts/remove",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Remove a Claude account from the pool. Does NOT tear down anything already deployed on it. Returns {ok, removed}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Retiring an account from the pool (e.g. a subscription you no longer use).",
+        "notWhen": "Tearing down a deployed frame — deploy:teardown / deploy:teardown_hive."
+      }
+    },
+    {
+      "name": "accounts:scale_out",
+      "http": {
+        "path": "/api/agent-tools/accounts/scale_out",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Manually scale out off an exhausted account (P-021): provision a FRESH cloud Swarm on the most-available account for the exhausted account's bound members, instead of waiting on the pause. ⚠ Provisions real machines (costs money) — owner-gated. `force` skips the sustained-limit check. Returns {ok, result}.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
+        "notWhen": "Just inspecting state — accounts:status. No fresh account is available (it will report no-fresh-account)."
+      }
+    },
+    {
+      "name": "accounts:status",
+      "http": {
+        "path": "/api/agent-tools/accounts/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-account rate-limit status: availability (not currently paused), the sustained-limit flag (the scale-out trigger), the rate projection, and any LIVE local governor buckets keyed to the account. Returns {ok, accounts}.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "Checking which accounts have headroom before a deploy, or why an account auto-scaled out."
+      }
+    },
     {
       "name": "actions:recent",
       "http": {
@@ -1175,7 +1320,7 @@
           "POST"
         ]
       },
-      "description": "Idle end-of-turn scaffold: register a STANDING wake watch on YOUR OWN inbox so a later coord:send {wake:true} to you re-invokes you, then end your turn (sleep). Call this exactly when your work-list is drained / you are awaiting direction — not while you still have work. Sugar over watch:create on your inbox-wake key (the deliver-and-wake rendezvous). Returns the watch id + your inbox-wake key.",
+      "description": "Annotate your idle state at end-of-turn: refresh the \"why I am idle\" note on your inbox-wake watch (and optionally its wake floor), then end your turn. You are ALREADY always-armed at session start (turn-lifecycle-control), so a later coord:send {wake:true} re-invokes you whether or not you call this — this just records why you are idle for the wake turn. Returns the watch id + your inbox-wake key.",
       "capabilities": [
         "coord:write"
       ],
@@ -1192,7 +1337,7 @@
         "bee"
       ],
       "guidance": {
-        "when": "You are idle at end-of-turn — work-list empty or blocked, awaiting the Queen / a peer to send you something. Register the watch, then END YOUR TURN. You are re-invoked when work/direction arrives via coord:send {wake:true}.",
+        "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides your wake turn) and tune your wake floor. You are wakeable regardless; arming is automatic at session start. Then END YOUR TURN.",
         "notWhen": "You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer's artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.",
         "chaining": "coord:await-inbox → end your turn. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel."
       }
@@ -2090,7 +2235,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "After adding a migration, or when a runtime \"missing column/relation\" error suggests the live DB lags the sql/ dir.",
@@ -2119,7 +2265,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Applying a migration / destructive DDL that could disrupt in-flight queries. Dry-run to see holders; confirm to drain + apply.",
@@ -2148,7 +2295,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.",
@@ -2316,7 +2464,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2362,7 +2511,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2386,7 +2536,8 @@
         "operator",
         "architect",
         "debugger",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2409,7 +2560,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2486,7 +2638,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer"
     },
@@ -2505,7 +2658,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2528,7 +2682,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2551,7 +2706,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2574,7 +2730,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2597,7 +2754,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2626,7 +2784,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Diagnose whether agent spawns / meridian calls are being paced or paused by the rate-limit governor (e.g. \"why are runs slow / stalled?\"), or read the fleet cap / effective concurrency / usage% the top-bar shows.",
@@ -2654,7 +2813,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You need to restart the dev server (e.g. to pick up a lib/** edit). Run dry first to see who is using it; then confirm to drain + restart.",
@@ -2683,7 +2843,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Confirm which dev services are up before testing against one, or diagnose a \"connection refused\" / stale-server symptom.",
@@ -2705,7 +2866,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2728,7 +2890,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -2776,7 +2939,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3155,7 +3319,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer"
     },
@@ -3174,7 +3339,8 @@
       "agentRoles": [
         "operator",
         "architect",
-        "debugger"
+        "debugger",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3439,8 +3605,7 @@
         "debugger",
         "operator",
         "documenter",
-        "curator",
-        "bee"
+        "curator"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3590,8 +3755,7 @@
         "debugger",
         "operator",
         "documenter",
-        "curator",
-        "bee"
+        "curator"
       ],
       "guidance": {
         "when": "Scoring a completed gym run for the optimizer — the subjective reward the proposer optimizes. Use the TARGET blueprint's gym.rubric so a coding vs research target is judged on its own dimensions.",
@@ -3620,8 +3784,7 @@
         "debugger",
         "operator",
         "documenter",
-        "curator",
-        "bee"
+        "curator"
       ],
       "guidance": {
         "when": "Scoring a gym run's deterministic guardrails — the optimizer cannot game these, so they gate/monitor a variant independently of the judge. Resolve the TARGET blueprint's declared gym.signals by name.",
@@ -4015,7 +4178,8 @@
         "documenter",
         "operator",
         "worker",
-        "architect"
+        "architect",
+        "bee"
       ],
       "guidance": {
         "when": "A human-authored doc should be drift-tracked: declare what code it covers. Run after writing/editing the doc, or to fix a wrong anchor.",
@@ -4037,7 +4201,8 @@
       ],
       "agentRoles": [
         "operator",
-        "documenter"
+        "documenter",
+        "bee"
       ],
       "guidance": {
         "when": "After this harness has existing docs/*.md that predate the typed model, to make the ones with a declared/inferable subject drift-tracked.",
@@ -4088,7 +4253,8 @@
       ],
       "agentRoles": [
         "documenter",
-        "operator"
+        "operator",
+        "bee"
       ],
       "guidance": {
         "when": "You (the documenter) just wrote or refreshed a generated doc file (docs/features/F-<id>.md, a guide). Call once per doc with the feature + the exact files/symbols you read.",
@@ -4111,7 +4277,8 @@
       "agentRoles": [
         "documenter",
         "operator",
-        "reviewer"
+        "reviewer",
+        "bee"
       ],
       "guidance": {
         "when": "A generated doc is stale (its subject code changed) and you want it refreshed.",
@@ -4135,7 +4302,8 @@
         "documenter",
         "operator",
         "worker",
-        "architect"
+        "architect",
+        "bee"
       ],
       "guidance": {
         "when": "A generated doc is accurate but missing the human \"why\"/caveats you want preserved across regenerations. Add it as an overlay rather than hand-editing the generated body (which a regen would lose).",
@@ -4160,7 +4328,8 @@
         "operator",
         "worker",
         "architect",
-        "reviewer"
+        "reviewer",
+        "bee"
       ],
       "guidance": {
         "when": "A manual doc was flagged for re-verify (its subject code changed) and you confirmed it's still accurate — or you just edited it to match.",
@@ -4990,7 +5159,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Per-edit locking is already automatic on every client (the PreToolUse/tool_call hook acquires + releases around each individual Edit/Write/apply_patch), so the gap this fills is the edit→commit window the hook cannot cover.",
@@ -5019,7 +5189,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A directory/subtree refactor (mode X on the dir), reading a whole subtree (S), or coordinating file-vs-harness-level work the per-edit lock is too fine for. Use \"\" as the path to take/contend the harness root.",
@@ -5048,7 +5219,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Before relying on a shared resource (mode shared), or before a destructive action on it like restarting the dev server (mode exclusive). Registered resources only — check locks:list.",
@@ -5077,7 +5249,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Mid-wait, when the user redirects you to other work or you decide a different approach.",
@@ -5106,7 +5279,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A hook (or you) wants to know if a destructive command would collide with an in-flight exclusive hold before running it.",
@@ -5135,7 +5309,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "For edits expected to take >15 min, call once at the halfway mark.",
@@ -5163,7 +5338,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Holding a named resource longer than its TTL — heartbeat near the halfway mark.",
@@ -5192,7 +5368,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining.",
@@ -5221,7 +5398,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Diagnostics — \"what are the other agents doing?\" or \"why am I blocked?\". Cheap, MVCC read.",
@@ -5249,7 +5427,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Immediately after the edit is committed. On context loss / restart, call with all_mine=true to release everything.",
@@ -5278,7 +5457,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "As soon as the subtree/directory work the lock guarded is done.",
@@ -5307,7 +5487,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "As soon as you are done using a shared resource, or immediately after an exclusive action (e.g. the dev-server restart) completes.",
@@ -6624,7 +6805,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate.",
@@ -6653,7 +6835,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one).",
@@ -6683,7 +6866,8 @@
         "operator",
         "documenter",
         "curator",
-        "operator"
+        "operator",
+        "bee"
       ],
       "guidance": {
         "when": "The architect (or any agent) emitted a ```promote:plan block and the human accepted it. Pass the raw block content (everything between the fences, excluding the fence lines themselves).",
@@ -6741,7 +6925,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Once, after the revision spine ships, to give existing plans a history before their first live write — or to seed a single plan whose spine was never populated.",
@@ -6770,7 +6955,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Correcting or rewriting a SPECIFIC part of a plan body the structured verbs cannot reach — a stale citation, a wrong line, a paragraph in `## Background` or a decision body. The default for small/targeted prose fixes.",
@@ -6887,7 +7073,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6975,7 +7162,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You are starting a new plan and want a templated file with valid frontmatter ready to fill in.",
@@ -7004,7 +7192,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "User pauses work on a plan from the UI, or an agent needs to suspend a plan without marking it done.",
@@ -7065,7 +7254,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -7269,7 +7459,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A human is editing the raw markdown of a plan — prose sections the assisted verbs (set-now / set-status / add-decision / add-item) do not cover. Use only for small-to-medium bodies that fit comfortably in one tool call.",
@@ -7298,7 +7489,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Writing or rewriting a large plan body. If the plan markdown is more than a few screens, use begin → append* → commit with chunks under 24k characters instead of sending one huge plans:set-content call.",
@@ -7327,7 +7519,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Promoting a legacy plan — one with no/malformed frontmatter — to a tracked plan, e.g. from the Plans admin tab triage screen.",
@@ -7356,7 +7549,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "An item's importance changes — escalating a stuck or aging item, or correcting a level set wrong at creation.",
@@ -7385,7 +7579,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.",
@@ -7414,7 +7609,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, shipping it, or rejecting it (→superseded).",
@@ -7443,7 +7639,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "User drags a started plan to a new position in the Plans rail, or explicitly asks \"do plan A before plan B\".",
@@ -7472,7 +7669,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "You want to archive a finished run, mark a run done, or un-archive one — a deliberate lifecycle change a human/agent makes.",
@@ -7531,7 +7729,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "User clicks 'Start Plan' in the harness UI, or an agent is asked to begin work on a specific plan.",
@@ -7560,7 +7759,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "bee"
       ],
       "guidance": {
         "when": "A revision from a plan-run session has no rationale and you want the \"why\" filled in — for the Revisions panel or a richer launch-context digest.",
@@ -8089,7 +8289,8 @@
         "intel:read"
       ],
       "agentRoles": [
-        "operator"
+        "operator",
+        "bee"
       ],
       "profile": "engineer",
       "guidance": {
@@ -8240,7 +8441,7 @@
           "POST"
         ]
       },
-      "description": "OWNER action: revoke another contributor from a shared harness by adding their device pubkeys to the harness revocation set (revoked_pubkeys). Every peer honors it on the next admission re-verify and drops them from live federation. Requires repo-admin token.",
+      "description": "OWNER action: revoke another contributor by adding their device pubkeys to a revocation set. Scope is per-HARNESS (`harnessSlug`) or per-HIVE (`hiveSlug` — revokes from the whole Hive's federation at once, P-006). Every peer honors it on the next admission re-verify and drops them from live federation. Harness scope requires a repo-admin token; Hive scope requires holding the Hive key.",
       "capabilities": [
         "intel:write"
       ],
@@ -8251,9 +8452,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to the harness revocation set (requires repo-admin token). Every peer drops them on its next admission re-verify. Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared harness's federation entirely.",
-        "notWhen": "Revoking your OWN device — use `substrate:revoke_self_device` instead. Also not when the token does not have GitHub admin permissions on the shared repo.",
-        "chaining": "Resolve the contributor's githubUserId from the Contributors tab, `dev:dogfood_substrate_status`, or `harness:membership` first — githubUserId is the stable numeric GitHub user id, not the login."
+        "when": "OWNER action: revoke ANOTHER contributor by adding their device pubkeys to a revocation set. Pass `harnessSlug` to drop them from ONE harness's federation (repo-admin token), or `hiveSlug` to drop them from the WHOLE Hive's federation in one action (P-006 — requires this Swarm to hold the Hive key). Use when a contributor is a confirmed bad actor, their account is compromised, or they must be removed from the shared federation entirely.",
+        "notWhen": "Revoking your OWN device — use `substrate:revoke_self_device` instead. For harness scope, not when the token lacks GitHub admin on the shared repo. For Hive scope, not when this Swarm does not hold the Hive private key (only the owning Swarm may revoke Hive-wide).",
+        "chaining": "Resolve the contributor's githubUserId from the Contributors tab, `dev:dogfood_substrate_status`, `harness:membership`, or `hive:get` first — githubUserId is the stable numeric GitHub user id, not the login."
       }
     },
     {
@@ -8567,6 +8768,35 @@
       "guidance": {
         "when": "You need to drive or read a running pui terminal workbench — switch its tab, change its active harness, move a selection, or read its current state. Side-effect tool: writes a tui_intents row the pui consumes over SSE.",
         "notWhen": "For the browser/desktop UI use `ui:dispatch`. For showing a question + choices use `chat:ask_choice`. For delegating work use `<spawn>` — tui:dispatch is UI control, not work delegation."
+      }
+    },
+    {
+      "name": "turn:interrupt",
+      "http": {
+        "path": "/api/agent-tools/turn/interrupt",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "End a peer agent's CURRENT turn (the dual of a wake). mode:'cooperative' injects a high-priority `yield` so the peer reaches a safe checkpoint, saves partial state, releases locks, and ends its turn (the polite default; DEFERS if the target holds file locks). mode:'force' ends the turn NOW, mid-thinking — Ctrl+C to a managed-pty session or SIGINT to a headless one (the turn ends; the session stays resumable). reason is REQUIRED + audited; storm-rate-limited so it can't be used to halt the fleet.",
+      "capabilities": [
+        "turn:interrupt"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "guidance": {
+        "when": "A peer is doing the wrong thing / working on something now-obsolete / looping, and you need its current turn to STOP. Prefer cooperative (it wraps up cleanly + saves); use force only when it must stop mid-thinking and cooperative was ignored or there's no time.",
+        "notWhen": "To wake an IDLE peer, use coord:send {wake:true} — interrupt is for a RUNNING peer. To hand work over, coord:handoff. Don't force a peer that holds file locks unless necessary (it can orphan a half-written edit) — cooperative defers exactly to avoid that."
       }
     },
     {

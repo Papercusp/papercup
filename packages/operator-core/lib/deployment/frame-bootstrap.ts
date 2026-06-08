@@ -49,6 +49,10 @@ export interface FrameBootstrapOpts {
    *  (`claude setup-token` output) was staged — installed to `~/.papercusp/claude-token`
    *  and exported as `CLAUDE_CODE_OAUTH_TOKEN` for everything the script starts. */
   claudeTokenRemotePath?: string;
+  /** P-019: the logical account id this frame's credential belongs to. Exported as
+   *  `PAPERCUSP_ACCOUNT_ID` so the frame's rate governor keys its buckets per-account
+   *  (and its pauses carry the account, driving the Queen's scale-out). */
+  accountId?: string;
   /** Install root on the frame (default `/opt/papercusp`). */
   installRoot?: string;
   /** Commands that install the papercusp RUNTIME on the frame (clone+build, or fetch a
@@ -140,6 +144,7 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
   const orchestratorOnFrame = opts.orchestratorOnFrame !== false;
   const credPath = opts.claudeCredentialsRemotePath;
   const tokenPath = opts.claudeTokenRemotePath;
+  const accountId = opts.accountId;
   const envSpec = opts.environment;
   const mergedEnv = { ...(envSpec?.env ?? {}), ...(opts.env ?? {}) };
 
@@ -238,11 +243,16 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     ]);
   }
 
-  if (credPath || tokenPath) {
+  if (credPath || tokenPath || accountId) {
     // P-011: stage the per-frame Claude subscription so this frame has its OWN
     // rate limits — via a credentials bundle (interactive-login channel), a
     // long-lived OAuth token (`claude setup-token`; the automated channel), or both.
     const lines: string[] = [];
+    if (accountId) {
+      // P-019: export the logical account id (script-level) so the orchestrator loop
+      // + every agent it spawns key their rate-governor buckets per-account.
+      lines.push(`export PAPERCUSP_ACCOUNT_ID=${shq(accountId)}`);
+    }
     if (credPath) {
       // The operator scp's the credentials to `credPath` BEFORE this runs; here we
       // install them where both omp (via Meridian) + claude read.

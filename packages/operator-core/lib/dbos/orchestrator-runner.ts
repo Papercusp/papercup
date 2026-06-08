@@ -224,7 +224,10 @@ export async function spawnInvokeOnce(
     // rather than the old hardcoded `('claude-code','')` which mis-bucketed everything.
     if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
       const { backend, model } = resolveSpawnBackendModel(role);
-      const gov = governorForBackend(backend, model);
+      // P-019: on a frame launched under a bound account, key the bucket to that account
+      // so its separate subscription tracks its separate rate limits (and its pauses carry
+      // the account id, driving the Queen's scale-out). Unset locally ⇒ the global bucket.
+      const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
       const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
       if (!release) {
         return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
@@ -786,6 +789,13 @@ export function wireOrchestratorInvokeRunner(): void {
   // governor is shared by the pipeline spawn, meridian calls, and the gym, so one init here
   // (on operator boot) covers them all.
   initAgentGovernorObserver();
+  // cloud-deployment-layer Phase 7 (P-019/P-021): bridge the governor's per-account pause
+  // signal into the account pool — record each account's rate state, and when an account is
+  // SUSTAINEDLY limited, scale out onto a fresh account instead of only pausing. A no-op until
+  // a process runs under PAPERCUSP_ACCOUNT_ID (i.e. account-keyed buckets exist).
+  void import('../deployment/account-pool-store')
+    .then(({ initAccountScaleObserver }) => initAccountScaleObserver())
+    .catch((err) => console.error('[account-pool] observer init failed:', err));
   // RB-007: when PAPERCUSP_AGENT_GOVERNOR_PG=1, route the governor's rate+pause budget through a
   // PG-backed store so every operator process + the gym share ONE account budget (no co-burst).
   maybeInstallPgGovernorStore(setGovernorStore);

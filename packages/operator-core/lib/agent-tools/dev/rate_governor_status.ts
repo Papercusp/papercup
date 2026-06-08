@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'intel:read',
   requirePrincipal: false,
-  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator'],
+  agentRoles: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator', 'bee'],
   args: z.object({
     usageWindowMinutes: z
       .number()

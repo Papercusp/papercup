@@ -79,10 +79,14 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // NECESSARY but NOT SUFFICIENT to call a tool. The dispatch stack (libs/generic/tooldef
   // dispatch-stack.ts) runs an independent `role-allowlist` gate FIRST: a tool that
   // declares `agentRoles` is callable only by a role in that list, regardless of caps. The
-  // intel/locks/docs:write tools each declare an agentRoles list that historically EXCLUDED
-  // bee — so these caps unlock the surface only once `bee` is ALSO added to those tools'
-  // agentRoles (the COORD_ROLES-gated tools — coord:*, issues:*, improvements:capture — already
-  // admit bee). See the plan's Phase-2 boundary for the allowlist co-edit.
+  // intel/locks/docs:write/plans:write tools each declared an agentRoles list that
+  // historically EXCLUDED bee, so the caps above were INERT until the allowlist co-edit.
+  // P-004 DID that co-edit: `bee` is now in the agentRoles of every tool gated by these caps
+  // (the ~60 dev:*/flags:*/locks:*/db:*/harness_docs:*/plans:* tools), and the COORD_ROLES-gated
+  // tools (coord:*, issues:*, improvements:capture) already admit bee. CARVE-OUT: three
+  // COORD_ROLES tools that are PLACEMENT/optimization surfaces — fleet:spawn, gym:judge,
+  // gym:signals — filter bee BACK OUT of their allowlist (D-002, Queen-only; see those files).
+  // The boundary is pinned empirically in bee-tool-boundary.test.ts.
   bee: [
     'harness:read',
     'harness:write',

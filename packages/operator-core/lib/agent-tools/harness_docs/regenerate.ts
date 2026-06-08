@@ -24,7 +24,7 @@ export default defineTool({
   },
   capability: 'docs:write',
   requirePrincipal: false,
-  agentRoles: ['documenter', 'operator', 'reviewer'],
+  agentRoles: ['documenter', 'operator', 'reviewer', 'bee'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

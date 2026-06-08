@@ -39,7 +39,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     path: z.string().max(4096).describe('Repo-relative node: a file, a directory/subtree, or "" for the harness root.'),
     mode: z.enum(['IS', 'IX', 'S', 'SIX', 'X']),

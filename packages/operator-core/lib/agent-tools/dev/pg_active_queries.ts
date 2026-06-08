@@ -19,7 +19,7 @@ export default defineTool({
     notWhen: `For routine diagnostics, the /dev/pg panel is enough. Use this tool when scripting an investigation.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     limit: z.number().int().positive().max(200).optional(),
   }),

@@ -20,7 +20,7 @@ export default defineTool({
     notWhen: `For per-agent audit, use \`audit:list\`. telemetry is observability-shaped, not action-shaped.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     /** Filter by which transport drove the dispatch. 'unknown' matches

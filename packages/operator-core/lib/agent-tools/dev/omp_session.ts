@@ -23,7 +23,7 @@ export default defineTool({
     notWhen: `For PRODUCTION agent runs, the orchestrator owns sessions. dev:omp_session is the CLI-tool inspector.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     spawnId: z.string().min(1).optional(),
     filePath: z.string().min(1).optional(),

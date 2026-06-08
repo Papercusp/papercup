@@ -30,7 +30,7 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     command: z.string().min(1).max(4000),
   }),

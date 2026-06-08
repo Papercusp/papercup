@@ -136,6 +136,8 @@ export async function installFrame(
     },
     claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
     claudeTokenRemotePath: boot.oauthTokenLocalPath ? REMOTE_TOKEN_PATH : undefined,
+    accountId: boot.accountId, // P-019: export PAPERCUSP_ACCOUNT_ID so the frame keys rate buckets per-account
+
     runtimeTarballRemotePath: boot.runtimeTarballLocalPath ? REMOTE_RUNTIME_TARBALL_PATH : undefined,
     embeddedPg: true, // D-007 ratified — frame runs its own embedded-pg
     orchestratorOnFrame: true, // D-006 ratified — frame runs its own loop

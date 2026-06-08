@@ -196,6 +196,7 @@ export function defaultScaleOutDeps(log?: (level: LogLevel, msg: string) => void
 export interface ScaleObserverDeps {
   workspaceId: () => string;
   now: () => number;
+  updatePool: (mutator: (pool: AccountPool) => AccountPool, ws: string) => Promise<AccountPool>;
   scaleOut: (accountId: string, ws: string) => Promise<ScaleOutResult>;
   emitExhausted: (accountId: string, pausedUntil: number) => void;
   log: (level: LogLevel, msg: string) => void;
@@ -234,6 +235,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
   const workspaceId = deps.workspaceId ?? (() => activeWorkspaceId());
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? ((lvl, m) => console.warn(`[accounts:${lvl}] ${m}`));
+  const updatePool = deps.updatePool ?? updateAccountPool;
   const scaleOut = deps.scaleOut ?? ((id, ws) => handleAccountExhausted(id, ws, defaultScaleOutDeps(log)));
   const emitExhausted = deps.emitExhausted ?? defaultEmitExhausted;
 
@@ -244,7 +246,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
     const t = now();
     void (async () => {
       try {
-        const pool = await updateAccountPool(
+        const pool = await updatePool(
           (p) => recordAccountPenalty(p, accountId, t, { pausedUntil: ev.pausedUntil }),
           ws,
         );

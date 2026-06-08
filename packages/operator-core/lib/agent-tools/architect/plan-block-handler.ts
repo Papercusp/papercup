@@ -303,7 +303,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES, 'operator'],
+  agentRoles: [...SU_ROLES, 'operator', 'bee'],
   args: z.object({
     blockContent: z
       .string()

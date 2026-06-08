@@ -52,7 +52,7 @@ export default defineTool({
   capability: 'locks:write',
   timeoutSec: MAX_DRAIN_SEC + 30,
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),

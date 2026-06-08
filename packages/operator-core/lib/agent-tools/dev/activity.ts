@@ -17,7 +17,7 @@ export default defineTool({
     notWhen: `For agent action audit, use \`audit:list\`. dev:activity is for the /dev panel, not for analysis.`,
   },
   requirePrincipal: false,
-  agentRoles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger', 'bee'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     limit: z.number().int().positive().max(500).optional(),

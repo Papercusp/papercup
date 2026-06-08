@@ -35,6 +35,13 @@ export interface DeployDeps {
   clearFrame: (slug: string, workspaceId: string) => Promise<void>;
   /** Revoke a destroyed frame's headless-peer device pubkey (P-015). */
   revokeFrame?: (frame: Frame, slug: string, workspaceId: string) => Promise<void>;
+  /**
+   * P-020: pick + bind an account from the pool to this deploy, returning the
+   * (possibly account-augmented) config. Omit to skip account selection (the config
+   * is used as-is — today's behavior). The default deps wire this to the pool's
+   * headroom selection + persist the binding onto the registry.
+   */
+  selectAccount?: (config: DeploymentConfig, slug: string, workspaceId: string) => Promise<DeploymentConfig>;
   log?: (level: LogLevel, msg: string) => void;
 }
 
@@ -64,12 +71,15 @@ export async function deployHarness(
   deps: DeployDeps,
   opts: { signal?: AbortSignal } = {},
 ): Promise<DeployResult> {
-  const config = await deps.getDeploymentConfig(slug, workspaceId);
-  if (!config || config.target === 'local') {
-    throw new Error(`deployHarness: harness '${slug}' has no cloud deployment config (target=${config?.target ?? 'local'})`);
+  const config0 = await deps.getDeploymentConfig(slug, workspaceId);
+  if (!config0 || config0.target === 'local') {
+    throw new Error(`deployHarness: harness '${slug}' has no cloud deployment config (target=${config0?.target ?? 'local'})`);
   }
+  // P-020: bind an account from the pool (by rate-limit headroom) before provisioning,
+  // unless the config already pins a credentialRef. No-op when no pool/hook is wired.
+  const config = deps.selectAccount ? await deps.selectAccount(config0, slug, workspaceId) : config0;
   const driver = deps.resolveDriver(config);
-  deps.log?.('info', `[deploy] ${slug} → ${config.target} (region=${config.region ?? 'default'})`);
+  deps.log?.('info', `[deploy] ${slug} → ${config.target} (region=${config.region ?? 'default'}${config.accountId ? `, account=${config.accountId}` : ''})`);
 
   const bootstrap = await deps.buildBootstrap(slug, workspaceId, config);
   const ctx = ctxFor(slug, workspaceId, bootstrap, deps, opts.signal);
@@ -134,6 +144,22 @@ export function defaultDeployDeps(
     resolveDriver: (config) => resolveDeploymentDriver(config),
     log,
     revokeFrame: (frame, slug, workspaceId) => revokeFrameOnTeardown(frame, slug, workspaceId, headlessAdmission),
+    async selectAccount(config, slug, workspaceId) {
+      const { selectAccountForDeploy, defaultDeployAccountDeps } = await import('./account-pool-store');
+      const effective = await selectAccountForDeploy(config, slug, workspaceId, defaultDeployAccountDeps(log));
+      // Persist the chosen account onto the registry so the frame bootstrap, status, and
+      // teardown all see the same credentialRef/accountId across operator restarts.
+      if (effective.credentialRef !== config.credentialRef || effective.accountId !== config.accountId) {
+        const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+        const reg = await loadHarnessRegistry(workspaceId);
+        const p = reg.projects.find((x) => x.slug === slug);
+        if (p) {
+          p.deployment = effective;
+          await saveHarnessRegistry(reg, workspaceId);
+        }
+      }
+      return effective;
+    },
     async getDeploymentConfig(slug, workspaceId) {
       const { loadHarnessRegistry } = await import('../harness-registry');
       const reg = await loadHarnessRegistry(workspaceId);

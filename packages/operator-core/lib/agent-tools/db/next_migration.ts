@@ -67,7 +67,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'bee'],
   args: z.object({
     name: z
       .string()

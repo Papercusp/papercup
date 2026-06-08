@@ -98,6 +98,8 @@ import './harness/membership';
 // Cloud deployment (cloud-deployment-layer-2026-06-06 P-012/P-016)
 import './deploy/deploy';
 import './deploy/hive';
+// Queen account pool + auto-scale-out (cloud-deployment-layer-2026-06-06 Phase 7 P-019/P-020/P-021)
+import './accounts/accounts';
 import './cross_harness/docs_outline';
 import './cross_harness/docs_get';
 import './cross_harness/docs_search';

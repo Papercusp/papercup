@@ -27,7 +27,13 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // D-002 (bee-capability-expansion-2026-06-08): spawning agents is PLACEMENT — a
+  // Queen-only surface. The Queen calls this as role 'operator'; the worker-bee is
+  // explicitly EXCLUDED. The bee joined COORD_ROLES in local-hive P-011 (so it could
+  // coord:* / issues:* / improvements:capture), which inadvertently leaked this
+  // placement tool to it via [...COORD_ROLES]. Filtering bee back out restores the
+  // pre-bee allowlist and turns "only the brain spawns" from convention into a gate.
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee'),
   args: z.object({
     harness: z.string().min(1).max(80).optional()
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),
