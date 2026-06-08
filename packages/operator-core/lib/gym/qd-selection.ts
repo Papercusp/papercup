@@ -16,8 +16,9 @@
  *
  *     curiosity = (1 - w) · headroom + w · novelty
  *
- * where `headroom ∈ [0,1]` is the frontier-relative inverse of train-aggregate
- * (1 at the lowest trainAgg — the member `selectParent` would pick) and
+ * where `headroom ∈ [0,1]` is the frontier-relative *competition rank* of
+ * train-aggregate (1 at the lowest trainAgg — the member `selectParent` would
+ * pick — descending to 0 at the highest) and
  * `novelty ∈ [0,1]` is the precomputed distance-from-archive (the P-010
  * ArchiveAPI's `sparseness(descriptor)` — see ./archive.ts). The most-curious
  * frontier member wins; ties break by `variantId` ascending (deterministic).
@@ -67,23 +68,35 @@ function clamp01(x: number): number {
 }
 
 /**
- * Frontier-relative headroom score in [0,1]: 1 at the lowest trainAgg (most
- * headroom — the `selectParent` pick), 0 at the highest. When every trainAgg is
- * equal the range is degenerate and headroom is a constant 1 for all, so
- * selection falls through to the novelty term and then the `variantId`
- * tie-break — exactly how `selectParent` tie-breaks on a flat frontier.
+ * Frontier-relative headroom score in [0,1] via *competition rank* of trainAgg:
+ * 1 at the lowest trainAgg (most headroom — the `selectParent` pick), descending
+ * to 0 at the highest. A member's rank is the count of strictly-lower members,
+ * so equal trainAggs share a headroom (the worst tier all gets 1; the
+ * `variantId` tie-break then decides among them, exactly like `selectParent`).
+ *
+ * Why rank, not min-max normalisation `1 - (trainAgg-min)/range`: the latter
+ * subtracts then divides, so two distinct-but-close trainAggs can collapse to
+ * the same float (FP underflow relative to a wide range) and reorder the pick —
+ * which silently breaks the w=0 ≡ selectParent invariant. Competition rank uses
+ * only comparisons, so distinct trainAgg ⇒ distinct headroom, always. It is also
+ * outlier-robust: one extreme-fitness member no longer squashes everyone else's
+ * headroom signal in the blend.
  */
 function headroomScores(members: readonly QdFrontierMember[]): Map<string, number> {
   const out = new Map<string, number>();
-  let min = Infinity;
-  let max = -Infinity;
-  for (const m of members) {
-    if (m.trainAgg < min) min = m.trainAgg;
-    if (m.trainAgg > max) max = m.trainAgg;
+  const n = members.length;
+  if (n === 1) {
+    out.set(members[0]!.variantId, 1);
+    return out;
   }
-  const range = max - min;
   for (const m of members) {
-    out.set(m.variantId, range === 0 ? 1 : 1 - (m.trainAgg - min) / range);
+    let strictlyLower = 0;
+    for (const other of members) {
+      if (other.trainAgg < m.trainAgg) strictlyLower++;
+    }
+    // strictlyLower=0 (lowest tier) ⇒ 1; =n-1 (unique max) ⇒ 0. Integer ratio,
+    // so distinct ranks map to distinct floats (no normalisation collapse).
+    out.set(m.variantId, (n - 1 - strictlyLower) / (n - 1));
   }
   return out;
 }

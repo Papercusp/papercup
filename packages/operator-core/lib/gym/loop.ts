@@ -13,11 +13,13 @@
  */
 import { paretoFrontier } from './frontier';
 import { decideAccept, selectParent, type AcceptThresholds, type VariantEval } from './gate-engine';
+import { selectParentQD } from './qd-selection';
 import { appendChangelog } from './changelog';
 import { circuitBreakerTripped } from './circuit-breaker';
 import { runWithRatePause } from './rate-pause';
 import type { VariantOverlay } from './variant-overlay';
 import type { CandidateProposal, WorstTrace } from './proposer';
+import type { ArchiveCandidateRecord } from './qd/niche';
 
 export interface LoopConfig {
   thresholds: AcceptThresholds;
@@ -36,6 +38,14 @@ export interface LoopConfig {
    * gym:accept. Internal champion/frontier tracking still advances (for exploration).
    */
   autoPromote?: boolean;
+  /**
+   * Quality-diversity parent selection (P-011, D-008). When set, the loop blends
+   * distance-from-archive novelty into parent selection (requires
+   * deps.noveltyForVariant); absent ⇒ pure fitness-headroom selection
+   * (unchanged). noveltyWeight ∈ [0,1]: 0 ≡ the legacy selectParent, 1 ⇒ pure
+   * novelty search.
+   */
+  qualityDiversity?: { noveltyWeight: number };
 }
 
 /** One candidate's reviewable record, handed to deps.recordProposal (gym UI). */
@@ -87,6 +97,21 @@ export interface LoopDeps {
   /** RB-006: injected clock + sleep for the rate-limit pause+resume (default real time). */
   now?(): number;
   sleep?(ms: number): Promise<void>;
+  /**
+   * Quality-diversity novelty signal (P-011): distance-from-archive in [0,1] for
+   * a frontier member, sourced from the P-010 ArchiveAPI (`sparseness(descriptor)`).
+   * Optional — absent ⇒ fitness-only selection. Only consulted when
+   * `config.qualityDiversity` is set.
+   */
+  noveltyForVariant?(variantId: string): Promise<number>;
+  /**
+   * Record an evaluated variant into the QD novelty/diversity archive (P-010, D-008).
+   * Called for the baseline and each evaluated candidate. Optional — absent ⇒ no archive
+   * (existing behavior unchanged). The live wiring derives the niche descriptor from the
+   * overlay pair and upserts a `source:'gym'` elite into harness_shared.gym_qd_archive.
+   * BEST-EFFORT: the loop swallows any failure so the archive can never abort the optimizer.
+   */
+  recordArchive?(rec: ArchiveCandidateRecord): Promise<void>;
 }
 
 export interface LoopResult {
@@ -113,6 +138,16 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
   // RB-006: a rate-limited turn pauses+resumes (near reset) rather than aborting the loop.
   let skipped = 0;
 
+  // P-010 (D-008): feed each evaluated variant to the QD novelty/diversity archive. The
+  // archive is auxiliary — a failure here must never abort the optimizer, so it's swallowed.
+  const recordArchive = async (rec: ArchiveCandidateRecord): Promise<void> => {
+    try {
+      await deps.recordArchive?.(rec);
+    } catch {
+      /* best-effort: the QD archive never gates the loop */
+    }
+  };
+
   // Seed: evaluate the baseline. A transient rate-limit is waited out; a persistent failure
   // here genuinely can't start the loop, so it propagates to the (unattended) caller.
   const base = await runWithRatePause(() => deps.evaluate(deps.baseline.variantId, deps.baseline.overlay), { now, sleep });
@@ -121,6 +156,12 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     evalResult: base.evalResult,
     overlay: deps.baseline.overlay,
     worstTraces: base.worstTraces,
+  });
+  // Seed the archive with the baseline (its niche is the origin point of the search).
+  await recordArchive({
+    variantId: deps.baseline.variantId,
+    overlay: deps.baseline.overlay,
+    fitness: base.evalResult.trainAgg,
   });
   let frontierIds = [deps.baseline.variantId];
   let championId = deps.baseline.variantId;
@@ -133,9 +174,20 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     if (config.budgetUsd !== null && spentUsd >= config.budgetUsd) break;
     cycles = cycle;
 
-    // Select parent from the frontier (most headroom).
+    // Select parent from the frontier. Default: most fitness headroom (selectParent).
+    // Quality-diversity (P-011, D-008): when configured AND a novelty signal is
+    // injected, blend distance-from-archive (novelty search) into the pick so the
+    // search leaps toward under-explored niches instead of pure hill-climbing.
     const frontierEvals = frontierIds.map((id) => ({ variantId: id, trainAgg: variants.get(id)!.evalResult.trainAgg }));
-    const parentPick = selectParent(frontierEvals);
+    const qd = config.qualityDiversity;
+    const noveltyForVariant = deps.noveltyForVariant;
+    const parentPick =
+      qd && noveltyForVariant
+        ? selectParentQD(
+            await Promise.all(frontierEvals.map(async (e) => ({ ...e, novelty: await noveltyForVariant(e.variantId) }))),
+            { noveltyWeight: qd.noveltyWeight },
+          )
+        : selectParent(frontierEvals);
     const parentId = parentPick?.variantId ?? championId;
     const parent = variants.get(parentId)!;
 
@@ -159,6 +211,14 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     }
     spentUsd += evalRes.costUsd;
     variants.set(candidateId, { evalResult: evalRes.evalResult, overlay: proposal.overlay, worstTraces: evalRes.worstTraces });
+    // P-010: offer the evaluated candidate to the QD archive (insert-if-better per niche).
+    await recordArchive({
+      variantId: candidateId,
+      overlay: proposal.overlay,
+      parentOverlay: parent.overlay,
+      fitness: evalRes.evalResult.trainAgg,
+      rationale: proposal.rationale,
+    });
 
     const champion = variants.get(championId)!;
     const verdict = decideAccept(

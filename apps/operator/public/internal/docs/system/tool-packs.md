@@ -176,6 +176,47 @@ A tool never installs in isolation (D-005): the storefront's Tools view
 executes. The storefront also gains a **Packs** kind tab, and plugin/pack
 detail pages surface the listing's `provides_tools`.
 
+### Closing the install loop (`autoInstallDeps`)
+
+Discovery + the dep gate stop at *advisory*: `harness:create` resolves a
+declared tool to an installable Cupboard listing and **reports** it, but the
+shipped gate never installed it — a human had to. The install loop closes that
+gap (`tool-distribution-discovery-2026-06-08` D-002):
+
+* **`resolveAndInstallDeps(declared, deps)`**
+  (`packages/operator-core/lib/cupboard/resolve-and-install.ts`) — pure +
+  dependency-injected. It classifies a declared `{tools,packs,plugins}` set
+  against the live catalog, installs every *installable* unit via the injected
+  installer, re-derives the catalog, folds in each installed unit's own declared
+  deps, and recurses — bounded by a visited-set + a round cap so a cyclic/deep
+  dep graph terminates. A tool with **no** provider still hard-fails; an
+  unreachable Cupboard softens unknown packs/plugins to advisory (mirroring the
+  gate).
+* **`cupboard:install-deps`** (`POST /api/cupboard/install-deps`) — the
+  deliberate one-click action: pass a `deps` set or a `blueprintId`/`blueprint`
+  and it installs everything the Cupboard can provide, returning
+  `{ ok, installed, stillMissing, advisory, rounds }`. The real install IO
+  (`install-io.ts`) reuses `installPluginFromCupboardCore` (a pack and a plugin
+  install through the *same* core — no second runtime) behind one
+  `installCupboardUnitFromListing` seam, shared with the install-plugin route.
+* **`harness:create { autoInstallDeps: true }`** — opt-in: when the blueprint's
+  only unmet deps are Cupboard-installable, the gate installs them (transitively)
+  and re-validates before deciding, instead of failing. Default off — silent
+  installs on every create would surprise. Code-tool packs install globally;
+  runtime-plugin capability grants for the new harness are a separate
+  `cupboard:install-deps { harness }` call.
+
+The full cycle — publish a `kind:'pack'` code-pack → `GET /api/cupboard/tools`
+discovers it → a blueprint declaring one of its tools → the loop installs it →
+the tool resolves `available` — is proven end-to-end against the real
+`example-tool-pack` in `resolve-and-install.e2e.test.ts`.
+
+The loop is proven against the local + in-memory Cupboard. Publishing a pack to
+the **prod** Cupboard worker still needs the federation-owner-gated deploy
+(`wrangler d1 execute …006…sql --remote` + `wrangler deploy` — base D-007 §1 /
+discovery D-003). Until applied, `?kind=pack` 400s at the prod worker and the
+loop's `installable` units resolve only against locally-listed packs.
+
 ## Source map
 
 | Concern                                   | Source                                                                                                                                            |
@@ -185,6 +226,11 @@ detail pages surface the listing's `provides_tools`.
 | Pack purity validation                    | `packages/plugin-loader/src/index.ts` (`validate`, `runtimeDispatch`)                                                                             |
 | Manifest schema (`kind`, `dependencies`)  | `packages/plugin-sdk/papercusp-plugin.schema.json`                                                                                                |
 | Install gate                              | `packages/operator-core/lib/cupboard/install-plugin-core.ts` + `…/routes/cupboard-install-plugin.ts`                                              |
+| Install loop (pure)                       | `packages/operator-core/lib/cupboard/resolve-and-install.ts`                                                                                      |
+| Install IO (shared seam)                  | `packages/operator-core/lib/cupboard/install-io.ts`                                                                                               |
+| `cupboard:install-deps` tool/route        | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts`                                                                       |
+| `harness:create { autoInstallDeps }`      | `packages/operator-core/lib/agent-tools/harness/create.ts`                                                                                        |
+| End-to-end loop proof                     | `packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts`                                                                             |
 | Reference pack                            | `libs/papercusp/plugins/example-tool-pack/`                                                                                                       |
 | Dep validator (pure)                      | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                            |
 | Worker schema + routes (`provides_tools`) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts`                                |

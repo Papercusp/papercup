@@ -154,4 +154,48 @@ describe('runOptimizationLoop', () => {
     expect(res.skipped).toBe(1);
     expect(res.cycles).toBe(3);
   });
+
+  // P-011 (D-008) — quality-diversity parent selection. The novelty signal is only
+  // consulted when config.qualityDiversity is set, and when it is, it can steer the
+  // pick toward an under-explored (novel) frontier member instead of pure headroom.
+  it('does NOT consult noveltyForVariant when qualityDiversity is absent (default path unchanged)', async () => {
+    let called = false;
+    const { d } = baseDeps({ async noveltyForVariant() { called = true; return 0.9; } });
+    await runOptimizationLoop(config, d); // no qualityDiversity ⇒ legacy fitness-only selection
+    expect(called).toBe(false);
+  });
+
+  it('quality-diversity selects the NOVEL frontier parent where fitness-only selects the under-served one', async () => {
+    // Build a 2-member frontier: baseline (trainVector [7,7]) + cand-1 ([9,5]) trade
+    // off, so neither Pareto-dominates → both persist on the frontier. baseline has
+    // the lower trainAgg (what selectParent picks); cand-1 is flagged the novel one.
+    function runWith(qd: LoopConfig['qualityDiversity']): Promise<string[]> {
+      const parents: string[] = [];
+      const d: LoopDeps = {
+        baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+        async evaluate(variantId) {
+          if (variantId === 'baseline') {
+            return { evalResult: { variantId, trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.0, meanCost: 1.0, anyNewRegression: false, allProbesCaught: true }, worstTraces: [], costUsd: 1.0 };
+          }
+          // higher trainAgg (clears the improvement gate) but a trade-off vector so it
+          // does not dominate baseline → the frontier keeps both members.
+          return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, meanCost: 1.0, anyNewRegression: false, allProbesCaught: true }, worstTraces: [], costUsd: 1.0 };
+        },
+        async propose() { return { overlay: { promptOverrides: { worker: 'v' } }, rationale: 'x', diffFromParent: 'worker' } as CandidateProposal; },
+        async promote() {},
+        async revert() {},
+        async persistCycle(rec) { parents.push(rec.parentId); },
+        newVariantId: (cycle) => `cand-${cycle}`,
+        // baseline = under-served (low trainAgg); cand-1 = the novel/sparse member.
+        async noveltyForVariant(variantId) { return variantId === 'baseline' ? 0.0 : 1.0; },
+      };
+      return runOptimizationLoop({ ...config, maxCycles: 2, qualityDiversity: qd }, d).then(() => parents);
+    }
+    // Cycle 1 parent is always baseline (sole frontier member); cycle 2 selects over
+    // the 2-member frontier [baseline, cand-1].
+    const qdParents = await runWith({ noveltyWeight: 1.0 });
+    expect(qdParents[1]).toBe('cand-1'); // pure novelty → the sparse member
+    const fitnessParents = await runWith(undefined);
+    expect(fitnessParents[1]).toBe('baseline'); // fitness-only → the under-served member
+  });
 });

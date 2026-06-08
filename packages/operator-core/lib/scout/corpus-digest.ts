@@ -13,16 +13,22 @@
  * (self-learning-central D-003: "the Hive's complete operational history is the
  * creative substrate").
  *
+ * INTEGRATION CONTRACT (with su-797a5's scout/types.ts, affirmed by su-b6c3f's
+ * verification-lane contract): the four ref-carrying lanes ARE the shared
+ * {@link CorpusDigest} (types.ts is the single source of truth for the consumed
+ * shape; this file is the production PRODUCER of it). {@link StateOfHiveDigest}
+ * is a structural SUPERSET — the 4 `CorpusDigest` lanes plus a `reverts` churn
+ * substrate (P-003's third input) and a `corpus` rollup — so it is directly
+ * assignable to `CorpusDigest`; the ideators / `flattenDigest` / `digestRefSet`
+ * read only the 4 lanes and ignore the extras. No adapter seam needed.
+ *
  * DESIGN — deterministic, not an LLM call (mirrors curation/change-feed.ts):
  * the digest is a PURE, REGENERABLE rollup over injected readers. The creative
  * LEAP happens DOWNSTREAM (the P-004 ideators); the digest's job is to be the
  * grounded, queryable, ref-carrying substrate they leap FROM. Keeping it
  * deterministic makes it cheap (no per-cycle model spend just to summarise) and
- * exhaustively testable.
- *
- * Each surfaced pattern carries `refs` back to the originals (the
- * rationale:feed / change-feed pattern) — never a duplicated log; an ideator or
- * critic drills in with work_items:get / plans:get / curation:change-feed.
+ * exhaustively testable. Each pattern's `ref` drills back to the original (the
+ * change-feed pattern — never a duplicated log).
  */
 
 import { z } from 'zod';
@@ -33,8 +39,7 @@ import {
   type SignatureRecurrence,
 } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+import type { MetaPattern, MetaPatternCategory } from './types';
 
 // ---------------------------------------------------------------------------
 // Raw input records (what the readers gather; normalised by synthesize).
@@ -108,50 +113,42 @@ export interface StateOfHiveReaders {
 
 // ---------------------------------------------------------------------------
 // DigestSchema — the structured output the Scout ideators consume (B1).
+// The MetaPattern shape MATCHES scout/types.ts (single source of truth for the
+// consumed contract); this zod schema is the runtime validator for it.
 // ---------------------------------------------------------------------------
 
+/** The four corpus lanes (mirrors scout/types.ts MetaPatternCategory). */
+const META_PATTERN_CATEGORIES = [
+  'recurring-friction',
+  'time-token-sink',
+  'chronic-deferral',
+  'capability-gap',
+] as const;
+
 /**
- * One grounded meta-pattern — a single row in one of the four categories. The
- * unit the ideators reason over: a named pattern with a salience `signal`, the
- * underlying `count`, and `refs` to drill back to the originals.
+ * Zod validator for one grounded meta-pattern — structurally identical to
+ * scout/types.ts `MetaPattern` (a colocated `satisfies` assertion in the tests
+ * pins the two together). `weight` is the 0..1 salience the digest's own
+ * ranking assigns (top pattern per lane = 1.0); `ref` is the drill-back key.
  */
 export const MetaPatternSchema = z.object({
-  /** Stable id for dedup across ticks, e.g. "friction:<signature>", "sink:papercup/worker". */
-  id: z.string(),
-  /** Human one-line: what the pattern IS. */
-  title: z.string(),
-  /** Optional detail (counts, decay, $ amount, statuses). */
+  category: z.enum(META_PATTERN_CATEGORIES).optional(),
+  summary: z.string(),
   detail: z.string().optional(),
-  /**
-   * Salience score (higher = more significant for ideation). Category-relative:
-   * recurrence count for friction, $ for sinks, occurrences×weight for deferrals,
-   * recurrence for gaps, churn weight for reverts.
-   */
-  signal: z.number(),
-  /** How many underlying records this pattern rolls up. */
-  count: z.number().int().nonnegative(),
-  /** Owning harness, when the pattern is harness-scoped. */
-  harness: z.string().optional(),
-  /**
-   * Drill-back references to the originals (never duplicated): e.g.
-   * "wi:EI-12", "plan:foo-2026#P-003", "usage:papercup/worker", "audit:F-7".
-   */
-  refs: z.array(z.string()),
-  /** Category-specific extras (decayDays, costUsd, openCount, statuses, …). */
-  meta: z.record(z.string(), z.unknown()).optional(),
+  ref: z.string(),
+  weight: z.number().optional(),
 });
-export type MetaPattern = z.infer<typeof MetaPatternSchema>;
 
 /**
  * `DigestSchema` (B1 deliverable) — the validated shape of a "state of the Hive"
- * corpus digest. The four plan-named meta-pattern categories + a reverts churn
- * substrate + a corpus rollup. `z.infer<typeof DigestSchema>` is the
- * `StateOfHiveDigest` type the Scout loop passes around.
+ * corpus digest. The four plan-named lanes (the shared {@link CorpusDigest}) +
+ * a `reverts` churn substrate + a `corpus` coverage rollup.
+ * `z.infer<typeof DigestSchema>` is {@link StateOfHiveDigest}.
  */
 export const DigestSchema = z.object({
   /** ISO generation time (deterministic in tests via opts.nowMs). */
   generatedAt: z.string(),
-  /** What corpus was scanned — for honesty about coverage. */
+  /** What corpus was scanned — honesty about coverage. */
   corpus: z.object({
     completions: z.number().int().nonnegative(),
     reverts: z.number().int().nonnegative(),
@@ -160,20 +157,22 @@ export const DigestSchema = z.object({
     spendUsd: z.number(),
     spendBuckets: z.number().int().nonnegative(),
   }),
-  // The four meta-pattern categories (plan P-003), each ranked signal-desc.
-  /** Recurring friction nobody named — same stable signature seen >1×. */
+  // The four meta-pattern categories (plan P-003) — the shared CorpusDigest lanes.
   recurringFriction: z.array(MetaPatternSchema),
-  /** Where time/tokens went — the heaviest spend buckets. */
   timeTokenSinks: z.array(MetaPatternSchema),
-  /** What keeps being deferred — chronic (recurring) deferrals first. */
   chronicDeferrals: z.array(MetaPatternSchema),
-  /** Absent capabilities — net-new asks + repeated "no way to X" friction. */
   capabilityGaps: z.array(MetaPatternSchema),
-  /** Undone work — status regressions, churniest items first (substrate signal). */
+  /** Undone work — status regressions, churniest first (P-003's reverts input). */
   reverts: z.array(MetaPatternSchema),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });
+
+/**
+ * The production digest. A structural SUPERSET of the shared {@link CorpusDigest}
+ * (the four lanes), adding the `reverts` churn substrate + the `corpus` rollup.
+ * Assignable to `CorpusDigest`, so the P-004 ideators consume it directly.
+ */
 export type StateOfHiveDigest = z.infer<typeof DigestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -247,60 +246,72 @@ function truncate(s: string, n = 120): string {
   return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
 }
 
+/** A scored, pre-normalisation row. We carry the raw salience so each lane can
+ *  max-normalise it into MetaPattern.weight (0..1, top = 1.0). */
+interface Scored {
+  salience: number;
+  pattern: Omit<MetaPattern, 'weight'>;
+}
+
+/** Sort by raw salience desc, slice to `limit`, then max-normalise into the
+ *  shared MetaPattern.weight (top of the lane = 1.0). */
+function finalize(scored: Scored[], limit: number): MetaPattern[] {
+  const ranked = [...scored].sort((a, b) => b.salience - a.salience).slice(0, limit);
+  const max = ranked.length ? ranked[0].salience : 0;
+  return ranked.map((s) => ({
+    ...s.pattern,
+    weight: max > 0 ? round(s.salience / max) : 0,
+  }));
+}
+
 /** recurringFriction — recurring (count>1) stable signatures from the friction
- *  queue, ranked recurrence-then-recency. Open recurrence (active friction) is
- *  weighted above resolved. Reuses the improvement loop's recurrence matcher. */
+ *  queue. Open recurrence (active friction) outweighs a recurrence gone quiet.
+ *  Reuses the improvement loop's recurrence matcher (no second dedup). */
 function buildRecurringFriction(friction: ImprovementCandidate[], nowMs: number, limit: number): MetaPattern[] {
   const recurrences: SignatureRecurrence[] = signatureRecurrence(friction, { nowMs }).filter((s) => s.count > 1);
   const byId = new Map(friction.map((c) => [c.id, c] as const));
-  return recurrences
-    .map((r): MetaPattern => {
-      // Open friction still biting outweighs a recurrence that has gone quiet.
-      const openBoost = r.openCount > 0 ? 1 + r.openCount / r.count : 0.5;
-      const signal = round(r.count * openBoost);
-      const exemplar = byId.get(r.ids[0]);
-      const title = exemplar ? truncate(exemplar.title) : r.signature;
-      return {
-        id: `friction:${r.signature.slice(0, 60)}`,
-        title,
+  const scored: Scored[] = recurrences.map((r) => {
+    const openBoost = r.openCount > 0 ? 1 + r.openCount / r.count : 0.5;
+    const salience = r.count * openBoost;
+    const exemplar = byId.get(r.ids[0]);
+    return {
+      salience,
+      pattern: {
+        category: 'recurring-friction',
+        summary: exemplar ? truncate(exemplar.title) : r.signature,
         detail: `recurred ${r.count}× (${r.openCount} open), last ${r.decayDays}d ago`,
-        signal,
-        count: r.count,
-        refs: r.ids.slice(0, 12).map((id) => `wi:${id}`),
-        meta: { signature: r.signature, openCount: r.openCount, resolvedCount: r.resolvedCount, decayDays: r.decayDays },
-      };
-    })
-    .sort((a, b) => b.signal - a.signal)
-    .slice(0, limit);
+        ref: `wi:${r.ids[0]}`,
+      },
+    };
+  });
+  return finalize(scored, limit);
 }
 
 /** timeTokenSinks — the heaviest spend buckets (where time/tokens went). */
 function buildTimeTokenSinks(spend: SpendRecord[], limit: number): MetaPattern[] {
-  return [...spend]
+  const scored: Scored[] = spend
     .filter((s) => s.costUsd > 0 || s.outputTokens > 0)
-    .sort((a, b) => b.costUsd - a.costUsd || b.outputTokens - a.outputTokens)
-    .slice(0, limit)
-    .map((s): MetaPattern => {
+    .map((s) => {
       const harness = s.harness ?? '(unattributed)';
       const role = s.role ?? '(any role)';
       const tokens = s.inputTokens + s.outputTokens;
       return {
-        id: `sink:${harness}/${role}`,
-        title: `$${round(s.costUsd)} on ${harness} · ${role}`,
-        detail: `${s.runs} run(s), ${tokens.toLocaleString()} tokens`,
-        signal: round(s.costUsd),
-        count: s.runs,
-        harness: s.harness ?? undefined,
-        refs: [`usage:${harness}/${role}`],
-        meta: { costUsd: round(s.costUsd), inputTokens: s.inputTokens, outputTokens: s.outputTokens },
+        salience: s.costUsd > 0 ? s.costUsd : tokens / 1_000_000, // $ first; tokens as a tiny tiebreak
+        pattern: {
+          category: 'time-token-sink' as MetaPatternCategory,
+          summary: `$${round(s.costUsd)} on ${harness} · ${role}`,
+          detail: `${s.runs} run(s), ${tokens.toLocaleString()} tokens`,
+          ref: `usage:${harness}/${role}`,
+        },
       };
     });
+  return finalize(scored, limit);
 }
 
 /** chronicDeferrals — deferrals aggregated by stable signature so the SAME thing
  *  deferred repeatedly (across items / plans / decisions) reads as *chronic*
- *  (high signal). needs-human punts weigh above blocked; a one-off deferral is a
- *  low-signal current deferral, not yet chronic. */
+ *  (high salience). needs-human punts weigh above blocked; a one-off deferral is
+ *  a low-salience current deferral, not yet chronic. */
 function buildChronicDeferrals(deferrals: DeferralRecord[], limit: number): MetaPattern[] {
   const groups = new Map<string, DeferralRecord[]>();
   for (const d of deferrals) {
@@ -310,25 +321,24 @@ function buildChronicDeferrals(deferrals: DeferralRecord[], limit: number): Meta
     groups.set(sig, arr);
   }
   const weightOf = (status: string): number => (status === 'needs-human' ? 1.5 : status === 'blocked' ? 1.2 : 1);
-  return [...groups.entries()]
-    .map(([sig, members]): MetaPattern => {
-      const signal = round(members.reduce((acc, m) => acc + weightOf(m.status), 0));
-      const exemplar = members[0];
-      const plans = [...new Set(members.map((m) => m.planSlug))];
-      const statuses = [...new Set(members.map((m) => m.status))];
-      return {
-        id: `deferral:${sig.slice(0, 60)}`,
-        title: truncate(exemplar.text),
+  const scored: Scored[] = [...groups.values()].map((members) => {
+    // Recurrence is the chronic signal; punt-severity is the tiebreak.
+    const severity = members.reduce((acc, m) => acc + weightOf(m.status), 0);
+    const salience = members.length * 10 + severity;
+    const exemplar = members[0];
+    const plans = [...new Set(members.map((m) => m.planSlug))];
+    const statuses = [...new Set(members.map((m) => m.status))];
+    return {
+      salience,
+      pattern: {
+        category: 'chronic-deferral' as MetaPatternCategory,
+        summary: truncate(exemplar.text),
         detail: `deferred ${members.length}× across ${plans.length} plan(s) [${statuses.join(', ')}]`,
-        signal,
-        count: members.length,
-        refs: members.slice(0, 12).map((m) => `plan:${m.planSlug}#${m.refId}`),
-        meta: { signature: sig, plans, statuses },
-      };
-    })
-    // Chronic = recurs OR is a hard stop (needs-human). Rank chronic-first.
-    .sort((a, b) => b.count - a.count || b.signal - a.signal)
-    .slice(0, limit);
+        ref: `plan:${exemplar.planSlug}#${exemplar.refId}`,
+      },
+    };
+  });
+  return finalize(scored, limit);
 }
 
 /** capabilityGaps — absent capabilities: net-new feature-kind asks + friction
@@ -349,28 +359,26 @@ function buildCapabilityGaps(friction: ImprovementCandidate[], nowMs: number, li
   const gapCandidates = friction.filter((c) => c.kind === 'feature' || namesMissingCapability(c));
   const recurrences = signatureRecurrence(gapCandidates, { nowMs });
   const byId = new Map(gapCandidates.map((c) => [c.id, c] as const));
-  return recurrences
-    .map((r): MetaPattern => {
-      const exemplar = byId.get(r.ids[0]);
-      const isFeature = exemplar?.kind === 'feature';
-      // A net-new feature ask is a stronger gap signal than a keyword hit; recurrence amplifies.
-      const signal = round(r.count * (isFeature ? 2 : 1) + (r.openCount > 0 ? 1 : 0));
-      return {
-        id: `gap:${r.signature.slice(0, 60)}`,
-        title: exemplar ? truncate(exemplar.title) : r.signature,
+  const scored: Scored[] = recurrences.map((r) => {
+    const exemplar = byId.get(r.ids[0]);
+    const isFeature = exemplar?.kind === 'feature';
+    const salience = r.count * (isFeature ? 2 : 1) + (r.openCount > 0 ? 1 : 0);
+    return {
+      salience,
+      pattern: {
+        category: 'capability-gap' as MetaPatternCategory,
+        summary: exemplar ? truncate(exemplar.title) : r.signature,
         detail: `${isFeature ? 'net-new ask' : 'named missing capability'}${r.count > 1 ? `, asked ${r.count}×` : ''} (${r.openCount} open)`,
-        signal,
-        count: r.count,
-        refs: r.ids.slice(0, 12).map((id) => `wi:${id}`),
-        meta: { signature: r.signature, kind: exemplar?.kind, openCount: r.openCount },
-      };
-    })
-    .sort((a, b) => b.signal - a.signal)
-    .slice(0, limit);
+        ref: `wi:${r.ids[0]}`,
+      },
+    };
+  });
+  return finalize(scored, limit);
 }
 
 /** reverts — status regressions grouped by work item; the churniest (most-/
- *  hardest-reverted) work first. The substrate signal for "where rework lives". */
+ *  hardest-reverted) work first. The substrate signal for "where rework lives".
+ *  Not one of the four CorpusDigest lanes, so its patterns carry no `category`. */
 function buildReverts(reverts: RevertRecord[], limit: number): MetaPattern[] {
   const groups = new Map<string, { records: RevertRecord[]; weight: number }>();
   for (const r of reverts) {
@@ -381,28 +389,25 @@ function buildReverts(reverts: RevertRecord[], limit: number): MetaPattern[] {
     g.weight += w;
     groups.set(r.workItemId, g);
   }
-  return [...groups.entries()]
-    .map(([workItemId, g]): MetaPattern => {
-      const latest = [...g.records].sort((a, b) => (a.ts < b.ts ? 1 : -1))[0];
-      return {
-        id: `revert:${workItemId}`,
-        title: `${workItemId} reverted ${g.records.length}× (latest ${latest.from}→${latest.to})`,
-        detail: latest.actor ? `last by ${latest.actor}` : undefined,
-        signal: round(g.weight),
-        count: g.records.length,
-        harness: latest.harness,
-        refs: [`wi:${workItemId}`, `audit:${workItemId}`],
-        meta: { latestFrom: latest.from, latestTo: latest.to, latestTs: latest.ts },
-      };
-    })
-    .sort((a, b) => b.signal - a.signal)
-    .slice(0, limit);
+  const scored: Scored[] = [...groups.entries()].map(([workItemId, g]) => {
+    const latest = [...g.records].sort((a, b) => (a.ts < b.ts ? 1 : -1))[0];
+    return {
+      salience: g.weight,
+      pattern: {
+        summary: `${workItemId} reverted ${g.records.length}× (latest ${latest.from}→${latest.to})`,
+        detail: latest.actor ? `last by ${latest.actor}` : `latest ${latest.ts}`,
+        ref: `wi:${workItemId}`,
+      },
+    };
+  });
+  return finalize(scored, limit);
 }
 
 /**
  * Synthesize the "state of the Hive" corpus digest. Pure + deterministic given
  * `nowMs`. Gathers all substrates (defensively), rolls each into its
- * meta-pattern category, and returns a `DigestSchema`-valid digest.
+ * meta-pattern lane, and returns a `DigestSchema`-valid digest (a structural
+ * superset of the shared CorpusDigest).
  */
 export async function synthesizeStateOfHive(
   readers: StateOfHiveReaders,

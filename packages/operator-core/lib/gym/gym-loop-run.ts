@@ -35,6 +35,7 @@ import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { runOptimizationLoop } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
+import { makeLoopArchiveRecorder } from './qd/archive-recorder';
 import { readPoolAggregates } from './read-api';
 import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
@@ -201,6 +202,8 @@ async function main(): Promise<void> {
       repeats: REPEATS, // P-025
       // Human-gated (D-020): the loop records proposals for review; the human promotes via gym:accept.
       recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: WS, harnessSlug: SLUG }),
+      // P-010 (D-008): feed each evaluated variant into the QD novelty/diversity archive.
+      recordArchive: makeLoopArchiveRecorder(controlSql, { workspaceId: WS, harnessSlug: SLUG }),
     });
 
     // 6. Mark autoloop running, run the loop, then settle the status.

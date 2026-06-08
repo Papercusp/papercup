@@ -27,6 +27,7 @@ import { ratePauseEventHooks } from './rate-pause-events';
 import { GYM_JUDGE_RUBRIC_V1, type GymJudgeRubric } from './judge-scoring';
 import type { GymRunnerPorts } from './gym-runner';
 import type { LoopDeps, EvaluateResult, LoopProposalRecord } from './loop';
+import type { ArchiveCandidateRecord } from './qd/niche';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantEval } from './gate-engine';
 import type { GymLlmCall, GymTaskPool } from './task-generator';
@@ -75,6 +76,8 @@ export interface BuildLoopDepsConfig {
   revert?: () => Promise<void>;
   /** Live control-plane recorder (makeLoopProposalRecorder) — surfaces candidates for review. */
   recordProposal?: (rec: LoopProposalRecord) => Promise<void>;
+  /** Live QD-archive recorder (makeLoopArchiveRecorder) — feeds each variant to the MAP-Elites archive (P-010). */
+  recordArchive?: (rec: ArchiveCandidateRecord) => Promise<void>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -242,6 +245,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       });
     },
     recordProposal: cfg.recordProposal,
+    recordArchive: cfg.recordArchive,
     newVariantId: (cycle) => `cand-c${cycle}`,
     now,
     sleep,

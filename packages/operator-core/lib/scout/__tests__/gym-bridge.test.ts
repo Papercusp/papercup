@@ -138,7 +138,7 @@ describe('gatherSteppingStones', () => {
       elite('A', C('local', 'x', 'low'), [0, 0, 0, 0]),
       elite('B', C('architectural', 'x', 'high'), [1, 1, 1, 1]),
       elite('C', C('module', 'x', 'medium'), [0.5, 0.5, 0.5, 0.5]),
-      elite('D', C('architectural', 'x', 'high'), [0.9, 0.9, 0.9, 0.9]),
+      elite('D', C('cross-cutting', 'x', 'high'), [0.9, 0.9, 0.9, 0.9]), // distinct niche; still hugs B in feature space
     ]);
     const res = gatherSteppingStones(a, { count: 2 });
     expect(res.stones.map((s) => s.candidateId).sort()).toEqual(['A', 'B']);
@@ -149,7 +149,7 @@ describe('gatherSteppingStones', () => {
       elite('A', C('local', 'x', 'low'), [0, 0, 0, 0]),
       elite('B', C('architectural', 'x', 'high'), [1, 1, 1, 1]),
       elite('C', C('module', 'x', 'medium'), [0.5, 0.5, 0.5, 0.5]),
-      elite('D', C('architectural', 'x', 'high'), [0.9, 0.9, 0.9, 0.9]),
+      elite('D', C('cross-cutting', 'x', 'high'), [0.9, 0.9, 0.9, 0.9]), // distinct niche; still hugs B in feature space
     ]);
     const ids = gatherSteppingStones(a, { count: 3 }).stones.map((s) => s.candidateId);
     expect(ids).toContain('A');

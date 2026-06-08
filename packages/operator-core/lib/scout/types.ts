@@ -23,6 +23,10 @@
  *    call (no network), exactly like `runGymJudge(args, { llmCall })`.
  */
 
+// P-005/P-006 (su-d1170) extend this contract below; the pure critic spine lives
+// in ./critique-core (Idea-shape-agnostic + reusable) and supplies these types.
+import type { CorpusMatch, CritiqueVerdict } from './critique-core';
+
 /**
  * The forced-diversity lens taxonomy (D-004). Each lens is a structurally
  * different generative stance so N ideators can't collapse to the median idea:
@@ -146,4 +150,74 @@ export interface ScoutLlmCall {
     inputTokens: number;
     outputTokens: number;
   }>;
+}
+
+// ───────────────────── P-005 / P-006 (su-d1170) — critics → proposals ─────────────────────
+// Appended onto su-797a5's seed per the lane split. The pure critic spine + its
+// CorpusMatch / CritiqueVerdict types live in ./critique-core (network-free,
+// Idea-shape-agnostic); these are the typed contract the steps hand each other:
+// ideators (P-004) → ScoredIdea (P-005) → Proposal (P-006) → routing (P-007).
+
+/**
+ * One idea after the adversarial critics (P-005 output → P-006 input). `novelty`
+ * blends the deterministic SEARCH-FIRST signal (corpusNovelty — a ceiling, so an
+ * already-tried idea stays caught) with the LLM novelty-skeptic; `feasibility` is
+ * the LLM feasibility critic. `verdict` is the bucket it landed in (D-005), and
+ * `noveltyMatches` is the search-first evidence so a reviewer sees *why*.
+ */
+export interface ScoredIdea {
+  idea: Idea;
+  /** 0..1 — how unlike the corpus (1 = nothing like it). */
+  novelty: number;
+  /** 0..1 — how groundable in this architecture (cost vs upside). */
+  feasibility: number;
+  /** The closest priors the search-first pass surfaced (evidence for the verdict). */
+  noveltyMatches: CorpusMatch[];
+  /** Which bucket: 'keep' (build), 'moonshot' (preserved leap), 'reject'. */
+  verdict: CritiqueVerdict;
+  /** One-line rationale (verdict reason + critic notes), for the digest / audit. */
+  notes: string;
+}
+
+/**
+ * The cheap, falsifiable first experiment every Proposal must carry (D-006) —
+ * STRUCTURED so "bettable" is machine-checkable (not free prose): a hypothesis,
+ * the method to test it, and the concrete signal that would FALSIFY it. The
+ * natural hand-off to the gym.
+ */
+export interface ScoutExperiment {
+  /** What we believe will be true if the idea has merit. */
+  hypothesis: string;
+  /** The cheap first test (what to run / build / measure). */
+  method: string;
+  /** The observable that would prove the hypothesis WRONG (the falsifier). */
+  falsifiableSignal: string;
+}
+
+/**
+ * A recombined proposal (P-006 output → P-007 routing input). Surviving critiques
+ * are debated + *merged* (A's mechanism + B's framing — the best ideas are usually
+ * a fusion) into this shape. `cheapExperiment` is REQUIRED (D-006): the
+ * anti-bullshit gate that keeps a proposal bettable, not merely clever, and the
+ * natural hand-off to the gym. `routeHint` is P-007's hint (the router may override).
+ */
+export interface Proposal {
+  id: string;
+  /** The problem framing the proposal addresses. */
+  framing: string;
+  /** The novel mechanism — how it would work. */
+  mechanism: string;
+  /** Why it's new vs everything the Hive has already considered (search-first grounded). */
+  whyNew: string;
+  /** The bet — the upside if it pans out. */
+  bet: string;
+  /** REQUIRED (D-006): the cheap falsifiable first experiment, STRUCTURED + machine-checkable.
+   *  All three sub-fields must be non-empty (see validateProposal). */
+  cheapExperiment: ScoutExperiment;
+  /** The critiqued ideas that recombined into this proposal (≥1). */
+  sourceIdeaIds: string[];
+  /** P-007 routing hint: broad-scope → 'plan'; testable-small → 'gym'; concrete → 'improvement'. */
+  routeHint?: 'plan' | 'gym' | 'improvement';
+  /** Corpus pattern refs carried from the source ideas — grounding (⊆ digest refs) + P-013 lens attribution. */
+  addressesPatternRefs: string[];
 }

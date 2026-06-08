@@ -9,12 +9,12 @@
  * builders AND the P-009 invariants suite + P-014 E2E share one harness instead
  * of each re-rolling fakes.
  *
- * SCOPE DISCIPLINE: this file imports ONLY the *stable* contract from
- * `./types` (`CorpusDigest` / `MetaPattern` / `Idea` / `CreativeLens` /
- * `ScoutLlmCall`). It deliberately does NOT bake in `Critique` / `Proposal`
- * fixtures yet — those types are still being added by P-005/P-006 (su-d1170);
- * fixtures for them land here once their shape is settled, so this harness can
- * never drift ahead of the contract.
+ * SCOPE: this file imports the settled contract from `./types` (`CorpusDigest`
+ * / `MetaPattern` / `Idea` / `CreativeLens` / `ScoutLlmCall` / `ScoredIdea` /
+ * `ScoutExperiment` / `Proposal`) plus the search-first cores from
+ * `./critique-core`. Fixtures track the contract — when a type changes here the
+ * harness is updated in lock-step so it never ships stale (the P-005/P-006
+ * `Critique`→`ScoredIdea` rename + structured `ScoutExperiment` were tracked).
  *
  * Mirrors the convention of `coord-ops/test-support.ts` (a `*-support.ts`
  * helper, not a `*.test.ts`).
@@ -24,9 +24,13 @@ import type {
   CreativeLens,
   Idea,
   MetaPattern,
+  Proposal,
+  ScoredIdea,
+  ScoutExperiment,
   ScoutLlmCall,
 } from './types';
 import { CREATIVE_LENSES } from './types';
+import type { CorpusEntry, CorpusKind, CorpusMatch, CritiqueVerdict } from './critique-core';
 
 /* ────────────────────────────────────────────────────────────────────────
  * Fake ScoutLlmCall
@@ -270,4 +274,83 @@ export function fixtureIdeasAllLenses(): Idea[] {
       seedDomain: lens === 'analogical' ? 'immune-systems' : undefined,
     }),
   );
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Critic + proposal fixtures (P-005 / P-006 contract)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** A search-first corpus prior an idea is measured against (non-dup invariant). */
+export function fixtureCorpusEntry(over: Partial<CorpusEntry> = {}): CorpusEntry {
+  return {
+    ref: 'plan:lock-contention-2026-06-01',
+    kind: 'plan' as CorpusKind,
+    text: 'reduce lock contention by re-queuing blocked edits instead of retrying',
+    state: 'dropped',
+    ...over,
+  };
+}
+
+/** One CorpusMatch (the search-first evidence on a ScoredIdea). */
+export function fixtureCorpusMatch(over: Partial<CorpusMatch> = {}): CorpusMatch {
+  return {
+    ref: 'plan:lock-contention-2026-06-01',
+    kind: 'plan' as CorpusKind,
+    similarity: 0.42,
+    state: 'dropped',
+    ...over,
+  };
+}
+
+/**
+ * A ScoredIdea fixture (P-005 critic output). Defaults to a `keep` verdict on a
+ * grounded idea with high novelty + feasibility and no strong prior. Override
+ * `verdict`/`novelty`/`feasibility`/`noveltyMatches` to exercise the moonshot +
+ * reject buckets and the search-first "already-tried" path.
+ */
+export function fixtureScoredIdea(over: Partial<ScoredIdea> = {}): ScoredIdea {
+  const idea = over.idea ?? fixtureIdea();
+  return {
+    novelty: 0.8,
+    feasibility: 0.7,
+    noveltyMatches: [],
+    verdict: 'keep' as CritiqueVerdict,
+    notes: 'novel + groundable; no strong prior in the corpus',
+    ...over,
+    idea,
+  };
+}
+
+/**
+ * A structured cheap-falsifiable experiment (D-006). All three sub-fields are
+ * non-empty by default (the bettable invariant); override one to `''` to
+ * exercise the validateProposal reject path.
+ */
+export function fixtureScoutExperiment(over: Partial<ScoutExperiment> = {}): ScoutExperiment {
+  return {
+    hypothesis: 'yielding on lock-block (vs retry) eliminates the retry-storm without raising latency',
+    method: 'instrument 50 lock-blocks; route half through events:await-on-grant, half through retry',
+    falsifiableSignal: 'the yield arm shows ≥ the retry arm’s mean time-to-edit (no improvement)',
+    ...over,
+  };
+}
+
+/**
+ * A Proposal fixture (P-006 recombine output). `cheapExperiment` is a non-empty
+ * structured {@link ScoutExperiment} by default (D-006 / bettable). `sourceIdeaIds`
+ * + `addressesPatternRefs` are non-empty (a proposal recombines ≥1 grounded idea).
+ */
+export function fixtureProposal(over: Partial<Proposal> = {}): Proposal {
+  return {
+    id: 'prop-1',
+    framing: 'lock contention is treated as failure to attack, not a signal to yield',
+    mechanism: 'on lock-block, register events:await on grant + yield the turn; never spin-retry',
+    whyNew: 'prior lock work (plan:lock-contention) was dropped; this borrows immune tolerance, untried',
+    bet: 'eliminates the retry-storm class of friction without a scheduler change',
+    cheapExperiment: fixtureScoutExperiment(),
+    sourceIdeaIds: ['idea-analogical-1'],
+    routeHint: 'plan',
+    addressesPatternRefs: ['plan:lock-contention-2026-06-01'],
+    ...over,
+  };
 }
