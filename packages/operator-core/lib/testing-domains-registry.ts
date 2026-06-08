@@ -937,6 +937,72 @@ defineTestDomain({
  * ---------------------------------------------------------------- */
 
 defineTestDomain({
+  id: 'hive',
+  label: 'Hive (Queen/bee loop)',
+  description:
+    'The local-hive orchestration loop: tracked Queen launch, bee placement + nursery, the deliver-and-wake / parent-wake liveness chain, spawn reclaim, host self-recycle, and the Apiary IQ battery. Many files also appear under operator-core (overlap intentional); this is the cohesive subsystem view.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'wake-loop',
+      label: 'Wake loop',
+      description: 'Deliver-and-wake: parent-wake on bee terminal, the wake executor (resume command + MCP remount), inbox-wake fan, await engine/store, and the end-to-end reclaim→parent-wake liveness contract.',
+      globs: [
+        'packages/operator-core/lib/fleet/parent-wake.integration.test.ts',
+        'packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts',
+        'packages/operator-core/lib/events/await/**/*.test.ts',
+        'packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts',
+        'packages/operator-core/lib/agent-tools/coordination/tools/await-inbox*.test.ts',
+      ],
+    },
+    {
+      id: 'placement',
+      label: 'Placement & nursery',
+      description: 'fleet:spawn chokepoint, the fleet_assignment (Brood Box) projection, graceful drain, selected-bee, spawn budget/governor, and the concurrency-primitive suite.',
+      globs: [
+        'packages/operator-core/lib/fleet/operator-spawn.test.ts',
+        'packages/operator-core/lib/fleet/assignments*.test.ts',
+        'packages/operator-core/lib/fleet/nursery.integration.test.ts',
+        'packages/operator-core/lib/fleet/selected-bee.test.ts',
+        'packages/operator-core/lib/fleet/spawn-budget.integration.test.ts',
+        'packages/operator-core/lib/fleet/governor.integration.test.ts',
+        'packages/operator-core/lib/fleet/supervision.integration.test.ts',
+        'packages/operator-core/lib/fleet/saga.integration.test.ts',
+        'packages/operator-core/lib/fleet/lock-release.integration.test.ts',
+        'packages/operator-core/lib/fleet/classic-*.test.ts',
+      ],
+    },
+    {
+      id: 'reclaim',
+      label: 'Reclaim',
+      description: 'P-011 heartbeat-stale reclaim of orphaned spawns (frees the concurrency ceiling; fires parent-wake).',
+      globs: ['packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts'],
+    },
+    {
+      id: 'pot-wake',
+      label: 'Pot wake',
+      description: 'The Queen wake routine — pot:wake / declare-wake / urgent-wake scheduling and the pot-wake PG path.',
+      globs: ['packages/operator-core/lib/pot/**/*.test.ts'],
+    },
+    {
+      id: 'host-health',
+      label: 'Host health',
+      description: 'Operator self-protection: the memory watchdog (bounded-RSS self-recycle) and the event-loop-lag gauge.',
+      globs: [
+        'packages/operator-core/lib/memory-watchdog.test.ts',
+        'packages/operator-core/lib/event-loop-lag-monitor.test.ts',
+      ],
+    },
+    {
+      id: 'apiary',
+      label: 'Apiary IQ battery',
+      description: 'The Apiary instance-gym: corpus seeder, the seven metric collectors, and the Beekeeper runner.',
+      globs: ['packages/operator-core/lib/iq-battery/**/*.test.ts'],
+    },
+  ],
+});
+
+defineTestDomain({
   id: 'operator-ui-lib',
   label: 'Operator UI lib',
   description: 'UI-tier lib kept in apps/operator after the operator-core carve (router-compat, flag-hooks, plugin UI, forms, chat-cards, theme/notify/visual-effects hooks + the operator-vite/script/bin-composition tests).',
@@ -953,6 +1019,8 @@ const PAPERCUSP_IDS = [
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
   'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
+  // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
+  'hive',
 ] as const;
 
 export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {

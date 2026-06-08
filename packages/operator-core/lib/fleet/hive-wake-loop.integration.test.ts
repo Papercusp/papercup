@@ -26,9 +26,13 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { reclaimOrphanedSpawns } from './spawn-reclaim';
 
 // Spy on the inbox-wake fan so we can assert WHO gets woken without standing up
-// the full await/delivery schema. parent-wake.ts imports it from here.
-const wakeRecipients = vi.fn(async () => ({ targets: [] as string[], keys: [] as string[], woken: 1 }));
-vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
+// the full await/delivery schema. parent-wake.ts imports it from here. The
+// factory is hoisted above all imports, so the vi.fn is created inside it and
+// read back through the (mocked) import below — never a top-level closure ref.
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: vi.fn(async () => ({ targets: [] as string[], keys: [] as string[], woken: 1 })),
+}));
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 
 const SPAWNED_AGENTS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
@@ -77,14 +81,16 @@ describe('hive wake loop: reclaim → parent-wake', () => {
     const r = await reclaimOrphanedSpawns(db.sql, STALE);
 
     expect(r.reclaimed).toBe(1);
-    // The fix: the Queen (a hive owner with no spawned_agents row) is woken.
-    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    // The parent-wake is fire-and-forget inside the sweep (void … .catch()), so
+    // wait for the async wake to land before asserting. The fix: the Queen (a
+    // hive owner with NO spawned_agents row) is woken.
+    await vi.waitFor(() => expect(wakeRecipients).toHaveBeenCalledTimes(1));
     expect(wakeRecipients).toHaveBeenCalledWith(
       ['s-queen-coord-owner'],
       expect.objectContaining({ source: 'spawn-finish', workspaceId: WS }),
     );
     // The death notice names the dead bee + its terminal status.
-    const call = wakeRecipients.mock.calls[0][1] as { summary: string; payload: { status: string } };
+    const call = vi.mocked(wakeRecipients).mock.calls[0][1] as { summary: string; payload: { status: string } };
     expect(call.summary).toContain('bee-1');
     expect(call.payload.status).toBe('failed');
   });
@@ -94,9 +100,11 @@ describe('hive wake loop: reclaim → parent-wake', () => {
 
     await reclaimOrphanedSpawns(db.sql, STALE);
 
-    expect(wakeRecipients).toHaveBeenCalledWith(
-      ['parent-bee'],
-      expect.objectContaining({ source: 'spawn-finish' }),
+    await vi.waitFor(() =>
+      expect(wakeRecipients).toHaveBeenCalledWith(
+        ['parent-bee'],
+        expect.objectContaining({ source: 'spawn-finish' }),
+      ),
     );
   });
 
@@ -117,8 +125,8 @@ describe('hive wake loop: reclaim → parent-wake', () => {
     const r = await reclaimOrphanedSpawns(db.sql, STALE);
 
     expect(r.reclaimed).toBe(3);
-    expect(wakeRecipients).toHaveBeenCalledTimes(3);
-    const wokenOwners = wakeRecipients.mock.calls.map((c) => (c[0] as string[])[0]).sort();
+    await vi.waitFor(() => expect(wakeRecipients).toHaveBeenCalledTimes(3));
+    const wokenOwners = vi.mocked(wakeRecipients).mock.calls.map((c) => (c[0] as string[])[0]).sort();
     expect(wokenOwners).toEqual(['s-other-queen', 's-queen', 's-queen']);
   });
 
