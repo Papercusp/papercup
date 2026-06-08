@@ -1,0 +1,88 @@
+/**
+ * hive-directory-deps.ts — the production WIRING of the HiveDirectory service
+ * (p2p-hive-directory-2026-06-06 P-003/P-005).
+ *
+ * Mirrors change-feed-deps.ts: the core `hive-directory.ts` stays pure over
+ * injected seams; this module binds those seams to the real subsystems and owns
+ * the process singleton the operator endpoint (`discovery:hives`, P-005) reads:
+ *
+ *   - `sign`             → `signWithDeviceKey(keychainId, …)` (the device key
+ *                          that signs our own hive announces). Throws until the
+ *                          boot wiring supplies the keychain id.
+ *   - `verifyAttestation`→ `attest.verifyAttestation(...).valid` (channel-2 — the
+ *                          spam floor: only GitHub-attested announces render).
+ *   - `broadcast`        → the swarm transport set by the boot wiring
+ *                          (`setHiveDirectoryTransport`). A no-op until wired, so
+ *                          the endpoint serves a read-only list before the
+ *                          substrate join exists.
+ *   - cache              → omitted for now (in-memory only). The PG offline cache
+ *                          (a `hive_directory_cache` state table) lands with its
+ *                          migration; until then the discovered set is rebuilt
+ *                          from the live topic on each boot.
+ *
+ * Boot integration (the live join, deferred to the substrate boot path): on
+ * substrate boot, call `setHiveDirectoryTransport(send, keychainId)`, join
+ * `deriveDirectoryTopic()` (+ any invite topics for owned invite hives), pipe
+ * inbound frames to `getHiveDirectory().ingestAnnounce`, `registerLocalHive` the
+ * workspace's public/invite hives, and `startReannounce(...)`.
+ */
+
+import { verifyAttestation } from './identity/attest';
+import { signWithDeviceKey } from './identity/sign-with-device-key';
+import { HiveDirectory, type HiveDirectoryDeps, type SignedHiveAnnounce } from './hive-directory';
+
+let _singleton: HiveDirectory | null = null;
+let _transport: ((topicHex: string, frame: SignedHiveAnnounce) => Promise<void>) | null = null;
+let _keychainId: string | null = null;
+
+/**
+ * Wire the live swarm transport + device keychain id (called by the substrate
+ * boot path). Until this runs, `broadcast` is a no-op and `sign` throws — the
+ * endpoint still serves the (empty) discovered list without crashing.
+ */
+export function setHiveDirectoryTransport(
+  broadcast: (topicHex: string, frame: SignedHiveAnnounce) => Promise<void>,
+  keychainId: string,
+): void {
+  _transport = broadcast;
+  _keychainId = keychainId;
+}
+
+function productionDeps(): HiveDirectoryDeps {
+  return {
+    sign: async (bytes) => {
+      if (!_keychainId) {
+        throw new Error('hive-directory: device keychain not wired (call setHiveDirectoryTransport at boot)');
+      }
+      return signWithDeviceKey(_keychainId, bytes);
+    },
+    verifyAttestation: async ({ attestationGistId, devicePubkey, githubUserId }) => {
+      const res = await verifyAttestation(attestationGistId, devicePubkey, githubUserId);
+      return res.valid;
+    },
+    broadcast: async (topicHex, frame) => {
+      if (_transport) await _transport(topicHex, frame);
+    },
+  };
+}
+
+/** The process singleton the operator endpoint reads + the boot path feeds. */
+export function getHiveDirectory(): HiveDirectory {
+  if (!_singleton) _singleton = new HiveDirectory(productionDeps());
+  return _singleton;
+}
+
+/** Test seam: install a directory built over fake deps + clear the transport. */
+export function configureHiveDirectoryForTest(deps: HiveDirectoryDeps): HiveDirectory {
+  _singleton = new HiveDirectory(deps);
+  _transport = null;
+  _keychainId = null;
+  return _singleton;
+}
+
+/** Test seam: drop the singleton so the next getHiveDirectory rebuilds it. */
+export function __resetHiveDirectorySingleton(): void {
+  _singleton = null;
+  _transport = null;
+  _keychainId = null;
+}
