@@ -63,7 +63,19 @@ export interface BeekeeperDeps {
     handle: InstanceRunHandle;
     case: CorpusCase;
     maxChars: number;
-  }): Promise<{ distilledTrace: string; traceRef: string; rawSignals: unknown }>;
+  }): Promise<{
+    distilledTrace: string;
+    traceRef: string;
+    rawSignals: unknown;
+    /**
+     * The run's REAL metric signals (status / tokens / times / escalation /
+     * retrieved-vs-expected sources), threaded into `collectMetrics` so the
+     * seven collectors measure the actual run — not the stubbed defaults the
+     * orchestrator used to pass (apiary-generation-0-battery D-004). Optional:
+     * a dep that omits it keeps the prior {runId,caseId,variant}-only behavior.
+     */
+    signals?: Partial<MetricCollectorInput>;
+  }>;
   collectMetrics(input: MetricCollectorInput): Promise<IQBatteryMetrics>;
   llmCall: JudgeLlmCall;
   newRunId(caseId: string, repeat: number): string;
@@ -132,7 +144,7 @@ export async function runBeekeeperBattery(config: BeekeeperConfig, deps: Beekeep
           caseTitle: caseItem.title,
         });
 
-        const { distilledTrace, traceRef, rawSignals } = await deps.collectAndDistill({
+        const { distilledTrace, traceRef, rawSignals, signals } = await deps.collectAndDistill({
           handle,
           case: caseItem,
           maxChars: config.maxDistillChars,
@@ -146,13 +158,16 @@ export async function runBeekeeperBattery(config: BeekeeperConfig, deps: Beekeep
           elapsedMs,
         });
 
-        // Collect metrics (P-002).
+        // Collect metrics from the run's REAL signals (apiary-generation-0-battery
+        // D-004): collectAndDistill extracts status/tokens/times/escalation/sources
+        // from the actual instance run and returns them as `signals`; thread them
+        // into the seven collectors. A dep that omits `signals` (e.g. a test stub)
+        // falls back to the {runId,caseId,variant}-only call as before.
         const metrics = await deps.collectMetrics({
+          ...(signals ?? {}),
           runId,
           caseId: caseItem.id,
           variant: caseItem.variant,
-          // In a real scenario, these would come from the harness telemetry/PG.
-          // For now, stubbed; the instance run would populate these.
         });
 
         // Judge the run.
