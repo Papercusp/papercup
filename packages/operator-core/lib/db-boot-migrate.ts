@@ -67,7 +67,19 @@ export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult 
   // BEGIN/COMMIT land on the same socket). getOrgPg's shared handle is max:2,
   // so we use a throwaway single-connection client (mirrors the embedded-pg
   // boot runner + the migration tests) and close it after.
-  const client = postgres(getHarnessAdminUrl(), { max: 1, prepare: false, onnotice: () => {} });
+  // lock_timeout (root-caused 2026-06-08): fail-fast on lock contention instead
+  // of queuing. A boot `ALTER TABLE … ADD COLUMN` needs ACCESS EXCLUSIVE; queued
+  // behind a pg_dump backup's ACCESS SHARE it would block ALL access to the
+  // table for the dump's duration (the coord_event_log → coord → psu-bootstrap
+  // wedge). Boot apply is already continueOnError, so a lock_timeout abort just
+  // leaves the (idempotent) migration pending for next boot. application_name
+  // self-identifies a stuck boot migration in pg_stat_activity.
+  const client = postgres(getHarnessAdminUrl(), {
+    max: 1,
+    prepare: false,
+    onnotice: () => {},
+    connection: { lock_timeout: 15_000, application_name: 'papercusp-boot-migrate' },
+  });
   try {
     const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
       client,

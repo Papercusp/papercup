@@ -85,7 +85,22 @@ export async function applyStagedMigrations(opts: MigrateOpts = {}): Promise<Mig
 
   // Dedicated max:1 client — the runner applies each file as a raw
   // BEGIN; <ddl>; COMMIT; via .unsafe(), rejected on a pooled connection.
-  const client = postgres(dbUrl, { max: 1, prepare: false, onnotice: () => {} });
+  //
+  // lock_timeout (root-caused 2026-06-08): a DDL that cannot acquire its lock
+  // quickly must ABORT, not queue. A migration `ALTER TABLE … ADD COLUMN` needs
+  // ACCESS EXCLUSIVE; if a pg_dump backup holds ACCESS SHARE on that table, the
+  // ALTER queues — and a *queued* ACCESS EXCLUSIVE blocks ALL access to the
+  // table (even reads) for the backup's whole duration, wedging the table and
+  // everything that reads it (e.g. coord_event_log → coord → the psu bootstrap
+  // routes hung for 37 min). Fail-fast → the migration is left pending and
+  // retried, instead of taking the table down. application_name makes a stuck
+  // migration self-identify in pg_stat_activity.
+  const client = postgres(dbUrl, {
+    max: 1,
+    prepare: false,
+    onnotice: () => {},
+    connection: { lock_timeout: 15_000, application_name: 'papercusp-deploy-migrate' },
+  });
   try {
     const before = await appliedSet(client);
     const { appliedCount, totalKnown, failed } = await applyPendingMigrations({
