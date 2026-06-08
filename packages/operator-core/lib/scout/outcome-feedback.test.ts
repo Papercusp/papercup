@@ -14,6 +14,7 @@ import {
   computeLensOutcomes,
   allocateIdeators,
   gatherLensOutcomes,
+  lensWeightsFromReport,
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
@@ -137,6 +138,16 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       const provenance = completions.map((e) => prov({ lens: 'analogical', routedRef: e.ref, rail: 'gym' }));
       const r = computeLensOutcomes(provenance, completions, { minShare: 0.1 });
       for (const l of CREATIVE_LENSES) expect(r.byLens[l].weight).toBeGreaterThanOrEqual(0.1 - 1e-9);
+    });
+  });
+
+  describe('lensWeightsFromReport (D-009 hook for runIdeators)', () => {
+    it('projects each lens weight into the runIdeators lensWeights shape (summing ~1)', () => {
+      const report = computeLensOutcomes([], []);
+      const w = lensWeightsFromReport(report);
+      expect(Object.keys(w).sort()).toEqual([...CREATIVE_LENSES].sort());
+      const total = CREATIVE_LENSES.reduce((a, l) => a + w[l], 0);
+      expect(total).toBeCloseTo(1, 9);
     });
   });
 

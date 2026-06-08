@@ -304,6 +304,18 @@ export function allocateIdeators(report: LensOutcomeReport, n: number): Creative
 }
 
 /**
+ * Project a report's per-lens weights into the `lensWeights` shape the ideator
+ * fan-out (P-004 `runIdeators`, BuildRosterInput.lensWeights) consumes — the
+ * D-009 feedback hook: extra ideators are distributed across lenses proportional
+ * to these weights (the diversity floor in the weights keeps every lens alive).
+ */
+export function lensWeightsFromReport(report: LensOutcomeReport): Record<CreativeLens, number> {
+  return Object.fromEntries(
+    CREATIVE_LENSES.map((l) => [l, report.byLens[l].weight]),
+  ) as Record<CreativeLens, number>;
+}
+
+/**
  * Top-level P-013 entry: read routed-idea provenance + the change feed and
  * compute the lens-outcome report. The caller stamps `generatedAt`.
  */

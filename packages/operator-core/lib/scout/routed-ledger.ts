@@ -22,13 +22,14 @@ import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import {
   classifyIdeaOutcome,
   computeLensOutcomes,
+  lensWeightsFromReport,
   type LensOutcomeReport,
   type LensWeightOptions,
   type RoutedIdeaProvenance,
   type RoutedRail,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
-import type { CreativeLens } from './types';
+import { CREATIVE_LENSES, type CreativeLens } from './types';
 
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
@@ -150,6 +151,24 @@ export async function getScoutLensOutcomes(
   ]);
   const report = computeLensOutcomes(provenance, completions, opts.weights);
   return { ...report, generatedAt: new Date().toISOString() };
+}
+
+/**
+ * The D-009 feedback hand-off for P-004: read live lens outcomes and return them
+ * in the shape `runIdeators` consumes (`lensWeights` + `extraIdeatorBudget`), so
+ * the next cycle's ideator fan-out favours the lenses that have been winning (the
+ * diversity floor in the weights keeps every lens alive). cb4b9's cycle-deps
+ * `ideate` calls this to close the meta-learning loop. With no outcome history the
+ * weights are uniform, so this is safe before any idea has panned out.
+ */
+export async function getScoutLensWeights(
+  opts: ScoutLedgerOpts & { weights?: LensWeightOptions; extraIdeatorBudget?: number } = {},
+): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
+  const report = await getScoutLensOutcomes(opts);
+  return {
+    lensWeights: lensWeightsFromReport(report),
+    extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
+  };
 }
 
 /**

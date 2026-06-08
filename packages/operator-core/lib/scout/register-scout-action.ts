@@ -8,11 +8,11 @@
  *     that only REGISTERS the action never loads the meridian graph (the gym's
  *     ab-run pattern); it loads on the first real cycle.
  *   - createPlanDraft — the system-side `plans:new` DRAFT creator (scout-plan-draft).
- *   - archive — su-8075f's gym-QD ArchivePort for the gym (testable) rail. P-012's
- *     production async→sync ArchivePort adapter (a32af's lane) is not yet landed,
- *     so a NO-OP archive is the default: the broad (plans:new) + concrete
- *     (improvements:capture) rails activate now; the gym-seed rail records nothing
- *     admitted until the real adapter replaces it via {@link setScoutArchive}.
+ *   - archive — the gym-QD ArchivePort. P-012 production wire: built per cycle from
+ *     su-8075f's real archive via {@link buildScoutArchivePort} (snapshot→seed→flush),
+ *     so the gym (testable) rail seeds Scout's distant ideas into the MAP-Elites
+ *     archive. Falls back to a NO-OP if the archive is unavailable (e.g. PG/migration
+ *     193 absent) — the broad + concrete rails are unaffected.
  *
  * Side-effect import: harness/routines/register-system-actions.ts imports this so
  * the routines engine can dispatch a seeded `system:scout-cycle` routine. The
@@ -24,42 +24,78 @@ import { registerScoutCycleAction, type ScoutCycleRunner } from './scout-cycle-a
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
+import { buildScoutArchivePort, type ScoutArchivePort } from './scout-archive-port';
 import { nicheKey, type ArchivePort } from './gym-bridge';
 
 /**
- * Placeholder gym-QD archive until P-012's production async→sync ArchivePort
- * adapter (over su-8075f's Archive) lands. Reads empty + admits nothing, so the
- * gym-seed rail is a safe no-op (the broad/concrete rails are unaffected).
+ * Placeholder gym-QD archive used when the real archive can't be built (PG down /
+ * migration 193 absent). Reads empty + admits nothing, so the gym-seed rail is a
+ * safe no-op (the broad/concrete rails are unaffected).
  */
-export const noopArchive: ArchivePort = {
+export const noopArchive: ScoutArchivePort = {
   listElites: () => [],
   seed: (entry) => ({ admitted: false, nicheKey: nicheKey(entry.descriptor.coords) }),
+  flush: async () => {},
 };
 
-let activeArchive: ArchivePort = noopArchive;
+/** Builds the per-cycle ArchivePort for a harness (overridable for tests / alternate stores). */
+export type ScoutArchiveBuilder = (scope: { workspaceId: string; harnessSlug: string }) => Promise<ArchivePort>;
 
-/** Swap in the real gym-QD ArchivePort (P-012's adapter calls this at its boot). */
-export function setScoutArchive(archive: ArchivePort): void {
-  activeArchive = archive;
+const defaultArchiveBuilder: ScoutArchiveBuilder = (scope) => buildScoutArchivePort(scope);
+
+let activeArchiveBuilder: ScoutArchiveBuilder = defaultArchiveBuilder;
+
+/** Swap the archive builder (a test, or an alternate gym-QD store). */
+export function setScoutArchiveBuilder(builder: ScoutArchiveBuilder): void {
+  activeArchiveBuilder = builder;
+}
+
+/** Build the cycle's archive, degrading to the no-op if the real one is unavailable. */
+async function resolveArchive(scope: { workspaceId: string; harnessSlug: string }): Promise<ArchivePort> {
+  try {
+    return await activeArchiveBuilder(scope);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[register-scout-action] archive unavailable — gym rail no-ops this cycle:', err instanceof Error ? err.message : err);
+    return noopArchive;
+  }
 }
 
 /**
  * The production Scout cycle runner the `system:scout-cycle` action invokes:
  * assembles cb4b9's cycle deps with the real llmCall + the system-side plan-draft
- * creator + the active archive, then runs one budgeted cycle.
+ * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
+ * buffered scout seeds to the archive (P-012).
  */
 export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId }) => {
   const { llmCall } = await import('../llm-testing/llm-client');
+  const archive = await resolveArchive({ workspaceId, harnessSlug });
   const deps = buildScoutCycleDeps({
     harnessSlug,
     llmCall,
     createPlanDraft: (args) => createScoutPlanDraft({ ...args, harnessSlug, workspaceId }),
-    archive: activeArchive,
+    archive,
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,
   });
-  return runScoutCycle(deps);
+  try {
+    return await runScoutCycle(deps);
+  } finally {
+    // Persist scout seeds (P-012) even if the cycle threw mid-route.
+    if (isFlushable(archive)) {
+      try {
+        await archive.flush();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[register-scout-action] archive flush failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  }
 };
+
+function isFlushable(a: ArchivePort): a is ScoutArchivePort {
+  return typeof (a as ScoutArchivePort).flush === 'function';
+}
 
 // Self-register at module load (the *-actions.ts convention).
 registerScoutCycleAction(productionScoutRunner);
