@@ -62,7 +62,7 @@ For per-workspace single-row-per-key state, the helper is
 `packages/operator-core/lib/operator-state-pg.ts`:
 
 ```ts
-import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { readOperatorState, writeOperatorState } from '@papercusp/operator-core/lib/operator-state-pg';
 
 const cur = await readOperatorState<MyShape>('my_table');
 await writeOperatorState('my_table', { /* … */ });
@@ -78,7 +78,7 @@ Steps to add a new piece of state:
 4. If the data is sensitive (API keys, bearers, signing fingerprints), add
    the table to `ENCRYPTED_TABLES` in `packages/operator-core/lib/db-encryption.ts`
    and follow the cipher pattern from migration 027 + the runbook in
-   `/docs/system/credentials-encryption`.
+   `/internal/docs/system/credentials-encryption`.
 
 For compound-key tables (per-harness, per-feature, append-only audit logs),
 write a focused module that runs SQL directly via `getOrgPg()`. See
@@ -132,7 +132,7 @@ Files are correct for these specific cases:
 | Code, scripts, templates, snapshots | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs |
 | Harness contract artifacts read by tools running inside the harness | `<harness>/.papercusp/config.json`, `SPEC.md`, `supervisor-notes.md` |
 | Append-only logs at high volume where SQL log tables would dwarf state | `.papercusp/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
-| Per-process locks via O_EXCL | `expert-dispatcher.ts` lockfiles |
+| Per-process resource leases (in-process / O_EXCL) | `deployment/display-allocator.ts` per-agent DISPLAY leases |
 | Plugin-sandbox storage (the plugin host exposes a virtual FS by design) | `plugin-host.ts` `read`/`write` API to plugins |
 | Per-device UX preferences that should NOT sync across devices | voice config (per audio stack), one-time UI hint dismissals |
 

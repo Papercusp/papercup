@@ -32,7 +32,7 @@ papercusp
 
 Or click **Install + launch Linux .deb** in `/admin`.
 
-Expected: window opens within ~5s. Title bar "Papercusp". Renders the operator harness UI (NOT "Pick a project" empty state — if you see that, the wrapper fix is missing → rebuild).
+Expected: a brief bootstrap page, then the window navigates to the operator UI within ~5–15s (a first boot pays `initdb` + migrations inside `serve.mjs`, so allow longer). Title bar "Papercusp". If it stays stuck on the bootstrap page, the sidecar never reached the preflight-ready state → check the serve logs.
 
 ### 2. Verify no discovery files leaked
 
@@ -49,33 +49,39 @@ Expected: `No such file or directory`. The bundle never created the file.
 curl -s http://127.0.0.1:3055/api/flags/bootstrap | jq
 ```
 
-Wait — the prod binary doesn't serve on `:3055`. The prod operator-server picks a free port (find it in `~/.papercusp/embedded-pg.json` is NOT the right place; the operator port is logged at startup, or use `ss -tnlp | grep papercusp` to find it).
+Wait — the prod binary doesn't serve on `:3055`. The sidecar (`node serve.mjs`) picks a free port, which it records in `~/.papercusp/operator.json` (the authoritative source). Read it from there, or grep the listener.
 
 ```sh
-PROD_PORT=$(ss -tnlp | awk '/next-server/{split($4,a,":"); print a[2]}' | sort -u | grep -v 3055 | head -1)
+PROD_PORT=$(jq -r .port ~/.papercusp/operator.json)
+# Fallback if operator.json isn't present:
+# PROD_PORT=$(ss -tnlp | awk '/serve\.mjs|node/{split($4,a,":"); print a[2]}' | sort -u | grep -v 3055 | head -1)
 curl -s http://127.0.0.1:${PROD_PORT}/api/flags/bootstrap | jq
 ```
 
-Expected:
+Expected (the V1 ship defaults — `papercusp-snapshots` is `true` by design, every other flag `false`):
 
 ```json
 {
   "flags": {
-    "papercusp-snapshots": false,
-    "papercusp-templates": false,
-    "papercusp-marketplace": false,
+    "papercusp-snapshots": true,
     "papercusp-cloudflare-publish": false,
     "papercusp-oracle": false,
     "papercusp-rust-port-ui": false,
     "papercusp-harness-phases": false,
-    "papercusp-design": false
+    "papercusp-design": false,
+    "papercusp-testing": false,
+    "papercusp-inbox-durable-escalations": false,
+    "papercusp-improvement-auto-implement": false,
+    "papercusp-video-channels": false,
+    "papercusp-voice-channels": false,
+    "papercusp-the-hive": false
   },
   "evaluatedAt": 1234567890,
   "source": "defaults"
 }
 ```
 
-Every flag `false`, `source: "defaults"`. Any other source → leak.
+`source` must be `"defaults"` (the only other values are `"posthog"` and `"override"`). A `"posthog"` source on a clean install means PostHog config leaked in. The flag *values* must match `FLAG_DEFAULTS` in `libs/flags/src/types.ts` (snapshots on; everything else off). (`papercusp-templates` / `papercusp-marketplace` were retired — distribution lives in the ungated Cupboard.)
 
 ### 4. No outbound PostHog traffic
 
@@ -89,13 +95,14 @@ Expected: empty.
 
 ```sh
 cat ~/.papercusp/embedded-pg.json
+cat ~/.papercusp/operator.json
 ```
 
-Expected: JSON with non-5432 port. **Confirms desktop spawned its own embedded PG, didn't talk to native `:5432`.**
+Expected: JSON with a non-5432 port (both files written by `serve.mjs`). **Confirms the desktop spawned its own embedded PG, didn't talk to native `:5432`.**
 
 ### 6. Feature data loads
 
-In the app, navigate to **Harness → sheets**. The Feature Queue panel should show ~63–101 features. No "access control checks" errors in DevTools console. No duplicate dashboard.
+In the app, navigate to **Harness → sheets**. The Feature Queue panel should populate with features (not empty). No errors in the DevTools console.
 
 ### 7. Closed-flag routes really 404
 
@@ -242,15 +249,14 @@ Or via Settings → Apps → Papercusp → Uninstall.
 
 | Symptom | Means |
 |---|---|
-| `posthog*.json` found via `find` inside install dir | Discovery file leaked into bundle — **must** rebuild |
-| `/api/flags/bootstrap` returns `source: "env"` or `source: "discovery"` | Env var or file made it through — leak |
-| Any flag returns `true` | Same |
+| A real PostHog key (`phx_…` / `phc_…`) found by `audit-bundle.sh` inside the install | Secret leaked into bundle — **must** rebuild |
+| `/api/flags/bootstrap` returns `source: "posthog"` on a clean install | PostHog config (env var or discovery file) made it through — leak |
+| Any flag other than `papercusp-snapshots` returns `true` | Default ship-state violated — leak |
 | `ss -tnp` shows connection to `flags.papercuspai.com` | App phoning home in clean-install state — leak |
-| Window shows persistent "Pick a project" empty state | The `<div id="papercusp-app">` wrapper fix didn't ship — rebuild needed |
-| Two stacked dashboards / 2× `<main>` in DOM | Same |
-| `embedded-pg.json` missing or app connects to `:5432` | Embedded PG didn't bootstrap |
-| Sheets harness shows 0 features when API returns 101 | Feature loading broken |
-| Window shows the **dev** server's app (URL has `:3055`) | The `sidecarBase()` race hit — rebuild after pulling the `30ab725` fix |
+| Window stuck on the bootstrap page (never navigates off `web/index.html`) | The sidecar never became ready — check the preflight handshake / serve logs |
+| `embedded-pg.json` / `operator.json` missing, or app connects to `:5432` | Embedded PG didn't bootstrap (`serve.mjs` owns this) |
+| Sheets harness shows 0 features when the API returns features | Feature loading broken |
+| Window shows the **dev** server's app (URL has `:3055`) | The webview pointed at the dev server instead of the bundled sidecar — rebuild |
 
 ---
 
@@ -269,9 +275,9 @@ papercusp-desktop/bin/audit-bundle.sh \
 # 2. Linux install + launch + smoke
 sudo dpkg -i papercupai-workspace/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
 setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
-sleep 10
-PORT=$(ss -tnlp | awk '/next-server/{split($4,a,":"); print a[2]}' | sort -u | grep -v 3055 | head -1)
-echo "operator-server port: $PORT"
+sleep 15
+PORT=$(jq -r .port ~/.papercusp/operator.json)
+echo "operator port: $PORT"
 curl -s "http://127.0.0.1:${PORT}/api/flags/bootstrap" | jq .source       # → "defaults"
 curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:${PORT}/design"  # → 404
 sudo ss -tnp | grep -E "flags.papercuspai|posthog" || echo "no posthog traffic ✓"

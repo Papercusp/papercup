@@ -46,7 +46,7 @@ If you find yourself wanting to reach for `node:fs` in core code, the answer is 
 
 ### host
 
-**What lives here:** host-specific glue that the desktop needs but a future web host might not. `desktopHostPlatform`'s body, IPC bridge code (`lib/endpoint-ipc/`), embedded-PG discovery, plugin runtime (`lib/plugin-host-runtime.ts`), FS watchers, background sweepers, socket lifecycle.
+**What lives here:** host-specific glue that the desktop needs but a future web host might not. `desktopHostPlatform`'s body, IPC bridge code (`packages/operator-core/lib/endpoint-ipc/`), embedded-PG discovery, plugin runtime (`packages/operator-core/lib/plugin-host-runtime.ts`), FS watchers, background sweepers, socket lifecycle.
 
 **What may be imported:** `core`, anything in `libs/*` and `packages/*`, Node stdlib (`node:fs`, `node:child_process`, `node:net`, etc.).
 
@@ -64,7 +64,7 @@ A handler that holds non-transport state (cookies, cost caps, feature locks, tra
 
 ### client
 
-**What lives here:** React components, hooks, transport-adapter polyfills (`lib/transport-adapters/`), Zero client wiring, client-side state.
+**What lives here:** React components, hooks, transport-adapter polyfills (`packages/operator-core/lib/transport-adapters/`), Zero client wiring, client-side state.
 
 **What may be imported:** `core`, `react`, `next/link`, `next/navigation` (client APIs), DOM types, browser-only third-party packages.
 
@@ -94,7 +94,7 @@ When files start moving in (Phase 4, Phase 6b), the build will start checking th
 
 When a route migration (Phase 4) determines that a handler is host-clean and projectable, the worker:
 
-1. Moves the handler file to its target location (often `lib/agent-tools/<feature>/<name>.ts`).
+1. Moves the handler file to its target location (often `packages/operator-core/lib/agent-tools/<feature>/<name>.ts`).
 2. Adds the file's path to the appropriate layer's `include` glob in `apps/operator/layers/tsconfig.core.json` (or `host.json`, etc.).
 3. Runs `tsc --build apps/operator/layers/tsconfig.layers.json` locally; addresses any reported violations before committing.
 
