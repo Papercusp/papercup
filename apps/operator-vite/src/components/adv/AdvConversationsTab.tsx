@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { AlertTriangle, ArrowUpRight, MessageCircle, RefreshCw, Radio, Megaphone, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, CheckCircle2, MessageCircle, RefreshCw, Radio, Megaphone, Send, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -759,15 +759,25 @@ function ThreadsView() {
             )}
             {detail.body && <p className="pc-coord__body">{detail.body}</p>}
             {detail.accepted_answer && (
-              <p className="pc-coord__body pc-advconv__accepted">
-                <strong>✓ Accepted answer:</strong> {detail.accepted_answer}
-              </p>
+              <div className="pc-advconv__callout pc-advconv__callout--accepted">
+                <CheckCircle2 size={15} aria-hidden />
+                <div>
+                  <strong>Accepted answer</strong>
+                  <p>{detail.accepted_answer}</p>
+                </div>
+              </div>
             )}
             {detail.promoted_issue_id && (
-              <p className="pc-advconv__linked">
-                <ArrowUpRight size={13} aria-hidden /> Linked work-item: <strong>{detail.promoted_issue_id}</strong>
-                <span className="pc-coord__row-meta"> (promoted to an engineer issue — discussion continues there)</span>
-              </p>
+              <div className="pc-advconv__callout pc-advconv__callout--linked">
+                <ArrowUpRight size={15} aria-hidden />
+                <div>
+                  <strong>Linked work-item</strong>
+                  <p>
+                    <span>{detail.promoted_issue_id}</span>
+                    <em>Promoted to an engineer issue; implementation discussion continues there.</em>
+                  </p>
+                </div>
+              </div>
             )}
             <div className="pc-coord__actions">
               {canPromote && (
@@ -795,19 +805,26 @@ function ThreadsView() {
             </ol>
             {detail.state === 'open' && (
               <div className="pc-advconv__reply">
+                <div className="pc-advconv__replyhead">
+                  <span>
+                    <MessageCircle size={13} aria-hidden />
+                    Thread response
+                  </span>
+                  <em>{detail.kind === 'question' ? 'Resolve with an accepted answer when this closes the loop.' : 'Add context for everyone subscribed to this discussion.'}</em>
+                </div>
                 <textarea
                   value={reply}
                   onChange={(e) => setReply(e.target.value)}
                   placeholder={detail.kind === 'question' ? 'Write a reply, or accept it as the answer…' : 'Write a reply…'}
                   rows={2}
                 />
-                <div className="pc-coord__actions">
-                  <button type="button" disabled={busy || !reply.trim()} onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/post', { conversation_id: detail.id, body: b }); }}>
-                    Reply
+                <div className="pc-coord__actions pc-advconv__replyactions">
+                  <button type="button" className="pc-advconv__replybtn" disabled={busy || !reply.trim()} onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/post', { conversation_id: detail.id, body: b }); }}>
+                    <Send size={12} aria-hidden /> Reply
                   </button>
                   {detail.kind === 'question' && (
-                    <button type="button" disabled={busy || !reply.trim()} aria-label="Record this reply as the accepted answer and resolve the question" onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/resolve', { conversation_id: detail.id, accepted_answer: b }); }}>
-                      Accept as answer
+                    <button type="button" className="pc-advconv__replybtn pc-advconv__replybtn--resolve" disabled={busy || !reply.trim()} aria-label="Record this reply as the accepted answer and resolve the question" onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/resolve', { conversation_id: detail.id, accepted_answer: b }); }}>
+                      <CheckCircle2 size={12} aria-hidden /> Accept as answer
                     </button>
                   )}
                 </div>
@@ -914,8 +931,66 @@ function AdvConvStyles() {
       }
       .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; grid-column: 1 / -1; }
       .pc-advconv__refresh { margin-left: auto; display: inline-flex; align-items: center; }
-      .pc-advconv__accepted { border-left: 2px solid rgba(34, 197, 94, 0.6); padding-left: 8px; }
-      .pc-advconv__linked { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: #bae6fd; margin: 4px 0; }
+      .pc-advconv__callout {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px;
+        align-items: flex-start;
+        margin: 8px 0;
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid rgba(125, 211, 252, 0.16);
+        background:
+          radial-gradient(circle at 0% 0%, rgba(125, 211, 252, 0.12), transparent 34%),
+          rgba(255, 255, 255, 0.028);
+        color: var(--fg-mute, #9fb6cc);
+      }
+      .pc-advconv__callout > svg { margin-top: 2px; }
+      .pc-advconv__callout strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #f5fbff;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .pc-advconv__callout p {
+        margin: 0;
+        line-height: 1.5;
+      }
+      .pc-advconv__callout--accepted {
+        border-color: rgba(34, 197, 94, 0.24);
+        background:
+          radial-gradient(circle at 0% 0%, rgba(34, 197, 94, 0.14), transparent 34%),
+          rgba(22, 101, 52, 0.055);
+      }
+      .pc-advconv__callout--accepted > svg { color: #86efac; }
+      .pc-advconv__callout--linked {
+        border-color: rgba(56, 189, 248, 0.22);
+        background:
+          radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.13), transparent 34%),
+          rgba(8, 47, 73, 0.06);
+      }
+      .pc-advconv__callout--linked > svg { color: #7dd3fc; }
+      .pc-advconv__callout--linked p {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .pc-advconv__callout--linked p span {
+        display: inline-flex;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        color: #bae6fd;
+        background: rgba(125, 211, 252, 0.08);
+        font-weight: 750;
+      }
+      .pc-advconv__callout--linked p em {
+        color: var(--fg-mute, #8aa3bc);
+        font-style: normal;
+      }
       .pc-advconv__empty {
         display: flex;
         align-items: center;
@@ -954,14 +1029,59 @@ function AdvConvStyles() {
       }
       .pc-advconv__empty strong { color: #f5fbff; font-size: 14px; }
       .pc-advconv__empty span { max-width: 420px; line-height: 1.45; }
-      .pc-advconv__reply { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+      .pc-advconv__reply {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 15px;
+        border: 1px solid rgba(125, 211, 252, 0.14);
+        background:
+          linear-gradient(135deg, rgba(56, 189, 248, 0.07), rgba(236, 72, 153, 0.045)),
+          rgba(3, 7, 18, 0.24);
+      }
+      .pc-advconv__replyhead {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 11px;
+      }
+      .pc-advconv__replyhead span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #e0f2fe;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .pc-advconv__replyhead em {
+        max-width: 410px;
+        text-align: right;
+        font-style: normal;
+        line-height: 1.35;
+      }
       .pc-advconv__reply textarea {
-        width: 100%; resize: vertical; min-height: 38px;
-        background: var(--bg-popover, #0d1829); color: var(--fg, #e7f7ff);
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
-        border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 12px;
+        width: 100%; resize: vertical; min-height: 58px;
+        background: rgba(3, 7, 18, 0.48); color: var(--fg, #e7f7ff);
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        border-radius: 12px; padding: 10px 11px; font: inherit; font-size: 12px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
       }
       .pc-advconv__reply textarea:focus { outline: 2px solid rgba(56, 189, 248, 0.34); outline-offset: 2px; }
+      .pc-advconv__replyactions { justify-content: flex-end; }
+      .pc-advconv__replybtn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pc-advconv__replybtn--resolve:not(:disabled) {
+        border-color: rgba(34, 197, 94, 0.32);
+        color: #dcfce7;
+        background: rgba(34, 197, 94, 0.1);
+      }
 
       /* View tabs */
       .pc-advconv__viewtabs {
@@ -1434,6 +1554,8 @@ function AdvConvStyles() {
         .pc-advconv__viewtab { justify-content: center; flex: 1 1 0; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
+        .pc-advconv__replyhead { flex-direction: column; }
+        .pc-advconv__replyhead em { max-width: none; text-align: left; }
         .pc-advfeed__clarity { grid-template-columns: 1fr 1fr; }
         .pc-advfeed__clarity-main { grid-column: 1 / -1; }
         .pc-advfeed__signals { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
