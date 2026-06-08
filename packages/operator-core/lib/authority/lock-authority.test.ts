@@ -4,7 +4,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { selectAuthorityFromRows, lockAuthorityFor, lockAuthorityForHive } from './lock-authority';
+import {
+  selectAuthorityFromRows,
+  lockAuthorityFor,
+  lockAuthorityForHive,
+  routeToAuthorityForHive,
+} from './lock-authority';
 
 const NOW = 1_000_000_000_000;
 const row = (pk: string, ageMs = 0) => ({ device_pubkey: pk, github_user_id: 1, machine_label: pk, last_seen_ms: NOW - ageMs });
@@ -96,5 +101,29 @@ describe('lockAuthorityForHive (P-009 — Hive scope)', () => {
 
   it('throws on an empty hiveSlug', async () => {
     await expect(lockAuthorityForHive('')).rejects.toThrow(/non-empty/);
+  });
+});
+
+describe('routeToAuthorityForHive (P-009 routing — local / fail-open)', () => {
+  it('runs op.local directly when we are the Hive authority', async () => {
+    let ran = false;
+    const r = await routeToAuthorityForHive(
+      'h',
+      { local: async () => { ran = true; return 42; } },
+      { fetchHivePresenceRows: async () => [], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'aaa' }), now: () => NOW },
+    );
+    expect(ran).toBe(true);
+    expect(r).toMatchObject({ value: 42, via: 'local-authority' });
+  });
+
+  it('fails open (local + warning) when the Hive authority is a remote Swarm and no transport exists', async () => {
+    const r = await routeToAuthorityForHive(
+      'h',
+      { local: async () => 7 },
+      { fetchHivePresenceRows: async () => [row('aaa')], resolveSelf: async () => ({ githubUserId: 1, devicePubkey: 'zzz' }), now: () => NOW },
+    );
+    expect(r.via).toBe('fail-open');
+    expect(r.value).toBe(7);
+    expect(r.warning).toMatch(/hive "h"/);
   });
 });

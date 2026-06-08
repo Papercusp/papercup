@@ -88,14 +88,17 @@ function keyFile() { return join(homedir(), '.papercusp', 'db-encryption-key'); 
 ```
 
 <Aside type="tip" title="Find them before users do">
-Scan client-bundled libs for the pattern:
-`grep -rnE "^(export )?const [A-Za-z0-9_]+ ?=.*(homedir|readFileSync|existsSync|hostname)\(" apps/operator/lib`
+Scan client-bundled libs for the pattern (server libs now live in
+`packages/operator-core/lib`, so scan there too):
+`grep -rnE "^(export )?const [A-Za-z0-9_]+ ?=.*(homedir|readFileSync|existsSync|hostname)\(" packages/operator-core/lib apps/operator/lib`
 then confirm which are actually in the renderer chunk by grepping the built
 `dist/assets/index-*.js` for a tell-tale string from each module. As of
 2026-05-31, latent (server-only, not yet bundled) offenders include
 `flag-distinct-id.ts`, `superuser-token.ts`, `console-launcher.ts`,
-`identity/keychain.ts`, and `flags/preset.ts` — fix them if the migration ever
-pulls them client-side.
+`identity/keychain.ts`, and `flags/preset.ts` (all now under
+`packages/operator-core/lib/`) — fix them if the migration ever
+pulls them client-side. A regression guard lives in
+`packages/operator-core/lib/__tests__/no-server-imports-in-client.test.ts`.
 </Aside>
 
 ## Root cause: one value-import of a const drags the whole server subtree

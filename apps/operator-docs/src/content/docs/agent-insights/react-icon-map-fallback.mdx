@@ -39,14 +39,19 @@ The failure mode is especially nasty because:
 
 ## How to apply
 
-Two-line fix, no exceptions:
+Two-line fix, no exceptions — `??` (or `||`) to a fallback component:
 
 ```tsx
-import { FallbackIcon } from '@/app/harness/icons';
-
 const Icon = ICON_MAP[row.kind] ?? FallbackIcon;
 return <Icon />;
 ```
+
+(`FallbackIcon` is illustrative — use whatever neutral lucide glyph the
+surface already imports. Live examples: `iconFor()` in
+`apps/operator/app/harness/dock/AddPanelCatalog.tsx` falls through
+`ICON_MAP[type]` → `Puzzle` (plugin) → `SquareDashed`; `pluginIcon()` in
+`apps/operator/app/harness/plugin-utils.tsx` does
+`PLUGIN_ICON_MAP[name] || Puzzle`.)
 
 **Every** map-based component lookup needs `?? FallbackIcon`. Grep
 for `ICON_MAP[` / `_MAP[` patterns when reviewing panels — anywhere

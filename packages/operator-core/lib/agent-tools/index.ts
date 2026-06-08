@@ -324,6 +324,9 @@ import './work_items/promote';
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
 import './work_items/claim_next';
 import './work_items/observe';
+// Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
+// decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
+import './work_items/register-claim-authority-ops';
 
 // Fleet — structured concurrency / supervision over the spawn tree
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive

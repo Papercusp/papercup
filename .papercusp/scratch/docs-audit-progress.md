@@ -23,7 +23,7 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] implementation (6)
 - [x] design (16) — DONE
 - [x] reference (5) — DONE (role-registry/blueprint-catalog up-to-date; agent-insights-index regenerated; tool-catalog + plans-index regenerate in FINAL PASS)
-- [~] agent-insights (99) — groups done: 1-4 (pages 1-40). Drift: lib→operator-core, @restart→@papercusp, defineTool→tooldef; obsolete notes (autoloop director-cadence retired, dogfood-substrate gate removed, instrumentation-node boot retired→host-bootstrap, universalDomains rename, classifier 14 not 16). NEXT: groups 5-10 (41-99).
+- [~] agent-insights (99) — groups done: 1-4 (pages 1-40). Drift: lib→operator-core, @restart→@papercusp, defineTool→tooldef; obsolete notes (autoloop director-cadence retired, dogfood-substrate gate removed, instrumentation-node boot retired→host-bootstrap, universalDomains rename, classifier 14 not 16). NEXT: groups 5-10 (41-99). [groups 5-6 (41-60) DONE: idempotent-pg-ensure+live-pg-regression-sentinel→superseded notes; cjs-family-trap reversed (ESM); index §18→§19; mobile→device rename; 3070 restart→staging :3170. agent-insights-index regenerated again.] NEXT: 7-10 (61-99).
 
 ## Per-page log
 

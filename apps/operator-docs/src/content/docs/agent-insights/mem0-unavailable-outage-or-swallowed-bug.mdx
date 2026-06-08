@@ -35,7 +35,7 @@ unknown until you've read the reason.
 
 ## What actually produces it
 
-The verb wrappers (`lib/agent-tools/memory/*.ts`) are simple:
+The verb wrappers (`packages/operator-core/lib/agent-tools/memory/*.ts`) are simple:
 
 ```ts
 const client = await getMemoryClient();
@@ -43,7 +43,7 @@ if (!client) return { /* reason: 'mem0_unavailable' */ };
 ```
 
 So the real question is **why `getMemoryClient()` (→ `tryLoad()` in
-`packages/memory/src/mem0-client.ts`) returns `null`.** Four causes,
+`libs/generic/memory/src/mem0-client.ts`) returns `null`.** Four causes,
 and only the first three are "outages":
 
 | # | Cause | Outage or bug? |

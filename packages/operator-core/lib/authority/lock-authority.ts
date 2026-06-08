@@ -400,6 +400,48 @@ export async function routeToAuthority<T>(
 }
 
 /**
+ * Route a lock/claim operation to a shared HIVE's authority (P-009) — the Hive
+ * analog of {@link routeToAuthority}. Resolves the authority across the Hive's
+ * Swarms ({@link lockAuthorityForHive}) and applies the same local / RPC /
+ * fail-open policy. The `op.remote` envelope (when a transport exists) carries the
+ * hive slug as its scope key. Used by the file-claim cutover for a harness that
+ * federates within a Hive (its locks serialize at the Hive authority, not the
+ * harness's).
+ */
+export async function routeToAuthorityForHive<T>(
+  hiveSlug: string,
+  op: AuthorityOp<T>,
+  deps: LockAuthorityDeps = {},
+): Promise<RouteResult<T>> {
+  const resolution = await lockAuthorityForHive(hiveSlug, deps);
+  if (resolution.isSelf || !resolution.peer) {
+    return { value: await op.local(), via: 'local-authority' };
+  }
+
+  const peer = resolution.peer;
+  const transport = getPeerRpcTransport();
+  if (transport && op.remote) {
+    try {
+      const raw = await transport.rpc(peer, {
+        harnessSlug: hiveSlug, // scope key (the transport field is named harnessSlug)
+        kind: op.remote.kind,
+        payload: op.remote.payload,
+      });
+      return { value: op.remote.decode(raw), via: 'remote-authority' };
+    } catch (err) {
+      if (!(err instanceof PeerUnreachableError)) throw err;
+      // fall through to fail-open
+    }
+  }
+
+  const warning =
+    `lock authority for hive "${hiveSlug}" is a remote Swarm ` +
+    `(${peer.machineLabel}, ${peer.devicePubkey.slice(0, 12)}…) and is unreachable — ` +
+    `proceeding with a local-advisory grant; concurrent edits will be git-merged.`;
+  return { value: await op.local(), via: 'fail-open', warning };
+}
+
+/**
  * Convenience: the bare boolean "am I the authority for this harness?" — for
  * callers (e.g. su-119ce's claim store) that want the {@link AuthorityResolution}
  * shape `{ isSelf, peer? }` directly.

@@ -50,6 +50,9 @@ describe('buildPresenceAnnounceRow / Op', () => {
       current_view: 'harness/papercup',
       last_seen_at: NOW,
       schema_version: 1,
+      // hive_slug defaults null (shared-hive-federation P-008/P-009 carry; the
+      // publisher stamps a real Hive slug when wired).
+      hive_slug: null,
     });
   });
   it('builds a put op keyed <github_user_id>/<machine> (mirrors the projection composeKey)', () => {

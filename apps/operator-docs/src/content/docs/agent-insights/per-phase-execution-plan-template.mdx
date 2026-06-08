@@ -98,7 +98,7 @@ After splitting an arc into per-phase plans, also write:
 
 2. **Overview doc** (one page, in `apps/operator/docs/plans/<arc-slug>-overview-<date>.md`). 5-minute read covering why, what, how-rolled-out, what's done, what's deferred, what success looks like. Read before any individual phase plan.
 
-3. **Design memos** (in `apps/operator/docs/plans/<arc-slug>-design-memo-<topic>-<date>.md` initially; convert to MDX under `apps/operator/content/internal-docs/design/` when implementation of the relevant phase begins). One memo per design question that gates implementation.
+3. **Design memos** (in `apps/operator/docs/plans/<arc-slug>-design-memo-<topic>-<date>.md` initially; convert to MDX under `apps/operator-docs/src/content/docs/design/` when implementation of the relevant phase begins — the operator docs site moved there from the retired `apps/operator/content/internal-docs/`). One memo per design question that gates implementation.
 
 4. **Deferral plans** (separate plan docs for substantial threads carved out of the arc). The master plan's deferral block points at these; each deferral plan is a real plan with its own phases, decisions, and open questions — not a stub.
 

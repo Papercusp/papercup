@@ -25,10 +25,11 @@ Making a route reachable from the paired phone is now one flag:
 defineRoute({
   method: 'GET',
   path: '/device/whatever',
-  auth: { kind: ['device'], tokenIn: ['query'] }, // gate on the device-JWT principal (DEVICE_AUTH)
-  cors: true,                                     // mount the shared CORS allowlist
+  auth: DEVICE_AUTH,  // = { kind: ['device'] } — gate on the device-JWT principal
+  cors: true,         // mount the shared CORS allowlist
   handler(req, ctx) { /* ctx.principal is the device */ },
 });
+// (a query-token route adds `tokenIn: ['query']`, e.g. routes/device/sync.ts)
 ```
 
 `cors: true` mounts the shared CORS middleware (`corsFor` in

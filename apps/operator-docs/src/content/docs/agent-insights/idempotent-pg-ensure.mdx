@@ -3,7 +3,7 @@ title: The idempotent PG-ensure pattern (and where the in-process flag goes)
 description: ensure-schema-dogfood.ts and ensure-schema.ts use the same recipe — CREATE ... IF NOT EXISTS + a globalThis-pinned flag that's set ONLY after the await succeeds. Errors leave the flag false so retry works.
 discovered: 2026-05-25
 tags: [postgres, ensure, idempotent, ddl, footguns]
-status: active
+status: superseded
 sidebar:
   order: 19
 ---

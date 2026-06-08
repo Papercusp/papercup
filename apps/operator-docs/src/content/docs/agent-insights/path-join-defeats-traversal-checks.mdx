@@ -12,7 +12,7 @@ string, the `..` it's looking for is gone, and a malicious input sails
 through.
 
 Real bug (found in the 2026-05-21 plans-tooling audit, `withPlanLock` in
-`lib/agent-tools/plans/with-plan-lock.ts`):
+`packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts`):
 
 ```ts
 const lockKey = path.posix.join(PLANS_DIR_REL, slug + '.md');
@@ -58,10 +58,21 @@ escape.)
 
 If you must validate a *path* rather than a single segment, validate the
 **raw** string for `..` segments first, and only then canonicalize — which
-is exactly what `lib/agent-tools/locks/path-normalize.ts` does correctly
-(`validatePath` runs on the raw path, `canonicalizePath` after). The
+is exactly what `path-normalize.ts` does correctly (`validatePath` runs on
+the raw path, `canonicalizePath` after). The canonical source is now
+`libs/papercusp/packages/locks/src/path-normalize.ts`, re-exported through
+`packages/operator-core/lib/agent-tools/locks/path-normalize.ts`. The
 `withPlanLock` bug was feeding it a path that an earlier `path.join` had
 already canonicalized.
+
+> **Update (2026-06-08):** the specific `withPlanLock` instance has since
+> been fixed. It is now PG-canonical (`plans-pg-canonical-migration-2026-06-03`):
+> the lock key is a PG advisory lock on `workspace:harness:slug`, no longer a
+> joined `.md` path, and the slug is validated up front against
+> `VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/` (`packages/operator-core/lib/agent-tools/plans/source.ts`)
+> — exactly the `/`-rejecting charset whitelist this page recommends. The
+> general rule below still stands; the code block above is preserved as the
+> case study that motivated it.
 
 ## Checklist when you see a traversal guard
 

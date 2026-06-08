@@ -87,7 +87,7 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
   it('drops a cross-Hive op (hive_home_slug != the projection scope)', async () => {
     await seedHive();
     await seedHive('beta');
-    await proj().writeToPg(memberRow({ hive_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote' });
+    await proj().writeToPg(memberRow({ hive_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
     expect(await getHiveMember(WS, HIVE, 9, db.sql)).toBeNull(); // demuxed out
     expect(await getHiveMember(WS, 'beta', 9, db.sql)).toBeNull(); // this projection is bound to HIVE
   });
@@ -95,17 +95,17 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
   it('LWW: a newer fed_ts wins, an older one is dropped', async () => {
     await seedHive();
     const p = proj();
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['old'] }), { ts: 200, origin: 'remote' });
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['stale'] }), { ts: 100, origin: 'remote' }); // older
+    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['old'] }), { ts: 200, origin: 'remote', authorPubkey: 'peer' });
+    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['stale'] }), { ts: 100, origin: 'remote', authorPubkey: 'peer' }); // older
     expect((await getHiveMember(WS, HIVE, 7, db.sql))?.revokedPubkeys).toEqual(['old']); // newer held
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['new'] }), { ts: 300, origin: 'remote' }); // newer
+    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['new'] }), { ts: 300, origin: 'remote', authorPubkey: 'peer' }); // newer
     expect((await getHiveMember(WS, HIVE, 7, db.sql))?.revokedPubkeys).toEqual(['new']);
   });
 
   it('deleteFromPg removes by github_user_id (ts-guarded)', async () => {
     await seedHive();
     const p = proj();
-    await p.writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote' });
+    await p.writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
     await p.deleteFromPg('7', 50); // stale del — guarded out
     expect(await getHiveMember(WS, HIVE, 7, db.sql)).not.toBeNull();
     await p.deleteFromPg('7', 200); // newer del — applies

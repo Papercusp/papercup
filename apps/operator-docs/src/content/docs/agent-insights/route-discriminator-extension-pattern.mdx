@@ -49,8 +49,8 @@ The trade-off: the body must be unambiguous (you can't paste both `path` and `gi
 
 ### 2. Each entry has a dedicated helper module
 
-Entry 1 → `lib/harness/init-local-dir.ts` exports `initLocalHarnessDir({parentDir, folderName})`.
-Entry 2 → `lib/harness/clone-github.ts` exports `cloneGithubRepo(url, opts)`.
+Entry 1 → `packages/operator-core/lib/harness/init-local-dir.ts` exports `initLocalHarnessDir({parentDir, folderName})`.
+Entry 2 → `packages/operator-core/lib/harness/clone-github.ts` exports `cloneGithubRepo(url, opts)`.
 Entry 3 → in-route path resolve (small; no helper warranted).
 
 The route handler is thin: it picks the entry, calls the helper, handles errors, falls through to the shared scaffold path. The helpers are independently testable (init-local-dir: 20 tests; clone-github: 65 tests) without the HTTP layer.
@@ -118,7 +118,7 @@ The discriminator-extension pattern works because POST /harness/projects's entri
 
 ## See also
 
-- `apps/operator/lib/endpoint-route/routes/harness/projects.ts` — the canonical example. 284 LOC, three entries.
-- `apps/operator/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
-- `apps/operator/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
+- `packages/operator-core/lib/endpoint-route/routes/harness/projects.ts` — the canonical example, three entries.
+- `packages/operator-core/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
+- `packages/operator-core/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
 - [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.

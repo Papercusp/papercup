@@ -122,8 +122,8 @@ Otherwise: reach for JCS. The 24-hour debugging session you'll skip is worth the
 
 ## In this codebase
 
-- [`apps/operator/lib/identity/contributor-file-types.ts`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/identity/contributor-file-types.ts) — the Channel 2 contributor file (Phase 1b P-075). Per `dogfood-design-memo-two-channel-binding-ux-2026-05-24`. JCS field-order const + tests.
-- [`apps/operator/lib/identity/attestation-types.ts`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/identity/attestation-types.ts) — the Channel 1 device attestation gist body (Phase 1b P-011). Per `dogfood-design-memo-device-attestation-ux-2026-05-24`. Also targets JCS canonicalization at the byte level when the runtime impl lands.
+- [`packages/operator-core/lib/identity/contributor-file-types.ts`](https://github.com/papercupai/papercup/blob/main/packages/operator-core/lib/identity/contributor-file-types.ts) — the Channel 2 contributor file (Phase 1b P-075). Per `dogfood-design-memo-two-channel-binding-ux-2026-05-24`. JCS field-order const + tests.
+- [`packages/operator-core/lib/identity/attestation-types.ts`](https://github.com/papercupai/papercup/blob/main/packages/operator-core/lib/identity/attestation-types.ts) — the Channel 1 device attestation gist body (Phase 1b P-011). Per `dogfood-design-memo-device-attestation-ux-2026-05-24`. Also targets JCS canonicalization at the byte level when the runtime impl lands.
 
 Both modules ship before the runtime serializer because the field-order const is the load-bearing piece — once it's in tree + tested, downstream implementations cannot diverge from it.
 
