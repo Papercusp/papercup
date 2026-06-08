@@ -43,6 +43,7 @@ import { buildCoordThreadProjection } from './coord-thread';
 import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
+import { buildHiveMembersProjection } from './hive-members';
 
 export interface RegisterAllOpts {
   workspaceId: string;
@@ -97,6 +98,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
   'hive-settings-by-key',
+  // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
+  // (hive_members) federates across the Hive's Swarms so a revocation propagates.
+  'hive-members',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -125,6 +129,7 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildCoordThreadPostProjection(opts),
     buildPlanItemAssignmentsProjection(opts),
     buildHiveSettingsProjection(opts),
+    buildHiveMembersProjection(opts),
   ] as TableProjection<unknown>[];
 }
 

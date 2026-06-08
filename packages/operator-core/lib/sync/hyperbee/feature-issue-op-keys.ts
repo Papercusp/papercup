@@ -37,6 +37,7 @@ import type { CoordMessageRow } from './projections/coord-message';
 import type { CoordThreadRow } from './projections/coord-thread';
 import type { CoordThreadPostRow } from './projections/coord-thread-post';
 import type { PlanItemAssignmentRow } from './projections/plan-item-assignments';
+import type { HiveMemberRow } from './projections/hive-members';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -74,6 +75,11 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
   // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
   hive_settings: 'hive-settings-by-key',
+  // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission.
+  // Projection 'hive-members' (projections/hive-members.ts); key == github_user_id.
+  // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so
+  // it rides the Hive peer-log.
+  hive_members: 'hive-members',
 };
 
 /**
@@ -339,6 +345,24 @@ function toHiveSettingValue(row: Record<string, unknown>): HiveSettingRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `HiveMemberRow` the hive-members projection
+ *  INSERT consumes — the federated subset of harness_shared.hive_members. The Hive
+ *  scope key (`hive_home_slug`) is the projection demux; device_attestations stays a
+ *  jsonb array; github_user_id (BIGINT) → number. No TIMESTAMPTZ (joined_at/channels
+ *  are machine-local, not federated). */
+function toHiveMemberValue(row: Record<string, unknown>): HiveMemberRow {
+  return {
+    hive_home_slug: String(row.hive_home_slug ?? ''),
+    github_user_id: numOrZero(row.github_user_id),
+    github_username: String(row.github_username ?? ''),
+    device_attestations: Array.isArray(row.device_attestations)
+      ? (row.device_attestations as HiveMemberRow['device_attestations'])
+      : [],
+    revoked_pubkeys: Array.isArray(row.revoked_pubkeys) ? (row.revoked_pubkeys as string[]) : [],
+    binding_status: String(row.binding_status ?? 'unverified'),
+  };
+}
+
 /**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
  * own log. Throws on an unknown `table_name` (a programming error — the trigger
@@ -376,7 +400,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | CoordThreadRow
     | CoordThreadPostRow
     | PlanItemAssignmentRow
-    | HiveSettingRow;
+    | HiveSettingRow
+    | HiveMemberRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -404,6 +429,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_settings':
       value = toHiveSettingValue(row);
+      break;
+    case 'hive_members':
+      value = toHiveMemberValue(row);
       break;
     default:
       value = toIssueValue(row);

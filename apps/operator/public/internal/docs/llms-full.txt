@@ -36696,7 +36696,7 @@ This page distills the research-backed design memo (a code-truth audit + a 3-pas
 
 [Section titled “1. The gap (from the code audit)”](#1-the-gap-from-the-code-audit)
 
-A code-level audit found that **GitHub is the only authorization actually enforced today.** Every trust layer on top of it was dead code or self-asserted: the 5-state feature machine had zero non-test callers; the PR “trusted authors” gate had no writer; `completion_ref` was never written; the Hyperbee/Autobase substrate projected **unsigned, unauthenticated ops** verbatim into every peer’s Postgres, and the swarm topic was derivable from the **public** repo id — so any peer could join and forge rows.
+A code-level audit found that **GitHub is the only authorization actually enforced today.** Every trust layer on top of it was dead code or self-asserted: the 5-state feature machine had zero non-test callers; the PR “trusted authors” gate had no writer; `completion_ref` was never written (a writer — `stampCompletionRefOnMerge`, wired into `prs.ts`’s `reviewPr` → `tryAutoMerge` — has since landed, implementing recommendation #7 below); the Hyperbee/Autobase substrate projected **unsigned, unauthenticated ops** verbatim into every peer’s Postgres, and the swarm topic was derivable from the **public** repo id — so any peer could join and forge rows.
 
 The one thing that *is* enforced: PR merges go through GitHub’s REST API with a real user token, so **GitHub’s write-access + branch-protection are real.** That single fact drives the whole model.
 
