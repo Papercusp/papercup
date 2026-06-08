@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from './beekeeper-runner';
+import { seedCorpus } from './corpus';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
 import { createMetricsCollector, type IQBatteryMetrics } from './collectors';
 import type { CorpusCase } from './corpus';
@@ -125,6 +126,19 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     await sql.unsafe(
       'TRUNCATE harness_shared.beekeeper_scores, harness_shared.beekeeper_runs, harness_shared.beekeeper_instances CASCADE',
     );
+  });
+
+  it('seedCorpus persists all 20 cases with valid jsonb (regression: org-pool jsonb bind — corpus.ts:891)', async () => {
+    // The smoke caught seedCorpus binding RAW objects to jsonb columns (ground_truth/rubric) →
+    // postgres-js byteLength(Object) throws on a prepared statement. The fix is `${JSON.stringify(x)}::jsonb`.
+    // A default `postgres(uri)` connection uses prepare:true, so this reproduces + guards the bug.
+    await seedCorpus(sql);
+    const [{ n }] = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM iq_battery_cases`;
+    expect(Number(n)).toBe(20);
+    const rows = await sql<{ gt: unknown; rub: { dimensions?: unknown } }[]>`
+      SELECT ground_truth AS gt, rubric AS rub FROM iq_battery_cases ORDER BY variant, rotation_index LIMIT 1`;
+    expect(typeof rows[0].gt).toBe('object'); // jsonb decoded back to an object, not a throw
+    expect(rows[0].rub).toHaveProperty('dimensions');
   });
 
   it('D-004: threads REAL signals → the collectors measure the actual run (not stubbed defaults)', async () => {

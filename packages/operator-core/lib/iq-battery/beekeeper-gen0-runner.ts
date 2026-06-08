@@ -176,6 +176,50 @@ async function assertSchema(sql: postgres.Sql): Promise<void> {
   }
 }
 
+/**
+ * Load the seeded corpus back from iq_battery_cases — the in-memory corpus data carries NO `id`
+ * (it's assigned at seed time via generateStableCaseId), and the battery keys runs by case id. One
+ * single-value-bound query per variant (bulletproof binds), capped at `casesPerVariant`.
+ */
+async function loadSeededCorpus(
+  sql: postgres.Sql,
+  variants: TaskVariant[],
+  casesPerVariant: number,
+): Promise<CorpusCase[]> {
+  const corpus: CorpusCase[] = [];
+  for (const variant of variants) {
+    const rows = await sql<
+      {
+        id: string;
+        variant: string;
+        title: string;
+        prompt: string;
+        ground_truth: Record<string, unknown>;
+        rubric: unknown;
+        rotation_index: number;
+      }[]
+    >`
+      SELECT id, variant, title, prompt, ground_truth, rubric, rotation_index
+        FROM iq_battery_cases
+       WHERE variant = ${variant}
+       ORDER BY rotation_index
+       LIMIT ${casesPerVariant}`;
+    for (const r of rows) {
+      corpus.push({
+        id: r.id,
+        variant: r.variant as TaskVariant,
+        title: r.title,
+        prompt: r.prompt,
+        groundTruth: r.ground_truth ?? {},
+        rubric: (r.rubric ?? { dimensions: [] }) as Rubric,
+        rotationIndex: r.rotation_index,
+        createdAt: new Date(),
+      });
+    }
+  }
+  return corpus;
+}
+
 /** Transfer the freshly-recorded beekeeper_scores → iq_battery_metrics (the recurrence + Tests-tab source). */
 async function transferMetrics(sql: postgres.Sql, instanceId: string): Promise<number> {
   const runs = await sql<{ run_id: string; case_id: string; case_variant: string }[]>`
@@ -229,7 +273,10 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     if (variants.length === 0) {
       throw new Error(`--variants matched none of the corpus variants; valid: ${VARIANTS.join(', ')}`);
     }
-    const corpus: CorpusCase[] = variants.flatMap((v) => getCasesByVariant(v).slice(0, args.casesPerVariant));
+    const corpus: CorpusCase[] = await loadSeededCorpus(sql, variants, args.casesPerVariant);
+    if (corpus.length === 0) {
+      throw new Error(`no seeded cases for variants [${variants.join(', ')}] — seedCorpus may have failed`);
+    }
     const spec = buildManifest(workspaceId);
     const config: BeekeeperConfig = {
       instanceSpec: spec,
@@ -284,7 +331,7 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
       collectAndDistill: makeBeeCollectAndDistill(makeLiveBeeTraceLoaders(sql)),
       collectMetrics: (input) => metricsCollector.collectMetrics(input),
       llmCall: judge,
-      newRunId: (caseId, repeat) => `gen0-${spec.manifest.codeSha}-${caseId.slice(0, 12)}-r${repeat}`,
+      newRunId: (caseId, repeat) => `gen0-${spec.manifest.codeSha}-${(caseId ?? 'nocase').slice(0, 12)}-r${repeat}`,
       now: () => Date.now(),
     };
 
