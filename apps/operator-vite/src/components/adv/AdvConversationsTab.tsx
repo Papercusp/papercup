@@ -52,6 +52,16 @@ export default function AdvConversationsTab() {
           <span className="pc-advconv__eyebrow">Fleet comms</span>
           <h1>Conversations</h1>
           <p>Live coordination traffic, agent handoffs, human asks, and durable Q&amp;A threads in one workspace view.</p>
+          <div className="pc-advconv__herochips" aria-label="Conversation surfaces">
+            <span>
+              <Radio size={11} aria-hidden />
+              Full fleet feed
+            </span>
+            <span>
+              <MessageCircle size={11} aria-hidden />
+              Durable Q&amp;A threads
+            </span>
+          </div>
         </div>
         <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
           <button
@@ -61,7 +71,11 @@ export default function AdvConversationsTab() {
             className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
             onClick={() => void setView('feed')}
           >
-            <Radio size={13} aria-hidden /> Feed
+            <Radio size={13} aria-hidden />
+            <span>
+              Feed
+              <em>all envelopes</em>
+            </span>
           </button>
           <button
             type="button"
@@ -70,7 +84,11 @@ export default function AdvConversationsTab() {
             className={`pc-advconv__viewtab${view === 'threads' ? ' is-active' : ''}`}
             onClick={() => void setView('threads')}
           >
-            <MessageCircle size={13} aria-hidden /> Threads
+            <MessageCircle size={13} aria-hidden />
+            <span>
+              Threads
+              <em>human questions</em>
+            </span>
           </button>
         </div>
       </header>
@@ -946,6 +964,26 @@ function AdvConvStyles() {
         font-size: 13px;
         line-height: 1.45;
       }
+      .pc-advconv__herochips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin-top: 12px;
+      }
+      .pc-advconv__herochips span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 26px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(125, 211, 252, 0.14);
+        background: rgba(3, 7, 18, 0.3);
+        color: #b9d7ed;
+        font-size: 11px;
+        font-weight: 750;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+      }
       .pc-advconv .pc-coord__chip {
         transition: background-color 140ms, border-color 140ms, color 140ms, transform 140ms;
       }
@@ -1124,21 +1162,43 @@ function AdvConvStyles() {
         position: relative;
         z-index: 1;
         align-self: flex-start;
-        display: flex;
-        gap: 4px;
-        padding: 4px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(116px, 1fr));
+        gap: 5px;
+        padding: 5px;
         flex: 0 0 auto;
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 999px;
+        border-radius: 18px;
         background: rgba(3, 7, 18, 0.42);
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
       }
       .pc-advconv__viewtab {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 7px 13px; border-radius: 999px; font-size: 12px; font-weight: 750;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        padding: 9px 11px;
+        border-radius: 14px;
+        font-size: 12px;
+        font-weight: 800;
         border: 1px solid transparent;
         background: transparent; color: var(--fg-mute, #8aa3bc); cursor: pointer;
         transition: background-color 140ms, border-color 140ms, color 140ms, transform 140ms;
+      }
+      .pc-advconv__viewtab span {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1px;
+      }
+      .pc-advconv__viewtab em {
+        color: var(--fg-mute, #6f87a0);
+        font-size: 9px;
+        font-style: normal;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
       .pc-advconv__viewtab:hover { color: #f5fbff; transform: translateY(-1px); }
       .pc-advconv__viewtab.is-active {
@@ -1147,6 +1207,7 @@ function AdvConvStyles() {
         color: #fff;
         box-shadow: 0 10px 28px rgba(56, 189, 248, 0.12);
       }
+      .pc-advconv__viewtab.is-active em { color: #bae6fd; }
 
       /* Threads split fills the remaining height */
       .pc-advconv .pc-coord__split { flex: 1 1 auto; min-height: 0; }
@@ -1719,7 +1780,7 @@ function AdvConvStyles() {
       @media (max-width: 920px) {
         .pc-advconv__hero { flex-direction: column; }
         .pc-advconv__viewtabs { align-self: stretch; }
-        .pc-advconv__viewtab { justify-content: center; flex: 1 1 0; }
+        .pc-advconv__viewtab { justify-content: center; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }
