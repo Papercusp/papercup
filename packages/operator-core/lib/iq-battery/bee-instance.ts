@@ -1,0 +1,224 @@
+/**
+ * bee-instance.ts — the real `runInstance` effect + the live signal loaders for the
+ * Apiary gen-0 battery (`apiary-generation-0-battery` P-001 / D-002 / D-003).
+ *
+ * D-002: for gen-0, "an instance" = a sandboxed fleet bee. `runInstance` administers ONE corpus
+ * case to ONE bee (D-003): it spawns a `role:bee` agent via the hardened fleet path
+ * (`spawnAgentInHarness`), hands it the case prompt as its brief, then awaits a terminal state with
+ * a bounded timeout. The bee runs opus-4-8 @ xhigh (the runner pins `AGENT_MODELS`; bees have no
+ * committed `ROLE_MODEL_DEFAULTS` floor — see role-models.ts).
+ *
+ * Terminal-state mapping (what the battery does with the outcome):
+ *   - `done` / `failed`     → the instance RAN; return the handle so collectAndDistill + the judge
+ *                              read the real outcome. A bee that attempted-but-failed the case is a
+ *                              valid scored data point, NOT a runInstance error.
+ *   - `cancelled` / `reaped` → an INVALID run (manual cancel / host died mid-flight) → throw, so the
+ *                              orchestrator records it `errored` (re-runnable), never a fake "failed
+ *                              the task".
+ *   - never reached terminal within the timeout → throw (a harness hang, not a task outcome).
+ *
+ * The spawn + poll host-effects are INJECTED (`BeeRunDeps`) so the await/timeout/mapping logic
+ * unit-tests with fakes — zero spawn, zero spend. `liveBeeRunDeps` / `makeLiveBeeTraceLoaders` bind
+ * the real ones (fleet spawn + org-PG + on-disk transcript) for the runner (P-004).
+ */
+import type postgres from 'postgres';
+import { readFileSync } from 'node:fs';
+import { spawnAgentInHarness } from '../fleet/operator-spawn';
+import type { BeekeeperRunInput } from './beekeeper-runner';
+import type { InstanceRunHandle } from './instance-manifest';
+import {
+  locateBeeTranscript,
+  type BeeSpawnRow,
+  type BeeRunTokens,
+  type BeeTraceLoaders,
+} from './bee-trace';
+
+/** Terminal spawned_agents states. */
+const TERMINAL = new Set(['done', 'failed', 'cancelled', 'reaped']);
+/** Terminal states that represent a real, scoreable instance run (the bee attempted the case). */
+const SCOREABLE = new Set(['done', 'failed']);
+
+export interface SpawnOnceResult {
+  ok: boolean;
+  spawnId: string | null;
+  error: string | null;
+}
+
+/** The host effects `runInstance` needs, injected for testability. */
+export interface BeeRunDeps {
+  /** Launch one bee with the case prompt as its brief; resolve once the child is launched. */
+  spawn(input: { brief: string; runInput: BeekeeperRunInput }): Promise<SpawnOnceResult>;
+  /** The bee's current spawned_agents status, or null if the row isn't visible yet. */
+  pollStatus(spawnId: string): Promise<string | null>;
+  /** Total solver $cost for the run so far (agent_usage_samples), for the handle + spend cap. */
+  loadCost(spawnId: string): Promise<number>;
+  sleep(ms: number): Promise<void>;
+  now(): number;
+}
+
+export interface BeeRunConfig {
+  /** Bounded wall-clock per case — on overrun the run is `errored`, never hangs the battery. */
+  timeoutMs: number;
+  /** Poll cadence while awaiting a terminal state. */
+  pollMs: number;
+}
+
+/**
+ * Build the real `runInstance`: spawn one bee for the case, await a terminal state, map it, and
+ * return an `InstanceRunHandle` keyed to the bee's spawn id (which IS the instanceId collectAndDistill
+ * reads). Throws on spawn rejection, timeout, or an invalid (cancelled/reaped) terminal.
+ */
+export function makeBeeRunInstance(cfg: BeeRunConfig, deps: BeeRunDeps) {
+  return async (input: BeekeeperRunInput): Promise<InstanceRunHandle> => {
+    const res = await deps.spawn({ brief: input.case.prompt, runInput: input });
+    if (!res.ok || !res.spawnId) {
+      throw new Error(`runInstance: spawn rejected for case ${input.case.id}: ${res.error ?? 'unknown'}`);
+    }
+    const spawnId = res.spawnId;
+
+    const deadline = deps.now() + cfg.timeoutMs;
+    let status: string | null = null;
+    while (deps.now() < deadline) {
+      await deps.sleep(cfg.pollMs);
+      status = await deps.pollStatus(spawnId);
+      if (status && TERMINAL.has(status)) break;
+    }
+
+    if (!status || !TERMINAL.has(status)) {
+      throw new Error(
+        `runInstance: bee ${spawnId} did not reach a terminal state within ${cfg.timeoutMs}ms (last=${status ?? 'unseen'})`,
+      );
+    }
+    if (!SCOREABLE.has(status)) {
+      // cancelled / reaped — the run is invalid, not a task failure.
+      throw new Error(`runInstance: bee ${spawnId} ended '${status}' — invalid run, re-runnable`);
+    }
+
+    const costUsd = await deps.loadCost(spawnId).catch(() => 0);
+    return {
+      instanceId: spawnId,
+      instanceUrl: `bee://${spawnId}`,
+      targetSlug: input.case.variant,
+      costUsd,
+    };
+  };
+}
+
+// ───────────────────────────── live bindings (for the runner, P-004) ─────────────────────────────
+
+/** Read the columns bee-trace needs from a spawned_agents row. */
+async function readSpawnRow(sql: postgres.Sql, spawnId: string): Promise<BeeSpawnRow | null> {
+  const rows = await sql<
+    {
+      status: string;
+      run_id: string | null;
+      started_at: Date | null;
+      finished_at: Date | null;
+      duration_ms: string | null;
+      output_tail: string | null;
+      error_message: string | null;
+    }[]
+  >`
+    SELECT status, run_id, started_at, finished_at, duration_ms, output_tail, error_message
+      FROM harness_shared.spawned_agents
+     WHERE spawn_id = ${spawnId}
+     LIMIT 1`;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    status: r.status,
+    runId: r.run_id,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    durationMs: r.duration_ms != null ? Number(r.duration_ms) : null,
+    outputTail: r.output_tail,
+    errorMessage: r.error_message,
+  };
+}
+
+/** Sum a run's token totals from agent_usage_samples (null when none landed → transcript fallback). */
+async function readRunTokens(sql: postgres.Sql, runId: string): Promise<BeeRunTokens | null> {
+  const rows = await sql<{ input_tokens: string | null; output_tokens: string | null }[]>`
+    SELECT SUM(COALESCE(input_tokens, 0))::text AS input_tokens,
+           SUM(COALESCE(output_tokens, 0))::text AS output_tokens
+      FROM harness_shared.agent_usage_samples
+     WHERE run_id = ${runId}`;
+  const r = rows[0];
+  if (!r || (r.input_tokens == null && r.output_tokens == null)) return null;
+  const inputTokens = Number(r.input_tokens ?? 0);
+  const outputTokens = Number(r.output_tokens ?? 0);
+  if (!inputTokens && !outputTokens) return null;
+  return { inputTokens, outputTokens };
+}
+
+/** Sum a run's $cost from agent_usage_samples (0 when none priced). */
+async function readRunCostByRunId(sql: postgres.Sql, runId: string): Promise<number> {
+  const rows = await sql<{ cost_usd: string | null }[]>`
+    SELECT SUM(COALESCE(cost_usd, 0))::text AS cost_usd
+      FROM harness_shared.agent_usage_samples
+     WHERE run_id = ${runId}`;
+  return Number(rows[0]?.cost_usd ?? 0) || 0;
+}
+
+/** Live `BeeTraceLoaders`: org-PG spawn/token reads + the on-disk transcript. */
+export function makeLiveBeeTraceLoaders(sql: postgres.Sql, transcriptBaseDir?: string): BeeTraceLoaders {
+  return {
+    loadSpawn: (spawnId) => readSpawnRow(sql, spawnId),
+    loadRunTokens: (runId) => readRunTokens(sql, runId),
+    loadTranscript: (spawnId) => {
+      const path = locateBeeTranscript(spawnId, transcriptBaseDir);
+      if (!path) return null;
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+/** Resolve a spawn's run_id then sum its solver cost — the handle's `costUsd` (for the spend cap). */
+async function loadCostBySpawn(sql: postgres.Sql, spawnId: string): Promise<number> {
+  const rows = await sql<{ run_id: string | null }[]>`
+    SELECT run_id FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId} LIMIT 1`;
+  const runId = rows[0]?.run_id;
+  return runId ? readRunCostByRunId(sql, runId) : 0;
+}
+
+/**
+ * Live `BeeRunDeps`: the fleet spawn path + org-PG status/cost polls. `harness` + `workspaceId` scope
+ * the spawn; the case prompt is delivered as the bee's `brief`. (A richer delivery — a work_item per
+ * case — is a P-008 refinement if a brief-only spawn proves taskless; the brief carries a complete,
+ * self-contained corpus prompt, which is a real task.)
+ */
+export function liveBeeRunDeps(args: {
+  sql: postgres.Sql;
+  workspaceId: string;
+  harness: string;
+  parentSpawnId?: string | null;
+  planSlug?: string | null;
+}): BeeRunDeps {
+  return {
+    async spawn({ brief, runInput }) {
+      const res = await spawnAgentInHarness({
+        workspaceId: args.workspaceId,
+        harness: args.harness,
+        role: 'bee',
+        brief,
+        parentSpawnId: args.parentSpawnId ?? null,
+        parentRole: 'apiary-runner',
+        planSlug: args.planSlug ?? null,
+        extras: [`APIARY_CASE=${runInput.case.id}`, `APIARY_REPEAT=${runInput.repeat}`],
+      });
+      return { ok: res.ok, spawnId: res.spawnId, error: res.error };
+    },
+    async pollStatus(spawnId) {
+      const rows = await args.sql<{ status: string }[]>`
+        SELECT status FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId} LIMIT 1`;
+      return rows[0]?.status ?? null;
+    },
+    loadCost: (spawnId) => loadCostBySpawn(args.sql, spawnId),
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+  };
+}

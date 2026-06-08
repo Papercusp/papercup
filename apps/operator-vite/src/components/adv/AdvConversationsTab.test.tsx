@@ -168,6 +168,16 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(screen.queryByRole('button', { name: /^ack/i })).toBeNull();
   });
 
+  it('keeps Activity search compact instead of using the old wide field', () => {
+    nuqsState.conv = 'feed';
+    render(<AdvConversationsTab />);
+
+    const search = screen.getByLabelText('Free-text search');
+    expect(search).toHaveAttribute('type', 'search');
+    expect(search.closest('label')?.className).toContain('pc-advfeed__field--search');
+    expect(search.closest('label')?.className).not.toContain('pc-advfeed__field--wide');
+  });
+
   it('shows raw kind filters only when the advanced URL state is open', () => {
     nuqsState.conv = 'feed';
     nuqsState.fadvanced = 'open';
