@@ -110,6 +110,20 @@ function reinjectWindowMs(): number {
   return Number.isFinite(raw) && raw >= 0 ? raw : 120_000;
 }
 
+/**
+ * Auto-inject relevance floor (memory-backend-improve-and-hybrid P-001 / D-003).
+ * The PUSH path applies an absolute cosine floor so an off-topic turn is NOT
+ * injected with nearest-neighbour noise — the bench's hard-negative FP@5 fix,
+ * where there is no LLM in the loop to filter the inject. Default ~0.42 from the
+ * measured hard-negative (top ~0.385) vs real-hit (~0.51–0.58) separation; the
+ * exact value is locked by the bench sweep (P-031). Env-tunable; `<= 0` disables.
+ */
+function injectMinScore(): number | undefined {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_SCORE);
+  if (Number.isFinite(raw)) return raw > 0 ? raw : undefined;
+  return 0.42;
+}
+
 export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
 ): Promise<string | null> {
@@ -142,14 +156,16 @@ export async function buildMemoryContextBlock(
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   try {
+    const minScore = injectMinScore();
     const userPull: Promise<MemoryEntry[]> = input.userId
-      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit })
+      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore })
       : Promise.resolve([]);
 
     const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
       ? backend.search(input.queryContext, {
           scope: harnessSlugs.map((slug) => `harness:${slug}`),
           limit: PER_HARNESS_LIMIT,
+          minScore,
         })
       : Promise.resolve([]);
 

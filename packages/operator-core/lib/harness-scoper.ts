@@ -93,7 +93,7 @@ export async function invokeScoperBackground(
       // bail (governor permit timeout / aborted-before-start) never does, leaving
       // the file-poller hanging — so end the poll ourselves. Idempotent: a
       // duplicate sentinel after the child's own is harmless (the poller stops at
-      // the first). Preserves the old governed-background-spawn permit-bail end.
+      // the first). Preserves the old detached background spawn's permit-bail end.
       if (r.exitCode !== 0) {
         try {
           appendFileSync(

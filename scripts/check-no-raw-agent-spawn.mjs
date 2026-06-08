@@ -33,7 +33,13 @@ import { pathToFileURL } from 'node:url';
 const ROOT = new URL('..', import.meta.url).pathname;
 
 export const ALLOWLIST = new Set([
+  // The chokepoint: builds (buildInvokeOnce) + spawns (runChild) the agent CLI.
   'packages/operator-core/lib/dbos/orchestrator-runner.ts',
+  // The builder LIBRARY: defines `buildInvokeOnce`. It never spawns — every spawn
+  // caller must route through `spawnInvokeOnce` (the chokepoint, which lives in
+  // the file above). Allowlisted so its own `function buildInvokeOnce(` declaration
+  // doesn't read as a call-site bypass.
+  'packages/operator-core/lib/harness-invoke-once.ts',
 ]);
 
 export const isExcluded = (f) =>
@@ -45,16 +51,20 @@ export const isExcluded = (f) =>
   !/\.ts$/.test(f);
 
 /**
- * The tell of a raw agent-CLI spawn bypass: the file builds the invoke-once command
- * itself (`buildInvokeOnce`) AND spawns a child process directly from
- * node:child_process. Pure (text → boolean) so it's unit-testable.
+ * The tell of an agent-CLI spawn bypass: a CALL to `buildInvokeOnce(...)` outside
+ * the allowlist. Building the invoke-once command is the chokepoint's exclusive
+ * right — every other caller must go through `spawnInvokeOnce`. Keying on the
+ * *call* (not "build + raw-spawn in the same file") is what makes this robust to
+ * the CROSS-file shape: build the command in file A and hand it to a spawner in
+ * file B (the scoper bypass — `harness-scoper.ts` → the old `governed-background-
+ * spawn.ts` — that the original same-file `&&` rule silently missed; D-013
+ * residual 2). The `(` distinguishes a real call from a bare mention in a comment
+ * (e.g. "uses buildInvokeOnce + raw spawn"); the file that DEFINES it
+ * (`function buildInvokeOnce(`) is allowlisted, so it never reaches here. Pure
+ * (text → boolean) so it's unit-testable.
  */
 export function isRawAgentSpawnBypass(text) {
-  if (!text.includes('buildInvokeOnce')) return false;
-  const buildsAgentCmd = /\bbuildInvokeOnce\b/.test(text);
-  const rawSpawns =
-    /from\s+['"]node:child_process['"]/.test(text) && /\bspawn(Sync)?\s*\(/.test(text);
-  return buildsAgentCmd && rawSpawns;
+  return /\bbuildInvokeOnce\s*\(/.test(text);
 }
 
 /** Scan the tracked tree for bypass offenders (excludes allowlist + _retired + tests). */

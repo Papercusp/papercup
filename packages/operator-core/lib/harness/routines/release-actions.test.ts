@@ -8,9 +8,9 @@
  *     noop:true (or unparseable stdout) must NOT deploy; a real noop:false plan
  *     runs `deploy-cli --execute` directly and logs a `deploy` pipeline event.
  *
- * runScript shells out via node:child_process.spawn — mocked (mirrors
- * governed-background-spawn.test.ts's spawn-fake). pipeline-events is mocked so
- * no PG is touched. No subprocess, no network.
+ * runScript shells out via node:child_process.spawn — mocked with a small
+ * EventEmitter spawn-fake. pipeline-events is mocked so no PG is touched. No
+ * subprocess, no network.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
