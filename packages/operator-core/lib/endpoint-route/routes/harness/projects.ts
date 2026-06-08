@@ -20,6 +20,7 @@ import {
   saveHarnessRegistry,
 } from '../../../harness-registry';
 import { harnessDir } from '../../../harness-core';
+import { groupByHive, HIVE_KIND, type HiveGroupProject } from '../../../harness/hive-groups';
 import { defineTool } from '@papercusp/agent-mcp';
 
 // SSR self-fetch site for /harness/<slug>/page.tsx — every page render
@@ -67,6 +68,9 @@ const lite = defineTool({
         slug: p.slug,
         path: p.path,
         harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
+        // FORMAL Hive membership (shared-hive-federation): a registry field, so
+        // grouping over it needs no PG `hives`-table read (harnesses-tab P-021).
+        hive_slug: (p as { hive_slug?: string }).hive_slug ?? null,
         parent_slug: parentSlug,
         is_shared: isShared,
         hasState: existsSync(hDir),
@@ -74,7 +78,12 @@ const lite = defineTool({
         harnessDir: hDir,
       };
     }));
-    const payload = { projects };
+    // P-021 — the registry exposes the Hive grouping NATIVELY so the client
+    // (buildHarnessSelectOptions, member rail, all-mode cards) stops
+    // tree-inferring it. Grouped over the formal `harness_kind:'hive'` home +
+    // `hive_slug`, with `parent_slug` legacy fallback (D-002/D-008 seam).
+    const hives = groupByHive(projects as unknown as HiveGroupProject[]);
+    const payload = { projects, hives };
     g[__liteKey] = { ts: Date.now(), payload };
     return Response.json(payload);
   },
@@ -187,6 +196,21 @@ const create = defineTool({
       return Response.json({ error: 'slug already exists' }, { status: 409 });
     }
 
+    // P-011 (harnesses-tab-hive-model) — "add into hive": when the picker's
+    // add-into-hive mode passes `hive` (the current `?slug=` scope), stamp the
+    // membership edge to that scope. Validate FAIL-FAST here, before any dir/
+    // clone side effect (mirrors harness:create's gate). Membership precedence
+    // matches the grouping (hive-groups.ts): a FORMAL `kind:'hive'` home → the
+    // `hive_slug` registry field (shared-hive-federation); a legacy root scope →
+    // `parent_slug` in the new harness's .papercusp/config.json (the Phase-1
+    // edge). Either way the new harness groups under that scope in the rail.
+    const hiveScope = typeof body.hive === 'string' ? body.hive.trim() : '';
+    const membershipResult = resolveProjectHiveMembership(reg.projects, hiveScope);
+    if (!membershipResult.ok) {
+      return Response.json({ error: membershipResult.error, code: membershipResult.code }, { status: 404 });
+    }
+    const membership = membershipResult.membership;
+
     // Resolve the harness path from the body shape — supports three
     // entry points so far (papercusp-dogfood-v5 §3 P-008/P-009/P-010):
     //   Entry 1 — new local dir:    { slug, parentDir, folderName }
@@ -261,8 +285,37 @@ const create = defineTool({
       );
     }
 
-    reg.projects.push({ slug, path });
+    // FORMAL membership rides on the registry entry; legacy membership is written
+    // to the new harness's config.json below (after the dir exists).
+    reg.projects.push(
+      membership?.kind === 'hive_slug' ? { slug, path, hive_slug: membership.value } : { slug, path },
+    );
     await saveHarnessRegistry(reg);
+
+    // Legacy `parent_slug` membership (the Phase-1 edge): self-describing in the
+    // new harness's .papercusp/config.json, same shape registerSubs writes.
+    if (membership?.kind === 'parent_slug') {
+      try {
+        const { writeFile, mkdir } = await import('node:fs/promises');
+        const cfgDir = join(path, '.papercusp');
+        const cfgPath = join(cfgDir, 'config.json');
+        let prior: Record<string, unknown> = {};
+        try {
+          if (existsSync(cfgPath)) prior = JSON.parse(await readFile(cfgPath, 'utf8')) as Record<string, unknown>;
+        } catch { /* malformed = overwrite with our addition */ }
+        if (prior.parent_slug !== membership.value) {
+          if (!existsSync(cfgDir)) await mkdir(cfgDir, { recursive: true });
+          await writeFile(cfgPath, JSON.stringify({ ...prior, parent_slug: membership.value }, null, 2), 'utf8');
+        }
+      } catch { /* best-effort — registration succeeded; membership is a soft edge */ }
+    }
+    // Bust the lite/projects caches so the new member appears in the rail + the
+    // hive grouping on the next poll (membership changed the grouping).
+    {
+      const g = globalThis as LiteGlobals;
+      delete g[__liteKey];
+      __projectsCache.expires = 0;
+    }
 
     // Entry-seam migration (deprecate-harness-config-json-2026-06-06): a harness
     // that ARRIVES with a legacy `.papercusp/config.json` (a gym substrate, an
@@ -292,6 +345,7 @@ const create = defineTool({
       ok: true,
       project: { slug, path },
       provisioning,
+      ...(membership ? { membership: { hive: membership.value, edge: membership.kind } } : {}),
       ...(migratedConfigFields.length > 0 ? { migratedConfig: migratedConfigFields } : {}),
       ...(cloneInfo ? { clone: cloneInfo } : {}),
       ...(initInfo ? { init: initInfo } : {}),
@@ -452,6 +506,41 @@ const registerSubs = defineTool({
     });
   },
 });
+
+/**
+ * Resolve the membership edge for an "add into hive" create (harnesses-tab P-011).
+ *
+ * Decides which edge a new harness should carry when the picker's add-into-hive
+ * mode passes a `hive` scope (the current `?slug=`):
+ *   - empty scope        → no membership (a standalone harness).
+ *   - unknown scope       → error (the scope must exist in this workspace).
+ *   - FORMAL `kind:'hive'` home → `hive_slug` (shared-hive-federation membership).
+ *   - any other scope     → `parent_slug` (the Phase-1 legacy sub-harness edge).
+ *
+ * Pure over the registry projects so the formal-vs-legacy precedence is
+ * unit-tested without fs/PG (mirrors `resolveCreateHiveMembership`). Exported
+ * for tests + the POST handler.
+ */
+export function resolveProjectHiveMembership(
+  projects: ReadonlyArray<{ slug: string; harness_kind?: string }>,
+  hiveScope: string,
+):
+  | { ok: true; membership: { kind: 'hive_slug' | 'parent_slug'; value: string } | null }
+  | { ok: false; error: string; code: 'hive_not_found' } {
+  const scope = hiveScope.trim();
+  if (!scope) return { ok: true, membership: null };
+  const target = projects.find((p) => p.slug === scope);
+  if (!target) {
+    return { ok: false, error: `hive '${scope}' not found in this workspace`, code: 'hive_not_found' };
+  }
+  return {
+    ok: true,
+    membership: {
+      kind: target.harness_kind === HIVE_KIND ? 'hive_slug' : 'parent_slug',
+      value: scope,
+    },
+  };
+}
 
 /**
  * Sub-harness slug guard for P-021. Rejects slugs that would either
