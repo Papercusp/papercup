@@ -27,7 +27,7 @@ The library set documented here was chosen, installed, and applied across the ha
 | Hover/focus tooltip on a button or label | `@radix-ui/react-tooltip` | `<Tooltip label="…">{button}</Tooltip>` from `app/harness/Tooltip.tsx` |
 | Centered modal dialog | `@radix-ui/react-dialog` | `<Modal open onOpenChange title>…</Modal>` from `app/harness/Modal.tsx` |
 | Side-slide drawer (right- or left-anchored panel) | `vaul` | `<Drawer.Root direction="right">` from `vaul` |
-| Command palette / fuzzy launcher | `cmdk` + `@radix-ui/react-dialog` | See `app/harness/CommandPalette.tsx` |
+| Command palette / fuzzy launcher | `cmdk` + `@radix-ui/react-dialog` | See `app/_components/CommandPalette.tsx` |
 | Tabs (real tabs with content panels) | `@radix-ui/react-tabs` | `<Tabs.Root><Tabs.List><Tabs.Trigger><Tabs.Content>` |
 | Filter pills / scoped filters | `@radix-ui/react-tabs` (asChild) **OR** native button + `aria-pressed` | See gotchas page |
 | Single-select dropdown (replacement for `<select>`) | `@radix-ui/react-select` | `<Select value onChange options>` from `app/harness/Select.tsx` |
@@ -68,7 +68,7 @@ The library set documented here was chosen, installed, and applied across the ha
 
    Exceptions to all three: single-textarea chat composers and Monaco code editors — both explicitly out of scope; use plain `useState`.
 
-8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@restart/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
+8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@papercusp/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
 
 9. **Buttons are flat — no 3D.** In-page action buttons and pills are flat: a solid (or `color-mix`-tinted) background, a 1px border, readable text. Do **not** give them an embossed bevel (`box-shadow: inset 0 1px 0 …`), a raised drop-shadow / glow (`box-shadow: 0 8px … rgba(0,0,0,…)`), a hover-lift or press (`transform: translateY(…)`), or a vertical "sheen" gradient fill (`linear-gradient(180deg, rgba(255,255,255,.05), …)`) — those read as 3D and hurt legibility. Hover/active = change the background/border colour, not the elevation. Keyboard focus rings (`:focus-visible`) are the one box-shadow/outline that stays. *Carve-out: the large top-level **page/tab nav** (e.g. the `/adv` tab strip) is a different category — it may keep its accent treatment.* See [buttons](#buttons) below for the flat recipe.
 

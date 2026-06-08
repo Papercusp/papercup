@@ -168,6 +168,14 @@ awake → ack with `events:cancel { delivery_id }`; `events:status
 never wakes you, and a wake costs a whole turn: await only what genuinely
 blocks you. (`await-event-primitive-2026-06-05`.)
 
+**You're always-armed for inbox-wake.** The operator arms your standing
+`coord:inbox-wake:<self>` watch at SessionStart, so a `coord:send {wake:true,
+to:[you]}` re-invokes you even after an idle turn with no `events:await` — going
+idle never strands you; `coord:await-inbox` is now just an optional idle
+annotation, and a wake that woke nobody returns a `woken:0` warning. Full model:
+`/internal/docs/agent-insights/always-armed-inbox-wake`.
+(`turn-lifecycle-control-2026-06-08` D-001/D-005/D-010.)
+
 **Asked to yield? Save only when it fits, then end the turn.** Wake's dual:
 a peer/operator can end your *running* turn via **`turn:interrupt { owner,
 mode, reason }`** (operator-mediated, reason-required, audited,

@@ -295,6 +295,17 @@ also resumed; `events:status { meter: true }` is the wake-storm detector.
 costs a whole turn (D-007): await only what genuinely blocks you; ambient
 interest stays a subscription.
 
+**You're always-armed for inbox-wake.** The operator arms your standing
+`coord:inbox-wake:<self>` watch at **SessionStart**, so a `coord:send
+{wake:true, to:[you]}` re-invokes you even after you end an idle turn with NO
+`events:await` registered — going idle never strands you, and you needn't
+"arm" anything. `coord:await-inbox` is now just an optional idle *annotation*
+(it refreshes the "why I'm idle" note; it no longer makes you wakeable). A
+`{wake:true}` that woke nobody returns a `woken:0` warning (don't read a silent
+ok as "they were woken"). Full model:
+`/internal/docs/agent-insights/always-armed-inbox-wake`.
+(`turn-lifecycle-control-2026-06-08` D-001/D-005/D-010.)
+
 **Asked to yield? Save only when it fits, then end the turn.** Wake's dual:
 a peer or the operator can end your *running* turn via **`turn:interrupt {
 owner, mode, reason }`** (operator-mediated, reason-required, audited,

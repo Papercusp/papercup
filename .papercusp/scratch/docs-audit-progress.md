@@ -21,8 +21,8 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] posthog (2)
 - [x] desktop (3)
 - [x] implementation (6)
-- [~] design (16)
-- [ ] reference (5) — GENERATED (tool-catalog.md by scripts/gen-doc-tool-catalog.ts) — REGENERATE don't hand-edit; also re-confirm spec/plugin-quickstart here
+- [x] design (16) — DONE
+- [x] reference (5) — DONE (role-registry/blueprint-catalog up-to-date; agent-insights-index regenerated; tool-catalog + plans-index regenerate in FINAL PASS)
 - [ ] agent-insights (99) — peer added always-armed-inbox-wake.mdx mid-session (P-021); include it
 
 ## Per-page log
@@ -166,6 +166,26 @@ MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOI
 - design/proposals-tab-feedback: BANNER — /harness→/adv redirect; proposals now SamplePanel stub.
 - design/settings-feedback: NOTE — grouping/search/advanced shipped; Orchestrator page removed.
 NOTE: design system+plan agent (index,tokens,libraries,gotchas,design-phase-plan,scanner-role-plan,operator-card-lifecycle-plan,delegate-async-plan) hit transient "Not logged in" after 66 tool calls — partial edits left; RE-RUNNING.
+
+### Batch 10 (design system/plan + reference + plugin-quickstart) — DONE
+- design/index: EDITS — @papercusp/grid-core; CommandPalette path.
+- design/tokens: EDITS — hive not builtin theme (frost/black/honeycomb); pc-custom-themes attribution; +bg-raised tokens.
+- design/libraries: ACCURATE.
+- design/gotchas: EDITS — Next/Turbopack build section now historical.
+- design/scanner-role-plan: EDITS — RETIRED banner D-010/011→D-005/D-009 + migration 167.
+- design/operator-card-lifecycle-plan: SUPERSEDED note — OperatorPanel removed, OperatorChat; improvements:capture.
+- design/delegate-async-plan: EDITS — implemented note; delegates.list/get ids.
+- design/design-phase-plan: EDITS — implementation-status note (shipped; Style Dictionary not Terrazzo).
+- reference/tool-catalog: STALE (missing turn:interrupt) → regen `npm run gen:doc-tool-catalog` in final pass.
+- reference/role-registry: UP TO DATE (--check passed; 20 roles/38 personas).
+- reference/blueprint-catalog: UP TO DATE (16 blueprints).
+- reference/plans-index: STALE (high-churn, PG) → regen `npm run gen:doc-plans-index` in final pass.
+- reference/agent-insights-index: REGENERATED 98→99.
+- spec/plugin-quickstart: ACCURATE (no edits; note: CLI still says "marketplace"/:3057 in code, Cupboard is newer product name — product-naming drift not doc error).
+
+### FINAL PASS TODO (after agent-insights)
+1. `npm run gen:doc-tool-catalog` (regen tool-catalog.md) + `npm run gen:doc-plans-index` + `npm run gen:doc-insights-index` (refresh after my edits).
+2. `cd apps/operator-docs && npm run build` to rebuild served mirror (apps/operator/public/internal/docs) — docs don't hot-reload.
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

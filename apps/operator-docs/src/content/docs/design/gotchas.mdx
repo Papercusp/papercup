@@ -202,6 +202,13 @@ The lint lives at `app/_lints/css-tokens.test.ts` and runs as part of the operat
 
 Things we did wrong during the migration and had to back out — don't repeat:
 
+*Historical note: the operator has since migrated off Next.js/Turbopack to a
+Vite SPA (TanStack Router) + Hono host. The Turbopack-, `.next/`-, and
+`next/dynamic()`-specific items below are kept as migration history; they no
+longer describe the live build (use Vite's own dynamic-import / lazy patterns
+now), but the non-Next items (the regex/stack-walker and the Radix
+`data-state` one) still apply.*
+
 - **Don't write a Python regex that captures `.+?` between `<div>` tags.** Self-closing `<div/>` tags throw off the depth counter. Use a stack-based walker that distinguishes `<div ... />` from `<div ...>`.
 
 - **Don't add a `tsconfig.json` to a sub-package to fix `.js`-extension resolution under Turbopack.** Turbopack doesn't honor sub-package tsconfigs for files outside the project's own `tsconfig.json` `include`. We tried; it didn't help. The actual fix was a local copy at `apps/operator/lib/...` that bypassed the package barrel.

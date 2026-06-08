@@ -1,8 +1,8 @@
 ---
-title: "Always-armed inbox-wake: how idle agents get re-invoked"
-description: "Arming your inbox-wake watch is now automatic at SessionStart — you are wakeable even if you never call coord:await-inbox. The standing-row model, the woken:0 warning, why you still must not poll, and the one deploy-time hazard (migration 183 rides the deploy, never a manual apply)."
+title: "Turn-lifecycle control: always-arm wake + turn-interrupt"
+description: "The two halves of turn-lifecycle control. WAKE: arming your inbox-wake watch is automatic at SessionStart — you are wakeable even if you never call coord:await-inbox (standing-row model, the woken:0 warning, the migration-183-rides-the-deploy hazard, why you still must not poll). INTERRUPT: turn:interrupt ends a RUNNING peer's turn — cooperative yield (glyph |) vs force, operator-mediated + audited + storm-limited."
 discovered: 2026-06-08
-tags: [wake, coord, await-event, turn-lifecycle, always-arm, idle, migration]
+tags: [wake, interrupt, turn-interrupt, yield, coord, await-event, turn-lifecycle, always-arm, idle, migration]
 status: active
 ---
 
@@ -95,9 +95,44 @@ release SQL dir. So "apply 183 to live PG" is a no-op-by-design that rides the d
 - `coord:await-inbox` (annotation) — `packages/operator-core/lib/agent-tools/coordination/tools/await-inbox.ts`
 - Migration — `libs/papercusp/libs/db/sql/183-event-awaits-inbox-wake-one-per-agent.sql`
 
-## The dual: turn-interrupt
+## The dual: turn-interrupt — ending a RUNNING peer's turn
 
-Wake re-invokes a *sleeping* agent; its dual — ending a *running* peer's turn
-(cooperative yield or forced interrupt) — is the `turn:interrupt` surface built in
-the same plan's Phase 4. See [the coord injection protocol](/internal/docs/agent-insights/coord-injection-protocol)
-for the mid-turn injection glyphs once that lands.
+Wake re-invokes a *sleeping* agent; **`turn:interrupt`** ends a *running* one's
+turn. It is **operator-mediated** (D-008): every fleet agent runs as the same OS
+user, so authorization / attribution / rate-limit can't live at the OS socket —
+they live in the tool. `turn:interrupt { owner, mode, reason }` — `reason` is
+REQUIRED and audited.
+
+**Two modes:**
+
+- **`cooperative`** (the polite default) — injects a high-priority `yield` coord
+  message (glyph `|`) into the peer's `[coord+N]` block mid-turn. The peer follows
+  the yield policy every role's prompt now carries (the dual clause to this page's
+  wake guidance): reach a safe checkpoint, persist partial state to the work_item,
+  release locks, write a one-line successor note, end the turn. It is **not** killed.
+  It **DEFERS** when the target holds file locks (a critical section) — a hard yield
+  mid-edit can orphan a lock or half-write a file, so it lets the atomic edit finish
+  and the lock release first, then you retry.
+- **`force`** — ends the turn NOW, mid-thinking. A managed-pty session gets Ctrl+C
+  over its control socket (the Phase-3 `interruptViaPty` seam); a headless spawn gets
+  SIGINT to the session pid. The **turn** ends, not the agent — the session stays
+  resumable by id. On a critical section `force` WARNS (orphaned-edit hazard) but
+  proceeds.
+
+**Guardrails (D-009):** `reason` required; every call audited
+(`turn.interrupt_cooperative` / `_force` / `_deferred` / `_rate_limited` / `_failed`
+in `harness_shared.audit_log`); storm-limited to 10/min/actor (the audit log is the
+rate source) so a confused or looping agent can't halt the fleet; self-interrupt
+refused.
+
+**Reach for cooperative first**; use `force` only when cooperative was ignored or
+there's no time. To re-invoke an *idle* peer use `coord:send {wake:true}` — interrupt
+is for a *running* peer. The `yield` glyph + every other line type are sourced from
+the one `COORD_LEGEND`; see [the coord injection protocol](/internal/docs/agent-insights/coord-injection-protocol).
+
+**Known gaps (2026-06-08):** the managed-pty typing-parity feel-check and the
+default-on flip (`PAPERCUSP_PSU_PTY` is opt-in today), and a full live interactive
+force-interrupt-mid-thinking e2e, are not yet run — the transport and the logic are
+each covered separately (`turn:interrupt` unit tests 8/8 + the Phase-3 control-socket
+e2e). Where it lives: `packages/operator-core/lib/agent-tools/turn/interrupt.ts`
+(`performInterrupt` is the dep-injected, testable core).

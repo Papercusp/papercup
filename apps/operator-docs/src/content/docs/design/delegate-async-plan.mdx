@@ -5,6 +5,19 @@ sidebar:
   order: 5
 ---
 
+> **Implemented (with refinements).** The async race-with-timeout path (Q1
+> Option B) shipped in `packages/operator-core/lib/commands/defs/delegation.ts`:
+> a sync window races a deadline, and on overrun the handler returns
+> `{ status: 'started', agentSessionId, message }` and drains the SSE stream in
+> the background. The EL voice tool is still `delegate_to_claude`
+> (`response_timeout_secs: 15` in `apps/operator/scripts/el-agent-sync.mjs`).
+> Completion fires two browser events — `operator:delegation-complete`
+> (panel-targeted) and `operator:delegation-async-complete` (voice-targeted) —
+> and the voice-mode listener does the live-session push as **`sendSystem()`**
+> (not the plan's `sendContextualUpdate`). The ack shape also changed from the
+> draft below: it carries a `message` hint, not `expectedSeconds`, and the
+> session id field is `agentSessionId`, not `claudeSessionId`.
+
 ## Why
 
 EL caps `response_timeout_secs` at **120s** (the API rejects 121+).
@@ -115,7 +128,7 @@ panel — but the agent never speaks about it.
 
 **Option A** (panel-only): result hits the panel, agent forgets.
 The user can reconnect and ask the operator about it (via the
-existing `delegates_list` + `delegates_get` tools).
+existing `delegates.list` + `delegates.get` queries).
 
 **Option B** (hindsight memory): write a session-completion record
 to a small "agent inbox" table; on next session start, EL fetches
