@@ -37,6 +37,16 @@ export const DEFAULT_DRAIN_BATCH = 200;
 /** Drained rows older than this are GC'd inline on the next drain (24h). */
 export const OUTBOX_GC_AGE_MS = 24 * 60 * 60 * 1000;
 
+/** Inline-GC batch size. Bounded so a large backlog can't become one unbounded
+ *  DELETE that never commits before the host recycles (the memory-watchdog
+ *  recycles the operator ~every 12 min). Each batch is its own committed
+ *  statement, so progress survives a restart. */
+export const OUTBOX_GC_BATCH = 5000;
+
+/** Max GC batches per drain pass — bounds GC time per pass (≤100k rows); the
+ *  drain loop re-runs until the backlog clears. */
+export const OUTBOX_GC_MAX_BATCHES = 20;
+
 /** Default poll-fallback cadence for `startOutboxDrain` (ms). */
 export const DEFAULT_POLL_MS = 5000;
 
@@ -94,13 +104,30 @@ export async function drainOutboxOnce(
   const now = opts.now ?? Date.now();
   const batch = opts.batch ?? DEFAULT_DRAIN_BATCH;
 
-  // Inline 24h GC — cheap, keeps the table small. Best-effort: a GC failure
-  // must not block the drain, so swallow it (the next pass retries).
+  // Inline 24h GC — keep the table small. BOUNDED + BATCHED: a backlog of
+  // millions of drained rows must NOT become one unbounded DELETE — that single
+  // statement never commits before the memory-watchdog recycles the host
+  // (~every 12 min), so the backlog grows without bound (this produced a 102 GB
+  // substrate_outbox, 2026-06-08). Instead delete in capped batches, each its
+  // own committed statement so progress survives a restart, up to a bounded
+  // number per pass; the drain loop re-runs until the backlog clears.
+  // Best-effort: a GC failure must not block the drain, so swallow it.
   try {
-    await pg`
-      DELETE FROM harness_shared.substrate_outbox
-       WHERE drained_at IS NOT NULL
-         AND drained_at < ${now - OUTBOX_GC_AGE_MS}`;
+    for (let i = 0; i < OUTBOX_GC_MAX_BATCHES; i++) {
+      const gc = await pg`
+        WITH del AS (
+          SELECT id
+            FROM harness_shared.substrate_outbox
+           WHERE drained_at IS NOT NULL
+             AND drained_at < ${now - OUTBOX_GC_AGE_MS}
+           LIMIT ${OUTBOX_GC_BATCH}
+        )
+        DELETE FROM harness_shared.substrate_outbox o
+         USING del
+         WHERE o.id = del.id`;
+      // Fewer than a full batch removed → backlog cleared for now.
+      if ((gc.count ?? 0) < OUTBOX_GC_BATCH) break;
+    }
   } catch {
     // GC is non-fatal observability; continue to the actual drain.
   }

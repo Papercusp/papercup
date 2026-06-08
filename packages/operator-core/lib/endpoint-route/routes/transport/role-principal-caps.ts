@@ -114,6 +114,19 @@ export async function loadRoleCapabilities(
   // tools their blueprint role uses (e.g. coord:thread-post / improvements:capture →
   // coord:write).
   for (const c of BLUEPRINT_ROLE_CAPS[roleName] ?? []) caps.add(c);
+  // Universal tool-discovery. `agent_tools:list` is declared `agentRoles:[ALL_ROLES]`
+  // + `requirePrincipal:false`, and EVERY pipeline-role persona
+  // (worker/scoper/architect/validator/reviewer .tools.md) instructs calling
+  // `agent_tools:list { asRole }` as the runtime fallback playbook. It is read-only
+  // introspection — it lists tool metadata + a per-tool `allowed` flag; the
+  // role-allowlist + each tool's own capability still gate actual CALLS — so granting
+  // its `agent_tools:read` capability to every role-scoped caller is safe
+  // least-privilege. Without it, the synthesize-principal change (this module)
+  // regressed pipeline roles: pre-change they carried NO principal so the dispatch
+  // cap-gate was skipped and `agent_tools:list` ran via the role-allowlist; now they
+  // carry an empty-cap synthesized principal, so the cap-gate denied their own
+  // documented discovery tool with `missing_capability`.
+  caps.add('agent_tools:read');
   return caps;
 }
 

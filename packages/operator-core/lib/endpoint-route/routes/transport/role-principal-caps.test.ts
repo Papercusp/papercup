@@ -53,9 +53,19 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('search:read')).toBe(true);
   });
 
-  test('an ordinary pipeline role with no row stays empty (least-privilege)', async () => {
+  test('an ordinary pipeline role with no row gets ONLY the universal tool-discovery cap (least-privilege)', async () => {
+    // Pre-change this was the empty set. `agent_tools:list` is declared
+    // ALL_ROLES + requirePrincipal:false and every pipeline-role persona instructs
+    // calling `agent_tools:list { asRole }` as its runtime fallback playbook — so
+    // every role-scoped caller gets the read-only `agent_tools:read` introspection
+    // cap. The least-privilege intent is preserved for everything else: a bare
+    // pipeline role still gets NO workflow caps (no coord/work_items/harness/…).
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'worker');
-    expect(caps.size).toBe(0);
+    expect(caps.has('agent_tools:read')).toBe(true);
+    expect(caps.has('coord:write')).toBe(false);
+    expect(caps.has('work_items:write')).toBe(false);
+    expect(caps.has('harness:write')).toBe(false);
+    expect(caps.size).toBe(1);
   });
 
   test('operator: a provisioned row is unioned with the pot-decider baseline', async () => {
