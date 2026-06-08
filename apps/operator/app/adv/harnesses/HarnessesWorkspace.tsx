@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Plus } from 'lucide-react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
+import { useLexicon } from '@/lib/useLexicon';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
 import HarnessWelcomeEmptyState from './HarnessWelcomeEmptyState';
+import HiveMemberRail from './HiveMemberRail';
+import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
+import { groupByHive } from './harness-hive-groups';
 import './adv-dock.css';
 
 export interface AdvProjectEntry {
@@ -24,18 +29,21 @@ export interface AdvProjectEntry {
 }
 
 /**
- * /adv/harnesses — single-harness workspace replacing the legacy /harness
- * OPS surface.
+ * /adv/harnesses — the hive-aware Harnesses workspace (replaces the legacy
+ * /harness OPS surface).
  *
- * Slug comes from `?slug=` which the AdvShell header already owns. We
- * only fetch projects locally for the path-and-progress meta line in the
- * top bar; the selector itself lives in the shell.
+ * Two URL axes (harnesses-tab-hive-model-2026-06-07 D-001): `?slug=` is the
+ * HIVE / root scope (owned by the shell selector); `?harness=` is the MEMBER
+ * focus within that hive (owned here). `?scope=all` (the shell's "All Pots")
+ * switches to the hive-grouped workspace overview (D-003).
  *
- * The "Create new harness" button lives in this view (formerly only
- * reachable via the retired /harness route). Picker success can
- * optionally chain into ShareWizard via the picker's own follow-up.
+ * The member rail (P-002) is the in-tab place to select among a hive's
+ * member harnesses — the affordance the tab was missing. The "Create new
+ * harness" button lives here (formerly only reachable via the retired
+ * /harness route).
  */
 export default function HarnessesWorkspace() {
+  const t = useLexicon();
   // `?slug=` is the HIVE / root scope (owned by the shell selector). The new
   // `?harness=` axis is the MEMBER focus within that hive — which member's
   // dock is open. Nullable: unset means "use the hive's default member"
@@ -43,6 +51,13 @@ export default function HarnessesWorkspace() {
   // untouched everywhere else (P-001).
   const [slug, setSlug] = useQueryState('slug', parseAsString.withDefault(''));
   const [harness, setHarness] = useQueryState('harness', parseAsString);
+  // `?scope=` is the shell's orthogonal scope axis; `all` is "All Pots". We
+  // read it here to swap the single-hive dock for the hive-grouped workspace
+  // cards (P-003 / D-003), and write it on drill-in to exit all-mode.
+  const [scopeMode, setScopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
+  );
   const [projects, setProjects] = useState<AdvProjectEntry[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -63,6 +78,8 @@ export default function HarnessesWorkspace() {
     void refreshProjects();
   }, [refreshProjects]);
 
+  const allMode = scopeMode === 'all';
+
   // The hive's members (root first, then parent_slug children) and the
   // focused member the dock should render. Pure logic in ./harness-axis so
   // it's unit-tested + shared with the member rail (P-002).
@@ -75,6 +92,16 @@ export default function HarnessesWorkspace() {
   // to the hive root while projects/lite is still loading (members empty) so
   // the common solo case mounts instantly with no flash.
   const dockSlug = focusedMember ?? (slug || null);
+
+  // Zero-new-poller liveness hint for the rail (P-002): `hasState` from the
+  // already-fetched projects/lite payload (the harness has been set up).
+  const livenessBySlug = useMemo(
+    () => Object.fromEntries(projects.map((p) => [p.slug, !!p.hasState])),
+    [projects],
+  );
+
+  // All-mode (P-003): every hive in the workspace, grouped by root subtree.
+  const groups = useMemo(() => groupByHive(projects), [projects]);
 
   // Drop a stale `?harness=` when the shell selector switches `?slug=` to a
   // different hive (the value no longer names a member). Guarded inside
@@ -94,61 +121,102 @@ export default function HarnessesWorkspace() {
     [refreshProjects, setSlug, setHarness],
   );
 
+  // Drill from an all-mode card into one member (D-003). Writes are SEQUENTIAL
+  // — a same-tick scope+slug+harness triple collides in the nuqs adapter (last
+  // write wins), the exact pattern AdvShell documents for its own onChange. We
+  // exit all-mode (scope=expanded), set the hive, then the member (null when
+  // it's the root — the default focus, keeping URLs clean).
+  const drillIntoMember = useCallback(
+    async (hiveSlug: string, memberSlug: string) => {
+      await setScopeMode('expanded');
+      await setSlug(hiveSlug);
+      await setHarness(memberSlug === hiveSlug ? null : memberSlug);
+    },
+    [setScopeMode, setSlug, setHarness],
+  );
+
+  const hiveLabel = t('pot');
+  const hivesLabel = t('pot', { plural: true });
+
   return (
     <div className="pc-adv-harnesses pc-adv-dock">
-      {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
-          (`?harness=` resolved against the hive's members), not the raw hive
-          `?slug=` — so a hive with several member harnesses shows the picked
-          one. Solo harnesses resolve dockSlug === slug (zero regression). */}
-      <HarnessTopBar slug={dockSlug ?? ''} />
-      <div className="pc-adv-harnesses__dock">
-        {dockSlug ? (
-          <>
-            <HarnessesDock slug={dockSlug} />
-            {/* No-work-yet onboarding welcome (spec-md-ui-deprecation-cleanup
-                P-005 / D-003) — overlays the dock until the harness has a
-                started plan or an eligible feature, or is dismissed. */}
-            <HarnessWelcomeEmptyState slug={dockSlug} />
-          </>
-        ) : (
-          <div className="pc-adv-harnesses__empty">
-            {projectsError ? (
-              <>Failed to load harnesses: {projectsError}</>
-            ) : projects.length === 0 ? (
-              <>
-                <div>No harnesses yet.</div>
-                <button
-                  type="button"
-                  className="pc-adv-harnesses__create-cta"
-                  onClick={() => setCreateOpen(true)}
-                >
-                  <Plus size={14} aria-hidden /> Create new harness
-                </button>
-              </>
-            ) : (
-              <>
-                <div>Pick a harness from the selector above.</div>
-                <button
-                  type="button"
-                  className="pc-adv-harnesses__create-cta"
-                  onClick={() => setCreateOpen(true)}
-                >
-                  <Plus size={14} aria-hidden /> Create new harness
-                </button>
-              </>
-            )}
+      {allMode ? (
+        // All-mode (D-003): the hive-grouped workspace overview replaces the
+        // stale single-harness dock the tab used to keep showing.
+        <HiveWorkspaceCards
+          groups={groups}
+          onDrill={(hive, member) => void drillIntoMember(hive, member)}
+          onCreate={() => setCreateOpen(true)}
+        />
+      ) : (
+        <>
+          {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
+              (`?harness=` resolved against the hive's members), not the raw hive
+              `?slug=` — so a hive with several member harnesses shows the picked
+              one. Solo harnesses resolve dockSlug === slug (zero regression). */}
+          <HarnessTopBar slug={dockSlug ?? ''} />
+          <div className="pc-adv-harnesses__body">
+            {/* The member rail (P-002) — the in-tab harness selector. Renders
+                nothing for solo hives (single member → no choice). */}
+            <HiveMemberRail
+              members={members}
+              activeSlug={dockSlug}
+              onSelect={(memberSlug) => void setHarness(memberSlug)}
+              livenessBySlug={livenessBySlug}
+            />
+            <div className="pc-adv-harnesses__dock">
+              {dockSlug ? (
+                <>
+                  <HarnessesDock slug={dockSlug} />
+                  {/* No-work-yet onboarding welcome (spec-md-ui-deprecation-cleanup
+                      P-005 / D-003) — overlays the dock until the harness has a
+                      started plan or an eligible feature, or is dismissed. */}
+                  <HarnessWelcomeEmptyState slug={dockSlug} />
+                </>
+              ) : (
+                <div className="pc-adv-harnesses__empty">
+                  {projectsError ? (
+                    <>Failed to load {hivesLabel.toLowerCase()}: {projectsError}</>
+                  ) : projects.length === 0 ? (
+                    <>
+                      <div>No {hivesLabel.toLowerCase()} yet.</div>
+                      <button
+                        type="button"
+                        className="pc-adv-harnesses__create-cta"
+                        onClick={() => setCreateOpen(true)}
+                      >
+                        <Plus size={14} aria-hidden /> Create a {hiveLabel.toLowerCase()}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {/* Hive-aware empty state (P-004) — replaces the retired
+                          single-harness "Pick a harness from the selector above". */}
+                      <div>Select a {hiveLabel.toLowerCase()} from the selector above to open it.</div>
+                      <button
+                        type="button"
+                        className="pc-adv-harnesses__create-cta"
+                        onClick={() => setCreateOpen(true)}
+                      >
+                        <Plus size={14} aria-hidden /> Create a {hiveLabel.toLowerCase()}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
 
-      {slug && (
+      {!allMode && slug && (
         <button
           type="button"
           className="pc-adv-harnesses__create-fab"
-          title="Create a new harness"
+          title={`Add a ${t('harness', { lower: true })} to this ${hiveLabel.toLowerCase()}`}
           onClick={() => setCreateOpen(true)}
         >
-          <Plus size={16} aria-hidden /> New harness
+          <Plus size={16} aria-hidden /> New {t('harness', { lower: true })}
         </button>
       )}
 
@@ -167,9 +235,16 @@ export default function HarnessesWorkspace() {
           height: 100%;
           position: relative;
         }
+        .pc-adv-harnesses__body {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          min-width: 0;
+        }
         .pc-adv-harnesses__dock {
           flex: 1;
           min-height: 0;
+          min-width: 0;
           position: relative;
         }
         .pc-adv-harnesses__empty {

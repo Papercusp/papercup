@@ -90,8 +90,10 @@ The init command:
    - Copies template files from `<harness-dir>/<dir>/` (excluding manifest + tarballs)
    - Writes a default `.papercusp/config.json` if the template didn't bundle one (with `harness_kind` keyed off the entry's `kind` and `dept` set when applicable)
    - Adds a registry entry with the appropriate `harness_kind` + `department_slug`
-4. Emits a summary listing all created sub-harnesses + a recommended
-   `scaffold-schema --recursive <slug>` next step.
+4. Emits a summary listing all created sub-harnesses + a per-subproject
+   `scaffold-schema <slug><suffix>` next step for each (and `run <slug>`
+   to start the parent loop). The `--recursive` form (§5) scaffolds them
+   all in one call.
 
 `--target` is rejected for multi-topology templates — multi-install
 intrinsically owns multiple project paths.

@@ -11,7 +11,7 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] agents (7)
 - [x] agent-spawning (8)
 - [x] data-sync (7)
-- [~] spec (38) [b1: plan-format,vocabulary,roles,capabilities,state, harness-contract,orchestrator,operator-v5,operator-architecture-decisions,routines]
+- [x] spec (38) — DONE
 - [x] system (5)
 - [x] build-system (7)
 - [x] snapshots (7)
@@ -21,8 +21,8 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] posthog (2)
 - [x] desktop (3)
 - [x] implementation (6)
-- [ ] design (17)
-- [ ] reference (5) — CHECK IF GENERATED before hand-editing
+- [~] design (16)
+- [ ] reference (5) — GENERATED (tool-catalog.md by scripts/gen-doc-tool-catalog.ts) — REGENERATE don't hand-edit; also re-confirm spec/plugin-quickstart here
 - [ ] agent-insights (98)
 
 ## Per-page log
@@ -139,6 +139,22 @@ MORE CODE BUGS TO FLAG: FLAG_LABELS/FLAG_BLURBS in FeaturesAdmin.tsx missing VOI
 - spec/scaffold-failure-recovery: EDITS — removed SPEC.md case; token_index recovery; PG registry not JSON.
 - spec/cross-harness-coordination: EDITS — Aside run.sh→codex + cross_harness:* tools; Tier-3 endpoints verified live.
 - spec/workspace-scoping: EDITS — largely shipped Aside; backfill script tsx path.
+
+### Batch 8 (spec b3: identity/distribution + voice/misc, 16) — DONE — spec/ COMPLETE
+- spec/auth-and-identity: EDITS — token 3→2 places (config_token retired); rotation IS implemented.
+- spec/system-and-pi-principals: EDITS — slug→harness_slug; PG-only bearer; pi caps (no hindsight:recall).
+- spec/project-sharing: EDITS — Cupboard content-addressed snapshots not Gitea/Cosign.
+- spec/distribution: EDITS — superseded-by-Cupboard banner.
+- spec/publishing: ACCURATE (apps/papercusp-publish matches).
+- spec/marketplace-versioning: EDITS — Cupboard; Ed25519 attestation not Cosign.
+- spec/reference-runtime: EDITS — plugin-sdk/loader paths; webapp→operator-core; marketplace→operator-public.
+- spec/voice-mode: EDITS — desktop bus client path.
+- spec/voice-mode-v4: EDITS — file map roots; tts-spend + nudgeDedup now PG not json; Hono routes.
+- spec/validation-assertion-format: ACCURATE.
+- spec/cli-pluggability: ACCURATE (omp default, 3 backends).
+- spec/multi-topology: EDITS — init emits per-subproject scaffold not --recursive.
+- spec/compared: EDITS — real embedded PG not PGlite.
+- spec/why, what-not, open-questions: ACCURATE (philosophy).
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

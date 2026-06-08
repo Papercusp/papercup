@@ -71,7 +71,11 @@ export const CLASSIC_PACK: BrandPack = {
 
 export const THE_HIVE_PACK: BrandPack = {
   id: 'the-hive',
-  label: 'The Hive',
+  // Admin/debug display name = the flag-on product brand. Kept as "The Swarm"
+  // (P-008 "Product name decision", branding.mdx) — D-007 reassigns the *domain*
+  // term "swarm" (→ a deployment unit) but does not rename the brand. The
+  // brand-name question (The Swarm vs The Hive) is an open owner decision.
+  label: 'The Swarm',
   terms: THE_HIVE_TERMS,
 };
 

@@ -346,4 +346,44 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     await store.registerAwait({ subscriberId: 'su-arm-3', eventKey: 'pot:wake:x', once: false });
     expect((await store.listActiveAwaits('su-arm-3')).filter((a) => a.eventKey === 'pot:wake:x')).toHaveLength(2);
   });
+
+  it('always-arm round-trip: an armed inbox-wake watch FIRES on a wake emit and stays armed (P-002/D-002)', async () => {
+    // The end-to-end always-arm claim, against real PG with the migration-183
+    // index: upsertInboxWakeAwait makes an agent wakeable, a wake emit to its
+    // inbox-wake key fires the standing watch and yields a claimable delivery
+    // carrying the captured handle, and (once:false) the watch survives the wake
+    // so the agent stays armed across idle→woken→idle — the whole point of D-002.
+    const key = 'coord:inbox-wake:su-rt';
+    const armed = await store.upsertInboxWakeAwait({
+      subscriberId: 'su-rt',
+      eventKey: key,
+      note: 'idle — armed at SessionStart',
+      wakeHandle: {
+        kind: 'adv-session',
+        advSessionId: 11,
+        agent: 'claude',
+        sessionId: 'sid-rt',
+        ompThreadId: null,
+        cwd: '/r',
+        pid: 20,
+      },
+      minSleepSec: 0,
+    });
+
+    // A wake emit to the agent's key fires its armed standing watch (woken ≥ 1).
+    const fired = await store.fireAwaitsForKey({ eventKey: key });
+    expect(fired.map((a) => a.subscriberId)).toEqual(['su-rt']);
+    expect(fired[0].id).toBe(armed.id);
+
+    // …and produces a real, claimable delivery carrying the captured wake handle.
+    await store.insertDeliveries({ awaits: fired });
+    const work = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-rt');
+    expect(work).toHaveLength(1);
+    expect(work[0].wakeHandle).toMatchObject({ kind: 'adv-session', advSessionId: 11 });
+
+    // once:false → still armed after the wake (idle→woken→idle stays wakeable).
+    const again = await store.fireAwaitsForKey({ eventKey: key });
+    expect(again.map((a) => a.subscriberId)).toEqual(['su-rt']);
+    expect((await store.listActiveAwaits('su-rt')).filter((a) => a.eventKey === key)).toHaveLength(1);
+  });
 });

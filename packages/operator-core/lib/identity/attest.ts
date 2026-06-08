@@ -14,8 +14,13 @@
  * the declaration order in the interface — deterministic for this fixed schema.
  */
 
-import { generateKeyPairSync, sign as nodeSign, verify as nodeVerify, createPublicKey, createPrivateKey } from 'node:crypto';
 import { keychainStore, keychainLoad } from './keychain';
+import {
+  generateEd25519KeypairDer,
+  pubkeyBase64FromDer,
+  signWithPrivateKeyDer,
+  verifyEd25519,
+} from './ed25519';
 import {
   AttestationGistBody,
   AttestationVerificationResult,
@@ -49,17 +54,12 @@ export async function loadOrGenerateDeviceKeypair(
   const loaded = await keychainLoad(keychainId);
   if (loaded.kind === 'ok') {
     // Reconstruct the public key from the stored private key DER
-    const privKey = createPrivateKeyFromDer(loaded.value);
-    const pubkeyBase64 = extractPubkeyBase64(privKey);
-    return { keychainId, pubkeyBase64 };
+    return { keychainId, pubkeyBase64: pubkeyBase64FromDer(loaded.value) };
   }
 
   // First run — generate and store
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const privateKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer;
+  const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
   await keychainStore(keychainId, privateKeyDer);
-
-  const pubkeyBase64 = extractPubkeyBase64FromPublicKey(publicKey);
   return { keychainId, pubkeyBase64 };
 }
 
@@ -349,10 +349,8 @@ async function signPayload(
       'private key not found in keychain for id: ' + keychainId,
     );
   }
-  const privateKey = createPrivateKeyFromDer(loaded.value);
   const canonical = canonicalPayloadForSigning(payload);
-  const sig = nodeSign(null, canonical, privateKey);
-  return sig.toString('base64');
+  return signWithPrivateKeyDer(loaded.value, canonical).toString('base64');
 }
 
 function verifyEd25519Signature(
@@ -360,15 +358,11 @@ function verifyEd25519Signature(
   pubkeyBase64: string,
   signatureBase64: string,
 ): boolean {
-  try {
-    const pubkeyDer = buildSpkiDerFromRawPubkey(Buffer.from(pubkeyBase64, 'base64'));
-    const publicKey = createPublicKey({ key: pubkeyDer, format: 'der', type: 'spki' });
-    const canonical = canonicalPayloadForSigning(payload);
-    const sig = Buffer.from(signatureBase64, 'base64');
-    return nodeVerify(null, canonical, publicKey, sig);
-  } catch {
-    return false;
-  }
+  return verifyEd25519(
+    canonicalPayloadForSigning(payload),
+    pubkeyBase64,
+    Buffer.from(signatureBase64, 'base64'),
+  );
 }
 
 /**
@@ -389,40 +383,6 @@ function canonicalPayloadForSigning(
     created_at: payload.created_at,
   };
   return Buffer.from(JSON.stringify(ordered), 'utf8');
-}
-
-function createPrivateKeyFromDer(der: Buffer) {
-  // node:crypto is imported at the top — a bare require() here threw "require is
-  // not defined" under operator-core's ESM (type:module), breaking the device
-  // keypair load → plan_items:claim (EI-8) + any authority path that resolves the
-  // self device identity. Use the top-level import.
-  return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
-}
-
-function extractPubkeyBase64(privateKey: ReturnType<typeof createPrivateKeyFromDer>): string {
-  const pub = createPublicKey(privateKey);
-  return extractPubkeyBase64FromPublicKey(pub);
-}
-
-function extractPubkeyBase64FromPublicKey(
-  publicKey: ReturnType<typeof createPublicKey>,
-): string {
-  // SPKI DER for Ed25519 is 44 bytes; the raw 32-byte pubkey is the last 32 bytes.
-  const spkiDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
-  return spkiDer.subarray(-32).toString('base64');
-}
-
-/**
- * Reconstruct a 44-byte SPKI DER from a raw 32-byte Ed25519 public key.
- * The SPKI prefix for Ed25519 is the fixed 12-byte OID sequence:
- *   30 2a 30 05 06 03 2b 65 70 03 21 00
- */
-function buildSpkiDerFromRawPubkey(rawPubkey: Buffer): Buffer {
-  if (rawPubkey.length !== 32) {
-    throw new Error('expected 32-byte Ed25519 public key, got ' + rawPubkey.length);
-  }
-  const prefix = Buffer.from('302a300506032b6570032100', 'hex');
-  return Buffer.concat([prefix, rawPubkey]);
 }
 
 // ─── error class ──────────────────────────────────────────────────────────────

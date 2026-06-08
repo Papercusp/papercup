@@ -1,6 +1,8 @@
 /**
- * keychain — OS-level (or encrypted-file fallback) persistence for the
- * device Ed25519 private key used in Phase 1b attestation (P-011).
+ * keychain — OS-level (or encrypted-file fallback) persistence for an
+ * Ed25519 private key. Originally the device key (Phase 1b attestation,
+ * P-011); now also the per-HIVE identity key (shared-hive-federation P-002),
+ * which passes a distinct `serviceName`.
  *
  * Tiers, tried in order:
  *   1. `secret-tool` (Linux, libsecret / GNOME Keyring)
@@ -14,10 +16,13 @@
  *
  * All functions are pure async; no module-level side effects.
  *
- * Service name used for OS keychain entries:
- *   `papercusp-device-keypair`
- * Account name (label attribute) is the keychainId (e.g.
- *   `<github_user_id>:<machine-fingerprint>`).
+ * Service name for OS keychain entries defaults to `papercusp-device-keypair`;
+ * callers (e.g. the hive keypair) pass their own to namespace a different key
+ * class. Account name (label attribute) is the keychainId — e.g.
+ * `<github_user_id>:<machine-fingerprint>` for a device, `hive:<ws>:<slug>`
+ * for a hive. The encrypted-file fallback keys ONLY by keychainId (those id
+ * shapes never collide), so existing on-disk device keys keep resolving
+ * unchanged regardless of serviceName.
  */
 
 import { createCipheriv, createDecipheriv, pbkdf2, randomBytes } from 'node:crypto';
@@ -61,11 +66,15 @@ export type KeychainResult<T> = { kind: 'ok'; value: T } | { kind: 'error'; erro
  * Store a private key DER buffer under keychainId. Overwrites any
  * existing entry. Uses the first available backend.
  */
-export async function keychainStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
+export async function keychainStore(
+  keychainId: string,
+  privateKeyDer: Buffer,
+  serviceName: string = SERVICE_NAME,
+): Promise<void> {
   const b64 = privateKeyDer.toString('base64');
 
-  if (await trySecretTool('store', keychainId, b64)) return;
-  if (await trySecurityCli('store', keychainId, b64)) return;
+  if (await trySecretTool('store', keychainId, b64, serviceName)) return;
+  if (await trySecurityCli('store', keychainId, b64, serviceName)) return;
   await fileStore(keychainId, privateKeyDer);
 }
 
@@ -73,14 +82,17 @@ export async function keychainStore(keychainId: string, privateKeyDer: Buffer): 
  * Load a private key DER buffer by keychainId. Returns `not_found`
  * when no entry exists (first run → caller should generate a new key).
  */
-export async function keychainLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
-  const secTool = await trySecretTool('load', keychainId, '');
+export async function keychainLoad(
+  keychainId: string,
+  serviceName: string = SERVICE_NAME,
+): Promise<KeychainResult<Buffer>> {
+  const secTool = await trySecretTool('load', keychainId, '', serviceName);
   if (secTool !== null) {
     if (secTool === '') return { kind: 'error', error: { kind: 'not_found' } };
     return { kind: 'ok', value: Buffer.from(secTool, 'base64') };
   }
 
-  const security = await trySecurityCli('load', keychainId, '');
+  const security = await trySecurityCli('load', keychainId, '', serviceName);
   if (security !== null) {
     if (security === '') return { kind: 'error', error: { kind: 'not_found' } };
     return { kind: 'ok', value: Buffer.from(security, 'base64') };
@@ -92,9 +104,12 @@ export async function keychainLoad(keychainId: string): Promise<KeychainResult<B
 /**
  * Delete a keychain entry. No-op if not found.
  */
-export async function keychainDelete(keychainId: string): Promise<void> {
-  await trySecretTool('delete', keychainId, '');
-  await trySecurityCli('delete', keychainId, '');
+export async function keychainDelete(
+  keychainId: string,
+  serviceName: string = SERVICE_NAME,
+): Promise<void> {
+  await trySecretTool('delete', keychainId, '', serviceName);
+  await trySecurityCli('delete', keychainId, '', serviceName);
   await fileDelete(keychainId);
 }
 
@@ -104,13 +119,14 @@ async function trySecretTool(
   op: 'store' | 'load' | 'delete',
   id: string,
   value: string,
+  serviceName: string = SERVICE_NAME,
 ): Promise<string | null> {
   try {
     if (op === 'store') {
       await execFile('secret-tool', [
         'store',
-        '--label', SERVICE_NAME + ':' + id,
-        'service', SERVICE_NAME,
+        '--label', serviceName + ':' + id,
+        'service', serviceName,
         'account', id,
       ], { input: value, timeout: 5000 });
       return '';
@@ -118,7 +134,7 @@ async function trySecretTool(
     if (op === 'load') {
       const { stdout } = await execFile('secret-tool', [
         'lookup',
-        'service', SERVICE_NAME,
+        'service', serviceName,
         'account', id,
       ], { timeout: 5000 });
       return stdout.trim();
@@ -126,7 +142,7 @@ async function trySecretTool(
     if (op === 'delete') {
       await execFile('secret-tool', [
         'clear',
-        'service', SERVICE_NAME,
+        'service', serviceName,
         'account', id,
       ], { timeout: 5000 });
       return '';
@@ -147,12 +163,13 @@ async function trySecurityCli(
   op: 'store' | 'load' | 'delete',
   id: string,
   value: string,
+  serviceName: string = SERVICE_NAME,
 ): Promise<string | null> {
   try {
     if (op === 'store') {
       await execFile('security', [
         'add-generic-password',
-        '-s', SERVICE_NAME,
+        '-s', serviceName,
         '-a', id,
         '-w', value,
         '-U',
@@ -162,7 +179,7 @@ async function trySecurityCli(
     if (op === 'load') {
       const { stdout } = await execFile('security', [
         'find-generic-password',
-        '-s', SERVICE_NAME,
+        '-s', serviceName,
         '-a', id,
         '-w',
       ], { timeout: 5000 });
@@ -171,7 +188,7 @@ async function trySecurityCli(
     if (op === 'delete') {
       await execFile('security', [
         'delete-generic-password',
-        '-s', SERVICE_NAME,
+        '-s', serviceName,
         '-a', id,
       ], { timeout: 5000 });
       return '';

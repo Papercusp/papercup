@@ -29,7 +29,7 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
   [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
-  [FLAGS.THE_HIVE]: 'The Hive (bee lexicon)',
+  [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {

@@ -94,7 +94,9 @@ OpenAI uses buffered playback (no streaming endpoint as of `tts-1`).
 
 ## Cost tracking
 
-Per-call spend recorded in `<papercuspRoot>/system/operator/tts-spend.json`:
+Per-call spend recorded in Postgres (`harness_shared.operator_tts_spend`,
+migration 020 — was previously `<papercuspRoot>/system/operator/tts-spend.json`
+but the JSON file raced under multi-tab usage). The JSONB payload shape:
 
 ```json
 {
@@ -234,8 +236,9 @@ regardless of voice state. Voice supplements, never replaces.
 | breaker | 10 min | If PG is still down, users want to know |
 | pause | 5 min | Pause toggles are user-driven; dedup keeps it from re-announcing the latest flip |
 
-Dedup state persisted in `voice-prefs.json.nudgeDedup` so reload doesn't
-reset windows.
+Dedup state persisted as `nudgeDedup` inside the voice-prefs JSONB payload
+(`harness_shared.operator_voice_prefs`, migration 020 — was previously
+`voice-prefs.json`) so reload doesn't reset windows.
 
 ## Per-role voice mapping
 
@@ -284,48 +287,47 @@ Layout:
 ## File map
 
 ```
-apps/operator/
-├── lib/
-│   ├── voice-commands.ts        parser
-│   ├── voice-intents.ts         wake-word + approve disambiguation
-│   ├── voice-prefs.ts           JSON storage + 4 engine kinds
-│   ├── voice-credentials.ts     ElevenLabs + OpenAI keys (mask GET / preserve PUT)
-│   ├── voice-engines.ts         shared interfaces + detection
-│   ├── voice-engines/
-│   │   ├── kokoro.ts            Voicemode local
-│   │   ├── browser.ts           Web Speech wrapper
-│   │   ├── elevenlabs.ts        Turbo v2.5 + MSE streaming
-│   │   ├── elevenlabs-mse.ts    MediaSource player + buffered fallback
-│   │   ├── openai.ts            tts-1 / tts-1-hd
-│   │   ├── whisper.ts           Voicemode STT engine surface
-│   │   ├── webspeech.ts         Web Speech STT engine surface
-│   │   └── cancel-race.ts       pending-flush wrapper
-│   ├── tts-spend.ts             cost tracking + soft/hard caps + rollover
-│   ├── voice-engine-health.ts   TTS 3-strike + STT probe
-│   ├── voice-nudges.ts          per-kind persisted dedup
-│   └── operator-audit.ts        + ActorMethod enum
-│
-├── app/_components/voice/
-│   ├── voice-mode.ts            speak() with aria-live + leader gate + tutorial gate
-│   ├── voice-prefs-client.ts    client-side cache
-│   ├── VoiceAppBridge.tsx       priority registry + intent dispatch
-│   ├── voice-leader.ts          BroadcastChannel election + heartbeat + focus transfer
-│   ├── AriaLiveRegions.tsx      dual polite + assertive
-│   ├── aria-live-bus.ts         pub/sub from speak()
-│   ├── VoiceLeaderBootstrap.tsx async chrome-boot
-│   ├── OperatorVoiceAnnouncer.tsx closed-panel cadence + pause nudges
-│   └── stt-voicemode.ts         MediaRecorder VAD loop for Voicemode whisper
-│
-├── app/api/agent-mcp/
-│   ├── operator-voice-prefs/    GET/PUT
-│   ├── operator-credentials/    ElevenLabs + OpenAI keys
-│   ├── operator-tts-spend/      cost + caps
-│   ├── operator-elevenlabs-test/ /v1/user probe
-│   ├── operator-openai-test/    /v1/models probe
-│   ├── operator-nudge/          per-kind dedup arbitration
-│   └── operator-audit/          (extended for actorMethod field)
-│
-└── app/settings/voice/page.tsx   full v4 UI
+packages/operator-core/lib/        # the voice engines + node-side libs (moved off apps/operator/lib)
+├── voice-commands.ts        parser
+├── voice-intents.ts         wake-word + approve disambiguation
+├── voice-prefs.ts           JSON storage + 4 engine kinds
+├── voice-credentials.ts     ElevenLabs + OpenAI keys (mask GET / preserve PUT)
+├── voice-engines.ts         shared interfaces + detection
+├── voice-engines/
+│   ├── kokoro.ts            Voicemode local
+│   ├── browser.ts           Web Speech wrapper
+│   ├── elevenlabs.ts        Turbo v2.5 + MSE streaming
+│   ├── elevenlabs-mse.ts    MediaSource player + buffered fallback
+│   ├── openai.ts            tts-1 / tts-1-hd
+│   ├── whisper.ts           Voicemode STT engine surface
+│   ├── webspeech.ts         Web Speech STT engine surface
+│   └── cancel-race.ts       pending-flush wrapper
+├── tts-spend.ts             cost tracking + soft/hard caps + rollover
+├── voice-engine-health.ts   TTS 3-strike + STT probe
+├── voice-nudges.ts          per-kind persisted dedup
+└── operator-audit.ts        + ActorMethod enum
+
+apps/operator/app/_components/voice/   # browser-side chrome (still under apps/operator)
+├── voice-mode.ts            speak() with aria-live + leader gate + tutorial gate
+├── voice-prefs-client.ts    client-side cache
+├── VoiceAppBridge.tsx       priority registry + intent dispatch
+├── voice-leader.ts          BroadcastChannel election + heartbeat + focus transfer
+├── AriaLiveRegions.tsx      dual polite + assertive
+├── aria-live-bus.ts         pub/sub from speak()
+├── VoiceLeaderBootstrap.tsx async chrome-boot
+├── OperatorVoiceAnnouncer.tsx closed-panel cadence + pause nudges
+└── stt-voicemode.ts         MediaRecorder VAD loop for Voicemode whisper
+
+packages/operator-core/lib/endpoint-route/routes/agent-mcp/   # Hono routes (Next app/api retired)
+├── operator-voice-prefs.ts  GET/PUT
+├── operator-credentials.ts  ElevenLabs + OpenAI keys
+├── operator-tts-spend.ts    cost + caps
+├── operator-elevenlabs-test.ts /v1/user probe
+├── operator-openai-test.ts  /v1/models probe
+├── operator-nudge.ts        per-kind dedup arbitration
+└── operator-audit.ts        (extended for actorMethod field)
+
+apps/operator/app/settings/voice/page.tsx   full v4 UI (rendered by operator-vite via the @/app alias)
 ```
 
 ## Operational pre-flight
@@ -359,8 +361,10 @@ Per v4 plan §9 (carried + new):
 ## Tests
 
 ```sh
-cd apps/operator
-npx vitest run lib/voice-*.test.ts app/_components/voice/voice-*.test.ts
+# engine + node-side libs (moved to operator-core)
+cd packages/operator-core && npx vitest run lib/voice-*.test.ts
+# browser-side chrome (still under apps/operator)
+cd apps/operator && npx vitest run app/_components/voice/voice-*.test.ts
 ```
 
 Coverage: 78 tests across 9 modules — parser, intents, prefs, credentials,

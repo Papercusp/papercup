@@ -1,0 +1,292 @@
+'use client';
+
+/**
+ * HiveMemberRail — the in-tab member selector for the Harnesses tab
+ * (harnesses-tab-hive-model-2026-06-07 P-002).
+ *
+ * THIS is the "place to select the harnesses" the tab was missing: a
+ * collapsible left rail listing the selected hive's members (root first, then
+ * its `parent_slug` children — supplied by `hiveMembers` in ./harness-axis).
+ * Clicking a member sets `?harness=` (the member-focus axis from P-001) so the
+ * dock swaps to that member.
+ *
+ * Zero-regression for solo harnesses: a single-member hive renders nothing
+ * (there is nothing to pick) — the dock looks exactly as it did before this
+ * plan. Multi-member hives render the rail; the open/closed state lives in the
+ * URL (`?rail=`, nuqs house rule) so it survives reload and is agent-driveable.
+ *
+ * Presentational + flag-gated labels only (D-006): the hive/member words route
+ * through `useLexicon` ("Pot"/"Hive", "Harness"/"Harnesses"). The liveness dot
+ * reuses the `hasState` flag already in the projects/lite payload — no new
+ * poller (the brief's explicit constraint).
+ */
+
+import { parseAsBoolean, useQueryState } from 'nuqs';
+import { ChevronLeft, ChevronRight, Home, Share2 } from 'lucide-react';
+import { useLexicon } from '@/lib/useLexicon';
+import type { HiveMember } from './harness-axis';
+
+export interface HiveMemberRailProps {
+  /** The hive's members, root-first (from `hiveMembers`). */
+  members: readonly HiveMember[];
+  /** The currently-focused member (the resolved `dockSlug`). */
+  activeSlug: string | null;
+  /** Select a member → the caller writes `?harness=`. */
+  onSelect: (slug: string) => void;
+  /**
+   * Optional zero-new-poller liveness hint, keyed by slug — `hasState` from
+   * the already-fetched projects/lite payload (the harness has been set up).
+   */
+  livenessBySlug?: Record<string, boolean>;
+}
+
+export default function HiveMemberRail({
+  members,
+  activeSlug,
+  onSelect,
+  livenessBySlug,
+}: HiveMemberRailProps) {
+  const t = useLexicon();
+  // Open/closed in the URL (house rule: user-meaningful UI state → nuqs, so
+  // agents can drive it and it survives reload). Default open for a
+  // multi-member hive.
+  const [open, setOpen] = useQueryState('rail', parseAsBoolean.withDefault(true));
+
+  // Solo hive (root only, or nothing): no member choice exists — render
+  // nothing so the dock is byte-identical to the pre-plan single-harness view.
+  if (members.length <= 1) return null;
+
+  const hiveLabel = t('pot');
+  const membersLabel = t('harness', { plural: true });
+
+  if (!open) {
+    return (
+      <aside
+        className="pc-hive-rail pc-hive-rail--collapsed"
+        data-testid="hive-member-rail"
+        data-collapsed="true"
+        aria-label={`${hiveLabel} ${membersLabel.toLowerCase()}`}
+      >
+        <button
+          type="button"
+          className="pc-hive-rail__expand"
+          title={`Show ${membersLabel.toLowerCase()} (${members.length})`}
+          onClick={() => void setOpen(true)}
+        >
+          <ChevronRight size={14} aria-hidden />
+          <span className="pc-hive-rail__count">{members.length}</span>
+        </button>
+        <RailStyles />
+      </aside>
+    );
+  }
+
+  return (
+    <aside
+      className="pc-hive-rail"
+      data-testid="hive-member-rail"
+      data-collapsed="false"
+      aria-label={`${hiveLabel} ${membersLabel.toLowerCase()}`}
+    >
+      <div className="pc-hive-rail__head">
+        <span className="pc-hive-rail__title">
+          {membersLabel}
+          <span className="pc-hive-rail__title-count">{members.length}</span>
+        </span>
+        <button
+          type="button"
+          className="pc-hive-rail__collapse"
+          title={`Hide ${membersLabel.toLowerCase()}`}
+          onClick={() => void setOpen(false)}
+        >
+          <ChevronLeft size={14} aria-hidden />
+        </button>
+      </div>
+      <ul className="pc-hive-rail__list" role="list">
+        {members.map((m) => {
+          const active = m.slug === activeSlug;
+          const live = livenessBySlug?.[m.slug] ?? false;
+          return (
+            <li key={m.slug}>
+              <button
+                type="button"
+                data-testid={`hive-member-${m.slug}`}
+                className={`pc-hive-rail__item${active ? ' is-active' : ''}`}
+                aria-current={active ? 'true' : undefined}
+                title={m.slug}
+                onClick={() => onSelect(m.slug)}
+              >
+                <span
+                  className={`pc-hive-rail__dot${live ? ' is-live' : ''}`}
+                  title={live ? 'Harness has state' : 'Not set up yet'}
+                  aria-hidden
+                />
+                <span className="pc-hive-rail__name">{m.slug}</span>
+                {m.isRoot && (
+                  <Home
+                    size={12}
+                    className="pc-hive-rail__root"
+                    aria-label={`${hiveLabel} root`}
+                  />
+                )}
+                {m.harness_kind && m.harness_kind !== 'harness' && (
+                  <span className="pc-hive-rail__kind">{m.harness_kind}</span>
+                )}
+                {m.is_shared && (
+                  <Share2
+                    size={11}
+                    className="pc-hive-rail__shared"
+                    aria-label="Shared"
+                  />
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <RailStyles />
+    </aside>
+  );
+}
+
+function RailStyles() {
+  return (
+    <style>{`
+      .pc-hive-rail {
+        flex: 0 0 auto;
+        width: 196px;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 82%);
+        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 94%);
+        overflow: hidden;
+      }
+      .pc-hive-rail--collapsed {
+        width: 34px;
+        align-items: center;
+        padding-top: 8px;
+      }
+      .pc-hive-rail__expand {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        padding: 6px 0;
+        width: 100%;
+        background: transparent;
+        border: none;
+        color: color-mix(in oklab, var(--accent, #a78bfa), white 12%);
+        cursor: pointer;
+      }
+      .pc-hive-rail__expand:hover { color: #e7f7ff; }
+      .pc-hive-rail__count {
+        font-size: 11px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-hive-rail__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        border-bottom: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 86%);
+      }
+      .pc-hive-rail__title {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 760;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        color: color-mix(in oklab, var(--accent, #a78bfa), white 22%);
+      }
+      .pc-hive-rail__title-count {
+        font-size: 10px;
+        font-weight: 700;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 78%);
+        color: #e7f7ff;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-hive-rail__collapse {
+        display: inline-flex;
+        background: transparent;
+        border: none;
+        color: rgba(220, 214, 248, 0.55);
+        cursor: pointer;
+        padding: 2px;
+        border-radius: 4px;
+      }
+      .pc-hive-rail__collapse:hover { color: #e7f7ff; }
+      .pc-hive-rail__list {
+        list-style: none;
+        margin: 0;
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .pc-hive-rail__item {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 100%;
+        padding: 6px 8px;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        color: rgba(220, 214, 248, 0.82);
+        font-size: 12.5px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .pc-hive-rail__item:hover {
+        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 86%);
+        color: #e7f7ff;
+      }
+      .pc-hive-rail__item.is-active {
+        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 74%);
+        border-color: color-mix(in oklab, var(--accent, #a78bfa), transparent 52%);
+        color: #f3eeff;
+        font-weight: 650;
+      }
+      .pc-hive-rail__dot {
+        flex: 0 0 auto;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: rgba(220, 214, 248, 0.28);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      .pc-hive-rail__dot.is-live {
+        background: #4ade80;
+        box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+      }
+      .pc-hive-rail__name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pc-hive-rail__root { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #a78bfa), white 20%); }
+      .pc-hive-rail__kind {
+        flex: 0 0 auto;
+        font-size: 9.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.07);
+        color: rgba(220, 214, 248, 0.7);
+      }
+      .pc-hive-rail__shared { flex: 0 0 auto; color: #7dd3fc; }
+    `}</style>
+  );
+}
