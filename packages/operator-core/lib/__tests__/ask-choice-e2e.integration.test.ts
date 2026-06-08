@@ -78,16 +78,43 @@ describe('chat:ask_choice card e2e', () => {
     }
   });
 
-  itLive('tool reachable: echoes lowercased ids', async () => {
-    const r = await callMcpTool('chat:ask_choice', {
-      question: 'Test?',
-      options: [{ id: 'Yes', label: 'Yes' }, { id: 'NO', label: 'No' }],
-    });
-    const ids: string[] = r.unwrapped?.options?.map((o: any) => o.id) ?? [];
-    expect(r.unwrapped?.rendered).toBe(true);
-    expect(ids).toContain('yes');
-    expect(ids).toContain('no');
-  });
+  itLive('tool reachable: valid options take the blocking interactive path', async () => {
+    // Post bespoke-card-improvements (2026-05-13) `chat:ask_choice` BLOCKS on
+    // ctx.askUser until the user picks/declines — it no longer returns the legacy
+    // synchronous {rendered:true, options}. With no UI answerer in this headless
+    // e2e a VALID-options call never resolves, so it must hang until we abort —
+    // which proves the live MCP tool is reachable AND took the interactive
+    // (rather than error/validation) path. The id-lowercasing + pick round-trip
+    // are covered by ask_choice.test.ts (unit) and the persistence tests below.
+    // fetch() resolves on RESPONSE HEADERS, which arrive immediately (200
+    // text/event-stream). The block shows up while READING the body — the SSE
+    // stream stays open with no terminal `data:` result event because the tool
+    // is awaiting a pick — so the body read is what hangs and aborts.
+    let status = 0;
+    let bodyAborted = false;
+    try {
+      const res = await fetch(`${baseUrl}/api/mcp?superuser=1`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${TOKEN}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: 'chat:ask_choice', arguments: { question: 'Test?', options: [{ id: 'Yes', label: 'Yes' }, { id: 'NO', label: 'No' }] } },
+        }),
+        signal: AbortSignal.timeout(4000),
+      });
+      status = res.status;
+      await res.text(); // hangs: the SSE result event never arrives (tool blocked)
+    } catch (e) {
+      const name = (e as Error).name;
+      bodyAborted = name === 'TimeoutError' || name === 'AbortError';
+    }
+    expect(status).toBe(200); // reachable
+    expect(bodyAborted).toBe(true); // blocked on the pick (new interactive contract)
+  }, 15_000);
 
   // The args schema rejects empty / over-cap options (z.array().min(1).max(6)).
   // Assert the stable invalid_args + failing-field path; zod v4's messages no

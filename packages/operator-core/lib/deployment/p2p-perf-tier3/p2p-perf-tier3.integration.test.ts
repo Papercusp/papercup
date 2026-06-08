@@ -11,14 +11,20 @@
  *     is what proves the logic; the cred-gated path below only swaps in real
  *     provisioning + real WAN.
  *
- *  2. CRED-GATED REAL FRAMES (skipped without LATITUDE_API_KEY — $0 in CI, like
- *     latitude-e2e.integration.test.ts). Provisions 2 VM frames (one firewalled,
- *     NAT-like), runs the scenario matrix over SSH against the PUBLIC DHT, and
- *     DESTROYS everything in a finally (no billing leak). On-demand only (D-004/
- *     D-006) — the implementing agent builds + verifies the gate, never burns
- *     frames on cron.
- *     Env: LATITUDE_API_KEY, P2P_PERF_LATITUDE_PROJECT (or LATITUDE_E2E_PROJECT),
- *     P2P_PERF_SSH_KEY_IDS (comma-sep Latitude ssh_key ids), P2P_PERF_SSH_IDENTITY_FILE.
+ *  2. CRED-GATED REAL FRAMES — TWO provider variants, each $0 in CI (skipped
+ *     without that provider's creds, like latitude-e2e.integration.test.ts).
+ *     Provisions 2 VM frames (one firewalled, NAT-like) over the SAME provider-
+ *     agnostic bench fleet, runs the scenario matrix over SSH against the PUBLIC
+ *     DHT, and DESTROYS everything in a finally (no billing leak). On-demand only
+ *     (D-004/D-006) — the implementing agent builds + verifies the gate, never
+ *     burns frames on cron.
+ *       • Latitude: LATITUDE_API_KEY, P2P_PERF_LATITUDE_PROJECT (or LATITUDE_E2E_PROJECT),
+ *         P2P_PERF_SSH_KEY_IDS (comma-sep Latitude ssh_key ids), P2P_PERF_SSH_IDENTITY_FILE.
+ *       • Hetzner (the standing hourly-churn default — cloud-deployment-layer D-017/D-018):
+ *         HCLOUD_TOKEN, HETZNER_SSH_KEY_ID, HETZNER_SSH_IDENTITY_FILE;
+ *         opt HETZNER_E2E_SERVER_TYPE (cpx31), P2P_PERF_HETZNER_LOCATIONS (ash,ash).
+ *     Both variants drive the IDENTICAL fleet+scenario code — the only difference
+ *     is which DeploymentDriver is imported, the proof the seam is provider-agnostic.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -85,6 +91,94 @@ describe('Tier-3 p2p-perf — $0 local parity (no cloud, no SSH)', () => {
   );
 });
 
+/**
+ * The provider-agnostic real-frame body, shared by the Latitude + Hetzner blocks
+ * (the whole point of the DeploymentDriver seam): provision 2 VM frames over
+ * `driver`, run the scenario matrix over SSH against the PUBLIC DHT, assert the
+ * cross-region append→visible distribution, ALWAYS teardown. Only `driver` +
+ * `providerDefaults` + size/region defaults differ between providers.
+ */
+async function runRealFrameTier3(opts: {
+  driver: import('@papercusp/deployment-driver').DeploymentDriver;
+  providerDefaults: Record<string, unknown>;
+  identityFile?: string;
+  size: string;
+  regions: string[];
+  tag: string;
+}): Promise<void> {
+  const { provisionBenchFleet } = await import('./bench-frames');
+  const repoRoot = process.cwd().includes('packages/operator-core')
+    ? resolve(process.cwd(), '..', '..')
+    : process.cwd();
+  // Quota-adaptive: a constrained account runs FRAMES=1 + PEERS_PER_FRAME=2 —
+  // co-located peers over the PUBLIC DHT still verify the full real-machine path
+  // (SSH launch, npm-ci'd runtime, DHT join, measurement) minus true cross-region
+  // RTT. A full account runs FRAMES=2-3 for real WAN + cross-frame holepunch.
+  const frameCount = Math.max(1, Number(process.env.P2P_PERF_FRAMES ?? 2));
+  const peersPerFrame = Math.max(1, Number(process.env.P2P_PERF_PEERS_PER_FRAME ?? 1));
+  const log = (lvl: string, m: string) => console.log(`[tier3 ${opts.tag} ${lvl}] ${m}`);
+
+  // Labels must be UNIQUE per frame — the provisioned server NAME derives from the
+  // label (Hetzner rejects a duplicate name with a 409 uniqueness_error). Suffix
+  // the index whenever there aren't enough DISTINCT regions to disambiguate the
+  // frames (e.g. two frames both in `ash`). Distinct-region runs (Latitude ASH,DAL)
+  // keep their clean region labels.
+  const needsIndexSuffix = new Set(opts.regions.slice(0, frameCount)).size < frameCount;
+  const fleet = await provisionBenchFleet({
+    driver: opts.driver,
+    repoRoot,
+    sshIdentityFile: opts.identityFile,
+    providerDefaults: opts.providerDefaults,
+    specs: Array.from({ length: frameCount }, (_, i) => ({
+      label: opts.regions[i % opts.regions.length] + (needsIndexSuffix ? `-${i}` : ''),
+      region: opts.regions[i % opts.regions.length],
+      size: opts.size,
+      kind: 'vm' as const,
+      // Firewall the 2nd+ frame (NAT-like) so holepunch is exercised cross-frame.
+      firewall: i > 0,
+    })),
+    log,
+  });
+  try {
+    // Fan each frame into `peersPerFrame` slots (distinct peerIndex → distinct
+    // remote corestore root), so 1 frame can host writer+reader if quota-capped.
+    const frameSlots: SshSlotSpec[] = fleet.frames.flatMap((f) =>
+      Array.from({ length: peersPerFrame }, (_, k) => ({
+        label: peersPerFrame > 1 ? `${f.spec.label}-p${k}` : f.spec.label,
+        region: f.spec.region,
+        target: f.target,
+      })),
+    );
+    const launcher = sshPeerLauncher({ frames: frameSlots, log: (l) => console.log(`[tier3 ${opts.tag} peer] ${l}`) });
+    const scenarios: Array<'cross-region-replication' | 'dht-discovery' | 'nat-holepunch'> =
+      fleet.frames.length >= 2
+        ? ['cross-region-replication', 'dht-discovery', 'nat-holepunch']
+        : ['cross-region-replication', 'dht-discovery'];
+    const res = await runTier3Suite({
+      launcher,
+      harnessSlug: `p2p-perf-tier3-${opts.tag}-${Date.now()}`,
+      scenarios,
+      count: 200,
+      rate: 10,
+      estimateClock: true,
+      meshTimeoutMs: 180_000,
+      catchUpTimeoutMs: 300_000,
+      log: (l) => console.log(`[tier3 ${opts.tag}] ${l}`),
+    });
+    expect(res.artifacts.length).toBe(scenarios.length);
+    for (const a of res.artifacts) assertTier3Artifact(a);
+    const cr = res.artifacts.find((a) => a.scenario === 'tier3.cross-region-replication')!;
+    expect(cr.metrics['appendToVisibleMs']?.count).toBeGreaterThan(0);
+    console.log(`[tier3 ${opts.tag}] cross-region append→visible p95=${cr.metrics['appendToVisibleMs']?.p95}ms`);
+    const disc = res.artifacts.find((a) => a.scenario === 'tier3.dht-discovery');
+    if (disc) console.log(`[tier3 ${opts.tag}] DHT discovery p95=${disc.metrics['peerAdmittedMs']?.p95}ms`);
+    const hp = res.artifacts.find((a) => a.scenario === 'tier3.nat-holepunch');
+    if (hp) console.log(`[tier3 ${opts.tag}] holepunch notes: ${hp.notes.join(' | ')}`);
+  } finally {
+    await fleet.teardownAll();
+  }
+}
+
 const project = process.env.P2P_PERF_LATITUDE_PROJECT ?? process.env.LATITUDE_E2E_PROJECT;
 const haveCreds = !!process.env.LATITUDE_API_KEY && !!project;
 
@@ -95,74 +189,55 @@ describe.skipIf(!haveCreds)(
       'provisions VM frames, measures cross-region replication + DHT discovery (+holepunch with ≥2 frames), DESTROYS always',
       async () => {
         const { LatitudeDriver } = await import('../latitude/latitude-driver');
-        const { provisionBenchFleet } = await import('./bench-frames');
-        const repoRoot = process.cwd().includes('packages/operator-core')
-          ? resolve(process.cwd(), '..', '..')
-          : process.cwd();
         const sshKeyIds = (process.env.P2P_PERF_SSH_KEY_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
         const identityFile = process.env.P2P_PERF_SSH_IDENTITY_FILE;
-        const size = process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small';
-        // VM stock (live 2026-06-07): ASH/DAL/TYO3/LON/FRA — NYC is metal-only.
-        const regions = (process.env.P2P_PERF_REGIONS ?? 'ASH,DAL').split(',').map((s) => s.trim());
-        // Quota-adaptive: a constrained account (e.g. a 2-VM cap) runs FRAMES=1 +
-        // PEERS_PER_FRAME=2 — co-located peers over the PUBLIC DHT still verify the
-        // full real-metal path (SSH launch, npm-ci'd runtime, DHT join, measurement)
-        // minus true cross-region RTT. A full account runs FRAMES=2-3 for real WAN.
-        const frameCount = Math.max(1, Number(process.env.P2P_PERF_FRAMES ?? 2));
-        const peersPerFrame = Math.max(1, Number(process.env.P2P_PERF_PEERS_PER_FRAME ?? 1));
-        const log = (lvl: string, m: string) => console.log(`[tier3 ${lvl}] ${m}`);
-
-        const fleet = await provisionBenchFleet({
+        await runRealFrameTier3({
           driver: LatitudeDriver,
-          repoRoot,
-          sshIdentityFile: identityFile,
           providerDefaults: { project, sshKeys: sshKeyIds, sshIdentityFile: identityFile },
-          specs: Array.from({ length: frameCount }, (_, i) => ({
-            label: regions[i % regions.length] + (frameCount > regions.length ? `-${i}` : ''),
-            region: regions[i % regions.length],
-            size,
-            kind: 'vm' as const,
-            // Firewall the 2nd+ frame (NAT-like) so holepunch is exercised cross-frame.
-            firewall: i > 0,
-          })),
-          log,
+          identityFile,
+          size: process.env.P2P_PERF_LATITUDE_VM_PLAN ?? 'vm.small',
+          // VM stock (live 2026-06-07): ASH/DAL/TYO3/LON/FRA — NYC is metal-only.
+          regions: (process.env.P2P_PERF_REGIONS ?? 'ASH,DAL').split(',').map((s) => s.trim()),
+          tag: 'latitude',
         });
-        try {
-          // Fan each frame into `peersPerFrame` slots (distinct peerIndex → distinct
-          // remote corestore root), so 1 frame can host writer+reader if quota-capped.
-          const frameSlots: SshSlotSpec[] = fleet.frames.flatMap((f) =>
-            Array.from({ length: peersPerFrame }, (_, k) => ({
-              label: peersPerFrame > 1 ? `${f.spec.label}-p${k}` : f.spec.label,
-              region: f.spec.region,
-              target: f.target,
-            })),
-          );
-          const launcher = sshPeerLauncher({ frames: frameSlots, log: (l) => console.log(`[tier3 peer] ${l}`) });
-          const scenarios: Array<'cross-region-replication' | 'dht-discovery' | 'nat-holepunch'> =
-            fleet.frames.length >= 2
-              ? ['cross-region-replication', 'dht-discovery', 'nat-holepunch']
-              : ['cross-region-replication', 'dht-discovery'];
-          const res = await runTier3Suite({
-            launcher,
-            harnessSlug: `p2p-perf-tier3-${Date.now()}`,
-            scenarios,
-            count: 200,
-            rate: 10,
-            estimateClock: true,
-            meshTimeoutMs: 180_000,
-            catchUpTimeoutMs: 300_000,
-            log: (l) => console.log(`[tier3] ${l}`),
-          });
-          expect(res.artifacts.length).toBe(scenarios.length);
-          for (const a of res.artifacts) assertTier3Artifact(a);
-          const cr = res.artifacts.find((a) => a.scenario === 'tier3.cross-region-replication')!;
-          expect(cr.metrics['appendToVisibleMs']?.count).toBeGreaterThan(0);
-          console.log(`[tier3] cross-region append→visible p95=${cr.metrics['appendToVisibleMs']?.p95}ms`);
-          const hp = res.artifacts.find((a) => a.scenario === 'tier3.nat-holepunch');
-          if (hp) console.log(`[tier3] holepunch notes: ${hp.notes.join(' | ')}`);
-        } finally {
-          await fleet.teardownAll();
-        }
+      },
+      NINETY_MIN,
+    );
+  },
+);
+
+// Hetzner — the standing hourly-churn default (cloud-deployment-layer D-017/D-018).
+// Same fleet + scenarios as Latitude through the provider-agnostic seam; only the
+// driver + the Hetzner-shaped provider block (numeric ssh_key id, server_type,
+// location) differ. Closes the `linux-test-vm-and-federation` D-018 "needs a
+// truly separate machine" gate: two distinct public-IP cloud VMs DO holepunch +
+// merge over the public DHT where two same-host VMs cannot.
+const hetznerSshKeyId = process.env.HETZNER_SSH_KEY_ID;
+const hetznerIdentity = process.env.HETZNER_SSH_IDENTITY_FILE;
+const haveHetzner =
+  !!(process.env.HCLOUD_TOKEN || process.env.HETZNER_API_TOKEN) &&
+  !!hetznerSshKeyId &&
+  !!hetznerIdentity;
+
+describe.skipIf(!haveHetzner)(
+  'Tier-3 p2p-perf — REAL Hetzner frames (needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE)',
+  () => {
+    it(
+      'provisions Hetzner VM frames, measures cross-region replication + DHT discovery + holepunch, DESTROYS always',
+      async () => {
+        const { HetznerDriver } = await import('../hetzner/hetzner-driver');
+        // Hetzner ssh key id is numeric; the driver accepts string|number.
+        const sshKeyId = Number(hetznerSshKeyId) || hetznerSshKeyId!;
+        await runRealFrameTier3({
+          driver: HetznerDriver,
+          providerDefaults: { sshKeys: [sshKeyId], sshIdentityFile: hetznerIdentity },
+          identityFile: hetznerIdentity,
+          size: process.env.HETZNER_E2E_SERVER_TYPE ?? 'cpx31',
+          // Hetzner locations (us): ash, hil. Default two @ ash — distinct VMs,
+          // distinct public IPs (the same-host wall is about ONE host, not one DC).
+          regions: (process.env.P2P_PERF_HETZNER_LOCATIONS ?? 'ash,ash').split(',').map((s) => s.trim()),
+          tag: 'hetzner',
+        });
       },
       NINETY_MIN,
     );

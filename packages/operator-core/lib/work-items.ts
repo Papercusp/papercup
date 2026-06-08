@@ -243,6 +243,32 @@ export interface ListWorkItemsFilter {
   limit?: number;
 }
 
+/**
+ * Recency comparator — newest `updatedAt` first. The default work-item order.
+ */
+export function compareByRecency(a: WorkItem, b: WorkItem): number {
+  return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
+}
+
+/**
+ * Head-of-line comparator for an assignee's ordered work-list — the swarm
+ * scheduler's BUFFERED-DRAIN order (swarm-coordination-architecture P-005 /
+ * D-006). Ranked items first by `rank` ASC, unranked (`rank == null`) sink to
+ * the tail (treated as +∞), and ties break by recency (newest first). This is
+ * how the Queen places several items ahead and a bee drains them head-of-line
+ * without waiting on the brain's cadence; it MERGES across families (a bee's
+ * feature-family + issue-family items interleave by rank into one list).
+ *
+ * Pure + total so it is unit-testable in isolation; `listWorkItems` applies it
+ * after the cross-family fetch.
+ */
+export function compareByHeadOfLine(a: WorkItem, b: WorkItem): number {
+  const ar = a.rank ?? Number.POSITIVE_INFINITY;
+  const br = b.rank ?? Number.POSITIVE_INFINITY;
+  if (ar !== br) return ar - br;
+  return compareByRecency(a, b);
+}
+
 /** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
 export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
@@ -291,17 +317,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
     out.push(...issues.map(issueToWorkItem));
   }
 
-  if (filter.orderByRank) {
-    // Head-of-line first: ranked items by rank ASC, then unranked by updatedAt DESC.
-    out.sort((a, b) => {
-      const ar = a.rank ?? Number.POSITIVE_INFINITY;
-      const br = b.rank ?? Number.POSITIVE_INFINITY;
-      if (ar !== br) return ar - br;
-      return a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
-    });
-  } else {
-    out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
-  }
+  out.sort(filter.orderByRank ? compareByHeadOfLine : compareByRecency);
   return out.slice(0, limit);
 }
 

@@ -97,6 +97,23 @@ describe('chat:ask_choice handler', () => {
     expect(parsed.picks).toEqual([{ option_id: 'a', label: 'A' }]);
   });
 
+  it('lowercases option ids in the rendered card AND the returned pick', async () => {
+    // Migrated from the ask-choice-e2e "echoes lowercased ids" case: under the
+    // post-bespoke-card-improvements blocking contract the tool no longer returns
+    // a synchronous {rendered, options}, so the normalization (handler L119) is
+    // verifiable here — via the CardSpec handed to ctx.askUser and the pick echo.
+    openRun({ workspaceId: ws, runId: 'r-ac-lc' });
+    const askUser = vi.fn(async () => ({ action: 'submit', payload: { picks: ['yes'] } }));
+    const r = await (askChoiceTool as any).handler(
+      { question: 'Test?', options: [{ id: 'Yes', label: 'Yes' }, { id: 'NO', label: 'No' }] },
+      makeCtx(askUser),
+    );
+    const spec = askUser.mock.calls[0][0] as { presentation: { options: Array<{ id: string }> } };
+    expect(spec.presentation.options.map((o) => o.id)).toEqual(['yes', 'no']);
+    const parsed = JSON.parse((r.content[0] as { text: string }).text);
+    expect(parsed.picks).toEqual([{ option_id: 'yes', label: 'Yes' }]);
+  });
+
   it('multi-select: presentation.kind = checkbox; picks array is preserved', async () => {
     const askUser = vi.fn(async () => ({
       action: 'submit',
