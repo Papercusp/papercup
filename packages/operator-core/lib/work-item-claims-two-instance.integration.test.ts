@@ -51,7 +51,7 @@ vi.mock('@papercusp/db-org', async () => {
 });
 
 const { registerWorkItemClaimAuthorityOps } = await import('./work-item-claim-authority-ops');
-const { WORK_ITEM_CLAIM_OP_KINDS, getClaim, type AcquireResult, type AcquireOpts } = await import('./work-item-claims');
+const { WORK_ITEM_CLAIM_OP_KINDS, getClaim, acquireClaimLocal } = await import('./work-item-claims');
 
 const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
@@ -131,7 +131,9 @@ async function swarmClaim(selfPubkey: string, owner: string, workItemId: string)
   return routeToAuthorityForHive<AcquireResult>(
     'my-hive',
     {
-      local: async (): Promise<AcquireResult> => ({ ok: false, conflict: undefined as never }),
+      // local runs ONLY when self is the Hive authority (the argmin case); for the
+      // remote-authority Swarms it never executes (the RPC result is authoritative).
+      local: (): Promise<AcquireResult> => acquireClaimLocal(payload),
       remote: { kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload, decode: (raw): AcquireResult => raw as AcquireResult },
     },
     hiveDeps(selfPubkey),

@@ -12,12 +12,13 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**347 MCP tools** across **69 groups**.
+**352 MCP tools** across **70 groups**.
 
 ## Groups
 
 | Group | Verbs | Names | Capabilities |
 |---|---|---|---|
+| `accounts` | 5 | `list` `register` `remove` `scale_out` `status` | `harness:read` `harness:write` |
 | `actions` | 1 | `recent` | `actions:read` |
 | `activity` | 2 | `recent` `report` | `activity:read` `activity:report` |
 | `agent_chats` | 6 | `archive` `chat` `create` `get` `list` `send_message` | `agent_chats:read` `agent_chats:write` `harness:read` |
