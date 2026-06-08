@@ -42,6 +42,7 @@ import { buildCoordMessageProjection } from './coord-message';
 import { buildCoordThreadProjection } from './coord-thread';
 import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
+import { buildHiveSettingsProjection } from './hive-settings';
 
 export interface RegisterAllOpts {
   workspaceId: string;
@@ -93,6 +94,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // plan-item-assignment-claim-liveness-2026-06-04 (D-002): per-plan-item ASSIGNMENT
   // federates as content (the leased CLAIM is authority-mediated, never federated).
   'item-assignments',
+  // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
+  // state, scoped to the Hive home harness slug (rides the Hive-pubkey topic, P-004).
+  'hive-settings-by-key',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -120,6 +124,7 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildCoordThreadProjection(opts),
     buildCoordThreadPostProjection(opts),
     buildPlanItemAssignmentsProjection(opts),
+    buildHiveSettingsProjection(opts),
   ] as TableProjection<unknown>[];
 }
 

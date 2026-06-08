@@ -17,10 +17,12 @@ Three traps:
 
 1. **Every `defineTool` registers `methods: ['POST']`.** Both
    `registerLegacyAsProjected` and `registerRoleGatedAsProjected` in
-   `packages/agent-mcp/src/define-tool.ts` hardcode it. A GET dispatch
-   returns **405** at the methods gate inside
-   `resolveToolAndContext`. The browser side can keep cacheable GETs
-   — the *internal* call must be POST.
+   `libs/generic/tooldef/src/define-tool.ts` (the `defineTool` core was
+   generalized out of `packages/agent-mcp` into `libs/generic/tooldef` /
+   `libs/generic/tooldef-http`; `agent-mcp` re-exports them) hardcode it.
+   A GET dispatch returns **405** at the methods gate inside
+   `resolveToolAndContext` (now in `libs/generic/tooldef-http/src/http-projection.ts`).
+   The browser side can keep cacheable GETs — the *internal* call must be POST.
 
 2. **Tool args come from `req.body`, not `req.searchParams`.** The
    methods gate above is the obvious one; the more subtle one is

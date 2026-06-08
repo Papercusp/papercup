@@ -52,6 +52,9 @@ const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string]> 
   // migration 125). Fresh installs backfill plans here. (Clearing the marker forces
   // a one-time re-backfill of all targets; idempotent but re-enqueues everything.)
   ['harness_plans', 'plan_slug'],
+  // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
+  // state (key == setting_key), scoped to the Hive home harness slug.
+  ['hive_settings', 'setting_key'],
 ];
 
 /** substrate_meta key for the one-time-done marker. */

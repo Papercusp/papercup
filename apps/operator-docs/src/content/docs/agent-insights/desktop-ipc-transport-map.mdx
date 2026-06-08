@@ -29,9 +29,11 @@ socket to the Node sidecar) instead of real HTTP sockets, dodging the cap entire
    bodies, and WebSockets.
 2. **Typed `endpoint_invoke` dispatch** — `dispatchEndpointStream`
    (`libs/generic/desktop-ipc/src/index.ts`): picks IPC on Tauri for typed event-stream
-   tools, gated by a host **allowlist** in `apps/operator/instrumentation-node.ts`
-   (`maybeStartEndpointIpcServer`). Returns the same `EndpointStreamEvent` union on both
-   transports, so a consumer migrated to it keeps a working HTTP fallback in the browser.
+   tools, gated by a host **allowlist** in `apps/operator/bin/host-bootstrap.ts` (the IPC
+   server start logic moved there from the retired `instrumentation-node.ts`; it calls
+   `startEndpointIpcServer` from `packages/operator-core/lib/endpoint-ipc/server.ts`).
+   Returns the same `EndpointStreamEvent` union on both transports, so a consumer migrated
+   to it keeps a working HTTP fallback in the browser.
 3. **`expose.ipc: true`** — declarative per-tool flag in `ToolExposure`
    (`libs/generic/tooldef` `tool-projection.ts`). The intended successor to the hardcoded
    allowlist; `defineTool`'s auto-projection must thread `input.expose?.ipc` for it to reach
@@ -50,7 +52,7 @@ must all be satisfied for IPC to actually run:
   spawn"* and the operator runs separately on `:3055`/`:3070` with **no IPC server**. So a
   debug binary can never complete the handshake — you need `cargo build --release`.
 - **The handshake** — the sidecar boots its IPC server only when `PAPERCUSP_IPC_ENABLE=1`
-  (`instrumentation-node.ts` `maybeStartEndpointIpcServer`), prints
+  (`apps/operator/bin/host-bootstrap.ts`, which starts `startEndpointIpcServer`), prints
   `PAPERCUSP_IPC_READY socket=<path>`; Rust parses it, `IpcClient::connect` + `app.manage`.
   Until `app.manage` runs, `endpoint_invoke` errors with "state not managed", and
   `ipcFetch` falls back to native HTTP while `IpcEventSource` falls back to a native

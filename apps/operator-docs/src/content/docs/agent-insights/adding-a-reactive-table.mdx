@@ -22,7 +22,7 @@ producers**:
   │ PG trigger           │── emit_change_notify() ─────────┘          │
   │ (auto, every row)    │                                            │
   └──────────────────────┘                                            ▼
-                            apps/operator/lib/sync-sse.ts → /api/zero-harness/sse
+                            packages/operator-core/lib/sync-sse.ts → /api/zero-harness/sse
                                                                       ▼
                               libs/sync SSEAdapter → @tanstack/react-query
                                                                       ▼
@@ -48,8 +48,11 @@ happy path; the trigger covers everything else.
 
 ### Step 1: define the table
 
-Either in a `libs/papercusp/libs/db/sql/NNN-<name>.sql` migration or in
-`apps/operator/lib/ensure-schema*.ts` (runtime-ensure path). Both work.
+In a `libs/papercusp/libs/db/sql/NNN-<name>.sql` migration (≥ `107`).
+**Update:** the old runtime-ensure path (`ensure-schema*.ts`,
+lazy-`CREATE TABLE`) is **removed** — schema is migrations-only now
+(`self-contained-migration-baseline-2026-06-02`). Add a migration; do
+not add an `ensureXxx()`.
 
 ### Step 2: attach the trigger
 
@@ -60,20 +63,21 @@ CREATE OR REPLACE TRIGGER emit_change_notify_trg
   FOR EACH ROW EXECUTE FUNCTION harness_shared.emit_change_notify();
 ```
 
-Or use the `wireDogfoodTriggers()` pattern in
-`apps/operator/lib/ensure-schema-dogfood.ts` — append the table name
-to `DOGFOOD_REACTIVE_TABLES` (new tables) or
-`EXISTING_HYPERBEE_REACTIVE_TABLES` (existing consolidated tables).
+**Update:** the old runtime `wireDogfoodTriggers()` helper (in the
+removed `ensure-schema-dogfood.ts`) is gone. The dogfood trigger wiring
+now lives in a migration — `libs/papercusp/libs/db/sql/107-dogfood-reactivity-triggers.sql`
+attaches `emit_change_notify` to the reactive tables. Add your new
+table's `CREATE OR REPLACE TRIGGER` line to a migration alongside those.
 
-Idempotent (`CREATE OR REPLACE TRIGGER` is PG 14+), so re-running the
-ensure helper on every boot is safe.
+Idempotent (`CREATE OR REPLACE TRIGGER` is PG 14+), so re-applying the
+migration is safe.
 
 ### Step 3: in app code, also call `notifySyncInvalidate` after writes
 
 After your route handler writes to the table:
 
 ```ts
-import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { notifySyncInvalidate } from '@papercusp/operator-core/lib/sync-sse';
 
 // After the successful write:
 void notifySyncInvalidate('your_table.changed', { workspace_id, op }).catch(() => {});
@@ -84,7 +88,7 @@ Best-effort — never let a notify failure break the write itself.
 ### Step 4: on the client, subscribe with `useSyncQuery`
 
 ```tsx
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 const { data, loading } = useSyncQuery<YourRow>({
   // ...
@@ -106,7 +110,7 @@ Both producers emit on `sync_invalidate` channel with:
 ```
 
 Consumers filter on `name`. The format is the established `SyncEvent`
-contract in `apps/operator/lib/sync-sse.ts` — don't invent a parallel
+contract in `packages/operator-core/lib/sync-sse.ts` — don't invent a parallel
 channel; the trigger function was rewritten in commit `20609bb` to
 stop doing exactly that (was emitting on a new `papercusp_changes`
 channel; consolidated onto `sync_invalidate` for the 20+ existing
@@ -162,8 +166,8 @@ for the failure mode if you stack multiple long-lived connections.
 
 ## Related
 
-- `apps/operator/lib/sync-sse.ts` — `notifySyncInvalidate` + `subscribe`
-- `apps/operator/lib/endpoint-route/routes/zero-harness/sse.ts` — the SSE endpoint
-- `libs/papercusp/libs/db/sql/078-emit-change-notify.sql` — the trigger function
-- `apps/operator/lib/ensure-schema-dogfood.ts:wireDogfoodTriggers` — attach helper
+- `packages/operator-core/lib/sync-sse.ts` — `notifySyncInvalidate` + `subscribe`
+- `packages/operator-core/lib/endpoint-route/routes/zero-harness/sse.ts` — the SSE endpoint
+- `libs/papercusp/libs/db/sql/000-baseline.sql` — the `emit_change_notify()` trigger function (originally `archive/078-emit-change-notify.sql`)
+- `libs/papercusp/libs/db/sql/107-dogfood-reactivity-triggers.sql` — the trigger-attach migration (replaced the removed `wireDogfoodTriggers()` runtime helper)
 - `apps/operator/scripts/verify-trigger-consolidation.mjs` — the live verifier

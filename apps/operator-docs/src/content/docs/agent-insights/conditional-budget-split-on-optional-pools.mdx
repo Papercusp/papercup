@@ -15,7 +15,9 @@ import { Aside } from '@astrojs/starlight/components';
 `buildMemoryContextBlock` fans out one `limit` across multiple optional pools:
 
 - per-user pool (skipped when `userId` is `null` — workspace-bearer routes)
-- legacy `workspace:<wsId>` pool (always present during the deprecation window)
+- legacy `workspace:<wsId>` pool (was present during the deprecation window —
+  **since drained, D-005**; the live `buildMemoryContextBlock` no longer pulls
+  it, so the concrete user-vs-workspace example below is now historical)
 - N per-harness pools (zero when no harness slugs supplied)
 
 The original code hardcoded:
@@ -85,10 +87,15 @@ new variant breaks the assumption that the variant list is closed.
 
 ## See also
 
-- `apps/operator/lib/memory/injection.ts` — the canonical fix
-  (commit `5b0e48ee`).
-- `apps/operator/lib/memory/injection.test.ts` — the test that caught it
-  (`workspace-only mode honors `limit` for the shared pull`).
+- `packages/operator-core/lib/memory/injection.ts` — the canonical fix
+  (commit `5b0e48ee`). **Update:** the legacy `workspace:` pool this split fed
+  has since been **drained** (D-005), so the live code no longer divides a budget
+  here — it pulls the user pool at `limit` and each harness pool at
+  `PER_HARNESS_LIMIT`, with no `workspaceLimit`. The pattern above still holds for
+  any future multi-pool fan-out.
+- `packages/operator-core/lib/memory/injection.test.ts` — the test that caught it
+  was replaced (now `pulls user + harness scopes only — no deprecated workspace
+  pull (D-005)`).
 - [`pure-decision-functions-pulled-from-daemons`](/internal/docs/agent-insights/pure-decision-functions-pulled-from-daemons/)
   — extracting `decideBudgetSplit(input)` as a pure function with tests
   would have caught this on the first variant.

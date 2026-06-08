@@ -111,6 +111,9 @@ interface LivePeerRow {
 export interface LockAuthorityDeps {
   /** Fetch ALL presence rows for a harness (freshness filtered in TS). */
   fetchPresenceRows?: (harnessSlug: string) => Promise<LivePeerRow[]>;
+  /** Fetch ALL presence rows for a HIVE (P-009 — `WHERE hive_slug = ?`). Used by
+   *  {@link lockAuthorityForHive}; freshness filtered in TS like the harness path. */
+  fetchHivePresenceRows?: (hiveSlug: string) => Promise<LivePeerRow[]>;
   /** Resolve THIS peer's swarm identity, or null if it has none. */
   resolveSelf?: () => Promise<SelfSwarmIdentity | null>;
   /** Current epoch ms (injectable clock). */
@@ -156,10 +159,103 @@ async function defaultFetchPresenceRows(harnessSlug: string): Promise<LivePeerRo
   return queryPresenceRows(sql as never, harnessSlug);
 }
 
+/**
+ * The Hive-scoped presence query (P-009): all presence rows whose `hive_slug`
+ * matches — i.e. the Swarms of a shared Hive. Authority across a Hive is the
+ * lowest live device_pubkey over these. Parameterized on `sql` for tests.
+ */
+export async function queryPresenceRowsForHive(
+  sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
+  hiveSlug: string,
+): Promise<LivePeerRow[]> {
+  const rows = (await sql`
+    SELECT device_pubkey,
+           github_user_id,
+           machine_label,
+           (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
+    FROM harness_shared.shared_presence
+    WHERE hive_slug = ${hiveSlug}
+      AND device_pubkey <> ''
+  `) as Array<{
+    device_pubkey: string;
+    github_user_id: number;
+    machine_label: string;
+    last_seen_ms: string | number;
+  }>;
+  return rows.map((r) => ({
+    device_pubkey: r.device_pubkey,
+    github_user_id: Number(r.github_user_id),
+    machine_label: r.machine_label,
+    last_seen_ms: Number(r.last_seen_ms),
+  }));
+}
+
+async function defaultFetchHivePresenceRows(hiveSlug: string): Promise<LivePeerRow[]> {
+  const { sql } = getOrgPg();
+  return queryPresenceRowsForHive(sql as never, hiveSlug);
+}
+
 async function defaultResolveSelf(): Promise<SelfSwarmIdentity | null> {
   const actor = await resolveUsageActor();
   if (!actor) return null;
   return { githubUserId: actor.githubUserId, devicePubkey: actor.devicePubkey };
+}
+
+/**
+ * The PURE authority-selection core (D-005): from a scope's presence rows + this
+ * peer's identity, pick the lowest live `device_pubkey`. Shared by the
+ * harness-scoped {@link lockAuthorityFor} and the Hive-scoped
+ * {@link lockAuthorityForHive} — the only thing that differs between them is WHICH
+ * presence rows are fetched (harness_slug vs hive_slug); the argmin/isSelf/empty
+ * logic is identical, so it lives here once. Exported for direct unit testing.
+ */
+export function selectAuthorityFromRows(
+  rows: LivePeerRow[],
+  self: SelfSwarmIdentity | null,
+  nowMs: number,
+  staleMs: number,
+): AuthorityResolution {
+  const cutoff = nowMs - staleMs;
+  // Dedup by device_pubkey, keeping the freshest row per pubkey.
+  const byPubkey = new Map<string, LivePeerRow>();
+  for (const r of rows) {
+    if (!r.device_pubkey || r.last_seen_ms <= cutoff) continue;
+    const prior = byPubkey.get(r.device_pubkey);
+    if (!prior || r.last_seen_ms > prior.last_seen_ms) byPubkey.set(r.device_pubkey, r);
+  }
+  // Self is always a candidate when it has an identity, even if this machine
+  // does not (yet) publish its own presence row.
+  if (self && !byPubkey.has(self.devicePubkey)) {
+    byPubkey.set(self.devicePubkey, {
+      device_pubkey: self.devicePubkey,
+      github_user_id: self.githubUserId,
+      machine_label: '(self)',
+      last_seen_ms: nowMs,
+    });
+  }
+
+  const candidates = [...byPubkey.values()];
+  if (candidates.length === 0) {
+    // No swarm, no self identity — single box. We are the authority.
+    return { isSelf: true, liveCount: 0 };
+  }
+
+  // argmin(device_pubkey), lexicographic — deterministic across all peers.
+  let winner = candidates[0];
+  for (const c of candidates) if (c.device_pubkey < winner.device_pubkey) winner = c;
+
+  const isSelf = self != null && winner.device_pubkey === self.devicePubkey;
+  if (isSelf) return { isSelf: true, liveCount: candidates.length };
+
+  return {
+    isSelf: false,
+    liveCount: candidates.length,
+    peer: {
+      devicePubkey: winner.device_pubkey,
+      githubUserId: winner.github_user_id,
+      machineLabel: winner.machine_label,
+    },
+  };
 }
 
 /**
@@ -194,48 +290,37 @@ export async function lockAuthorityFor(
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
   const [rows, self] = await Promise.all([fetchRows(harnessSlug), resolveSelf()]);
+  return selectAuthorityFromRows(rows, self, now(), staleMs);
+}
 
-  const cutoff = now() - staleMs;
-  // Dedup by device_pubkey, keeping the freshest row per pubkey.
-  const byPubkey = new Map<string, LivePeerRow>();
-  for (const r of rows) {
-    if (!r.device_pubkey || r.last_seen_ms <= cutoff) continue;
-    const prior = byPubkey.get(r.device_pubkey);
-    if (!prior || r.last_seen_ms > prior.last_seen_ms) byPubkey.set(r.device_pubkey, r);
+/**
+ * Resolve who serializes locks/claims for a shared HIVE (P-009, D-011), and
+ * whether that is us. Same D-005 algorithm as {@link lockAuthorityFor} — the
+ * lowest live device_pubkey — but the candidate set is the Hive's Swarms
+ * (`shared_presence WHERE hive_slug = ?`) rather than one harness's peers.
+ *
+ * Post-Hive, presence is announced per-Swarm for the whole Hive, so a Hive has
+ * ONE authority across all its harnesses' file-claim locks. Non-Hive harnesses
+ * keep using {@link lockAuthorityFor} (their presence rows have a NULL hive_slug).
+ *
+ * Like the harness path it is a no-op-to-local on a single box (no remote Swarms
+ * in presence → `{isSelf:true}`); the cross-machine teeth grow in once presence
+ * federation (P-008) populates remote Swarms' hive_slug presence rows.
+ */
+export async function lockAuthorityForHive(
+  hiveSlug: string,
+  deps: LockAuthorityDeps = {},
+): Promise<AuthorityResolution> {
+  if (!hiveSlug || typeof hiveSlug !== 'string') {
+    throw new TypeError('lockAuthorityForHive: hiveSlug must be a non-empty string');
   }
-  // Self is always a candidate when it has an identity, even if this machine
-  // does not (yet) publish its own presence row.
-  if (self && !byPubkey.has(self.devicePubkey)) {
-    byPubkey.set(self.devicePubkey, {
-      device_pubkey: self.devicePubkey,
-      github_user_id: self.githubUserId,
-      machine_label: '(self)',
-      last_seen_ms: now(),
-    });
-  }
+  const fetchRows = deps.fetchHivePresenceRows ?? defaultFetchHivePresenceRows;
+  const resolveSelf = deps.resolveSelf ?? defaultResolveSelf;
+  const now = deps.now ?? Date.now;
+  const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const candidates = [...byPubkey.values()];
-  if (candidates.length === 0) {
-    // No swarm, no self identity — single box. We are the authority.
-    return { isSelf: true, liveCount: 0 };
-  }
-
-  // argmin(device_pubkey), lexicographic — deterministic across all peers.
-  let winner = candidates[0];
-  for (const c of candidates) if (c.device_pubkey < winner.device_pubkey) winner = c;
-
-  const isSelf = self != null && winner.device_pubkey === self.devicePubkey;
-  if (isSelf) return { isSelf: true, liveCount: candidates.length };
-
-  return {
-    isSelf: false,
-    liveCount: candidates.length,
-    peer: {
-      devicePubkey: winner.device_pubkey,
-      githubUserId: winner.github_user_id,
-      machineLabel: winner.machine_label,
-    },
-  };
+  const [rows, self] = await Promise.all([fetchRows(hiveSlug), resolveSelf()]);
+  return selectAuthorityFromRows(rows, self, now(), staleMs);
 }
 
 /**

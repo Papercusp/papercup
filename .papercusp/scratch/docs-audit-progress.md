@@ -23,7 +23,7 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [x] implementation (6)
 - [x] design (16) — DONE
 - [x] reference (5) — DONE (role-registry/blueprint-catalog up-to-date; agent-insights-index regenerated; tool-catalog + plans-index regenerate in FINAL PASS)
-- [ ] agent-insights (99) — peer added always-armed-inbox-wake.mdx mid-session (P-021); include it
+- [~] agent-insights (99) — groups done: 1-2 (pages 1-20). Dominant drift: lib→operator-core, @restart→@papercusp, defineTool→libs/generic/tooldef; obsolete notes (runtime-ensure→migrations, Fleet OS sandbox default-on). NEXT: groups 3-10 (21-99).
 
 ## Per-page log
 

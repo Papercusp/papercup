@@ -29,6 +29,7 @@ import type { LocalWriteOp } from './boot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
+import type { HiveSettingRow } from './projections/hive-settings';
 import type { HarnessIssueRow } from './projections/issues';
 import type { ContributorUsageEventRow } from './projections/usage';
 import type { CoordConversationRow } from './projections/coord-conversation';
@@ -70,6 +71,9 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // federates as content. Projection 'item-assignments' (projections/plan-item-assignments.ts);
   // key == '<plan_slug>:<item_id>' (the table's generated fed_key column).
   plan_item_assignments: 'item-assignments',
+  // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
+  // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
+  hive_settings: 'hive-settings-by-key',
 };
 
 /**
@@ -324,6 +328,17 @@ function toAssignmentValue(row: Record<string, unknown>): PlanItemAssignmentRow 
   };
 }
 
+/** Map an outbox `row` jsonb to the `HiveSettingRow` the hive-settings projection
+ *  INSERT consumes — the federated subset (harness_slug = the Hive home slug,
+ *  setting_key, JSON-text value). No epoch dance, no jsonb (value is TEXT). */
+function toHiveSettingValue(row: Record<string, unknown>): HiveSettingRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    setting_key: String(row.setting_key ?? ''),
+    value: strOrNull(row.value),
+  };
+}
+
 /**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
  * own log. Throws on an unknown `table_name` (a programming error — the trigger
@@ -360,7 +375,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | CoordMessageRow
     | CoordThreadRow
     | CoordThreadPostRow
-    | PlanItemAssignmentRow;
+    | PlanItemAssignmentRow
+    | HiveSettingRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -385,6 +401,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'plan_item_assignments':
       value = toAssignmentValue(row);
+      break;
+    case 'hive_settings':
+      value = toHiveSettingValue(row);
       break;
     default:
       value = toIssueValue(row);

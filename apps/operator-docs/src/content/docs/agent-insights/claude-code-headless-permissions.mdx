@@ -74,9 +74,11 @@ separate argv elements so internal spaces (`Bash(git push:*)`) survive —
 user set any permission flag in `AGENT_CMD`.
 
 The allow-list is **per-role** (`fleetAllowedToolsForRole(role)`): most roles
-get the kit above, but the API-only roles `expert` / `feedback` drop `Edit`/`Write`
-because their prompts explicitly say "do NOT use the `Write` or `Edit` tools" —
-mechanically enforcing an existing instruction. That's the *only* per-role
+get the kit above, while any role in `FLEET_NO_WRITE_ROLES` drops `Edit`/`Write`
+(mechanically enforcing an "API/MCP-only — do NOT use `Write`/`Edit`" prompt
+instruction). **Update (2026-06): `FLEET_NO_WRITE_ROLES` is currently EMPTY** —
+the former `expert`/`feedback` API-only roles were removed, so no role is cut
+today; the mechanism stays for when such a role returns. That's the *only* per-role
 built-in cut that's safe from a prompt read (other review/gate roles write
 legit output via `Write`). It's a nudge, not a boundary — `Bash` is still
 granted, so a shell redirect could write; deeper per-role cuts need a real
@@ -88,11 +90,24 @@ env only — the shared checkout's config and the user's/other agents' pushes ar
 untouched). The `Bash(git push:*)` deny is the evadable backstop (`git -C … push`,
 aliases, `&& git push` slip past command-string matching; the hook does not).
 
-## Honest limits (do not mistake this for a sandbox)
+## Honest limits (the deny-list alone is not a sandbox)
 
-- **Credential reads are not closed** — the allow-listed `Read` tool reaches any
-  path. **Network egress is not closed** — `WebFetch` is allow-listed. True
-  containment of those needs a network/fs sandbox, not a deny-list.
+**Update (`fleet-spawn-sandbox-2026-06-01`, P-013/D-015): there is now a
+DEFAULT-ON sandbox layered on top of this deny-list** — claude-code's OWN
+built-in sandbox (Linux bubblewrap + socat egress proxy; macOS Seatbelt),
+injected via `--settings`, opt-out with `PAPERCUSP_FLEET_SANDBOX=0`. It closes
+the two gaps the deny-list cannot: it hides credential dirs
+(`FLEET_SANDBOX_DENY_READ` — `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`,
+`~/.papercusp`, `~/.npmrc`) from sandboxed Bash and confines egress to an
+allow-listed set of package registries (`resolveFleetAllowedDomains()`;
+strip-all with `PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS=1`). The bullets below
+describe the **deny-list layer in isolation** — i.e. the posture *before* that
+sandbox, which is now the default container for those reads/egress.
+
+- **Credential reads are not closed by the deny-list** — the allow-listed `Read`
+  tool reaches any path. **Network egress is not closed by the deny-list** —
+  `WebFetch` is allow-listed. True containment of those needs a network/fs
+  sandbox, not a deny-list — which is what the default-on sandbox above now is.
 - **Worktree isolation is conditional** — `invoke.ts` falls back to
   `ctx.projectDir` (the shared main checkout) when there's no feature-worktree,
   so "the worker is contained in a worktree" is not universally true.
