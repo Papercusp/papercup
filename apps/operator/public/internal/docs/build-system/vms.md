@@ -95,10 +95,17 @@ physical host** — VM↔VM *and* host↔VM both sit at `conns=0` in raw-hypersw
 topic, same bridge-advertised bootstrap, working UDP both directions), so neither the
 single-NIC+NAT candidate nor the host's no-NAT network position rescues it (plan D-017/D-018).
 `--dht=public` (P-012) is **INCONCLUSIVE** by same-host NAT hairpin, per the plan's D-004
-best-effort caveat — though both peers do announce on the real public DHT through slirp. The
-full bidirectional-merge acceptance needs **truly separate machines**. The finding and the
-three clean-machine traps the harness flushed out (slirp-subnet, embedded-PG boot race, and
-the sidecar port-grep race vs code-server's listener) are in the agent-insight
+best-effort caveat — though both peers do announce on the real public DHT through slirp.
+
+The full bidirectional-merge acceptance needs **truly separate machines** — and that gate
+was **discharged on Hetzner (2026-06-08, plan D-019)**: the Tier-3 p2p-perf suite on two
+separate Hetzner cpx31 VMs over the public DHT got `peer_connected` on both peers,
+cross-region append→visible p95 = 950.5 ms, and a real NAT holepunch
+(`punches=1 relaySuccess=0`) — positively confirming the single-host `conns=0` wall is a
+topology artifact (no second physical box needed; the cloud-deployment layer provides the
+separate machines on-demand). The finding, the three clean-machine traps the harness flushed
+out (slirp-subnet, embedded-PG boot race, and the sidecar port-grep race vs code-server's
+listener), and the Hetzner discharge are in the agent-insight
 [VM federation harness](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands

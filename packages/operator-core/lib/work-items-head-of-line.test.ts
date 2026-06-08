@@ -19,7 +19,6 @@ function wi(p: Partial<WorkItem> & { id: string }): WorkItem {
   return {
     family: 'issue',
     harness: null,
-    id: p.id,
     title: p.id,
     summary: '',
     state: 'open',

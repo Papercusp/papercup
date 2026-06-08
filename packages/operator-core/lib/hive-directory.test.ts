@@ -239,7 +239,7 @@ describe('HiveDirectory — PG cache seam + TTL GC', () => {
 
   it('persists the discovered set on accept (saveCache called with the full set)', async () => {
     const kp = keypair();
-    const saveCache = vi.fn(async () => {});
+    const saveCache = vi.fn(async (_hives: DiscoveredHive[]) => {});
     const dir = new HiveDirectory(makeDeps({ saveCache }));
     await dir.ingestAnnounce(await announce(kp));
     expect(saveCache).toHaveBeenCalledTimes(1);

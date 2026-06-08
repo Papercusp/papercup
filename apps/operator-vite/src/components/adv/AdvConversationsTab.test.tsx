@@ -181,7 +181,8 @@ describe('AdvConversationsTab — Feed view', () => {
   it('shows the empty state when no traffic matches', () => {
     mockResult = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
     render(<AdvConversationsTab />);
-    expect(screen.getByText(/No coordination traffic matches/i)).toBeTruthy();
+    expect(screen.getByText(/No matching traffic/i)).toBeTruthy();
+    expect(screen.getByText(/broaden the search/i)).toBeTruthy();
   });
 
   it('shows a "Load older" control when the server reports more rows', () => {

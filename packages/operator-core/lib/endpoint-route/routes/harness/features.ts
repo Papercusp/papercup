@@ -96,6 +96,43 @@ export async function writeProvenance(
   return { written, errors };
 }
 
+/** The org-PG tagged-template handle type (`getOrgPg().sql`). */
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * EI-124: write a feature's plan provenance (source_plan_slug / item_ids / wave)
+ * to `harness_features_consolidated`, keyed by the PRIMARY KEY
+ * `(harness_slug, feature_id)` — NOT by workspace_id.
+ *
+ * The PK has no workspace_id, so (slug, feature_id) is globally unique and the
+ * slug alone unambiguously scopes the row (workspace_id is functionally derived
+ * from the slug by the `fill_workspace_id_from_projects` trigger). The previous
+ * `WHERE workspace_id = activeWorkspaceId()` filter was therefore redundant AND
+ * a bug: inside the loopback `POST /features/import` the request carries no
+ * workspace, so `activeWorkspaceId()` fell back to the host's global-current
+ * workspace and the UPDATE matched 0 rows — silently dropping provenance and
+ * making promoted features invisible to the wave engine.
+ *
+ * Returns the number of rows updated (0 ⇒ no such consolidated row). Exported so
+ * the integration regression test exercises this exact statement.
+ */
+export async function updateFeatureProvenance(
+  sql: OrgSql,
+  f: ProvenanceFeature,
+  slug: string,
+): Promise<number> {
+  const r = await sql`
+    UPDATE harness_shared.harness_features_consolidated
+       SET source_plan_slug     = ${f.source_plan_slug}
+         , source_plan_item_ids = ${f.source_plan_item_ids}
+         , wave                  = ${f.wave ?? null}
+     WHERE harness_slug = ${slug}
+       AND feature_id   = ${f.id}
+    RETURNING feature_id
+  `;
+  return (r as unknown as unknown[]).length;
+}
+
 // ── GET /:slug/features/:id ─────────────────────────────────────────────
 
 const getFeature = defineTool({
@@ -126,17 +163,18 @@ const getFeature = defineTool({
     let pgVerif: PgVerifRow | null = null;
     try {
       const { sql } = getOrgPg();
-      // P-041: harness_features_consolidated is RLS-scoped but read here via the
-      // admin (RLS-bypass) handle, so scope by the request workspace explicitly —
-      // otherwise a same-slug harness in another workspace collides on (slug, id).
+      // EI-124: key by the PK (harness_slug, feature_id) — globally unique, so a
+      // same-slug harness in another workspace can NOT collide on (slug, id). The
+      // old activeWorkspaceId() filter was redundant and wrong on any path where
+      // the request workspace isn't the harness's (e.g. a loopback call) — it
+      // silently dropped the verification columns.
       const rows = await sql<PgVerifRow[]>`
         SELECT completion_ref,
                verified_done_at_remote_ts,
                verifier_last_error,
                verifier_last_checked_at
           FROM harness_shared.harness_features_consolidated
-         WHERE workspace_id = ${activeWorkspaceId()}
-           AND harness_slug = ${project.slug}
+         WHERE harness_slug = ${project.slug}
            AND feature_id = ${id}
       `;
       pgVerif = rows[0] ?? null;
@@ -404,7 +442,17 @@ const importFeatures = defineTool({
     // dependency cycles BEFORE any write. Refs may point at batch features or
     // existing ones; an unresolvable/ambiguous ref or a cycle (a silent
     // permanent frontier deadlock) fails the WHOLE import loudly.
-    const importWs = activeWorkspaceId();
+    // EI-124: every consolidated read/write below keys by the PRIMARY KEY
+    // (harness_slug, feature_id) — globally unique — NOT by activeWorkspaceId().
+    // workspace_id is functionally determined by the slug (the
+    // fill_workspace_id_from_projects BEFORE-INSERT trigger), so the slug alone
+    // unambiguously scopes the row. activeWorkspaceId() is resolved from the
+    // request and is WRONG inside the loopback POST /features/import call (it
+    // falls back to the host's global-current workspace when the loopback carries
+    // no workspace header), which silently matched 0 rows and zeroed feature
+    // provenance (source_plan_slug/wave) → promoted features invisible to the
+    // wave engine. The admin handle (getOrgPg) bypasses RLS, and the PK can never
+    // collide across workspaces, so dropping the workspace predicate is safe.
     const resolvedBlockedBy = new Map<string, string[]>();
     const featureOrder = new Map<string, number>();
     for (const f of features) {
@@ -417,7 +465,7 @@ const importFeatures = defineTool({
         const rows = await sql<Array<{ feature_id: string; title: string }>>`
           SELECT feature_id, title
             FROM harness_shared.harness_features_consolidated
-           WHERE workspace_id = ${importWs} AND harness_slug = ${project.slug}
+           WHERE harness_slug = ${project.slug}
         `;
         // EI-1 (D-027): existing blocker sets come from the coord_links rel='blocks'
         // edges (the legacy blocked_by column is dropped), keyed blocked → blockers.
@@ -516,23 +564,8 @@ const importFeatures = defineTool({
     if (withProvenance.length > 0) {
       try {
         const { sql } = getOrgPg();
-        // P-041: scope the provenance UPDATE to the request workspace. The admin
-        // handle bypasses RLS, so without this an import could overwrite a
-        // same-slug harness's feature rows in another workspace.
-        const ws = activeWorkspaceId();
-        updater = async (f, slug) => {
-          const r = await sql`
-            UPDATE harness_shared.harness_features_consolidated
-               SET source_plan_slug     = ${f.source_plan_slug}
-                 , source_plan_item_ids = ${f.source_plan_item_ids}
-                 , wave                  = ${f.wave ?? null}
-             WHERE workspace_id = ${ws}
-               AND harness_slug = ${slug}
-               AND feature_id   = ${f.id}
-            RETURNING feature_id
-          `;
-          return (r as unknown as unknown[]).length;
-        };
+        // EI-124: keyed by the PK (harness_slug, feature_id) — see updateFeatureProvenance.
+        updater = (f, slug) => updateFeatureProvenance(sql, f, slug);
       } catch (e) {
         pgConnectError = e instanceof Error ? e.message : String(e);
         console.warn(`[features/import] PG provenance update skipped: ${pgConnectError}`);
@@ -571,8 +604,7 @@ const importFeatures = defineTool({
           const r = await sql`
             UPDATE harness_shared.harness_features_consolidated
                SET feature_order = ${ord}
-             WHERE workspace_id = ${importWs}
-               AND harness_slug = ${project.slug}
+             WHERE harness_slug = ${project.slug}
                AND feature_id   = ${f.id}
             RETURNING feature_id
           `;

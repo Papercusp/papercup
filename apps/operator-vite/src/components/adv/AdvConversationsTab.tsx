@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { ArrowUpRight, MessageCircle, RefreshCw, Radio, Megaphone, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, MessageCircle, RefreshCw, Radio, Megaphone, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -163,6 +163,13 @@ function clock(ts: string): string {
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
+function dateStamp(ts?: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
 function ToCell({ to, broadcast }: { to: string[]; broadcast: boolean }) {
   if (broadcast) {
@@ -232,6 +239,13 @@ function FeedView() {
     () => (wantBroadcast ? rawRows.filter((r) => r.broadcast) : rawRows),
     [rawRows, wantBroadcast],
   );
+  const signalStats = useMemo(() => {
+    const byKind = meta?.byKind ?? {};
+    const broadcastCount = rawRows.filter((r) => r.broadcast).length;
+    const humanCount = rawRows.filter((r) => (r.to ?? []).includes('human')).length;
+    const escalationCount = (byKind.escalation ?? 0) + (byKind.escalation_resolved ?? 0);
+    return { broadcastCount, humanCount, escalationCount };
+  }, [meta, rawRows]);
 
   // Group an ack/resolution/acceptance under its parent (related_msg_id chain),
   // so a reply collapses into its root row. A row whose related_msg_id points at
@@ -304,6 +318,11 @@ function FeedView() {
           <span>Window</span>
           <strong>{roots.length} shown</strong>
         </div>
+        <div className="pc-advfeed__signals" aria-label="Feed signal summary">
+          <span><Megaphone size={11} aria-hidden /> {signalStats.broadcastCount} broadcast</span>
+          <span><UserRound size={11} aria-hidden /> {signalStats.humanCount} human</span>
+          <span><AlertTriangle size={11} aria-hidden /> {signalStats.escalationCount} escalation</span>
+        </div>
         <button
           type="button"
           className="pc-coord__chip pc-advfeed__refresh"
@@ -367,16 +386,28 @@ function FeedView() {
             </button>
           )}
         </div>
+        {filtersActive && (
+          <div className="pc-advfeed__scopebar" aria-label="Active feed filters">
+            <span>Showing</span>
+            {kinds.length > 0 && <strong>{kinds.join(', ')}</strong>}
+            {agent && <strong>agent: {agent}</strong>}
+            {plan && <strong>plan: {plan}</strong>}
+            {q.trim() && <strong>search: {q.trim()}</strong>}
+          </div>
+        )}
       </div>
 
       {/* The stream */}
       <div className="pc-advfeed__stream">
         {head.loading && allRows.length === 0 ? (
-          <p className="pc-coord__empty">Loading the coordination feed…</p>
+          <p className="pc-coord__empty pc-advconv__empty">Loading the coordination feed…</p>
         ) : head.error ? (
-          <p className="pc-coord__empty">Feed unavailable: {head.error.message}</p>
+          <p className="pc-coord__empty pc-advconv__empty">Feed unavailable: {head.error.message}</p>
         ) : roots.length === 0 ? (
-          <p className="pc-coord__empty">No coordination traffic matches these filters.</p>
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
+            <strong>No matching traffic</strong>
+            <span>Clear a filter or broaden the search to return the fleet stream.</span>
+          </div>
         ) : (
           grouped.map((g) => (
             <div key={g.day} className="pc-advfeed__daygroup">
@@ -438,7 +469,8 @@ function FeedItem({
         <span className="pc-advfeed__time" title={row.ts}>
           {clock(row.ts)}
         </span>
-        <span className="pc-advfeed__badge" style={{ borderColor: color, color }}>
+        <span className="pc-advfeed__badge" style={{ borderColor: color, color, ['--feed-kind-color' as string]: color }}>
+          <span aria-hidden />
           {badge}
         </span>
         <span className="pc-advfeed__route">
@@ -665,19 +697,25 @@ function ThreadsView() {
           </div>
         )}
         {loading ? (
-          <p className="pc-coord__empty">Loading…</p>
+          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
         ) : visible.length === 0 ? (
-          <p className="pc-coord__empty">No conversations.</p>
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
+            <strong>No threads match</strong>
+            <span>Change the state, kind, or topic filter to widen the thread rail.</span>
+          </div>
         ) : (
           visible.map((c) => (
             <button key={c.id} type="button" className={`pc-coord__row${sel === c.id ? ' is-active' : ''}`} onClick={() => void setSel(c.id)}>
-              <span className={`pc-coord__kind pc-coord__kind--${c.kind}`}>{c.kind}</span>
+              <span className="pc-advconv__threadtop">
+                <span className={`pc-coord__kind pc-coord__kind--${c.kind}`}>{c.kind}</span>
+                <span className={`pc-advconv__statepill pc-advconv__statepill--${c.state}`}>{c.state}</span>
+              </span>
               <span className="pc-coord__row-title">{c.title ?? c.id}</span>
               <span className="pc-coord__row-meta">
-                {c.state}
-                {c.harness_slug ? ` · ${c.harness_slug}` : ''}
+                {c.harness_slug ? c.harness_slug : 'workspace'}
                 {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
               </span>
+              <span className="pc-advconv__rowdate">{dateStamp(c.created_ts)}</span>
               {(c.topics ?? []).length > 0 && (
                 <span className="pc-advconv__rowtags">
                   {(c.topics ?? []).map((t) => (
@@ -691,18 +729,26 @@ function ThreadsView() {
       </aside>
       <section className="pc-coord__detail">
         {!detail ? (
-          <p className="pc-coord__empty">
-            <MessageCircle size={14} aria-hidden /> Select a conversation.
-          </p>
+          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--detail">
+            <MessageCircle size={22} aria-hidden />
+            <strong>Select a thread</strong>
+            <span>Open a question or discussion to review context, replies, accepted answers, and linked work-items.</span>
+          </div>
         ) : (
           <article className="pc-coord__card">
-            <header>
-              <h2>{detail.title ?? detail.id}</h2>
-              <p className="pc-coord__row-meta">
-                {detail.kind} · {detail.state} · {detail.subscriber_count} follower(s)
-                {detail.scope === 'harness' && detail.harness_slug ? ` · ${detail.harness_slug}` : ''}
-                {detail.asker_id ? ` · asked by ${detail.asker_id}` : ''}
-              </p>
+            <header className="pc-advconv__detailhead">
+              <div>
+                <p className="pc-advconv__detailkicker">
+                  <span className={`pc-coord__kind pc-coord__kind--${detail.kind}`}>{detail.kind}</span>
+                  <span className={`pc-advconv__statepill pc-advconv__statepill--${detail.state}`}>{detail.state}</span>
+                </p>
+                <h2>{detail.title ?? detail.id}</h2>
+              </div>
+              <div className="pc-advconv__detailstats" aria-label="Conversation metadata">
+                <span><strong>{detail.subscriber_count}</strong> follower{detail.subscriber_count === 1 ? '' : 's'}</span>
+                <span>{detail.scope === 'harness' && detail.harness_slug ? detail.harness_slug : 'workspace'}</span>
+                {detail.asker_id && <span>asked by {detail.asker_id}</span>}
+              </div>
             </header>
             {detail.topics.length > 0 && (
               <p className="pc-coord__tags">
@@ -733,11 +779,19 @@ function ThreadsView() {
             <ol className="pc-coord__thread">
               {detail.posts.map((p) => (
                 <li key={p.id}>
-                  <span className="pc-coord__row-meta">{p.author_id ?? 'unknown'}</span>
+                  <span className="pc-advconv__postmeta">
+                    <strong>{p.author_id ?? 'unknown'}</strong>
+                    {p.created_ts && <span>{dateStamp(p.created_ts)}</span>}
+                  </span>
                   <p>{p.body}</p>
                 </li>
               ))}
-              {detail.posts.length === 0 && <li className="pc-coord__empty">No replies yet.</li>}
+              {detail.posts.length === 0 && (
+                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
+                  <strong>No replies yet</strong>
+                  <span>This thread is waiting for its first response.</span>
+                </li>
+              )}
             </ol>
             {detail.state === 'open' && (
               <div className="pc-advconv__reply">
@@ -862,6 +916,44 @@ function AdvConvStyles() {
       .pc-advconv__refresh { margin-left: auto; display: inline-flex; align-items: center; }
       .pc-advconv__accepted { border-left: 2px solid rgba(34, 197, 94, 0.6); padding-left: 8px; }
       .pc-advconv__linked { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: #bae6fd; margin: 4px 0; }
+      .pc-advconv__empty {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--fg-mute, #8aa3bc);
+      }
+      .pc-advconv__empty--card,
+      .pc-advconv__empty--detail,
+      .pc-advconv__empty--rail,
+      .pc-advconv__empty--thread {
+        align-items: flex-start;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 160px;
+        padding: 22px;
+        border-radius: 16px;
+        border: 1px dashed rgba(125, 211, 252, 0.2);
+        background:
+          radial-gradient(circle at 10% 0%, rgba(56, 189, 248, 0.1), transparent 30%),
+          rgba(255, 255, 255, 0.025);
+      }
+      .pc-advconv__empty--detail {
+        min-height: 100%;
+        align-items: center;
+        text-align: center;
+      }
+      .pc-advconv__empty--rail,
+      .pc-advconv__empty--thread {
+        min-height: 112px;
+        padding: 16px;
+        border-radius: 14px;
+      }
+      .pc-advconv__empty--thread {
+        min-height: 92px;
+        margin-top: 4px;
+      }
+      .pc-advconv__empty strong { color: #f5fbff; font-size: 14px; }
+      .pc-advconv__empty span { max-width: 420px; line-height: 1.45; }
       .pc-advconv__reply { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
       .pc-advconv__reply textarea {
         width: 100%; resize: vertical; min-height: 38px;
@@ -964,31 +1056,146 @@ function AdvConvStyles() {
         border-color: rgba(56, 189, 248, 0.36);
         box-shadow: inset 3px 0 0 var(--advconv-accent);
       }
+      .pc-advconv__threadtop {
+        grid-row: 1 / span 2;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+        min-width: 72px;
+      }
+      .pc-advconv__statepill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 18px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        background: rgba(148, 163, 184, 0.08);
+        color: #cbd5e1;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .pc-advconv__statepill--open {
+        border-color: rgba(34, 197, 94, 0.3);
+        background: rgba(34, 197, 94, 0.11);
+        color: #bbf7d0;
+      }
+      .pc-advconv__statepill--resolved {
+        border-color: rgba(56, 189, 248, 0.32);
+        background: rgba(56, 189, 248, 0.11);
+        color: #bae6fd;
+      }
+      .pc-advconv__statepill--closed {
+        border-color: rgba(148, 163, 184, 0.18);
+        background: rgba(15, 23, 42, 0.36);
+        color: #94a3b8;
+      }
+      .pc-advconv__rowdate {
+        position: absolute;
+        top: 10px;
+        right: 11px;
+        max-width: 118px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--fg-mute, #6f87a0);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-advconv__threads .pc-coord__row-title {
+        padding-right: 116px;
+        font-weight: 750;
+        letter-spacing: -0.01em;
+      }
       .pc-advconv__threads .pc-coord__card {
         min-height: 100%;
         padding: 6px;
       }
-      .pc-advconv__threads .pc-coord__card header {
-        padding: 4px 0 10px;
+      .pc-advconv__detailhead {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 4px 0 12px;
         border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+      }
+      .pc-advconv__detailkicker {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0 0 8px;
       }
       .pc-advconv__threads .pc-coord__card header h2 {
         font-size: clamp(20px, 3vw, 30px);
         line-height: 1;
         letter-spacing: -0.04em;
       }
+      .pc-advconv__detailstats {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 6px;
+        max-width: 390px;
+      }
+      .pc-advconv__detailstats span {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(125, 211, 252, 0.12);
+        background: rgba(3, 7, 18, 0.28);
+        color: var(--fg-mute, #9fb6cc);
+        font-size: 11px;
+      }
+      .pc-advconv__detailstats strong {
+        color: #f5fbff;
+        font-variant-numeric: tabular-nums;
+      }
       .pc-advconv__threads .pc-coord__thread li {
-        border-left-color: rgba(56, 189, 248, 0.26);
-        background: rgba(255, 255, 255, 0.025);
-        border-radius: 0 10px 10px 0;
-        padding: 9px 10px;
+        position: relative;
+        border-left-color: rgba(56, 189, 248, 0.3);
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.018));
+        border-radius: 0 12px 12px 0;
+        padding: 10px 12px;
+      }
+      .pc-advconv__threads .pc-coord__thread li::before {
+        content: "";
+        position: absolute;
+        left: -5px;
+        top: 16px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #38bdf8;
+        box-shadow: 0 0 14px rgba(56, 189, 248, 0.5);
+      }
+      .pc-advconv__postmeta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 11px;
+      }
+      .pc-advconv__postmeta strong {
+        color: #e0f2fe;
+      }
+      .pc-advconv__postmeta span {
+        font-variant-numeric: tabular-nums;
+        color: #6f87a0;
       }
 
       /* Feed */
       .pc-advfeed { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
       .pc-advfeed__clarity {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto auto;
+        grid-template-columns: minmax(0, 1fr) auto auto minmax(220px, auto) auto;
         align-items: stretch;
         gap: 8px;
         flex: 0 0 auto;
@@ -1032,6 +1239,30 @@ function AdvConvStyles() {
         font-size: 13px;
         font-variant-numeric: tabular-nums;
       }
+      .pc-advfeed__signals {
+        display: grid;
+        grid-template-columns: repeat(3, auto);
+        align-items: center;
+        gap: 5px;
+        padding: 6px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.025);
+      }
+      .pc-advfeed__signals span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 26px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        color: #b9d7ed;
+        background: rgba(3, 7, 18, 0.34);
+        border: 1px solid rgba(125, 211, 252, 0.1);
+        font-size: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
       .pc-advfeed__filters {
         flex: 0 0 auto;
         display: flex;
@@ -1056,6 +1287,35 @@ function AdvConvStyles() {
       }
       .pc-advfeed__input--wide { flex: 1 1 200px; }
       .pc-advfeed__input:focus { outline: 2px solid rgba(56,189,248,0.34); outline-offset: 1px; }
+      .pc-advfeed__scopebar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding-top: 2px;
+        font-size: 11px;
+        color: var(--fg-mute, #8aa3bc);
+      }
+      .pc-advfeed__scopebar > span {
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #6f87a0;
+      }
+      .pc-advfeed__scopebar strong {
+        display: inline-flex;
+        align-items: center;
+        max-width: 280px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(236, 72, 153, 0.22);
+        background: rgba(236, 72, 153, 0.08);
+        color: #fbcfe8;
+        font-weight: 700;
+      }
 
       .pc-advfeed__stream {
         flex: 1 1 auto;
@@ -1104,9 +1364,19 @@ function AdvConvStyles() {
       }
       .pc-advfeed__time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--fg-mute, #7890a8); }
       .pc-advfeed__badge {
-        font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 5px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
         border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent);
         white-space: nowrap; text-transform: lowercase;
+      }
+      .pc-advfeed__badge > span {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--feed-kind-color, currentColor);
+        box-shadow: 0 0 12px var(--feed-kind-color, currentColor);
       }
       .pc-advfeed__badge--sm { font-size: 9px; padding: 0 5px; }
       .pc-advfeed__route { display: inline-flex; align-items: center; gap: 5px; min-width: 0; font-size: 11px; }
@@ -1162,8 +1432,12 @@ function AdvConvStyles() {
         .pc-advconv__hero { flex-direction: column; }
         .pc-advconv__viewtabs { align-self: stretch; }
         .pc-advconv__viewtab { justify-content: center; flex: 1 1 0; }
+        .pc-advconv__detailhead { flex-direction: column; }
+        .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advfeed__clarity { grid-template-columns: 1fr 1fr; }
         .pc-advfeed__clarity-main { grid-column: 1 / -1; }
+        .pc-advfeed__signals { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .pc-advfeed__signals span { justify-content: center; }
         .pc-advfeed__refresh { justify-content: center; }
         .pc-advconv__threads { grid-template-columns: 1fr; }
         .pc-advconv__threads .pc-coord__rail { max-height: 34vh; }
@@ -1183,6 +1457,9 @@ function AdvConvStyles() {
         .pc-advconv__hero { padding: 13px; border-radius: 15px; }
         .pc-advfeed__clarity { grid-template-columns: 1fr; }
         .pc-advfeed__stat { min-width: 0; }
+        .pc-advfeed__signals { grid-template-columns: 1fr; }
+        .pc-advconv__rowdate { position: static; grid-column: 2; max-width: none; }
+        .pc-advconv__threads .pc-coord__row-title { padding-right: 0; }
         .pc-advfeed__inputs { flex-direction: column; }
         .pc-advfeed__input { width: 100%; }
         .pc-advfeed__row {

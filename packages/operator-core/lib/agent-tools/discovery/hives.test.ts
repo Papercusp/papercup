@@ -45,11 +45,11 @@ const fakeDeps = (): HiveDirectoryDeps => ({
 });
 
 const call = async (args: unknown) => {
-  const res = await hivesTool.handler(
+  const res = (await hivesTool.handler(
     (hivesTool.args as { parse: (x: unknown) => unknown }).parse(args) as never,
     {} as never,
-  );
-  return JSON.parse((res.content[0] as { text: string }).text);
+  )) as { content: Array<{ text: string }> };
+  return JSON.parse(res.content[0].text);
 };
 
 afterEach(() => __resetHiveDirectorySingleton());

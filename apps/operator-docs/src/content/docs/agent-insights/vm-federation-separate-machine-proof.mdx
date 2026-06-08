@@ -108,9 +108,34 @@ PG as `origin='remote'`, and the reverse) is **not achievable on one physical
 host in any topology** — VM↔VM, host↔VM, testnet or public DHT. It needs
 **truly separate machines** — two physical hosts, or VMs on two different
 hosts. The harness is correct and complete up to that boundary; the boundary is a
-hyperdht holepunch property, not a harness defect. When a second machine is
-available, `bin/vm-federation.sh` is ready: the same asserts run unchanged with
-one side remote.
+hyperdht holepunch property, not a harness defect.
+
+<Aside type="tip" title="Boundary DISCHARGED on Hetzner (2026-06-08) — separate machines DO punch + merge">
+You don't need to source a second physical box: the cloud-deployment layer
+already provisions genuinely-separate cloud VMs, and that closes this gate. Ran
+the **Tier-3 p2p-perf suite on two separate Hetzner cpx31 VMs** (`@ash`, distinct
+public IPs, the 2nd firewalled NAT-like), both joining the **public DHT**:
+
+- **`[swarm] peer_connected` fired on BOTH peers** across the two machines — the
+  exact event two same-host VMs never produce (`conns=0` above).
+- **cross-region-replication append→visible p95 = 950.5 ms** — the bidirectional
+  merge that no single-host topology could reach (matches the prior Latitude
+  Tier-3 ~974 ms).
+- **dht-discovery p95 ≈ 3.0 s**; **nat-holepunch: 1/1 readers connected,
+  `punches=1 relaySuccess=0`** — a real DHT-coordinated holepunch across the
+  firewalled frame, not a relay fallback.
+
+So the wall above is *positively confirmed* a same-host artifact, and the
+cross-machine path is reproducible on-demand:
+`HETZNER_SSH_KEY_ID=… HETZNER_SSH_IDENTITY_FILE=… npx vitest run --config
+vitest.integration.config.ts -t "REAL Hetzner frames"
+.../p2p-perf-tier3.integration.test.ts` (cred-gated, destroy-always, ~cents/run).
+See `linux-test-vm-and-federation` D-019 + `p2p-performance-suite` Tier-3.
+</Aside>
+
+When you want the packaged-`.deb`-specific cross-machine proof (vs the bench
+runtime), `bin/vm-federation.sh` is ready: point its `vm` driver at a Hetzner
+frame that has the `.deb` installed and the same asserts run unchanged.
 
 ## Networking: dual-NIC, no DHCP/NAT (D-016)
 
