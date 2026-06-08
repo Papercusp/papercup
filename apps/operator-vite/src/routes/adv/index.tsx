@@ -55,7 +55,6 @@ function renderAdvTab(tab: AdvTabId) {
     case 'brainstorm':
     case 'prs':
     case 'insights':
-    case 'config':
     case 'settings':
     case 'docs':
     case 'git':

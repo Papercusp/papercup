@@ -29,6 +29,7 @@ vi.mock('../git-sync/pipeline-events', () => ({
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
+import { shouldAutoServe, type AutoServePlan } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
 
 /**
@@ -56,8 +57,28 @@ const ctx: SystemActionCtx = {
 };
 
 function planJson(noop: boolean): string {
-  // shape: { mode, config, plan: { ..., noop } } — release-trigger reads plan.noop
-  return JSON.stringify({ mode: 'plan', config: { releaseRef: 'ready' }, plan: { targetSha: 'deadbeef', noop } }, null, 2);
+  // shape: { mode, config, plan } — release-trigger reads the plan through
+  // shouldAutoServe (forward-only). noop:false here models a REAL forward
+  // fast-forward (release behind green main with new commits); noop:true models
+  // the checkout already at green main.
+  const plan: AutoServePlan = noop
+    ? { targetSha: 'deadbeef', currentReleaseSha: 'deadbeef', isFastForward: true, commits: [], noop: true }
+    : { targetSha: 'deadbeef', currentReleaseSha: 'cafef00d', isFastForward: true, commits: ['c1', 'c2'], noop: false };
+  return JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2);
+}
+
+/** A plan in the redeploy-storm shape: the detached release checkout sits AHEAD
+ *  of green main — SHAs differ (noop:false) but there are ZERO new commits and
+ *  it is not a fast-forward. The forward-only gate must NOT deploy this. */
+function aheadOfMainPlanJson(): string {
+  const plan: AutoServePlan = {
+    targetSha: 'deadbeef',
+    currentReleaseSha: 'ahead123', // a git-sync auto-commit ahead of main
+    isFastForward: false,
+    commits: [],
+    noop: false,
+  };
+  return JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2);
 }
 
 beforeEach(() => {
@@ -83,6 +104,20 @@ describe('release-trigger — noop gating + detached auto-deploy', () => {
     await action(ctx);
 
     // the plan was gathered (one spawn for deploy-cli) but --execute never ran
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
+  });
+
+  it('does NOT deploy when the release checkout is AHEAD of main (0 new commits) — the redeploy-storm regression', async () => {
+    // The 2026-06-07 storm: noop:false (SHAs differ) but commits:[] + not-FF, so
+    // deploying would revert the checkout backward and git-sync re-advances it →
+    // an infinite redeploy loop that hard-restarts :3070. Forward-only gate skips it.
+    spawnMock.mockImplementation(() => fakeSpawn(aheadOfMainPlanJson(), 0));
+    const action = getSystemAction('release-trigger')!;
+
+    await action(ctx);
+
+    // plan gathered (1 spawn) but --execute / systemd-run NEVER ran (no 2nd spawn)
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(appendPipelineEvent).not.toHaveBeenCalled();
   });
@@ -142,5 +177,43 @@ describe('release-trigger — noop gating + detached auto-deploy', () => {
     expect(appendPipelineEvent).not.toHaveBeenCalled();
     warn.mockRestore();
     log.mockRestore();
+  });
+});
+
+describe('shouldAutoServe — forward-only auto-serve policy', () => {
+  const base: AutoServePlan = {
+    targetSha: 't',
+    currentReleaseSha: 'r',
+    isFastForward: true,
+    commits: ['c1'],
+    noop: false,
+  };
+
+  it('deploys a genuine forward fast-forward bringing ≥1 new commit', () => {
+    expect(shouldAutoServe({ ...base, isFastForward: true, commits: ['c1', 'c2'] })).toBe(true);
+  });
+
+  it('deploys the first deploy (release checkout not set up: currentReleaseSha=null)', () => {
+    expect(shouldAutoServe({ ...base, currentReleaseSha: null, commits: ['c1'] })).toBe(true);
+  });
+
+  it('SKIPS a true noop (release checkout already at green main)', () => {
+    expect(shouldAutoServe({ ...base, noop: true, commits: [] })).toBe(false);
+  });
+
+  it('SKIPS when the checkout is AHEAD of main: SHAs differ, 0 commits, not a FF (the storm)', () => {
+    expect(shouldAutoServe({ ...base, noop: false, isFastForward: false, commits: [] })).toBe(false);
+  });
+
+  it('SKIPS a non-fast-forward even with new commits (diverged → needs review, not auto-serve)', () => {
+    expect(shouldAutoServe({ ...base, isFastForward: false, commits: ['c1'] })).toBe(false);
+  });
+
+  it('SKIPS a fast-forward that somehow carries 0 commits (nothing to apply)', () => {
+    expect(shouldAutoServe({ ...base, isFastForward: true, commits: [] })).toBe(false);
+  });
+
+  it('SKIPS a malformed plan missing currentReleaseSha (conservative)', () => {
+    expect(shouldAutoServe({ targetSha: 't', isFastForward: true, commits: ['c1'], noop: false })).toBe(false);
   });
 });

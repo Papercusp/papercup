@@ -8,6 +8,7 @@ import { useFlag } from '@/lib/flag-hooks';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import SavedPromptsSection from './SavedPromptsSection';
+import HarnessPluginsSection from './HarnessPluginsSection';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
@@ -1170,6 +1171,11 @@ export default function HarnessSettingsPanel({
       )}
 
       <SavedPromptsSection scope={{ kind: 'harness', slug }} />
+
+      {/* Plugins — relocated from the retired Config tab (config-tab-cleanup-
+          2026-06-08). Per-harness plugin enable/disable/configure/invoke; saves
+          independently of the config.json Save bar above. */}
+      <HarnessPluginsSection slug={slug} />
     </div>
   );
 }

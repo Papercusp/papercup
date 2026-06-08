@@ -58,7 +58,7 @@ describe('ADV_TABS', () => {
     expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       'overview', 'brainstorm', 'plans', 'harnesses', 'frames', 'git', 'testing', 'docs', 'insights',
-      'conversations', 'config', 'settings',
+      'conversations', 'settings',
     ]);
   });
 });
@@ -169,7 +169,8 @@ describe('harness route panel → tab mapping contract', () => {
     brainstorm: 'brainstorm',
     prs:        'prs',
     insights:   'insights',
-    config:     'config',
+    // Config tab retired (config-tab-cleanup-2026-06-08) → legacy panel lands on Settings.
+    config:     'settings',
     settings:   'settings',
     docs:       'docs',
     git:        'git',
@@ -197,7 +198,8 @@ describe('harness route panel → tab mapping contract', () => {
   it('named panels map to their own tabs', () => {
     expect(EXPECTED_MAPPING.brainstorm).toBe('brainstorm');
     expect(EXPECTED_MAPPING.insights).toBe('insights');
-    expect(EXPECTED_MAPPING.config).toBe('config');
+    // Config tab retired → its legacy panel now lands on Settings.
+    expect(EXPECTED_MAPPING.config).toBe('settings');
     expect(EXPECTED_MAPPING.docs).toBe('docs');
   });
 });

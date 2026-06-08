@@ -1,27 +1,34 @@
 'use client';
 
-// Config tab cluster, extracted verbatim from HarnessDashboard so /adv can
-// render it standalone (see AdvConfigTab) without mounting the monolith —
-// the same shared-file pattern as BrainstormFull / PrsTab / etc. Behavior is
-// unchanged; only the home of this code moved. Shared plugin helpers come
-// from ./plugin-utils.
+// Per-harness plugin management — relocated from the retired Config tab's
+// ConfigPanel (config-tab-cleanup-2026-06-08).
+//
+// The Config tab's "Harness" pane (legacy 9-tab SpecEditor + the manifest
+// `configFiles` bridge) was the pre-blueprint paradigm of editing a harness by
+// hand-editing its dotfiles (AGENTS.md / config.json / .mcp.json / .claude/* /
+// knowledge.md / .env). Blueprints replaced that: the blueprint is the
+// declarative harness source (roles/prompts/spine/knobs), validated and
+// PG-projected. So the file-editor was removed wholesale; the proper "configure
+// the harness" replacement is a blueprint editor (follow-up).
+//
+// Plugin enable/disable/configure/invoke is blueprint-orthogonal and genuinely
+// per-install, so it survives — moved here and mounted as a section inside the
+// Settings tab. The plugin UX (a rail of enabled plugins + the selected
+// plugin's card) is preserved verbatim, minus the dropped "Harness" file tab.
 
-import { useState, useEffect, useMemo } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import MonacoEditor from '@monaco-editor/react';
-import { SlidersHorizontal, Check, Save } from 'lucide-react';
 import { makeAjvResolver } from '@/lib/forms';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Tooltip } from './Tooltip';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import { useConfirmDialog } from './useConfirmDialog';
-import SpecEditor from './SpecEditor';
-import ManifestSpecEditor from './ManifestSpecEditor';
 import {
   PluginIcon,
   pluginSlugFromPath,
@@ -30,56 +37,13 @@ import {
 } from './plugin-utils';
 
 /**
- * Reads the harness's manifest. If `configFiles` is declared, mounts the
- * template-driven `<ManifestSpecEditor>`. Otherwise falls back to the
- * legacy hardcoded-9-tabs `<SpecEditor>`. The fetch is fire-and-forget;
- * during the brief load window we render the legacy editor (which works
- * for any harness) so users never see a blank panel.
+ * Plugin tab button. Hoisted to module scope (NOT defined inline) so its
+ * component identity is stable across renders — an inline component is a brand
+ * new type every render, which remounts the whole rail and replays the
+ * `useAutoAnimate` enter animation on every poll/state tick (the "subtab keeps
+ * blinking" bug). `pane`/`setPane` are passed as props, not closed over.
  */
-function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
-  slug: string;
-  projectPath: string;
-  alive: boolean;
-  onClose: () => void;
-}) {
-  const [configFiles, setConfigFiles] = useState<Array<{ path: string; label?: string; language?: 'markdown' | 'json' | 'yaml' | 'text'; description?: string; sensitivity?: 'normal' | 'warn' | 'secret' }> | null | 'pending'>('pending');
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/harness/${encodeURIComponent(slug)}/manifest`, { cache: 'no-store' })
-      .then((r) => r.ok ? r.json() : Promise.resolve({ configFiles: null }))
-      .then((d) => { if (!cancelled) setConfigFiles(Array.isArray(d?.configFiles) && d.configFiles.length > 0 ? d.configFiles : null); })
-      .catch(() => { if (!cancelled) setConfigFiles(null); });
-    return () => { cancelled = true; };
-  }, [slug]);
-  if (configFiles === 'pending') {
-    // Show a skeleton instead of SpecEditor. Mounting SpecEditor here
-    // and then swapping to ManifestSpecEditor when the manifest fetch
-    // resolves causes a visible swap of editor tabs (Spec/Agents/...
-    // → custom config-files list) plus a Monaco editor remount. The
-    // fetch is a single GET — ~100-200ms — so a brief placeholder is
-    // the right UX, not a wrong editor.
-    return (
-      <div style={{ flex: 1, padding: '2rem', color: 'var(--fg-mute)' }} aria-busy="true">
-        loading…
-      </div>
-    );
-  }
-  if (configFiles && configFiles.length > 0) {
-    return <ManifestSpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} configFiles={configFiles} />;
-  }
-  return <SpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} />;
-}
-
-/**
- * Config-panel tab button. Hoisted to module scope (NOT defined inline inside
- * ConfigPanel) so its component identity is stable across renders. An inline
- * component is a brand-new type every render, so React remounts the entire tab
- * rail on each ConfigPanel re-render; the rail's `useAutoAnimate` then replays
- * its enter animation every poll/state tick — which is the "Harness subtab
- * keeps blinking" bug. `pane`/`setPane` are passed as props instead of closed
- * over.
- */
-function ConfigTabBtn({
+function PluginTabBtn({
   id,
   label,
   icon,
@@ -140,41 +104,74 @@ function ConfigTabBtn({
   );
 }
 
-export function ConfigPanel({
-  harnessSlug, projectPath, alive, onClose,
-  installedPlugins, enabledSlugs, onPluginsChange,
-  activePane, onPaneChange, pluginsMissing,
-}: {
-  harnessSlug: string;
-  projectPath: string;
-  alive: boolean;
-  onClose: () => void;
-  installedPlugins: InstalledPluginInfo[];
-  enabledSlugs: string[];
-  pluginCount: number;
-  onPluginsChange: () => void;
-  /** Active pane ('harness' or a plugin name). URL-synced via parent. */
-  activePane: string;
-  onPaneChange: (p: string) => void;
-  /** pluginName → list of required fields absent/empty. */
-  pluginsMissing: Record<string, string[]>;
-}) {
-  // 'harness' = the legacy spec editor; otherwise pane === plugin.name.
-  const HARNESS_PANE = 'harness' as const;
-  const pane = activePane;
-  const setPane = onPaneChange;
-  // Smooth FLIP when a plugin is enabled/disabled and a tab appears/leaves.
+export default function HarnessPluginsSection({ slug }: { slug: string }) {
+  const ws = useWorkspaceId();
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledPluginInfo[] | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [pane, setPane] = useQueryState('pluginPane', parseAsString.withDefault(''));
   const [tabRailRef] = useAutoAnimate<HTMLDivElement>();
 
+  // Installed plugins (re-fetched when a plugin is enabled/disabled below).
+  useEffect(() => {
+    const ac = new AbortController();
+    fetch('/api/plugins/global', { cache: 'no-store', signal: ac.signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => setInstalledPlugins(Array.isArray(d?.plugins) ? d.plugins : []))
+      .catch(() => { /* leave null → empty state */ });
+    return () => ac.abort();
+  }, [refreshKey]);
+
+  // Enabled-plugin slugs for this harness (Zero, live).
+  const { data: pluginEnableRows } = useSyncQuery<{ harnessSlug: string; pluginSlug: string; enabled: boolean }>({
+    queryName: 'pluginEnables.byWorkspace',
+    args: { workspaceId: ws },
+    enabled: !!ws,
+  });
+  const enabledSlugs = useMemo(() => {
+    if (!Array.isArray(pluginEnableRows)) return [];
+    return pluginEnableRows.filter((r) => r.enabled && r.harnessSlug === slug).map((r) => r.pluginSlug);
+  }, [pluginEnableRows, slug]);
+
+  // Missing required config per plugin → the "needs setup" dots on tabs.
+  const { data: pluginConfigRows } = useSyncQuery<{ harnessSlug: string; pluginSlug: string; config: Record<string, unknown> | null }>({
+    queryName: 'pluginConfigs.byHarness',
+    args: { harnessSlug: slug, workspaceId: ws },
+    enabled: !!slug && !!ws,
+  });
+  const pluginsMissing = useMemo<Record<string, string[]>>(() => {
+    const out: Record<string, string[]> = {};
+    if (!installedPlugins || enabledSlugs.length === 0) return out;
+    const cfgByDir = new Map<string, Record<string, unknown>>();
+    if (Array.isArray(pluginConfigRows)) {
+      for (const r of pluginConfigRows) cfgByDir.set(r.pluginSlug, (r.config ?? {}) as Record<string, unknown>);
+    }
+    for (const s of enabledSlugs) {
+      const m = installedPlugins.find(
+        (p) => p.name === s || (p.path ? pluginSlugFromPath(p.path, p.name) : null) === s,
+      );
+      if (!m) continue;
+      const required = (m as { configSchema?: { required?: string[] } }).configSchema?.required ?? [];
+      if (required.length === 0) continue;
+      const dirSlug = m.path ? pluginSlugFromPath(m.path, m.name) : m.name;
+      const cfg = cfgByDir.get(dirSlug) ?? {};
+      const missing = required.filter((f) => {
+        const v = cfg[f];
+        return v === undefined || v === null || (typeof v === 'string' && v.length === 0);
+      });
+      if (missing.length) out[m.name] = missing;
+    }
+    return out;
+  }, [installedPlugins, enabledSlugs, pluginConfigRows]);
+
   const enabledManifests = useMemo(() => {
-    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately
-    // list the same plugin under both its scoped and bare-dir names.
+    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately list the
+    // same plugin under both its scoped and bare-dir names.
     const seen = new Set<string>();
     const out: EnabledPluginManifest[] = [];
-    for (const slug of enabledSlugs) {
-      const m = installedPlugins.find((p) => {
+    for (const slugName of enabledSlugs) {
+      const m = installedPlugins?.find((p) => {
         const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
-        return p.name === slug || dirSlug === slug;
+        return p.name === slugName || dirSlug === slugName;
       });
       if (!m || seen.has(m.name)) continue;
       seen.add(m.name);
@@ -183,65 +180,58 @@ export function ConfigPanel({
     return out;
   }, [installedPlugins, enabledSlugs]);
 
-  // If the active pane points at a plugin that just got disabled, fall
-  // back to the harness pane.
+  // Keep the active pane valid — fall back to the first enabled plugin.
   useEffect(() => {
-    if (pane === HARNESS_PANE) return;
-    if (!enabledManifests.some((p) => p.name === pane)) setPane(HARNESS_PANE);
-  }, [pane, enabledManifests]);
+    if (enabledManifests.length === 0) return;
+    if (!enabledManifests.some((p) => p.name === pane)) void setPane(enabledManifests[0]!.name);
+  }, [pane, enabledManifests, setPane]);
 
-  const activePlugin = enabledManifests.find((p) => p.name === pane);
+  const activePlugin = enabledManifests.find((p) => p.name === pane) ?? enabledManifests[0];
+  const onPluginsChange = () => setRefreshKey((k) => k + 1);
 
   return (
-    <div className="h-config-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div ref={tabRailRef} className="h-config-rail" style={{
-        display: 'flex', alignItems: 'stretch', gap: 2,
-        padding: '0 18px',
-        borderBottom: '1px solid var(--border)',
-        overflowX: 'auto',
-        minHeight: 32,
-      }}>
-        <ConfigTabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} pane={pane} setPane={setPane} />
-        {enabledManifests.map((p) => {
-          const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
-          // Display name: strip @scope/ prefix for compactness.
-          const display = p.name.includes('/') ? p.name.split('/').pop()! : p.name;
-          return (
-            <ConfigTabBtn
-              key={p.name}
-              id={p.name}
-              label={display}
-              icon={<PluginIcon name={tabIcon} size={13} />}
-              missing={pluginsMissing[p.name]}
-              pane={pane}
-              setPane={setPane}
-            />
-          );
-        })}
-      </div>
-      <div className="h-config-body" style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
-        {pane === HARNESS_PANE ? (
-          <ManifestOrLegacySpecEditor
-            slug={harnessSlug}
-            projectPath={projectPath}
-            alive={alive}
-            onClose={onClose}
-          />
-        ) : activePlugin ? (
-          <div className="h-config-plugin-pane" style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--fg)' }}>
-            <PluginPanelCard
-              plugin={activePlugin}
-              harnessSlug={harnessSlug}
-              onChange={onPluginsChange}
-            />
+    <section style={{ marginBottom: 24, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+      <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Plugins</h2>
+      {enabledManifests.length === 0 ? (
+        <p style={{ margin: 0, color: 'var(--fg-mute)', fontSize: 11.5, fontStyle: 'italic' }}>
+          No plugins enabled for this harness. Install and enable plugins, then configure them here.
+        </p>
+      ) : (
+        <div className="h-config-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div ref={tabRailRef} className="h-config-rail" style={{
+            display: 'flex', alignItems: 'stretch', gap: 2,
+            borderBottom: '1px solid var(--border)',
+            overflowX: 'auto',
+            minHeight: 32,
+          }}>
+            {enabledManifests.map((p) => {
+              const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
+              const display = p.name.includes('/') ? p.name.split('/').pop()! : p.name;
+              return (
+                <PluginTabBtn
+                  key={p.name}
+                  id={p.name}
+                  label={display}
+                  icon={<PluginIcon name={tabIcon} size={13} />}
+                  missing={pluginsMissing[p.name]}
+                  pane={activePlugin?.name ?? pane}
+                  setPane={(v) => void setPane(v)}
+                />
+              );
+            })}
           </div>
-        ) : (
-          <div style={{ flex: 1, padding: 32, color: 'var(--fg-mute)' }}>
-            Plugin not found.
+          <div style={{ paddingTop: 16 }}>
+            {activePlugin && (
+              <PluginPanelCard
+                plugin={activePlugin}
+                harnessSlug={slug}
+                onChange={onPluginsChange}
+              />
+            )}
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -464,7 +454,6 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   const resolver = useMemo(() => makeAjvResolver(ajvSchema), [ajvSchema]);
 
   const {
-    register,
     handleSubmit,
     reset: rhfReset,
     setValue,
@@ -477,10 +466,9 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
     mode: 'onSubmit',
   });
 
-  // Eager via Zero — pluginConfigs.byHarness returns all rows for this
-  // harness; filter for the single (harnessSlug, pluginSlug) match.
-  // Avoid pluginConfigs.byKey because it uses .one() — per memory
-  // feedback_zero_one_shape_mismatch that can return undefined even
+  // Eager via Zero — pluginConfigs.byHarness returns all rows for this harness;
+  // filter for the single (harnessSlug, pluginSlug) match. Avoid
+  // pluginConfigs.byKey because it uses .one() which can return undefined even
   // when upstream has rows. byHarness + client-side find is robust.
   const pluginConfigEditorWs = useWorkspaceId();
   const { data: pluginConfigEditorRows } = useSyncQuery<{

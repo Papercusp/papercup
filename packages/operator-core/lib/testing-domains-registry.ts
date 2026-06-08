@@ -229,6 +229,12 @@ defineTestDomain({
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-suite-test.mjs'], label: 'el-suite' },
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/voice-stack-check.mjs'], label: 'voice-stack-check' },
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-connect-test.mjs'], label: 'el-connect (live EL creds)' },
+        // Static drift check (no live deps): el-agent-sync TOOLS list vs the
+        // operator command registry — catches the "client tool not defined" crash class.
+        { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-tools-check.mjs'], label: 'el-tools-check (registry↔TOOLS drift)' },
+        // pui/tui real-audio loopback through a PipeWire null-sink (synthetic audio,
+        // never touches the box's real defaults). See isolated-audio-e2e-null-sink.
+        { kind: 'shell', cmd: 'bash', args: ['apps/tui/scripts/audio-loopback-smoke.sh'], label: 'pui audio loopback (null-sink)' },
       ] },
   ],
 });
@@ -453,6 +459,13 @@ defineTestDomain({
     { id: 'wit', label: 'WIT', globs: ['packages/plugin-wit/**/*.test.ts'] },
     { id: 'grants', label: 'Grants', globs: ['packages/operator-core/lib/plugin-grants*.test.ts'] },
     { id: 'lifecycle', label: 'Lifecycle', globs: ['packages/operator-core/lib/plugin-*.test.ts'] },
+    // Built-in plugin smokes (libs/papercusp/plugins/**). In-process — the
+    // cloudflare-pages smoke runs the full Direct-Upload flow against a mock
+    // of api.cloudflare.com (no real CF account/token). Surfaced as a runner
+    // because the plugins/ dir is not part of an operator Vitest project.
+    { id: 'builtin-smoke', label: 'Built-in plugin smokes', runners: [
+        { kind: 'node', cmd: 'npx', args: ['tsx', 'libs/papercusp/plugins/cloudflare-pages/index.smoke.ts'], label: 'cloudflare-pages publish (mock CF)' },
+      ] },
   ],
 });
 
@@ -615,6 +628,9 @@ defineTestDomain({
       // agent-insights/live-pg-regression-sentinel.
       runners: [
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/verify-trigger-consolidation.mjs'], label: 'emit-change-notify sentinel' },
+        // Full reactivity round-trip e2e: PG trigger → pg_notify → sync-sse LISTEN
+        // → SSE endpoint → EventSource consumer. Drives the live operator.
+        { kind: 'node', cmd: 'npx', args: ['tsx', 'apps/operator/scripts/verify-reactivity-e2e.ts'], label: 'reactivity round-trip e2e (live operator)' },
       ],
     },
     {
@@ -890,6 +906,11 @@ defineTestDomain({
         'libs/testing-shell/src/**/*.test.tsx',
         // The standalone publish worker (Cloudflare).
         'apps/papercusp-publish/src/**/*.test.ts',
+      ],
+      // Live end-to-end smoke against `wrangler dev --local` (register → build
+      // manifest → mint JWT → publish/start → upload → finalize).
+      runners: [
+        { kind: 'node', cmd: 'node', args: ['apps/papercusp-publish/scripts/smoke-test.mjs'], label: 'papercusp-publish e2e (wrangler dev --local)' },
       ] },
     { id: 'ui-libs', label: 'UI libs', globs: [
         'libs/marketplace-public-ui/src/**/*.test.ts',

@@ -1,9 +1,10 @@
 'use client';
 
-// Shared plugin helpers used by both HarnessDashboard (legacy) and the
-// extracted ConfigPanel (rendered standalone in /adv). Lives in its own
-// module so neither side has to import the other — same pattern as the
-// already-standalone panel components (BrainstormFull, PrsTab, …).
+// Shared plugin helpers used by HarnessPluginsSection (the per-harness plugin
+// manager that lives in the Settings tab since the Config tab was retired —
+// config-tab-cleanup-2026-06-08). Lives in its own module so consumers don't
+// have to import a panel — same pattern as the standalone panel components
+// (BrainstormFull, PrsTab, …).
 
 import type { ComponentType } from 'react';
 import {

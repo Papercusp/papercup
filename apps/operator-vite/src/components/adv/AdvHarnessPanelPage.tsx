@@ -8,17 +8,15 @@ import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
 import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
-import AdvConfigTab from '@/app/adv/harnesses/AdvConfigTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
 
-type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'config' | 'settings' | 'docs' | 'git' | 'testing'>;
+type AdvHarnessPanel = Extract<AdvTabId, 'brainstorm' | 'prs' | 'insights' | 'settings' | 'docs' | 'git' | 'testing'>;
 
 export const ADV_HARNESS_PANEL_LABELS: Record<AdvHarnessPanel, string> = {
   brainstorm: 'Brainstorm',
   prs: 'PRs',
   insights: 'Insights',
-  config: 'Config',
   settings: 'Settings',
   docs: 'Docs',
   git: 'Git',
@@ -81,7 +79,6 @@ const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   prs: (slug) => <PrsTab harnessSlug={slug} />,
   settings: (slug) => <HarnessSettingsPanel slug={slug} phase={ADV_PHASE} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,
-  config: (slug) => <AdvConfigTab slug={slug} />,
   docs: (slug) => <AdvDocsTab slug={slug} />,
   testing: (slug) => <HarnessTestsView slug={slug} />,
 };

@@ -292,6 +292,22 @@
                 "apps/operator/scripts/el-connect-test.mjs"
               ],
               "label": "el-connect (live EL creds)"
+            },
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/el-tools-check.mjs"
+              ],
+              "label": "el-tools-check (registry↔TOOLS drift)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "apps/tui/scripts/audio-loopback-smoke.sh"
+              ],
+              "label": "pui audio loopback (null-sink)"
             }
           ]
         }
@@ -641,6 +657,21 @@
           "globs": [
             "packages/operator-core/lib/plugin-*.test.ts"
           ]
+        },
+        {
+          "id": "builtin-smoke",
+          "label": "Built-in plugin smokes",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "libs/papercusp/plugins/cloudflare-pages/index.smoke.ts"
+              ],
+              "label": "cloudflare-pages publish (mock CF)"
+            }
+          ]
         }
       ]
     },
@@ -923,6 +954,15 @@
                 "apps/operator/scripts/verify-trigger-consolidation.mjs"
               ],
               "label": "emit-change-notify sentinel"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "apps/operator/scripts/verify-reactivity-e2e.ts"
+              ],
+              "label": "reactivity round-trip e2e (live operator)"
             }
           ]
         },
@@ -1188,6 +1228,16 @@
             "libs/testing-shell/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.tsx",
             "apps/papercusp-publish/src/**/*.test.ts"
+          ],
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/papercusp-publish/scripts/smoke-test.mjs"
+              ],
+              "label": "papercusp-publish e2e (wrangler dev --local)"
+            }
           ]
         },
         {

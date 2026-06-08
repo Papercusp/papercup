@@ -21,7 +21,9 @@ const PANEL_TO_TAB: Record<string, string> = {
   brainstorm: 'brainstorm',
   prs: 'prs',
   insights: 'insights',
-  config: 'config',
+  // The Config tab was retired (config-tab-cleanup-2026-06-08); its plugin
+  // management moved into Settings, so the legacy `config` panel lands there.
+  config: 'settings',
   settings: 'settings',
   docs: 'docs',
   git: 'git',

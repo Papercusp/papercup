@@ -122,6 +122,48 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
  *  active, which is exactly the dedup we want across trigger ticks. */
 export const AUTO_DEPLOY_UNIT = 'papercup-auto-deploy';
 
+/** The subset of the deploy plan (deploy.ts `DeployPlan`, emitted as JSON by
+ *  `deploy-cli`) that the auto-serve gate reads. */
+export interface AutoServePlan {
+  targetSha?: string;
+  currentReleaseSha?: string | null;
+  isFastForward?: boolean;
+  commits?: string[];
+  noop?: boolean;
+}
+
+/**
+ * Auto-serve policy — may the unattended release-trigger deploy this plan?
+ *
+ * The trigger may ONLY advance the release checkout **forward** to a green
+ * `main` that brings ≥1 NEW commit via a fast-forward (or perform the first
+ * deploy, when the checkout isn't set up yet). It must NEVER act on a
+ * zero-new-commit plan.
+ *
+ * Why this guard exists (root-caused 2026-06-07): the *detached* release
+ * checkout can transiently sit AHEAD of green `main` — a
+ * `chore(git-sync): auto-commit` lands in it during a deploy / green-checkpoint
+ * race — so `currentReleaseSha !== targetSha` (the old `noop` SHA-equality test
+ * is false) while `commits` is empty and `isFastForward` is false. The old gate
+ * (`if (plan.noop) return`) missed exactly this case and redeployed a plan that
+ * applies ZERO commits, which reverts the checkout BACKWARD; the next git-sync
+ * tick re-advances it → an infinite redeploy storm, each iteration
+ * HARD-RESTARTING the `:3070` operator and dropping in-flight MCP/HTTP requests.
+ * Forward-only + non-empty + fast-forward is the structural fix. A
+ * backward / lateral / non-FF move is a deliberate rollback (`rollback.ts`) or a
+ * reviewed forced deploy (`deploy-cli --force`), never auto-serve.
+ */
+export function shouldAutoServe(plan: AutoServePlan): boolean {
+  // First deploy — the release checkout isn't set up yet → establish it.
+  if (plan.currentReleaseSha === null) return true;
+  // Malformed/absent field → conservative: don't deploy.
+  if (typeof plan.currentReleaseSha !== 'string') return false;
+  if (plan.noop === true) return false;
+  // Forward-only: a genuine fast-forward bringing ≥1 NEW commit. A 0-commit or
+  // non-FF plan means the checkout is AT or AHEAD of `main` → never redeploy.
+  return plan.isFastForward === true && Array.isArray(plan.commits) && plan.commits.length > 0;
+}
+
 /**
  * system:release-trigger — AUTO-SERVE (staging-branch-pipeline-2026-06-06 D-002):
  * when green `main` is ahead of what the operator runs, launch the SCRIPTED
@@ -140,22 +182,24 @@ registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
   const root = integrationRoot();
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);
-  let noop = true;
-  let planObj: Record<string, unknown> | null = null;
+  let planObj: AutoServePlan | null = null;
   try {
     const parsed = JSON.parse(plan.stdout.slice(plan.stdout.indexOf('{'), plan.stdout.lastIndexOf('}') + 1)) as {
-      plan?: Record<string, unknown> & { noop?: boolean };
+      plan?: AutoServePlan;
     };
     planObj = parsed?.plan ?? null;
-    noop = parsed?.plan?.noop !== false; // default to noop on parse trouble (safe)
   } catch {
     console.warn('[release-trigger] could not parse deploy plan — skipping this tick');
     return;
   }
-  if (noop) return; // release checkout already at green main
+  // Forward-only auto-serve: only advance to a green `main` that brings ≥1 new
+  // commit via a fast-forward (or the first deploy). Skips the
+  // checkout-at/ahead-of-main case that previously storm-redeployed :3070 — see
+  // `shouldAutoServe`.
+  if (!planObj || !shouldAutoServe(planObj)) return;
 
-  const targetSha = typeof planObj?.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : '?';
-  const commits = Array.isArray(planObj?.commits) ? planObj.commits.length : '?';
+  const targetSha = typeof planObj.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : '?';
+  const commits = Array.isArray(planObj.commits) ? planObj.commits.length : '?';
   console.log(`[release-trigger] green main is ahead — launching detached auto-deploy of ${targetSha} (${commits} commit(s)) as ${AUTO_DEPLOY_UNIT}`);
 
   // PAPERCUSP_ALLOW_DEV_RESTART=1: the restart step is env-gated against ad-hoc
