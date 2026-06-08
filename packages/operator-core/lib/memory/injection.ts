@@ -111,17 +111,33 @@ function reinjectWindowMs(): number {
 }
 
 /**
- * Auto-inject relevance floor (memory-backend-improve-and-hybrid P-001 / D-003).
+ * Auto-inject relevance floor (memory-backend-improve-and-hybrid P-001 / P-031 / D-003).
  * The PUSH path applies an absolute cosine floor so an off-topic turn is NOT
- * injected with nearest-neighbour noise — the bench's hard-negative FP@5 fix,
- * where there is no LLM in the loop to filter the inject. Default ~0.42 from the
- * measured hard-negative (top ~0.385) vs real-hit (~0.51–0.58) separation; the
- * exact value is locked by the bench sweep (P-031). Env-tunable; `<= 0` disables.
+ * injected with nearest-neighbour noise — the hard-negative FP fix, where there
+ * is no LLM in the loop to filter the inject. LOCKED at 0.45 by the P-031 2D
+ * sweep (D-006): the push path FAVORS PRECISION (an irrelevant inject pollutes
+ * the turn; a missed one is recoverable via the pull path), and 0.45 gives the
+ * best precision (~0.95) at the knee of the recall curve (hard-neg FP@5 100%→17%,
+ * R@10 ~82%). Note: FP cannot reach ~0% — the bench's hard-negatives genuinely
+ * overlap real hits in embedding space. Env-tunable; `<= 0` disables.
  */
 function injectMinScore(): number | undefined {
   const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_SCORE);
   if (Number.isFinite(raw)) return raw > 0 ? raw : undefined;
-  return 0.42;
+  return 0.45;
+}
+
+/**
+ * Hybrid-only PUSH lexical-admission bar (P-031 / D-006). The hybrid backend's
+ * default lexical bar (0.30) is recall-favoring for the pull path; the no-LLM
+ * push path TIGHTENS it to 0.40 so generic lexical token-overlap on an off-topic
+ * turn isn't admitted (cuts push FP at a small exact-id cost). Ignored by
+ * non-hybrid backends. Env-tunable.
+ */
+function injectMinLexScore(): number | undefined {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_LEX_SCORE);
+  if (Number.isFinite(raw)) return raw >= 0 ? raw : undefined;
+  return 0.4;
 }
 
 export async function buildMemoryContextBlock(
@@ -157,8 +173,9 @@ export async function buildMemoryContextBlock(
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   try {
     const minScore = injectMinScore();
+    const minLexScore = injectMinLexScore();
     const userPull: Promise<MemoryEntry[]> = input.userId
-      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore })
+      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit, minScore, minLexScore })
       : Promise.resolve([]);
 
     const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
@@ -166,6 +183,7 @@ export async function buildMemoryContextBlock(
           scope: harnessSlugs.map((slug) => `harness:${slug}`),
           limit: PER_HARNESS_LIMIT,
           minScore,
+          minLexScore,
         })
       : Promise.resolve([]);
 

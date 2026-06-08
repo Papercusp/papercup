@@ -22,9 +22,9 @@ Every tool here is callable on **both** transports:
 * **HTTP**: `POST /api/plugins/<...>` (plugin tools) or `POST /api/agent-tools/<...>` (built-ins)
 * **MCP**: through the orchestrator-baked `.mcp.json` URL or the [superuser-mode](./superuser-mode) `?superuser=1` endpoint
 
-## Built-in tools (\~100)
+## Built-in tools (\~340)
 
-Tools registered via `defineTool` from `packages/agent-mcp/src/tools/`. They run with a principal (bearer-resolved) and have direct PG access via `ctx.tx`.
+Tools registered via `defineTool`, primarily from `packages/operator-core/lib/agent-tools/` (read-side tools live in `packages/agent-mcp/src/tools/`). They run with a principal (bearer-resolved) and have direct PG access via `ctx.tx`. This page is a hand-curated subset; for the full live grouping (every group → verbs → capabilities) see the generated **Tool catalog (grouped)** reference page (`reference/tool-catalog`, projected from the `defineTool` registry by `scripts/gen-doc-tool-catalog.ts`).
 
 ### `harness:*` (12)
 
@@ -34,25 +34,25 @@ List, get, status, plan reviews, phase paths, markdown index, escalation, health
 
 The operator surface: scans, audit, dispatch, dedup, voice prefs, conv-voice, credentials status, scanner bootstrap/reset, decisions, preferences, multi-workspace view, budget, pause sentinel, voice/spend summary, etc.
 
-### `messages:*` (6)
+### `messages:*` (4)
 
-Cross-harness messaging: `inbox`, `outbox`, `send`, `feature_inbox`, `feature_send`, `feature_dismiss`.
+Cross-harness messaging: `inbox`, `outbox`, `send`, `dismiss`.
 
 ### `features:*` (5)
 
 `get`, `history`, `search`, `list_related`, `tag_vocabulary`.
 
-### `tasks:*` (5)
+### `tasks:*` (3)
 
-`list`, `get`, `create`, `update`, `close`.
+`list`, `get`, `create`.
 
 ### `roles:*` (4)
 
 `list`, `get`, `firing_on`, `known`.
 
-### `cross_harness:*` (7)
+### `cross_harness:*` (10)
 
-`inbox`, `outbox`, `supervisor_notes`, `recent_activity`, `docs_outline`, `docs_get`, `docs_search` — the docs\_\* variants take an explicit `harnessSlug` (and optional `workspaceId`) for engineers querying a specific harness from outside its context. See [docs retrieval](/internal/docs/agents/docs-retrieval).
+`inbox`, `outbox`, `supervisor_notes`, `recent_activity`, `docs_outline`, `docs_get`, `docs_search`, `plans_list`, `plans_get`, `plans_search` — the docs\_\* / plans\_\* variants take an explicit `harnessSlug` (and optional `workspaceId`) for engineers querying a specific harness from outside its context. See [docs retrieval](/internal/docs/agents/docs-retrieval).
 
 ### `docs:*` (3)
 
@@ -60,22 +60,21 @@ Cross-harness messaging: `inbox`, `outbox`, `send`, `feature_inbox`, `feature_se
 
 ### `projects:*` (4)
 
-`list`, `get`, `spec_history`, `regenerate_spec`.
+`list`, `get`, `spec_revision`, `spec_revisions`.
 
 ### `artifacts:*` (4)
 
 `load`, `save`, `append`, `delete` — PG-canonical text artifacts (`harness_text_artifacts`).
 
-### `plugins:*` (3)
+### `plugins:*` (4)
 
-`runtime_status`, `invoke_action`, `fire_event`.
+`runtime_status`, `invoke_action`, `fire_event`, `tui_panes`.
 
 ### Pairs (2 each)
 
 * `intel:*` — `spawn_tree`, `artifacts` (Intel panel data)
 * `goals:*` — `list`, `get`
 * `snapshots:*` — `list`, `get`
-* `delegates:*` — `list`, `inbox`
 * `autoloop:*` — `status`, `control`
 
 ### Singletons
@@ -87,8 +86,6 @@ Cross-harness messaging: `inbox`, `outbox`, `send`, `feature_inbox`, `feature_se
 | `audit:list`                | Audit log (recent actions)                                                                                                                                                                                  |
 | `actions:recent`            | Recent agent actions                                                                                                                                                                                        |
 | `dev:hello-card`            | Phase E mcp-ui fixture (verifies UI rendering)                                                                                                                                                              |
-| `experts:trigger_for`       | Fire experts whose `alwaysFireOn` matches                                                                                                                                                                   |
-| `hindsight:recall`          | Hindsight memory recall                                                                                                                                                                                     |
 | `hooks:known`               | Static hook-event allowlist                                                                                                                                                                                 |
 | `issues:list`               | Pending issues                                                                                                                                                                                              |
 | `notifications:recent`      | Recent notifications                                                                                                                                                                                        |
@@ -128,18 +125,9 @@ Code-graph queries proxied to a long-lived `gitnexus mcp` subprocess. Tools regi
 | `gitnexus.group_list`     | List logical code groups                                                    |
 | `gitnexus.group_sync`     | Re-sync a group's membership                                                |
 
-### `@papercupai/orchestrator-spawn` (4) — Phase 9 spawn primitive
+### `@papercupai/orchestrator-spawn` — **retired (2026-06-06)**
 
-Lets agents spawn other agents as tool calls. PG-backed (Migration 049) so spawns survive operator restart.
-
-| Tool                       | What                                                          |
-| -------------------------- | ------------------------------------------------------------- |
-| `orchestrator.spawn`       | Launch a child agent of role X (chunk required for `worker`)  |
-| `orchestrator.poll`        | Read a spawn's current state (memory + PG fallback)           |
-| `orchestrator.list_active` | Enumerate running spawns scoped to caller                     |
-| `orchestrator.cancel`      | SIGTERM running child; fallback to PG `cancel_requested` flag |
-
-Allowlist: architect→worker/validator/scoper/reviewer/debugger; operator→any; debugger→validator; scoper→validator/reviewer; reviewer→architect. Caps: depth ≤ 3, ≤ 5 children/parent, ≤ 10 concurrent.
+The Phase-9 "spawn agents as tool calls" plugin was never installed (its `/api/plugins/orchestrator/spawn` path 404'd) and is now retired — moved to `libs/papercusp/_retired/orchestrator-spawn-plugin/` and superseded by `packages/operator-core/lib/fleet/operator-spawn.ts`. Spawn agents via the built-in `fleet:*` tools (`fleet:spawn`, `fleet:supervise`, `fleet:tree`, …) instead.
 
 ### `@papercupai/firecrawl-bridge` (3)
 

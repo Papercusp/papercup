@@ -103,9 +103,13 @@ separate Hetzner cpx31 VMs over the public DHT got `peer_connected` on both peer
 cross-region append→visible p95 = 950.5 ms, and a real NAT holepunch
 (`punches=1 relaySuccess=0`) — positively confirming the single-host `conns=0` wall is a
 topology artifact (no second physical box needed; the cloud-deployment layer provides the
-separate machines on-demand). The finding, the three clean-machine traps the harness flushed
-out (slirp-subnet, embedded-PG boot race, and the sidecar port-grep race vs code-server's
-listener), and the Hetzner discharge are in the agent-insight
+separate machines on-demand). It was further confirmed **cross-region** (ash↔hil, D-020:
+append→visible p95 = 1115.5 ms over real transcontinental WAN) and — via
+`bin/deb-hetzner-federation.sh` — for the **shipped `.deb` itself** (D-021: two Hetzner VMs,
+the `.deb`'s headless sidecar, `peer_connected` + bidirectional `origin=remote` merge over the
+public DHT). The finding, the clean-machine traps the harness flushed out (slirp-subnet,
+embedded-PG boot race, the sidecar port-grep race, embedded-pg-refuses-root, and the bundled
+`pgvector` needing the 24.04 toolchain), and the Hetzner discharge are in the agent-insight
 [VM federation harness](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands

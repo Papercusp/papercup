@@ -49,9 +49,9 @@ Full scheme, reason codes, rotation, and observability live in [Spawn-URL signin
 
 A **fail-closed posture**: when the host sets `deps.defaultDeny`, a tool that declares **no gate at all** — no capabilities, no agent `roles`, no `requireRoles`, no `authorize` hook — is denied as `ungated` (403) unless it is explicitly marked `public: true` (the `[AllowAnonymous]` equivalent).
 
-It is **off by default** (the legacy allow-by-omission posture; no behavior change) and is **not bypassable** by `GateBypass` — an ungated tool is a declaration gap regardless of caller, so the fix is to declare a gate or mark it `public`.
+The *engine* default is off (the legacy allow-by-omission posture), but **the Papercusp host turns it ON** — `PROJECTED_DEPS` in `packages/operator-core/lib/projected-tool-deps.ts` sets `defaultDeny: true` (audited 2026-05-31). It currently denies nothing registered, because every first-party `defineTool` (which *requires* a `capability`) and every bundled plugin tool already declares a gate; it's the fail-closed floor for a future / third-party tool that forgets to. It is **not bypassable** by `GateBypass` — an ungated tool is a declaration gap regardless of caller, so the fix is to declare a gate or mark it `public`.
 
-`defineTool` *requires* a `capability`, so every first-party built-in tool already declares a gate and is never `ungated`. The posture exists to catch plugin / direct `registerProjectedTool` registrations that forgot to gate themselves. Before flipping `deps.defaultDeny` on, run `listUngatedProjectedTools()` (with the full registry loaded) — an empty result means the flip is safe; anything it returns must declare a gate or be marked `public` first.
+`defineTool` *requires* a `capability`, so every first-party built-in tool already declares a gate and is never `ungated`. The posture exists to catch plugin / direct `registerProjectedTool` registrations that forgot to gate themselves. Since `defaultDeny` is already on, re-verify before/after installing a plugin by running `listUngatedProjectedTools()` (with the full registry loaded) — an empty result means nothing is silently denied; anything it returns must declare a gate or be marked `public`.
 
 ## Role allowlist (gate 2)
 
@@ -221,7 +221,7 @@ None of the five flows through `@papercusp/rules`, the event-reaction tables, or
 
 ## The authorization audit trail
 
-Gates 4 and 7, and every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink — every allow, deny, and bypass. The Papercusp host persists them to `harness_shared.tool_authz_log` (`apps/operator/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers "show me every denial / every break-glass bypass / everything this principal was denied".
+Gates 4 and 7, and every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink — every allow, deny, and bypass. The Papercusp host persists them to `harness_shared.tool_authz_log` (`packages/operator-core/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers "show me every denial / every break-glass bypass / everything this principal was denied".
 
 ## Per-tool timeout (gate 9)
 
@@ -264,7 +264,7 @@ For MCP transport, errors are returned as a normal `tools/call` result with `isE
 
 Here's what happens when a `worker` tries to call `firecrawl.scrape` with `chunk=Q1` for the second time:
 
-1. **Default-deny.** Off by default → skip. (Even if on, `firecrawl.scrape` declares a role allowlist, so it's gated.)
+1. **Default-deny.** On in Papercusp (`defaultDeny: true`), but `firecrawl.scrape` declares a role allowlist, so it's gated → pass.
 2. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
 3. **Capability check.** Plugin tool — no principal — skipped.
 4. **RBAC role requirement.** No `requireRoles` → skip.

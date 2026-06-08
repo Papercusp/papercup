@@ -617,7 +617,7 @@ The following measurements were taken on `localhost:3055/harness` during a fresh
 | Dashboard freeze ("7 issues")             | infinite loop  | **clean**       | A8: dedup'd `replan` key                                                  |
 | Click responsiveness                      | 5s timeout     | **instant**     | A10: Radix `pointer-events: none !important`                              |
 
-**Compounded result: \~225× speedup on warm-cache TTFB (18.7s → 83ms); the dashboard now feels native on localhost.** Patterns codified into a CI-enforced lint test at `apps/operator/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
+**Compounded result: \~225× speedup on warm-cache TTFB (18.7s → 83ms); the dashboard now feels native on localhost.** Patterns codified into a CI-enforced lint test at `packages/operator-core/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
 
 ### Recurring patterns observed across all the fixes
 
@@ -636,7 +636,7 @@ A third pattern is harder to catch but biggest in absolute pain:
 * **20-second mystery endpoints are usually one of the patterns above.** Don't reach for "Next.js dev mode is just slow"; instrument the handler with `t0/t1` markers, find the actual bottleneck, parallelize.
 * **The `/lite` endpoint pattern is a smell.** If you have `/things` and `/things/lite`, every callsite using `/things` "just in case" is overpaying. Default to `/lite`; justify each upgrade.
 * **Lint guards beat memory.** Patterns added to `perf-anti-patterns.test.ts` are caught at CI time. Patterns that only live in this doc require humans to remember.
-* **The BASELINE ratchet works.** Started at 9 grandfathered offenders, now at 3. The stale-baseline check forces the list to shrink as fixes land, so this isn't "permanent debt" — it's a queue.
+* **The BASELINE ratchet works.** Started at 9 grandfathered offenders, now at 1. The stale-baseline check forces the list to shrink as fixes land, so this isn't "permanent debt" — it's a queue.
 
 ## Compliance — how to use this page
 
@@ -648,7 +648,7 @@ A third pattern is harder to catch but biggest in absolute pain:
 
 ### Automated guard
 
-`apps/operator/lib/perf-anti-patterns.test.ts` is a vitest CI guard that codifies the regex-detectable rules. As of the latest update, it covers:
+`packages/operator-core/lib/perf-anti-patterns.test.ts` is a vitest CI guard that codifies the regex-detectable rules. As of the latest update, it covers:
 
 | Rule   | What it catches                                                          |
 | ------ | ------------------------------------------------------------------------ |
@@ -665,24 +665,23 @@ Rules NOT regex-detectable (and so checked manually / via runtime symptoms): A3,
 
 The test ratchets via a `BASELINE` constant — existing offenders are grandfathered, only NEW occurrences fail CI. The baseline shrinks over time as offenders are fixed; a paired stale-baseline check forces the list to actually shrink (BASELINE entries that no longer match real hits also fail the test).
 
-Current BASELINE — 3 reasoned exceptions:
+Current BASELINE — 1 reasoned exception:
 
 ```ts
-A1: app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts  (small-N candidates list, ~3-5 paths,
-                                                                parallelization is a wash)
-A6: app/_components/OperatorPanel.tsx                          (paperclip-active file; one
-                                                                <details> per directive — small impact,
-                                                                edit risk too high to bundle)
-A7: app/settings/voice/page.tsx                                (justified — bounded 5-attempt
-                                                                cap on SpeechSynthesis.voiceschanged
-                                                                detection, total ≤ 2.5s)
+A7: app/settings/voice/page.tsx   (justified — bounded 5-attempt cap on
+                                   SpeechSynthesis.voiceschanged detection, total ≤ 2.5s)
 ```
+
+(The earlier A1 `plugin-runtime` and A6 `OperatorPanel.tsx` entries are gone: the Next
+plugin-runtime route was retired — its successor
+`lib/endpoint-route/routes/plugin-runtime/catchall.ts` carries inline `// perf:allow A1`
+directives instead — and `OperatorPanel.tsx` was deleted with the scanner card stream.)
 
 To intentionally allow a single line, append `// perf:allow A<N> <reason>` to it.
 
 ### Before merging
 
-1. **Run the perf guard**: `cd apps/operator && npx vitest run lib/perf-anti-patterns.test.ts`
+1. **Run the perf guard**: `cd packages/operator-core && npx vitest run lib/perf-anti-patterns.test.ts`
 2. **Test the affected endpoint** with `time curl http://localhost:3055/<your-endpoint>` — should match the targets at the top of this page (localhost endpoints should be a small fraction of stated network latencies).
 3. **Verify no new issues in the `/harness` page console** via verdict-cli:
    ```

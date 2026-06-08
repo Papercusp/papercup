@@ -59,13 +59,13 @@ We considered codegen — read the manifests, emit one route file per tool. We c
 * **No build step.** Adding a tool is editing a manifest + restarting the host. Codegen would mean re-running a generator and committing generated files; the next agent edit always clashes.
 * **Single dispatcher invariant.** With codegen, behavior diverges if anyone hand-edits a generated file. Dynamic routing forces all tools through the same code path.
 * **Plugin hot-reload is possible.** A new plugin registered at runtime appears in the catch-all on next request. Codegen would require a rebuild.
-* **About 10 lines of routing magic.** `/api/plugins/[...path]/route.ts` and `/api/agent-tools/[...path]/route.ts` look up the tool by path in the registry at request time. No magic, easy to debug.
+* **About 10 lines of routing magic.** The Hono catch-all routes (`packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts` and `…/agent-tools/catchall.ts`, serving `/api/plugins/*` and `/api/agent-tools/*`) look up the tool by path in the registry at request time. No magic, easy to debug.
 
 The trade is one extra registry lookup per request. Compared with auth + RLS + database I/O, it's noise.
 
 ## Why we kept mcp-handler
 
-We use Vercel's `mcp-handler` library as the MCP transport. We do not rebuild `StreamableHTTPTransport`. The bridge between two existing transports (mcp-handler for MCP, Next.js route handlers for HTTP) is \~150 lines, both share the same `dispatchProjectedTool`, both populate the same `UnifiedToolContext`. Building our own MCP transport would have been weeks of work for no win.
+We use Vercel's `mcp-handler` library as the MCP transport. We do not rebuild `StreamableHTTPTransport`. The bridge between two existing transports (mcp-handler for MCP, Hono route handlers for HTTP) is \~150 lines, both share the same `dispatchProjectedTool`, both populate the same `UnifiedToolContext`. Building our own MCP transport would have been weeks of work for no win.
 
 ## What "decoupling" actually means in our codebase
 

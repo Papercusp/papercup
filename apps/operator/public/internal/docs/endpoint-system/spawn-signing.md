@@ -1,7 +1,7 @@
 # Spawn-URL signing
 URL: /internal/docs/endpoint-system/spawn-signing
 
-Per-spawn MCP URLs carry an HMAC signature over the seven baked params. The dispatcher refuses to honor role claims that don't match. Realistic prompt-injection defence.
+Per-spawn MCP URLs carry an HMAC signature over their baked params. The dispatcher refuses to honor role claims that don't match. Realistic prompt-injection defence.
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
@@ -28,13 +28,13 @@ Both ends share a 32-byte signing key stored at:
 SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key';
 ```
 
-The row is auto-minted on first use by either side. Both the operator and the orchestrator cache it in-process for 5 minutes.
+The row is auto-minted on first use by either side. Both the operator and the orchestrator cache it in-process, invalidating the moment PG's `rotated_at` advances (a 5-minute TTL is kept only as a fallback for when `rotated_at` can't be read).
 
 ### Mint side — orchestrator
 
 `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` → `writeSignedSpawnMcp()` is what the orchestrator's `invoke()` calls when it lays down a per-spawn `.mcp.json`. It:
 
-1. Builds the seven baked URL params (`harness, workspace, role, run, spawn, [feature], [chunk], [parent_spawn]`).
+1. Builds the baked URL params (`harness, workspace, role, run, spawn, [feature], [chunk], [parent_spawn], [client]`).
 2. Adds `exp` = `now + 24h` (override with `ttlSec`).
 3. Canonicalizes by sorting + URL-encoding (only the allowlist; duplicates rejected; `sig` itself ignored).
 4. HMAC-SHA256 over the canonical string, base64url-encoded, appended as `sig=`.
@@ -44,7 +44,7 @@ The orchestrator's PG DSN is inherited from the operator-set env. If signing fai
 
 ### Verify side — operator
 
-`apps/operator/lib/spawn-signing.ts` → `verifySpawnParams(url)` runs first thing in `tryBuildSpawnContext()` at `apps/operator/app/api/[transport]/route.ts`. It:
+`packages/operator-core/lib/spawn-signing.ts` → `verifySpawnParams(url)` runs first thing in `tryBuildSpawnContext()` at `packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts`. It:
 
 1. Reads `sig` + `exp`. Missing either → `missing_sig` / `missing_exp`.
 2. Rejects past-`exp` URLs as `expired`.
@@ -90,12 +90,13 @@ The endpoint rotates the PG row **and** bumps the operator's in-process cache, s
 
 Loopback + superuser-bearer gated. Off-loopback returns 403; missing/bad bearer returns 401.
 
-Each operator process has its own in-process cache. Hitting `/rotate`
-on :3055 only bumps :3055's cache — :3070 still has the old key
-cached for up to 5 minutes. If you run dev (:3055) and prod (:3070)
-simultaneously, call the rotate endpoint on *each* port. Orchestrator
-subprocesses cache for 5 minutes too; they'll pick up the new key on
-their next refresh.
+Each process caches the key, but every cache honors PG's `rotated_at`:
+a rotate on *any* process (or a direct PG `UPDATE` that bumps
+`rotated_at`) is picked up by every other operator process and
+orchestrator subprocess on its **next** signing/verifying call — not
+after a 5-minute lag. The 5-minute TTL is only a fallback for when
+`rotated_at` can't be read, so you do **not** need to call `/rotate`
+on each port.
 
 ### CLI wrapper
 
@@ -104,7 +105,7 @@ bun run rotate:spawn-key                # confirmation prompt
 bun run rotate:spawn-key -- --yes       # no prompt
 ```
 
-(`apps/operator/scripts/rotate-spawn-signing-key.mjs`. Prefers the HTTP endpoint when the operator is reachable; falls back to direct PG when not — in which case caches lag up to 5 minutes or until restart.)
+(`apps/operator/scripts/rotate-spawn-signing-key.mjs`. Prefers the HTTP endpoint when the operator is reachable; falls back to direct PG when not — the direct `UPDATE` bumps `rotated_at`, so every other process still picks up the new key on its next call.)
 
 ### Direct PG (only when the operator is down)
 
@@ -186,39 +187,46 @@ OS-level isolation per worker (`bwrap` / `firejail` / a separate UID with file A
 Only these keys participate in the HMAC. Adding others has no effect on the signature.
 
 ```
-harness, workspace, role, run, spawn, feature, chunk, parent_spawn, exp
+harness, workspace, role, run, spawn, feature, chunk, parent_spawn, client, exp
 ```
 
 Reorder, URL-encoding variants, and duplicates are all canonicalized before signing/verification.
 
 ## Tests
 
-Four integration suites live under `apps/operator/__tests__/integration/`:
+The suites are Vitest, under `packages/operator-core/lib/`. The
+integration ones need Docker (testcontainers Postgres); run them from
+the package dir (e.g. `cd packages/operator-core && npx vitest run <name>`):
 
-| Script                           | Run   | What it proves                                                           |
-| -------------------------------- | ----- | ------------------------------------------------------------------------ |
-| `bun run test:spawn-signing`     | :3070 | 12 cases through the live HTTP boundary                                  |
-| `bun run test:spawn-signing:dev` | :3055 | Same suite, dev server                                                   |
-| `bun run test:mint-roundtrip`    | :3070 | Orchestrator's `writeSignedSpawnMcp` ↔ operator's verifier agree on HMAC |
-| `bun run test:admin-rotate`      | :3070 | Rotation endpoint auth + revocation semantics                            |
+| Test                                              | Kind        | What it proves                                                           |
+| ------------------------------------------------- | ----------- | ------------------------------------------------------------------------ |
+| `spawn-signing.test.ts`                           | unit        | sign/verify canonicalization + every reason code                         |
+| `__tests__/spawn-signing-e2e.integration.test.ts` | integration | full path through the MCP boundary                                       |
+| `__tests__/mint-roundtrip.integration.test.ts`    | integration | orchestrator's `writeSignedSpawnMcp` ↔ operator's verifier agree on HMAC |
+| `__tests__/admin-rotate.integration.test.ts`      | integration | rotation endpoint auth + revocation semantics                            |
+| `__tests__/admin-failures.integration.test.ts`    | integration | audit-read endpoint (filter + summary)                                   |
 
-Run all four before promoting any change to the signing pipeline.
+Run them before promoting any change to the signing pipeline.
 
 ## File map
 
 ```
-apps/operator/lib/spawn-signing.ts                       — sign/verify/rotate/log
-apps/operator/lib/ensure-schema.ts                       — table DDL
-apps/operator/app/api/[transport]/route.ts               — verifier wired into tryBuildSpawnContext
-apps/operator/app/api/admin/spawn-signing/rotate/route.ts — POST: rotate + bump cache
-apps/operator/app/api/admin/spawn-signing/failures/route.ts — GET: audit read
-apps/operator/scripts/rotate-spawn-signing-key.mjs       — CLI wrapper
-apps/operator/docs/spawn-signing-threat-model.md         — long-form threat model
-apps/operator/__tests__/integration/spawn-signing-e2e.mjs
-apps/operator/__tests__/integration/mint-roundtrip.mjs
-apps/operator/__tests__/integration/admin-rotate.mjs
+packages/operator-core/lib/spawn-signing.ts                                 — sign/verify/rotate/log
+packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts  — verifier wired into tryBuildSpawnContext
+packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-rotate.ts    — POST: rotate + bump cache
+packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-failures.ts  — GET: audit read
+apps/operator/scripts/rotate-spawn-signing-key.mjs                          — CLI wrapper
+apps/operator/docs/spawn-signing-threat-model.md                            — long-form threat model
+packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts
+packages/operator-core/lib/__tests__/mint-roundtrip.integration.test.ts
+packages/operator-core/lib/__tests__/admin-rotate.integration.test.ts
+packages/operator-core/lib/__tests__/admin-failures.integration.test.ts
 
 libs/papercusp/packages/orchestrator/src/spawn-mcp.ts   — writeSignedSpawnMcp (mint side)
 libs/papercusp/packages/orchestrator/src/invoke.ts       — calls writeSignedSpawnMcp on every spawn
-libs/papercusp/packages/orchestrator/src/branch-iso.ts   — chmod 0700 per-spawn worktree
 ```
+
+(The `operator_secrets` + `spawn_sig_verification_failures` tables are
+defined by SQL migrations under `libs/papercusp/libs/db/sql/`, not by
+runtime DDL — the old `ensure-schema.ts` lazy-`CREATE TABLE` path was
+removed.)

@@ -136,10 +136,11 @@ describe('buildMemoryContextBlock', () => {
     });
     // One user pull (limit 6) + one harness pull (per-pool limit 3) —
     // never a `workspace:*` scope. Both pulls carry the inject relevance floor
-    // (injectMinScore() default 0.42) — the no-LLM-in-the-loop quality gate.
+    // (injectMinScore() 0.45) + the hybrid push lexical bar (injectMinLexScore()
+    // 0.40) — the no-LLM-in-the-loop precision gate (P-031 / D-003).
     expect(b.search.mock.calls).toEqual([
-      ['foo', { scope: 'u-123', limit: 6, minScore: 0.42 }],
-      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.42 }],
+      ['foo', { scope: 'u-123', limit: 6, minScore: 0.45, minLexScore: 0.4 }],
+      ['foo', { scope: ['harness:papercup'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
     ]);
   });
 

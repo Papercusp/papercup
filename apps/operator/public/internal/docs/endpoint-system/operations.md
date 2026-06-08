@@ -48,7 +48,7 @@ These are populated at startup as a side effect of:
 
 `loadPlugins` searches in this order:
 
-1. `<projectDir>/plugins/<name>/` — for in-repo bundled plugins. The operator wires this via `findBundledPluginsParent()` in `apps/operator/lib/plugin-host-runtime.ts`.
+1. `<projectDir>/plugins/<name>/` — for in-repo bundled plugins. The operator wires this via `findBundledPluginsParent()` in `packages/operator-core/lib/plugin-host-runtime.ts`.
 2. `~/.papercusp/harnesses/<slug>/plugins/<name>/` — per-harness plugins.
 3. `~/.papercusp/global-plugins/<name>/` — globally installed plugins.
 
@@ -109,7 +109,7 @@ Common causes: `name` collision with an existing tool from a different plugin; `
 
 ### Tool works on MCP but returns "ctx.X is unset" on HTTP
 
-The HTTP catch-all needs the same `ctx.spawn` / `ctx.secret` / `ctx.projectDir` resolvers as MCP. Check that `apps/operator/app/api/plugins/[...path]/route.ts` has `HOST_EXTRAS` populated with `spawn`, `secret`, and `resolveHarnessPaths`. If it doesn't, that's a regression of audit-2/3 fixes.
+The HTTP catch-all needs the same `ctx.spawn` / `ctx.secret` / `ctx.projectDir` resolvers as MCP. Check that the plugins catch-all (`packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts`) builds its `HttpToolHostExtras` with `spawn` (`pluginSpawnImpl`), `secret` (`secretImpl`/`makeSecretResolver`), and `resolveHarnessPaths`. If it doesn't, that's a regression of audit-2/3 fixes.
 
 ### Tool works on dev but agents in spawned subprocesses don't see it
 
@@ -117,9 +117,9 @@ Check the orchestrator's `.mcp.json` URL. In dev (`NODE_ENV=development`) it sho
 
 ### Search-provider env vars don't reach spawned agents
 
-The orchestrator's CLI runner (`bin/run.ts`) decrypts search-provider keys from PG via `buildSearchProviderSpawnEnv` and attaches them to `InvokeContext.extraSpawnEnv`. They land in every `invoke()` call's spawn env.
+The orchestrator's `invoke()` path (`libs/papercusp/packages/orchestrator/src/invoke.ts`) decrypts search-provider keys from PG via `buildSearchProviderSpawnEnv` (`spawn-env-from-pg.ts`) and attaches them to `InvokeContext.extraSpawnEnv`. They land in every `invoke()` call's spawn env.
 
-The expert-dispatcher path in `apps/operator/lib/expert-dispatcher.ts` does this independently via `apps/operator/lib/search-provider-credentials.ts:buildSpawnEnv`. Both paths are wired; if a worker doesn't see `TAVILY_API_KEY` etc., the keys aren't in PG (check `harness_shared.operator_search_provider_credentials`) or the encryption key is missing (`~/.papercusp/db-encryption-key`).
+The operator harness-launch path does this independently: `packages/operator-core/lib/harness-launch.ts` calls `buildSpawnEnv` from `packages/operator-core/lib/search-provider-credentials.ts`. Both paths are wired; if a worker doesn't see `TAVILY_API_KEY` etc., the keys aren't in PG (check `harness_shared.operator_search_provider_credentials`) or the encryption key is missing (`~/.papercusp/db-encryption-key`).
 
 ## Spawn-signing admin endpoints
 

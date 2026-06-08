@@ -120,11 +120,23 @@ cross-machine path is reproducible on-demand:
 `HETZNER_SSH_KEY_ID=… HETZNER_SSH_IDENTITY_FILE=… npx vitest run --config
 vitest.integration.config.ts -t "REAL Hetzner frames"
 .../p2p-perf-tier3.integration.test.ts` (cred-gated, destroy-always, \~cents/run).
-See `linux-test-vm-and-federation` D-019 + `p2p-performance-suite` Tier-3.
+Also confirmed **cross-region** (ash↔hil transcontinental WAN, D-020):
+append→visible p95 = 1115.5 ms, real holepunch — the \~165 ms WAN premium over
+co-located. See `linux-test-vm-and-federation` D-019/D-020 + `p2p-performance-suite` Tier-3.
 
-When you want the packaged-`.deb`-specific cross-machine proof (vs the bench
-runtime), `bin/vm-federation.sh` is ready: point its `vm` driver at a Hetzner
-frame that has the `.deb` installed and the same asserts run unchanged.
+The Tier-3 run above proves the **substrate runtime**. To prove the **packaged
+`.deb`** specifically, `bin/deb-hetzner-federation.sh` provisions two separate
+Hetzner VMs, installs the `.deb` on each, and launches its federating **sidecar**
+(`serve.mjs` + bundled embedded-pg + swarm) **headless as a non-root user** —
+no Tauri GUI / no Xvfb, since the GUI is irrelevant to federation — then runs the
+same `federation-asserts.sh` over the public DHT. **PASS: `peer_connected` +
+A→B + B→A merge (`origin=remote` both ways).** Two clean-machine gotchas it
+surfaced, both faithful to real desktop usage (not federation defects):
+
+* embedded-postgres **refuses to run as root** → launch the sidecar as a normal user.
+* the `.deb`'s bundled **`pgvector` (`vector.so`) loads on Ubuntu 24.04 but NOT
+  22.04** (the baseline schema needs `public.vector`) — frames must match the
+  24.04 golden-VM toolchain. A real `.deb` portability note worth tracking.
 
 ## Networking: dual-NIC, no DHCP/NAT (D-016)
 
