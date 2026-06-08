@@ -1,14 +1,18 @@
 /**
- * Pure predicates for the DBOS default-on gates (P-009 + the autoloop/timers
- * migration). Centralized so the bootstrap registration and the legacy
- * stand-down checks (autoloop ticker, periodic timers) use the EXACT same
- * condition — guaranteeing exactly one of {DBOS, legacy} runs (no gap, no
+ * Pure predicates for the DBOS default-on gates (P-009 + the timers migration).
+ * Centralized so the bootstrap registration and the legacy stand-down checks
+ * (periodic timers) use the EXACT same condition — guaranteeing exactly one of
+ * {DBOS, legacy} runs for the pieces that still HAVE a legacy path (no gap, no
  * double-fire).
  *
- * Master revert: PAPERCUSP_DBOS_ORCHESTRATOR=0 turns the whole DBOS orchestration
- * substrate off (orchestrator + autoloop + timers) and brings the legacy paths
- * back. Individual pieces can be disabled with PAPERCUSP_DBOS_AUTOLOOP=0 /
- * PAPERCUSP_DBOS_TIMERS=0 (which re-enables that piece's legacy fallback).
+ * Master switch: PAPERCUSP_DBOS_ORCHESTRATOR=0 turns the whole DBOS orchestration
+ * substrate off (durable orchestrator + routines engine + periodic timers). The
+ * legacy orchestrator run-loop and the director-cadence autoloop ticker are
+ * RETIRED (0 importers — see _retired/orchestrator-run-loop), so =0 does NOT
+ * bring a legacy orchestrator back; those paths simply don't run. Periodic
+ * timers can still be disabled individually with PAPERCUSP_DBOS_TIMERS=0, and a
+ * few timer pieces (push-cred refresher, harness-status sweep) retain a legacy
+ * fallback that stands down on that predicate.
  */
 type DbosEnv = Record<string, string | undefined>;
 

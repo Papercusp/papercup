@@ -39,6 +39,9 @@ export interface Tier3SuiteOpts {
   harnessSlug: string;
   scenarios?: Tier3ScenarioId[];
   workspaceId?: string;
+  /** When set, peers federate over the HIVE pubkey topic instead of the
+   *  workspace/slug topic — the shared-hive-federation P-011 cross-machine E2E. */
+  hivePubkey?: string;
   count?: number;
   rate?: number;
   seed?: number;
@@ -70,6 +73,7 @@ export async function runTier3Suite(opts: Tier3SuiteOpts): Promise<Tier3SuiteRes
     launcher: opts.launcher,
     harnessSlug: opts.harnessSlug,
     workspaceId: opts.workspaceId,
+    hivePubkey: opts.hivePubkey,
     count: opts.count ?? 50,
     rate: opts.rate ?? 10,
     seed: opts.seed,

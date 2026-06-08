@@ -32,6 +32,10 @@ export interface Tier3ScenarioOpts {
   /** Unique-per-run harness slug so peers derive a shared topic that no other run collides on. */
   harnessSlug: string;
   workspaceId?: string;
+  /** When set, peers federate over the HIVE pubkey topic
+   *  (`deriveHiveFederationTopic(hivePubkey)`) instead of the workspace/slug
+   *  topic — the P-011 cross-machine Hive E2E. Passed through to every peer-child. */
+  hivePubkey?: string;
   /** Writer load. */
   count: number;
   rate: number;
@@ -97,6 +101,8 @@ async function runReplicationCore(opts: Tier3ScenarioOpts, scenario: string): Pr
     root: '',
     peerIndex,
     corpusAuthor: FIXED_CORPUS_AUTHOR,
+    // Re-key onto the Hive federation topic when running the Hive E2E (P-004/D-003).
+    ...(opts.hivePubkey ? { hivePubkey: opts.hivePubkey } : {}),
   });
 
   // 1. Writer (slot 0).

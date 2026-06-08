@@ -552,6 +552,11 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
         messages,
         trigger: effectiveTrigger,
         mayAskActive: false,
+        // EL is the voice surface — declare the voice modality so the route
+        // forwards voice-card state-snapshots on this SSE stream (its
+        // `body.modality === 'voice'` gate) and the brain gets the voice
+        // modality. Without this the card-forward described below never fires.
+        modality: 'voice',
       }),
     });
     if (!res.ok || !res.body) {

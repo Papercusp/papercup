@@ -29,6 +29,7 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: 'Durable inbox escalations',
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: 'Auto-implement improvements',
   [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
+  [FLAGS.VOICE_CHANNELS]: 'Voice channels (desktop)',
   [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
 };
 
@@ -46,6 +47,8 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
     'Master switch for auto-implementing captured improvements. Off = capture + triage only.',
   [FLAGS.VIDEO_CHANNELS]:
     'Desktop P2P video channel (participant-grid) for shared harnesses. Off until the live-camera E2E passes.',
+  [FLAGS.VOICE_CHANNELS]:
+    'Desktop P2P voice channel (holepunch) for shared harnesses. Off until the live Tauri+mic pass.',
   [FLAGS.THE_HIVE]:
     'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
 };

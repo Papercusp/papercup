@@ -27,6 +27,7 @@ import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
 import { closeHarnessStore } from '../corestore';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
+import type { SwarmBinding } from '../derive-swarm-topic';
 import Hyperswarm from 'hyperswarm';
 import type { HyperswarmLike } from '../swarm';
 import { makePeerIdentity } from './fixture';
@@ -38,6 +39,13 @@ export interface PeerChildConfig {
   role: 'writer' | 'reader';
   workspaceId: string;
   harnessSlug: string;
+  /** When set, this peer joins the HIVE federation topic
+   *  (`deriveHiveFederationTopic(hivePubkey)`) instead of the local
+   *  workspace/slug topic. Both peers passing the SAME raw-32-byte base64
+   *  pubkey share one topic — this is the P-004 re-key (D-003: change only the
+   *  key, reuse the transport) and the seam the P-011 cross-machine Hive E2E
+   *  rides to prove a Hive federates over its pubkey topic across real machines. */
+  hivePubkey?: string;
   /** Workspace root for this peer's corestore. Reused across churn restarts. */
   root: string;
   /** Local-testnet DHT bootstrap (Tier 1/2). ABSENT or empty → the PUBLIC DHT
@@ -193,11 +201,13 @@ async function main(): Promise<void> {
   };
   const seenRep = new Set<string>();
 
-  const binding = {
-    kind: 'local' as const,
-    workspace_id: cfg.workspaceId,
-    harness_slug: cfg.harnessSlug,
-  };
+  // The swarm topic comes from this binding. A `hivePubkey` re-keys the peer
+  // onto the HIVE federation topic (P-004/D-003) so two peers sharing the pubkey
+  // federate over `deriveHiveFederationTopic(pubkey)`; otherwise it's the local
+  // workspace/slug topic (the default perf posture). Identical transport either way.
+  const binding: SwarmBinding = cfg.hivePubkey
+    ? { kind: 'hive', hive_pubkey: cfg.hivePubkey }
+    : { kind: 'local', workspace_id: cfg.workspaceId, harness_slug: cfg.harnessSlug };
 
   let handle: BootedHarnessHandle | null = null;
   try {
