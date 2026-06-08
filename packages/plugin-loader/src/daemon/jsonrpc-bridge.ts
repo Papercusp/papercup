@@ -77,7 +77,12 @@ export class JsonRpcBridge {
           p.reject(new Error(`json-rpc call timed out after ${timeoutMs}ms: ${method}`));
         }
       }, timeoutMs);
-      promise.finally(() => clearTimeout(timer));
+      // Clear the timer on settle. The `.catch` is load-bearing: this `.finally`
+      // forms a SEPARATE promise chain off `promise`, so without it a rejected
+      // call (timeout / error reply / shutdown) leaves an UNHANDLED rejection on
+      // this floating chain — the caller's own `await promise` already surfaces
+      // the real rejection, so swallowing it here is correct.
+      void promise.finally(() => clearTimeout(timer)).catch(() => {});
     }
     return (await promise) as T;
   }

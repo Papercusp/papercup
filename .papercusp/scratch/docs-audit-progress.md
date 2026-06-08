@@ -48,6 +48,19 @@ Dominant drift: Next.js app/api → Hono endpoint-route routes; apps/operator/li
 - endpoint-system/superuser-mode: EDITS — *-su→psu; token reused on reinstall; telemetry run_id/window_key fixed; gate-bypass diagram.
 - endpoint-system/voice-modality: EDITS — modality default ['text','voice']; ask_choice not text-only; <sleep duration_minutes>; paths. Flag: possible voice-modality bug in askOperatorViaSse.
 
+### Batch 2a (agents/ + agent-spawning first half) — DONE
+- agents/index: EDITS — claude_sessions table→delegates; @restart/sync→@papercusp/sync.
+- agents/action-registry: EDITS (v5 plan doc, kept framing) — archived plan paths; lib/commands→operator-core/lib/commands.
+- agents/docs-retrieval: EDITS (heavy) — fumadocs→Starlight adapters; content paths; Next llms.txt routes→Hono host-docs.ts; operator-core paths.
+- agents/finding-context: ACCURATE.
+- agents/kickoffs: EDITS — omp --append-system-prompt→psu --launch-context (P-032); operator-core paths; KICKOFF_KIND_ALLOW.
+- agents/operator-persona: EDITS — operator-core paths; narration API split; panel-cards RETIRED.
+- agents/prompt-assembly: EDITS — operator-core path; injection dir; /internal/docs links.
+- agent-spawning/overview: EDITS (heavy) — orchestrator.spawn/poll/list_active/cancel → fleet:spawn/tree/cancel; real source map.
+- agent-spawning/lifecycle: EDITS (heaviest) — 4 tools→3 fleet:*; removed in-memory Map narrative; heartbeat/reclaim; KILL_GRACE_MS=2000.
+- agent-spawning/schema: EDITS — spawned_agents DDL +10 cols; status +restarting; RLS policy name; URL params +client/exp/HMAC.
+- agent-spawning/limits: EDITS — MAX_CONCURRENT=10 → maxSimultaneousAgents(16, ceiling 64); queue+await not caller-retry; output_tail ~2KB.
+
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.
 - Possible code bug: askOperatorViaSse POSTs without modality:'voice' so voice card-forwarding gate may never fire.

@@ -8,14 +8,14 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note">
-This is the canonical plan — earlier iterations (v1-v4) are preserved at
-`apps/operator/docs/agent-action-registry-plan.v{2,3,4}.md` for design history.
+This is the canonical plan — earlier iterations (v2-v4) are preserved at
+`apps/operator/docs/plans/archive/agent-action-registry-plan-v{2,3,4}-2026-05-03.md` for design history.
 </Aside>
 
 # Agent Action Registry — Implementation Plan v5 (final, implementation-ready)
 
 **Status:** v5 — final, implementation-ready. Earlier iterations preserved as
-`agent-action-registry-plan.v{2,3,4}.md`.
+`apps/operator/docs/plans/archive/agent-action-registry-plan-v{2,3,4}-2026-05-03.md`.
 
 **Scope:** unify the agent tool surfaces (Oracle, Operator-voice, Pi) plus
 the user-facing surfaces (keyboard shortcuts, ⌘K command palette) under a
@@ -326,8 +326,10 @@ tool error, ElevenLabs webhook 4xx) — all from the same
 
 ### 2.3 File structure
 
+(As built, the registry landed at `packages/operator-core/lib/commands/` — the operator-core carve moved the route/lib code out of `apps/operator/lib/`. Paths below show the plan's original layout under `apps/operator/lib/commands/`.)
+
 ```
-apps/operator/lib/commands/
+packages/operator-core/lib/commands/
   registry.ts            # the engine above
   types.ts               # CommandDef, QueryDef, AgentId, Tier
   audit.ts               # audit() impl, batched insert into PG

@@ -89,52 +89,45 @@ The result reports `cancelled` (the spawn ids), `processes_aborted`, `already_te
 ## Status transitions
 
 ```
-   ┌─────────────┐
-   │   running   │
-   └──┬───┬───┬──┘
+   ┌─────────────┐  ←→  ┌──────────────┐
+   │   running   │      │  restarting  │  (supervised restart; still ACTIVE)
+   └──┬───┬───┬──┘      └──────────────┘
       │   │   │
    .then  .catch  abort()
       │   │   │
    ┌──↓─┐ │   ┌─↓─────┐
-   │done│ │   │failed │
+   │done│ │   │failed │ ← also: stale-heartbeat orphan reclaimed here
    └────┘ │   └───────┘
           │
        ┌──↓──────┐
        │cancelled│
        └─────────┘
-
-   ┌─────────────┐
-   │   reaped    │  ← startup sweep on rows still 'running' from prior process
-   └─────────────┘
 ```
 
-Once a row is in any terminal state (`done | failed | cancelled | reaped`), it stays there. No re-runs.
+`running` and `restarting` are the two ACTIVE statuses; `done | failed | cancelled | reaped` are terminal. Once a row is terminal it stays there — no re-runs (a supervised restart is a fresh attempt, not a terminal-row revival). `reaped` is a legacy terminal status: today an orphaned row is reclaimed to `failed`, not `reaped`.
 
 ## Cross-restart durability
 
-| Action | Pre-restart spawn | Post-restart spawn |
+| Action | Pre-restart spawn (this host) | Post-restart spawn (prior host) |
 |---|---|---|
-| `poll()` | ✅ returns the PG row | ✅ returns the in-memory record |
-| `list_active()` | ✅ if still running, else filtered out (or reaped) | ✅ |
-| `cancel()` | ⚠️ marks intent only — can't actually kill the OS process | ✅ real SIGTERM |
+| `fleet:tree` | ✅ reads the PG row | ✅ reads the PG row (the nursery is fully durable) |
+| concurrency count | ✅ counted live | ✅ counted until reclaimed |
+| `fleet:cancel` | ✅ durable flip **+** real SIGTERM (local AbortController) | ⚠️ durable flip only — no local handle to kill the OS process; the heartbeat sweep reclaims it |
 
-A `running` row from a prior operator process is **always** zombied at restart (the operator that held its pid is gone; the agent process probably died with it but we don't have a way to confirm). The reaper sweep in `list_active` and `spawn` flips those rows to `status='reaped'` with an explanatory `error_message`.
+A `running` row whose launching operator host died is no longer left to zombie forever. The live host heartbeats `heartbeat_at` for its in-flight spawns; once a row's heartbeat goes stale past `RECLAIM_STALE_MS` (5 min), the reclaim sweep (`reclaimOrphanedSpawns`, run opportunistically on each spawn and periodically) flips it to `status='failed'` with an explanatory `error_message` and frees the concurrency ceiling. That sweep also wakes the dead child's parent.
 
 ## What runs in the child
 
-`invoke()` from `@papercusp/orchestrator/invoke` is the same code path the main loop uses. The plugin builds an `InvokeContext` from the caller's `ctx`:
+`spawnInvokeOnce` (`packages/operator-core/lib/dbos/orchestrator-runner.ts`) launches the child as a detached subprocess (its own process group, so a group-kill reaps the wrapper + invoke-once + agent together on cancel/timeout) — the same invoke-once code path the harness uses. The engine threads:
 
-| InvokeContext field | Source |
+| Passed to the child | Source |
 |---|---|
-| `harnessDir` | `PAPERCUSP_HARNESS_DIR` env var, falls back to `~/autonomous-harness` |
-| `projectDir` | From the caller's tool ctx (resolved via `loadHarnessRegistry()`) |
-| `stateDir` | `<projectDir>/.papercusp` |
-| `phase` | Read from `<stateDir>/config.json` — defaults to `'staging'` |
-| `claudeCmd` | `AGENT_CMD` env, then `CLAUDE` env, then `'omp -p'` default |
-| `agentBackend` | `'omp'` |
-| `workspaceId` | From the caller's tool ctx |
-| `extraSpawnEnv` | Inherited from process env |
+| `project.path` (cwd) | `resolveProject(harness)` — the registered harness's project dir |
+| `role` | the spawn input's `role` |
+| `extras[]` | the input's `extras`, with `FEATURE_ID=<id>` / `CHUNK_ID=<id>` appended when set |
+| `PAPERCUSP_SPAWN_ID` | the durable `s-…` spawnId (the umbilical — becomes the child's stable MCP `client`/owner) |
+| `PAPERCUSP_PARENT_SPAWN_ID` | the parent's spawnId, when this spawn has a parent (lineage) |
+| `QUEEN_BRIEF` | the spawn input's `brief`, when set (P-060) — injected into the bee's prompt |
+| pipeline env | `buildPipelineExtraEnv` (workspace, harness, idempotency key, PG DSN) |
 
-`extras[]` from the tool input gets prepended with `FEATURE_ID=<id>` and `CHUNK_ID=<id>` if those are set on the spawn input. The child agent sees them as standard extras.
-
-The orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.json` with the seven URL params, including `parent_spawn` set to the parent's spawnId — so any tool calls the child makes carry parent_spawn_id automatically.
+The orchestrator's `spawn-mcp.ts` writes a per-child, HMAC-signed `.mcp.json` (`packages/operator-core/lib/spawn-signing.ts`) with the per-spawn URL params, including `parent_spawn` set to the parent's spawnId — so any tool calls the child makes carry `parent_spawn_id` automatically. (See [Schema](/internal/docs/agent-spawning/schema#url-plumbing--the-spawn-params) for the full param list.)

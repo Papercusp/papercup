@@ -1007,22 +1007,23 @@ function AdvConvStyles() {
         min-height: 30px;
         padding: 5px 8px;
         border-radius: 8px;
-        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b), transparent 62%);
-        background: var(--advconv-warn-soft);
+        border: 1px solid color-mix(in oklab, #fbbf24, transparent 64%);
+        background: color-mix(in oklab, #fbbf24, transparent 90%);
         color: var(--fg, #e7f7ff);
         text-align: left;
         font: inherit;
         cursor: pointer;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       .pc-advconv__needs:hover {
-        border-color: color-mix(in oklab, var(--warn, #f59e0b), transparent 40%);
-        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 78%);
+        border-color: color-mix(in oklab, #fbbf24, transparent 44%);
+        background: color-mix(in oklab, #fbbf24, transparent 74%);
       }
       .pc-advconv__needs-kicker {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        color: var(--warn, #f59e0b);
+        color: var(--fg, #e7f7ff);
         font-size: 11.5px;
         font-weight: 700;
         letter-spacing: 0.02em;
@@ -1038,22 +1039,25 @@ function AdvConvStyles() {
         color: var(--fg-mute, #8aa3bc);
         display: none;
       }
-      .pc-advconv .pc-coord__chip {
-        transition: background-color 140ms, border-color 140ms, color 140ms;
+      .pc-advconv {
+        --advconv-button-accent: var(--advconv-accent);
       }
       .pc-advconv .pc-coord__chip {
-        border-color: var(--advconv-border);
-        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 40%);
-        color: var(--fg-mute, #7f9bb4);
+        border-color: color-mix(in oklab, var(--advconv-button-accent), transparent 68%);
+        background: color-mix(in oklab, var(--advconv-button-accent), transparent 93%);
+        color: var(--fg-dim, #b9d4e8);
+        border-radius: 8px;
+        box-shadow: none;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       .pc-advconv .pc-coord__chip:hover:not(:disabled) {
-        border-color: var(--advconv-border-strong);
-        background: var(--advconv-accent-soft);
+        border-color: color-mix(in oklab, var(--advconv-button-accent), transparent 32%);
+        background: color-mix(in oklab, var(--advconv-button-accent), transparent 82%);
         color: var(--fg, #e7f7ff);
       }
       .pc-advconv .pc-coord__chip.is-active {
-        border-color: color-mix(in oklab, var(--advconv-accent), transparent 48%);
-        background: color-mix(in oklab, var(--advconv-accent), transparent 78%);
+        border-color: color-mix(in oklab, var(--advconv-button-accent), transparent 18%);
+        background: color-mix(in oklab, var(--advconv-button-accent), transparent 66%);
         color: var(--fg, #e7f7ff);
       }
       .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; grid-column: 1 / -1; }
@@ -1189,63 +1193,101 @@ function AdvConvStyles() {
       }
       .pc-advconv__reply textarea:focus { outline: 2px solid color-mix(in oklab, var(--advconv-accent), transparent 66%); outline-offset: 2px; }
       .pc-advconv__replyactions { justify-content: flex-end; }
+      .pc-advconv .pc-coord__actions button,
       .pc-advconv__replybtn {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 6px;
+        min-height: 30px;
+        padding: 5px 10px;
+        border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 64%);
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--advconv-accent), transparent 90%);
+        color: var(--fg, #e7f7ff);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+      .pc-advconv .pc-coord__actions button:hover:not(:disabled),
+      .pc-advconv__replybtn:hover:not(:disabled) {
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 30%);
+        background: color-mix(in oklab, var(--advconv-accent), transparent 64%);
+      }
+      .pc-advconv .pc-coord__actions button:disabled,
+      .pc-advconv__replybtn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
       .pc-advconv__replybtn--resolve:not(:disabled) {
-        border-color: color-mix(in oklab, var(--good, #22c55e), transparent 58%);
+        border-color: color-mix(in oklab, #22c55e, transparent 64%);
         color: var(--fg, #e7f7ff);
-        background: var(--advconv-good-soft);
+        background: color-mix(in oklab, #22c55e, transparent 90%);
+      }
+      .pc-advconv__replybtn--resolve:hover:not(:disabled) {
+        border-color: color-mix(in oklab, #22c55e, transparent 30%);
+        background: color-mix(in oklab, #22c55e, transparent 64%);
       }
 
       /* View tabs */
       .pc-advconv__viewtabs {
         position: relative;
         z-index: 1;
-        align-self: flex-start;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(92px, 1fr));
-        gap: 3px;
-        padding: 3px;
+        align-self: center;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0;
         flex: 0 0 auto;
-        border: 1px solid var(--advconv-border);
-        border-radius: 10px;
-        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 28%);
+        border: 0;
+        border-radius: 0;
+        background: transparent;
         box-shadow: none;
       }
       .pc-advconv__viewtab {
-        display: grid;
-        grid-template-columns: auto minmax(0, 1fr);
+        --advconv-view-accent: var(--advconv-accent);
+        display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: 6px;
-        padding: 5px 8px;
+        min-height: 30px;
+        min-width: 104px;
+        padding: 5px 10px;
         border-radius: 8px;
         font-size: 12px;
-        font-weight: 800;
-        border: 1px solid transparent;
-        background: transparent; color: var(--fg-mute, #8aa3bc); cursor: pointer;
-        transition: background-color 140ms, border-color 140ms, color 140ms;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        border: 1px solid color-mix(in oklab, var(--advconv-view-accent), transparent 64%);
+        background: color-mix(in oklab, var(--advconv-view-accent), transparent 90%);
+        color: var(--fg, #e7f7ff);
+        cursor: pointer;
+        box-shadow: none;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+      .pc-advconv__viewtab:first-child {
+        --advconv-view-accent: #22c55e;
+      }
+      .pc-advconv__viewtab:last-child {
+        --advconv-view-accent: var(--advconv-accent);
       }
       .pc-advconv__viewtab span {
-        display: flex;
+        display: inline;
         min-width: 0;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 1px;
       }
       .pc-advconv__viewtab em {
         display: none;
       }
       .pc-advconv__viewtab:hover {
-        border-color: var(--advconv-border);
-        background: var(--advconv-accent-softer);
+        border-color: color-mix(in oklab, var(--advconv-view-accent), transparent 30%);
+        background: color-mix(in oklab, var(--advconv-view-accent), transparent 72%);
         color: var(--fg, #e7f7ff);
       }
       .pc-advconv__viewtab.is-active {
-        background: color-mix(in oklab, var(--advconv-accent), transparent 78%);
-        border-color: color-mix(in oklab, var(--advconv-accent), transparent 48%);
+        background: color-mix(in oklab, var(--advconv-view-accent), transparent 64%);
+        border-color: color-mix(in oklab, var(--advconv-view-accent), transparent 18%);
         color: var(--fg, #e7f7ff);
         box-shadow: none;
       }
@@ -1534,6 +1576,7 @@ function AdvConvStyles() {
       }
       .pc-advfeed__groupchip,
       .pc-advfeed__advancedtoggle {
+        --advconv-button-accent: var(--advconv-accent);
         display: inline-flex;
         align-items: center;
         gap: 5px;
@@ -1543,10 +1586,14 @@ function AdvConvStyles() {
         font-size: 11px;
         font-weight: 700;
       }
+      .pc-advfeed__advancedtoggle {
+        --advconv-button-accent: #a78bfa;
+      }
       .pc-advfeed__rawkinds {
         padding-top: 2px;
       }
       .pc-advfeed__kindchip {
+        --advconv-button-accent: #94a3b8;
         display: inline-flex;
         align-items: center;
         gap: 5px;
