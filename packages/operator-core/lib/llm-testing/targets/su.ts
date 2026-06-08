@@ -209,8 +209,35 @@ interface TextBlock { type: 'text'; text: string }
 interface ToolUseBlock { type: 'tool_use'; id: string; name: string; input: unknown }
 type ContentBlock = TextBlock | ToolUseBlock | { type: string; [k: string]: unknown };
 interface AnthropicMessage { role: 'user' | 'assistant'; content: string | ContentBlock[] }
+type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
 
 const MAX_TOOL_ITERATIONS = 6;
+
+/**
+ * The Claude Code identifier. It MUST be the first `system` block on the SUT's
+ * raw Messages API call: a Claude Max/Pro OAuth token (the no-ANTHROPIC_API_KEY
+ * path this suite runs under) is only admitted to the full, CLI-equivalent
+ * rate-limit bucket when the request is framed as Claude Code. Without it the
+ * SAME token is shunted to a far stricter raw-OAuth bucket that 429s almost
+ * immediately, independent of real account usage (measured 2026-06-08: identical
+ * call 429s without this block, 200s with it, while the `claude` CLI runs fine).
+ * Regression-tested in su-system-framing.test.ts — do not drop or reorder it.
+ */
+export const CLAUDE_CODE_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/**
+ * Build the SUT system prompt: the Claude Code identifier FIRST (auth framing,
+ * above), then the engineer playbook (cache_control'd when prompt caching is on).
+ * Exported so the framing invariant has a unit test independent of live creds.
+ */
+export function buildSuSystemBlocks(playbookText: string, cache: boolean): SystemBlock[] {
+  return [
+    { type: 'text', text: CLAUDE_CODE_IDENTIFIER },
+    cache
+      ? { type: 'text', text: playbookText, cache_control: { type: 'ephemeral' } }
+      : { type: 'text', text: playbookText },
+  ];
+}
 
 export interface SuTargetOpts {
   catalog?: BuiltCatalog;
@@ -292,22 +319,10 @@ class SuSession implements ChatSession {
     const model = sutModel();
     const price = priceFor(model);
     const cache = promptCacheEnabled();
-    // A Claude Max/Pro OAuth token (the no-ANTHROPIC_API_KEY path) is admitted to
-    // the full, CLI-equivalent rate-limit bucket on the raw Messages API ONLY when
-    // the request is FRAMED AS CLAUDE CODE — the first system block must be the
-    // Claude Code identifier. Without it the SAME token is shunted to a far
-    // stricter raw-OAuth bucket that 429s almost immediately, independent of any
-    // real account usage (measured 2026-06-08: identical call 429s without this
-    // block, 200s with it, while the `claude` CLI runs fine the whole time).
-    // This also makes the SUT's framing match a real psu session (Claude Code +
-    // the engineer playbook). Harmless when an ANTHROPIC_API_KEY is set instead.
-    const CLAUDE_CODE_IDENTIFIER = "You are Claude Code, Anthropic's official CLI for Claude.";
-    const system = [
-      { type: 'text', text: CLAUDE_CODE_IDENTIFIER },
-      ...(cache
-        ? [{ type: 'text', text: loadPlaybook(), cache_control: { type: 'ephemeral' } }]
-        : [{ type: 'text', text: loadPlaybook() }]),
-    ];
+    // First system block MUST be the Claude Code identifier (auth framing for the
+    // Max OAuth rate-limit bucket — see CLAUDE_CODE_IDENTIFIER / buildSuSystemBlocks).
+    // Built via the exported helper so the framing invariant is regression-tested.
+    const system = buildSuSystemBlocks(loadPlaybook(), cache);
     const tools = this.state.catalog.tools;
 
     // The conversation transcript for THIS turn (stateless: caller threads the

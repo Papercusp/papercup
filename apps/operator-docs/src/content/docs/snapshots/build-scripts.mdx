@@ -42,6 +42,25 @@ the full mapping. Most-recent additions:
 
 ## Manifest surface
 
+<Aside type="tip" title="Partially implemented — shipped surface is leaner than this spec">
+Core build-script execution has landed: the SDK types (`PluginProvision` /
+`ProvisionScript` in `@papercusp/plugin-sdk`), the runner + sandbox
+(`packages/operator-core/lib/provision/{runner,sandbox}.ts`), the audit log
+(`lib/provision/audit-log.ts` + `provision-audit-bus.ts` → `/api/provision/stream`),
+the `harness_shared.operator_claims` PG lock table, the `lib/provision/runtime/lib.sh`
+helper, and real plugin scripts under `libs/papercusp/plugins/{github-repo,cloudflare-stack,cloudflare-pages}/provision/`.
+
+The **shipped** `ProvisionScript` type is just `{ path, timeoutSec?, runAt? }`
+(note `path`, not `command`); `cloudProvider` / `allowedHosts` /
+`skipReprovisionOnPatch` / `auditLogCapMb` live on the parent `PluginProvision`
+object, and the runner currently reads only `{ path, timeoutSec }` per script.
+The richer manifest fields below (`displayName`, `description`, `network`,
+`writesState`, `requiresInteractive`, etc.) describe the design target; some
+(e.g. `displayName`/`description`) already appear in real manifests, others are
+not yet wired. Treat the examples below as the design, and the SDK type + runner
+as the current truth.
+</Aside>
+
 Add a `provision` section to `papercusp.json`:
 
 ```json
@@ -56,7 +75,7 @@ Add a `provision` section to `papercusp.json`:
     "platforms": ["linux", "darwin"],
 
     "setup": {
-      "command": "./provision/setup.sh",
+      "path": "provision/setup.sh",
       "displayName": "Provision AWS Lambda + API Gateway",
       "description": "Creates a Lambda function, an API Gateway HTTP API, and the IAM role binding them.",
       "allowedHosts": ["lambda.us-east-1.amazonaws.com", "execute-api.us-east-1.amazonaws.com", "iam.amazonaws.com"],
@@ -67,13 +86,13 @@ Add a `provision` section to `papercusp.json`:
     },
 
     "teardown": {
-      "command": "./provision/teardown.sh",
+      "path": "provision/teardown.sh",
       "displayName": "Tear down provisioned AWS resources",
       "timeoutSec": 180
     },
 
     "verify": {
-      "command": "./provision/verify.sh",
+      "path": "provision/verify.sh",
       "displayName": "Check Lambda is healthy",
       "timeoutSec": 30,
       "intervalSec": 600
@@ -89,16 +108,16 @@ Each script is **part of the plugin's signed tarball** — its sha256 is include
 | Field | Required | Default | Notes |
 |---|---|---|---|
 | `platforms` | no | all | Substrate refuses to run on platforms outside this set; falls back to a clear "this plugin doesn't support your OS" message. |
-| `setup.command` | yes | — | Relative path inside the plugin tarball. Must be marked executable in the tarball. |
+| `setup.path` | yes | — | Relative path inside the plugin tarball (the shipped SDK field is `path`). Must be marked executable in the tarball. |
 | `setup.displayName` | yes | — | Human label shown in the consent dialog. |
 | `setup.description` | yes | — | One-paragraph explanation shown to the user before they approve. |
 | `setup.allowedHosts` | yes for non-cloudProvider plugins | — | Outbound network restricted to this allowlist. Always blocked even when this list is empty: 169.254.0.0/16 (IMDS), 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1, fd00::/8 — see [Network policy floor](#network-policy-floor). |
 | `setup.cloudProvider` | yes for cloud-SDK plugins | — | Substrate-curated preset replacing the old `network: "open"` mode. Shape: `{ id: "aws" \| "gcp" \| "azure", region: "us-east-1" \| ... \| "${cfg.region}" }`. Substrate templates region into the preset's allowlist. Multi-region plugins use `regions: [...]`. See [Cloud provider presets](#cloud-provider-presets). |
-| `setup.timeoutSec` | no | 300 | Substrate kills the script if it exceeds this. Audit log records the timeout. |
+| `setup.timeoutSec` | no | 600 | Substrate kills the script if it exceeds this. Audit log records the timeout. |
 | `setup.writesState` | no | false | If true, substrate expects the script to drop a JSON file at `$PAPERCUSP_PLUGIN_STATE` on success. Used for resource tracking. |
 | `setup.requiresInteractive` | no | false | If false (the default and only V1-supported value), substrate refuses scripts that try to read from stdin or open browser windows mid-run. Forbidden in V1 — see [No interactive subprocesses](#no-interactive-subprocesses). |
-| `teardown.command` | recommended | — | If absent, uninstalling the plugin shows "this plugin can't auto-clean its resources; you'll need to remove them manually." |
-| `verify.command` | recommended | — | Used for plugin health on operator boot. If absent, plugin health is inferred from action invocations. |
+| `teardown.path` | recommended | — | If absent, uninstalling the plugin shows "this plugin can't auto-clean its resources; you'll need to remove them manually." |
+| `verify.path` | recommended | — | Used for plugin health on operator boot. If absent, plugin health is inferred from action invocations. |
 | `verify.intervalSec` | no | 600 | How often the substrate runs `verify` opportunistically. |
 
 ### Cost estimate field — explicitly dropped from V1
@@ -364,7 +383,7 @@ The substrate compares **three** values against the current install:
 | Compared value | Source | Trigger |
 |---|---|---|
 | `configHash` | sha256 of the structural projection of the current per-harness plugin-config | Mismatch → re-provision prompt |
-| `scriptHash` | sha256 of the current plugin's `setup.command` file content | Mismatch → **always** re-provision prompt (script-hash changes can never be auto-applied) |
+| `scriptHash` | sha256 of the current plugin's `setup.path` file content | Mismatch → **always** re-provision prompt (script-hash changes can never be auto-applied) |
 | `pluginVersion` | semver from the current plugin's manifest | Mismatch → re-provision prompt unless `skipReprovisionOnPatch: true` AND only the patch component changed AND `scriptHash` matches |
 
 | State | Substrate behavior |
@@ -839,8 +858,9 @@ V1.1 will add explicit cross-references between the two in the SDK docs.
 ## Helper library: `provision/lib.sh`
 
 The substrate ships a small helper library that plugin scripts source.
-It's at `$PAPERCUSP_PLUGIN_DIR/../runtime/lib.sh` and gets sourced by
-the standard pattern:
+Its path is provided to the script in `$PAPERCUSP_RUNTIME_LIB` (source is
+`packages/operator-core/lib/provision/runtime/lib.sh`); scripts source it
+by the standard pattern:
 
 ```bash
 #!/usr/bin/env bash
@@ -863,8 +883,9 @@ papercusp_record_resource "aws.lambda.function" "$FN_ARN"
 | `papercusp_progress <step> <message>` | Emits a `::papercusp::progress` marker. UI renders a structured progress bar. |
 | `papercusp_warn <message>` | Emits a `::papercusp::warn` marker. UI renders a yellow indicator. |
 | `papercusp_error <message>` | Emits a `::papercusp::error` marker. UI renders a red indicator (script may still continue or exit). |
-| `papercusp_record_resource <kind> <id>` | Appends `{kind, id, recordedAt}` to `state.json` *immediately* (not at success). Substrate uses this for partial-failure rollback. |
-| `papercusp_state_set <key> <value>` | Sets a key in `state.json` `outputs`. |
+| `papercusp_record_resource <kind> <id> [<meta-json>]` | Appends `{kind, externalId, recordedAt, metadata?}` to the resource WAL (via `$PAPERCUSP_RECORD_FIFO`) *immediately* (not at success). Substrate uses this for partial-failure rollback. |
+| `papercusp_state_set <key> <value>` | Sets a key in `state.json` `outputs` (same FIFO, `$op: "state_set"`). |
+| `papercusp_render_templates` | Walks `$PAPERCUSP_PROJECT_DIR` for `*.tmpl` files, renders each via `envsubst` with the script's exported env, writes the de-suffixed result, removes the `.tmpl` source. Skips VCS/build dirs. |
 
 ### Partial-failure rollback via `record_resource`
 
@@ -947,8 +968,8 @@ to control when setup fires:
 {
   "provision": {
     "setup": {
-      "command": "./provision/setup.sh",
-      "runAt": "fork"          // "fork" (default) | "manual" | "first-action"
+      "path": "provision/setup.sh",
+      "runAt": "fork"          // "fork" (default) | "install" | "first-action"
     }
   }
 }
@@ -976,6 +997,10 @@ The badge prevents the silent-drop failure mode where the user has no
 idea their plugin missed events because setup took too long.
 
 ### Run-timing options
+
+(The shipped SDK `runAt` enum is `'fork' | 'install' | 'first-action'`;
+`"install"` runs setup at plugin-install time rather than at fork. The
+`"manual"` mode described here is a design target not yet in the enum.)
 
 `runAt: "manual"` puts setup behind a "Run setup" button in plugin
 settings, never auto-fires. Useful for heavyweight optional plugins

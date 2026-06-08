@@ -14,13 +14,13 @@ Legend: [ ] todo · [~] in progress · [x] done
 - [ ] spec (45)
 - [x] system (5)
 - [x] build-system (7)
-- [~] snapshots (7)
-- [~] testing (4)
-- [~] security (2)
-- [~] plugins (1)
-- [ ] posthog (2)
-- [ ] desktop (3)
-- [ ] implementation (6)
+- [x] snapshots (7)
+- [x] testing (4)
+- [x] security (2)
+- [x] plugins (1)
+- [~] posthog (2)
+- [~] desktop (3)
+- [~] implementation (6)
 - [ ] design (17)
 - [ ] reference (5) — CHECK IF GENERATED before hand-editing
 - [ ] agent-insights (98)
@@ -89,6 +89,16 @@ NOTE: real baseline SQL path = libs/papercusp/libs/db/sql/000-baseline.sql (arch
 - build-system/verification: EDITS — port finder ss/next-server→operator.json; flag defaults (snapshots TRUE); FAIL signals.
 - build-system/privacy-audit: EDITS — scanner is REGEX phx_/phc_ not 6 literal strings; FLAG_DEFAULTS; .app/sidecar layout.
 - build-system/vms: EDITS — pcusp-fedbr0→papercusp-fedbr0; no engines field; bundled_path_env; node v24 runtime. Flag: win10-vm torn down (env, not doc).
+
+### Batch 4 (snapshots + testing + security + plugins) — DONE
+- snapshots/*: EDITS — design suite largely SHIPPED; renamed fields command→path, aliases map→array, pluginVersionPinned→versionPin, runAt manual→install; Next paths→Hono routes; added "implemented" Asides. index ACCURATE.
+- testing/index: EDITS — llm-testing + registry paths→operator-core; Vitest 3→4; Storybook 8→10.
+- testing/agent-e2e: EDITS — removed nonexistent PAPERCUSP_BRIDGE_PORT=9230 (bridge binds ephemeral :0, read token file); Next sidecar→Vite/Hono; .next cache→.vite.
+- testing/visual-regression: EDITS — libs/ui-primitives→libs/generic/ui-primitives; refreshed snapshot counts.
+- testing/p079-bidirectional-federation: EDITS — operator-core test paths. (very accurate)
+- security/distribution-trust: ACCURATE.
+- security/shared-harnesses: ACCURATE (proposed-design doc, dated 2026-05-31).
+- plugins/branch-buttons: EDITS — Next route handler example→plugin apiRoutes Hono app.
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

@@ -50,30 +50,38 @@ Your handler can return:
 Non-2xx responses mark the run as `failed` with the HTTP status as the
 exit code.
 
-URLs are resolved against the operator's origin. Most plugins point at
-their own routes mounted under `/api/plugins/<slug>/...`, but any
-operator-relative or absolute URL works.
+URLs are resolved against the operator's origin (`selfUrl()`). Most
+plugins point at their own routes mounted under `/api/plugins/<slug>/...`,
+but any operator-relative or absolute URL works.
 
-### Example handler (Next.js route)
+### Example handler (plugin `apiRoutes` — a Hono app)
+
+A plugin exposes HTTP routes by declaring `apiRoutes` (a Hono app, or any
+object with a `.fetch(req)` method) in its manifest; the operator mounts
+it under `/api/plugins/<slug>/...` (see
+`packages/operator-core/lib/plugin-api-mount.ts`). The handler receives a
+standard Web `Request` and returns a `Response`:
 
 ```ts
-// app/api/plugins/@scope/myplugin/build-staging/route.ts
-export async function POST(req: Request) {
-  const { harness, branch, button, runId } = await req.json();
+// plugin apiRoutes (Hono)
+import { Hono } from 'hono';
+
+export const apiRoutes = new Hono().post('/build-staging', async (c) => {
+  const { harness, branch, button, runId, env } = await c.req.json();
   const stream = new ReadableStream({
-    async start(c) {
+    async start(ctrl) {
       const enc = new TextEncoder();
-      const send = (s: string) => c.enqueue(enc.encode(`data: ${s}\n\n`));
+      const send = (s: string) => ctrl.enqueue(enc.encode(`data: ${s}\n\n`));
       send(`Starting ${button} for ${harness}/${branch}…`);
       // …do work…
       send(`Done.`);
-      c.close();
+      ctrl.close();
     },
   });
   return new Response(stream, {
     headers: { 'content-type': 'text/event-stream' },
   });
-}
+});
 ```
 
 ## 2. Script-based contributions

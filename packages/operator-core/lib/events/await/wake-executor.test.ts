@@ -283,6 +283,42 @@ describe('executeWake — the liveness ladder', () => {
     expect(o.env.PAPERCUSP_SID).toBe('su-abc');
   });
 
+  it('exited codex → DETACHED `exec resume <uuid>` with CODEX_HOME, uuid recovered from the rollout (P-009)', async () => {
+    const spawnDetached = vi.fn(() => 5555);
+    const out = await executeWake(
+      // codex carries no native id on the row — executeWake recovers it from the home.
+      work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null })) as never,
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [bin, args, o] = spawnDetached.mock.calls[0] as unknown as [
+      string, string[], { cwd: string; env: Record<string, string> },
+    ];
+    expect(bin).toBe('codex');
+    expect(args.slice(0, 4)).toEqual([
+      'exec', '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume',
+    ]);
+    expect(args[4]).toBe(ROLLOUT_UUID); // recovered from the newest rollout
+    expect(args[5]).toContain('lock:grant:t-1'); // the wake turn text
+    expect(o.env.CODEX_HOME).toBe(join(CODEX_HOMES_DIR, 'session-42'));
+  });
+
+  it('exited codex with NO recoverable home → park, never a bare --last (P-009)', async () => {
+    const out = await executeWake(
+      // adv-session 999 has no codex home on disk → no uuid → not resumable.
+      work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null, advSessionId: 999 }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, id: 999 })) as never,
+      }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+  });
+
   it('a session row marked ended is exited even if the recorded pid is reused-alive', async () => {
     const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(
@@ -364,5 +400,16 @@ describe('executeWake — the liveness ladder', () => {
       }),
     );
     expect(out).toMatchObject({ kind: 'error' });
+  });
+});
+
+describe('codex home + rollout recovery (P-009/P-010)', () => {
+  it('codexHomeForAdvSession keys the home by the adv-session id', () => {
+    expect(codexHomeForAdvSession(42)).toBe(join(CODEX_HOMES_DIR, 'session-42'));
+  });
+
+  it('findCodexRolloutSessionId returns the NEWEST rollout uuid; null when absent', () => {
+    expect(findCodexRolloutSessionId(join(CODEX_HOMES_DIR, 'session-42'))).toBe(ROLLOUT_UUID);
+    expect(findCodexRolloutSessionId(join(CODEX_HOMES_DIR, 'session-nope'))).toBeNull();
   });
 });
