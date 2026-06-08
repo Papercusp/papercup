@@ -139,6 +139,11 @@ export interface AnnounceLocalPresenceDeps {
   prev: LastAnnounce | null;
   now?: () => number;
   cadence?: AnnounceCadenceOpts;
+  /** The harness's home Hive slug (shared-hive-federation P-008/P-009), stamped on
+   *  each announce so the FEDERATED presence row carries it — the per-Hive lock
+   *  authority scopes by it (lockAuthorityForHive's `WHERE hive_slug`). Null = a
+   *  non-Hive harness. Additive: omitted → null (back-compat). */
+  hiveSlug?: string | null;
 }
 
 export interface AnnounceResult {
@@ -161,7 +166,7 @@ export async function announceLocalPresence(
   if (!shouldAnnounce(deps.prev, state, now, deps.cadence)) {
     return { announced: false };
   }
-  await deps.append(buildPresenceAnnounceOp(identity, state, now));
+  await deps.append(buildPresenceAnnounceOp(identity, state, now, deps.hiveSlug ?? null));
   return { announced: true, last: { state: { ...state }, atMs: now } };
 }
 
@@ -173,6 +178,9 @@ export interface PresenceAnnounceLoopDeps {
   getState: () => PresenceState;
   /** Append the announce op to the booted substrate handle's own log. */
   append: (op: LocalWriteOp) => Promise<void>;
+  /** The harness's home Hive slug (P-008/P-009) — resolved ONCE by the publisher
+   *  (hiveHomeSlugForHarness) and stamped on every announce. Null = non-Hive. */
+  hiveSlug?: string | null;
   /** Tick rate (the decision cadence is shouldAnnounce's; the loop just polls). */
   intervalMs: number;
   cadence?: AnnounceCadenceOpts;
@@ -215,6 +223,7 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
         prev,
         now: deps.now,
         cadence: deps.cadence,
+        hiveSlug: deps.hiveSlug,
       });
       if (result.last) prev = result.last;
     } catch (err) {

@@ -39,6 +39,7 @@ import {
 import type { SwarmBinding } from './derive-swarm-topic';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 import { wireOutboxForHarness } from './wire-outbox';
+import { wirePresenceAnnounceForHarness } from './wire-presence';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
@@ -243,6 +244,20 @@ export async function bootSingleHarness(
       // eslint-disable-next-line no-console
       console.error(
         `[boot-all] outbox wiring failed for ${k} (boot still succeeded):`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+    // P-008 presence PUBLISHER: start THIS machine's presence-announce loop so a
+    // shared Hive's Swarms see each other (the per-Hive lock authority, P-009,
+    // elects over the live roster). A no-op for a private/unswarmed harness
+    // (handle.swarm null). Best-effort + close-hook-tied (mirrors the outbox wiring);
+    // a failure must NEVER block boot (presence is additive — PG-direct still works).
+    try {
+      await wirePresenceAnnounceForHarness(handle);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[boot-all] presence wiring failed for ${k} (boot still succeeded):`,
         e instanceof Error ? e.message : String(e),
       );
     }
