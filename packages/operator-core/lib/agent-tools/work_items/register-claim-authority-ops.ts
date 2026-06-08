@@ -16,5 +16,14 @@
  * `LocalWorkItemClaimAuthority` is correct (single box → authority is always self).
  */
 import { registerWorkItemClaimAuthorityOps } from '../../work-item-claim-authority-ops';
+import { installSwarmWorkItemClaimAuthority } from '../../work-item-claim-authority-swarm';
+import { workItemClaimLeaseEnabled } from '../../work-item-claim-lease-wiring';
 
 registerWorkItemClaimAuthorityOps();
+
+// Install the production multi-peer Hive router ONLY when the owner has flipped the
+// ratification switch (PAPERCUSP_WORKITEM_CLAIM_LEASE=1, D-007/P-001). Off → the store's
+// default LocalWorkItemClaimAuthority stays (single-box correct; tests stay deterministic).
+if (workItemClaimLeaseEnabled()) {
+  installSwarmWorkItemClaimAuthority();
+}

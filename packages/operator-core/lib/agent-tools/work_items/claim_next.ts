@@ -12,7 +12,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimNextWorkItem } from '../../work-items';
+import { claimNextWorkItem, releaseWorkItem } from '../../work-items';
+import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -35,12 +36,25 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const assignee = args.assignee ?? ident.ownerId;
     const wi = await claimNextWorkItem({
       harness: args.harness,
-      assignee: args.assignee ?? ident.ownerId,
+      assignee,
       kind: args.kind,
       states: args.states,
     });
+    // P-004 / D-002 (D-007 hybrid), flag-gated default-OFF: once the owner ratifies
+    // (PAPERCUSP_WORKITEM_CLAIM_LEASE=1), the local SKIP-LOCKED claim is arbitrated by
+    // the per-Hive authority lease. On a single box this is a no-op (authority = self);
+    // cross-Swarm, only one Swarm wins the Hive lease — the loser releases its local
+    // claim so the item returns to the backlog (work-stealing across machines).
+    if (wi && workItemClaimLeaseEnabled()) {
+      const leased = await leaseClaimedWorkItem({ harness: args.harness, workItemId: wi.id, owner: assignee });
+      if (!leased) {
+        await releaseWorkItem(wi.id, { harness: args.harness });
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'claimed by another Swarm (Hive authority)' }) }] };
+      }
+    }
     return { content: [{ type: 'text' as const, text: JSON.stringify(wi ? { ok: true, workItem: wi } : { ok: false, error: 'no claimable work-item' }) }] };
   },
 });
