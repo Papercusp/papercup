@@ -264,21 +264,4 @@ describe('harness-fs-watcher: existence-anchored watch paths', () => {
     }
   });
 
-  it('org-root files are only watched when the project root exists', () => {
-    const root = mkdtempSync(join(tmpdir(), 'fsw-org-'));
-    try {
-      const org = { slug: 'org', path: root, harness_kind: 'org' };
-      // No .papercusp dirs — only the org-root files should appear.
-      const paths = watchedPaths(org);
-      expect(paths).toEqual([
-        join(root, 'charter.md'),
-        join(root, 'departments.json'),
-        join(root, 'projects.json'),
-      ]);
-      const deadOrg = { slug: 'org2', path: join(root, 'nope'), harness_kind: 'org' };
-      expect(watchedPaths(deadOrg)).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
 });

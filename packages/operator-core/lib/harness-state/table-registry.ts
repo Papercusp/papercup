@@ -211,11 +211,10 @@ const WORKSPACE_OWNED_PREFIXES = [
   'tool_invocations', 'route_invocations',
 ];
 
-/** Legacy / dead (D-008 papercup-org departments) — classified DEFAULT, not extended. */
-const LEGACY_DEAD = [
-  'org_charter', 'org_decisions', 'org_departments', 'org_inbox',
-  'org_notes', 'org_outbox', 'org_projects',
-];
+/** Legacy / dead surfaces — classified DEFAULT, not extended. Currently empty:
+ *  the papercup-org/department tables (D-008) that filled this were dropped in
+ *  migration 192. Kept as the classification slot for any future dead table. */
+const LEGACY_DEAD: string[] = [];
 
 const GIT_SET = new Set(GIT_DOCS);
 const PEER_SET = new Set(PEER_LOG_LIVE);

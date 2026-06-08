@@ -113,21 +113,16 @@ describe('sync-resolver v2 registry', () => {
         'pluginConfigs.byHarness',
         'pluginEnables.byWorkspace',
         'projectSpecRevisions.byProject',
-        'orgCharter.byOrg',
-        'orgDepartments.byOrg',
       ]) {
         expect(names).toContain(expected);
       }
     });
 
+    // (batch 10's org_* query names were removed with the org-sim retirement,
+    //  migration 192 — proposalsShared remains.)
     it('includes batch 10 migrated names', () => {
       const names = knownQueryNamesV2();
       for (const expected of [
-        'orgProjects.byOrg',
-        'orgInbox.byDept',
-        'orgOutbox.byDept',
-        'orgNotes.byDept',
-        'orgDecisions.byDept',
         'proposalsShared.byHarness',
       ]) {
         expect(names).toContain(expected);

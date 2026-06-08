@@ -1,5 +1,4 @@
 import { createFileRoute, notFound, redirect, Navigate } from '@tanstack/react-router';
-import DepartmentHarnessDashboard from '@/app/harness/DepartmentHarnessDashboard';
 import HarnessDockShell from '@/app/harness/[slug]/HarnessDockShell';
 import { InsightsFirstVisitGate } from '@/app/harness/insights/InsightsFirstVisitGate';
 
@@ -15,14 +14,15 @@ import { InsightsFirstVisitGate } from '@/app/harness/insights/InsightsFirstVisi
  *     route data (`Route.useLoaderData()` is typed).
  *   - `notFound()` from `next/navigation` → TSR `notFound()` throw.
  *   - `searchParams.dock === '1'` (server) → TSR `validateSearch` + `Route.useSearch()`.
+ *
+ * Coding harnesses are served by /adv; the only remaining per-slug surface is
+ * the opt-in `?dock=1` shell. (The org/department dashboard was retired with the
+ * org-sim — migration 192.)
  */
 
-type HarnessKind = '' | 'coding' | 'org' | 'department';
 type ProjectEntry = {
   slug: string;
   path: string;
-  harness_kind?: HarnessKind;
-  department_slug?: string;
 };
 
 export const Route = createFileRoute('/harness/$slug/')({
@@ -47,9 +47,9 @@ export const Route = createFileRoute('/harness/$slug/')({
     const projects: ProjectEntry[] = data.projects ?? [];
     const project = projects.find((p) => p.slug === params.slug);
     if (!project) throw notFound();
-    // Coding harnesses are now served by /adv; only org/department + the
-    // opt-in ?dock=1 shell still render the legacy per-slug surface here.
-    if (deps.dock !== 1 && project.harness_kind !== 'department') {
+    // Coding harnesses are served by /adv; only the opt-in ?dock=1 shell still
+    // renders the legacy per-slug surface here.
+    if (deps.dock !== 1) {
       throw redirect({ to: '/adv', search: { tab: 'harnesses', slug: params.slug } });
     }
     return { project };
@@ -71,19 +71,7 @@ function HarnessProjectPage() {
     );
   }
 
-  if (project.harness_kind === 'department' && project.department_slug) {
-    return (
-      <>
-        <InsightsFirstVisitGate slug={project.slug} />
-        <DepartmentHarnessDashboard
-          harnessSlug={project.slug}
-          departmentSlug={project.department_slug}
-        />
-      </>
-    );
-  }
-
-  // Coding harnesses are redirected to /adv in the loader; this branch is an
-  // unreachable safety net (HarnessDashboard is no longer rendered anywhere).
+  // Everything else is redirected to /adv in the loader; this is an unreachable
+  // safety net.
   return <Navigate to="/adv" search={{ tab: 'harnesses', slug: project.slug }} replace />;
 }

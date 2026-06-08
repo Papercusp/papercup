@@ -58,12 +58,6 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     }
   });
 
-  it('legacy papercup-org tables are tagged legacy (D-008), DEFAULT otherwise', () => {
-    const s = resolveTableSpec('org_charter');
-    expect(s.legacy).toBe(true);
-    expect(s).toMatchObject({ key: 'slug-shared', sync: 'none' });
-  });
-
   it('the across-workspaces config override is workspace-owned', () => {
     expect(resolveTableSpec('harness_prompt_overrides').key).toBe('workspace-owned');
   });
@@ -133,12 +127,11 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
       'harness_decisions',             // git
       'operator_preferences',          // workspace-owned (prefix)
       'operator_credentials',          // security
-      'org_charter',                   // legacy
       'agent_runs_consolidated',       // DEFAULT
       'some_brand_new_table',          // DEFAULT (would be flagged as defaulted → review)
     ];
     const c = classifyInventory(sample);
-    expect(c.total).toBe(7);
+    expect(c.total).toBe(6);
     expect(c.unreviewed).toHaveLength(0); // NEEDS_REVIEW empty
     // a NEW unclassified table surfaces in `defaulted` so it can't hide:
     expect(c.defaulted).toContain('some_brand_new_table');

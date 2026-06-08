@@ -99,15 +99,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   ],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
-  // ── Org-overlay tables (per-org-id, sometimes per-dept) ──────────
-  'harness_shared.org_charter': ['orgCharter.byOrg'],
-  'harness_shared.org_departments': ['orgDepartments.byOrg'],
-  'harness_shared.org_projects': ['orgProjects.byOrg'],
-  'harness_shared.org_inbox': ['orgInbox.byDept'],
-  'harness_shared.org_outbox': ['orgOutbox.byDept'],
-  'harness_shared.org_notes': ['orgNotes.byDept'],
-  'harness_shared.org_decisions': ['orgDecisions.byDept'],
-
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────
   // No camelCase query names yet — Insights tab + activity-feed reads
   // are P-073+ work. Mapped here in advance so trigger events have a

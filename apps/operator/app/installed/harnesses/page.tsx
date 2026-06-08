@@ -17,7 +17,6 @@ interface ProjectRow {
   slug: string;
   path: string;
   harness_kind?: string;
-  department_slug?: string;
   exists: boolean;
   addedAt?: string;
 }
@@ -50,7 +49,7 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       width: 1.2,
       render: ({ row }) => (
         <span className="pc-installed-harness-kind" style={{ color: 'var(--fg-dim)', opacity: row.exists ? 1 : 0.5 }}>
-          {row.harness_kind ?? (row.department_slug ? `department:${row.department_slug}` : '—')}
+          {row.harness_kind ?? '—'}
         </span>
       ),
     },
