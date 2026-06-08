@@ -19,10 +19,10 @@ Eighteen types-only modules shipped in the 2026-05-24 dogfood loop ([wrap doc](/
 Modules that pin a JSON / message shape exchanged across a process boundary.
 
 **Examples this loop:**
-- `lib/cupboard/types.ts` — Cupboard server ↔ desktop client RPCs
-- `lib/identity/contributor-file-types.ts` — signed JSON committed to git
-- `lib/harness/harness-link-types.ts` — `papercusp://harness?...` URL format
-- `lib/pr-host/types.ts` — neutral PrHost interface + Pr shape
+- `packages/operator-core/lib/cupboard/types.ts` — Cupboard server ↔ desktop client RPCs
+- `packages/operator-core/lib/identity/contributor-file-types.ts` — signed JSON committed to git
+- `packages/operator-core/lib/harness/harness-link-types.ts` — `papercusp://harness?...` URL format
+- `packages/operator-core/lib/pr-host/types.ts` — neutral PrHost interface + Pr shape
 
 **Test surface:** structural predicates (`isHarnessListing`), round-trip pairs (`formatHarnessLink` ↔ `parseHarnessLink`), JCS field-order const tests, error-discriminator coverage.
 
@@ -35,10 +35,10 @@ Modules that pin a JSON / message shape exchanged across a process boundary.
 Modules that pull the "what should I do next?" logic out of a daemon or runtime into a pure function returning a discriminated union.
 
 **Examples this loop:**
-- `lib/pr-host/auto-review-decision-types.ts` (`decideAutoReview`)
-- `lib/pr-host/retry-policy-types.ts` (`decideRetry`, `computeBackoffMs`)
-- `lib/harness/feature-claim-types.ts` (`arbitrateClaims`, `findWinningClaim`)
-- `lib/identity/binding-verifier-types.ts` (`deriveBindingStatus`, `canClaimHarness`)
+- `packages/operator-core/lib/pr-host/auto-review-decision-types.ts` (`decideAutoReview`)
+- `packages/operator-core/lib/pr-host/retry-policy-types.ts` (`decideRetry`, `computeBackoffMs`)
+- `packages/operator-core/lib/harness/feature-claim-types.ts` (`arbitrateClaims`, `findWinningClaim`)
+- `packages/operator-core/lib/identity/binding-verifier-types.ts` (`deriveBindingStatus`, `canClaimHarness`)
 
 **Test surface:** input × output permutation coverage. Every variant of the discriminated-union return shows up at least once. Edge-case args (boundary timestamps, empty arrays, zero counts) exercised explicitly.
 
@@ -53,10 +53,10 @@ See [`pure-decision-functions-pulled-from-daemons`](/internal/docs/agent-insight
 Modules that pin a row shape mirroring a PG table that's the canonical durability layer for a Hyperbee KV.
 
 **Examples this loop:**
-- `lib/harness/contributor-row-types.ts` (mirror of `contributors`)
-- `lib/harness/feature-queue-row-types.ts` (mirror of `feature_queue`)
-- `lib/pr-host/harness-feature-pr-row-types.ts` (mirror of `harness_feature_prs`)
-- `lib/pr-host/pr-reviewer-settings-types.ts` (mirror of `pr_reviewer_settings`)
+- `packages/operator-core/lib/harness/contributor-row-types.ts` (mirror of `contributors`)
+- `packages/operator-core/lib/harness/feature-queue-row-types.ts` (mirror of `feature_queue`)
+- `packages/operator-core/lib/pr-host/harness-feature-pr-row-types.ts` (mirror of `harness_feature_prs`)
+- `packages/operator-core/lib/pr-host/pr-reviewer-settings-types.ts` (mirror of `pr_reviewer_settings`)
 
 **Test surface:** structural predicate (rejects legacy rows missing the new columns), default-value constructor (`defaultPrReviewerSettings`), patch-merge helper (`applyPatch`), soft-delete marker (`markRemoved`), schema_version invariants.
 
@@ -69,10 +69,10 @@ Modules that pin a row shape mirroring a PG table that's the canonical durabilit
 Modules that pin a key string shape used by a KV store, URL scheme, or filesystem layout.
 
 **Examples this loop:**
-- `lib/harness/hyperbee-key-types.ts` (9 key shapes for the Hyperbee KV)
-- `lib/identity/contributor-file-types.ts` (path: `.papercusp/contributors/<login>.json`)
-- `lib/harness/harness-shared-config-types.ts` (path: `.papercusp/shared.json`)
-- `lib/pr-host/types.ts` (composePrKey / parsePrKey — `<remote>#<number>`)
+- `packages/operator-core/lib/harness/hyperbee-key-types.ts` (9 key shapes for the Hyperbee KV)
+- `packages/operator-core/lib/identity/contributor-file-types.ts` (path: `.papercusp/contributors/<login>.json`)
+- `packages/operator-core/lib/harness/harness-shared-config-types.ts` (path: `.papercusp/shared.json`)
+- `packages/operator-core/lib/pr-host/types.ts` (composePrKey / parsePrKey — `<remote>#<number>`)
 
 **Test surface:** composer + parser round-trip coverage, path-escape defense (`../`, embedded slashes), edge cases (numeric overflow, empty segments).
 
