@@ -21,7 +21,7 @@ const norm = (t: string): string => t.trim().replace(/\s+/g, ' ');
 
 async function main() {
   const { sql } = getOrgPg();
-  const owner = await sql<{ id: string }>`SELECT id FROM harness_shared.users WHERE username = 'default' AND is_active = true LIMIT 1`;
+  const owner = await sql<{ id: string }[]>`SELECT id FROM harness_shared.users WHERE username = 'default' AND is_active = true LIMIT 1`;
   if (!owner.length) throw new Error('default user not found');
   const ownerId = owner[0].id;
   console.log(`owner scope: ${ownerId}`);
