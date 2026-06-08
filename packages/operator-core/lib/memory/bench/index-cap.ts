@@ -4,24 +4,33 @@
  * The claude-file backend itself searches TOPIC FILES and never reads
  * `MEMORY.md` — but the real consumption path at session start is the
  * INDEX, an auto-generated projection (`~/.claude/scripts/memory-compact.mjs`,
- * plan fix-claude-code-memory-2026-06-05) with a HARD ~24.4 KB cap (past it
- * Claude silently drops the tail) and a 20 KB soft cap the projector keeps
- * the index under by PHYSICALLY ARCHIVING overflow `project` topic files
- * (oldest first; durable user/feedback/reference entries are never evicted).
+ * plans fix-claude-code-memory-2026-06-05 + memory-backend-improve-and-hybrid
+ * P-010) with a HARD ~24.4 KB cap (past it Claude silently drops the tail) and
+ * a 20 KB soft cap. The projector keeps the index under the cap by TWO
+ * mechanisms with different recall consequences:
+ *   - **Archiving** — `project` topic files that read like derivable state are
+ *     moved to `archive/` (stale >30d, or oldest-first to fit the soft cap).
+ *     These LEAVE the backend's searchable store (collect() skips archive/).
+ *   - **Tiering (P-010)** — the surviving durable set that still overflows the
+ *     always-loaded budget is split: `user` + the newest durables stay in
+ *     MEMORY.md, the rest page to `MEMORY-overflow.md`. Tiered entries are NOT
+ *     archived — the topic file stays put and STAYS SEARCHABLE. This replaced
+ *     the old abort-and-leave-a-stale-index failure (silent memory loss).
  *
  * Two distinct cap consequences this probe records per store size:
- *   1. **Session-start visibility** — only entries that fit in the rendered
- *      index are visible to a booting agent; everything else exists but is
- *      invisible until searched for explicitly.
- *   2. **Post-compaction searchability** — archived files leave the
- *      backend's searchable store entirely (collect() skips archive/), so a
- *      real compaction pass SHRINKS RECALL, not just the index.
+ *   1. **Session-start visibility** — only the always-loaded (kept) entries are
+ *      visible to a booting agent; tiered + searchable-but-unlisted entries
+ *      exist but load on demand.
+ *   2. **Post-compaction searchability** — only ARCHIVED files leave the
+ *      searchable store; tiering does not shrink recall. So
+ *      `searchableAfterCompaction` = indexed + tiered (everything not archived).
  *
- * The simulation mirrors the projector's math exactly (constants, entry
- * line format, section order, eviction passes). Fidelity is pinned by an
- * integration test that runs the REAL script (`--dry-run`) over the same
- * store and compares. The probe seeds temp-dir stores through the seam
- * (D-009 — the live `~/.claude` store is never written).
+ * The simulation mirrors the projector's math exactly (constants, entry line
+ * format, section order, eviction passes, the tier split + overflow note).
+ * Fidelity is pinned by an integration test that runs the REAL script
+ * (`--dry-run`) over the same store and compares the always-loaded count + KB.
+ * The probe seeds temp-dir stores through the seam (D-009 — the live `~/.claude`
+ * store is never written).
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -230,8 +239,15 @@ export interface IndexProjectionResult {
   /** Eviction tallies — these files ARE physically archived by a real run. */
   archivedStale: number;
   archivedOverflow: number;
+  /** Durable entries in the always-loaded MEMORY.md (keep). */
   durableIndexed: number;
   projectIndexed: number;
+  /**
+   * Durable entries still searchable after compaction — durables are NEVER
+   * archived (only tiered), so this is every durable in the deduped store.
+   * The P-010 invariant: durable recall is lossless regardless of store size.
+   */
+  durableSearchable: number;
   /** The untiered active set exceeded the soft cap → tiering kicked in. */
   overSoftCap: boolean;
   /** Even MEMORY.md (post-tiering) exceeds the hard cap — should never happen. */
@@ -301,6 +317,7 @@ export function simulateIndexProjection(
     archivedOverflow: overflow.length,
     durableIndexed: keep.filter((e) => DURABLE_TYPES.has(e.type)).length,
     projectIndexed: keep.filter((e) => e.type === 'project').length,
+    durableSearchable: active.filter((e) => DURABLE_TYPES.has(e.type)).length,
     overSoftCap: untieredBytes > softCapBytes,
     overHardCap: indexBytes > HARD_CAP_KB * 1024,
     indexedFraction: deduped.length === 0 ? 1 : keep.length / deduped.length,
@@ -408,25 +425,25 @@ export async function probeIndexCap(opts: IndexCapProbeOptions): Promise<IndexCa
 
 function buildCapNotes(points: readonly IndexCapPoint[]): string[] {
   const notes: string[] = [
-    `index caps (memory-compact.mjs defaults): soft ${SOFT_CAP_KB} KB (projector evicts to fit), hard ~${HARD_CAP_KB} KB (native Claude limit — past it the tail is silently dropped).`,
-    'durable types (user/feedback/reference) are never auto-evicted; only project entries are shed (oldest first).',
-    'a real (non-dry-run) compaction PHYSICALLY ARCHIVES evicted files — they leave the backend\'s searchable store, so the cap bounds recall, not just session-start visibility.',
+    `index caps (memory-compact.mjs defaults): soft ${SOFT_CAP_KB} KB always-loaded, hard ~${HARD_CAP_KB} KB (native Claude limit).`,
+    'two distinct shedding mechanisms (P-010): (1) project memories that read like derivable state are PHYSICALLY ARCHIVED (stale >30d, or oldest-first to fit the soft cap) — these LEAVE the searchable store; (2) the surviving durable set that still overflows the always-loaded budget is TIERED to MEMORY-overflow.md — reachable on demand and STILL searchable (the topic file is untouched).',
+    'durable types (user/feedback/reference) are never archived; the `user` section is always-loaded, other durables tier (newest-first) only when over budget. So tiering bounds session-start VISIBILITY, not RECALL.',
   ];
   const worst = points[points.length - 1];
-  if (worst && worst.size > worst.indexed) {
+  if (worst && worst.tiered > 0) {
     notes.push(
-      `at ${worst.size} entries only ${worst.indexed} (${(worst.indexedFraction * 100).toFixed(1)}%) fit the index; ` +
-        `${worst.archivedOverflow} would be archived by one compaction pass.`,
+      `at ${worst.size} entries ${worst.indexed} are always-loaded and ${worst.tiered} are tiered to ${OVERFLOW_FILE} (still searchable); ` +
+        `${worst.archivedOverflow + worst.archivedStale} project memories would be archived (out of recall) by one compaction pass.`,
     );
   }
   if (points.some((p) => p.overSoftCap)) {
     notes.push(
-      'the durable set alone exceeds the soft cap at some sizes — nothing mechanical left to shed (the projector emits its near-limit hygiene notice; the real store already hit this once).',
+      'the active set exceeds the soft cap at some sizes — the projector tiers the durable overflow to the on-demand index (no abort, no stale index, no lost facts; the real store already hit this once).',
     );
   }
   if (points.some((p) => p.overHardCap)) {
     notes.push(
-      'post-eviction index STILL over the hard cap at some sizes (durables alone over-cap) — there the real projector ABORTS: archives nothing, leaves MEMORY.md stale, and the session-start reader silently drops the tail of whatever index was last written.',
+      'MEMORY.md STILL over the hard cap after tiering at some sizes — the belt-and-suspenders abort guard fires; this should not happen since the tier budget is below the soft cap.',
     );
   }
   return notes;
@@ -435,12 +452,12 @@ function buildCapNotes(points: readonly IndexCapPoint[]): string[] {
 /** One markdown table over the probe points (folds into the bench report). */
 export function renderIndexCapMarkdown(points: readonly IndexCapPoint[], notes: readonly string[]): string {
   const lines: string[] = [];
-  lines.push('| store size | indexed | index KB | indexed % | archived by compaction | over soft cap | over hard cap | real projector |');
+  lines.push('| store size | always-loaded | tiered (searchable) | index KB | loaded % | archived (out of recall) | over soft cap | real projector |');
   lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const p of points) {
     lines.push(
-      `| ${p.size} | ${p.indexed} (${p.durableIndexed} durable + ${p.projectIndexed} project) | ${(p.indexBytes / 1024).toFixed(1)} | ` +
-        `${(p.indexedFraction * 100).toFixed(1)}% | ${p.archivedOverflow + p.archivedStale} | ${p.overSoftCap ? 'YES' : 'no'} | ${p.overHardCap ? 'YES' : 'no'} | ` +
+      `| ${p.size} | ${p.indexed} (${p.durableIndexed} durable + ${p.projectIndexed} project) | ${p.tiered} | ${(p.indexBytes / 1024).toFixed(1)} | ` +
+        `${(p.indexedFraction * 100).toFixed(1)}% | ${p.archivedOverflow + p.archivedStale} | ${p.overSoftCap ? 'YES' : 'no'} | ` +
         `${p.realProjector ? `${p.realProjector.indexed} @ ${p.realProjector.indexKb} KB` : '—'} |`,
     );
   }

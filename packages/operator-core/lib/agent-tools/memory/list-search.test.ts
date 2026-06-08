@@ -113,6 +113,29 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(out.results[0]).toEqual({ id: 'm0', memory: 't0', score: 0.9 });
   });
 
+  it('PULL path applies NO relevance floor — surfaces weak scored candidates for the LLM to judge (P-021 / D-003)', async () => {
+    // The read-gate split: the push/auto-inject path floors with injectMinScore()
+    // (no LLM in the loop, so a bad inject already harmed the turn); the on-demand
+    // PULL path must NOT floor — the calling LLM is present and judges relevance
+    // itself, so memory:search returns every scored candidate (including weak ones
+    // below the push floor) with scores intact.
+    const entries: Entry[] = [
+      { id: 'strong', text: 'a strong hit', scope: 'user-1', score: 0.83 },
+      { id: 'weak', text: 'a weak hit far below the 0.42 push floor', scope: 'user-1', score: 0.18 },
+    ];
+    const b = fakeBackend(entries);
+    useBackend(b);
+    const out = parse(await search.handler({ query: 'q' }, ctx));
+
+    // backend.search invoked WITHOUT any floor key — no minScore / minScoreRatio.
+    const opts = b.search.mock.calls[0][1] as Record<string, unknown>;
+    expect('minScore' in opts).toBe(false);
+    expect('minScoreRatio' in opts).toBe(false);
+    // the weak candidate is surfaced (not floored out), score preserved for judging.
+    expect(out.results.map((r) => r.id)).toEqual(['strong', 'weak']);
+    expect(out.results.find((r) => r.id === 'weak')?.score).toBe(0.18);
+  });
+
   it('unavailable backend → { ok:false, reason, results: [] } on both tools', async () => {
     const b = fakeBackend([], false);
     useBackend(b);

@@ -58,7 +58,7 @@ describe('simulateIndexProjection', () => {
     expect(r.searchableAfterCompaction).toBe(20);
   });
 
-  it('over the soft cap: sheds OLDEST project entries until the index fits', () => {
+  it('over the soft cap: archives oldest project entries, tiers the rest; nothing lost', () => {
     // ~110 bytes/line → need >190 entries to pass 20 KB.
     const entries = Array.from({ length: 400 }, (_, i) =>
       entry({ file: `project_p${i}.md`, mtimeMs: NOW - i * 60_000 }),
@@ -67,21 +67,30 @@ describe('simulateIndexProjection', () => {
     expect(r.archivedOverflow).toBeGreaterThan(0);
     expect(r.indexed).toBeLessThan(400);
     expect(r.indexBytes).toBeLessThanOrEqual(SOFT_CAP_KB * 1024);
-    expect(r.overSoftCap).toBe(false);
+    expect(r.overSoftCap).toBe(false); // active fits the soft cap post-eviction
     expect(r.indexedFraction).toBeLessThan(1);
-    // Newest survive: p0 (newest) indexed, p399 (oldest) evicted.
-    expect(r.indexed + r.archivedOverflow).toBe(400);
+    // Every file lands in exactly one bucket: always-loaded + tiered + archived = 400.
+    expect(r.indexed + r.tiered + r.archivedOverflow + r.archivedStale).toBe(400);
+    // Tiered entries are NOT archived — they stay searchable.
+    expect(r.searchableAfterCompaction).toBe(r.indexed + r.tiered);
   });
 
-  it('durable entries are NEVER evicted, even when they alone exceed the cap', () => {
+  it('durable entries are NEVER archived — they tier (still searchable), never lost', () => {
     const entries = Array.from({ length: 400 }, (_, i) =>
       entry({ file: `feedback_f${i}.md`, type: 'feedback', mtimeMs: NOW - i * 60_000 }),
     );
     const r = simulateIndexProjection(entries, NOW);
+    // No durable is ever archived (out of recall)…
     expect(r.archivedOverflow).toBe(0);
-    expect(r.indexed).toBe(400);
-    expect(r.overSoftCap).toBe(true); // nothing mechanical left to shed
-    expect(r.overHardCap).toBe(true);
+    expect(r.archivedStale).toBe(0);
+    expect(r.durableSearchable).toBe(400);
+    expect(r.searchableAfterCompaction).toBe(400);
+    // …but the always-loaded set is tiered down to fit the cap (no abort).
+    expect(r.indexed).toBeLessThan(400);
+    expect(r.tiered).toBeGreaterThan(0);
+    expect(r.indexed + r.tiered).toBe(400);
+    expect(r.overSoftCap).toBe(true); // untiered durable set exceeds the soft cap
+    expect(r.overHardCap).toBe(false); // tiering keeps MEMORY.md under the hard cap
   });
 
   it('derivable project entries older than 30d are stale-archived', () => {
@@ -129,10 +138,12 @@ describe('probeIndexCap (temp-dir stores through the seam)', () => {
     expect(scaled.totalFiles).toBe(400);
     expect(scaled.archivedOverflow).toBeGreaterThan(0);
     expect(scaled.indexedFraction).toBeLessThan(1);
-    expect(scaled.durableIndexed).toBe(10); // durables survive
+    expect(scaled.durableSearchable).toBe(10); // durables are never archived — all 10 remain searchable
+    expect(scaled.durableIndexed).toBeLessThanOrEqual(10); // some may tier to the on-demand index
     expect(scaled.indexBytes).toBeLessThanOrEqual(SOFT_CAP_KB * 1024);
     expect(report.markdown).toContain('| 400 |');
-    expect(report.notes.some((n) => n.includes('PHYSICALLY ARCHIVES'))).toBe(true);
+    expect(report.notes.some((n) => n.includes('PHYSICALLY ARCHIVED'))).toBe(true);
+    expect(report.notes.some((n) => n.includes('TIERED') || n.includes('tier'))).toBe(true);
   }, 60_000);
 });
 
