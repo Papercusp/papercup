@@ -75,6 +75,19 @@ async function seedPlan(
        ${`P ${slug}`}, 'active', ${`body ${slug}`}, ${opts.origin ?? 'local'})`;
 }
 
+async function seedHiveMember(
+  sql: postgres.Sql,
+  githubUserId: number,
+  opts: { origin?: string; workspace_id?: string; hive_home_slug?: string } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.hive_members
+      (workspace_id, hive_home_slug, github_user_id, github_username, origin)
+    VALUES
+      (${opts.workspace_id ?? WS}, ${opts.hive_home_slug ?? SLUG}, ${githubUserId},
+       ${`u${githubUserId}`}, ${opts.origin ?? 'local'})`;
+}
+
 async function outboxRows(sql: postgres.Sql) {
   return sql<{
     table_name: string;
@@ -138,6 +151,27 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         origin       TEXT NOT NULL DEFAULT 'local',
         PRIMARY KEY (harness_slug, plan_slug)
       );
+      -- shared-hive-federation (P-005) added hive_settings to BACKFILL_TARGETS
+      -- (scope == harness_slug) and (P-006) added hive_members (scope ==
+      -- hive_home_slug). The fixture must create BOTH or the backfill's count query
+      -- hits a missing relation. Subset of the real columns the SELECT / to_jsonb touch.
+      CREATE TABLE harness_shared.hive_settings (
+        harness_slug TEXT NOT NULL,
+        setting_key  TEXT NOT NULL,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        value        TEXT,
+        origin       TEXT NOT NULL DEFAULT 'local',
+        PRIMARY KEY (harness_slug, setting_key)
+      );
+      CREATE TABLE harness_shared.hive_members (
+        workspace_id   TEXT   NOT NULL,
+        hive_home_slug TEXT   NOT NULL,
+        github_user_id BIGINT NOT NULL,
+        github_username TEXT  NOT NULL DEFAULT '',
+        revoked_pubkeys TEXT[] NOT NULL DEFAULT '{}',
+        origin         TEXT   NOT NULL DEFAULT 'local',
+        PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
+      );
       CREATE TABLE harness_shared.substrate_outbox (
         id           BIGSERIAL PRIMARY KEY,
         workspace_id TEXT   NOT NULL,
@@ -167,6 +201,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
     await db.sql`TRUNCATE harness_shared.harness_issues_consolidated`;
     await db.sql`TRUNCATE harness_shared.harness_plans`;
+    await db.sql`TRUNCATE harness_shared.hive_settings`;
+    await db.sql`TRUNCATE harness_shared.hive_members`;
     await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
     await db.sql`TRUNCATE harness_shared.substrate_meta`;
   });
@@ -295,5 +331,29 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     // Second call skipped.
     const second = await backfillLocalState(fakeHandle(), db.sql);
     expect(second.skipped).toBe(true);
+  });
+
+  it('backfills local hive_members scoped by hive_home_slug (P-006 multi-Swarm admission)', async () => {
+    // 2 local members of THIS Hive home (SLUG) + a remote one + a member of a DIFFERENT Hive.
+    await seedHiveMember(db.sql, 11);
+    await seedHiveMember(db.sql, 22);
+    await seedHiveMember(db.sql, 33, { origin: 'remote' }); // echo-loop guard → NOT enqueued
+    await seedHiveMember(db.sql, 44, { hive_home_slug: 'other-hive' }); // other Hive → NOT enqueued
+    // A local feature too, so the marker/loop isn't a single-table run.
+    await seedFeature(db.sql, 'F-1');
+
+    const res = await backfillLocalState(fakeHandle(), db.sql);
+    expect(res.skipped).toBe(false);
+
+    const rows = await outboxRows(db.sql);
+    const memberRows = rows.filter((r) => r.table_name === 'hive_members');
+    // Only the 2 local SLUG-scoped members, keyed by github_user_id (the trigger's
+    // TG_ARGV[0]), scoped to the Hive home (outbox harness_slug == hive_home_slug).
+    expect(memberRows.map((r) => r.key).sort()).toEqual(['11', '22']);
+    for (const r of memberRows) {
+      expect(r.harness_slug).toBe(SLUG);
+      expect(r.op).toBe('put');
+      expect(r.row?.hive_home_slug).toBe(SLUG);
+    }
   });
 });

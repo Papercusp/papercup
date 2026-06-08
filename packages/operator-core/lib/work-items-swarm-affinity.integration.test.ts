@@ -51,6 +51,17 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const wi = await import('./work-items');
+const coLocateTool = (await import('./agent-tools/work_items/co_locate')).default;
+const runCoLocate = async (args: Record<string, unknown>) =>
+  JSON.parse(
+    (
+      await (
+        coLocateTool as unknown as {
+          handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
+        }
+      ).handler(args, { log() {}, workspaceId: 'default', role: 'operator' })
+    ).content[0].text,
+  );
 const H = 'papercup';
 const S1 = 'swarm-one';
 const S2 = 'swarm-two';
@@ -148,5 +159,37 @@ describe('setWorkItemSwarmAffinity / getWorkItemSwarmAffinity', () => {
     await wi.setWorkItemSwarmAffinity('F-1', S2, { harness: H }); // now belongs to S2
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-x', swarmId: S1 });
     expect(got).toBeNull(); // S1 can't claim S2's work
+  });
+});
+
+describe('work_items:co_locate tool', () => {
+  it('read mode reports the current affinity without writing', async () => {
+    await seedFeature('F-1', { createdTs: 100, affinity: S1 });
+    const r = await runCoLocate({ workItem: 'F-1', harness: H });
+    expect(r).toMatchObject({ ok: true, mode: 'read', workItem: 'F-1', swarmAffinity: S1 });
+  });
+
+  it('explicit mode pins a Swarm, and null clears it', async () => {
+    await seedFeature('F-1', { createdTs: 100 });
+    const pinned = await runCoLocate({ workItem: 'F-1', harness: H, swarm: S2 });
+    expect(pinned).toMatchObject({ ok: true, mode: 'explicit', action: 'pin', swarmAffinity: S2 });
+    expect((await wi.getWorkItemSwarmAffinity('F-1', { harness: H }))?.swarmAffinity).toBe(S2);
+
+    const cleared = await runCoLocate({ workItem: 'F-1', harness: H, swarm: null });
+    expect(cleared).toMatchObject({ ok: true, action: 'clear', swarmAffinity: null });
+  });
+
+  it('decided mode co-locates with another item: inherits its Swarm', async () => {
+    await seedFeature('F-peer', { createdTs: 100, affinity: S2 }); // collaborator on S2
+    await seedFeature('F-new', { createdTs: 200 });
+    const r = await runCoLocate({ workItem: 'F-new', harness: H, coLocateWith: 'F-peer' });
+    expect(r).toMatchObject({ ok: true, mode: 'decided', action: 'co-locate', swarmAffinity: S2 });
+    expect((await wi.getWorkItemSwarmAffinity('F-new', { harness: H }))?.swarmAffinity).toBe(S2);
+  });
+
+  it('decided mode reports not-found for a missing coLocateWith item', async () => {
+    await seedFeature('F-new', { createdTs: 200 });
+    const r = await runCoLocate({ workItem: 'F-new', harness: H, coLocateWith: 'F-nope' });
+    expect(r.ok).toBe(false);
   });
 });

@@ -39,9 +39,12 @@ import type postgres from 'postgres';
 import type { BootedHarnessHandle } from './boot';
 import { DEFAULT_MAX_OPS_PER_AUTHOR } from './read-merge';
 
-/** The two consolidated tables backfilled, paired with their key column (the
- *  outbox `key` == the feature_id / issue_id, mirroring the capture trigger). */
-const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string]> = [
+/** The tables backfilled, paired with their key column (the outbox `key` ==
+ *  feature_id / issue_id / …, mirroring the capture trigger) and an OPTIONAL scope
+ *  column (the column matched against this harness's slug; default `harness_slug`).
+ *  A Hive-scoped table whose scope column is `hive_home_slug` (not `harness_slug`)
+ *  supplies it explicitly. */
+const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string, scopeCol?: string]> = [
   ['harness_features_consolidated', 'feature_id'],
   ['harness_issues_consolidated', 'issue_id'],
   // plans-pg-canonical-migration-2026-06-03 (Stage 2): PG-canonical plans federate
@@ -55,6 +58,13 @@ const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string]> 
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state (key == setting_key), scoped to the Hive home harness slug.
   ['hive_settings', 'setting_key'],
+  // shared-hive-federation-2026-06-08 (P-006): per-Hive admission records federate so
+  // existing device-attestations + revocations reach a joining Swarm (not just
+  // post-online writes via the mig-189 trigger). hive_members' scope column is
+  // `hive_home_slug` (FK→hives), and for the Hive HOME harness harnessSlug ==
+  // hive_home_slug, so the same (workspace, slug) scoping holds — key == github_user_id
+  // (matches the trigger's TG_ARGV[0] + the projection composeKey).
+  ['hive_members', 'github_user_id', 'hive_home_slug'],
 ];
 
 /** substrate_meta key for the one-time-done marker. */
@@ -115,14 +125,19 @@ export async function backfillLocalState(
   let enqueued = 0;
   let dropped = 0;
 
-  for (const [tableName, keyCol] of BACKFILL_TARGETS) {
+  for (const [tableName, keyCol, scopeColRaw] of BACKFILL_TARGETS) {
+    // The column matched against this harness's slug. Default `harness_slug`; a
+    // Hive-scoped table (hive_members) overrides it to `hive_home_slug`. The outbox
+    // `harness_slug` written below stays ${harnessSlug} — which, for the Hive home
+    // harness, EQUALS the scoped hive_home_slug (mirrors the mig-189 trigger's bridge).
+    const scopeCol = scopeColRaw ?? 'harness_slug';
     // Count the local rows for this (workspace, harness) so we can attribute
     // drops even when the budget runs out (the INSERT below stops at the budget).
     const [{ total }] = await pg<{ total: number }[]>`
       SELECT count(*)::int AS total
         FROM harness_shared.${pg(tableName)}
        WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${harnessSlug}
+         AND ${pg(scopeCol)} = ${harnessSlug}
          AND COALESCE(origin, 'local') = 'local'`;
 
     if (total === 0) continue;
@@ -143,9 +158,9 @@ export async function backfillLocalState(
           c.${pg(keyCol)}::text, to_jsonb(c), ${now}, NULL
           FROM harness_shared.${pg(tableName)} c
          WHERE c.workspace_id = ${workspaceId}
-           AND c.harness_slug = ${harnessSlug}
+           AND c.${pg(scopeCol)} = ${harnessSlug}
            AND COALESCE(c.origin, 'local') = 'local'
-         ORDER BY c.harness_slug, c.${pg(keyCol)}
+         ORDER BY c.${pg(scopeCol)}, c.${pg(keyCol)}
          LIMIT ${take}
         RETURNING key`;
       enqueued += inserted.length;
