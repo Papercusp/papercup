@@ -508,32 +508,48 @@ function FeedItem({
       </div>
       {open && hasDetail && (
         <div className="pc-advfeed__detail">
-          {row.body && <p className="pc-advfeed__body">{row.body}</p>}
+          <div className="pc-advfeed__detailhead">
+            <span>{row.surface}</span>
+            <span>{dateStamp(row.ts)}</span>
+            {row.event && <span>{row.event}</span>}
+          </div>
+          {row.body && (
+            <div className="pc-advfeed__bodycard">
+              <strong>Body</strong>
+              <p className="pc-advfeed__body">{row.body}</p>
+            </div>
+          )}
           {row.next_action && (
-            <p className="pc-advfeed__kv">
-              <strong>next action:</strong> {row.next_action}
-            </p>
+            <div className="pc-advfeed__kv pc-advfeed__kv--action">
+              <strong>next action</strong>
+              <span>{row.next_action}</span>
+            </div>
           )}
           {row.detail && !summary.includes(row.detail) && (
-            <p className="pc-advfeed__kv">
-              <strong>detail:</strong> {row.detail}
-            </p>
+            <div className="pc-advfeed__kv">
+              <strong>detail</strong>
+              <span>{row.detail}</span>
+            </div>
           )}
           {children.length > 0 && (
             <ol className="pc-advfeed__thread">
               {children.map((c) => (
                 <li key={c.msg_id}>
-                  <span
-                    className="pc-advfeed__badge pc-advfeed__badge--sm"
-                    style={{ borderColor: KIND_COLOR[c.kind] ?? '#64748b', color: KIND_COLOR[c.kind] ?? '#64748b' }}
-                  >
-                    {c.kind}
+                  <span className="pc-advfeed__threadrail" aria-hidden />
+                  <span className="pc-advfeed__threadmeta">
+                    <span
+                      className="pc-advfeed__badge pc-advfeed__badge--sm"
+                      style={{ borderColor: KIND_COLOR[c.kind] ?? '#64748b', color: KIND_COLOR[c.kind] ?? '#64748b' }}
+                    >
+                      <span aria-hidden />
+                      {c.kind}
+                    </span>
+                    <strong>{c.from}</strong>
+                    <em>{relTime(c.ts)}</em>
                   </span>
-                  <span className="pc-advfeed__threadfrom">{c.from}</span>
                   <span className="pc-advfeed__threadsum">
                     {c.summary ?? (c.choice ? `choice: ${c.choice}` : c.body ?? '')}
                   </span>
-                  <span className="pc-advfeed__rel">{relTime(c.ts)}</span>
                 </li>
               ))}
             </ol>
@@ -1526,22 +1542,102 @@ function AdvConvStyles() {
       .pc-advfeed__rel { font-size: 10px; color: var(--fg-mute, #6f87a0); white-space: nowrap; font-variant-numeric: tabular-nums; }
       .pc-advfeed__detail {
         margin: 0 8px 4px 36px;
-        padding: 9px 12px;
+        padding: 11px 12px 12px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 8px;
         font-size: 12px;
-        border-left: 2px solid rgba(56, 189, 248, 0.24);
-        background: rgba(3, 7, 18, 0.28);
-        border-radius: 0 12px 12px 0;
+        border: 1px solid rgba(56, 189, 248, 0.14);
+        border-left: 2px solid rgba(56, 189, 248, 0.34);
+        background:
+          radial-gradient(circle at 0% 0%, rgba(56, 189, 248, 0.1), transparent 34%),
+          rgba(3, 7, 18, 0.32);
+        border-radius: 0 14px 14px 0;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+      }
+      .pc-advfeed__detailhead {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .pc-advfeed__detailhead span {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(125, 211, 252, 0.12);
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--fg-mute, #8aa3bc);
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .pc-advfeed__bodycard,
+      .pc-advfeed__kv {
+        padding: 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.055);
+        background: rgba(255, 255, 255, 0.026);
+      }
+      .pc-advfeed__bodycard strong,
+      .pc-advfeed__kv strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #e0f2fe;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
       }
       .pc-advfeed__body { white-space: pre-wrap; color: var(--fg, #dceaf6); margin: 0; line-height: 1.5; }
       .pc-advfeed__kv { color: var(--fg-mute, #9fb6cc); margin: 0; }
-      .pc-advfeed__kv strong { color: var(--fg, #cfe8ff); }
-      .pc-advfeed__thread { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; border-left: 2px solid rgba(125,211,252,0.18); }
-      .pc-advfeed__thread li { display: flex; align-items: center; gap: 7px; padding-left: 8px; font-size: 11px; }
-      .pc-advfeed__threadfrom { font-weight: 600; color: var(--fg, #cfe8ff); }
-      .pc-advfeed__threadsum { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #aebfd0); }
+      .pc-advfeed__kv span { color: var(--fg-mute, #b6c8d8); line-height: 1.45; }
+      .pc-advfeed__kv--action {
+        border-color: rgba(251, 191, 36, 0.22);
+        background: rgba(251, 191, 36, 0.06);
+      }
+      .pc-advfeed__kv--action strong { color: #fde68a; }
+      .pc-advfeed__thread {
+        list-style: none;
+        margin: 2px 0 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .pc-advfeed__thread li {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+        gap: 8px 9px;
+        padding: 8px 9px 8px 2px;
+        font-size: 11px;
+      }
+      .pc-advfeed__threadrail {
+        width: 9px;
+        height: 9px;
+        margin-top: 5px;
+        border-radius: 50%;
+        background: #7dd3fc;
+        box-shadow: 0 0 14px rgba(125, 211, 252, 0.48);
+      }
+      .pc-advfeed__threadmeta {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+      .pc-advfeed__threadmeta strong { color: #e0f2fe; font-size: 11px; }
+      .pc-advfeed__threadmeta em { color: var(--fg-mute, #6f87a0); font-style: normal; margin-left: auto; white-space: nowrap; }
+      .pc-advfeed__threadsum {
+        grid-column: 2;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--fg-mute, #aebfd0);
+      }
       .pc-advfeed__loadolder {
         margin: 8px auto; padding: 6px 16px; border-radius: 8px; font-size: 12px; cursor: pointer;
         border: 1px solid var(--border, rgba(125,211,252,0.2)); background: transparent; color: var(--fg-mute, #9fb6cc); font: inherit;

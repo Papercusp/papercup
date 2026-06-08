@@ -63,7 +63,9 @@ type StateTable =
   // Migration 161 — the live-editable fleet rate-limit knobs (rate-limit-layer-v2 D-004):
   | 'operator_rate_limit_config'
   // Migration 164 — P2P voice-channel registry (holepunch-voice-channels P-007/D-011):
-  | 'operator_voice_channels';
+  | 'operator_voice_channels'
+  // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
+  | 'hive_directory_cache';
 
 /**
  * Read the single row for the active workspace, or null if missing.

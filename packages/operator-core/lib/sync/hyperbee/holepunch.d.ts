@@ -44,7 +44,7 @@ declare module 'protomux' {
      * fresh connection (a `message.send()` synchronously after `open()` can be
      * lost before the peer's channel exists).
      */
-    createChannel(opts: { protocol: string; onopen?: () => void }): ProtomuxChannel;
+    createChannel(opts: { protocol: string; onopen?: () => void; onclose?: () => void }): ProtomuxChannel;
   }
 }
 

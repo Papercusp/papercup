@@ -281,7 +281,23 @@ export function runBootstrap(): void {
   // + boot-gate, then boots every harness in the active workspace. Failures
   // roll up but don't block the host (each harness boot is independently
   // defensive — a swarm/identity failure leaves it local-only).
-  void (async () => {
+  // [EI-126] Secondary/test hosts (e.g. the staging operator on :3170) must NOT
+  // run the shared-DB background machinery — federation projections + outbox
+  // drains (hyperbee substrate), git-export drains, and DBOS scheduled workflows.
+  // Two hosts doing this against one papercusp DB caused a DBOS appVersion war,
+  // doubled drain loops, and a plan-content federation echo that rewrote single
+  // plans ~100k times (a 102 GB substrate_outbox, 2026-06-08). Default ON; the
+  // staging systemd unit sets PAPERCUSP_BACKGROUND_WORKERS=0 to be request-only.
+  // The release operator (:3070) + the desktop have no override → stay ON.
+  const backgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS !== '0';
+  if (!backgroundWorkers) {
+    console.log(
+      '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',
+    );
+  }
+
+  if (backgroundWorkers)
+    void (async () => {
     try {
       // [A1 handoff-coordination-dx-followups] Apply pending sql/*.sql to the
       // operator DB on boot. Embedded-pg applies them when ITS server boots, but
@@ -385,7 +401,8 @@ export function runBootstrap(): void {
   // auto-commit (git-committer.ts) is real + scoped to `.papercusp/state` only and
   // never pushes, but FLAG-GATED OFF by default (PAPERCUSP_GIT_EXPORT_COMMIT=1 to
   // enable); until then the files are written + visible but left uncommitted.
-  void (async () => {
+  if (backgroundWorkers)
+    void (async () => {
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
       const { readRegistry } = await import('@papercusp/operator-core/lib/workspace-registry');
@@ -421,7 +438,7 @@ export function runBootstrap(): void {
   // no-op. startDbos() itself conditionally loads the AutoLoop (PAPERCUSP_DBOS_AUTOLOOP)
   // and periodic-timer (PAPERCUSP_DBOS_TIMERS) workflows; the legacy setInterval
   // workers stand down via their own guards.
-  if (process.env.PAPERCUSP_DBOS_ENABLE === '1') {
+  if (backgroundWorkers && process.env.PAPERCUSP_DBOS_ENABLE === '1') {
     void (async () => {
       try {
         const { startDbos } = await import('@papercusp/operator-core/lib/dbos/bootstrap');

@@ -234,11 +234,10 @@ export class HiveDirectory {
    * timer (`startReannounce`) AND call this directly when a hive's metadata
    * changes (P-004 create/edit) so the directory converges promptly.
    */
-  async announceLocalHive(hiveId: string): Promise<SignedHiveAnnounce | null> {
-    const desc = this.owned.get(hiveId);
-    if (!desc) return null;
-    const topic = this.topicForLocalHive(desc);
-    if (!topic) return null; // private
+  /** Build (sign, do NOT broadcast) the announce frame for one owned hive, or
+   *  null when private/unknown. Shared by announceLocalHive + buildOwnedAnnounces. */
+  private async buildAnnounceFor(desc: LocalHiveDescriptor): Promise<SignedHiveAnnounce | null> {
+    if (!this.topicForLocalHive(desc)) return null; // private
     const body: HiveAnnounceBody = {
       hive_id: desc.hiveId,
       title: desc.title,
@@ -252,9 +251,33 @@ export class HiveDirectory {
       created_at: desc.createdAt,
       ts: this.nowMs(),
     };
-    const frame = await buildHiveAnnounce(body, this.deps.sign);
+    return buildHiveAnnounce(body, this.deps.sign);
+  }
+
+  async announceLocalHive(hiveId: string): Promise<SignedHiveAnnounce | null> {
+    const desc = this.owned.get(hiveId);
+    if (!desc) return null;
+    const topic = this.topicForLocalHive(desc);
+    if (!topic) return null; // private
+    const frame = await this.buildAnnounceFor(desc);
+    if (!frame) return null;
     await this.deps.broadcast(hiveTopicAsHex(topic), frame);
     return frame;
+  }
+
+  /**
+   * Build signed announce frames for every owned NON-private hive (no broadcast).
+   * The directory-swarm sends these to a freshly-paired peer (`getOwnAnnounces`)
+   * so a newly-connected peer learns our hives immediately, without waiting for
+   * the re-announce timer.
+   */
+  async buildOwnedAnnounces(): Promise<SignedHiveAnnounce[]> {
+    const out: SignedHiveAnnounce[] = [];
+    for (const desc of this.owned.values()) {
+      const frame = await this.buildAnnounceFor(desc).catch(() => null);
+      if (frame) out.push(frame);
+    }
+    return out;
   }
 
   /** Re-announce every owned non-private hive (the timer body). Returns the count broadcast. */

@@ -29,7 +29,8 @@
 
 import { verifyAttestation } from './identity/attest';
 import { signWithDeviceKey } from './identity/sign-with-device-key';
-import { HiveDirectory, type HiveDirectoryDeps, type SignedHiveAnnounce } from './hive-directory';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { HiveDirectory, type DiscoveredHive, type HiveDirectoryDeps, type SignedHiveAnnounce } from './hive-directory';
 
 let _singleton: HiveDirectory | null = null;
 let _transport: ((topicHex: string, frame: SignedHiveAnnounce) => Promise<void>) | null = null;
@@ -62,6 +63,18 @@ function productionDeps(): HiveDirectoryDeps {
     },
     broadcast: async (topicHex, frame) => {
       if (_transport) await _transport(topicHex, frame);
+    },
+    // PG offline cache (migration 182, hive_directory_cache state table). Reads/
+    // writes via getOrgPg (admin, RLS-bypass) like the rest of operator-state.
+    // Best-effort — a cache failure must never break ingest/listing.
+    loadCache: async () => {
+      const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache').catch(
+        () => null,
+      );
+      return row?.hives ?? [];
+    },
+    saveCache: async (hives) => {
+      await writeOperatorState('hive_directory_cache', { hives }).catch(() => {});
     },
   };
 }

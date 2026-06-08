@@ -123,7 +123,7 @@ describe('joinDirectorySwarm', () => {
     f.connect();
     expect(muxers).toHaveLength(1);
     expect(muxers[0].protocol).toBe(HIVE_DIRECTORY_PROTOCOL);
-    muxers[0].open(); // simulate the peer pairing → onopen
+    muxers[0].pair(); // simulate the peer pairing → onopen
     await new Promise((r) => setTimeout(r, 0)); // getOwnAnnounces is async
     expect(muxers[0].sent.map((s) => (s as SignedHiveAnnounce).hive_id)).toEqual(['mine-1', 'mine-2']);
   });
@@ -142,7 +142,7 @@ describe('joinDirectorySwarm', () => {
     const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
     f.connect();
     f.connect();
-    muxers[0].open(); // only the first pairs
+    muxers[0].pair(); // only the first pairs
     await new Promise((r) => setTimeout(r, 0));
     expect(h.openChannelCount).toBe(1);
     h.broadcast(frame('bcast'));
@@ -154,7 +154,7 @@ describe('joinDirectorySwarm', () => {
     const f = fakeSwarm();
     const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
     f.connect();
-    muxers[0].open();
+    muxers[0].pair();
     await new Promise((r) => setTimeout(r, 0));
     expect(h.openChannelCount).toBe(1);
     muxers[0].fireClose();

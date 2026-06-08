@@ -60,6 +60,12 @@ export interface HarnessRegistry {
    *  the registry blob (workspace PG) alongside per-harness deployment frames, so
    *  teardown can DESTROY the Queen across restarts. Keyed by hiveId. */
   hiveControlFrames?: Record<string, Frame>;
+  /** Per-Hive directory metadata (p2p-hive-directory P-004) — title/description/
+   *  visibility/memberTopics/inviteSecret the directory announces. Kept in the
+   *  registry blob (workspace PG, no migration) keyed by hiveId; a public/invite
+   *  entry is announced on boot. Shape = the directory's `HiveDirectoryMeta`
+   *  (lib/hive-publish.ts). */
+  hiveDirectoryMeta?: Record<string, import('./hive-publish').HiveDirectoryMeta>;
 }
 
 export interface SaveRegistryOptions {
@@ -78,6 +84,7 @@ export async function loadHarnessRegistry(workspaceId?: string): Promise<Harness
   return {
     projects: raw?.projects ?? [],
     ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),
+    ...(raw?.hiveDirectoryMeta ? { hiveDirectoryMeta: raw.hiveDirectoryMeta } : {}),
   };
 }
 

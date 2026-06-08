@@ -269,6 +269,23 @@ export async function bootAllHarnessesForActiveWorkspace(
     }
   }
   const results = await Promise.all(tasks);
+
+  // p2p-hive-directory P-003 boot-join: after the harnesses boot, join the global
+  // hive-directory topic + announce this workspace's owned public/invite hives.
+  // Fully best-effort + fire-and-forget — a directory failure (e.g. gh
+  // unauthenticated → no announce identity) must NEVER affect harness boot, so
+  // this is a detached promise with its own catch.
+  for (const wsId of workspaceIds) {
+    void (async () => {
+      try {
+        const { wireHiveDirectoryForWorkspace } = await import('../../hive-directory-boot');
+        await wireHiveDirectoryForWorkspace(wsId);
+      } catch {
+        /* best-effort; boot-all never fails on the directory */
+      }
+    })();
+  }
+
   return {
     attempted: results.length,
     booted: results.filter((r) => r.state === 'booted').length,
