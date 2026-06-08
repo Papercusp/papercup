@@ -23,6 +23,7 @@
  */
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
+import { classifySubprocessResult } from '@papercusp/papercup-shared/agent';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import type { BeekeeperRunInput } from './beekeeper-runner';
 import type { InstanceRunHandle } from './instance-manifest';
@@ -35,8 +36,6 @@ import {
 
 /** Terminal spawned_agents states. */
 const TERMINAL = new Set(['done', 'failed', 'cancelled', 'reaped']);
-/** Terminal states that represent a real, scoreable instance run (the bee attempted the case). */
-const SCOREABLE = new Set(['done', 'failed']);
 
 export interface SpawnOnceResult {
   ok: boolean;
@@ -52,8 +51,13 @@ export interface BeeRunDeps {
   pollStatus(spawnId: string): Promise<string | null>;
   /** Total solver $cost for the run so far (agent_usage_samples), for the handle + spend cap. */
   loadCost(spawnId: string): Promise<number>;
+  /** output_tail + error_message of a `failed` bee — to classify a transient rate-limit/overload
+   *  (→ relaunch) vs a genuine task failure (→ score). */
+  loadFailureText(spawnId: string): Promise<string>;
   sleep(ms: number): Promise<void>;
   now(): number;
+  /** Fired before a rate-limited/overloaded bee is relaunched (observability). */
+  onRateLimitRetry?(info: { spawnId: string; attempt: number; backoffMs: number; cls: string }): void;
 }
 
 export interface BeeRunConfig {
@@ -61,6 +65,11 @@ export interface BeeRunConfig {
   timeoutMs: number;
   /** Poll cadence while awaiting a terminal state. */
   pollMs: number;
+  /** Max RELAUNCHES when a bee fails on a transient rate-limit/overload (the owner's hit-limit →
+   *  relaunch loop; the fleet AIMD governor lowers concurrency in parallel). 0 = no retry. */
+  maxRateRetries: number;
+  /** Floor backoff before a rate-limit relaunch; the server's retry-after wins when larger. */
+  rateBackoffMs: number;
 }
 
 /**
@@ -69,38 +78,66 @@ export interface BeeRunConfig {
  * reads). Throws on spawn rejection, timeout, or an invalid (cancelled/reaped) terminal.
  */
 export function makeBeeRunInstance(cfg: BeeRunConfig, deps: BeeRunDeps) {
+  const handleFor = async (spawnId: string, variant: string): Promise<InstanceRunHandle> => ({
+    instanceId: spawnId,
+    instanceUrl: `bee://${spawnId}`,
+    targetSlug: variant,
+    costUsd: await deps.loadCost(spawnId).catch(() => 0),
+  });
+
   return async (input: BeekeeperRunInput): Promise<InstanceRunHandle> => {
-    const res = await deps.spawn({ brief: input.case.prompt, runInput: input });
-    if (!res.ok || !res.spawnId) {
-      throw new Error(`runInstance: spawn rejected for case ${input.case.id}: ${res.error ?? 'unknown'}`);
-    }
-    const spawnId = res.spawnId;
+    // Relaunch loop: a bee that FAILS on a transient rate-limit / overload is re-spawned (a FRESH
+    // bee) up to maxRateRetries, after a backoff (the server's retry-after, floored). The fleet
+    // AIMD governor halves the effective concurrency in parallel, so each relaunch lands at a
+    // lower cap — the owner's hit-limit → lower-cap → relaunch → converge loop.
+    for (let attempt = 0; ; attempt++) {
+      const res = await deps.spawn({ brief: input.case.prompt, runInput: input });
+      if (!res.ok || !res.spawnId) {
+        throw new Error(`runInstance: spawn rejected for case ${input.case.id}: ${res.error ?? 'unknown'}`);
+      }
+      const spawnId = res.spawnId;
 
-    const deadline = deps.now() + cfg.timeoutMs;
-    let status: string | null = null;
-    while (deps.now() < deadline) {
-      await deps.sleep(cfg.pollMs);
-      status = await deps.pollStatus(spawnId);
-      if (status && TERMINAL.has(status)) break;
-    }
+      const deadline = deps.now() + cfg.timeoutMs;
+      let status: string | null = null;
+      while (deps.now() < deadline) {
+        await deps.sleep(cfg.pollMs);
+        status = await deps.pollStatus(spawnId);
+        if (status && TERMINAL.has(status)) break;
+      }
 
-    if (!status || !TERMINAL.has(status)) {
-      throw new Error(
-        `runInstance: bee ${spawnId} did not reach a terminal state within ${cfg.timeoutMs}ms (last=${status ?? 'unseen'})`,
-      );
-    }
-    if (!SCOREABLE.has(status)) {
-      // cancelled / reaped — the run is invalid, not a task failure.
-      throw new Error(`runInstance: bee ${spawnId} ended '${status}' — invalid run, re-runnable`);
-    }
+      if (!status || !TERMINAL.has(status)) {
+        throw new Error(
+          `runInstance: bee ${spawnId} did not reach a terminal state within ${cfg.timeoutMs}ms (last=${status ?? 'unseen'})`,
+        );
+      }
+      if (status === 'done') return handleFor(spawnId, input.case.variant);
+      if (status === 'cancelled' || status === 'reaped') {
+        throw new Error(`runInstance: bee ${spawnId} ended '${status}' — invalid run, re-runnable`);
+      }
 
-    const costUsd = await deps.loadCost(spawnId).catch(() => 0);
-    return {
-      instanceId: spawnId,
-      instanceUrl: `bee://${spawnId}`,
-      targetSlug: input.case.variant,
-      costUsd,
-    };
+      // status === 'failed' — classify the cause from the bee's output (the canonical classifier
+      // scans stdout on failure, incl. claude's stdout-only "· Rate limited" line).
+      const failText = await deps.loadFailureText(spawnId).catch(() => '');
+      const te = classifySubprocessResult({ exitCode: 1, stdout: failText });
+      const transient = te.class === 'rate_limited' || te.class === 'overloaded';
+
+      if (transient && attempt < cfg.maxRateRetries) {
+        const backoffMs = Math.max(cfg.rateBackoffMs, te.retryAfterMs ?? 0);
+        deps.onRateLimitRetry?.({ spawnId, attempt, backoffMs, cls: te.class });
+        await deps.sleep(backoffMs);
+        continue; // relaunch a FRESH bee for the same case
+      }
+      if (transient || te.class === 'usage_limit') {
+        // Exhausted retries (or a hard usage cap) → surface as rate-limited so the orchestrator
+        // records `rate_limited` (NOT a scored task-failure). The 'rate-limited' in the message
+        // triggers the orchestrator's isRateLimitError.
+        throw new Error(
+          `runInstance: bee ${spawnId} rate-limited (${te.class}) after ${attempt} relaunch${attempt === 1 ? '' : 'es'} — giving up`,
+        );
+      }
+      // Genuine task failure (agent_crash, etc.) → a real, scoreable outcome.
+      return handleFor(spawnId, input.case.variant);
+    }
   };
 }
 
@@ -216,6 +253,12 @@ export function liveBeeRunDeps(args: {
       const rows = await args.sql<{ status: string }[]>`
         SELECT status FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId} LIMIT 1`;
       return rows[0]?.status ?? null;
+    },
+    async loadFailureText(spawnId) {
+      const rows = await args.sql<{ output_tail: string | null; error_message: string | null }[]>`
+        SELECT output_tail, error_message FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId} LIMIT 1`;
+      const r = rows[0];
+      return `${r?.error_message ?? ''}\n${r?.output_tail ?? ''}`;
     },
     loadCost: (spawnId) => loadCostBySpawn(args.sql, spawnId),
     sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),

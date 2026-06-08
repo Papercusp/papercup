@@ -32,7 +32,7 @@ import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps } from '.
 import { seedCorpus, type TaskVariant, type CorpusCase, type Rubric } from './corpus';
 import { createMetricsCollector } from './collectors';
 import { BeekeeperStorePg } from './beekeeper-store-pg';
-import { makeBeeRunInstance, liveBeeRunDeps, makeLiveBeeTraceLoaders } from './bee-instance';
+import { makeBeeRunInstance, liveBeeRunDeps, makeLiveBeeTraceLoaders, type BeeRunDeps } from './bee-instance';
 import { makeBeeCollectAndDistill } from './bee-trace';
 import type { GymJudgeRubric } from '../gym/judge-scoring';
 import type { JudgeLlmCall } from '../gym/judge';
@@ -57,6 +57,10 @@ export interface Gen0Args {
   harness: string | null;
   timeoutMs: number;
   pollMs: number;
+  /** Max relaunches of a bee that fails on a transient rate-limit/overload. */
+  maxRateRetries: number;
+  /** Floor backoff before a rate-limit relaunch (ms); the server's retry-after wins when larger. */
+  rateBackoffMs: number;
 }
 
 /** Parse the CLI flags. Pure (no env/PG); `--workspace`/`--harness` default null → resolved by main. */
@@ -87,6 +91,8 @@ export function parseGen0Args(argv: string[]): Gen0Args {
     harness: get('harness') ?? null,
     timeoutMs: num(get('timeout-ms'), 600_000),
     pollMs: num(get('poll-ms'), 5_000),
+    maxRateRetries: Math.max(0, Math.floor(num(get('rate-retries'), 3))),
+    rateBackoffMs: num(get('rate-backoff-ms'), 30_000),
   };
 }
 
@@ -272,11 +278,19 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
   const workspaceId = args.workspaceId ?? activeWorkspaceId();
   if (!args.harness) throw new Error('--harness=<slug> is required (the harness the solver bees spawn into)');
 
-  // Pin solver bees to opus-4-8 @ xhigh deterministically (bees have no committed ROLE_MODEL_DEFAULTS floor).
-  const priorAgentModels = process.env.AGENT_MODELS;
+  // Pin solver bees to opus-4-8 @ xhigh deterministically (bees have no committed ROLE_MODEL_DEFAULTS
+  // floor), and ENABLE the shared AIMD governor so a bee 429 halves the effective concurrency cap
+  // (the "lower cap" half of the hit-limit → lower-cap → relaunch loop).
+  const priorEnv = {
+    AGENT_MODELS: process.env.AGENT_MODELS,
+    PAPERCUSP_AGENT_GOVERNOR: process.env.PAPERCUSP_AGENT_GOVERNOR,
+    PAPERCUSP_AGENT_GOVERNOR_PG: process.env.PAPERCUSP_AGENT_GOVERNOR_PG,
+  };
   try {
-    const merged = { ...(priorAgentModels ? safeJson(priorAgentModels) : {}), bee: 'opus:xhigh' };
+    const merged = { ...(priorEnv.AGENT_MODELS ? safeJson(priorEnv.AGENT_MODELS) : {}), bee: 'opus:xhigh' };
     process.env.AGENT_MODELS = JSON.stringify(merged);
+    process.env.PAPERCUSP_AGENT_GOVERNOR = '1';
+    process.env.PAPERCUSP_AGENT_GOVERNOR_PG = '1';
 
     const { sql } = getOrgPg();
     await assertSchema(sql);
@@ -311,10 +325,19 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
 
     const spend = makeSpend(args.capUsd);
 
-    // Real runInstance, wrapped to charge solver cost against the cap.
+    // Real runInstance, wrapped to charge solver cost against the cap. A bee that fails on a
+    // transient rate-limit / overload is RELAUNCHED (maxRateRetries) — the fleet AIMD governor
+    // lowers concurrency in parallel (enabled via PAPERCUSP_AGENT_GOVERNOR below).
+    const beeDeps: BeeRunDeps = {
+      ...liveBeeRunDeps({ sql, workspaceId, harness: args.harness, planSlug: 'apiary-generation-0-battery-2026-06-08' }),
+      onRateLimitRetry: ({ spawnId, attempt, backoffMs, cls }) =>
+        console.log(
+          `  ↻ rate-limit relaunch: bee=${spawnId} cls=${cls} attempt=${attempt + 1}/${args.maxRateRetries} backoff=${Math.round(backoffMs / 1000)}s`,
+        ),
+    };
     const baseRunInstance = makeBeeRunInstance(
-      { timeoutMs: args.timeoutMs, pollMs: args.pollMs },
-      liveBeeRunDeps({ sql, workspaceId, harness: args.harness, planSlug: 'apiary-generation-0-battery-2026-06-08' }),
+      { timeoutMs: args.timeoutMs, pollMs: args.pollMs, maxRateRetries: args.maxRateRetries, rateBackoffMs: args.rateBackoffMs },
+      beeDeps,
     );
 
     // Real judge (opus-4-8) unless dry-run; wrapped to pre-check + charge judge cost.
@@ -365,8 +388,10 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     console.log(`\ntransferred ${transferred} score(s) → iq_battery_metrics`);
     console.log(`\n✓ gen-0 ${args.dryRun ? 'dry-run' : 'baseline'} complete (spend $${spend.usd.toFixed(4)} / cap $${args.capUsd})`);
   } finally {
-    if (priorAgentModels === undefined) delete process.env.AGENT_MODELS;
-    else process.env.AGENT_MODELS = priorAgentModels;
+    for (const [k, v] of Object.entries(priorEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }
 }
 
