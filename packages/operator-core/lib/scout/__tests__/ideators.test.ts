@@ -190,4 +190,20 @@ describe('runIdeators', () => {
     expect(calls[0].thinkingBudgetTokens).toBe(2000);
     expect(calls[0].maxTokens).toBe(2000 + 4096);
   });
+
+  it('threads stepping-stone priming into every ideator user prompt (P-012)', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    const priming = '## Prior gym elites\n- pheromone-style stale-claim decay (ref: gym:var-9)';
+    await runIdeators(digest, { llmCall: call, priming });
+    expect(calls).toHaveLength(4);
+    for (const c of calls) {
+      expect(c.messages[0].content).toContain('pheromone-style stale-claim decay');
+    }
+  });
+
+  it('omits priming from prompts when none is given', async () => {
+    const { call, calls } = fakeLlm(() => oneIdeaPerCall(['wi:F-1']));
+    await runIdeators(digest, { llmCall: call });
+    for (const c of calls) expect(c.messages[0].content).not.toContain('Prior gym elites');
+  });
 });

@@ -152,3 +152,26 @@ describe('buildIdeatorPrompt — forced diversity (D-004)', () => {
     expect(sys).toContain('at most 2 ideas');
   });
 });
+
+describe('stepping-stone priming (P-012, D-008 — archive→Scout)', () => {
+  const priming = '## Prior gym elites (stepping-stones)\n- a price-signal scheduler for bee placement (ref: gym:var-1)';
+
+  it('appends the priming blob to the user substrate when provided', () => {
+    const { user } = buildIdeatorPrompt({ lens: 'first-principles', digest, priming });
+    expect(user).toContain('price-signal scheduler');
+    // grounding substrate is preserved alongside the priming
+    expect(user).toContain('wi:F-1');
+  });
+
+  it('omits priming when absent or whitespace-only', () => {
+    expect(buildIdeatorPrompt({ lens: 'first-principles', digest }).user).not.toContain('price-signal');
+    expect(buildIdeatorPrompt({ lens: 'first-principles', digest, priming: '   ' }).user).not.toContain('price-signal');
+  });
+
+  it('keeps the four lens system prompts pairwise-distinct even under priming', () => {
+    const systems = CREATIVE_LENSES.map(
+      (lens) => buildIdeatorPrompt({ lens, digest, seedDomain: assignDistantDomain(0), priming }).system,
+    );
+    expect(new Set(systems).size).toBe(CREATIVE_LENSES.length);
+  });
+});

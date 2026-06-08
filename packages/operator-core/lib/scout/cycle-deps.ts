@@ -36,7 +36,8 @@ import {
   type CapturePortOptions,
   type PlanDraftCreator,
 } from './router-deps';
-import type { ArchivePort } from './gym-bridge';
+import { gatherSteppingStones, type ArchivePort } from './gym-bridge';
+import { getScoutLensWeights } from './routed-ledger';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 import type { CorpusEntry } from './critique-core';
 import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
@@ -140,8 +141,28 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     cycleId: opts.cycleId,
     readCorpus: () => synthesizeStateOfHive(readers, opts.digestOptions),
     readNoveltyCorpus: noveltyCorpus,
-    ideate: async (digest, ctx) =>
-      (await runIdeators(digest, { llmCall: ctx.llmCall, ...rosterForBudget(ctx.maxIdeators) })).ideas,
+    // D-009 closure (P-013 → P-004 meta-learning): bias the EXTRA ideators toward
+    // the lenses that have been winning (uniform at cold start; defensive — a PG
+    // hiccup degrades to the base one-per-lens roster). The diversity floor in the
+    // weights keeps every lens alive (D-004). BUT when the per-cycle budget clamps
+    // the roster (D-010), the cap wins — skip the meta-learned extras so the cycle
+    // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
+    ideate: async (digest, ctx) => {
+      const roster = rosterForBudget(ctx.maxIdeators);
+      const weighting = roster.lenses ? {} : await getScoutLensWeights({ harnessSlug: opts.harnessSlug });
+      // P-012 archive→Scout FEED: prime the ideators with the gym QD archive's diverse
+      // elites (stepping-stones), so Scout builds on / leaps away from what the gym has
+      // found. Empty/no-op archive ⇒ no stones ⇒ no priming block (clean cold start).
+      const { stones, priming } = gatherSteppingStones(opts.archive);
+      return (
+        await runIdeators(digest, {
+          llmCall: ctx.llmCall,
+          ...roster,
+          ...weighting,
+          ...(stones.length ? { priming } : {}),
+        })
+      ).ideas;
+    },
     critique: async (ideas, ctx) =>
       (await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall })).critiques,
     recombine: async (scored, ctx) =>

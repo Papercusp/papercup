@@ -139,6 +139,12 @@ export interface RunIdeatorsOptions extends BuildRosterInput {
   model?: string;
   /** Extended-thinking budget per ideator (default none — cheaper). */
   thinkingBudgetTokens?: number;
+  /**
+   * Optional gym-QD stepping-stone priming (P-012 archive→Scout): appended to
+   * every ideator's grounded substrate so generation builds on the gym's
+   * discovered elites. Empty/absent ⇒ cold start (no priming).
+   */
+  priming?: string;
 }
 
 /** Per-ideator outcome (forced-diversity audit + provenance + failure isolation). */
@@ -243,6 +249,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
         digest,
         seedDomain: slot.seedDomain,
         maxIdeas,
+        ...(opts.priming ? { priming: opts.priming } : {}),
       });
       try {
         const res = await opts.llmCall({

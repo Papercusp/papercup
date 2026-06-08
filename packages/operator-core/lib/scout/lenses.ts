@@ -219,6 +219,13 @@ export interface BuildIdeatorPromptInput {
   seedDomain?: DistantDomain;
   /** Max ideas this ideator should return (default 3). */
   maxIdeas?: number;
+  /**
+   * Optional gym-QD stepping-stone priming (P-012 archive→Scout): a formatted block
+   * of diverse elites the gym has already discovered, appended to the grounded
+   * substrate so the ideator builds on / leaps away from them rather than
+   * re-deriving them. Empty/absent ⇒ no priming (pre-archive cold start).
+   */
+  priming?: string;
 }
 
 /**
@@ -272,6 +279,11 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
     '',
     renderDigest(input.digest),
   ];
+
+  // P-012 archive→Scout: stepping-stones the gym's QD archive has already discovered.
+  if (input.priming && input.priming.trim()) {
+    user.push('', input.priming.trim());
+  }
 
   return { system: system.join('\n'), user: user.join('\n') };
 }

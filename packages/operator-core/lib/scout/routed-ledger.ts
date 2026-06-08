@@ -164,11 +164,20 @@ export async function getScoutLensOutcomes(
 export async function getScoutLensWeights(
   opts: ScoutLedgerOpts & { weights?: LensWeightOptions; extraIdeatorBudget?: number } = {},
 ): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
-  const report = await getScoutLensOutcomes(opts);
-  return {
-    lensWeights: lensWeightsFromReport(report),
-    extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
-  };
+  try {
+    const report = await getScoutLensOutcomes(opts);
+    return {
+      lensWeights: lensWeightsFromReport(report),
+      extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
+    };
+  } catch (err) {
+    // Defensive: the lens-weighting is an enhancement on the ideator fan-out, not
+    // a dependency — a PG hiccup must never kill a Scout cycle. Degrade to inert
+    // (extraIdeatorBudget 0 ⇒ weights ignored, the base one-per-lens roster runs).
+    // eslint-disable-next-line no-console
+    console.warn('[scout/routed-ledger] getScoutLensWeights failed — running unweighted:', err instanceof Error ? err.message : err);
+    return { lensWeights: {} as Record<CreativeLens, number>, extraIdeatorBudget: 0 };
+  }
 }
 
 /**
