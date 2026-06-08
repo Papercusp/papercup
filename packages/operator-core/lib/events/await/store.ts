@@ -145,6 +145,61 @@ export async function registerAwait(input: {
   return mapAwait(rows[0]);
 }
 
+/**
+ * Upsert the ONE standing inbox-wake await for an agent (turn-lifecycle-control
+ * D-002): re-arming REFRESHES the handle / floor / note in place instead of
+ * piling a duplicate row, so the operator can safely (re-)arm on every
+ * SessionStart. Relies on the partial unique index
+ * `event_awaits_inbox_wake_one_per_agent` (migration 183) — its predicate and
+ * the ON CONFLICT inference predicate below MUST stay byte-identical. A null
+ * `wakeHandle` on re-arm KEEPS the previously-captured handle (the session's
+ * native id may only land in adv_sessions a moment after the first arm).
+ */
+export async function upsertInboxWakeAwait(input: {
+  subscriberId: string;
+  eventKey: string;
+  note?: string | null;
+  wakeHandle?: WakeHandle | null;
+  minSleepSec?: number | null;
+  workspaceId?: string;
+}): Promise<AwaitRow> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs(input.workspaceId);
+  const rows = await sql`
+    INSERT INTO harness_shared.event_awaits
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency)
+    VALUES
+      (${ws}, ${input.subscriberId}, ${input.eventKey}, 'wake',
+       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
+       'expire', NULL, false, ${input.minSleepSec ?? null}, false)
+    ON CONFLICT (workspace_id, subscriber_id, event_key)
+      WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL
+            AND event_key LIKE 'coord:inbox-wake:%'
+    DO UPDATE SET
+      wake_handle = COALESCE(EXCLUDED.wake_handle, harness_shared.event_awaits.wake_handle),
+      note = COALESCE(EXCLUDED.note, harness_shared.event_awaits.note),
+      min_sleep_sec = EXCLUDED.min_sleep_sec
+    RETURNING *
+  `;
+  return mapAwait(rows[0]);
+}
+
+/** Cancel an agent's standing inbox-wake await(s) — SessionEnd hygiene
+ *  (turn-lifecycle-control D-003). Returns how many rows were cancelled. */
+export async function cancelInboxWakeAwaits(subscriberId: string, workspaceId?: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs(workspaceId);
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET cancelled_at = now()
+     WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
+       AND policy = 'wake' AND once = false AND fired_at IS NULL AND cancelled_at IS NULL
+       AND event_key LIKE 'coord:inbox-wake:%'
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
 export async function cancelAwait(input: {
   awaitId: number;

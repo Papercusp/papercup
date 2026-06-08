@@ -63,13 +63,21 @@ export default defineTool({
     // targeted emit per ownerId, NEVER a broadcast key (P-042). We wake the
     // POST-expansion recipients (`env.to` — audience selectors already resolved),
     // so a `@plan:`/`@topic:` send wakes exactly the resolved set, not '*'.
-    let wake: { targets: string[]; woken: number } | undefined;
+    let wake: { targets: string[]; woken: number; warning?: string } | undefined;
     if (args.wake) {
       const fan = await wakeRecipients(env.to, {
         summary: args.summary,
         source: identity.ownerId,
       });
       wake = { targets: fan.targets, woken: fan.woken };
+      // turn-lifecycle-control P-007 / D-010: a wake:true that fired with zero
+      // live awaits re-invoked NO ONE — it degraded to a plain inbox inject.
+      // Surface that instead of a silent ok (the gap that made su-d96e6 look
+      // fine when nothing was listening).
+      if (fan.targets.length > 0 && fan.woken === 0) {
+        wake.warning =
+          'wake fired but no live wake-watch was registered for the addressee(s) — the message was injected to their inbox (seen on their next natural turn) but no session was re-invoked now.';
+      }
     }
 
     return {

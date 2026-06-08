@@ -25,11 +25,22 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { recordActivity, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../../activity-pg-store';
+import { armInboxWake, cancelInboxWake } from '../../events/await/inbox-wake-arm';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
   'debugger', 'operator', 'documenter', 'curator',
 ] as const;
+
+/** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
+ *  hook sends '▶ session started' (SessionStart) and '■ session ended'
+ *  (SessionEnd/Stop); key off the stable word, default to a no-op. */
+function lifecyclePhase(summary?: string | null): 'start' | 'end' | null {
+  if (!summary) return null;
+  if (/start/i.test(summary)) return 'start';
+  if (/end/i.test(summary)) return 'end';
+  return null;
+}
 
 /** A todo item shape the CLIs emit (TodoWrite / TaskCreate / todo_write). */
 const todoSchema = z
@@ -111,6 +122,26 @@ export default defineTool({
       cwd: args.cwd ?? null,
       workspaceId: ctx.principal?.workspaceId ?? '*',
     });
+
+    // turn-lifecycle-control P-003/P-004: a session's lifecycle transition is the
+    // universal, client-agnostic moment to (un)arm its inbox-wake watch — so EVERY
+    // psu/Queen-launched agent is wakeable WITHOUT having to call coord:await-inbox
+    // (D-001). Idempotent upsert / cancel; never let it break the report.
+    const phase = args.kind === 'lifecycle' ? lifecyclePhase(args.summary) : null;
+    if (phase) {
+      try {
+        if (phase === 'start') {
+          await armInboxWake({ ownerId: owner, workspaceId: ctx.principal?.workspaceId });
+        } else {
+          await cancelInboxWake(owner, ctx.principal?.workspaceId); // D-003: cancel on clean end
+        }
+      } catch (e) {
+        console.warn(
+          `[activity:report] inbox-wake ${phase} for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true, ...result }) }] };
   },
 });

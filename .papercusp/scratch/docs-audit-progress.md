@@ -8,13 +8,13 @@ Legend: [ ] todo · [~] in progress · [x] done
 ## Sections (page counts)
 - [x] top-level (4): index, agent-policies, branding, performance
 - [x] endpoint-system (15)
-- [~] agents (7)
-- [~] agent-spawning (8)
-- [~] data-sync (7)
+- [x] agents (7)
+- [x] agent-spawning (8)
+- [x] data-sync (7)
 - [ ] spec (45)
-- [ ] system (5)
-- [ ] build-system (7)
-- [ ] snapshots (6)
+- [~] system (5)
+- [~] build-system (7)
+- [~] snapshots (7)
 - [ ] testing (4)
 - [ ] security (2)
 - [ ] plugins (1)
@@ -60,6 +60,20 @@ Dominant drift: Next.js app/api → Hono endpoint-route routes; apps/operator/li
 - agent-spawning/lifecycle: EDITS (heaviest) — 4 tools→3 fleet:*; removed in-memory Map narrative; heartbeat/reclaim; KILL_GRACE_MS=2000.
 - agent-spawning/schema: EDITS — spawned_agents DDL +10 cols; status +restarting; RLS policy name; URL params +client/exp/HMAC.
 - agent-spawning/limits: EDITS — MAX_CONCURRENT=10 → maxSimultaneousAgents(16, ceiling 64); queue+await not caller-retry; output_tail ~2KB.
+
+### Batch 2b (agent-spawning 2nd half + data-sync) — DONE
+- agent-spawning/allowlist-and-caps: EDITS (heavy) — removed fictional per-role matrix + 5 spawn_* error codes + MAX_DEPTH/MAX_CHILDREN; real model = new_subagent:request/approve + ceiling 16/64 + queue-await.
+- agent-spawning/named-resource-locks: EDITS — dev-server now ENFORCED; full registered-resource table; raw-Bash gate now WIRED (P-026).
+- agent-spawning/observability: EDITS — cap-rejects DO write failed row; query filter fix; concurrency number.
+- agent-spawning/terminal-wrappers: ACCURATE.
+- data-sync/index: EDITS — @restart/*→@papercusp/*; operator-core paths; live consumer paths.
+- data-sync/zero: EDITS — args object not array; useSyncQuery returns object not 2-tuple; no-provider graceful.
+- data-sync/schema: EDITS — schema-per-harness INVERTED → consolidated tables; papercup_shared table list.
+- data-sync/named-queries: EDITS (heavy) — defineQueries namespaced object-arg API; consolidated catalog.
+- data-sync/cookbook: EDITS — package names; args object; removed schemaVersion bumps; retired panels re-pathed.
+- data-sync/pitfalls: EDITS — RichGrid ctx shape; no schemaVersion; useSyncQuery no-throw; loadProjects gone.
+- data-sync/richgrid: EDITS (heavy) — ColumnDef/CellRenderContext signatures; controlled sort; virtualMode; expandedRowKey(s).
+NOTE: data-sync section already carries a retirement banner (zero-cache retired); kept it.
 
 ### CROSS-CUTTING (flag for human)
 - Next.js framing is stale repo-wide; operator is Vite SPA + Hono. Many docs still teach Next idioms.

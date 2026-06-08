@@ -296,4 +296,54 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     await store.markDeliveriesCoalesced([only.id], 999);
     expect((await store.lastWokenAtForSubscribers(['su-coalonly'])).has('su-coalonly')).toBe(false);
   });
+
+  // ── turn-lifecycle-control: always-arm inbox-wake (D-002/D-003, P-002) ──
+
+  it('upsertInboxWakeAwait is idempotent: re-arming refreshes ONE standing row, never duplicates', async () => {
+    const key = 'coord:inbox-wake:su-arm-1';
+    const first = await store.upsertInboxWakeAwait({
+      subscriberId: 'su-arm-1',
+      eventKey: key,
+      note: 'first',
+      wakeHandle: { kind: 'adv-session', advSessionId: 7, agent: 'claude', sessionId: 'sid-1', ompThreadId: null, cwd: '/r', pid: 10 },
+      minSleepSec: 60,
+    });
+    const second = await store.upsertInboxWakeAwait({
+      subscriberId: 'su-arm-1',
+      eventKey: key,
+      note: 'second',
+      wakeHandle: null, // re-arm without a fresh handle
+      minSleepSec: 30,
+    });
+    // Same row, refreshed in place.
+    expect(second.id).toBe(first.id);
+    expect(second.note).toBe('second');
+    expect(second.minSleepSec).toBe(30);
+    // A null handle on re-arm KEEPS the previously-captured handle (COALESCE).
+    expect(second.wakeHandle).toMatchObject({ kind: 'adv-session', advSessionId: 7 });
+    // Exactly one active standing inbox-wake await for this agent.
+    expect((await store.listActiveAwaits('su-arm-1')).filter((a) => a.eventKey === key)).toHaveLength(1);
+  });
+
+  it('cancelInboxWakeAwaits cancels the standing watch; a later arm starts a fresh row', async () => {
+    const key = 'coord:inbox-wake:su-arm-2';
+    const armed = await store.upsertInboxWakeAwait({ subscriberId: 'su-arm-2', eventKey: key, note: 'armed' });
+    expect(await store.cancelInboxWakeAwaits('su-arm-2')).toBe(1);
+    expect((await store.listActiveAwaits('su-arm-2')).filter((a) => a.eventKey === key)).toHaveLength(0);
+    // Re-arming after cancel creates a NEW active row (the unique index frees on cancel).
+    const rearmed = await store.upsertInboxWakeAwait({ subscriberId: 'su-arm-2', eventKey: key, note: 're' });
+    expect(rearmed.id).not.toBe(armed.id);
+    expect((await store.listActiveAwaits('su-arm-2')).filter((a) => a.eventKey === key)).toHaveLength(1);
+    // A second cancel once nothing is active returns 0.
+    expect(await store.cancelInboxWakeAwaits('su-arm-2')).toBe(1); // cancels the re-armed row
+    expect(await store.cancelInboxWakeAwaits('su-arm-2')).toBe(0);
+  });
+
+  it('the unique index is scoped to inbox-wake keys: OTHER standing watches still allow duplicates', async () => {
+    // A non-inbox-wake standing watch is NOT constrained by the partial index,
+    // so two identical registrations coexist (unchanged behavior for pot/watch).
+    await store.registerAwait({ subscriberId: 'su-arm-3', eventKey: 'pot:wake:x', once: false });
+    await store.registerAwait({ subscriberId: 'su-arm-3', eventKey: 'pot:wake:x', once: false });
+    expect((await store.listActiveAwaits('su-arm-3')).filter((a) => a.eventKey === 'pot:wake:x')).toHaveLength(2);
+  });
 });

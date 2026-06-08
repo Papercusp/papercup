@@ -39,13 +39,13 @@ goes to Postgres and the panel updates because of step 3.
 ```tsx
 'use client';
 
-import { useSyncQuery } from '@restart/sync';
-import type { SnapshotConsolidatedRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@papercusp/sync';
+import type { SnapshotConsolidatedRow } from '@papercusp/zero-harness';
 
 export default function SnapshotsPanel({ slug }: { slug: string }) {
   const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
     queryName: 'snapshotsConsolidated.bySlug',
-    args: [slug],
+    args: { harnessSlug: slug },
   });
   // rows is SnapshotConsolidatedRow[]; map to your domain shape if needed
 }
@@ -53,17 +53,24 @@ export default function SnapshotsPanel({ slug }: { slug: string }) {
 
 Three things to know:
 
-- **`useQuery` returns a 2-tuple**: `[results, info]`. The second element
-  has `complete`, `error`, etc. — for most panels you only need
-  `results`.
-- **The provider must be mounted upstream**. The harness layout
-  (`apps/operator/app/harness/layout.tsx`) wraps children in a
-  `HarnessZeroProvider`. If you see `useZero must be within a
-  ZeroProvider` errors during SSR, you're rendering above the provider.
-- **Data arrives over time**. On first render `rows` is `[]` and the
-  query hasn't completed. Don't gate on `rows.length === 0` to mean
+- **`useSyncQuery` returns an object**, not a tuple:
+  `{ data, loading, fetching, transport, invalidate, error }` (see
+  `SyncQueryResult` in `libs/generic/sync/src/types.ts`). `data` is always
+  an array (never `undefined`); for most panels you only need `data`.
+  (Raw `@rocicorp/zero`'s `useQuery` returns a `[results, info]` 2-tuple —
+  but in this stack you call the `@papercusp/sync` wrapper, not Zero
+  directly.)
+- **The provider must be mounted upstream**. `HarnessZeroProvider`
+  (`apps/operator/providers/HarnessZeroProvider.tsx`) wraps every
+  `/harness/*` route in a `<SyncProvider>`. Used outside a provider,
+  `useSyncQuery` does **not** throw — it returns
+  `{ data: undefined, loading: false, error: null }` so app-chrome
+  components mounted above the provider don't crash; branch on the result
+  and supply your own fallback if you need live data there.
+- **Data arrives over time**. On first render `data` is empty and the
+  query hasn't completed. Don't gate on `data.length === 0` to mean
   "empty data" — distinguish "no rows yet, sync in progress" from
-  "actually empty" via the `complete` flag if it matters.
+  "actually empty" via the `loading` flag if it matters.
 
 ## Writing to Zero — there is no Zero write
 

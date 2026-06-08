@@ -1,133 +1,143 @@
 ---
-title: Allowlist & caps
-description: Who can spawn whom, and the five typed errors a spawn can fail with.
+title: Admission & the concurrency ceiling
+description: Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one fleet-wide cap, and how a rejected spawn fails.
 sidebar:
   order: 3
 ---
 
-## Allowlist
+## Who may call `fleet:spawn`
 
-Who can spawn whom. The mapping is enforced inside the plugin, not by the framework's role gate (the framework gate just says "is this caller-role allowed to call `orchestrator.spawn` at all?"; this is the finer per-target check).
+There is no per-role *allowlist matrix* (caller-role → set-of-spawnable-roles).
+That layered rule budget lived in the retired `@papercupai/orchestrator-spawn`
+plugin; the live path is `packages/operator-core/lib/fleet/operator-spawn.ts`
+behind the `fleet:spawn` tool.
 
-| Caller role | Can spawn |
-|---|---|
-| `operator` | worker, validator, scoper, reviewer, debugger, documenter, curator, architect |
-| `architect` | worker, validator, scoper, reviewer, debugger |
-| `scoper` | validator, reviewer |
-| `debugger` | validator |
-| `reviewer` | architect |
-| `worker`, `validator`, `documenter`, `curator` | (nothing) |
+`fleet:spawn` is role-gated to **`COORD_ROLES`** (`scoper`, `architect`,
+`worker`, `validator`, `reviewer`, `debugger`, `operator`, `documenter`,
+`curator`, `bee`) — the same coordination role set the `coord:*` and `locks:*`
+tools use. A **superuser** caller (a `psu` session, the loopback admin door)
+bypasses the role gate entirely. So "who can spawn whom" is no longer a static
+edge list; it's *admission* (below) plus the one concurrency ceiling.
 
-Some of those choices are deliberately restrictive:
+The child role itself is only sanity-checked, not allowlisted against the
+caller: it must be a known `AGENT_ROLES` id (`packages/agent-mcp/src/role-config.ts`)
+or a plugin-namespaced `<plugin>:<role>`, and `role='worker'` requires a
+`chunkId` (workers window their quotas on `chunk:<id>`). A `bee` carries no
+chunk requirement.
 
-- **Worker and validator can't spawn anything.** They're the leaves of the tree. A worker that needs to fan out should escalate to architect or operator, not spawn directly.
-- **Reviewer → architect** is the one bottom-up edge. It lets a reviewer kick a re-architect cycle without involving the orchestrator's main loop. Use case: reviewer notices the auth pattern is wrong; spawns architect with an `extras=['REVIEW_NOTE=auth pattern unclear, please re-plan']`.
-- **Debugger → validator only.** The narrowest spawn — debugger spawns a validator to verify the patch it's about to suggest worked.
-- **Operator → any.** The escape hatch. The operator role represents user-driven actions; an operator can launch anything in any direction.
+## Admission is the brain's judgment, not a rules budget
 
-## Five typed errors
+The model (`unify-agent-spawn-chokepoint-2026-06-06`) is: **any** coordination
+agent may *initiate* a spawn request, but whether it actually launches is the
+**brain's** call, informed by live spawn headroom and open work — not a static
+per-role quota.
 
-Every spawn that can't run fails with one of these codes. Each gets its own `error_message` for human consumption.
+- **`new_subagent:request`** — any agent asks the brain to spin up a sub-agent.
+  It routes a typed, brain-only-approvable request and returns an
+  `await_event`; the requester `events:await`s the grant, ends its turn, and on
+  wake (`choice === 'approve'`) calls `fleet:spawn`. The response surfaces the
+  live headroom (`running/ceiling`, free slots) so the brain decides informed.
+- **`new_subagent:approve`** — **brain-only**: approve or deny a pending
+  request and wake the requester. The "only the brain decides" rule is enforced
+  at the **dispatch layer**, not by prompt convention: `requireRoles:
+  [BRAIN_PRINCIPAL_ROLE]` is a fail-closed RBAC gate (the operator/brain
+  principal carries the `brain` role; a spawned worker/scoper/etc. carries none
+  → denied), with `agentRoles: ['operator']` as defense-in-depth. A superuser
+  bypasses both.
+- **Pre-granted stream budget** — the brain can grant a requester's stream a
+  spawn budget up front (`fleet:governor { op: 'grant_n', scopeKey }`,
+  consumed by `tryConsumeSpawnCredit`). While budget remains,
+  `new_subagent:request` **auto-approves** with `via: 'budget'` and no brain
+  round-trip; only an exhausted (or never-granted) budget routes to the brain.
 
-### `spawn_role_not_allowed` — caller's role isn't permitted to spawn the target
+The operator/brain itself doesn't request — it allocates directly via
+`fleet:spawn`. Already-decided pipeline work admits its own role progression
+(the harness autoloop dispatches it), and a human-initiated `psu` session needs
+no request at all.
 
-```json
-{
-  "code": "spawn_role_not_allowed",
-  "message": "Role \"worker\" cannot spawn \"validator\". Allowed: (none)."
-}
+## The one cap: a fleet-wide concurrency ceiling
+
+There is a **single** deterministic safety floor (P-007), not separate
+depth / children / concurrent caps. The old hardcoded `MAX_CONCURRENT_SPAWNS=10`
+and the orchestrator dispatch cap were folded into one live-editable value:
+`operator:rate_limit_config`'s **`maxSimultaneousAgents`** (default **16**),
+read live by `spawnConcurrencyCeiling()`. The governor's global gate, the
+orchestrator dispatch ceiling, and the await pump all draw from the same
+number. It is clamped to **`RATE_LIMIT_MAX_CEILING = 64`**
+(`packages/operator-core/lib/rate-limit-config.ts`).
+
+The count is **per-workspace and durable**: `countRunning()` counts every
+`harness_shared.spawned_agents` row with `status IN ('running', 'restarting')`
+for the workspace — so it holds across operator restarts and a dead host's
+orphaned rows are reclaimed (P-011) before the count, so they can't wedge the
+ceiling.
+
+The depth/children fan-out limits are gone. There is **no** `MAX_DEPTH` and
+**no** `MAX_CHILDREN_PER_PARENT`. Fan-out shape is the brain's allocation
+decision (informed by `getSpawnHeadroom`), not a static cap.
+
+## How a rejected spawn fails
+
+There are **no** five typed `spawn_*` error codes. A spawn that can't run
+fails in one of two ways:
+
+### Validation / resolution failure → a recorded `failed` row
+
+Missing role, unknown role, `worker` without `chunkId`, an unregistered or
+missing harness — all `fail()` with a plain-text `error_message` and are
+**recorded durably** as a `status='failed'` nursery row (via
+`recordFailedAttempt`), so the rejection is visible in `fleet:tree` / the Brew
+tab rather than a silent `console.warn`. Example messages:
+
+```text
+spawn rejected: unknown role "wroker" — known roles: scoper, architect, worker, …
+spawn rejected: role="worker" requires a chunk id (spawn a scoper first to chunk the feature)
+spawn rejected: harness "sheets" is not a registered project (registered: …)
 ```
 
-Cancel uses the same allowlist: a scoper trying to cancel an architect spawn it didn't launch hits the same code.
+### Over-ceiling → queue + await (never a silent drop)
 
-### `spawn_invalid_input` — required input missing
+When `running >= cap`, the spawn is **not** dropped and **not** a hard error —
+it returns a wake key the caller sleeps on (D-004):
 
-The only case today: `role='worker'` without `chunkId`. Workers use `chunk:<id>` as their quota window; without one, the framework can't apply per-chunk limits.
-
-```json
-{
-  "code": "spawn_invalid_input",
-  "message": "role=\"worker\" requires chunkId so the child's tool quotas window correctly."
-}
+```text
+spawn rejected: 16 spawns already running (fleet ceiling 16 — maxSimultaneousAgents).
+Do not drop or busy-wait: events:await { event: "spawn-slot:freed:<workspace>" },
+end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.
 ```
 
-### `spawn_depth_exceeded` — lineage chain too deep
-
-Default cap is `MAX_DEPTH = 3`. Counted from the in-process Map only; cross-restart depth (i.e., a spawn launched by a previous operator process) doesn't propagate, so this check is a same-session-only guard.
-
-```json
-{
-  "code": "spawn_depth_exceeded",
-  "message": "Spawn depth 3 >= cap 3. Cannot spawn another child from this lineage."
-}
-```
-
-If you hit this often, the design pressure is "rethink the architect → worker → debugger → validator chain — could one of those steps be inlined?".
-
-### `spawn_children_exceeded` — too many siblings
-
-Default cap is `MAX_CHILDREN_PER_PARENT = 5`. Same caveat as depth: counted from the in-process Map.
-
-```json
-{
-  "code": "spawn_children_exceeded",
-  "message": "Parent already has 5 children (cap 5). Wait for some to finish or cancel before spawning more."
-}
-```
-
-The cap exists to prevent an architect from accidentally launching 50 workers at once. If you legitimately need wider fan-out, raise it; there's no pressure-tested rationale for 5 specifically.
-
-### `spawn_concurrent_exceeded` — host total too high
-
-Default cap is `MAX_CONCURRENT = 10`. Counts every spawn currently `status='running'` across all parents in this operator process.
-
-```json
-{
-  "code": "spawn_concurrent_exceeded",
-  "message": "10 spawns already running (cap 10). Wait or cancel."
-}
-```
-
-Per-host cap, not per-workspace. A workspace running 10 spawns can't kick off an 11th even from a different harness within the same operator process.
+The result carries `awaitEvent = spawn-slot:freed:<workspaceId>`. Every freed
+slot — a spawn completing (`done`/`failed`/`cancelled`) or the reclaim sweep
+freeing orphaned rows — broadcasts that event, waking all waiters, which
+re-check the ceiling on retry (re-check-on-wake fairness, not a granted ticket).
 
 ## How the gates compose
 
-The full sequence when an architect calls `orchestrator.spawn(role: 'worker', featureId: 'F-001', chunkId: 'F-001-1')`:
+The full sequence when an agent calls `fleet:spawn(role: 'worker', feature:
+'F-001', chunk: 'F-001-1')`:
 
 ```
 1. Framework: tool exists?                          ✓ (registered)
-2. Framework: HTTP method allowed?                  ✓ (POST)
-3. Framework: caller role in tool's roles[]?        ✓ (architect ∈ {architect,operator,scoper,debugger,reviewer})
-4. Framework: per-window quota OK?                  ✓ (architect: perRun: 30; we're under)
-5. Plugin: childRole in ALLOWED[callerRole]?        ✓ (worker ∈ {worker,validator,scoper,reviewer,debugger})
-6. Plugin: worker has chunkId?                      ✓
-7. Plugin: depth(callerSpawnId) < 3?                ✓
-8. Plugin: childrenOf(callerSpawnId) < 5?           ✓
-9. Plugin: countConcurrent() < 10?                  ✓
+2. Framework: caller role in COORD_ROLES?           ✓ (or superuser bypass)
+3. Engine: role known (AGENT_ROLES or <plugin>:…)?  ✓
+4. Engine: worker has chunkId?                       ✓
+5. Engine: harness resolves to a real project dir?   ✓
+6. Engine: reclaim orphans, then running < ceiling? ✓ (else queue+await)
 
-   → SpawnRecord allocated, PG row written,
-     invoke() fires in background.
+   → SpawnRecord allocated, PG row written (status='running'),
+     spawnInvokeOnce fires in the background; finishSpawn flips
+     the row to done/failed on exit.
 ```
 
-If 1-2 fail you get HTTP 4xx with a framework error code. If 3-4 fail you get HTTP 4xx with `role_not_allowed` or `quota_exceeded`. If 5-9 fail you get HTTP 200 with an `isError: true` envelope and one of the typed `spawn_*` codes — same shape as a successful spawn, just signaling failure.
+If 1-2 fail you get a framework dispatch error. If 3-5 fail you get a recorded
+`failed` row with a plain-text reason. If 6 is over-ceiling you get the
+queue+await wake key. There are no typed `spawn_*` codes — the engine speaks in
+recorded `error_message` strings and the one await rail.
 
-The split (HTTP-status for framework gates vs `isError` for plugin gates) matches MCP convention: the protocol carries the call envelope, the application's success/failure goes in the result body.
+## Headroom the brain reads
 
-## Manifest reference
-
-```jsonc
-{
-  "name": "spawn",
-  "roles": ["architect", "operator", "scoper", "debugger", "reviewer"],
-  "rolesQuota": {
-    "architect": { "perRun": 30 },
-    "operator":  { "perRun": 60 },
-    "scoper":    { "perRun": 10 },
-    "debugger":  { "perRun": 10 },
-    "reviewer":  { "perRun": 10 }
-  },
-  "timeoutSec": 10
-}
-```
-
-Quota numbers are intentionally generous — spawn itself is cheap (allocates state, fires a background promise). The expensive work is the *child agent*, which has its own quota windows. `perRun: 30` for architect means you can fan out 30 spawns in a run; the budget for what those children do is separate.
+`getSpawnHeadroom(workspaceId)` returns `{ ceiling, running, headroom }` after
+reclaiming orphaned rows, so the count reflects live spawns only. This is the
+read the brain-as-allocator consults — and what `new_subagent:request` surfaces
+to the brain — before deciding a spawn is worth it. The ceiling is the hard
+backstop; the worth-it allocation above it is judgment, not a quota table.
