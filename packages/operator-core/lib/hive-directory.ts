@@ -272,14 +272,23 @@ export class HiveDirectory {
   }
 
   /**
-   * Build signed announce frames for every owned NON-private hive (no broadcast).
-   * The directory-swarm sends these to a freshly-paired peer (`getOwnAnnounces`)
-   * so a newly-connected peer learns our hives immediately, without waiting for
-   * the re-announce timer.
+   * Build signed announce frames for owned NON-private hives (no broadcast). The
+   * directory-swarm sends these to a freshly-paired peer (`getOwnAnnounces`) so a
+   * newly-connected peer learns our hives immediately, without waiting for the
+   * re-announce timer.
+   *
+   * `topicHex` SCOPES the result to the hives that announce on THAT topic — so a
+   * peer paired on the GLOBAL topic only ever receives PUBLIC hives, and an
+   * invite-topic peer only the invite hive(s) for that secret. Without it (the
+   * default) every non-private owned hive is returned. The topic-scoping is what
+   * keeps an invite hive from leaking onto the global directory.
    */
-  async buildOwnedAnnounces(): Promise<SignedHiveAnnounce[]> {
+  async buildOwnedAnnounces(opts: { topicHex?: string } = {}): Promise<SignedHiveAnnounce[]> {
     const out: SignedHiveAnnounce[] = [];
     for (const desc of this.owned.values()) {
+      const topic = this.topicForLocalHive(desc); // null for private
+      if (!topic) continue;
+      if (opts.topicHex && hiveTopicAsHex(topic) !== opts.topicHex) continue;
       const frame = await this.buildAnnounceFor(desc).catch(() => null);
       if (frame) out.push(frame);
     }

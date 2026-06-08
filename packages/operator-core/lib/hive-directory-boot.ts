@@ -19,7 +19,7 @@
  * (follow-up: join an invite topic per owned invite hive).
  */
 
-import { deriveDirectoryTopic, hiveTopicAsHex } from './sync/hyperbee/derive-hive-topic';
+import { deriveDirectoryTopic, deriveInviteTopic, hiveTopicAsHex } from './sync/hyperbee/derive-hive-topic';
 import { joinDirectorySwarm, type DirectorySwarmHandle } from './sync/hyperbee/directory-swarm';
 import type { HyperswarmLike } from './sync/hyperbee/swarm';
 import { getHiveDirectory, setHiveDirectoryTransport } from './hive-directory-deps';
