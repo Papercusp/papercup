@@ -35,8 +35,8 @@ import { z } from 'zod';
 import type { ChangeFeedEntry } from '../curation/change-feed';
 import {
   dedupSignature,
+  findLikelyDuplicates,
   signatureRecurrence,
-  type SignatureRecurrence,
 } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { MetaPattern, MetaPatternCategory } from './types';
@@ -236,6 +236,16 @@ export function revertWeight(from: string, to: string): number {
   return fromR - toR + (fromR === 4 ? 2 : 0);
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Most recent activity (resolution time when resolved, else creation) — the
+ *  recurrence-decay clock for one candidate. */
+function lastSeenMsOf(c: ImprovementCandidate): number {
+  const ts = c.updatedAt ?? c.createdAt;
+  const parsed = ts ? Date.parse(ts) : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 function round(n: number, dp = 2): number {
   const f = 10 ** dp;
   return Math.round(n * f) / f;
@@ -264,23 +274,32 @@ function finalize(scored: Scored[], limit: number): MetaPattern[] {
   }));
 }
 
-/** recurringFriction — recurring (count>1) stable signatures from the friction
- *  queue. Open recurrence (active friction) outweighs a recurrence gone quiet.
- *  Reuses the improvement loop's recurrence matcher (no second dedup). */
+/** recurringFriction — friction that RECURS: clusters of captures sharing a
+ *  stable signature OR near-duplicate wording (Jaccard ≥ 0.8). Reuses the
+ *  shipped keystone matcher `findLikelyDuplicates` (exact-then-near-dup) — NOT a
+ *  second dedup — so the same underlying friction worded differently still
+ *  collides (the "friction nobody named", which exact-signature-only misses on
+ *  real, distinctly-worded captures). Open recurrence outweighs a quiet one. */
 function buildRecurringFriction(friction: ImprovementCandidate[], nowMs: number, limit: number): MetaPattern[] {
-  const recurrences: SignatureRecurrence[] = signatureRecurrence(friction, { nowMs }).filter((s) => s.count > 1);
   const byId = new Map(friction.map((c) => [c.id, c] as const));
-  const scored: Scored[] = recurrences.map((r) => {
-    const openBoost = r.openCount > 0 ? 1 + r.openCount / r.count : 0.5;
-    const salience = r.count * openBoost;
-    const exemplar = byId.get(r.ids[0]);
+  const clusters = findLikelyDuplicates(friction).filter((c) => c.ids.length > 1);
+  const scored: Scored[] = clusters.map((cluster) => {
+    const members = cluster.ids
+      .map((id) => byId.get(id))
+      .filter((c): c is ImprovementCandidate => Boolean(c));
+    const openCount = members.filter((m) => (m.state ?? 'open') === 'open').length;
+    // Exemplar + decay clock = the most-recently-seen member.
+    const newest = [...members].sort((a, b) => lastSeenMsOf(b) - lastSeenMsOf(a))[0];
+    const lastSeenMs = newest ? lastSeenMsOf(newest) : 0;
+    const decayDays = lastSeenMs ? round((nowMs - lastSeenMs) / DAY_MS, 1) : 0;
+    const openBoost = openCount > 0 ? 1 + openCount / members.length : 0.5;
     return {
-      salience,
+      salience: members.length * openBoost,
       pattern: {
-        category: 'recurring-friction',
-        summary: exemplar ? truncate(exemplar.title) : r.signature,
-        detail: `recurred ${r.count}× (${r.openCount} open), last ${r.decayDays}d ago`,
-        ref: `wi:${r.ids[0]}`,
+        category: 'recurring-friction' as MetaPatternCategory,
+        summary: newest ? truncate(newest.title) : cluster.signature,
+        detail: `recurred ${members.length}× (${openCount} open), last ${decayDays}d ago`,
+        ref: newest ? `wi:${newest.id}` : `friction:${cluster.signature.slice(0, 40)}`,
       },
     };
   });

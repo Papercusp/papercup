@@ -256,3 +256,36 @@ export {
   type AbDeps,
 } from './ab-runner';
 export type { PlantedBug } from './probe-generator';
+// Quality-diversity archive (P-010, D-008) — the MAP-Elites novelty/diversity surface the
+// gym-QD pieces consume (P-011 selection, P-012 Scout bridge, a gym read-tool). The PG store
+// + recorder take an injected `Sql` (type-only import), so this surface stays runtime-pure.
+export {
+  describeBehavior,
+  nicheKey,
+  coordsToFeatures,
+  featureDistance,
+  noveltyFromMembers,
+  GYM_NICHE_CELL_COUNT,
+  SCOPE_BANDS,
+  RISK_BANDS,
+  DOMAIN_VOCAB,
+  type NicheCoords,
+  type BehaviorDescriptor,
+  type ScopeBand,
+  type RiskBand,
+  type ArchiveSource,
+  type ArchiveElite,
+  type GymCandidate,
+  type ArchiveCandidateRecord,
+} from './qd/niche';
+export {
+  QdArchive,
+  InMemoryArchiveStore,
+  type ArchiveAPI,
+  type ArchiveStore,
+  type ArchiveCandidate,
+  type UpsertResult,
+  type CoverageStat,
+} from './qd/archive';
+export { PgArchiveStore } from './qd/archive-store-pg';
+export { makeLoopArchiveRecorder, makeGymArchive } from './qd/archive-recorder';

@@ -22,7 +22,6 @@ import {
   type RevertRecord,
   type SpendRecord,
   type DeferralRecord,
-  type StateOfHiveDigest,
 } from './corpus-digest';
 
 const NOW = Date.parse('2026-06-08T12:00:00Z');
@@ -255,6 +254,3 @@ describe('structural contract with scout/types.ts', () => {
     expect(() => MetaPatternSchema.parse(recurringFriction[0])).not.toThrow();
   });
 });
-
-// Type-only helper so an unused StateOfHiveDigest import never trips lint.
-export type _DigestType = StateOfHiveDigest;

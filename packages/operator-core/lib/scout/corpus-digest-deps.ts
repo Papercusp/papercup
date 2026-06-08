@@ -134,7 +134,7 @@ async function fetchDeferrals(): Promise<DeferralRecord[]> {
            d->>'title' AS title
       FROM harness_shared.harness_plans p,
            jsonb_array_elements(COALESCE(p.decisions, '[]'::jsonb)) AS d
-     WHERE d->>'body' ~* '\mdeferr'
+     WHERE d->>'body' ~* '\\mdeferr'
      LIMIT 1000`;
 
   const out: DeferralRecord[] = [];

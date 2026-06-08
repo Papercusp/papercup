@@ -1,0 +1,113 @@
+/**
+ * Tests for the P-005 critics (D-005). Self-contained: a tiny local fake
+ * ScoutLlmCall + local Idea fixtures, so this verifies the critic LOGIC
+ * independent of the (actively-evolving) shared test-support harness. The
+ * load-bearing invariant pinned here: SEARCH-FIRST novelty is a CEILING — an
+ * already-present idea is rejected even when the LLM critic claims it's novel.
+ */
+import { describe, it, expect } from 'vitest';
+import type { Idea, ScoutLlmCall } from './types';
+import { critiqueIdea, critiqueIdeas } from './critics';
+import type { CorpusEntry } from './critique-core';
+
+function idea(over: Partial<Idea> = {}): Idea {
+  return {
+    id: 'i1',
+    lens: 'first-principles',
+    title: 'a genuinely fresh mechanism',
+    body: 'something the hive has not considered',
+    mechanism: 'do the new thing',
+    addressesPatternRefs: [],
+    ...over,
+  };
+}
+
+/** A fake critic LLM returning fixed scores (optionally varying by idea title). */
+function fakeCritic(
+  pick: { conceptualNovelty: number; feasibility: number } | ((title: string) => { conceptualNovelty: number; feasibility: number }),
+): ScoutLlmCall {
+  return async (opts) => {
+    const userText = opts.messages.map((m) => m.content).join('\n');
+    const titleLine = userText.split('\n').find((l) => l.startsWith('Title: ')) ?? '';
+    const title = titleLine.slice('Title: '.length);
+    const scores = typeof pick === 'function' ? pick(title) : pick;
+    const json = { ...scores, rationale: 'fake critic' };
+    return { text: JSON.stringify(json), json, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+  };
+}
+
+describe('critiqueIdea', () => {
+  it('keeps a novel + feasible idea', async () => {
+    const c = await critiqueIdea(idea(), [], { llmCall: fakeCritic({ conceptualNovelty: 0.9, feasibility: 0.9 }) });
+    expect(c.verdict).toBe('keep');
+    expect(c.novelty).toBeGreaterThanOrEqual(0.66);
+    expect(c.feasibility).toBe(0.9);
+  });
+
+  it('SEARCH-FIRST CEILING: an already-present idea is rejected even when the LLM claims it is novel', async () => {
+    const corpus: CorpusEntry[] = [
+      { ref: 'plan:dup', kind: 'plan', text: 'reuse the lock token bucket', state: 'dropped' },
+    ];
+    const dup = idea({ title: 'reuse the lock token bucket', body: 'reuse the lock token bucket' });
+    // The fake critic LIES that it is maximally novel — search-first must win.
+    const c = await critiqueIdea(dup, corpus, { llmCall: fakeCritic({ conceptualNovelty: 1, feasibility: 0.9 }) });
+    expect(c.novelty).toBe(0);
+    expect(c.verdict).toBe('reject');
+    expect(c.noveltyMatches[0]?.ref).toBe('plan:dup');
+  });
+
+  it('preserves a high-novelty / low-feasibility idea as a moonshot (D-005)', async () => {
+    const c = await critiqueIdea(idea(), [], { llmCall: fakeCritic({ conceptualNovelty: 1, feasibility: 0.2 }) });
+    expect(c.verdict).toBe('moonshot');
+  });
+
+  it('a critic that fails to produce JSON cannot smuggle an idea to KEEP', async () => {
+    const brokenLlm: ScoutLlmCall = async () => ({ text: 'not json at all', costUsd: 0, inputTokens: 0, outputTokens: 0 });
+    const c = await critiqueIdea(idea(), [], { llmCall: brokenLlm });
+    expect(c.feasibility).toBe(0);
+    expect(c.verdict).not.toBe('keep');
+  });
+});
+
+describe('critiqueIdeas (batch + moonshot cap + no-human-prompt)', () => {
+  it('partitions a batch into keep / moonshot / reject', async () => {
+    const ideas = [
+      idea({ id: 'keep', title: 'keep me' }),
+      idea({ id: 'leap', title: 'leap one' }),
+    ];
+    const llm = fakeCritic((title) =>
+      title.startsWith('keep') ? { conceptualNovelty: 0.9, feasibility: 0.8 } : { conceptualNovelty: 0.9, feasibility: 0.2 },
+    );
+    const r = await critiqueIdeas(ideas, [], { llmCall: llm });
+    expect(r.kept.map((c) => c.idea.id)).toEqual(['keep']);
+    expect(r.moonshot.map((c) => c.idea.id)).toEqual(['leap']);
+    expect(r.critiques).toHaveLength(2);
+  });
+
+  it('caps the moonshot bucket and demotes the least-novel leap', async () => {
+    const ideas = [
+      idea({ id: 'm1', title: 'leap alpha' }),
+      idea({ id: 'm2', title: 'leap beta' }),
+      idea({ id: 'm3', title: 'leap gamma' }),
+    ];
+    // All high-novelty / low-feasibility, but distinct novelty so the cap is deterministic.
+    const llm = fakeCritic((title) => {
+      const cn = title.endsWith('alpha') ? 0.95 : title.endsWith('beta') ? 0.85 : 0.75;
+      return { conceptualNovelty: cn, feasibility: 0.2 };
+    });
+    const r = await critiqueIdeas(ideas, [], { llmCall: llm }, { bucket: { maxMoonshots: 2 } });
+    expect(r.moonshot.map((c) => c.idea.id)).toEqual(['m1', 'm2']);
+    expect(r.rejected.map((c) => c.idea.id)).toEqual(['m3']);
+  });
+
+  it('runs entirely from the injected llmCall — one call per idea, no other input (no human prompt)', async () => {
+    const ideas = [idea({ id: 'a', title: 'one' }), idea({ id: 'b', title: 'two' })];
+    let calls = 0;
+    const llm: ScoutLlmCall = async () => {
+      calls += 1;
+      return { text: '{}', json: { conceptualNovelty: 0.9, feasibility: 0.9 }, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+    };
+    await critiqueIdeas(ideas, [], { llmCall: llm });
+    expect(calls).toBe(2);
+  });
+});

@@ -1,5 +1,5 @@
 /**
- * Scout loop — the end-to-end cycle composition (hive-creative-ideation-2026-06-08, P-006…P-008 seam).
+ * Scout loop — the end-to-end cycle composition (hive-creative-ideation-2026-06-08, the P-003…P-007 seam).
  *
  * `runScoutCycle` is the single entrypoint that wires the five Scout steps into
  * one autonomous, prompt-free pass:
@@ -7,12 +7,13 @@
  *   corpus synthesis (P-003) → divergent generation (P-004) → adversarial
  *   critics (P-005) → debate + recombine (P-006) → routing (P-007).
  *
- * It is **pure orchestration over injected ports** — it imports only the shared
- * contract from `./types` and never the concrete step modules, so:
+ * It is **pure orchestration over injected ports** — it owns no step's logic and
+ * converges on the swarm's canonical contracts (`./types`, ce4bd's
+ * {@link RoutingDecision} + {@link decisionsToProvenance}, su-80be9's
+ * {@link RoutedIdeaProvenance}) rather than forking parallel types. So:
  *  - it unit-tests with fakes + `./test-support` (no network, $0, deterministic);
- *  - it couples to no peer's file (each step is a port, wired in `./cycle-deps`
- *    once the implementations land);
- *  - it is the entrypoint the verification lane drives (b6c3f P-014 / e8630
+ *  - it couples to no peer's *implementation*, only their published contracts;
+ *  - it is the entrypoint the verification lane drives (su-b6c3f P-014 / su-e8630
  *    P-009, contract invariant 7) and the cadence/budget layer wraps (su-80be9
  *    P-008: `tick → shouldRunScoutCycle → budget gate → runScoutCycle → routed`).
  *
@@ -21,69 +22,30 @@
  *    {@link ScoutLlmCall}; the cycle wraps it in a recorder so spend + the
  *    "no human-authored prompt entered the loop" invariant (D-010) read from
  *    one place ({@link ScoutCycleResult.calls}).
- *  - **Survivors only (D-005):** `reject` critiques are dropped before
- *    recombine; `keep` + `moonshot` proceed (the moonshot bucket survives so
- *    the leaps aren't over-pruned).
+ *  - **Survivors (D-005):** `keep` + `moonshot` proceed, `reject` is dropped (the
+ *    recombine port re-filters internally; the cycle also surfaces `survivors`
+ *    for observability + a no-survivors short-circuit, and the two agree).
  *  - **Per-cycle budget (D-010):** an optional `limits.maxCostUsd` halts the
- *    cycle before the next LLM-spending step rather than running unbounded —
- *    a belt to su-80be9's pre-fire budget-gate suspenders.
+ *    cycle before the next LLM-spending step — a belt to su-80be9's pre-fire
+ *    budget-gate suspenders.
+ *
+ * PROVENANCE (P-013, D-009): a {@link Proposal} *fuses* multiple source ideas
+ * (`sourceIdeaIds[]`), and the creative `lens` lives on {@link Idea}. The router
+ * dispatches once per proposal (ce4bd's `routeProposals` is per-proposal) and the
+ * cycle expands each routed decision to per-idea lens provenance via ce4bd's
+ * {@link decisionsToProvenance}, supplying a lens resolver over its own ideas —
+ * the canonical rows su-80be9's `recordRoutedIdea` ledger persists.
  */
 import type {
   CorpusDigest,
-  CreativeLens,
-  Critique,
   Idea,
   Proposal,
+  ScoredIdea,
   ScoutLlmCall,
 } from './types';
-
-/* ────────────────────────────────────────────────────────────────────────
- * Routing contract (P-007, su-ce4bd) — the shape the cycle consumes + returns.
- * su-ce4bd's `./router` aligns its decision output to this; the side-effecting
- * dispatch (plans:new / gym / improvements:capture) is an injected port INSIDE
- * the route step, so the cycle stays write-free + testable.
- * ──────────────────────────────────────────────────────────────────────── */
-
-/** Which downstream rail a proposal routes to (D-007). */
-export type ScoutRail = 'plan' | 'gym' | 'improvement';
-
-/**
- * One routing decision for one proposal (P-007 output). `routedRef` is the
- * change-feed ref of the artifact the dispatch created — `"plan:<slug>"` /
- * `"gym:<proposal-id>"` / `"wi:<issue-id>"` — the exact shape su-80be9's
- * P-013 ledger keys on.
- */
-export interface RouteDecision {
-  /** The {@link Proposal.id} this decision is for. */
-  proposalId: string;
-  /** The rail the proposal was dispatched to. */
-  rail: ScoutRail;
-  /** Change-feed ref of the created artifact ("plan:<slug>" | "gym:<id>" | "wi:<id>"). */
-  routedRef: string;
-  /** One-line why-this-rail (for the audit / digest). */
-  reason: string;
-}
-
-/**
- * Per-idea provenance derived by the cycle for P-013 outcome feedback (D-009):
- * a routed proposal is expanded to one row per source idea, carrying the
- * **creative lens** that produced it — the attribution key that lets P-013
- * weight winning lenses. su-80be9's `recordRoutedIdea` ledger consumes this
- * (structurally a subset of their `RoutedIdeaProvenance`; they stamp
- * `cycleId` / `routedAt` at persist time).
- */
-export interface ScoutRoutedIdea {
-  /** The {@link Idea.id} that contributed to the routed proposal. */
-  ideaId: string;
-  /** The lens that produced the idea — the P-013 attribution key. */
-  lens: CreativeLens;
-  /** Rail the proposal routed to. */
-  rail: ScoutRail;
-  /** Change-feed ref of the created artifact. */
-  routedRef: string;
-  /** Convenience: the idea's title (for the ledger / report). */
-  title?: string;
-}
+import type { CorpusEntry } from './critique-core';
+import { decisionsToProvenance, type RoutingDecision } from './router';
+import type { RoutedIdeaProvenance } from './outcome-feedback';
 
 /* ────────────────────────────────────────────────────────────────────────
  * Budget + observability
@@ -101,6 +63,9 @@ export interface ScoutCycleLimits {
   maxCostUsd?: number;
 }
 
+/** The LLM-spending steps (also the `ScoutCallRecord.step` tags). Routing spends no LLM. */
+export type ScoutStep = 'ideate' | 'critique' | 'recombine';
+
 /**
  * A recorded LLM invocation — the single place the no-human-prompt invariant
  * (D-010) and cost accounting read from. The cycle wraps the injected
@@ -116,9 +81,6 @@ export interface ScoutCallRecord {
   costUsd: number;
 }
 
-/** The cycle's ordered steps (also the `ScoutCallRecord.step` tags). */
-export type ScoutStep = 'ideate' | 'critique' | 'recombine' | 'route';
-
 /* ────────────────────────────────────────────────────────────────────────
  * Ports — one per Scout step, injected so the cycle owns no step's logic.
  * ──────────────────────────────────────────────────────────────────────── */
@@ -129,16 +91,18 @@ export interface ScoutStepCtx {
 }
 
 export interface ScoutCyclePorts {
-  /** P-003 (su-7a8ee): synthesize the "state of the Hive" digest. */
+  /** P-003 (su-7a8ee): synthesize the "state of the Hive" digest (the grounded substrate). */
   readCorpus: () => Promise<CorpusDigest>;
+  /** Search-first novelty corpus for the critics (prior plans/decisions/ideas/dropped-improvements). */
+  readNoveltyCorpus: () => Promise<CorpusEntry[]>;
   /** P-004 (su-797a5): divergent generation → grounded ideas. `maxIdeators` clamps the roster (budget). */
   ideate: (digest: CorpusDigest, ctx: ScoutStepCtx & { maxIdeators?: number }) => Promise<Idea[]>;
-  /** P-005 (su-d1170): adversarial novelty + feasibility critics → bucketed critiques. */
-  critique: (ideas: Idea[], ctx: ScoutStepCtx) => Promise<Critique[]>;
-  /** P-006 (su-d1170): debate + recombine SURVIVORS (keep+moonshot) → proposals. */
-  recombine: (survivors: Critique[], ctx: ScoutStepCtx) => Promise<Proposal[]>;
-  /** P-007 (su-ce4bd): route + dispatch each proposal → typed decisions (dispatch is internal/injected). */
-  route: (proposals: Proposal[], ctx: ScoutStepCtx) => Promise<RouteDecision[]>;
+  /** P-005 (su-d1170): adversarial novelty (search-first vs `corpus`) + feasibility critics → scored ideas. */
+  critique: (ideas: Idea[], ctx: ScoutStepCtx & { corpus: CorpusEntry[] }) => Promise<ScoredIdea[]>;
+  /** P-006 (su-d1170): debate + recombine survivors → proposals (the port filters verdict≠reject internally). */
+  recombine: (scored: ScoredIdea[], ctx: ScoutStepCtx) => Promise<Proposal[]>;
+  /** P-007 (su-ce4bd): route + dispatch each proposal once → per-proposal decisions (with `routedRef`). */
+  route: (proposals: Proposal[]) => Promise<RoutingDecision[]>;
 }
 
 export interface ScoutCycleDeps extends ScoutCyclePorts {
@@ -168,13 +132,15 @@ export interface ScoutCycleResult {
   cycleId?: string;
   digest: CorpusDigest;
   ideas: Idea[];
-  critiques: Critique[];
-  /** keep + moonshot (reject dropped) — the proposals' source pool. */
-  survivors: Critique[];
+  /** Every idea after the critics (P-005). */
+  scored: ScoredIdea[];
+  /** keep + moonshot (reject dropped) — the proposals' source pool (D-005). */
+  survivors: ScoredIdea[];
   proposals: Proposal[];
-  routed: RouteDecision[];
-  /** Per-idea lens provenance for P-013 (derived from routed × proposals × ideas). */
-  provenance: ScoutRoutedIdea[];
+  /** Per-proposal routing decisions (ce4bd's canonical shape, with `routedRef`). */
+  routed: RoutingDecision[];
+  /** Per-idea lens provenance for P-013 (ce4bd's `decisionsToProvenance` over the cycle's ideas). */
+  provenance: RoutedIdeaProvenance[];
   /** Every LLM call the cycle issued, in order (no-human-prompt + cost). */
   calls: ScoutCallRecord[];
   /** Total LLM spend this cycle (sum of `calls[].costUsd`). */
@@ -187,47 +153,16 @@ export interface ScoutCycleResult {
  * The composition
  * ──────────────────────────────────────────────────────────────────────── */
 
-/** keep + moonshot survive (D-005); reject is pruned before recombine. */
-export function selectSurvivors(critiques: Critique[]): Critique[] {
-  return critiques.filter((c) => c.verdict !== 'reject');
-}
-
-/**
- * Expand routed proposals to per-idea lens provenance (D-009 attribution). One
- * row per (decision × source idea); the idea's lens is looked up from the
- * cycle's own `ideas`. Ideas not found (defensive) are skipped.
- */
-export function deriveProvenance(
-  routed: RouteDecision[],
-  proposals: Proposal[],
-  ideas: Idea[],
-): ScoutRoutedIdea[] {
-  const ideaById = new Map(ideas.map((i) => [i.id, i]));
-  const proposalById = new Map(proposals.map((p) => [p.id, p]));
-  const out: ScoutRoutedIdea[] = [];
-  for (const decision of routed) {
-    const proposal = proposalById.get(decision.proposalId);
-    if (!proposal) continue;
-    for (const ideaId of proposal.sourceIdeaIds) {
-      const idea = ideaById.get(ideaId);
-      if (!idea) continue;
-      out.push({
-        ideaId,
-        lens: idea.lens,
-        rail: decision.rail,
-        routedRef: decision.routedRef,
-        title: idea.title,
-      });
-    }
-  }
-  return out;
+/** keep + moonshot survive (D-005); reject is pruned. */
+export function selectSurvivors(scored: ScoredIdea[]): ScoredIdea[] {
+  return scored.filter((s) => s.verdict !== 'reject');
 }
 
 /**
  * Run one full Scout cycle. Prompt-free: the only input is `deps` (an injected
  * LLM call + step ports); there is NO human-input parameter and the cycle never
  * prompts a human — autonomy is structural (D-010). Returns the digest, the
- * ideas, the critiques + survivors, the proposals, the routing decisions, the
+ * ideas, the scored ideas + survivors, the proposals, the routing decisions, the
  * per-idea provenance, and the recorded spend.
  */
 export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleResult> {
@@ -259,17 +194,17 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     partial: {
       digest: CorpusDigest;
       ideas?: Idea[];
-      critiques?: Critique[];
-      survivors?: Critique[];
+      scored?: ScoredIdea[];
+      survivors?: ScoredIdea[];
       proposals?: Proposal[];
-      routed?: RouteDecision[];
-      provenance?: ScoutRoutedIdea[];
+      routed?: RoutingDecision[];
+      provenance?: RoutedIdeaProvenance[];
     },
   ): ScoutCycleResult => ({
     cycleId: deps.cycleId,
     digest: partial.digest,
     ideas: partial.ideas ?? [],
-    critiques: partial.critiques ?? [],
+    scored: partial.scored ?? [],
     survivors: partial.survivors ?? [],
     proposals: partial.proposals ?? [],
     routed: partial.routed ?? [],
@@ -292,29 +227,37 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   if (ideas.length === 0) return finish('no-ideas', { digest, ideas });
   if (overBudget()) return finish('budget-exhausted', { digest, ideas });
 
-  // 3. Adversarial critics (P-005) → survivors (D-005: drop reject; keep+moonshot proceed).
+  // 3. Adversarial critics (P-005) — search-first novelty vs the corpus + feasibility.
   currentStep = 'critique';
-  const critiques = await deps.critique(ideas, { llmCall: recordingLlm });
-  const survivors = selectSurvivors(critiques);
-  if (survivors.length === 0) return finish('no-survivors', { digest, ideas, critiques, survivors });
-  if (overBudget()) return finish('budget-exhausted', { digest, ideas, critiques, survivors });
+  const corpus = await deps.readNoveltyCorpus();
+  const scored = await deps.critique(ideas, { llmCall: recordingLlm, corpus });
+  const survivors = selectSurvivors(scored);
+  if (survivors.length === 0) return finish('no-survivors', { digest, ideas, scored, survivors });
+  if (overBudget()) return finish('budget-exhausted', { digest, ideas, scored, survivors });
 
-  // 4. Debate + recombine survivors → proposals (P-006).
+  // 4. Debate + recombine survivors → proposals (P-006). The port re-filters
+  //    verdict≠reject internally (su-d1170's recombineProposals), so passing all
+  //    `scored` is safe + matches its published wiring.
   currentStep = 'recombine';
-  const proposals = await deps.recombine(survivors, { llmCall: recordingLlm });
+  const proposals = await deps.recombine(scored, { llmCall: recordingLlm });
   if (proposals.length === 0) {
-    return finish('no-proposals', { digest, ideas, critiques, survivors, proposals });
+    return finish('no-proposals', { digest, ideas, scored, survivors, proposals });
   }
 
-  // 5. Route + dispatch each proposal (P-007); derive per-idea provenance (P-013).
-  currentStep = 'route';
-  const routed = await deps.route(proposals, { llmCall: recordingLlm });
-  const provenance = deriveProvenance(routed, proposals, ideas);
+  // 5. Route + dispatch each proposal once (P-007); expand to per-idea lens
+  //    provenance (P-013) via ce4bd's canonical adapter + a resolver over our ideas.
+  const routed = await deps.route(proposals);
+  const lensById = new Map(ideas.map((i) => [i.id, i.lens]));
+  const provenance = decisionsToProvenance(
+    routed,
+    (ideaId) => lensById.get(ideaId),
+    deps.cycleId ? { cycleId: deps.cycleId } : {},
+  );
 
   return finish('completed', {
     digest,
     ideas,
-    critiques,
+    scored,
     survivors,
     proposals,
     routed,
