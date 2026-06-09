@@ -53,7 +53,8 @@ export const FLAGS = {
   // Studio surface (edit the renderSuPlaybook SOURCES — base playbooks / per-client
   // overlays / project-guide — with a live assembled-prompt preview). OFF (default)
   // until it's mounted in the settings nav (coordinated with the in-flight /settings
-  // restructure) + Tauri-verified. Backend routes (/api/prompt-studio/*) ship regardless.
+  // restructure) + Tauri-verified. The /api/prompt-studio/* routes are gated on this flag
+  // TOO (security review — closed-gate default; the prompt-source backend never ships dark).
   PROMPT_STUDIO: "papercusp-prompt-studio",
 } as const;
 
@@ -81,8 +82,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the legacy hardcoded HarnessSettingsPanel ships until the
   // schema-driven BlueprintSettingsPanel (P-008) is Tauri-verified. Flip on to adopt.
   [FLAGS.BLUEPRINT_AWARE_SETTINGS]: false,
-  // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the
-  // settings nav + Tauri-verified. The /api/prompt-studio/* routes are live regardless.
+  // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the settings
+  // nav + Tauri-verified. The /api/prompt-studio/* routes are flag-gated on it too.
   [FLAGS.PROMPT_STUDIO]: false,
 };
 

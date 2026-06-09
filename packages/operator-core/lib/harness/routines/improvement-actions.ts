@@ -48,6 +48,25 @@ import type { ScoredItem } from '../improvements/digest';
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
 export const IMPROVEMENT_RUNNER_ASSIGNEE = 'improvement-runner';
 
+/**
+ * Parse a non-negative integer env var, HONORING an explicit `0` (watchdog-robustness
+ * P-005 / D-005). Returns `fallback` only when the var is unset/blank/non-numeric
+ * (warning on a non-numeric value), then clamps to `min` (default 0). Replaces the
+ * `Number(process.env.X ?? d) || d` idiom, which silently mapped an explicit `0`
+ * (a legitimate "disable") AND any typo to the default.
+ */
+export function intFromEnv(name: string, fallback: number, opts: { min?: number } = {}): number {
+  const min = opts.min ?? 0;
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return Math.max(min, fallback);
+  const n = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(n) || String(n) !== raw.trim()) {
+    console.warn(`[improvement-routines] ${name}="${raw}" is not an integer — using ${fallback}`);
+    return Math.max(min, fallback);
+  }
+  return Math.max(min, n);
+}
+
 /** A stable system identity for the digest broadcast (display-only ownerLabel). */
 function systemIdentity(ctx: SystemActionCtx, who: string): AgentIdentity {
   return { ownerId: `system:${who}`, ownerLabel: who, source: 'principal', workspaceId: ctx.workspaceId, userId: null };
@@ -76,12 +95,19 @@ registerSystemAction('improvement-digest', async (ctx: SystemActionCtx) => {
 
 // ── close-loop D-003: the watchdog hard feed-in (capture only) ───────────────
 registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
-  const maxPerTick = Number(process.env.PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK ?? 3) || 3;
-  const result = await runWatchdogTick(ctx.workspaceId, { maxPerTick });
+  const maxPerTick = intFromEnv('PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK', 3, { min: 0 });
+  const result = await runWatchdogTick(ctx.workspaceId, { maxPerTick, installSlug: ctx.installSlug });
+  if (result.status === 'skipped') {
+    console.log('[improvement-watchdog] tick skipped — another host held the cross-host lock');
+    return;
+  }
+  const failed = result.collectors.filter((c) => !c.ok).map((c) => c.name);
   console.log(
     `[improvement-watchdog] ${result.signals} signal(s) → captured ${result.captured.length}` +
       (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
-      `, ${result.declinedDuplicates} open-duplicate(s) declined, ${result.deferred} deferred by the per-tick cap`,
+      `, ${result.declinedDuplicates} open-duplicate(s) declined, ${result.deferred} deferred by the per-tick cap` +
+      (failed.length ? `, ${failed.length} collector(s) FAILED: ${failed.join(', ')}` : '') +
+      (result.selfEscalations.length ? `, self-escalated ${result.selfEscalations.join(', ')}` : ''),
   );
 });
 
@@ -164,8 +190,14 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
   const items = await readImprovementItems({ state: 'open' });
   const flagEnabled = await getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, `routine:${ctx.installSlug}`);
   const runnerHarness = process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || null;
-  const maxPerRun = Number(process.env.PAPERCUSP_IMPROVEMENT_MAX_PER_RUN ?? 1) || 1;
-  const maxAttempts = Number(process.env.PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS ?? 0) || undefined;
+  const maxPerRun = intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_PER_RUN', 1, { min: 0 });
+  // maxAttempts is genuinely optional (undefined = no cap). Honor an explicit 0
+  // (a valid "never dispatch" pause) when set; leave undefined when unset/blank.
+  const maxAttemptsRaw = process.env.PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS;
+  const maxAttempts =
+    maxAttemptsRaw && maxAttemptsRaw.trim() !== ''
+      ? intFromEnv('PAPERCUSP_IMPROVEMENT_MAX_ATTEMPTS', 0, { min: 0 })
+      : undefined;
 
   const plan = planImplementRun({ items, flagEnabled, runnerHarness, maxPerRun, maxAttempts });
   if (plan.action !== 'dispatch') {

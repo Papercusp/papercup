@@ -33,6 +33,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../loopback-guard';
+import { gateApiRoute } from '../../require-flag';
+import { FLAGS } from '@papercusp/flags';
 
 /** Whitelisted editable sources that live in the operator `prompts/` dir. */
 const PROMPT_SOURCES: Record<string, { file: string; label: string; kind: 'playbook' | 'overlay' }> = {
@@ -83,6 +85,10 @@ const listSources = defineTool({
   async handler(req) {
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
+    // Don't ship the prompt-source backend ahead of the flag (security review): the
+    // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
+    const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
+    if (off) return off;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const sources = [
@@ -100,6 +106,10 @@ const readSource = defineTool({
   async handler(req) {
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
+    // Don't ship the prompt-source backend ahead of the flag (security review): the
+    // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
+    const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
+    if (off) return off;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const id = new URL(req.url).searchParams.get('id') ?? '';
@@ -123,6 +133,10 @@ const writeSource = defineTool({
     // auth:'public' is the codebase norm; the loopback bind + this guard are the perimeter.
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
+    // Don't ship the prompt-source backend ahead of the flag (security review): the
+    // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
+    const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
+    if (off) return off;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const body = (await req.json()) as { id?: string; content?: string };
@@ -130,6 +144,12 @@ const writeSource = defineTool({
     if (!src) return Response.json({ error: 'unknown source id' }, { status: 404 });
     if (typeof body.content !== 'string') {
       return Response.json({ error: 'content must be a string' }, { status: 400 });
+    }
+    // Size cap (security review — dangerous-sink hardening): a prompt source is a
+    // few-KB markdown file; reject anything pathological before it hits writeFile.
+    const MAX_BYTES = 512 * 1024; // generous — base playbooks ~50KB, the project guide ~44KB
+    if (Buffer.byteLength(body.content, 'utf8') > MAX_BYTES) {
+      return Response.json({ error: `content exceeds ${MAX_BYTES} bytes` }, { status: 413 });
     }
     try {
       await writeFile(src.path, body.content, 'utf8');
@@ -148,6 +168,10 @@ const previewPrompt = defineTool({
   async handler(req) {
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
+    // Don't ship the prompt-source backend ahead of the flag (security review): the
+    // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
+    const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
+    if (off) return off;
     const url = new URL(req.url);
     const agent = url.searchParams.get('agent') ?? 'claude';
     const profile = url.searchParams.get('profile') ?? 'engineer';

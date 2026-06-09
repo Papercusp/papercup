@@ -20,6 +20,10 @@
  *   - `system:scout-cycle` — hive-creative-ideation-2026-06-08 P-008 (the Scout
  *     autonomous-ideation cadence; D-010). Self-gates on idle/friction + budget;
  *     seeded INACTIVE (seed-scout-routine.ts), bring-up human-gated.
+ *   - `system:session-dir-gc` — the per-session isolation-dir janitor (the EI-155
+ *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
+ *     not-live, not-resumable sessions past a retention window. Seeded INACTIVE
+ *     (seed-session-dir-gc-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -27,3 +31,4 @@ import './release-actions';
 import './improvement-actions';
 import './p2p-perf-actions';
 import '../../scout/register-scout-action';
+import './session-dir-gc-action';

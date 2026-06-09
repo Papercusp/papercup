@@ -120,8 +120,19 @@ const HEALTH_IDENTITY: AgentIdentity = {
 
 /** Last probe results (for the on-demand status tool / UI). */
 let lastResults: ProbeResult[] = [];
+/**
+ * When `lastResults` was last populated (epoch ms), or null if never probed this
+ * process. The watchdog's service-down collector reads this to skip a STALE
+ * snapshot — if the probe workflow has stopped, the module singleton would
+ * otherwise feed the watchdog phantom up/down data (watchdog-robustness P-004).
+ */
+let lastResultsAt: number | null = null;
 export function lastServiceHealth(): ProbeResult[] {
   return lastResults;
+}
+/** Epoch-ms timestamp of the last probe, or null if never probed (P-004). */
+export function lastServiceHealthAt(): number | null {
+  return lastResultsAt;
 }
 
 /**
@@ -132,6 +143,7 @@ export function lastServiceHealth(): ProbeResult[] {
 export async function runServiceHealthTick(): Promise<{ checked: number; transitions: HealthTransition[] }> {
   const results = await probeAll();
   lastResults = results;
+  lastResultsAt = Date.now();
   const { transitions, next } = diffHealth(lastHealth, results);
   lastHealth = next;
   for (const t of transitions) {
@@ -154,4 +166,5 @@ export async function runServiceHealthTick(): Promise<{ checked: number; transit
 export function _resetServiceHealthState(): void {
   lastHealth = {};
   lastResults = [];
+  lastResultsAt = null;
 }

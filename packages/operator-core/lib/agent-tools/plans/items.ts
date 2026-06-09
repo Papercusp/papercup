@@ -29,6 +29,35 @@ import {
   type ItemStatus,
   type Importance,
 } from './parser';
+import { TERMINAL_PLAN_STATUSES } from './plan-start-state';
+
+/** Item statuses that are themselves terminal — the only item statuses worth
+ *  surfacing from a terminal (shipped/superseded) plan in a cross-plan query. */
+const TERMINAL_ITEM_STATUSES = new Set<string>(['done', 'dropped']);
+
+/**
+ * Cross-plan exclusion guard. A terminal-status plan (shipped/superseded) has no
+ * pickable items and needs no human action — its non-terminal items are stale by
+ * definition. So in a CROSS-plan query its items are hidden, which is what stops a
+ * dead plan's `todo` item from being picked up: the fleet-federation-reanchor trap,
+ * where the superseded plan's P-002 still surfaced in `plans:items actionable=true`
+ * (EI-154). Two deliberate escapes keep it from over-hiding:
+ *   - `args.slug` — an explicit single-plan query always returns that plan's items.
+ *   - a terminal item-status filter (`status: 'done' | 'dropped'`) — e.g. auditing a
+ *     shipped plan's completed items cross-plan.
+ * Returns true when the plan's items should be EXCLUDED from the result.
+ */
+export function isTerminalPlanHiddenFromCrossPlan(
+  planStatus: string | null,
+  args: { slug?: string; status?: string },
+): boolean {
+  if (args.slug) return false;
+  if (args.status && TERMINAL_ITEM_STATUSES.has(args.status)) return false;
+  return (
+    planStatus != null &&
+    (TERMINAL_PLAN_STATUSES as readonly string[]).includes(planStatus)
+  );
+}
 
 /**
  * Resolve a plan row's items from the PG-canonical structured `items` index
@@ -157,6 +186,7 @@ export default defineTool({
 
     for (const row of planRows) {
       if (row.isLegacy) continue;
+      if (isTerminalPlanHiddenFromCrossPlan(row.status, args)) continue;
       const { items: resolvedItems, blockingIssues } = applyPlanItemBlocks(
         resolveEffectiveStatusForItems(planItemsForRow(row)).items,
         (id) => allBlocked.get(planItemRef(row.planSlug, id)),

@@ -29,7 +29,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { lastServiceHealth } from '../../service-health';
+import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
 import { captureImprovement, type CaptureImprovementResult } from './capture-core';
 import type { ImprovementSeverity } from './policy';
 
@@ -46,6 +46,48 @@ export interface WatchdogSignal {
   severity: ImprovementSeverity;
   /** Repo-relative paths involved, when the signal knows them (feeds the path gate). */
   paths?: string[];
+}
+
+/**
+ * Per-collector outcome for one tick (watchdog-robustness P-001). Persisted in the
+ * tick record so the watchdog can detect its OWN broken collector (P-002): an
+ * element with `ok:false` is a collector that threw this tick.
+ */
+export interface CollectorStatus {
+  name: string;
+  ok: boolean;
+  /** Signals the collector produced (0 when it failed). */
+  signalCount: number;
+  /** Error message when `ok:false`. */
+  error?: string;
+  /** Non-error note (e.g. a deliberate skip — `service-down` on a stale snapshot, P-004). */
+  note?: string;
+}
+
+/**
+ * A collector may return a bare signal array OR this richer shape to carry a
+ * non-error `note` (watchdog-robustness P-004 — e.g. the service-down collector
+ * skipping a stale service-health snapshot). `collectWatchdogSignalsDetailed`
+ * normalizes both.
+ */
+export interface CollectorResult {
+  signals: WatchdogSignal[];
+  note?: string;
+}
+
+/** One durable watchdog-tick record (watchdog-robustness P-001 / D-002). */
+export interface WatchdogTickRecord {
+  workspaceId: string;
+  installSlug?: string | null;
+  /** 'ran' = swept + captured; 'skipped' = another host held the cross-host lock (P-003). */
+  status: 'ran' | 'skipped';
+  signals: number;
+  captured: string[];
+  declinedDuplicates: number;
+  deferred: number;
+  collectors: CollectorStatus[];
+  /** Improvement ids the watchdog filed ABOUT ITSELF this tick (P-002). */
+  selfEscalations: string[];
 }
 
 const SEVERITY_RANK: Record<ImprovementSeverity, number> = { critical: 3, major: 2, minor: 1, nit: 0 };
@@ -87,6 +129,8 @@ export interface CollectOptions {
   toolErrorWindowMinutes?: number;
   /** Minimum error/timeout count per tool in the window. Default 5. */
   toolErrorMinCount?: number;
+  /** Max age of the service-health snapshot to trust for service-down (P-004). Default 2× the 60s probe interval. */
+  serviceHealthMaxStaleMs?: number;
 }
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
@@ -149,28 +193,56 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string): Pr
   }));
 }
 
+interface ToolErrorRow {
+  tool_name: string;
+  n: number;
+  sample: string | null;
+}
+
+/**
+ * Pure (watchdog-robustness P-006 / D-006): a tool name belonging to the
+ * self-improvement loop ITSELF — the watchdog must never file a tool-error
+ * capture about its own capture path (a self-amplifying loop: it would file a
+ * bug about the very tool it files bugs through). The loop's own health is the
+ * self-escalation's job (P-002), not a self-captured tool-error.
+ */
+export function isImprovementLoopTool(toolName: string): boolean {
+  return /^improvements:/.test(toolName) || /^system:improvement-/.test(toolName);
+}
+
+/** Pure: tool-error rows → signals, excluding the loop's own tools (D-006). */
+export function toolErrorSignalsFromRows(rows: ToolErrorRow[], windowMinutes: number): WatchdogSignal[] {
+  return rows
+    .filter((r) => !isImprovementLoopTool(r.tool_name))
+    .map((r) => ({
+      source: 'repeated-tool-error' as const,
+      key: r.tool_name,
+      title: `Tool ${r.tool_name} erroring repeatedly`,
+      body:
+        `Watchdog signal (repeated-tool-error): ${r.tool_name} returned error/timeout ${r.n}× in the last ` +
+        `${windowMinutes} minute(s).\n\nSample error: ${(r.sample ?? '').slice(0, 800) || '(no message)'}`,
+      severity: r.n >= 20 ? ('major' as const) : ('minor' as const),
+    }));
+}
+
 /** repeated-tool-error: one tool erroring/timing out ≥ threshold in the window. */
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
   const windowMinutes = opts.toolErrorWindowMinutes ?? 60;
   const minCount = opts.toolErrorMinCount ?? 5;
-  const rows = await sql<{ tool_name: string; n: number; sample: string | null }[]>`
+  // Exclude the loop's own tools in SQL (correct + efficient) — `toolErrorSignalsFromRows`
+  // re-applies the same predicate as a defense-in-depth guard (and the unit-test seam).
+  const rows = await sql<ToolErrorRow[]>`
     SELECT tool_name, count(*)::int AS n, max(error_message) AS sample
       FROM harness_shared.tool_invocations
      WHERE status IN ('error', 'timeout')
        AND invoked_at > now() - make_interval(mins => ${windowMinutes})
+       AND tool_name NOT LIKE 'improvements:%'
+       AND tool_name NOT LIKE 'system:improvement-%'
      GROUP BY tool_name
     HAVING count(*) >= ${minCount}
      ORDER BY count(*) DESC
      LIMIT 10`;
-  return rows.map((r) => ({
-    source: 'repeated-tool-error' as const,
-    key: r.tool_name,
-    title: `Tool ${r.tool_name} erroring repeatedly`,
-    body:
-      `Watchdog signal (repeated-tool-error): ${r.tool_name} returned error/timeout ${r.n}× in the last ` +
-      `${windowMinutes} minute(s).\n\nSample error: ${(r.sample ?? '').slice(0, 800) || '(no message)'}`,
-    severity: r.n >= 20 ? ('major' as const) : ('minor' as const),
-  }));
+  return toolErrorSignalsFromRows(rows, windowMinutes);
 }
 
 /** service-down: a watched dev endpoint currently DOWN per the service-health monitor. */
@@ -192,6 +264,49 @@ export function collectServiceDownSignals(
     }));
 }
 
+/**
+ * The service-health probe runs every 60s (a DBOS scheduled workflow). The
+ * `lastServiceHealth()` snapshot is a module singleton — if the probe workflow
+ * has STOPPED (or the host just restarted), it goes stale and would feed the
+ * watchdog phantom up/down data. Default freshness window = 2× the probe
+ * interval (watchdog-robustness P-004 / D-004).
+ */
+export const DEFAULT_SERVICE_HEALTH_MAX_STALE_MS = 2 * 60_000;
+
+/** Pure: is the service-health snapshot too old (or never populated) to trust? (P-004) */
+export function isServiceHealthStale(at: number | null, now: number, maxStaleMs: number): boolean {
+  if (at == null) return true; // never probed this process
+  return now - at > maxStaleMs;
+}
+
+/**
+ * The default `service-down` collector with the P-004 freshness gate: emit
+ * service-down signals only when the service-health snapshot is FRESH; on a stale
+ * (or never-populated) snapshot, emit nothing and carry a `stale-service-health`
+ * note so the skip is visible in the tick record rather than silently dropping
+ * real downs or filing phantom ones.
+ */
+export function serviceDownCollectorResult(opts: {
+  results?: ProbeResult[];
+  at?: number | null;
+  now?: number;
+  maxStaleMs?: number;
+} = {}): CollectorResult {
+  const at = opts.at ?? lastServiceHealthAt();
+  const now = opts.now ?? Date.now();
+  const maxStaleMs = opts.maxStaleMs ?? DEFAULT_SERVICE_HEALTH_MAX_STALE_MS;
+  if (isServiceHealthStale(at, now, maxStaleMs)) {
+    const ageMs = at == null ? null : now - at;
+    return {
+      signals: [],
+      note:
+        `stale-service-health: snapshot ${ageMs == null ? 'never populated' : `is ${Math.round(ageMs / 1000)}s old`} ` +
+        `(> ${Math.round(maxStaleMs / 1000)}s) — skipping service-down collection (the probe workflow may have stopped)`,
+    };
+  }
+  return { signals: collectServiceDownSignals(opts.results ?? lastServiceHealth()) };
+}
+
 /** (P-011) Collector definition: a pluggable source of watchdog signals for a target. */
 export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
@@ -204,6 +319,8 @@ export interface WatchdogCollector {
 export interface WatchdogDeps {
   collect: () => Promise<WatchdogSignal[]>;
   capture: typeof captureImprovement;
+  /** Tick-record sink (P-001). Defaults to the PG writer; tests inject. */
+  recordTick: (rec: WatchdogTickRecord) => Promise<void>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
@@ -228,43 +345,107 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
   ];
 }
 
-export async function collectWatchdogSignals(workspaceId: string, opts: CollectOptions = {}, collectors?: WatchdogCollector[]): Promise<WatchdogSignal[]> {
+/**
+ * Collect signals AND the per-collector status (watchdog-robustness P-001). The
+ * status array is what makes a forever-failing collector visible — before this
+ * the only trace of a rejected collector was a `console.warn` nobody tails.
+ */
+export async function collectWatchdogSignalsDetailed(
+  workspaceId: string,
+  opts: CollectOptions = {},
+  collectors?: WatchdogCollector[],
+): Promise<{ signals: WatchdogSignal[]; collectors: CollectorStatus[] }> {
   // (P-011) Use provided collectors or default to papercusp
   const activeCollectors = collectors ?? (await defaultPapercuspCollectors(workspaceId, opts));
 
   const settled = await Promise.allSettled(activeCollectors.map((c) => c.collect()));
-  const collected = settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
+  const signals: WatchdogSignal[] = [];
+  const statuses: CollectorStatus[] = [];
   for (let i = 0; i < settled.length; i++) {
     const s = settled[i];
-    if (s.status === 'rejected') {
-      const collectorName = activeCollectors[i]?.name ?? `collector[${i}]`;
-      console.warn(`[improvement-watchdog] collector "${collectorName}" failed: ${s.reason instanceof Error ? s.reason.message : s.reason}`);
+    const name = activeCollectors[i]?.name ?? `collector[${i}]`;
+    if (s.status === 'fulfilled') {
+      signals.push(...s.value);
+      statuses.push({ name, ok: true, signalCount: s.value.length });
+    } else {
+      const error = s.reason instanceof Error ? s.reason.message : String(s.reason);
+      console.warn(`[improvement-watchdog] collector "${name}" failed: ${error}`);
+      statuses.push({ name, ok: false, signalCount: 0, error });
     }
   }
-  return collected;
+  return { signals, collectors: statuses };
+}
+
+/** Back-compat: signals only (delegates to the detailed collector). */
+export async function collectWatchdogSignals(workspaceId: string, opts: CollectOptions = {}, collectors?: WatchdogCollector[]): Promise<WatchdogSignal[]> {
+  return (await collectWatchdogSignalsDetailed(workspaceId, opts, collectors)).signals;
+}
+
+/**
+ * Default tick-record sink (watchdog-robustness P-001): one row per tick into
+ * `harness_shared.watchdog_ticks`. Injectable via `WatchdogDeps.recordTick` so
+ * unit tests observe the record without PG. The caller swallows its errors — a
+ * bookkeeping failure must never abort the tick.
+ */
+export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.watchdog_ticks
+      (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, collectors, self_escalations)
+    VALUES (${rec.workspaceId}, ${rec.installSlug ?? null}, ${rec.status}, ${rec.signals},
+            ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred},
+            ${JSON.stringify(rec.collectors)}::text::jsonb, ${rec.selfEscalations}::text[])
+  `;
 }
 
 export interface WatchdogTickResult {
+  /** 'ran' = swept + captured; 'skipped' = another host held the cross-host lock (P-003). */
+  status: 'ran' | 'skipped';
   signals: number;
   captured: string[];
   declinedDuplicates: number;
   deferred: number;
+  /** Per-collector outcomes this tick (P-001) — the read path for self-escalation (P-002). */
+  collectors: CollectorStatus[];
+  /** Improvement ids the watchdog filed about its OWN broken collectors (P-002). */
+  selfEscalations: string[];
+}
+
+/** Options the tick accepts beyond planning/collection (P-001 install slug). */
+export interface WatchdogTickOptions extends WatchdogPlanOptions, CollectOptions {
+  /** The routine's install slug, recorded on the tick (observability only). */
+  installSlug?: string | null;
 }
 
 /**
  * One watchdog tick: collect → plan (cap) → capture each through the shared core
  * (`dedupScope:'open'` — an open duplicate declines; a resolved one re-files the
- * regression). Returns a compact result for the routine log.
+ * regression) → record the tick (P-001, best-effort). Returns a compact result
+ * for the routine log.
  * (P-011) Accepts optional collectors for per-target-project sources.
  */
 export async function runWatchdogTick(
   workspaceId: string,
-  opts: WatchdogPlanOptions & CollectOptions = {},
+  opts: WatchdogTickOptions = {},
   deps?: Partial<WatchdogDeps> & { collectors?: WatchdogCollector[] },
 ): Promise<WatchdogTickResult> {
-  const collect = deps?.collect ?? (() => collectWatchdogSignals(workspaceId, opts, deps?.collectors));
   const capture = deps?.capture ?? captureImprovement;
-  const signals = await collect();
+  const recordTick = deps?.recordTick ?? recordWatchdogTick;
+
+  // Collect signals + per-collector status. When a test injects `collect` we lose
+  // per-collector granularity (the seam returns signals only), so synthesize one
+  // 'injected' status so the tick record is still coherent.
+  let signals: WatchdogSignal[];
+  let collectors: CollectorStatus[];
+  if (deps?.collect) {
+    signals = await deps.collect();
+    collectors = [{ name: 'injected', ok: true, signalCount: signals.length }];
+  } else {
+    const detailed = await collectWatchdogSignalsDetailed(workspaceId, opts, deps?.collectors);
+    signals = detailed.signals;
+    collectors = detailed.collectors;
+  }
+
   const plan = planWatchdogCaptures(signals, opts);
   const captured: string[] = [];
   let declinedDuplicates = 0;
@@ -290,5 +471,33 @@ export async function runWatchdogTick(
     if (res.created && res.issue) captured.push(res.issue.id);
     else if (res.reason === 'likely-duplicate') declinedDuplicates += 1;
   }
-  return { signals: signals.length, captured, declinedDuplicates, deferred: plan.deferred.length };
+
+  const result: WatchdogTickResult = {
+    status: 'ran',
+    signals: signals.length,
+    captured,
+    declinedDuplicates,
+    deferred: plan.deferred.length,
+    collectors,
+    selfEscalations: [],
+  };
+
+  // P-001: record the tick (best-effort — a bookkeeping failure never aborts it).
+  try {
+    await recordTick({
+      workspaceId,
+      installSlug: opts.installSlug ?? null,
+      status: result.status,
+      signals: result.signals,
+      captured: result.captured,
+      declinedDuplicates: result.declinedDuplicates,
+      deferred: result.deferred,
+      collectors: result.collectors,
+      selfEscalations: result.selfEscalations,
+    });
+  } catch (e) {
+    console.warn(`[improvement-watchdog] tick record failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  return result;
 }
