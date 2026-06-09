@@ -170,6 +170,7 @@ export default function LeftSidebar() {
         className="pclsb"
         data-testid="left-sidebar"
         data-collapsed={open ? 'false' : 'true'}
+        data-tab={active.id}
         style={{ width: renderedWidth }}
         aria-label="Swarm sidebar"
       >
@@ -181,9 +182,8 @@ export default function LeftSidebar() {
               <button
                 key={x.id}
                 type="button"
-                className="pclsb__rail-btn"
+                className={`pclsb__rail-btn pclsb__rail-btn--${x.id}`}
                 data-testid={`left-sidebar-rail-${x.id}`}
-                title={x.label}
                 aria-label={`Open ${x.label}`}
                 onClick={() => void setRail({ lsb: true, lst: x.id })}
               >
@@ -193,10 +193,9 @@ export default function LeftSidebar() {
           })}
           <button
             type="button"
-            className="pclsb__rail-btn"
+            className="pclsb__rail-btn pclsb__rail-btn--expand"
             onClick={() => setOpen(true)}
             aria-label="Open sidebar"
-            title="Expand"
           >
             <ChevronRight size={16} aria-hidden="true" />
           </button>
@@ -231,7 +230,7 @@ export default function LeftSidebar() {
                       type="button"
                       role="tab"
                       aria-selected={isActive}
-                      className={`pclsb__tab${isActive ? ' is-active' : ''}`}
+                      className={`pclsb__tab pclsb__tab--${x.id}${isActive ? ' is-active' : ''}`}
                       data-testid={`left-sidebar-tab-${x.id}`}
                       onClick={() => setTab(x.id)}
                     >

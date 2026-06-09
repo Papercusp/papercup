@@ -21,6 +21,30 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
+  // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
+  // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet
+  // health (intel: dev diagnostics, activity), harness health, the coord
+  // substrate (presence/inbox/feed), the work frontier, recent audit events, and
+  // lock contention — and its ONLY writes are raising alarms (coord:write →
+  // coord:escalate / coord:send / messages). Deliberately WITHOUT work_items /
+  // harness / plans / docs / routines write, and without the Queen's placement
+  // surface (fleet:spawn/drain, autoloop, processes:kill): the sentinel watches +
+  // alerts, the Queen acts. Two-gate reality applies — these caps are paired with
+  // adding `sentinel` to the watcher tools' `agentRoles` (COORD_ROLES + the
+  // explicit fleet/intel/audit reads below).
+  sentinel: [
+    'coord:read',
+    'coord:write', // alarms only: coord:escalate / coord:send / messages
+    'harness:read',
+    'work_items:read',
+    'activity:read',
+    'intel:read', // the dev-diagnostics surface (service_health, build_status, processes, activity)
+    'audit:read',
+    'locks:read', // lock-contention / hog detection
+    'plans:read',
+    'search:read',
+    'issues:read',
+  ],
   // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
   // D-001/D-003): the `pot` launch blueprint wakes the `operator` role to
   // survey the blackboard (work_items frontier, curation feed, activity

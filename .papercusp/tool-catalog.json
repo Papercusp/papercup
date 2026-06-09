@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 352,
+  "count": 362,
   "tools": [
     {
       "name": "accounts:list",
@@ -2215,6 +2215,24 @@
       }
     },
     {
+      "name": "curation:state-of-hive",
+      "http": {
+        "path": "/api/agent-tools/curation/state-of-hive",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The \"state of the Hive\" corpus digest — a deterministic rollup of cross-corpus meta-patterns (recurring friction, time/token sinks, chronic deferrals, capability gaps) over the change feed + completions + reverts. The Scout loop's grounded ideation substrate; each pattern references the originals (drill in via work_items:get / plans:get / curation:change-feed).",
+      "capabilities": [
+        "curation:read"
+      ],
+      "guidance": {
+        "when": "You want the introspective \"what are the Hive's standing meta-patterns\" rollup — the recurring friction, where time/tokens go, what keeps being deferred, and the absent capabilities — as the grounded substrate for generative ideation (the Scout loop) or a state-of-the-Hive review. Each pattern carries refs back to the originals.",
+        "notWhen": "For the raw stream of recent completions use curation:change-feed. For salience-ranked live fleet signals (escalations/blockers) use curation:feed. For the captured-improvement triage queue (auto vs human lanes) use improvements:digest.",
+        "chaining": "curation:state-of-hive → drill into a pattern via its refs (work_items:get on wi:<id>, plans:get on plan:<slug>, curation:change-feed) → feed the digest to the Scout ideators."
+      }
+    },
+    {
       "name": "db:check_drift",
       "http": {
         "path": "/api/agent-tools/db/check_drift",
@@ -4345,7 +4363,7 @@
           "POST"
         ]
       },
-      "description": "Stand up a NEW local hive (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+      "description": "Stand up a NEW local hive (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + hive:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
       "capabilities": [
         "harness:write"
       ],
@@ -4365,7 +4383,69 @@
       "guidance": {
         "when": "Standing up a NEW local hive (its home harness + Queen) in one call. Operator/user only.",
         "notWhen": "Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).",
-        "chaining": "hive:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down."
+        "chaining": "hive:get { slug } to inspect; hive:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down."
+      }
+    },
+    {
+      "name": "hive:cross_grant",
+      "http": {
+        "path": "/api/agent-tools/hive/cross_grant",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may send which kinds (ask | work-request) INTO this Hive, or list current grants. Default-deny — only granted peer-Hives are admitted at the cross-Hive boundary. Grants federate to all of this Hive's Swarms.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Setting this Hive's cross-Hive admission policy: allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests, revoke a peer, or review the current grants.",
+        "notWhen": "Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.",
+        "chaining": "discovery:hives (find a peer Hive's pubkey) → hive:cross_grant { action: \"grant\", peerHivePubkey, kinds }."
+      }
+    },
+    {
+      "name": "hive:declare-wake",
+      "http": {
+        "path": "/api/agent-tools/hive/declare-wake",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Declare the Hive operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire hive:wake when the subscribed tool-event matches.",
+      "capabilities": [
+        "routines:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the hive/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.",
+        "notWhen": "To fire the hive right now — that is hive:wake.",
+        "chaining": "hive:status to inspect the current declaration; hive:wake for an immediate manual fire."
       }
     },
     {
@@ -4395,7 +4475,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Permanently tearing down a local hive — stop the Queen, cancel its bees, deregister it. Operator/user only.",
-        "notWhen": "Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.",
+        "notWhen": "Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — hive:declare-wake { mode:none }. From a bee — not allowed.",
         "chaining": "hive:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm."
       }
     },
@@ -4427,7 +4507,7 @@
       "guidance": {
         "when": "You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.",
         "notWhen": "A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.",
-        "chaining": "hive:list to find the slug; pot:wake to fire the Queen now; pot:declare-wake to change the cadence; hive:dissolve to tear it down."
+        "chaining": "hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down."
       }
     },
     {
@@ -4438,7 +4518,7 @@
           "POST"
         ]
       },
-      "description": "The workspace-local hives (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one hive in depth use hive:get.",
+      "description": "The workspace-local hives (kind:'hive' harnesses — the Hives): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one hive in depth use hive:get.",
       "capabilities": [
         "harness:read"
       ],
@@ -4456,9 +4536,39 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want the workspace-local hives (the Pots) and their wake/load at a glance.",
+        "when": "You want the workspace-local hives (the Hives) and their wake/load at a glance.",
         "notWhen": "Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One hive in depth — hive:get.",
         "chaining": "hive:get { slug } to drill into one; hive:create to add one; hive:dissolve to tear one down."
+      }
+    },
+    {
+      "name": "hive:status",
+      "http": {
+        "path": "/api/agent-tools/hive/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Hive operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To see when/whether the operator will wake next, or to verify a hive:declare-wake landed.",
+        "chaining": "hive:declare-wake to change the declaration; hive:wake to fire now."
       }
     },
     {
@@ -4488,8 +4598,39 @@
       "profile": "engineer",
       "guidance": {
         "when": "Changing a hive's deployment target or its per-instance config overrides (budget/parallelism knobs).",
-        "notWhen": "Waking/pausing the Queen — pot:wake / pot:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.",
+        "notWhen": "Waking/pausing the Queen — hive:wake / hive:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.",
         "chaining": "hive:get { slug } to see the current config; deploy:hive to act on a changed deployment target."
+      }
+    },
+    {
+      "name": "hive:wake",
+      "http": {
+        "path": "/api/agent-tools/hive/wake",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fire the Hive operator immediately (launches the hive blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.",
+      "capabilities": [
+        "routines:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).",
+        "notWhen": "To schedule a future wake — that is hive:declare-wake.",
+        "chaining": "hive:status to see the last/next wake; hive:declare-wake to schedule."
       }
     },
     {
@@ -4673,6 +4814,99 @@
       "guidance": {
         "when": "Operator inbox PASS — run FIRST each wake over the Decisions tier: re-tier an attention item after reading it (downgrade noise, escalate something a worker under-flagged, confirm/resolve a real decision), always recording the why in `note`. Leave the inbox clean before sleeping.",
         "notWhen": "Acting on the item itself (resolve an escalation → coord:resolve; mark a plan item done → plans:set-status). Messaging the owning agent → coord:message-agent."
+      }
+    },
+    {
+      "name": "instance:boot",
+      "http": {
+        "path": "/api/agent-tools/instance/boot",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Boot a new harness from an InstanceSpec, reproducing the captured instance. Reuses harness:create.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Instantiate a NEW harness identical to a captured InstanceSpec (same blueprint + SHA + deployment + genome).",
+        "notWhen": "To create a fresh harness from scratch, use `harness:create`. To clone-and-vary in one call, use `instance:clone`.",
+        "chaining": "instance:capture → instance:boot."
+      }
+    },
+    {
+      "name": "instance:capture",
+      "http": {
+        "path": "/api/agent-tools/instance/capture",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Capture an InstanceSpec (blueprintRef + repoSha + deploymentConfig + genome) from a live harness, for reproducible boot/vary.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Capture a reproducible descriptor of a live harness/instance — its blueprint + git SHA + deployment + genome — to boot or vary an identical one. The replacement for the retired snapshot clone path.",
+        "notWhen": "For a full state backup (code+data), git + PG already cover it. To create a fresh harness from scratch, use `harness:create`.",
+        "chaining": "instance:capture → instance:boot (identical) or instance:clone (with a genome delta)."
+      }
+    },
+    {
+      "name": "instance:clone",
+      "http": {
+        "path": "/api/agent-tools/instance/clone",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Capture a harness → optionally apply a genome delta → boot an identical / same-origin clone.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Clone a live harness into a new identical one, or a same-origin variant (pass a genomeDelta). The reproducible-clone replacement for the retired snapshot fork.",
+        "notWhen": "For a fresh harness from scratch, use `harness:create`. To capture a spec without booting, use `instance:capture`.",
+        "chaining": "instance:clone = instance:capture → (vary) → instance:boot in one call."
       }
     },
     {
@@ -7871,98 +8105,6 @@
       }
     },
     {
-      "name": "pot:declare-wake",
-      "http": {
-        "path": "/api/agent-tools/pot/declare-wake",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Declare the Pot operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
-      "capabilities": [
-        "routines:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "bee"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "You are the pot/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.",
-        "notWhen": "To fire the pot right now — that is pot:wake.",
-        "chaining": "pot:status to inspect the current declaration; pot:wake for an immediate manual fire."
-      }
-    },
-    {
-      "name": "pot:status",
-      "http": {
-        "path": "/api/agent-tools/pot/status",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "The Pot operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
-      "capabilities": [
-        "harness:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "bee"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "To see when/whether the operator will wake next, or to verify a pot:declare-wake landed.",
-        "chaining": "pot:declare-wake to change the declaration; pot:wake to fire now."
-      }
-    },
-    {
-      "name": "pot:wake",
-      "http": {
-        "path": "/api/agent-tools/pot/wake",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Fire the Pot operator immediately (launches the pot blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.",
-      "capabilities": [
-        "routines:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "bee"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).",
-        "notWhen": "To schedule a future wake — that is pot:declare-wake.",
-        "chaining": "pot:status to see the last/next wake; pot:declare-wake to schedule."
-      }
-    },
-    {
       "name": "processes:kill",
       "http": {
         "path": "/api/agent-tools/processes/kill",
@@ -8371,66 +8513,6 @@
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
         "notWhen": "When the user knows the exact keyword they want. `search:fulltext` is faster + cheaper there (no embedding API call). For structured queries (tasks/goals/projects rows by title), use `search:query`.",
         "chaining": "Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit."
-      }
-    },
-    {
-      "name": "snapshots:get",
-      "http": {
-        "path": "/api/agent-tools/snapshots/get",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Fetch one snapshot listing by id. Returns null when not in the registry.",
-      "capabilities": [
-        "snapshots:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "User names a specific snapshot id and wants its full content (spec, code, history).",
-        "notWhen": "For the snapshot list, use `snapshots:list` first.",
-        "chaining": "Follow `snapshots:list` for the id."
-      }
-    },
-    {
-      "name": "snapshots:list",
-      "http": {
-        "path": "/api/agent-tools/snapshots/list",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "List every published snapshot known to the workspace registry (id, slug, version, …).",
-      "capabilities": [
-        "snapshots:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "User asks \"what snapshots do I have?\", \"any backups?\". Cross-harness snapshot enumeration.",
-        "notWhen": "For ONE snapshot's detail, use `snapshots:get`. For automated backups (not snapshots), check backup-group tools.",
-        "chaining": "Pair with `snapshots:get` for content."
       }
     },
     {
@@ -9117,6 +9199,68 @@
       }
     },
     {
+      "name": "work_items:claim_replica",
+      "http": {
+        "path": "/api/agent-tools/work_items/claim_replica",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Claim one replica slot of a HIGH-STAKES (redundancy>1) work-item — the redundancy analogue of claim_next. Up to N distinct Swarms each get a distinct slot of the SAME item and run it independently. Returns the slot (replica_index + claim_id) or null when not high-stakes / all slots held.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are a Swarm picking up a high-stakes item that is being run redundantly. Claim a replica slot, run the item independently, then record your result.",
+        "notWhen": "A normal exactly-once item — that is work_items:claim_next. Marking an item high-stakes — that is work_items:set_redundancy.",
+        "chaining": "work_items:claim_replica → (run the item) → work_items:record_replica_result { replicaIndex } → work_items:judge_redundancy resolves the winner."
+      }
+    },
+    {
+      "name": "work_items:co_locate",
+      "http": {
+        "path": "/api/agent-tools/work_items/co_locate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's co-location lever: stamp a work-item's Swarm affinity so tightly-coupled work runs on the SAME Swarm (instant coordination) and loosely-coupled work spreads. Pin with { swarm }, decide with { coLocateWith, tight? }, or read the current affinity with just { workItem }.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen placing work: co-locate a work-item with its tight collaborators on one Swarm (coLocateWith), pin it to a specific Swarm (swarm), or check where it is affined. The affinity is honored by claim_next once the per-Hive claim lease is active.",
+        "notWhen": "Ranking a bee's queue (work_items:reorder) or sending a specific item to a specific agent (work_items:claim). Co-location is about WHICH SWARM, not which bee.",
+        "chaining": "fleet:assignments (see where collaborators run) → work_items:co_locate { workItem, coLocateWith } → the affined Swarm claims it under the lease."
+      }
+    },
+    {
       "name": "work_items:comment",
       "http": {
         "path": "/api/agent-tools/work_items/comment",
@@ -9236,6 +9380,36 @@
       "guidance": {
         "when": "You have a work-item id and need its full state (kind, lifecycle, assignee, parent).",
         "chaining": "work_items:list → work_items:get { id } for detail."
+      }
+    },
+    {
+      "name": "work_items:judge_redundancy",
+      "http": {
+        "path": "/api/agent-tools/work_items/judge_redundancy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Judge a high-stakes item's redundant replicas + adopt the winner (reuse gym:judge). Scores each complete replica's result on the gym rubric, picks the highest composite (deterministic tie-break), settles the item to passed, marks winner/losers. Needs ≥2 complete replicas. Returns the winner + every replica's score.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "All (or ≥2) replicas of a high-stakes item have recorded their results and you want to pick + adopt the best one. The frozen Opus judge compares them above the per-replica validators.",
+        "notWhen": "Fewer than 2 replicas have recorded (wait for them). A normal exactly-once item (it has no replicas to compare). Scoring a gym optimization run — that is gym:judge directly.",
+        "chaining": "work_items:set_redundancy → claim_replica (×N) → record_replica_result (×N) → work_items:judge_redundancy (adopt winner)."
       }
     },
     {
@@ -9360,6 +9534,68 @@
       }
     },
     {
+      "name": "work_items:record_replica_result",
+      "http": {
+        "path": "/api/agent-tools/work_items/record_replica_result",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record your replica's result for a high-stakes item slot you hold + mark it complete (ready to judge). `text` is the distilled output the judge scores (and the winner's is adopted). Owner-checked — no double-record.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You finished running your replica of a high-stakes item — record the distilled result so the judge can compare it against the other Swarms.",
+        "notWhen": "A normal item — that is work_items:complete / work_items:set_state. You do not hold the slot (you must claim_replica first).",
+        "chaining": "work_items:claim_replica → (run) → work_items:record_replica_result → work_items:judge_redundancy."
+      }
+    },
+    {
+      "name": "work_items:redundancy_status",
+      "http": {
+        "path": "/api/agent-tools/work_items/redundancy_status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a work-item's redundancy config + replica ledger: target N, each slot's status (claimed/complete/winner/loser), owner, lease expiry, and judge verdict (composite + rationale). The read view of a high-stakes item's redundant run.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Checking how a high-stakes item is progressing across its Swarms — how many replicas have completed, whether it has been judged, and which replica won.",
+        "notWhen": "A normal item (it has no replicas). The plain item state — that is work_items:get.",
+        "chaining": "work_items:redundancy_status → (if ≥2 complete) work_items:judge_redundancy."
+      }
+    },
+    {
       "name": "work_items:release",
       "http": {
         "path": "/api/agent-tools/work_items/release",
@@ -9448,6 +9684,68 @@
       "guidance": {
         "when": "You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).",
         "chaining": "work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail."
+      }
+    },
+    {
+      "name": "work_items:set_priority",
+      "http": {
+        "path": "/api/agent-tools/work_items/set_priority",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "The Queen's steer-don't-dispatch lever: set a work-item's BACKLOG priority — the order the decentralized claim layer pulls against (lower = claimed sooner). Set an explicit { priority } integer, bump to { position:'top'|'bottom' }, clear with { priority:null }, or read with just { workItem }. Distinct from work_items:reorder, which ranks one bee's already-claimed work-list.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are the Queen steering the SHARED backlog after reading the rolled-up change feed (curation:change-feed) + the frontier (work_items:list): promote/demote what the fleet should claim next. Use position:'top'/'bottom' for the common 'make this most/least urgent', or an explicit priority integer for fine control.",
+        "notWhen": "Ranking a single bee's already-claimed work-list (work_items:reorder — per-assignee), pinning work to a Swarm (work_items:co_locate), or changing lifecycle state (work_items:set_state). This sets the GLOBAL backlog order, not a per-bee queue, and applies to feature-family items only.",
+        "chaining": "curation:change-feed (what shipped / where momentum is) + work_items:list (the backlog) → work_items:set_priority { workItem, position:'top' } → the next claim_next pulls it first."
+      }
+    },
+    {
+      "name": "work_items:set_redundancy",
+      "http": {
+        "path": "/api/agent-tools/work_items/set_redundancy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Mark a high-stakes work-item for BOINC redundancy: run it independently on N Swarms then judge + adopt the best (reuse gym:judge). Pass { id, redundancy: N≥2 } to opt in, or { redundancy: 1 } to clear (back to exactly-once). Opt-in, off by default — inert until PAPERCUSP_WORKITEM_REDUNDANCY=1.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A work-item is high-stakes enough to be worth running redundantly (the cost of a wrong result exceeds the cost of a second independent run + a judge). Set redundancy: 2 to fan it out to two Swarms; a judge picks the winner.",
+        "notWhen": "Routine work — redundancy doubles the cost. Issue-family items (bugs/changes) — only feature-family pipeline items carry redundancy. Pinning which Swarm runs it — that is work_items:co_locate.",
+        "chaining": "work_items:set_redundancy { id, redundancy: 2 } → work_items:claim_replica (each Swarm) → work_items:record_replica_result → work_items:judge_redundancy (adopt the winner)."
       }
     },
     {

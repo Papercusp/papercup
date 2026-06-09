@@ -23,6 +23,8 @@
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { parseDecisionFor } from '@papercusp/orchestrator';
 import { deriveNext, loadBuiltinBlueprint, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
+import { runWithRateLimitTolerance } from './decide-rate-limit';
+import { resolveSpawnBackendModel } from '../harness-invoke-once';
 
 export interface PipelineInput {
   harnessSlug: string;
@@ -211,14 +213,27 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     // the retries are exhausted the workflow ERRORs rather than false-succeeding.
     const decision = await DBOS.runStep(
       async () => {
-        const r = await runner()(
-          input.harnessSlug,
-          orchestratorRole,
-          input.featureId,
-          key(input.harnessSlug, input.featureId, orchestratorRole, turn),
-          [`FEATURE_ID=${input.featureId}`],
-          input.workspaceId,
-        );
+        // Absorb a TRANSIENT 429 / overload in-process before it can look like a real
+        // decision failure: the decide step's throw→DBOS-retry budget is tiny (3× over
+        // ~15s), which a rate-limit blip under fleet/load can't clear — so a transient
+        // 429 would ERROR the whole pipeline (the dominant cloud-frame failure mode). A
+        // genuine failure (crash / empty / usage_limit / auth) still returns at once and
+        // falls through to the throw below. See decide-rate-limit.ts.
+        const r = await runWithRateLimitTolerance({
+          run: () =>
+            runner()(
+              input.harnessSlug,
+              orchestratorRole,
+              input.featureId,
+              key(input.harnessSlug, input.featureId, orchestratorRole, turn),
+              [`FEATURE_ID=${input.featureId}`],
+              input.workspaceId,
+            ),
+          backend: resolveSpawnBackendModel(orchestratorRole).backend,
+          log: (m) => console.warn(`[dbos-decide] ${input.harnessSlug}/${input.featureId} ${m}`),
+          maxAttempts: Number(process.env.PAPERCUSP_DECIDE_RL_MAX_ATTEMPTS) || undefined,
+          maxTotalWaitMs: Number(process.env.PAPERCUSP_DECIDE_RL_MAX_WAIT_MS) || undefined,
+        });
         if (r.exitCode !== 0 || !r.output.trim()) {
           throw new Error(`decide invoke failed (exit=${r.exitCode}, empty=${!r.output.trim()})`);
         }

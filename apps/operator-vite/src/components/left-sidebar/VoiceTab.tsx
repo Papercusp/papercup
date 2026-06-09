@@ -23,7 +23,7 @@ export default function VoiceTab({ active }: { active: boolean }) {
 
   return (
     <div className="pclsb-voice" data-testid="left-sidebar-voice">
-      <div className="pclsb-panel__bar" style={{ padding: '4px 12px 0' }}>
+      <div className="pclsb-panel__bar pclsb-voice__bar">
         <span className="pclsb-panel__bar-label">
           voice{harnessSlug ? ` · ${harnessSlug}` : ''}
         </span>
@@ -32,7 +32,7 @@ export default function VoiceTab({ active }: { active: boolean }) {
           type="button"
           className="pclsb-chipbtn"
           onClick={() => navigateClient('/settings/voice')}
-          title="Voice settings — engines, role voices, spend"
+          aria-label="Voice settings: engines, role voices, spend"
         >
           <Settings2 size={12} aria-hidden="true" /> settings
         </button>
@@ -41,7 +41,7 @@ export default function VoiceTab({ active }: { active: boolean }) {
       {active && videoOn && harnessSlug ? (
         <VideoGrid harnessSlug={harnessSlug} className="pclsb-voice__grid" />
       ) : (
-        <div className="pclsb-panel__empty" style={{ padding: '24px 16px' }}>
+        <div className="pclsb-panel__empty pclsb-voice__empty">
           {videoOn
             ? harnessSlug
               ? ''

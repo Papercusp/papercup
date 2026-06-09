@@ -100,7 +100,11 @@ beforeAll(async () => {
       CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
     )
   `);
-  await rootSql.unsafe(readMigration('158-hive-wake-state.sql')).simple();
+  // 158 creates the legacy `pot_wake` table; 198 renames it to `hive_wake`
+  // (the unify-launch-mechanics pot→hive rename) — apply BOTH so the test DB
+  // matches head, where readHiveWakeState('hive_wake') reads the renamed table.
+  await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
+  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   h.sql = rootSql;
 }, 90_000);
 

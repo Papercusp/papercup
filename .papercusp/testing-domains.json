@@ -383,7 +383,7 @@
             "packages/operator-core/lib/agent-tools/projects/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/roles/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/search/**/*.test.ts",
-            "packages/operator-core/lib/agent-tools/snapshots/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/instance/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/tasks/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/ui/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/wiki/**/*.test.ts",
@@ -708,44 +708,44 @@
       ]
     },
     {
-      "id": "snapshots",
-      "label": "Snapshots",
-      "description": "Snapshot shape, locks, fork, export-state, routes.",
+      "id": "instance-spec",
+      "label": "Instance spec",
+      "description": "The reproducible InstanceSpec: genome surface, capture/boot/vary, eval-battery subject.",
       "tier": "project",
       "sections": [
         {
-          "id": "shape",
-          "label": "Shape",
+          "id": "genome",
+          "label": "Genome",
           "globs": [
-            "packages/operator-core/lib/snapshot-shape*.test.ts"
+            "packages/operator-core/lib/instance-spec/genome*.test.ts"
           ]
         },
         {
-          "id": "locks",
-          "label": "Locks",
+          "id": "vary",
+          "label": "Vary",
           "globs": [
-            "packages/operator-core/lib/snapshot-lock*.test.ts"
+            "packages/operator-core/lib/instance-spec/vary.test.ts"
           ]
         },
         {
-          "id": "fork",
-          "label": "Fork",
+          "id": "capture",
+          "label": "Capture",
           "globs": [
-            "packages/operator-core/lib/snapshot-fork*.test.ts"
+            "packages/operator-core/lib/instance-spec/capture.test.ts"
           ]
         },
         {
-          "id": "export-state",
-          "label": "Export-state",
+          "id": "subject",
+          "label": "Subject",
           "globs": [
-            "libs/papercusp-export-state/src/**/*.test.ts"
+            "packages/operator-core/lib/instance-spec/instance-subject.test.ts"
           ]
         },
         {
-          "id": "routes",
-          "label": "Routes",
+          "id": "roundtrip",
+          "label": "Round-trip",
           "globs": [
-            "packages/operator-core/lib/endpoint-route/__tests__/snapshot*.test.ts"
+            "packages/operator-core/lib/instance-spec/roundtrip.test.ts"
           ]
         }
       ]
@@ -1353,11 +1353,11 @@
           ]
         },
         {
-          "id": "pot-wake",
+          "id": "hive-wake",
           "label": "Pot wake",
-          "description": "The Queen wake routine — pot:wake / declare-wake / urgent-wake scheduling and the pot-wake PG path.",
+          "description": "The Queen wake routine — hive:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.",
           "globs": [
-            "packages/operator-core/lib/pot/**/*.test.ts"
+            "packages/operator-core/lib/hive/**/*.test.ts"
           ]
         },
         {

@@ -12,6 +12,7 @@
  */
 export const LEFT_SIDEBAR_CSS = `
 .pclsb {
+  --pclsb-current-accent: var(--accent, #38bdf8);
   position: fixed;
   top: 0;
   left: var(--op-chat-w, 0px); /* dock AFTER the op-chat sidebar */
@@ -20,13 +21,24 @@ export const LEFT_SIDEBAR_CSS = `
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%),
-    color-mix(in srgb, var(--bg-deep, #060d18), transparent 0%)
-  );
-  border-right: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 78%);
-  box-shadow: 18px 0 48px rgba(0, 0, 0, 0.32);
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--accent), transparent 94%), transparent 38%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-1, #0b1220), transparent 1%),
+      color-mix(in srgb, var(--bg-deep, #050d18), transparent 0%)
+    );
+  border-right: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  box-shadow: 14px 0 38px rgba(0, 0, 0, 0.28);
+}
+.pclsb[data-tab="swarm"] {
+  --pclsb-current-accent: var(--good, #4ade80);
+}
+.pclsb[data-tab="voice"] {
+  --pclsb-current-accent: var(--accent, #38bdf8);
+}
+.pclsb[data-tab="hives"] {
+  --pclsb-current-accent: var(--warn, #fbbf24);
 }
 
 /* Body reservation — the app shifts right by op-chat + this rail. This rule
@@ -70,27 +82,41 @@ body.has-left-sidebar .pc-header {
   display: flex;
 }
 .pclsb__rail-btn {
+  --pclsb-tab-accent: var(--accent, #38bdf8);
   width: 34px;
   height: 34px;
   flex: 0 0 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 76%);
-  background:
-    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.16), transparent 24%),
-    color-mix(in srgb, var(--accent, #57d7ff), transparent 88%);
-  color: var(--accent-strong, #7dd3fc);
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 68%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 92%);
+  color: color-mix(in oklab, var(--pclsb-tab-accent), var(--fg, #e7f7ff) 38%);
   cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pclsb__rail-btn:hover {
-  border-color: rgba(103, 232, 249, 0.5);
-  color: #eff8ff;
+  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 34%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 82%);
+  color: var(--fg, #e7f7ff);
 }
 .pclsb__rail-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 18%);
-  outline-offset: -3px;
+  outline: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 18%);
+  outline-offset: -2px;
+}
+.pclsb__rail-btn--swarm,
+.pclsb__tab--swarm {
+  --pclsb-tab-accent: var(--good, #4ade80);
+}
+.pclsb__rail-btn--voice,
+.pclsb__tab--voice,
+.pclsb__rail-btn--expand {
+  --pclsb-tab-accent: var(--accent, #38bdf8);
+}
+.pclsb__rail-btn--hives,
+.pclsb__tab--hives {
+  --pclsb-tab-accent: var(--warn, #fbbf24);
 }
 
 /* Header */
@@ -99,9 +125,9 @@ body.has-left-sidebar .pc-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
-  background: color-mix(in srgb, var(--bg-deep, #060d18), transparent 6%);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-deep, #050d18), transparent 4%);
 }
 .pclsb__title {
   display: flex;
@@ -111,7 +137,10 @@ body.has-left-sidebar .pc-header {
   font-weight: 760;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(203, 238, 255, 0.82);
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb__title svg {
+  color: var(--pclsb-current-accent);
 }
 .pclsb__spacer {
   flex: 1;
@@ -123,52 +152,60 @@ body.has-left-sidebar .pc-header {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(214, 236, 248, 0.78);
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pclsb__iconbtn:hover {
-  background: rgba(12, 24, 38, 0.96);
-  border-color: rgba(103, 232, 249, 0.4);
-  color: #eff8ff;
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  border-color: var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
+  color: var(--fg, #e7f7ff);
 }
 
 /* Tab strip — the Swarm / Voice / Hives switcher (mirrors the pui main pane). */
 .pclsb__tabs {
   flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  padding: 8px 10px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 88%);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
 }
 .pclsb__tab {
+  --pclsb-tab-accent: var(--accent, #38bdf8);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 7px 12px 8px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: rgba(214, 236, 248, 0.66);
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--pclsb-tab-accent), transparent 72%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 94%);
+  color: var(--fg-dim, #b9d4e8);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 720;
   letter-spacing: 0.02em;
   cursor: pointer;
-  transition: color 120ms, border-color 120ms;
+  transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pclsb__tab:hover {
-  color: #eff8ff;
+  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 40%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 86%);
+  color: var(--fg, #e7f7ff);
 }
 .pclsb__tab.is-active {
-  color: #f7fdff;
-  border-bottom-color: var(--accent, #57d7ff);
+  border-color: color-mix(in oklab, var(--pclsb-tab-accent), transparent 24%);
+  background: color-mix(in oklab, var(--pclsb-tab-accent), transparent 76%);
+  color: var(--fg, #e7f7ff);
 }
 .pclsb__tab-icon {
   display: inline-flex;
-  color: var(--accent, #57d7ff);
-  opacity: 0.85;
+  color: currentColor;
+  opacity: 0.92;
 }
 
 /* Active panel body */
@@ -176,7 +213,7 @@ body.has-left-sidebar .pc-header {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 6px 0 10px;
+  padding: 4px 0 10px;
 }
 
 /* Drag-to-resize handle on the RIGHT edge (the rail is docked on the left). */
@@ -206,8 +243,8 @@ body.has-left-sidebar .pc-header {
 .pclsb-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 12px 14px;
+  gap: 7px;
+  padding: 8px 10px 12px;
 }
 .pclsb-panel__bar {
   display: flex;
@@ -220,14 +257,17 @@ body.has-left-sidebar .pc-header {
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.78);
+  color: var(--fg-mute, #7f9bb4);
 }
 .pclsb-panel__bar-spacer {
   flex: 1;
 }
 .pclsb-panel__empty {
-  padding: 14px 4px;
-  color: rgba(148, 163, 184, 0.74);
+  padding: 14px 10px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 36%);
+  color: var(--fg-mute, #7f9bb4);
   font-size: 12px;
   text-align: center;
   line-height: 1.6;
@@ -235,9 +275,9 @@ body.has-left-sidebar .pc-header {
 .pclsb-panel__error {
   padding: 10px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(248, 113, 113, 0.32);
-  background: rgba(248, 113, 113, 0.08);
-  color: #fda4af;
+  border: 1px solid color-mix(in oklab, var(--bad, #f87171), transparent 64%);
+  background: color-mix(in oklab, var(--bad, #f87171), transparent 91%);
+  color: color-mix(in oklab, var(--bad, #f87171), var(--fg, #e7f7ff) 32%);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -245,35 +285,40 @@ body.has-left-sidebar .pc-header {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 82%);
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(214, 236, 248, 0.8);
+  min-height: 26px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  color: var(--fg-dim, #b9d4e8);
   font-size: 11px;
+  font-weight: 680;
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pclsb-chipbtn:hover {
-  border-color: rgba(103, 232, 249, 0.4);
-  color: #eff8ff;
+  border-color: var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  color: var(--fg, #e7f7ff);
 }
 .pclsb-chipbtn.is-on {
-  background: rgba(56, 189, 248, 0.16);
-  border-color: rgba(103, 232, 249, 0.45);
-  color: #bfeaff;
+  background: color-mix(in oklab, var(--pclsb-current-accent), transparent 84%);
+  border-color: color-mix(in oklab, var(--pclsb-current-accent), transparent 48%);
+  color: var(--fg, #e7f7ff);
 }
 
 /* Rows (agents / hives / tasks / mail) */
 .pclsb-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 88%);
-  background: color-mix(in srgb, var(--bg-deep, #060d18), transparent 12%);
+  padding: 8px 10px;
+  border-radius: 11px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 28%);
   cursor: default;
+  transition: background 120ms, border-color 120ms, color 120ms;
 }
 .pclsb-row + .pclsb-row {
   margin-top: 5px;
@@ -282,11 +327,13 @@ body.has-left-sidebar .pc-header {
   cursor: pointer;
 }
 .pclsb-row.is-clickable:hover {
-  border-color: rgba(103, 232, 249, 0.34);
+  border-color: color-mix(in oklab, var(--pclsb-current-accent), transparent 58%);
+  background: color-mix(in oklab, var(--pclsb-current-accent), transparent 92%);
 }
 .pclsb-row.is-selected {
-  border-color: var(--accent, #57d7ff);
-  background: color-mix(in srgb, var(--bg-raised, #0e1c30), transparent 2%);
+  border-color: color-mix(in oklab, var(--pclsb-current-accent), transparent 36%);
+  background: color-mix(in oklab, var(--pclsb-current-accent), transparent 86%);
+  box-shadow: inset 3px 0 0 var(--pclsb-current-accent);
 }
 .pclsb-row__main {
   flex: 1;
@@ -294,8 +341,8 @@ body.has-left-sidebar .pc-header {
 }
 .pclsb-row__title {
   font-size: 13px;
-  font-weight: 600;
-  color: #eff8ff;
+  font-weight: 680;
+  color: var(--fg, #e7f7ff);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -303,7 +350,7 @@ body.has-left-sidebar .pc-header {
 .pclsb-row__sub {
   margin-top: 2px;
   font-size: 11px;
-  color: rgba(205, 226, 240, 0.7);
+  color: var(--fg-mute, #7f9bb4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -313,29 +360,33 @@ body.has-left-sidebar .pc-header {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: rgba(148, 163, 184, 0.6);
+  background: var(--fg-mute, #7f9bb4);
 }
 .pclsb-dot.is-up {
-  background: #4ade80;
-  box-shadow: 0 0 7px rgba(74, 222, 128, 0.7);
+  background: var(--good, #4ade80);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--good, #4ade80), transparent 82%);
 }
 .pclsb-dot.is-down {
-  background: #f87171;
+  background: var(--bad, #f87171);
 }
 .pclsb-pill {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
+  padding: 2px 7px;
+  border-radius: 7px;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  background: rgba(148, 163, 184, 0.18);
-  color: rgba(214, 236, 248, 0.82);
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  color: var(--fg-dim, #b9d4e8);
 }
 
 /* Section headers inside a tab (task list / plan progress / comms). */
 .pclsb-sec {
-  margin-top: 10px;
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 44%);
 }
 .pclsb-sec__head {
   display: flex;
@@ -345,20 +396,24 @@ body.has-left-sidebar .pc-header {
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.78);
-  padding: 2px 1px 6px;
+  color: var(--fg-mute, #7f9bb4);
+  padding: 0 1px 7px;
 }
 .pclsb-task {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  padding: 3px 2px;
+  padding: 4px 5px;
+  border-radius: 8px;
   font-size: 12px;
-  color: rgba(222, 240, 250, 0.88);
+  color: var(--fg-dim, #b9d4e8);
+}
+.pclsb-task:hover {
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
 }
 .pclsb-task__rank {
   flex: 0 0 34px;
-  color: rgba(148, 163, 184, 0.75);
+  color: var(--fg-mute, #7f9bb4);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
@@ -372,7 +427,7 @@ body.has-left-sidebar .pc-header {
 .pclsb-task__st {
   flex: 0 0 auto;
   font-size: 10px;
-  color: rgba(148, 163, 184, 0.8);
+  color: var(--fg-mute, #7f9bb4);
 }
 
 /* Plan progress bars */
@@ -380,8 +435,12 @@ body.has-left-sidebar .pc-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 2px;
+  padding: 4px 5px;
+  border-radius: 8px;
   font-size: 12px;
+}
+.pclsb-plan:hover {
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
 }
 .pclsb-plan__slug {
   flex: 1;
@@ -389,37 +448,38 @@ body.has-left-sidebar .pc-header {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: rgba(222, 240, 250, 0.88);
+  color: var(--fg-dim, #b9d4e8);
 }
 .pclsb-plan__bar {
   flex: 0 0 90px;
   height: 6px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.18);
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
   overflow: hidden;
 }
 .pclsb-plan__fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--accent, #57d7ff);
+  background: var(--pclsb-current-accent);
 }
 .pclsb-plan__nums {
   flex: 0 0 auto;
   font-size: 10px;
-  color: rgba(148, 163, 184, 0.85);
+  color: var(--fg-mute, #7f9bb4);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* Mail / conversation lines (comms view) */
 .pclsb-mail {
-  padding: 4px 2px;
+  padding: 6px 7px;
+  border-radius: 9px;
   font-size: 12px;
-  color: rgba(222, 240, 250, 0.85);
-  border-bottom: 1px dashed color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 90%);
+  color: var(--fg-dim, #b9d4e8);
+  background: var(--bg-2, rgba(255, 255, 255, 0.045));
 }
 .pclsb-mail__meta {
   font-size: 10px;
-  color: rgba(148, 163, 184, 0.75);
+  color: var(--fg-mute, #7f9bb4);
 }
 
 /* The Voice tab's video region wants the full panel height. */
@@ -429,8 +489,27 @@ body.has-left-sidebar .pc-header {
   min-height: 0;
   height: 100%;
 }
+.pclsb-voice__bar {
+  padding: 8px 10px 2px;
+}
+.pclsb-voice__channels {
+  margin: 6px 10px 8px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-1, #0b1220), transparent 34%);
+  overflow: hidden;
+}
 .pclsb-voice__grid {
   flex: 1;
-  min-height: 240px;
+  min-height: 220px;
+  margin: 0 10px 10px;
+  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  border-radius: 12px;
+  background: var(--bg-deep, #050d18);
+  overflow: hidden;
+}
+.pclsb-voice__empty {
+  margin: 10px;
+  padding: 18px 14px;
 }
 `;

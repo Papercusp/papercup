@@ -73,6 +73,16 @@ export const AGENT_ROLES = [
   // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
   // reads health and decides rollback. The script is the hands; this is the brain.
   'release-manager',
+  // The SENTINEL — the fleet watcher split out of the overloaded "operator"
+  // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
+  // (steer: schedule + place + prioritize) AND a watcher; they are now separate.
+  // The Queen STEERS; the sentinel WATCHES — fleet health (stuck/orphaned spawns,
+  // crash-loops), misbehaving agents (lock hogs, retry storms, mute bees), and the
+  // coord substrate (presence staleness, undelivered escalations). It is READ-MOSTLY
+  // (its only writes are raising alarms: coord:escalate / coord:send), launched
+  // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
+  // or the `sentinel` launch blueprint). No execution/mutation capability.
+  'sentinel',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */
