@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -31,17 +32,9 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
-// HFC with feature_order (the backlog priority column) baked in.
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
-    swarm_affinity text,
-    feature_order integer,
-    ts bigint, created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+// Canonical complete consolidated-features schema (single source of truth, incl.
+// feature_order + swarm_affinity) — see test/_work-items-schema.ts (D-014).
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -177,6 +170,26 @@ describe('issue-family is a no-op (not the dispatched backlog)', () => {
     expect(set).toMatchObject({ id: 'EI-1', priority: null, applicable: false });
     const read = await wi.getWorkItemPriority('EI-1', { harness: H });
     expect(read).toMatchObject({ priority: null, applicable: false });
+  });
+});
+
+describe('priority surfaces on the unified WorkItem (the work_items:list/get field)', () => {
+  it('getWorkItem / listWorkItems carry feature_order as `priority`; unprioritized + issue-family are null', async () => {
+    await seedFeature('F-1', { createdTs: 100, order: 7 });
+    await seedFeature('F-2', { createdTs: 200 }); // unprioritized
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title)
+      VALUES ('default', 'EI-1', 'a bug')`;
+
+    // get — the Queen reads any one item's backlog priority off the unified shape.
+    expect((await wi.getWorkItem('F-1', H))?.priority).toBe(7);
+    expect((await wi.getWorkItem('F-2', H))?.priority).toBeNull();
+    expect((await wi.getWorkItem('EI-1', H))?.priority).toBeNull(); // issue-family is never the dispatched backlog
+
+    // list — the Queen sees the whole backlog's order in one call (the B7 deferred follow-up).
+    const listed = await wi.listWorkItems({ harness: H });
+    expect(listed.find((w) => w.id === 'F-1')?.priority).toBe(7);
+    expect(listed.find((w) => w.id === 'F-2')?.priority).toBeNull();
   });
 });
 
