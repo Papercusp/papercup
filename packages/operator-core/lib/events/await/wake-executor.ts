@@ -28,8 +28,12 @@
 
 import { spawn as childSpawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  sessionClaudeConfigDir,
+  sessionMcpJsonPath,
+  codexHomeForSessionKey,
+} from '@papercusp/orchestrator/session-launch-dirs';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
@@ -79,12 +83,11 @@ export function findCodexRolloutSessionId(codexHome: string): string | null {
 }
 
 /** The per-session CODEX_HOME bootstrap-su/psu minted for a tracked codex
- *  session, keyed by the adv-session row id (`writeSuCodexHome`). */
+ *  session, keyed by the adv-session row id (`writeSuCodexHome`). Delegates to
+ *  the ONE shared key helper so launch + resume never drift (unify-launch-mechanics
+ *  P-004). */
 export function codexHomeForAdvSession(advSessionId: number): string {
-  return join(
-    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR || join(homedir(), '.papercusp', 'su-codex-homes'),
-    `session-${advSessionId}`,
-  );
+  return codexHomeForSessionKey(advSessionId);
 }
 
 /** Compose the single-line wake turn injected/submitted into the woken session. */
@@ -132,9 +135,7 @@ export function resumeCommandFor(handle: {
     // spawn loaded it via --mcp-config; resume must too).
     const mcpArgs: string[] = [];
     if (handle.coordOwnerId) {
-      const root =
-        process.env.PAPERCUSP_SESSION_MCP_DIR || join(homedir(), '.papercusp', 'session-mcp');
-      const cfg = join(root, handle.coordOwnerId, '.mcp.json');
+      const cfg = sessionMcpJsonPath(handle.coordOwnerId);
       if (existsSync(cfg)) mcpArgs.push('--mcp-config', cfg, '--strict-mcp-config');
     }
     return {
@@ -352,10 +353,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // it so `--resume <sessionId>` finds the session file (D-010 resume leg).
     const owner = fresh?.coordOwnerId ?? null;
     if (owner) {
-      const cfgDir = join(
-        process.env.PAPERCUSP_SESSION_CLAUDE_DIR || join(homedir(), '.papercusp', 'session-claude'),
-        owner,
-      );
+      const cfgDir = sessionClaudeConfigDir(owner);
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
     }
     // codex finds the session's history + baked superuser MCP only inside its

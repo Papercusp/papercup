@@ -22,7 +22,7 @@
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { distillTrace, type RawTrace } from '../gym/distill';
 import type { MetricCollectorInput } from './collectors';
 import type { InstanceRunHandle } from './instance-manifest';
@@ -121,7 +121,9 @@ export function extractAssistantText(lines: TranscriptLine[]): string {
  * newest `.jsonl` by mtime, or null if the spawn left no transcript.
  */
 export function locateBeeTranscript(spawnId: string, baseDir?: string): string | null {
-  const root = join(baseDir ?? join(homedir(), '.papercusp', 'session-claude'), spawnId, 'projects');
+  const root = baseDir
+    ? join(baseDir, spawnId, 'projects')
+    : join(sessionClaudeConfigDir(spawnId), 'projects');
   if (!existsSync(root)) return null;
   let newest: { path: string; mtime: number } | null = null;
   let projDirs: string[];

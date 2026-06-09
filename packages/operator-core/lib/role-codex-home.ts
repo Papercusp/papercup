@@ -37,6 +37,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
 export interface RoleCodexHome {
   /** Absolute path to set as the child's CODEX_HOME. */
@@ -198,9 +199,12 @@ export function writeRoleCodexHome(opts: {
    *  Omit → no activity hook (a role home without an identity). */
   sid?: string;
 }): RoleCodexHome {
-  const codexHome = freshCodexHome(
-    join(homedir(), '.papercusp', 'role-codex-homes', `session-${opts.sessionKey}`),
-  );
+  // ONE shared codex-home key (unify-launch-mechanics P-004): both role and su
+  // codex sessions live under the SAME root the wake-executor resume leg reads
+  // (`codexHomeForAdvSession` → `codexHomeForSessionKey`). Previously the role
+  // path wrote to a separate `role-codex-homes/` root the resume leg never
+  // looked in, so a woken codex role session resumed from nothing.
+  const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
   // flag; its instruction file is $CODEX_HOME/AGENTS.md (same mechanism
@@ -275,9 +279,7 @@ export function writeSuCodexHome(opts: {
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;
 }): SuCodexHome {
-  const codexHome = freshCodexHome(
-    join(homedir(), '.papercusp', 'su-codex-homes', `session-${opts.sessionKey}`),
-  );
+  const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
 
   const agentsPath = join(codexHome, 'AGENTS.md');
   writeFileSync(agentsPath, opts.promptText, { mode: 0o600 });

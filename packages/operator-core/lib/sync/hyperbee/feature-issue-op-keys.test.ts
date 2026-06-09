@@ -36,6 +36,7 @@ import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import { isHarnessFeatureRow, type HarnessFeatureRow } from './projections/harness-features';
 import { isHarnessIssueRow, type HarnessIssueRow } from './projections/issues';
 import { isContributorUsageEventRow, type ContributorUsageEventRow } from './projections/usage';
+import { isEngineerIssueRow, type EngineerIssueRow } from './projections/engineer-issues';
 
 describe('composeFeatureKey / composeIssueKey', () => {
   it('composeFeatureKey is the feature_id itself (matches projection composeKey)', () => {
@@ -302,6 +303,64 @@ describe('outboxRowToLocalWriteOp — contributor usage events (P-070 federation
     expect(op.type).toBe('del');
     expect(op.table).toBe('usage');
     expect(op.hbKey).toBe('01HXEVENTID0000000000000AB');
+    expect(op.value).toBeUndefined();
+  });
+});
+
+describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)', () => {
+  // A to_jsonb rendering of an engineer_issues row, WITH the capture-stamped
+  // harness_slug (mig 197 derives it from `scope` and adds it to the row jsonb).
+  // assigned_at/created_at are TIMESTAMPTZ → ISO strings under to_jsonb.
+  const engineerIssueOutboxRow: OutboxRow = {
+    table_name: 'engineer_issues',
+    op: 'put',
+    key: 'EI-10',
+    ts: 1717000000000,
+    row: {
+      harness_slug: 'papercup', // stamped by the capture trigger
+      issue_id: 'EI-10',
+      scope: 'harness:papercup',
+      kind: 'task',
+      title: 'delegated work',
+      body: 'do the thing',
+      severity: 'minor',
+      source: 'engineer',
+      state: 'open',
+      assignee: 'su-abc',
+      assigned_by: 'operator',
+      assigned_at: '2026-06-08T12:00:00.000Z',
+      payload: { agentSessionId: 'sess-1', backend: 'claude-code' },
+      found_during: null,
+      linked_feature_id: null,
+      created_by: 'queen',
+      created_at: '2026-06-08T11:59:00.000Z',
+      origin: 'local',
+    },
+  };
+
+  it('maps to the engineer-issues tableTag (NOT the raw table_name)', () => {
+    const op = outboxRowToLocalWriteOp(engineerIssueOutboxRow);
+    expect(op.table).toBe('engineer-issues');
+    expect(op.hbKey).toBe('EI-10');
+  });
+
+  it('produces a value that passes isEngineerIssueRow, preserving scope/kind/payload + the stamped harness_slug', () => {
+    const op = outboxRowToLocalWriteOp(engineerIssueOutboxRow)!;
+    const v = op.type === 'put' ? (op.value as EngineerIssueRow) : (null as never);
+    expect(isEngineerIssueRow(v)).toBe(true);
+    expect(v.harness_slug).toBe('papercup');
+    expect(v.scope).toBe('harness:papercup');
+    expect(v.kind).toBe('task');
+    expect(v.assigned_at).toBe('2026-06-08T12:00:00.000Z'); // ISO preserved (PG casts on insert)
+    expect(v.created_at).toBe('2026-06-08T11:59:00.000Z');
+    expect(v.payload).toEqual({ agentSessionId: 'sess-1', backend: 'claude-code' });
+  });
+
+  it('maps a del to a keyed LocalWriteOp with no value', () => {
+    const op = outboxRowToLocalWriteOp({ ...engineerIssueOutboxRow, op: 'del', row: null });
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('engineer-issues');
+    expect(op.hbKey).toBe('EI-10');
     expect(op.value).toBeUndefined();
   });
 });

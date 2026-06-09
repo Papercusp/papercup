@@ -168,6 +168,54 @@ export async function backfillLocalState(
     }
   }
 
+  // engineer_issues (fed-reanchor B5) — the work-queue's issue/task family. Its
+  // federation scope lives in the `scope` column ('harness:<slug>' | 'operator'), not a
+  // bare slug column, so the generic scopeCol-equality target above can't express it.
+  // Mirror the mig-197 capture derivation: enqueue local rows scoped to THIS harness
+  // (scope = 'harness:<harnessSlug>'), PLUS operator-scope rows iff this harness is the
+  // workspace's single Hive home (the canonical "operator coordination rides the
+  // kind:'hive' home"). Stamp harness_slug into the row jsonb for the projection demux.
+  if (workspaceId && workspaceId !== '*' && budget > 0) {
+    const [{ home }] = await pg<{ home: string | null }[]>`
+      SELECT CASE WHEN count(*) = 1 THEN min(home_slug) ELSE NULL END AS home
+        FROM harness_shared.hives WHERE workspace_id = ${workspaceId}`;
+    const operatorOwnedHere = home != null && home === harnessSlug;
+    const scopePredicate = operatorOwnedHere
+      ? pg`(c.scope = ${'harness:' + harnessSlug} OR c.scope = 'operator')`
+      : pg`c.scope = ${'harness:' + harnessSlug}`;
+
+    const [{ total }] = await pg<{ total: number }[]>`
+      SELECT count(*)::int AS total
+        FROM harness_shared.engineer_issues c
+       WHERE c.workspace_id = ${workspaceId}
+         AND COALESCE(c.origin, 'local') = 'local'
+         AND ${scopePredicate}`;
+
+    if (total > 0) {
+      const take = budget === Number.POSITIVE_INFINITY ? total : Math.min(total, budget);
+      dropped += total - take;
+      if (take > 0) {
+        const inserted = await pg<{ key: string }[]>`
+          INSERT INTO harness_shared.substrate_outbox
+            (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at)
+          SELECT
+            ${workspaceId}, ${harnessSlug}, 'engineer_issues', 'put',
+            c.issue_id::text,
+            to_jsonb(c) || jsonb_build_object('harness_slug', ${harnessSlug}::text),
+            ${now}, NULL
+            FROM harness_shared.engineer_issues c
+           WHERE c.workspace_id = ${workspaceId}
+             AND COALESCE(c.origin, 'local') = 'local'
+             AND ${scopePredicate}
+           ORDER BY c.issue_id
+           LIMIT ${take}
+          RETURNING key`;
+        enqueued += inserted.length;
+        if (budget !== Number.POSITIVE_INFINITY) budget -= inserted.length;
+      }
+    }
+  }
+
   // Cap-and-warn: a peer's read-merge drops anything past the per-author cap, so
   // warn (rather than chunk) when we couldn't enqueue everything.
   if (dropped > 0) {

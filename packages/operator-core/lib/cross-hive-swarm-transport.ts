@@ -58,6 +58,14 @@ export interface SwarmCrossHiveTransportOpts {
   sendWaitMs?: number;
   /** Poll cadence while waiting for a channel (default 50ms). */
   pollMs?: number;
+  /**
+   * Background re-announce cadence (default 2500ms). The transport periodically
+   * re-flushes the swarm so BOTH a receiver (re-announcing its topic) and a
+   * sender (re-driving its lookup) stay continuously discoverable — repeated
+   * mutual flushing is what makes the cross-topic rendezvous connect reliably
+   * (a single announce can be missed). 0 disables it.
+   */
+  reannounceMs?: number;
 }
 
 export interface SwarmCrossHiveTransport extends CrossHiveTransport {
@@ -86,6 +94,7 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   const deriveTopic = opts.deriveTopic ?? deriveHiveFederationTopic;
   const sendWaitMs = opts.sendWaitMs ?? 5000;
   const pollMs = opts.pollMs ?? 50;
+  const reannounceMs = opts.reannounceMs ?? 2500;
 
   const channels = new Set<OpenChannel>();
   const joined = new Map<string, unknown>(); // topicHex → discovery handle
@@ -189,6 +198,15 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   ensureJoined(selfTopic);
   void swarmFlush();
 
+  // Keep BOTH sides continuously discoverable: a periodic re-flush re-announces
+  // our joined topics + re-drives lookups, so a sender and a receiver converge
+  // even if an announce/lookup is missed on the first round. Cleared on close.
+  let reannounceTimer: ReturnType<typeof setInterval> | null = null;
+  if (reannounceMs > 0) {
+    reannounceTimer = setInterval(() => void swarmFlush(), reannounceMs);
+    reannounceTimer.unref?.();
+  }
+
   return {
     selfTopicHex: selfTopic.toString('hex'),
     get connectionCount() {
@@ -232,6 +250,10 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
     },
 
     async close(): Promise<void> {
+      if (reannounceTimer) {
+        clearInterval(reannounceTimer);
+        reannounceTimer = null;
+      }
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       channels.clear();
       for (const hex of joined.keys()) {

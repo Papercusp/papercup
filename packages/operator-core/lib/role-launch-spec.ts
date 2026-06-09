@@ -33,6 +33,10 @@
  */
 import { randomUUID } from 'node:crypto';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import {
+  sessionClaudeConfigDir,
+  sessionMcpDir,
+} from '@papercusp/orchestrator/session-launch-dirs';
 import { signSpawnParams } from './spawn-signing';
 import { resolveProjectDir } from './spawn-config';
 import { getPromptOverride } from './harness-prompt-overrides';
@@ -78,6 +82,38 @@ export interface RoleLaunchSpec {
   mcpUrl: string;
   /** `.mcp.json` contents the launcher writes to `cwd` for the agent to discover. */
   mcpJsonContents: string;
+  // ── Launch invariants (unify-launch-mechanics-2026-06-09 P-002) ──────────
+  // The HOW: the launch-mechanics properties EVERY agent type needs, produced
+  // by the ONE primitive so the wake/coord system reads a consistent setup
+  // regardless of which trigger fired the launch. The caller materializes them
+  // per-agent (claude/codex/omp differ) but the VALUES live here.
+  /**
+   * Per-session coord/lock owner id (`PAPERCUSP_SID` / `adv_sessions.coord_owner_id`).
+   * Keys coord:inbox-wake, presence, the lock owner — and the per-session
+   * config dirs below, so launch and the wake-executor resume leg agree.
+   */
+  sid: string;
+  /**
+   * Forced native session UUID for EXACT resumability (`claude --session-id`).
+   * Recorded as `adv_sessions.session_id` so wake-executor resumes THIS
+   * conversation (never `--continue`'s most-recent-in-cwd, which on the shared
+   * tree resumes a random peer). claude-specific; codex recovers its uuid from
+   * the rollout, omp resumes by thread id.
+   */
+  nativeSessionId: string;
+  /**
+   * Per-session `CLAUDE_CONFIG_DIR` (keyed by `sid`) — transcript + plugin
+   * isolation (the EI-153 fix, D-002). The caller provisions it
+   * (`writeSpawnClaudeConfig`) for a claude launch and points the resume leg at
+   * the same path.
+   */
+  claudeConfigDir: string;
+  /**
+   * Per-session signed-MCP config dir (keyed by `sid`). The launch writes
+   * `<dir>/.mcp.json`; the resume leg remounts it (`--mcp-config … --strict-mcp-config`)
+   * so a woken session keeps its role-scoped tool surface.
+   */
+  sessionMcpDir: string;
 }
 
 /**
@@ -89,6 +125,14 @@ export async function buildRoleLaunchSpec(
 ): Promise<RoleLaunchSpec> {
   const spawnId = randomUUID();
   const featureId = input.featureId?.trim() || null;
+
+  // Launch-mechanics identity (P-002): the per-session coord/lock owner +
+  // forced native session id. Minted HERE (the one primitive) — not by each
+  // caller — so the identity, the config-dir key, and the resume key are all
+  // derived from the same `sid`. `role-` prefix mirrors the prior bootstrap-role
+  // value so coord/lock owners read identically.
+  const sid = `role-${randomUUID()}`;
+  const nativeSessionId = randomUUID();
 
   // 0. Resolve the project dir IN-PROCESS, workspace-aware. The operator is
   //    the workspace authority (PG/registry-backed `resolveProjectDir`), so

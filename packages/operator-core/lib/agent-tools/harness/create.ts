@@ -23,6 +23,8 @@ import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { DeploymentConfigSchema, parseDeploymentConfig } from '../../deployment/config-schema';
 import { resolveCreateHiveMembership } from './create-hive-membership';
+import { applyGenomeConfig, writeGenomePrompts } from '../../instance-spec/genome-storage';
+import type { InstanceConfigFields } from '../../deployment/instance-config';
 
 const fail = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...payload }) }],
@@ -57,6 +59,22 @@ export default defineTool({
         .optional()
         .describe('When the blueprint declares deps that are not installed but are installable from the Cupboard, INSTALL them (transitively) before the gate instead of failing. Opt-in (default false). Code-tool packs install globally; runtime-plugin capability grants for this harness are a separate cupboard:install-deps {harness} call. tool-distribution-discovery D-002.'),
       deployment: DeploymentConfigSchema.optional().describe('Where this harness\'s execution plane runs — a sibling to the blueprint (cloud-deployment-layer D-001). Omit ⇒ {target:"local"}. e.g. {target:"latitude",region:"NYC",kind:"vm"}.'),
+      instance: z
+        .object({
+          genome: z
+            .object({
+              prompts: z.record(z.string(), z.string()).optional(),
+              config: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+            })
+            .optional()
+            .describe('The genome surface (prompt overlays + placement/wake/memory/coordination config knobs) to seed this instance with.'),
+          phase: z.string().optional(),
+          phases: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
+          dept: z.string().optional(),
+          configOverrides: z.record(z.string(), z.unknown()).optional(),
+        })
+        .optional()
+        .describe('Per-install INSTANCE config to seed (cloud-deployment-layer P-008 + retire-snapshots-instance-spec P-005): the genome + phase/phases/dept/configOverrides. This is what `boot(InstanceSpec)` threads to reproduce a captured instance — record/reuse the spec at create.'),
       hive: z
         .string()
         .min(1)
@@ -227,12 +245,27 @@ export default defineTool({
     }
 
     // 3. Register the harness + provision its PG schema. The deployment config is
-    //    persisted on the registry entry (workspace PG) — local omits it.
+    //    persisted on the registry entry (workspace PG) — local omits it. The
+    //    optional `instance` config (genome + phase/phases/dept/overrides) is seeded
+    //    onto the entry too — this is the record/reuse-at-create half of the
+    //    InstanceSpec wiring (retire-snapshots-instance-spec P-005), what boot(spec)
+    //    threads to reproduce a captured instance. The genome's config knobs fold
+    //    into configOverrides.genome; its prompt overlays are written to disk below.
+    const instanceFields: InstanceConfigFields = {};
+    if (args.instance) {
+      if (args.instance.phase !== undefined) instanceFields.phase = args.instance.phase;
+      if (args.instance.phases !== undefined) instanceFields.phases = args.instance.phases;
+      if (args.instance.dept !== undefined) instanceFields.dept = args.instance.dept;
+      const genomeConfig = args.instance.genome?.config ?? {};
+      const folded = applyGenomeConfig(args.instance.configOverrides, genomeConfig);
+      if (Object.keys(folded).length > 0) instanceFields.configOverrides = folded;
+    }
     reg.projects.push({
       slug: args.slug,
       path,
       ...(hiveMembership ? { hive_slug: hiveMembership } : {}),
       ...(deployment.target !== 'local' ? { deployment } : {}),
+      ...instanceFields,
     });
     await saveHarnessRegistry(reg);
     let provisioning: { ok: true } | { ok: false; error: string };
@@ -249,6 +282,13 @@ export default defineTool({
     mkdirSync(bpDir, { recursive: true });
     const bpFile = join(bpDir, 'blueprint.yaml');
     writeFileSync(bpFile, stringifyYaml(childObj, { lineWidth: 100 }), 'utf8');
+
+    // 4a. Write the genome's prompt overlays to `.papercusp/genome/` (git-canonical),
+    //     completing the instance-config seed (the config knobs went to PG above).
+    const genomePrompts = args.instance?.genome?.prompts;
+    if (genomePrompts && Object.keys(genomePrompts).length > 0) {
+      writeGenomePrompts(path, genomePrompts);
+    }
 
     // 5. Materialize the blueprint's triggers.schedule into harness_shared.routines
     //    (P-021/D-018). Each entry → a cron routine whose target_role is its action
