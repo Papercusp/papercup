@@ -49,6 +49,12 @@ export const FLAGS = {
   // Flip ON once the panel is visually verified in the Tauri shell + folded over the
   // legacy panel's residual sections (Discord/telemetry). Reversible presentation switch.
   BLUEPRINT_AWARE_SETTINGS: "papercusp-blueprint-aware-settings",
+  // psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 (P-011): gates the Prompt
+  // Studio surface (edit the renderSuPlaybook SOURCES — base playbooks / per-client
+  // overlays / project-guide — with a live assembled-prompt preview). OFF (default)
+  // until it's mounted in the settings nav (coordinated with the in-flight /settings
+  // restructure) + Tauri-verified. Backend routes (/api/prompt-studio/*) ship regardless.
+  PROMPT_STUDIO: "papercusp-prompt-studio",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -75,6 +81,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the legacy hardcoded HarnessSettingsPanel ships until the
   // schema-driven BlueprintSettingsPanel (P-008) is Tauri-verified. Flip on to adopt.
   [FLAGS.BLUEPRINT_AWARE_SETTINGS]: false,
+  // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the
+  // settings nav + Tauri-verified. The /api/prompt-studio/* routes are live regardless.
+  [FLAGS.PROMPT_STUDIO]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -176,9 +176,22 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       // tests fail 8/8 under the routine while the same sha passed 8/8 in a
       // login shell. Tests that need papercusp env set it themselves; the
       // host's identity must never define green.
+      // P-008 (release-pipeline-resilience-2026-06-09): also strip host-set,
+      // test-affecting NON-PAPERCUSP_ vars of the same class. `AGENT_MODELS` (the
+      // operator's per-role model map, e.g. {"worker":"opus"} in .env.local) leaked
+      // into the gate and broke `@papercusp/orchestrator` invoke.test 2026-06-09 —
+      // green in a clean shell, red only under the routine. Same principle: the
+      // gate measures the COMMITTED defaults; tests that need it set it themselves.
+      const HOST_ENV_STRIP = ['AGENT_MODELS'];
       for (const k of Object.keys(env)) {
-        if (k.startsWith('PAPERCUSP_')) delete env[k];
+        if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
       }
+      // P-008: a gate marker so genuinely load- / live-network-sensitive tests that
+      // CANNOT be made hermetic (real Hyperswarm/DHT, ports) can self-exclude from
+      // the hourly gate via `describe.skipIf(process.env.GREEN_CHECKPOINT === '1')`
+      // — they still run in normal CI/local. The gate measures deterministic
+      // suites; live-wire coverage belongs in a non-gating tier.
+      env.GREEN_CHECKPOINT = '1';
       if (base) env.AFFECTED_BASE = base;
       // Cap the suite's parallelism: the checkpoint shares the box with the live
       // fleet (deploys, hive agents, builds), and uncapped vitest workers under
