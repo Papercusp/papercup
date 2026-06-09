@@ -97,6 +97,22 @@ export function applyRoleModel(baseCmd: string, role: string): string {
   return cmd;
 }
 
+/**
+ * Append a forced native session id to the agent command so a headless bee run
+ * is resumable by EXACT uuid — `claude --resume <uuid>` — for the hive-tabs bee
+ * attach (hive-agent-tabs-psu-tui-2026-06-09 P-016 / D-007). Only `claude`
+ * accepts `--session-id`; omp resumes by thread id and codex by rollout, so for
+ * those the command is returned UNCHANGED (the caller records the backend-native
+ * handle instead). Idempotent — never double-appends if a `--session-id` is
+ * already present. Exported for unit testing.
+ */
+export function appendForcedSessionId(cmd: string, sessionId: string): string {
+  const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  if (!/claude/.test(bin)) return cmd; // omp/codex: not claude-resumable this way
+  if (/--session-id(?:=|\s)/.test(cmd)) return cmd; // already forced
+  return `${cmd.trimEnd()} --session-id ${sessionId}`;
+}
+
 export interface InvokeOnceSpec {
   /** PROJECT_DIR — the user's project root. */
   projectDir: string;
@@ -116,6 +132,10 @@ export interface InvokeOnceSpec {
   /** Extra env merged in (role-specific: SCOPER_*, decrypted
       search-provider keys). `undefined` values are skipped. */
   extraEnv?: Record<string, string | undefined>;
+  /** P-016/D-007: force this native session uuid so the run is resumable by exact
+      id (`claude --resume <uuid>`). Applied only when the resolved backend is
+      claude (see appendForcedSessionId); the caller records it for the bee attach. */
+  forceSessionId?: string;
 }
 
 export function buildInvokeOnce(spec: InvokeOnceSpec): {
@@ -129,6 +149,12 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // setting only CLAUDE is masked by the inherited global AGENT_CMD. Set both so
   // whichever resolveAgentCmd reads gets the per-role command.
   const roleAgentCmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spec.role);
+  // P-016/D-007: when the spawn forces a native session id, bake `--session-id`
+  // into the (claude) agent command so the headless bee run is resumable by exact
+  // uuid for the hive-tabs bee attach. No-op for omp/codex (appendForcedSessionId).
+  const agentCmd = spec.forceSessionId
+    ? appendForcedSessionId(roleAgentCmd, spec.forceSessionId)
+    : roleAgentCmd;
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PROJECT_DIR: spec.projectDir,
@@ -137,8 +163,8 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     LOG_DIR: `${spec.stateDir}/logs`,
     ROLE: spec.role,
     EXTRAS_JSON: JSON.stringify(spec.extras),
-    AGENT_CMD: roleAgentCmd,
-    CLAUDE: roleAgentCmd,
+    AGENT_CMD: agentCmd,
+    CLAUDE: agentCmd,
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned
     // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts

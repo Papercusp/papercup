@@ -115,6 +115,20 @@ export function setAuditorLaneFns(
 const NEEDS_WORK: ReadonlySet<string> = new Set(['todo', 'failing', 'pending', 'failed']);
 
 /**
+ * Check if a task deadline has passed. Correctly handles both ISO string and Date
+ * object deadlines by converting them to the same type before comparison.
+ *
+ * @param deadline - The deadline to check, either as an ISO string or Date object
+ * @returns true if the deadline has passed, false otherwise
+ */
+export function isOverdue(deadline: string | Date): boolean {
+  // Convert deadline to Date object if it's a string
+  const deadlineDate = typeof deadline === 'string' ? new Date(deadline) : deadline;
+  // Compare with current time
+  return deadlineDate < new Date();
+}
+
+/**
  * Hard safety ceiling on per-harness pipeline concurrency when no explicit
  * `PAPERCUSP_DBOS_MAX_PIPELINES` override is set. A misconfigured harness
  * (`parallelWorkers.max: 1000`) must not be able to spawn 1000 pipelines; this

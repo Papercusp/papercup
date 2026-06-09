@@ -17,6 +17,7 @@ import {
   resolveDispatchPolicy,
   orchestratorWorkspaceIds,
   harnessDispatchesLocally,
+  isOverdue,
   type FrontierFeature,
 } from './orchestrator-loop';
 import {
@@ -423,6 +424,39 @@ describe('computeFrontier — frontier dispatch (P-042)', () => {
       toStart: [],
       stuck: false,
     });
+  });
+});
+
+describe('isOverdue — deadline comparison (handles both ISO strings and Date objects)', () => {
+  test('returns false for future deadline as ISO string', () => {
+    const futureDate = new Date(Date.now() + 1000 * 60 * 60); // 1 hour in the future
+    expect(isOverdue(futureDate.toISOString())).toBe(false);
+  });
+
+  test('returns false for future deadline as Date object', () => {
+    const futureDate = new Date(Date.now() + 1000 * 60 * 60); // 1 hour in the future
+    expect(isOverdue(futureDate)).toBe(false);
+  });
+
+  test('returns true for past deadline as ISO string', () => {
+    const pastDate = new Date(Date.now() - 1000 * 60 * 60); // 1 hour in the past
+    expect(isOverdue(pastDate.toISOString())).toBe(true);
+  });
+
+  test('returns true for past deadline as Date object', () => {
+    const pastDate = new Date(Date.now() - 1000 * 60 * 60); // 1 hour in the past
+    expect(isOverdue(pastDate)).toBe(true);
+  });
+
+  test('correctly compares deadline times without type mismatch', () => {
+    // This test ensures the bug is fixed: comparing ISO string with Date object
+    // should work correctly by converting to the same type first
+    const now = new Date();
+    const pastISOString = new Date(now.getTime() - 5000).toISOString();
+    const futureDate = new Date(now.getTime() + 5000);
+
+    expect(isOverdue(pastISOString)).toBe(true);
+    expect(isOverdue(futureDate)).toBe(false);
   });
 });
 

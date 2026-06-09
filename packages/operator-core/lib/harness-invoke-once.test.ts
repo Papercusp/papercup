@@ -17,7 +17,7 @@ vi.mock('./embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
+import { appendForcedSessionId, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
 
 const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
   projectDir: '/proj',
@@ -56,6 +56,45 @@ describe('buildInvokeOnce — command + core env', () => {
     const { env } = buildInvokeOnce(spec({ extraEnv: { SCOPER_MODE: 'x', SKIP: undefined } }));
     expect(env.SCOPER_MODE).toBe('x');
     expect(env.SKIP).toBeUndefined();
+  });
+});
+
+describe('appendForcedSessionId / buildInvokeOnce forceSessionId (P-016 / D-007)', () => {
+  it('appends --session-id only for a claude command', () => {
+    expect(appendForcedSessionId('claude -p', 'uuid-1')).toBe('claude -p --session-id uuid-1');
+    expect(appendForcedSessionId('claude -p --model sonnet', 'u')).toBe('claude -p --model sonnet --session-id u');
+  });
+
+  it('leaves omp / codex commands unchanged (they resume by thread id / rollout)', () => {
+    expect(appendForcedSessionId('omp -p', 'uuid-1')).toBe('omp -p');
+    expect(appendForcedSessionId('codex exec', 'uuid-1')).toBe('codex exec');
+  });
+
+  it('is idempotent — never double-appends', () => {
+    const once = appendForcedSessionId('claude -p', 'uuid-1');
+    expect(appendForcedSessionId(once, 'uuid-2')).toBe(once);
+    expect(appendForcedSessionId('claude --session-id=abc -p', 'uuid-2')).toBe('claude --session-id=abc -p');
+  });
+
+  it('buildInvokeOnce bakes --session-id into a claude AGENT_CMD when forceSessionId is set', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    const { env } = buildInvokeOnce(spec({ forceSessionId: 'uuid-xyz' }));
+    expect(env.AGENT_CMD).toContain('claude');
+    expect(env.AGENT_CMD).toContain('--session-id uuid-xyz');
+    expect(env.CLAUDE).toBe(env.AGENT_CMD);
+  });
+
+  it('buildInvokeOnce leaves an omp AGENT_CMD un-forced even with forceSessionId', () => {
+    vi.stubEnv('AGENT_CMD', 'omp -p');
+    const { env } = buildInvokeOnce(spec({ forceSessionId: 'uuid-xyz' }));
+    expect(env.AGENT_CMD).toContain('omp');
+    expect(env.AGENT_CMD).not.toContain('--session-id');
+  });
+
+  it('buildInvokeOnce without forceSessionId never adds --session-id', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    const { env } = buildInvokeOnce(spec());
+    expect(env.AGENT_CMD).not.toContain('--session-id');
   });
 });
 
