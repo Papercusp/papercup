@@ -137,18 +137,42 @@ File: `multi-session-concurrency.integration.test.ts` (4 channels, N isolated te
 | N×M concurrent claims → one winner per item                          | ❌      | 🔴  |
 | N concurrent lock races → one grant/path; distinct paths all granted | ❌      | 🔴  |
 
+## Closed since first publication
+
+**Interactive psu/SU + role claude config isolation (EI-155) is now implemented
+and tested.** Per-session `CLAUDE_CONFIG_DIR` isolation was previously only on
+the **orchestrator-spawned bee** path (`spawn-mcp.ts`/`invoke.ts` →
+`~/.papercusp/session-claude/<spawnId>`, restored on **wake-executor resume**);
+interactive `psu` claude sessions shared one `~/.claude`. The fix (`bootstrap-su`
+
+* `bootstrap-role` → `writeInteractiveClaudeConfig`, keyed by `sid` via the same
+  `sessionClaudeConfigDir` helper the resume leg reads) materializes a **symlink
+  mirror** of `~/.claude` with exactly one thing isolated — the `projects/`
+  transcript store — and the sibling `~/.claude.json` symlinked in. That is what
+  makes it credential-/onboarding-safe where a creds-only dir is not: the
+  user-level `papercusp-su` MCP (lives in `~/.claude.json`), the file-lock + coord
+  hooks (`settings.json`), plugins/skills, and onboarding/trust all carry through;
+  only the conversation transcripts are private (so `/resume` + wake-by-uuid never
+  reach a peer's session — the EI-153 root). Verified live on claude-code 2.1.169
+  (a creds-only dir lost the MCP + hooks; the mirror restores them). Covered by
+  `interactive-claude-config.test.ts` (7) + the `bootstrap-su`/`bootstrap-role`
+  route assertions (CLAUDE\_CONFIG\_DIR present for claude, absent for omp/codex,
+  non-fatal on materialize failure).
+
+**The real-CLI resume rung now has a live-smoke.** The CI test
+(`wake-resume-isolation.test.ts`) still asserts the wake-executor *builds* the
+right resume command + hands it to `spawnDetached` (bin/args/env captured via an
+injected `spawnDetached`). Its complement — does that command, run for real,
+actually continue the session? — is `apps/operator/scripts/resume-spawn-live.ts`,
+surfaced as the coordination-suite **C5 real resume spawn (live)** runner. It
+builds the resume command via the SAME `resumeCommandFor`, runs it against the
+REAL `claude` / `codex` binary in the EI-155 isolated `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME`, and asserts the resume CONTINUED the exact session **deterministically**
+— the session transcript / rollout file GROWS — independent of the model's output.
+Gated (needs creds → not CI); each agent leg SKIPS when its CLI is absent/unauthed.
+Both legs verified green on this box (claude 2.1.169, codex).
+
 ## Accepted gaps (logged — not silent)
 
-* **Interactive-SU launch-side claude config isolation (EI-155).** Per-session
-  `CLAUDE_CONFIG_DIR` isolation is implemented for **orchestrator-spawned bees**
-  (`spawn-mcp.ts`/`invoke.ts` → `~/.papercusp/session-claude/<spawnId>`) and
-  restored on **wake-executor resume**, but **not** for interactive `psu`/SU
-  claude sessions (`bootstrap-su` sets none). Repointing it is credential-
-  sensitive (the human's `~/.claude` login), so it is a deliberate design
-  follow-up, not a test detail — filed as **EI-155**. The EI-153 regression
-  therefore asserts isolation at the seams where it **is** the implemented fix
-  (per-spawn config-dir, per-owner resume config-dir + exact session id,
-  per-owner discovery socket).
-* **Full real `claude`/`codex` resume spawn.** The resume rungs are asserted via
-  injected `spawnDetached` (capturing bin/args/env); a real CLI resume needs
-  credentials and is the **live-smoke** tier (gated runner), not CI.
+* *None outstanding for this suite.* The two gaps logged at first publication
+  (interactive-claude config isolation, real resume spawn) are both closed above.

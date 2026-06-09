@@ -467,6 +467,14 @@ plan `fleet-coordination-painpoints-2026-06-02`.
   (`BORROWABLE.md`) rather than leaving it inline — don't shy off the bigger
   refactor. Just tell the user what changed; don't ask permission to do it
   right, and don't water it down to feel safe.
+- **New feature flags DEFAULT TO ENABLED.** The app is alpha — finished work
+  never ships dark. When a plan/feature you're implementing gets a flag, set
+  its `FLAG_DEFAULTS` entry in `libs/flags/src/types.ts` to `true` so the
+  feature is ACTIVE the moment it deploys; flags exist so the owner can
+  switch a feature OFF, not so completed work waits inactive for a flip the
+  owner was never told about. Default-OFF only for genuinely incomplete or
+  unsafe-to-enable work, or an explicit owner ask — and then surface the
+  pending flip loudly in the plan's **Next** line + your completion report.
 - **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
   through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useSyncPrefetch`
   / `useOwnedSyncEntity` / `selectOwnedData`) — never hand-roll `fetch` / SWR /

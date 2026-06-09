@@ -456,10 +456,22 @@ JSON or hitting PostHog directly. The admin UI calls
 through PostHog + the SSE flag-bus.
 
 **When adding a feature you'll later want to cut**, gate it from day one:
-add the flag to `libs/flags/src/types.ts`, create the matching definition
-in PostHog (active=false, rollout 0), then guard pages with `requireFlag`,
-nav with `useFlag`, API routes with `gateApiRoute`, Hono routes with a
-`use('/path/*', …)` middleware, and MCP tools at registration.
+add the flag to `libs/flags/src/types.ts`, then guard pages with
+`requireFlag`, nav with `useFlag`, API routes with `gateApiRoute`, Hono
+routes with a `use('/path/*', …)` middleware, and MCP tools at registration.
+
+**New flags DEFAULT TO ENABLED — the app is alpha; finished work never
+ships dark.** When you create a flag for a feature you're implementing,
+set its `FLAG_DEFAULTS` entry in `libs/flags/src/types.ts` to `true` (and
+any PostHog definition to active) so the feature is live the moment the
+code deploys. The flag exists so the owner can switch a feature OFF (or
+cut it for ship) — **not** so completed work sits inactive waiting for the
+owner to remember a flip he was never told about. Ship a flag default-OFF
+only when (a) the work is genuinely incomplete or unsafe to enable, or
+(b) the owner explicitly asked for a dark launch — and in either case say
+so loudly in the plan's `## Now` **Next** line and your completion report,
+so the pending flip is the owner's explicit decision, never a silent
+default.
 
 Full reference: `/internal/docs/posthog` and `/internal/docs/posthog/feature-flags`.
 
@@ -602,6 +614,44 @@ Per-tool when/not-when goes in the tool file. Cross-tool patterns
 (chaining, panel verbs, workflows) go in `<role>.tools.md`. Behavior
 rules ("always call", "tier-high → confirm") go in `<role>.persona.md`.
 The split is intentional — see `packages/operator-core/lib/prompt-assembly.ts`.
+
+## Prompts are auto-generated — edit the source, never the rendered output
+
+Every agent-facing prompt is ASSEMBLED at launch/spawn time from source
+files; the text an agent actually receives is a rendered artifact,
+regenerated on the next launch (a direct edit there is clobbered and never
+reaches anyone). To change what agents are told, edit the SOURCE in the
+canonical staging tree:
+
+- **Chat-surface role prompts** (operator, oracle, …) — assembled per-launch
+  by `packages/operator-core/lib/prompt-assembly.ts` from three source layers
+  in `apps/operator/prompts/`: `<role>.persona.md` (behavior) + the tools
+  catalog (generated from each tool's `defineTool({ guidance })`) +
+  `<role>.tools.md` (cross-tool workflows). Pick the lowest layer that fits —
+  per-tool guidance belongs on the `defineTool` call, not in prose.
+- **psu / SU collaborator playbooks** — sources are
+  `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`, rendered
+  per-launch by `renderSuPlaybook`
+  (`packages/operator-core/lib/desktop-install/papercusp-files.ts`), which
+  also splices THIS `CLAUDE.md` in as the "Project guide" section — a
+  repo-convention change belongs here and reaches every psu session
+  automatically. The live `:3070` psu serves the **release checkout's** copy,
+  so an edit reaches new psu launches only after the staging→green deploy
+  carries it.
+- **Autonomous harness spawn prompts** (scoper → worker → validator →
+  reviewer …) — sources at `libs/papercusp/packages/harness/prompts/<role>.md`,
+  layered with `base/<role>.md` + kind/department overrides per the resolution
+  rules in that directory's `README.md`.
+- **Never edit rendered outputs:** `~/.papercusp/*-collaborator*.md`
+  (vestigial installer dumps, not read at launch), anything under the
+  `papercup-release` checkout, or an assembled prompt captured from a live
+  session. Those are projections; the next render erases the edit.
+
+In dev, prompt-source edits load immediately (`PAPERCUSP_RELOAD_PROMPTS=1`,
+default in development). After editing a `<role>.tools.md`, run the sync
+test: `cd packages/operator-core && npx vitest run tools-md-sync`. After a
+substantial edit to the SU engineer playbook, run the behavioral suite
+(`npm --prefix apps/operator run llm-test -- --target su`).
 
 ## Where new tests go — four canonical frameworks (2026-05-24)
 

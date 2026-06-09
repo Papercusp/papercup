@@ -268,6 +268,13 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
   Same for reuse: prefer a library / existing surface over rolling your own,
   lift general code into a shared/generic lib. Tell the user what changed;
   don't ask permission to do it right or water it down to feel safe.
+- **New feature flags DEFAULT TO ENABLED.** The app is alpha — finished work
+  never ships dark. A flag you create for a feature gets its `FLAG_DEFAULTS`
+  entry (`libs/flags/src/types.ts`) set to `true` so the feature is ACTIVE on
+  deploy; flags exist so the owner can switch a feature OFF, not so completed
+  work waits for a flip he was never told about. Default-OFF only for
+  genuinely incomplete/unsafe work or an explicit owner ask — and then
+  surface the pending flip loudly in the plan + your report.
 - **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
   through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useOwnedSyncEntity`
   / `selectOwnedData`) — never hand-roll `fetch` / SWR / React-Query / direct-Zero

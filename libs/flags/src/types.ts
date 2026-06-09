@@ -80,9 +80,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
   // OFF by default — desktop video ships dark behind the live-camera E2E (P-010).
   [FLAGS.VIDEO_CHANNELS]: false,
-  // OFF by default — desktop voice channels ship dark behind the supervised
-  // live Tauri+mic pass (holepunch-voice-channels D-014).
-  [FLAGS.VOICE_CHANNELS]: false,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
+  // the supervised live Tauri+mic pass (holepunch-voice-channels D-014) is still
+  // outstanding but the owner chose to run it live.
+  [FLAGS.VOICE_CHANNELS]: true,
   // OFF by default — classic Papercusp is the V1 ship state; flip on to adopt
   // the bee lexicon (the-hive-lexicon-2026-06-06). Presentation only.
   [FLAGS.THE_HIVE]: false,
@@ -92,9 +93,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the settings
   // nav + Tauri-verified. The /api/prompt-studio/* routes are flag-gated on it too.
   [FLAGS.PROMPT_STUDIO]: false,
-  // OFF by default — the current dock (operator chat-pane + read-only watch-pane
-  // bees) ships until the unified psu/Claude TUI agent-tabs dock is Tauri-verified.
-  [FLAGS.HIVE_AGENT_TABS]: false,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy).
+  // Phases 2-5 of hive-agent-tabs-psu-tui-2026-06-09 are still building; the
+  // shipped flag-gated paths (taxonomy/roster stamping/session-id) go live now.
+  [FLAGS.HIVE_AGENT_TABS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

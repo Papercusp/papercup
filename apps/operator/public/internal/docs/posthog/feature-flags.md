@@ -5,7 +5,7 @@ The complete feature-flag system — every flag, how to flip them, where they're
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
-Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. Every flag defaults to **off**, the operator falls back to bundled defaults when offline, and admins flip flags through the operator's own UI — no PostHog dashboard required for day-to-day use.
+Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. The cut-for-V1 flags default to **off**; flags created for newly built features default to **on** in alpha (finished work ships active — the flag is the owner's off-switch, not a dark launch). The operator falls back to bundled defaults when offline, and admins flip flags through the operator's own UI — no PostHog dashboard required for day-to-day use.
 
 ## The 12 flags
 
@@ -31,12 +31,12 @@ All keys also live in `libs/flags/src/types.ts` as the single source of truth �
 
 ## Defaults and the V1 ship contract
 
-`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state: **every flag defaults `false`**. The operator returns this map whenever PostHog is unreachable or unconfigured: every cut feature stays cut, no network call required to discover it.
+`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the bundled default state: cut-for-V1 flags are `false`; flags for newly shipped alpha features are `true` (see "Add a new flag" below). The operator returns this map whenever PostHog is unreachable or unconfigured: every cut feature stays cut, every shipped alpha feature stays live, no network call required to discover it.
 
 Two statements that hold for every shipped binary:
 
 1. A freshly installed Papercusp binary on Linux / macOS / Windows makes **zero** outbound HTTP requests to `flags.papercuspai.com` under normal use.
-2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
+2. Every flag resolves to its `FLAG_DEFAULTS` value, so every cut surface (default `false`) is unreachable — routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered — while shipped alpha features (default `true`) stay live.
 
 Both hold without any post-install configuration. Verified by the build-agent handoff via a clean-machine smoke test.
 
@@ -356,8 +356,8 @@ curl -s http://localhost:3055/api/flags/bootstrap | jq
 
 ### "Add a new flag"
 
-1. Add the key + default to `libs/flags/src/types.ts` (`FLAGS` + `FLAG_DEFAULTS`).
-2. Create the matching flag in the PostHog UI at `flags.papercuspai.com` (default to `active: false`, `rollout_percentage: 0`). Key must match the TS string exactly.
+1. Add the key + default to `libs/flags/src/types.ts` (`FLAGS` + `FLAG_DEFAULTS`). **In alpha, the `FLAG_DEFAULTS` entry for a flag you create alongside the feature is `true`** — finished work ships active; the flag exists so the owner can switch it off (or cut it for ship), not to ship the feature dark. Default `false` only for genuinely incomplete/unsafe work or an explicit owner-requested dark launch — and then surface the pending flip in the plan + completion report.
+2. If you also define the flag in the PostHog UI at `flags.papercuspai.com`, match the bundled default (`active: true`, `rollout_percentage: 100` for an alpha default-on flag). Key must match the TS string exactly.
 3. Add the entry to `FLAG_LABELS` + `FLAG_BLURBS` in `apps/operator/app/admin/features/FeaturesAdmin.tsx`.
 4. Gate the actual surfaces — pages with `requireFlag`, nav entries with `useFlag`, API routes with `gateApiRoute`, MCP tools with the same.
 5. `tsc --noEmit` on the operator to confirm no surface forgot the gate.
