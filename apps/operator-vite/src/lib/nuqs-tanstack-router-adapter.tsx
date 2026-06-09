@@ -145,7 +145,6 @@ export function applyNuqsToSearch(
 }
 
 function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
-  const pathname = useLocation({ select: (state) => state.pathname });
   const search = useLocation({
     select: (state) =>
       Object.fromEntries(
