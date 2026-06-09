@@ -506,9 +506,22 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 .get(&r.owner_id)
                 .map(|t| format!("⇄{}/{}", t.done, t.count))
                 .unwrap_or_default();
+            // P-010: flag-on, tint the agent name by its pane-type (Queen/Bee/
+            // Sentinel/Planner). zellij has no per-pane color (D-008), so pui draws
+            // it here where it owns the chrome. Flag-off → plain (current).
+            let agent_cell = format!(" {:<6} ", trunc(&agent, 6));
+            let agent_span = match (
+                app.hive_agent_tabs,
+                crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
+            ) {
+                (true, Some(k)) => {
+                    Span::styled(agent_cell, ratatui::style::Style::default().fg(k.color()))
+                }
+                _ => Span::raw(agent_cell),
+            };
             ListItem::new(Line::from(vec![
                 dot,
-                Span::raw(format!(" {:<6} ", trunc(&agent, 6))),
+                agent_span,
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),
             ]))

@@ -168,43 +168,46 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   // own key and our HELLO carries our real pubkey; addressing is still validated
   // by the receiver, so a stray connection mis-delivers nothing.
   //
-  // CRITICAL: do NOT call the per-topic `discovery.flushed()` here. Calling it
-  // alongside `swarm.flush()` POISONS discovery on this swarm — the connection
-  // never forms (verified: a bare two-swarm pair connects in ~1.5s, but adding
-  // `void discovery.flushed()` to the same joins keeps connectionCount at 0).
-  // We drive discovery exclusively through `swarmFlush()` (the swarm-level flush),
-  // which is the pattern that reliably connects.
+  // CRITICAL: discovery is driven by a per-topic `discovery.refresh()` LOOP —
+  // empirically the ONLY driver that connects a standalone (non-corestore)
+  // transport on the current hyperswarm/hyperdht. The first announce/lookup
+  // round after `join` reliably misses (fresh DHT node) and nothing internal
+  // retries for minutes; `discovery.flushed()` and swarm-level `swarm.flush()`
+  // (this transport's ORIGINAL driver — since rotted) never form a connection.
+  // Verified on a loopback testnet: join + refresh-loop connects in ~1.1s; join
+  // + flushed / flush(-loop) / dht.ready()+join all sit at 0 connections.
+  // See directory-swarm.ts (the same driver) + its live two-peer test.
   const ensureJoined = (topic: Buffer): void => {
     const hex = topic.toString('hex');
     if (joined.has(hex)) return;
     joined.set(hex, opts.swarm.join(topic, { server: true, client: true }));
   };
 
-  /** Drive a full DHT announce+lookup+connect round (awaited). Best-effort. */
-  const swarmFlush = async (): Promise<void> => {
-    const f = (opts.swarm as { flush?: () => Promise<unknown> }).flush;
-    if (typeof f === 'function') {
-      try {
-        await f.call(opts.swarm);
-      } catch {
-        /* best-effort */
-      }
-    }
+  /** Re-run every joined topic's DHT announce + lookup round (best-effort). */
+  const refreshAll = async (): Promise<void> => {
+    await Promise.all(
+      [...joined.values()].map(async (d) => {
+        try {
+          await (d as { refresh?: (o?: object) => unknown } | undefined)?.refresh?.();
+        } catch {
+          /* best-effort per topic */
+        }
+      }),
+    );
   };
 
   // Reachable immediately: register the handler + join our own topic (server) so
-  // peers can dial us, then flush in the background to announce it on the DHT.
+  // peers can dial us; the refresh loop announces it on the DHT.
   opts.swarm.on('connection', handler);
   const selfTopic = deriveTopic(opts.selfHivePubkey);
   ensureJoined(selfTopic);
-  void swarmFlush();
 
-  // Keep BOTH sides continuously discoverable: a periodic re-flush re-announces
-  // our joined topics + re-drives lookups, so a sender and a receiver converge
-  // even if an announce/lookup is missed on the first round. Cleared on close.
+  // Keep BOTH sides continuously discoverable: a periodic per-topic refresh
+  // re-runs each topic's announce + lookup round, so a sender and a receiver
+  // converge even when a round is missed. Cleared on close.
   let reannounceTimer: ReturnType<typeof setInterval> | null = null;
   if (reannounceMs > 0) {
-    reannounceTimer = setInterval(() => void swarmFlush(), reannounceMs);
+    reannounceTimer = setInterval(() => void refreshAll(), reannounceMs);
     reannounceTimer.unref?.();
   }
 
@@ -223,21 +226,20 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
       const buffered = inboundBuffer.splice(0);
       for (const env of buffered) void Promise.resolve(handlerFn(env)).catch(() => {});
       // Now that we're listening, (re)announce our self-topic so senders find us.
-      void swarmFlush();
+      void refreshAll();
     },
 
     async send(toHivePubkey: string, env: CrossHiveWireEnvelope): Promise<void> {
       // Rendezvous on the target Hive's topic (it is server there; we join too).
       ensureJoined(deriveTopic(toHivePubkey));
       const targets = (): OpenChannel[] => [...channels].filter((ch) => ch.remotePubkey === toHivePubkey);
-      // Wait for the channel to the target to pair + exchange HELLOs, AWAITING a
-      // re-triggered DHT announce+lookup+connect round (swarm.flush) each
-      // iteration — awaiting the flush is what drives the connection to
-      // completion (it resolves only after the swarm has looked up + connected to
-      // discovered peers). Never use discovery.flushed() (it poisons discovery).
+      // Wait for the channel to the target to pair + exchange HELLOs, driving a
+      // per-topic discovery.refresh() round each iteration — the refresh is what
+      // re-runs announce+lookup until the connection forms (the first round
+      // after join reliably misses; see the driver note above ensureJoined).
       const start = Date.now();
       while (targets().length === 0 && Date.now() - start < sendWaitMs) {
-        await swarmFlush();
+        await refreshAll();
         if (targets().length > 0) break;
         await delay(pollMs);
       }
