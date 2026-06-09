@@ -400,6 +400,15 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
           >
             {itemView === 'kanban' ? '☰ List' : '⊞ Kanban'}
           </button>
+          <button
+            type="button"
+            className="pc-plan-editor-tools__btn"
+            onClick={() => setActivityOpen(activityOpen === 'open' ? 'closed' : 'open')}
+            aria-pressed={activityOpen === 'open'}
+            title="Show the plan's revision activity feed"
+          >
+            ⟲ Activity
+          </button>
         </div>
       ) : null}
       {!editing && itemView === 'kanban' ? (
