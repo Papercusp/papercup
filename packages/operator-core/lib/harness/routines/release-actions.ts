@@ -88,6 +88,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // green, reason }); `reason` IS our status vocabulary. On a crash before that
   // print (non-zero exit, no parseable JSON), record an 'error' row instead.
   let status = 'error';
+  let candidate: string | undefined;
   const detail: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1)) as {
@@ -98,6 +99,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     };
     if (parsed?.reason) {
       status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
+      candidate = parsed.candidate;
       detail.green = parsed.green ?? null;
       if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
       if (parsed.from) detail.from = parsed.from.slice(0, 12);
@@ -115,7 +117,80 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     status,
     detail,
   });
+
+  // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
+  // release-fixer agent to diagnose + fix the failing test — the test-failure
+  // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
+  if (status === 'not-green' && candidate) {
+    await dispatchReleaseFixer(ctx, candidate).catch((e) =>
+      console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
+    );
+  }
 });
+
+/**
+ * P-006: dispatch a release-fixer agent for a held (not-green) gate, mirroring
+ * git-sync's merge-resolver (git-sync-action.ts `spawnMergeResolver`). Resolves
+ * the `release-fix` launch blueprint from the `green-checkpoint:red` trigger event
+ * and invokes its role via the loopback invoke route. Deduped per red-candidate
+ * via the green-checkpoint routine metadata (`last_fixer`) so the hourly tick
+ * doesn't respawn a fixer while one is in flight for the same candidate.
+ * Fail-safe: every step is best-effort and never throws into the routine tick.
+ */
+async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Promise<void> {
+  const { resolveLaunchTargetForEvent } = await import('../../blueprint/launch-blueprint');
+  const target = await resolveLaunchTargetForEvent('green-checkpoint:red', {
+    installSlug: ctx.installSlug,
+    workspaceId: ctx.workspaceId,
+  });
+  if (!target) return; // no blueprint declares the trigger — nothing to dispatch
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  // Dedup: a fixer dispatched for THIS candidate within the last 2h is "in flight".
+  const rows = (await sql.unsafe(
+    `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug],
+  )) as Array<{ lf: { candidate?: string; at?: number } | null }>;
+  const lf = rows[0]?.lf ?? null;
+  if (lf?.candidate === candidate && typeof lf.at === 'number' && Date.now() - lf.at < 2 * 60 * 60_000) {
+    return;
+  }
+  await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug, JSON.stringify({ last_fixer: { candidate, at: Date.now(), status: 'dispatched' } })],
+  );
+  const { loopbackFetch } = await import('../../loopback-fetch');
+  void loopbackFetch(target.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      kickoff: `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`,
+      extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
+      timeoutMs: 280_000,
+    }),
+  })
+    .then((res) =>
+      appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'release_fixer',
+        status: res.ok ? 'ok' : 'failed',
+        detail: { candidate: candidate.slice(0, 12), httpStatus: res.status },
+      }),
+    )
+    .catch((e) =>
+      appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'release_fixer',
+        status: 'error',
+        detail: { candidate: candidate.slice(0, 12), error: (e instanceof Error ? e.message : String(e)).slice(0, 200) },
+      }).catch(() => {}),
+    );
+}
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on
  *  purpose: systemd-run refuses a second unit with the same name while one is

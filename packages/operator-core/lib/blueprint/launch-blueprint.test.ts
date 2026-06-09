@@ -28,6 +28,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       scan: 'scanner',
       implement: 'worker',
       'merge-resolution': 'merge-resolver',
+      // release-pipeline-resilience-2026-06-09 P-006: the gate-fixer's decider IS the release-fixer role.
+      'release-fix': 'release-fixer',
       audit: 'auditor',
       // autoloop-pot-operator-rebuild P0: the hive's decider IS the operator (D-001).
       hive: 'operator',

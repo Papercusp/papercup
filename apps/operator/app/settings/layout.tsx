@@ -52,6 +52,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Keys & OAuth',
     links: [
       { href: '/settings/api-keys', label: 'Keys & OAuth', keywords: ['credentials', 'keys', 'oauth', 'login', 'sign in', 'claude', 'chatgpt', 'anthropic', 'openai', 'github', 'google', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
+      { href: '/settings/deploy-accounts', label: 'Deploy accounts', keywords: ['deploy', 'deployment', 'accounts', 'credentials', 'claude', 'oauth', 'setup-token', 'remote frame', 'per-machine', 'pool', 'rate limit'] },
     ],
   },
   {

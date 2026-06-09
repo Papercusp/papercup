@@ -72,6 +72,10 @@ export default defineTool({
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
   },
   requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
+  // Cross-workspace store (see memory:search) — handler rides getMemoryBackend /
+  // getOrgPg, never ctx.tx. crossWorkspace:true lets an UNSCOPED superuser (psu)
+  // session write instead of failing `workspace_required`.
+  crossWorkspace: true,
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 100 } },
   args: z.object({
@@ -81,6 +85,8 @@ export default defineTool({
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Omit for a personal (per-user) fact.'),
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
+    workspace: z.string().optional()
+      .describe('Superuser-only: from an UNSCOPED session, tag the write under THIS workspace (the dispatch pins ctx.workspaceId → metadata.workspace_id). Scoped/power-user sessions ignore it.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();

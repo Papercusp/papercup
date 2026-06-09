@@ -5,7 +5,9 @@
  *   cd packages/operator-core && npx vitest run lib/agent-tools/memory/search.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { toWireRow } from './search';
+import memorySearch from './search';
 import type { MemoryEntry } from '../../memory/backend';
 
 const entry = (over: Partial<MemoryEntry> = {}): MemoryEntry => ({
@@ -55,5 +57,27 @@ describe('toWireRow', () => {
 
   it('preserves a score of 0 (not dropped as falsy)', () => {
     expect(toWireRow(entry({ score: 0 })).score).toBe(0);
+  });
+});
+
+// Regression: memory:search was unreachable from a default (unscoped) psu
+// session — the projected legacy gate threw `workspace_required` because the
+// host synthesizes no tx for workspaceId '*'. The store is cross-workspace by
+// design, so the fix is crossWorkspace:true (admin handle + synth principal) +
+// an optional per-call `workspace` arg (EI-30 superuser scoping). This block
+// runs the REAL defineTool (principal-gated path), so it also asserts that
+// definePrincipalGatedTool THREADS crossWorkspace — drop the threading and
+// `memorySearch.crossWorkspace` goes undefined and these fail.
+describe('memory:search — psu reachability (crossWorkspace + workspace arg)', () => {
+  it('is crossWorkspace:true so an unscoped superuser session gets the admin handle', () => {
+    expect(memorySearch.crossWorkspace).toBe(true);
+  });
+
+  it('accepts an optional per-call `workspace` arg, and works without it', () => {
+    const schema = memorySearch.args as z.ZodTypeAny;
+    expect(schema.safeParse({ query: 'x' }).success).toBe(true);
+    const withWs = schema.safeParse({ query: 'x', workspace: 'ws-a' });
+    expect(withWs.success).toBe(true);
+    if (withWs.success) expect((withWs.data as { workspace?: string }).workspace).toBe('ws-a');
   });
 });

@@ -197,6 +197,40 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     expect(Number(scores)).toBe(2);
   });
 
+  it('D-005: re-running the SAME instance + run ids is idempotent (no duplicate-PK crash, scores overwritten)', async () => {
+    // Regression for the gen-0 baseline crash: instance_id and run_id are DETERMINISTIC
+    // (`gen0-<sha>-<case>-r<repeat>`), so a re-run at the same commit reuses every id.
+    // upsertInstance/startRun/recordScore must be idempotent (D-005) — the prior store did a
+    // plain INSERT (+ a mis-targeted instance ON CONFLICT) and threw
+    // `duplicate key … beekeeper_instances_pkey`. NOTE: no TRUNCATE here — that is the whole
+    // point; the other tests truncate in beforeEach, which is why this never got caught.
+    const cases = [caseOf('find-the-flaw', 'idem-a'), caseOf('build-spec', 'idem-b')];
+    const config: BeekeeperConfig = {
+      instanceSpec: { manifest: { instanceId: 'inst-idem', workspaceId: 'default', codeSha: 'sha-idem', createdAt: new Date() }, instanceUrl: 'mock://x' },
+      corpus: cases, repeats: 1, rubric: RUBRIC, maxDistillChars: 2000,
+    };
+    const mkDeps = () => makeDeps(sql, {
+      capturedMetrics: [],
+      signalsFor: () => ({ workItemStatus: 'done', escalated: false, inputTokens: 10, outputTokens: 10 }),
+    });
+
+    const first = await runBeekeeperBattery(config, mkDeps());
+    expect(first.passedCases).toBe(2);
+
+    // Re-run the identical config — must NOT throw on any duplicate key.
+    const second = await runBeekeeperBattery(config, mkDeps());
+    expect(second.passedCases).toBe(2);
+    expect(second.outcomes.filter((o) => o.status === 'errored').length).toBe(0);
+
+    // Idempotent: still exactly one instance, N runs, N scores — re-run overwrote, didn't append.
+    const [{ insts }] = await sql<{ insts: string }[]>`SELECT count(*)::text AS insts FROM harness_shared.beekeeper_instances`;
+    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
+    const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.beekeeper_scores`;
+    expect(Number(insts)).toBe(1);
+    expect(Number(runs)).toBe(2);
+    expect(Number(scores)).toBe(2);
+  });
+
   it('repeats > 1 produce one scored run per (case × repeat) — noise calibration works (D-012)', async () => {
     // newRunId keys each run by (caseId, repeat), so the same case run twice
     // produces two distinct runs that both score — the noise-calibration repeats

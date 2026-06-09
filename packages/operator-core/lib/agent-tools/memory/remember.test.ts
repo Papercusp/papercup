@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { z } from 'zod';
 
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
@@ -330,5 +331,23 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
     );
     await new Promise((r) => setImmediate(r));
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+// Regression: memory:remember (like memory:search) must be reachable from a
+// default unscoped psu session. crossWorkspace:true gives it the admin handle +
+// a synthesized principal instead of `workspace_required`; the optional
+// `workspace` arg lets an unscoped superuser tag the write's provenance.
+describe('memory:remember — psu reachability (crossWorkspace + workspace arg)', () => {
+  it('declares crossWorkspace:true (unscoped superuser write path)', () => {
+    expect((remember as { crossWorkspace?: boolean }).crossWorkspace).toBe(true);
+  });
+
+  it('accepts an optional per-call `workspace` arg', () => {
+    const schema = remember.args as z.ZodTypeAny;
+    expect(schema.safeParse({ content: 'x', kind: 'preference' }).success).toBe(true);
+    const withWs = schema.safeParse({ content: 'x', kind: 'preference', workspace: 'ws-a' });
+    expect(withWs.success).toBe(true);
+    if (withWs.success) expect((withWs.data as { workspace?: string }).workspace).toBe('ws-a');
   });
 });

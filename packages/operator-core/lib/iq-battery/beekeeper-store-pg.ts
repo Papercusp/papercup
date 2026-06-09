@@ -14,6 +14,11 @@ export class BeekeeperStorePg implements BeekeeperStore {
   constructor(private sql: postgres.Sql) {}
 
   async upsertInstance(manifest: InstanceManifest): Promise<void> {
+    // Idempotent re-run (D-005): instance_id is deterministic (`gen0-<sha>-<workspace>`),
+    // so a re-run at the same commit MUST be a no-op, not a crash. Conflict on the PK
+    // (instance_id) — NOT the UNIQUE (workspace_id, code_sha, genome_id), whose NULL
+    // genome_id makes its rows distinct (NULLs never match in a UNIQUE constraint), so
+    // that target never fired and the INSERT hit the instance_id PK instead.
     await this.sql`
       INSERT INTO harness_shared.beekeeper_instances
         (instance_id, workspace_id, code_sha, genome_id, memory_snapshot_id, battery_slice_id)
@@ -21,7 +26,7 @@ export class BeekeeperStorePg implements BeekeeperStore {
         (${manifest.instanceId}, ${manifest.workspaceId}, ${manifest.codeSha},
          ${manifest.genomeId || null}, ${manifest.memorySnapshotId || null},
          ${manifest.batterySliceId || null})
-      ON CONFLICT (workspace_id, code_sha, genome_id) DO NOTHING
+      ON CONFLICT (instance_id) DO NOTHING
     `;
   }
 
@@ -39,11 +44,25 @@ export class BeekeeperStorePg implements BeekeeperStore {
     caseVariant: string;
     caseTitle: string;
   }): Promise<void> {
+    // Idempotent re-run (D-005): run_id is deterministic per (case, repeat). A re-run
+    // RESETS the row to a fresh attempt — clear the terminal fields finishRun will repopulate —
+    // rather than colliding on the run_id PK.
     await this.sql`
       INSERT INTO harness_shared.beekeeper_runs
         (run_id, instance_id, case_id, case_variant, case_title)
       VALUES
         (${r.runId}, ${r.instanceId}, ${r.caseId}, ${r.caseVariant}, ${r.caseTitle})
+      ON CONFLICT (run_id) DO UPDATE SET
+        instance_id = EXCLUDED.instance_id,
+        case_id = EXCLUDED.case_id,
+        case_variant = EXCLUDED.case_variant,
+        case_title = EXCLUDED.case_title,
+        started_at = now(),
+        finished_at = NULL,
+        terminal_state = NULL,
+        deterministic_signals = NULL,
+        trace_ref = NULL,
+        elapsed_ms = NULL
     `;
   }
 
@@ -64,6 +83,8 @@ export class BeekeeperStorePg implements BeekeeperStore {
   }
 
   async recordScore(runId: string, score: GymScore, metrics: IQBatteryMetrics): Promise<void> {
+    // Idempotent re-run (D-005): the score PK is (run_id, rubric_hash). Re-judging the same
+    // run under the same rubric OVERWRITES the prior score rather than colliding on the PK.
     await this.sql`
       INSERT INTO harness_shared.beekeeper_scores
         (run_id, judge_model, rubric_hash, judge_temp, weights,
@@ -77,6 +98,23 @@ export class BeekeeperStorePg implements BeekeeperStore {
          ${metrics.firstAttemptPass},
          ${metrics.recurrence}, ${metrics.escalation}, ${metrics.recallHit},
          ${score.d1}, ${score.d2}, ${score.d3}, ${score.composite}, ${score.rationale || null})
+      ON CONFLICT (run_id, rubric_hash) DO UPDATE SET
+        judge_model = EXCLUDED.judge_model,
+        judge_temp = EXCLUDED.judge_temp,
+        weights = EXCLUDED.weights,
+        success = EXCLUDED.success,
+        tokens_per_task = EXCLUDED.tokens_per_task,
+        time_to_green_secs = EXCLUDED.time_to_green_secs,
+        first_attempt_pass = EXCLUDED.first_attempt_pass,
+        recurrence = EXCLUDED.recurrence,
+        escalation = EXCLUDED.escalation,
+        recall_hit = EXCLUDED.recall_hit,
+        d1 = EXCLUDED.d1,
+        d2 = EXCLUDED.d2,
+        d3 = EXCLUDED.d3,
+        composite = EXCLUDED.composite,
+        rationale = EXCLUDED.rationale,
+        scored_at = now()
     `;
   }
 }

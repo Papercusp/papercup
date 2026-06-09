@@ -42,6 +42,7 @@ import { Route as SettingsOmpIntegrationRouteImport } from './routes/settings/om
 import { Route as SettingsOmpRouteImport } from './routes/settings/omp'
 import { Route as SettingsMobileRouteImport } from './routes/settings/mobile'
 import { Route as SettingsMeridianRouteImport } from './routes/settings/meridian'
+import { Route as SettingsDeployAccountsRouteImport } from './routes/settings/deploy-accounts'
 import { Route as SettingsBackupsRouteImport } from './routes/settings/backups'
 import { Route as SettingsApiKeysRouteImport } from './routes/settings/api-keys'
 import { Route as SettingsAgentRouteImport } from './routes/settings/agent'
@@ -69,7 +70,6 @@ import { Route as AdminPlansRouteImport } from './routes/admin/plans'
 import { Route as AdminGitRouteImport } from './routes/admin/git'
 import { Route as AdminFeaturesRouteImport } from './routes/admin/features'
 import { Route as AdminDogfoodSubstrateRouteImport } from './routes/admin/dogfood-substrate'
-import { Route as AdminDeployAccountsRouteImport } from './routes/admin/deploy-accounts'
 import { Route as AdminDbosRouteImport } from './routes/admin/dbos'
 import { Route as AdminCupboardModerationRouteImport } from './routes/admin/cupboard-moderation'
 import { Route as AdminCoordinationRouteImport } from './routes/admin/coordination'
@@ -252,6 +252,11 @@ const SettingsMeridianRoute = SettingsMeridianRouteImport.update({
   path: '/meridian',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsDeployAccountsRoute = SettingsDeployAccountsRouteImport.update({
+  id: '/deploy-accounts',
+  path: '/deploy-accounts',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsBackupsRoute = SettingsBackupsRouteImport.update({
   id: '/backups',
   path: '/backups',
@@ -387,11 +392,6 @@ const AdminDogfoodSubstrateRoute = AdminDogfoodSubstrateRouteImport.update({
   path: '/admin/dogfood-substrate',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AdminDeployAccountsRoute = AdminDeployAccountsRouteImport.update({
-  id: '/admin/deploy-accounts',
-  path: '/admin/deploy-accounts',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AdminDbosRoute = AdminDbosRouteImport.update({
   id: '/admin/dbos',
   path: '/admin/dbos',
@@ -493,7 +493,6 @@ export interface FileRoutesByFullPath {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
-  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -521,6 +520,7 @@ export interface FileRoutesByFullPath {
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
+  '/settings/deploy-accounts': typeof SettingsDeployAccountsRoute
   '/settings/meridian': typeof SettingsMeridianRoute
   '/settings/mobile': typeof SettingsMobileRoute
   '/settings/omp': typeof SettingsOmpRoute
@@ -571,7 +571,6 @@ export interface FileRoutesByTo {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
-  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -599,6 +598,7 @@ export interface FileRoutesByTo {
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
+  '/settings/deploy-accounts': typeof SettingsDeployAccountsRoute
   '/settings/meridian': typeof SettingsMeridianRoute
   '/settings/mobile': typeof SettingsMobileRoute
   '/settings/omp': typeof SettingsOmpRoute
@@ -651,7 +651,6 @@ export interface FileRoutesById {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
-  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -679,6 +678,7 @@ export interface FileRoutesById {
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
+  '/settings/deploy-accounts': typeof SettingsDeployAccountsRoute
   '/settings/meridian': typeof SettingsMeridianRoute
   '/settings/mobile': typeof SettingsMobileRoute
   '/settings/omp': typeof SettingsOmpRoute
@@ -732,7 +732,6 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
-    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -760,6 +759,7 @@ export interface FileRouteTypes {
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
+    | '/settings/deploy-accounts'
     | '/settings/meridian'
     | '/settings/mobile'
     | '/settings/omp'
@@ -810,7 +810,6 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
-    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -838,6 +837,7 @@ export interface FileRouteTypes {
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
+    | '/settings/deploy-accounts'
     | '/settings/meridian'
     | '/settings/mobile'
     | '/settings/omp'
@@ -889,7 +889,6 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
-    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -917,6 +916,7 @@ export interface FileRouteTypes {
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
+    | '/settings/deploy-accounts'
     | '/settings/meridian'
     | '/settings/mobile'
     | '/settings/omp'
@@ -969,7 +969,6 @@ export interface RootRouteChildren {
   AdminCoordinationRoute: typeof AdminCoordinationRoute
   AdminCupboardModerationRoute: typeof AdminCupboardModerationRoute
   AdminDbosRoute: typeof AdminDbosRoute
-  AdminDeployAccountsRoute: typeof AdminDeployAccountsRoute
   AdminDogfoodSubstrateRoute: typeof AdminDogfoodSubstrateRoute
   AdminFeaturesRoute: typeof AdminFeaturesRoute
   AdminGitRoute: typeof AdminGitRoute
@@ -1238,6 +1237,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsMeridianRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/deploy-accounts': {
+      id: '/settings/deploy-accounts'
+      path: '/deploy-accounts'
+      fullPath: '/settings/deploy-accounts'
+      preLoaderRoute: typeof SettingsDeployAccountsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/backups': {
       id: '/settings/backups'
       path: '/backups'
@@ -1427,13 +1433,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminDogfoodSubstrateRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/admin/deploy-accounts': {
-      id: '/admin/deploy-accounts'
-      path: '/admin/deploy-accounts'
-      fullPath: '/admin/deploy-accounts'
-      preLoaderRoute: typeof AdminDeployAccountsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/admin/dbos': {
       id: '/admin/dbos'
       path: '/admin/dbos'
@@ -1571,6 +1570,7 @@ interface SettingsRouteChildren {
   SettingsAgentRoute: typeof SettingsAgentRoute
   SettingsApiKeysRoute: typeof SettingsApiKeysRoute
   SettingsBackupsRoute: typeof SettingsBackupsRoute
+  SettingsDeployAccountsRoute: typeof SettingsDeployAccountsRoute
   SettingsMeridianRoute: typeof SettingsMeridianRoute
   SettingsMobileRoute: typeof SettingsMobileRoute
   SettingsOmpRoute: typeof SettingsOmpRoute
@@ -1595,6 +1595,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsAgentRoute: SettingsAgentRoute,
   SettingsApiKeysRoute: SettingsApiKeysRoute,
   SettingsBackupsRoute: SettingsBackupsRoute,
+  SettingsDeployAccountsRoute: SettingsDeployAccountsRoute,
   SettingsMeridianRoute: SettingsMeridianRoute,
   SettingsMobileRoute: SettingsMobileRoute,
   SettingsOmpRoute: SettingsOmpRoute,
@@ -1637,7 +1638,6 @@ const rootRouteChildren: RootRouteChildren = {
   AdminCoordinationRoute: AdminCoordinationRoute,
   AdminCupboardModerationRoute: AdminCupboardModerationRoute,
   AdminDbosRoute: AdminDbosRoute,
-  AdminDeployAccountsRoute: AdminDeployAccountsRoute,
   AdminDogfoodSubstrateRoute: AdminDogfoodSubstrateRoute,
   AdminFeaturesRoute: AdminFeaturesRoute,
   AdminGitRoute: AdminGitRoute,

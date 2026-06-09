@@ -59,6 +59,12 @@ export default defineTool({
       'Pair with memory:update / memory:forget when the user corrects something you recall.',
   },
   requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
+  // The memory store is cross-workspace by design (shared tables scoped by
+  // user-id / harness-slug, not by workspace; the handler reads getMemoryBackend,
+  // never ctx.tx). crossWorkspace:true hands an UNSCOPED superuser session ('*')
+  // the admin handle + a synthesized principal, so memory:search works from a psu
+  // session instead of failing `workspace_required`. (EI: memory unreachable from psu.)
+  crossWorkspace: true,
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 200 } },
   args: z.object({
@@ -66,6 +72,8 @@ export default defineTool({
     limit: z.number().int().min(1).max(20).optional(),
     harness_slug: z.string().optional()
       .describe('Scope the search to a single harness in addition to user memory. Omit to fan out across every harness in the workspace.'),
+    workspace: z.string().optional()
+      .describe('Superuser-only: from an UNSCOPED session, resolve harness fan-out within THIS workspace (the dispatch pins ctx.workspaceId to it). Scoped/power-user sessions ignore it. Omit for personal (user-scoped) recall.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();

@@ -1,16 +1,21 @@
+'use client';
+
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 
 /**
- * DeployAccountsClient — the "Deploy Accounts" admin surface. Registers a Claude subscription
- * account (a per-machine / remote-frame DEPLOY credential) by pasting a credential the owner mints
- * with claude-code's own login.
+ * Deploy accounts settings — the pool of Claude accounts used as per-machine /
+ * remote-frame DEPLOY credentials. Register one by pasting a credential the
+ * owner mints with claude-code's own login.
  *
  * Why paste-a-token (not an in-app OAuth redirect): claude.ai's authorize endpoint rejects a
  * hand-built URL (it needs claude-code's own client handshake), so the owner runs
  * `claude setup-token` — which does that handshake in their real browser — and pastes the result.
  * Accepts a `sk-ant-oat…` setup-token (→ token:) or a `.credentials.json` bundle (→ file:).
  * Never touches this box's ~/.claude. Backed by /api/admin/deploy-accounts{,/register,/remove}.
+ *
+ * Lives under /settings/deploy-accounts (moved here from the /admin tabs). The
+ * /settings layout supplies the chrome, so this page renders bare content.
  */
 interface AccountRow {
   id: string;
@@ -22,7 +27,7 @@ interface AccountRow {
   rate: { pausedUntil: number; penaltyCount: number };
 }
 
-export default function DeployAccountsClient() {
+export default function DeployAccountsPage() {
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(true);
