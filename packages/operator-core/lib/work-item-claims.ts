@@ -132,9 +132,25 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
   `;
   if (rows[0]) return { ok: true, claim: claimFromDb(rows[0]) };
   // Conflict update skipped → a LIVE claim held by another owner. Report it.
-  const held = await getClaim(opts.workspaceId, opts.harnessSlug, opts.workItemId);
-  if (held) return { ok: false, conflict: held };
-  // Lost a race (the holder released between INSERT and SELECT) — retry once.
+  // Use SELECT FOR UPDATE to lock the row during check to prevent concurrent claims
+  // on a freed item (race condition: two agents both get null from getClaim(), then both
+  // execute INSERT). The lock ensures only one agent can proceed if the row was just released.
+  const held = await sql<ClaimDbRow[]>`
+    SELECT workspace_id, harness_slug, work_item_id, hive_slug, claim_id, owner,
+           owner_label, holder_pubkey, intent, ttl_sec, acquired_ts, expires_ts,
+           last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
+      FROM harness_shared.work_item_claims
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+       AND work_item_id = ${opts.workItemId}
+      FOR UPDATE
+  `;
+  if (held[0]) {
+    const claim = claimFromDb(held[0]);
+    return { ok: false, conflict: claim };
+  }
+  // Row doesn't exist (or is about to be inserted by another concurrent transaction that
+  // locked it). Attempt to insert atomically. If another agent already inserted while we
+  // were acquiring the lock, we'll get 0 rows back and fall through to the final check.
   const retry = await sql<ClaimDbRow[]>`
     INSERT INTO harness_shared.work_item_claims
       (workspace_id, harness_slug, work_item_id, hive_slug, owner, owner_label, holder_pubkey,
