@@ -63,6 +63,24 @@ export interface CaptureImprovementInput {
    * mode: a RESOLVED duplicate means the problem regressed, so re-file it).
    */
   dedupScope?: 'all' | 'open';
+  /**
+   * Stable watchdog signal identity (`'<source>:<key>'` — watchdog-audit
+   * P-004 / D-001). Stamped into `payload.watchdogKey` so cross-tick dedup is an
+   * exact indexed lookup instead of a fuzzy title match. Also sharpens the title
+   * net here: a candidate carrying a DIFFERENT watchdogKey is a different signal
+   * and never declines this capture (kills the subset-title false-dedup edge —
+   * a nested-path red-test title token-subsetting another).
+   */
+  watchdogKey?: string;
+  /**
+   * Newest evidence timestamp (ISO) backing this capture (watchdog-audit
+   * P-005 / D-002). Under `dedupScope:'open'`, a RESOLVED duplicate normally
+   * re-files (regression semantics) — but only when the evidence post-dates the
+   * resolution. A resolved dup whose `updatedAt` >= `evidenceAt` declines the
+   * capture as 'stale-evidence' (the collector's lookback window still contains
+   * pre-fix rows; that is not a regression).
+   */
+  evidenceAt?: string;
   createdBy?: string;
   /**
    * Source role that filed this improvement (P-010 source-tag): 'Queen', 'bee', 'system',
@@ -83,7 +101,7 @@ export interface PossibleDuplicate {
 export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
-  reason?: 'likely-duplicate' | 'check-only';
+  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence';
   kind?: ImprovementKind;
   issue?: EngineerIssue;
   topics?: string[];
@@ -149,16 +167,59 @@ export async function captureImprovement(
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
-  const blockingDuplicates =
-    input.dedupScope === 'open' ? possibleDuplicates.filter((d) => d.state === 'open') : possibleDuplicates;
+  // Key-aware title net (watchdog-audit P-004 / D-001): a candidate carrying a
+  // DIFFERENT watchdogKey is a different signal — nested-path red-test titles
+  // token-subset each other and used to false-decline. A candidate WITHOUT a key
+  // stays in the net (legacy items + agent captures).
+  const candidateById = new Map(candidates.map((i) => [i.id, i]));
+  const candidateKeyOf = (id: string): string | null => {
+    const p = candidateById.get(id)?.payload;
+    const k = p && typeof p === 'object' ? (p as Record<string, unknown>).watchdogKey : undefined;
+    return typeof k === 'string' ? k : null;
+  };
+  const compatible = input.watchdogKey
+    ? possibleDuplicates.filter((d) => {
+        const ck = candidateKeyOf(d.id);
+        return ck == null || ck === input.watchdogKey;
+      })
+    : possibleDuplicates;
+
+  let blockingDuplicates: PossibleDuplicate[];
+  let declineReason: 'likely-duplicate' | 'stale-evidence' = 'likely-duplicate';
+  let declineHint =
+    'This looks already filed — comment on / claim the existing item, or re-run with force:true if it is genuinely distinct.';
+  if (input.dedupScope === 'open') {
+    blockingDuplicates = compatible.filter((d) => d.state === 'open');
+    if (blockingDuplicates.length === 0 && input.evidenceAt) {
+      // P-005 / D-002: a RESOLVED dup re-files only on evidence NEWER than the
+      // resolution. Collector lookback windows still contain pre-fix rows; when
+      // the newest evidence pre-dates the dup's resolution, decline — that is
+      // stale evidence, not a regression. Unparseable timestamps fail open
+      // (re-file): a phantom re-file beats a suppressed real regression.
+      const evidenceMs = Date.parse(input.evidenceAt);
+      const staleResolved = compatible.filter((d) => {
+        if (d.state === 'open') return false;
+        const resolvedMs = Date.parse(candidateById.get(d.id)?.updatedAt ?? '');
+        return Number.isFinite(evidenceMs) && Number.isFinite(resolvedMs) && resolvedMs >= evidenceMs;
+      });
+      if (staleResolved.length > 0) {
+        blockingDuplicates = staleResolved;
+        declineReason = 'stale-evidence';
+        declineHint =
+          'A resolved duplicate exists and the newest evidence pre-dates its resolution — stale lookback-window evidence, not a regression. Re-file with force:true only if the problem genuinely recurred.';
+      }
+    }
+  } else {
+    blockingDuplicates = compatible;
+  }
   if (blockingDuplicates.length > 0 && !input.force) {
     return {
       ok: true,
       created: false,
-      reason: 'likely-duplicate',
+      reason: declineReason,
       possibleDuplicates,
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
-      hint: 'This looks already filed — comment on / claim the existing item, or re-run with force:true if it is genuinely distinct.',
+      hint: declineHint,
     };
   }
 
@@ -173,6 +234,9 @@ export async function captureImprovement(
   const payload: Record<string, unknown> = {};
   if (input.kind === 'feature') payload.improvementKind = 'feature';
   if (input.paths?.length) payload.paths = input.paths;
+  // Stable signal identity (watchdog-audit P-004 / D-001): the indexed cross-tick
+  // dedup key the watchdog pre-filters against (findIssuesByWatchdogKeys).
+  if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
   // P-010 source-tag: track who filed this improvement for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
 

@@ -510,6 +510,15 @@ export async function findTaskBySessionId(agentSessionId: string): Promise<Engin
   return rows[0] ? toIssue(rows[0]) : null;
 }
 
+/**
+ * Full-text search over the issue store. Scoping note (watchdog-audit-2026-06-09
+ * P-013): the DEFAULT_COORD_WORKSPACE filter here is BY DESIGN, not a bug — every
+ * write path (createIssue) stores into that single coord workspace (see the
+ * capability-stores comment above: engineer_issues' workspace_id is a domain
+ * column; the coordination layer runs in the one coord workspace). Searching the
+ * same constant the writes use keeps dedup consistent. If the store ever becomes
+ * genuinely multi-workspace, the WRITE path must change first and this follows.
+ */
 export async function searchIssues(query: string, limit = 50): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
@@ -518,5 +527,24 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
        AND _search @@ websearch_to_tsquery('english', ${query})
      ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
      LIMIT ${Math.min(limit, 200)}`;
+  return rows.map(toIssue);
+}
+
+/**
+ * Watchdog-key dedup feed (watchdog-audit-2026-06-09 P-004 / D-001): every issue
+ * carrying one of the given `payload.watchdogKey` values — ONE indexed query
+ * (engineer_issues_watchdog_key_idx, migration 207). The improvement watchdog
+ * pre-filters its collected signals against this BEFORE planning captures, so a
+ * standing already-filed signal never consumes the per-tick capture budget.
+ */
+export async function findIssuesByWatchdogKeys(keys: string[]): Promise<EngineerIssue[]> {
+  if (keys.length === 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND payload ? 'watchdogKey'
+       AND payload->>'watchdogKey' = ANY(${keys}::text[])
+     ORDER BY updated_at DESC`;
   return rows.map(toIssue);
 }

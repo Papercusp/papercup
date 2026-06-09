@@ -221,12 +221,19 @@ pub fn chat_dock_kdl(
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     let brain_name = kdl_pane_name(&lex.lex("brain"), "brain");
     // P-003 (hive-agent-tabs): under HIVE_AGENT_TABS the Sentinel pane is a REAL
-    // psu/Claude TUI (operator role) — `psu --role operator` — replacing the
-    // `pui chat-pane` widget so it renders like the Queen. Flag-off keeps the
-    // chat-pane (which also drives the reactive stack + the pui tab surfaces;
-    // relocating those flag-on is the rest of the D-009 dock restructure).
+    // psu/Claude TUI (operator role), replacing the `pui chat-pane` widget so it
+    // renders like the Queen. It MUST be a FULLY-SCOPED, no-picker launch (owner
+    // ask 2026-06-09): `psu --no-picker --agent=claude --role=operator`.
+    //   - `--no-picker` → strict scripting launch, no interactive picker.
+    //   - `--agent=claude` → required by --no-picker; the Claude TUI backend.
+    //   - `--role=operator` → MUST use `=` (psu-launcher parses `--role=<v>`, NOT
+    //     space-separated — `--role operator` is silently dropped → role picker).
+    //   - workspace/harness/plan are omitted → psu falls back to the operator's
+    //     active-workspace defaults (selectionsFromArgs), which is the right scope.
+    // Flag-off keeps the chat-pane (which also drives the reactive stack + the pui
+    // tab surfaces; relocating those flag-on is the rest of the D-009 restructure).
     let operator_cmd_block = if hive_agent_tabs {
-        "command \"psu\"\n            args \"--role\" \"operator\""
+        "command \"psu\"\n            args \"--no-picker\" \"--agent=claude\" \"--role=operator\""
     } else {
         "command \"pui\"\n            args \"chat-pane\""
     };
@@ -528,7 +535,10 @@ mod tests {
         // psu/Claude TUI (`psu --role operator`), NOT the `pui chat-pane` widget,
         // so it renders like the Queen. Two psu commands now (Sentinel + brain).
         let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
-        assert!(on.contains("args \"--role\" \"operator\""));
+        // Fully-scoped, no-picker launch (owner ask): the role is auto-selected.
+        assert!(on.contains("args \"--no-picker\" \"--agent=claude\" \"--role=operator\""));
+        assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
+        assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
         assert_eq!(on.matches("command \"psu\"").count(), 2);
         assert_eq!(on.matches("command \"pui\"").count(), 0);
@@ -536,7 +546,7 @@ mod tests {
         // Flag OFF → unchanged: the pui chat-pane widget drives the dock.
         let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
         assert!(off.contains("args \"chat-pane\""));
-        assert!(!off.contains("args \"--role\" \"operator\""));
+        assert!(!off.contains("--role=operator"));
         assert_eq!(off.matches("command \"pui\"").count(), 1);
     }
 
