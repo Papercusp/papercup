@@ -1,14 +1,14 @@
 /**
- * pot:declare-wake — the Pot operator declares its own next wake before ending
- * a turn (autoloop-pot-operator-rebuild-2026-06-05 P0, D-002). REPLACE
+ * hive:declare-wake — the Hive operator declares its own next wake before ending
+ * a turn (autoloop-hive-operator-rebuild-2026-06-05 P0, D-002). REPLACE
  * semantics like coord:declare-intent: each call describes the WHOLE wake —
  * a time (`at` | `inSeconds`), event subscriptions (`events`), both, or
  * nothing (`mode:'none'`/all omitted). Omitted parts are cleared.
  *
- * The time wake is durable (a one-shot `pot-wake` routine row fired by the
- * DBOS routinesTick → system:blueprint-run → the pot launch blueprint); event
+ * The time wake is durable (a one-shot `hive-wake` routine row fired by the
+ * DBOS routinesTick → system:blueprint-run → the hive launch blueprint); event
  * wakes are persisted subscriptions projected into live event-reaction rules
- * that fire `pot:wake`. A wake floor clamps the time (≥ now+floor) so a
+ * that fire `hive:wake`. A wake floor clamps the time (≥ now+floor) so a
  * confused operator can't spin.
  */
 import { z } from 'zod';
@@ -34,18 +34,18 @@ const subscriptionSchema = z.object({
     .record(z.string(), z.unknown())
     .optional()
     .describe('Optional declarative condition (a @papercusp/rules DataCondition over {args,result,ctx}).'),
-  note: z.string().max(300).optional().describe('Why you subscribed — shown in pot:status.'),
+  note: z.string().max(300).optional().describe('Why you subscribed — shown in hive:status.'),
 });
 
 export default defineTool({
   name: 'hive:declare-wake',
   profile: 'engineer',
   description:
-    "Declare the Pot operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
+    "Declare the Hive operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire hive:wake when the subscribed tool-event matches.",
   guidance: {
-    when: 'You are the pot/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
-    notWhen: 'To fire the pot right now — that is pot:wake.',
-    chaining: 'pot:status to inspect the current declaration; pot:wake for an immediate manual fire.',
+    when: 'You are the hive/operator ending a turn — ALWAYS declare your next wake (a time, events, or explicitly none). Also when the user asks to schedule or re-schedule the operator.',
+    notWhen: 'To fire the hive right now — that is hive:wake.',
+    chaining: 'hive:status to inspect the current declaration; hive:wake for an immediate manual fire.',
   },
   capability: 'routines:write',
   requirePrincipal: false,
@@ -55,7 +55,7 @@ export default defineTool({
       at: z.string().datetime({ offset: true }).optional().describe('Absolute wake time (ISO 8601).'),
       inSeconds: z.number().positive().max(60 * 60 * 24 * 30).optional().describe('Relative wake time in seconds from now.'),
       events: z.array(subscriptionSchema).max(20).optional().describe('Event-wake subscriptions (replaces the current set; omit to clear).'),
-      mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual pot:wake."),
+      mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual hive:wake."),
       harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
       kickoff: z.string().max(2000).optional().describe('Kickoff text the woken operator reads (why this wake exists).'),
     })

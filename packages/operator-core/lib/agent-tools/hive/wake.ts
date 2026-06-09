@@ -1,7 +1,7 @@
 /**
- * pot:wake — fire the Pot operator NOW (autoloop-pot-operator-rebuild-2026-06-05
+ * hive:wake — fire the Hive operator NOW (autoloop-hive-operator-rebuild-2026-06-05
  * P0, D-002). The manual/user override and the event-wake target: event-reaction
- * rules registered by pot:declare-wake fire THIS tool, so the floor debounce
+ * rules registered by hive:declare-wake fire THIS tool, so the floor debounce
  * lives here — a burst of subscribed events collapses to one wake, and a wake
  * within the floor of the previous one is skipped (`force` overrides).
  */
@@ -23,11 +23,11 @@ export default defineTool({
   name: 'hive:wake',
   profile: 'engineer',
   description:
-    'Fire the Pot operator immediately (launches the pot blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
+    'Fire the Hive operator immediately (launches the hive blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
   guidance: {
     when: 'The user asks to wake/kick the operator now, or an event-wake rule fires (it targets this tool automatically).',
-    notWhen: 'To schedule a future wake — that is pot:declare-wake.',
-    chaining: 'pot:status to see the last/next wake; pot:declare-wake to schedule.',
+    notWhen: 'To schedule a future wake — that is hive:declare-wake.',
+    chaining: 'hive:status to see the last/next wake; hive:declare-wake to schedule.',
   },
   capability: 'routines:write',
   requirePrincipal: false,
@@ -49,7 +49,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the pot launch is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the hive launch is harness-scoped.',
             }),
           },
         ],

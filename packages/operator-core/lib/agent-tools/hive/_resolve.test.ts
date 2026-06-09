@@ -26,8 +26,8 @@ describe('isHiveProject', () => {
 
 describe('describeHive', () => {
   it('passes through slug/path, stamps kind, keeps the wake view', () => {
-    const d = describeHive({ slug: 'pot-home', path: '/p', harness_kind: 'hive' }, WAKE);
-    expect(d.slug).toBe('pot-home');
+    const d = describeHive({ slug: 'hive-home', path: '/p', harness_kind: 'hive' }, WAKE);
+    expect(d.slug).toBe('hive-home');
     expect(d.path).toBe('/p');
     expect(d.kind).toBe(HIVE_KIND);
     expect(d.wake).toBe(WAKE);

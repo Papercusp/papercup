@@ -1,6 +1,6 @@
 /**
- * pot:status — inspect the Pot's current wake declaration
- * (autoloop-pot-operator-rebuild-2026-06-05 P0). Read-only: the one-shot time
+ * hive:status — inspect the Hive's current wake declaration
+ * (autoloop-hive-operator-rebuild-2026-06-05 P0). Read-only: the one-shot time
  * wake (routine row), the persisted event subscriptions + their live rule ids,
  * the last fire, and the floor.
  */
@@ -21,10 +21,10 @@ export default defineTool({
   name: 'hive:status',
   profile: 'engineer',
   description:
-    "The Pot operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
+    "The Hive operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
   guidance: {
-    when: 'To see when/whether the operator will wake next, or to verify a pot:declare-wake landed.',
-    chaining: 'pot:declare-wake to change the declaration; pot:wake to fire now.',
+    when: 'To see when/whether the operator will wake next, or to verify a hive:declare-wake landed.',
+    chaining: 'hive:declare-wake to change the declaration; hive:wake to fire now.',
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -40,7 +40,7 @@ export default defineTool({
     const time = installSlug ? await getHiveTimeWake(sql, installSlug) : null;
     const state = await readHiveWakeState(workspaceId);
     const ruleIds = listReactionRules()
-      .filter((r) => r.id.startsWith(`pot-wake:${workspaceId}#`))
+      .filter((r) => r.id.startsWith(`hive-wake:${workspaceId}#`))
       .map((r) => r.id);
 
     return {

@@ -4,7 +4,7 @@
  *
  * Composes the SAME primitives `harness:create` uses (blueprint resolve+validate,
  * dir provision, registry, schema scaffold, blueprint.yaml, trigger
- * materialization) for the built-in `pot` (kind:'hive') blueprint — but with two
+ * materialization) for the built-in `hive` (kind:'hive') blueprint — but with two
  * hive-specific differences:
  *   1. it stamps `harness_kind: 'hive'` on the registry entry (harness:create
  *      never sets harness_kind, so resolveHive could not otherwise find it), and
@@ -12,7 +12,7 @@
  *
  * Transactional: each side effect pushes an undo onto a stack; a failure rolls
  * them back in reverse so a half-made hive (registered, no schema, dangling dir)
- * never lingers (D-005). The pot is a built-in blueprint with no external deps,
+ * never lingers (D-005). The hive is a built-in blueprint with no external deps,
  * so the cupboard dependency-validation gate in harness:create is intentionally
  * omitted here.
  */
@@ -26,7 +26,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
-import { POT_BLUEPRINT_ID, declarePotTimeWake, recordPotWake } from '../../pot/wake';
+import { HIVE_BLUEPRINT_ID, declareHiveTimeWake, recordHiveWake } from '../../hive/wake';
 import { HIVE_KIND } from './_resolve';
 
 export interface CreateHiveOpts {
@@ -36,7 +36,7 @@ export interface CreateHiveOpts {
   parentDir?: string;
   deployment?: DeploymentConfig;
   /** Wake the Queen `wakeInSeconds` from now (0 = immediately). Omit ⇒ create
-   *  idle (no wake declared; wake later via pot:wake / pot:declare-wake). */
+   *  idle (no wake declared; wake later via hive:wake / hive:declare-wake). */
   wakeInSeconds?: number;
   kickoff?: string;
 }
@@ -58,15 +58,15 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
     return { ok: false, error: 'slug_exists', message: `A harness '${opts.slug}' already exists in this workspace.` };
   }
 
-  // Resolve + validate the built-in pot (kind:'hive') blueprint.
+  // Resolve + validate the built-in hive (kind:'hive') blueprint.
   const resolver = operatorResolveExtends({ localDirs: [] });
-  const childObj: Record<string, unknown> = { id: opts.slug, extends: POT_BLUEPRINT_ID };
+  const childObj: Record<string, unknown> = { id: opts.slug, extends: HIVE_BLUEPRINT_ID };
   const validation = resolveAndValidate(childObj, resolver);
   if (validation.parseError || !validation.ok || !validation.blueprint) {
     return {
       ok: false,
       error: 'blueprint_invalid',
-      message: validation.parseError ?? 'the pot blueprint failed to resolve/validate',
+      message: validation.parseError ?? 'the hive blueprint failed to resolve/validate',
     };
   }
   const requiresRepo = validation.blueprint.knobs.requiresRepo !== false;
@@ -90,7 +90,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
   };
 
   try {
-    // 1. Provision the dir (pot is normally repo-less; honor the blueprint knob).
+    // 1. Provision the dir (hive is normally repo-less; honor the blueprint knob).
     let path: string;
     if (requiresRepo) {
       const { initLocalHarnessDir } = await import('../../harness/init-local-dir');
@@ -153,12 +153,12 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       await dropHarnessSchema(opts.slug).catch(() => {});
     });
 
-    // 4. Write the git-canonical blueprint file (the pot blueprint).
+    // 4. Write the git-canonical blueprint file (the hive blueprint).
     const bpDir = join(path, '.papercusp');
     mkdirSync(bpDir, { recursive: true });
     writeFileSync(join(bpDir, 'blueprint.yaml'), stringifyYaml(childObj, { lineWidth: 100 }), 'utf8');
 
-    // 5. Materialize the pot blueprint's triggers (best-effort, like harness:create).
+    // 5. Materialize the hive blueprint's triggers (best-effort, like harness:create).
     try {
       const { materializeBlueprintTriggers } = await import('../../blueprint/materialize-triggers');
       await materializeBlueprintTriggers(opts.slug, validation.blueprint);
@@ -174,11 +174,11 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
         opts.kickoff ??
         `Hive '${opts.slug}' created. You are the Queen/operator in charge; survey the fleet and figure out what to do.`;
       if (opts.wakeInSeconds <= 0) {
-        await fireLaunchBlueprint(POT_BLUEPRINT_ID, { installSlug: opts.slug, workspaceId: ws, kickoff });
-        await recordPotWake(ws);
+        await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug: opts.slug, workspaceId: ws, kickoff });
+        await recordHiveWake(ws);
       } else {
         const { sql } = getOrgPg();
-        await declarePotTimeWake(sql, {
+        await declareHiveTimeWake(sql, {
           workspaceId: ws,
           installSlug: opts.slug,
           at: new Date(Date.now() + opts.wakeInSeconds * 1000),

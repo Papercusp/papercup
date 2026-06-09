@@ -1,14 +1,14 @@
 /**
- * Handler-level tests for the three Pot self-declared-wake tools
- * (autoloop-pot-operator-rebuild-2026-06-05 P0, D-002): pot:declare-wake,
- * pot:wake, pot:status. The wake CORE fns (clamp/debounce/subscription
+ * Handler-level tests for the three Hive self-declared-wake tools
+ * (autoloop-hive-operator-rebuild-2026-06-05 P0, D-002): hive:declare-wake,
+ * hive:wake, hive:status. The wake CORE fns (clamp/debounce/subscription
  * projection) are unit-covered in ../../hive/wake.test.ts and round-tripped
- * against real PG in ../../pot/pot-wake-pg.integration.test.ts; THIS file pins
+ * against real PG in ../../hive/hive-wake-pg.integration.test.ts; THIS file pins
  * the tool-handler ORCHESTRATION the dispatcher runs — slug resolution + the
  * no_home_harness guard, the time/event/none `mode` computation, the
  * fire-vs-floor-skip branch, and the read-only status assembly.
  *
- * The PG-touching pot fns + the blueprint launch are mocked at their module
+ * The PG-touching hive fns + the blueprint launch are mocked at their module
  * seams; the pure floor/slug helpers (hiveWakeFloorSec / resolveHiveHomeSlug /
  * withinWakeFloor) run REAL.
  */
@@ -197,7 +197,7 @@ describe('hive:wake', () => {
     expect(fireLaunchBlueprint).not.toHaveBeenCalled();
   });
 
-  it('outside the floor → fires the pot launch + records the wake', async () => {
+  it('outside the floor → fires the hive launch + records the wake', async () => {
     readHiveWakeState.mockResolvedValue({ subscriptions: [] }); // no prior wake
     const res = parse(await tool.handler({ reason: 'prod fire', source: 'user', harness: 'papercup' }, ctx()));
     expect(res).toMatchObject({ ok: true, fired: true, role: 'operator', harness: 'papercup' });
@@ -206,7 +206,7 @@ describe('hive:wake', () => {
       string,
       { installSlug: string; workspaceId: string; kickoff: string },
     ];
-    expect(bp).toBe('pot');
+    expect(bp).toBe('hive');
     expect(input.installSlug).toBe('papercup');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.kickoff).toContain('prod fire');
@@ -244,8 +244,8 @@ describe('hive:status', () => {
       declaredAt,
     });
     listReactionRules.mockReturnValue([
-      { id: 'pot-wake:ws-test#0' },
-      { id: 'pot-wake:other-ws#0' }, // another workspace — excluded
+      { id: 'hive-wake:ws-test#0' },
+      { id: 'hive-wake:other-ws#0' }, // another workspace — excluded
       { id: 'some:unrelated-rule' },
     ]);
 
@@ -254,7 +254,7 @@ describe('hive:status', () => {
     expect(res.harness).toBe('papercup');
     expect(res.time).toEqual({ active: true, nextFireAt: nextFire.toISOString(), lastFiredAt: null });
     expect(res.subscriptions).toEqual([{ on: 'coord:escalate', note: 'x' }]);
-    expect(res.liveRuleIds).toEqual(['pot-wake:ws-test#0']);
+    expect(res.liveRuleIds).toEqual(['hive-wake:ws-test#0']);
     expect(res.lastWakeAt).toBe(new Date(lastWakeAt).toISOString());
     expect(res.declaredAt).toBe(new Date(declaredAt).toISOString());
     expect(res.floorSec).toBe(60);

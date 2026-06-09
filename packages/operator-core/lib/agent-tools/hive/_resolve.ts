@@ -3,8 +3,8 @@
  * (hive-tool-namespace-2026-06-08 P-001, D-001/D-003; P-012 landed).
  *
  * A hive is the registry-enumerated unit — a registered project whose
- * `harness_kind === 'hive'` (the built-in `pot` blueprint, POT_BLUEPRINT_ID),
- * plus its per-home-slug `pot-wake` routine + (workspace-scoped) event
+ * `harness_kind === 'hive'` (the built-in `hive` blueprint, HIVE_BLUEPRINT_ID),
+ * plus its per-home-slug `hive-wake` routine + (workspace-scoped) event
  * subscriptions, plus a live Queen woken via the parentless system path —
  * keyed to the FIRST-CLASS Hive entity for identity. That entity shipped:
  * `harness_shared.hives` holds each hive's stable Ed25519 keypair
@@ -28,10 +28,10 @@ import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
-  getPotTimeWake,
-  readPotWakeState,
-  type PotEventSubscription,
-} from '../../pot/wake';
+  getHiveTimeWake,
+  readHiveWakeState,
+  type HiveEventSubscription,
+} from '../../hive/wake';
 import { resolveHivePubkey } from '../../hive-identity';
 import { getHiveByPubkey } from '../../hive-store';
 
@@ -39,14 +39,14 @@ import { getHiveByPubkey } from '../../hive-store';
 export const HIVE_KIND = 'hive';
 
 /** The Queen's declared next/last wake for a hive. The time wake is per-home-slug
- *  (a `pot-wake` routine row); the event subscriptions + lastWakeAt are
- *  workspace-scoped today (`pot_wake` state is one row per workspace) — a known
+ *  (a `hive-wake` routine row); the event subscriptions + lastWakeAt are
+ *  workspace-scoped today (`hive_wake` state is one row per workspace) — a known
  *  limitation the first-class Hive entity fixes (then they become per-hive). */
 export interface HiveWakeView {
   active: boolean;
   nextFireAt: string | null;
   lastFiredAt: string | null;
-  subscriptions: PotEventSubscription[];
+  subscriptions: HiveEventSubscription[];
   lastWakeAt: string | null;
 }
 
@@ -92,8 +92,8 @@ async function buildWakeView(
   homeSlug: string,
   workspaceId: string,
 ): Promise<HiveWakeView> {
-  const time = await getPotTimeWake(sql, homeSlug);
-  const state = await readPotWakeState(workspaceId);
+  const time = await getHiveTimeWake(sql, homeSlug);
+  const state = await readHiveWakeState(workspaceId);
   return {
     active: time?.active ?? false,
     nextFireAt: time?.nextFireAt ? new Date(time.nextFireAt).toISOString() : null,

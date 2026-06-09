@@ -42,7 +42,7 @@ beforeEach(() => {
     resolveAndValidate: () => ({
       ok: true,
       parseError: null,
-      blueprint: { id: 'pot', version: '0', knobs: { requiresRepo: false }, dependencies: {} },
+      blueprint: { id: 'hive', version: '0', knobs: { requiresRepo: false }, dependencies: {} },
     }),
   }));
   // The first-class Hive identity mint (PG + keychain) is mocked — this test is
