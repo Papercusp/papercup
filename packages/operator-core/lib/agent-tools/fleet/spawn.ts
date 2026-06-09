@@ -33,7 +33,10 @@ export default defineTool({
   // coord:* / issues:* / improvements:capture), which inadvertently leaked this
   // placement tool to it via [...COORD_ROLES]. Filtering bee back out restores the
   // pre-bee allowlist and turns "only the brain spawns" from convention into a gate.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee'),
+  // Also exclude the sentinel: it WATCHES the fleet (fleet:assignments/tree), it
+  // does not PLACE agents — placement is the Queen's, the sentinel raises alarms
+  // (unify-launch-mechanics D-004). Same carve-out as bee.
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
   args: z.object({
     harness: z.string().min(1).max(80).optional()
       .describe('Registry slug of the harness to spawn into. Optional only when exactly one harness is registered.'),

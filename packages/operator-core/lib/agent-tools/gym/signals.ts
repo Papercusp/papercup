@@ -32,7 +32,7 @@ export default defineTool({
   // D-002 (bee-capability-expansion-2026-06-08): gym signals are a Queen-only
   // optimization surface — the worker-bee (a COORD_ROLE since local-hive P-011) is
   // EXCLUDED so [...COORD_ROLES] doesn't leak it. Other coord roles are unchanged.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
   args: z.object({
     signals: z.array(z.string()).min(1).describe("Signal names from the target blueprint's gym.signals"),
     preTests: z.array(testResult).optional().describe("The repo's own tests run BEFORE the change"),

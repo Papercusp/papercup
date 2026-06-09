@@ -53,6 +53,42 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('search:read')).toBe(true);
   });
 
+  // ── sentinel — the fleet watcher (unify-launch-mechanics-2026-06-09 D-004) ──
+  describe('sentinel — the read-mostly fleet watcher surface', () => {
+    test("sentinel's WATCH+ALARM contract is reachable: read caps + coord:write, AND fleet:assignments allowlists it", async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      // Reads it sweeps with.
+      expect(caps.has('coord:read')).toBe(true);
+      expect(caps.has('harness:read')).toBe(true);
+      expect(caps.has('work_items:read')).toBe(true);
+      expect(caps.has('activity:read')).toBe(true);
+      expect(caps.has('search:read')).toBe(true);
+      // The alarm channel: coord:write (coord:escalate/send).
+      expect(caps.has('coord:write')).toBe(true);
+      // The two-gate other half — the watcher tools must allowlist sentinel, else
+      // the read caps are INERT (the bee/scanner lesson).
+      const { default: assignments } = await import('../../../agent-tools/fleet/assignments.js');
+      expect(assignments.agentRoles).toContain('sentinel');
+      const { default: health } = await import('../../../agent-tools/harness/health.js');
+      expect(health.agentRoles).toContain('sentinel');
+    });
+
+    test('sentinel is READ-MOSTLY: no work/harness/plan/routine WRITE caps (watch, do not act)', async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'sentinel');
+      expect(caps.has('work_items:write')).toBe(false);
+      expect(caps.has('harness:write')).toBe(false);
+      expect(caps.has('plans:write')).toBe(false);
+      expect(caps.has('routines:write')).toBe(false);
+    });
+
+    test('sentinel is carved OUT of fleet:spawn (placement is the Queen’s, not the watcher’s)', async () => {
+      const { default: spawn } = await import('../../../agent-tools/fleet/spawn.js');
+      expect(spawn.agentRoles).not.toContain('sentinel');
+      // ...but the Queen (operator) still spawns it.
+      expect(spawn.agentRoles).toContain('operator');
+    });
+  });
+
   test('an ordinary pipeline role with no row gets ONLY the universal tool-discovery cap (least-privilege)', async () => {
     // Pre-change this was the empty set. `agent_tools:list` is declared
     // ALL_ROLES + requirePrincipal:false and every pipeline-role persona instructs

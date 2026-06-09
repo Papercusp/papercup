@@ -24,7 +24,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Seeing which accounts the Queen can draw from and what each is bound to.",
@@ -53,7 +54,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Adding a Claude subscription the Queen can deploy Swarms onto (each account has its own rate limits). Build the pool before deploying a Hive that should spread across accounts.",
@@ -83,7 +85,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Retiring an account from the pool (e.g. a subscription you no longer use).",
@@ -112,7 +115,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "An account is rate-limited and you want to move its work onto a fresh account NOW (the same action the auto-scale-out takes; this is the manual lever).",
@@ -141,7 +145,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Checking which accounts have headroom before a deploy, or why an account auto-scaled out."
@@ -197,7 +202,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "guidance": {
         "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner to scope to one pane, harness to scope to one project, since_id to page forward.",
@@ -871,7 +877,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Deciding WHICH blueprint shape fits a piece of work before creating a harness — the Pot operator's first stop (decomposable features → coding, investigation → research, parallel codemod → migration, a decision → vote/deliberate). Also the discovery surface for what launch blueprints exist.",
@@ -901,7 +908,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Authoring a brand-new blueprint shape from scratch (rare — usually you extend `coding`/`base`/`research`). Returns validated canonical YAML.",
@@ -931,7 +939,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.",
@@ -961,7 +970,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.",
@@ -1036,7 +1046,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You can answer an open question (you saw it via a topic subscription or conversations:list). Post the answer here so the asker is notified and the answer is captured on resolve.",
@@ -1066,7 +1077,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You have a conversation_id (from coord:ask, conversations:list, or an inbox notice) and want the full thread.",
@@ -1096,7 +1108,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode.",
@@ -1126,7 +1139,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.",
@@ -1156,7 +1170,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Open-ended coordination with no single answer (\"how should we approach X?\"), or contributing to an existing thread. For a question that wants an answer, use coord:ask instead.",
@@ -1186,7 +1201,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A conversation has concluded that there is a concrete, trackable problem — turn it into an issue so it can be claimed, prioritized, and promoted to a feature.",
@@ -1216,7 +1232,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again.",
@@ -1246,7 +1263,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) a coord message — closes the loop for the sender.",
@@ -1275,7 +1293,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You have a question and want the fastest correct answer without needlessly interrupting a peer. Always include topics so a miss reaches the right people. For a harness-specific question pass harness.",
@@ -1305,7 +1324,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You need the owner's (human's) input on a decision and can wait briefly, but want to proceed (e.g. fall through to a vote) if they don't respond in time.",
@@ -1334,7 +1354,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides your wake turn) and tune your wake floor. You are wakeable regardless; arming is automatic at session start. Then END YOUR TURN.",
@@ -1364,7 +1385,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Starting a distinct piece of work, so other agents see what you have taken on.",
@@ -1393,7 +1415,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A consequential decision where the owner might already have an answer, but you want an automatic fallback to a vote and a curated escalation rather than blocking.",
@@ -1422,7 +1445,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.",
@@ -1452,7 +1476,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A decision you should not make alone, a blocker that requires human input, or a risky operation that needs explicit confirmation.",
@@ -1481,7 +1506,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Showing the human inbox; diagnostics; checking your own past escalations.",
@@ -1510,7 +1536,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.",
@@ -1539,7 +1566,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.",
@@ -1568,7 +1596,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Diagnostics — \"who handed what to whom?\" or \"what handoffs to me are still open?\".",
@@ -1597,7 +1626,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
@@ -1626,7 +1656,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You (or the human via the inbox) want to message the agent that owns a specific work-item — start a durable, scoped thread with them about that item.",
@@ -1656,7 +1687,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to show which plans changed since the agent last read. Also ad-hoc, to review recent plan activity.",
@@ -1685,7 +1717,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "\"Who else is working right now, and on what?\" — before starting work that might overlap.",
@@ -1714,7 +1747,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "The human (or an authorised agent acting on their behalf) has decided how to proceed on an open escalation.",
@@ -1743,7 +1777,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Sharing context with another agent — \"I just finished X, the next step is Y\", or asking a question, or handing off a piece of work. Use wake:true ONLY when the recipient is idle/asleep and must act now (a Queen placing work onto a sleeping bee); a running recipient already sees the inject mid-turn, so wake is wasted on it.",
@@ -1772,7 +1807,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You want the full conversation around a coord message (replies, acks, resolutions).",
@@ -1802,6 +1838,7 @@
         "documenter",
         "curator",
         "bee",
+        "sentinel",
         "voter",
         "advocate"
       ],
@@ -1832,7 +1869,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You face a genuinely uncertain, consequential choice between named options and want a diverse, anti-correlated read before committing — instead of deciding alone or escalating raw.",
@@ -1861,7 +1899,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Turn start — the OMP coordination extension calls this to scope the inbox to new entries.",
@@ -1890,7 +1929,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Turn end — the OMP coordination extension records how far you read this turn.",
@@ -1919,7 +1959,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Debugging identity — \"what ownerId am I?\" before relying on lock or message behaviour.",
@@ -2344,7 +2385,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Moving a cloud-configured harness onto a real frame so its agents run remotely (distinct IP, own Claude sub) while state federates to the local view.",
@@ -2374,7 +2416,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Running a whole group of harnesses in the cloud — full-auto laptop-optional, or just to scale out execution across frames.",
@@ -2404,7 +2447,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Checking where a harness runs (local vs which cloud frame) and the frame's reachable host."
@@ -2432,7 +2476,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Done with a cloud harness (or to stop its billing). Teardown destroys the machine so it stops costing money.",
@@ -2461,7 +2506,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Done with a deployed Hive (or to stop all its billing). Frames are cattle — destroy + redeploy is the model."
@@ -3410,7 +3456,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3440,7 +3487,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3471,7 +3519,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3502,7 +3551,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3533,7 +3583,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You (the Queen) want to reclaim a bee slot: the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give the bee a chance to hand off cleanly.",
@@ -3563,7 +3614,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3593,7 +3645,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3654,7 +3707,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3685,7 +3739,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3832,7 +3887,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.",
@@ -3861,7 +3917,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -3891,7 +3948,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.",
@@ -3939,7 +3997,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4068,7 +4127,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Once per workspace after the config.json→PG cutover, to lift any pre-existing harness config.json instance content into the registry. Safe to re-run (idempotent).",
@@ -4377,7 +4437,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4408,7 +4469,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4439,7 +4501,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4470,7 +4533,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4501,7 +4565,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4532,7 +4597,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4563,7 +4629,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4593,7 +4660,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4624,7 +4692,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4685,6 +4754,7 @@
         "documenter",
         "curator",
         "bee",
+        "sentinel",
         "scanner"
       ],
       "profile": "engineer",
@@ -4716,7 +4786,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4747,7 +4818,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4778,7 +4850,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4809,7 +4882,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Operator inbox PASS — run FIRST each wake over the Decisions tier: re-tier an attention item after reading it (downgrade noise, escalate something a worker under-flagged, confirm/resolve a real decision), always recording the why in `note`. Leave the inbox clean before sleeping.",
@@ -4838,7 +4912,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4869,7 +4944,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4900,7 +4976,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4967,7 +5044,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -4998,7 +5076,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5028,7 +5107,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5058,7 +5138,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5089,7 +5170,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5120,7 +5202,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5150,7 +5233,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5181,7 +5265,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5212,7 +5297,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5242,7 +5328,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5273,7 +5360,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5303,7 +5391,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5334,7 +5423,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -5364,7 +5454,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -6710,7 +6801,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "At the start of a session that should act as a named agent — e.g. you were told \"you are builder-1, go to your items\". Adopt the name, then plan_items:my_items.",
@@ -6740,7 +6832,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You are dividing your own plan work across your named agents — \"builder-1 takes P-001..P-003\".",
@@ -6770,7 +6863,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You are about to begin work on an item (yours via assignment, or pulled from the pool).",
@@ -6800,7 +6894,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You are picking up a plan item to work it — this replaces a bare plan_items:claim: every worked item gets a tracked work_item (no untracked self-item).",
@@ -6830,7 +6925,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Periodically while holding a claim — ideally once per completed turn (kind=\"activity\"), or kind=\"extend\" before a long uninterrupted op.",
@@ -6860,7 +6956,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You want to help on a shared plan owned by another user — join, then pull unassigned items.",
@@ -6890,7 +6987,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You are done helping on a shared plan.",
@@ -6920,7 +7018,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You were told to work on your assigned items — read them here, then claim the next idle one.",
@@ -6950,7 +7049,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You finished (or are pausing) work on an item you claimed and want to free the live grip.",
@@ -6980,7 +7080,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Deciding what to pick up, or auditing who holds what on a plan.",
@@ -7010,7 +7111,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "An assignment is no longer wanted — reassigning to nobody, or freeing an item back to the pool.",
@@ -7458,6 +7560,7 @@
         "documenter",
         "curator",
         "bee",
+        "sentinel",
         "promote"
       ],
       "profile": "engineer",
@@ -8264,7 +8367,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "Before working in a subsystem (e.g. `coordination-substrate`), to load the rationale behind it — why it is the way it is — without searching everything.",
@@ -8294,7 +8398,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "To backfill the rationale index (kind:\"all\") on a fresh DB, or force-resync one source after an out-of-band change. Routine maintenance is automatic.",
@@ -8461,7 +8566,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "guidance": {
         "when": "User references prose past the chat history budget (\"remember when we decided pricing\", \"the X discussion from last week\"), or asks about content in escalations/brainstorm where the right SQL filter is not obvious. Returns ranked snippets.",
@@ -8507,7 +8613,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "guidance": {
         "when": "User asks about a concept by paraphrase rather than the exact keyword used in the recorded text. Examples: \"when did we talk about authentication strategy\" (could match \"login flow\", \"auth approach\", \"JWT decision\"). Prefer mode=hybrid for best recall.",
@@ -8639,7 +8746,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "No existing topic fits a relevance area you (and likely others) will want to follow. Keep the slug to a word or two; the description to one sentence.",
@@ -8668,7 +8776,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "To understand all current work in a relevance area before you start in it, or to see what is happening with e.g. `zero-cache` across every object kind.",
@@ -8698,7 +8807,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "At the start of work, to see the shared topic taxonomy before tagging/subscribing — and to prefer an existing topic over creating a near-duplicate (D-004).",
@@ -8728,7 +8838,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "topics:list shows two topics that mean the same thing — fold the lesser-used into the better one.",
@@ -8757,7 +8868,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet.",
@@ -8787,7 +8899,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "You want a feature/plan/issue/conversation to be visible to everyone following a relevance area — tag it with the topic.",
@@ -8817,7 +8930,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise.",
@@ -8874,7 +8988,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "guidance": {
         "when": "A peer is doing the wrong thing / working on something now-obsolete / looping, and you need its current turn to STOP. Prefer cooperative (it wraps up cleanly + saves); use force only when it must stop mid-thinking and cooperative was ignored or there's no time.",
@@ -9159,7 +9274,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9189,7 +9305,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9220,7 +9337,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9251,7 +9369,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9282,7 +9401,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9312,7 +9432,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9343,7 +9464,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9374,7 +9496,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9403,7 +9526,8 @@
         "debugger",
         "operator",
         "documenter",
-        "curator"
+        "curator",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9434,7 +9558,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9464,7 +9589,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9494,7 +9620,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9524,7 +9651,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9555,7 +9683,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9586,7 +9715,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9617,7 +9747,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9647,7 +9778,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9678,7 +9810,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9708,7 +9841,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9739,7 +9873,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9770,7 +9905,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9800,7 +9936,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {
@@ -9830,7 +9967,8 @@
         "operator",
         "documenter",
         "curator",
-        "bee"
+        "bee",
+        "sentinel"
       ],
       "profile": "engineer",
       "guidance": {

@@ -37,7 +37,7 @@ const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http:
  * a trigger (`triggers.schedule` for cadence launches, `triggers.event` for
  * event-driven ones). Firing one invokes that role once via the invoke route.
  */
-export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'audit', 'hive', 'bee'] as const;
+export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'audit', 'hive', 'bee', 'sentinel'] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 
 /**

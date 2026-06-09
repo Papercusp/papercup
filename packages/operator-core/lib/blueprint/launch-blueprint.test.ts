@@ -33,6 +33,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       hive: 'operator',
       // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
       bee: 'bee',
+      // unify-launch-mechanics D-004: the sentinel watcher's decider IS the sentinel role.
+      sentinel: 'sentinel',
     };
     for (const id of BUILTIN_LAUNCH_BLUEPRINTS) {
       const target = await resolveLaunchTarget(id, opts);

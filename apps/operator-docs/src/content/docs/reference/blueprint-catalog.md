@@ -12,7 +12,7 @@ sidebar:
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (15 concrete + 2 abstract).
 
 ## Built-in blueprints
 
@@ -31,6 +31,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 con
 | `research` | base | research-task (`R`) | research-director | concurrency 1 | 4 | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less. |
 | `review` | base | review-task (`RV`) | review-director | inherited | 4 | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report. |
 | `scan` | single-agent | scan-run (`SCAN`) | scanner | inherited | 1 | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog. |
+| `sentinel` | single-agent | task (`SENTINEL`) | sentinel | inherited | 1 | Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches. |
 | `vote` | base | decision (`VOTE`) | — | inherited | 2 | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human. |
 
 ### Abstract (not directly runnable)
@@ -187,6 +188,16 @@ Proactive workspace scan: the scanner sweeps for latent problems + improvement o
 - **Work item:** `scan-run` (id prefix `SCAN`)
 - **Spine decider:** `scanner` (maxTurns 30)
 - **Roles (1):** `scanner`
+
+### `sentinel`
+
+Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches.
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `task` (id prefix `SENTINEL`)
+- **Spine decider:** `sentinel` (maxTurns 40)
+- **Roles (1):** `sentinel`
 
 ### `single-agent`
 

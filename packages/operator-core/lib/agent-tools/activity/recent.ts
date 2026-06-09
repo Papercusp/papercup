@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
   'debugger', 'operator', 'documenter', 'curator',
+  'sentinel', // the fleet watcher reads the activity bridge (unify-launch-mechanics D-004)
 ] as const;
 
 const DEFAULT_LIMIT = 50;

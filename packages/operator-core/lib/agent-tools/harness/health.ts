@@ -19,6 +19,7 @@ const ALL_ROLES = [
   'operator',
   'documenter',
   'curator',
+  'sentinel', // the fleet watcher reads harness health (unify-launch-mechanics D-004)
 ] as const;
 
 export default defineTool({

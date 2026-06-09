@@ -67,7 +67,7 @@ export default defineTool({
   // D-002 (bee-capability-expansion-2026-06-08): gym judging is a Queen-only
   // optimization surface — the worker-bee (a COORD_ROLE since local-hive P-011) is
   // EXCLUDED so [...COORD_ROLES] doesn't leak it. Other coord roles are unchanged.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'bee'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'bee' && r !== 'sentinel'),
   args: z.object({
     intent: z.string().min(1).describe('The high-level intent the work should have achieved'),
     projectContext: z.string().describe('Repo/project summary the judge weighs spec-gaps against'),

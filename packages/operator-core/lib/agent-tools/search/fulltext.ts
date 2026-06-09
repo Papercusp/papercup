@@ -22,6 +22,7 @@ const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all']
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
   'reviewer', 'debugger', 'operator', 'documenter', 'curator',
+  'sentinel', // the fleet watcher searches to investigate (unify-launch-mechanics D-004)
 ] as const;
 
 export default defineTool({

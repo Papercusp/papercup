@@ -32,18 +32,19 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // alerts, the Queen acts. Two-gate reality applies — these caps are paired with
   // adding `sentinel` to the watcher tools' `agentRoles` (COORD_ROLES + the
   // explicit fleet/intel/audit reads below).
+  // Caps are kept IN LOCKSTEP with the tools sentinel is actually allowlisted on
+  // (the two-gate reality — an un-allowlisted cap is INERT). Enforced surface:
+  // COORD_ROLES (fleet:assignments/tree, coord:presence/inbox/feed/escalate/send,
+  // work_items:list, issues:list) + the ALL_ROLES health/search reads
+  // (harness:health/escalation, activity:recent, search:fulltext/semantic).
   sentinel: [
     'coord:read',
-    'coord:write', // alarms only: coord:escalate / coord:send / messages
-    'harness:read',
+    'coord:write', // alarms only: coord:escalate / coord:send
     'work_items:read',
-    'activity:read',
-    'intel:read', // the dev-diagnostics surface (service_health, build_status, processes, activity)
-    'audit:read',
-    'locks:read', // lock-contention / hog detection
-    'plans:read',
-    'search:read',
     'issues:read',
+    'harness:read',
+    'activity:read',
+    'search:read',
   ],
   // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
   // D-001/D-003): the `pot` launch blueprint wakes the `operator` role to

@@ -18,6 +18,10 @@ describe('COORD_ROLES', () => {
     expect(COORD_ROLES).toContain('bee');
   });
 
+  test('sentinel is a coord role (unify-launch-mechanics D-004 — fleet:assignments/tree + coord:* resolve for a sentinel URL)', () => {
+    expect(COORD_ROLES).toContain('sentinel');
+  });
+
   test('the pipeline + chat coord roles are all present (catches an accidental removal)', () => {
     for (const role of [
       'scoper',
