@@ -1,0 +1,78 @@
+/**
+ * pending-wakes.ts — the STAGED-wake queue for manual-mode agents
+ * (hive-agent-tabs-psu-tui-2026-06-09 P-007 / D-005).
+ *
+ * When an agent's wake-mode is `manual` (wake-mode.ts), `wakeRecipients` STAGES
+ * the wake here instead of firing it (the agent is NOT re-invoked). The owner
+ * reviews them from the agent's pane and releases / edits / skips (P-008/P-009).
+ * Table: harness_shared.pending_wakes (migration 204).
+ */
+import { getOrgPg } from '@papercusp/db-org';
+
+export interface StageWakeInput {
+  ownerId: string;
+  summary?: string;
+  /** Arbitrary wake payload (stored as jsonb). */
+  payload?: unknown;
+  source?: string;
+  workspaceId?: string;
+}
+
+export interface PendingWake {
+  id: number;
+  ownerId: string;
+  summary: string | null;
+  payload: unknown;
+  source: string | null;
+  workspaceId: string | null;
+  createdAt: string;
+}
+
+/** Stage a wake for a manual-mode agent (the P-007 gate calls this instead of firing). */
+export async function stagePendingWake(input: StageWakeInput): Promise<void> {
+  const { sql } = getOrgPg();
+  const payloadJson = input.payload != null ? JSON.stringify(input.payload) : null;
+  await sql`
+    INSERT INTO harness_shared.pending_wakes (owner_id, summary, payload, source, workspace_id)
+    VALUES (
+      ${input.ownerId},
+      ${input.summary ?? null},
+      ${payloadJson}::jsonb,
+      ${input.source ?? null},
+      ${input.workspaceId ?? null}
+    )
+  `;
+}
+
+/** An agent's staged wakes, oldest-first (the pane lists them in order). */
+export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT id, owner_id, summary, payload, source, workspace_id, created_at
+    FROM harness_shared.pending_wakes
+    WHERE owner_id = ${ownerId}
+    ORDER BY id ASC
+  `;
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    id: Number(r.id),
+    ownerId: String(r.owner_id),
+    summary: (r.summary as string | null) ?? null,
+    payload: r.payload ?? null,
+    source: (r.source as string | null) ?? null,
+    workspaceId: (r.workspace_id as string | null) ?? null,
+    createdAt: String(r.created_at),
+  }));
+}
+
+/** How many wakes are staged for an agent (the pane's pending-count badge). */
+export async function countPendingWakes(ownerId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql`SELECT count(*)::int AS n FROM harness_shared.pending_wakes WHERE owner_id = ${ownerId}`;
+  return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
+}
+
+/** Drop one staged wake (after the owner releases / skips it). */
+export async function releasePendingWake(id: number): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`DELETE FROM harness_shared.pending_wakes WHERE id = ${id}`;
+}

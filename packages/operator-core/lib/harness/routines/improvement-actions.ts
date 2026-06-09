@@ -37,12 +37,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { readImprovementItems } from '../improvements/read-items';
-import { buildDigest } from '../improvements/digest';
 import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { runWatchdogTick } from '../improvements/watchdog';
-import { sendMessage } from '../../agent-tools/coordination/messages';
-import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import type { ScoredItem } from '../improvements/digest';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
@@ -67,31 +64,13 @@ export function intFromEnv(name: string, fallback: number, opts: { min?: number 
   return Math.max(min, n);
 }
 
-/** A stable system identity for the digest broadcast (display-only ownerLabel). */
-function systemIdentity(ctx: SystemActionCtx, who: string): AgentIdentity {
-  return { ownerId: `system:${who}`, ownerLabel: who, source: 'principal', workspaceId: ctx.workspaceId, userId: null };
-}
-
-// ── Phase 2: the scheduled triage digest ────────────────────────────────────
-registerSystemAction('improvement-digest', async (ctx: SystemActionCtx) => {
-  const items = await readImprovementItems({});
-  const digest = buildDigest(items, { nowMs: Date.now() });
-  console.log(`[improvement-digest] ${digest.headline}`);
-  if (digest.open === 0) return; // nothing to surface
-
-  // Best-effort: surface the triage to the human inbox so it doesn't need polling.
-  try {
-    const top = (q: ScoredItem[]): string =>
-      q.slice(0, 5).map((i) => `  • ${i.id} [${i.kind}/${i.severity ?? '?'}] ${i.title} (score ${i.score})`).join('\n') || '  (none)';
-    const body =
-      `Auto-eligible (kind=bug, safe surface):\n${top(digest.autoEligible)}\n\n` +
-      `Needs a human:\n${top(digest.humanQueue)}` +
-      (digest.likelyDuplicates.length ? `\n\nLikely-duplicate clusters: ${digest.likelyDuplicates.map((c) => c.ids.join('=')).join(' | ')}` : '');
-    await sendMessage(systemIdentity(ctx, 'improvement-digest'), { to: ['human'], summary: digest.headline, body });
-  } catch (e) {
-    console.warn(`[improvement-digest] inbox broadcast skipped: ${e instanceof Error ? e.message : e}`);
-  }
-});
+// The scheduled `improvement-digest` action was REMOVED (operator-learning-tab-2026-06-09
+// D-001): its only job was pushing the triage headline to the human inbox, which
+// rendered as a dead-end notification (web /coord row + zellij TUI bell, neither
+// clickable, no improvements UI to open). The backlog is now surfaced by PULL in the
+// Learning tab (`learning.improvements` sync resolver → the same readImprovementItems
+// + buildDigest path the `improvements:digest` tool uses). The watchdog below still
+// auto-files objective signals into the backlog silently.
 
 // ── close-loop D-003: the watchdog hard feed-in (capture only) ───────────────
 registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {

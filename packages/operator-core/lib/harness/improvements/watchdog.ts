@@ -91,6 +91,8 @@ export interface WatchdogTickRecord {
   captured: string[];
   declinedDuplicates: number;
   deferred: number;
+  /** `${source}:${key}` of each signal the anti-flood cap deferred this tick (P-009). */
+  deferredKeys?: string[];
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed ABOUT ITSELF this tick (P-002). */
   selfEscalations: string[];
@@ -99,8 +101,21 @@ export interface WatchdogTickRecord {
 const SEVERITY_RANK: Record<ImprovementSeverity, number> = { critical: 3, major: 2, minor: 1, nit: 0 };
 
 export interface WatchdogPlanOptions {
-  /** Max captures per tick (anti-flood). Default 3. */
+  /** Max captures per tick (global anti-flood). Default 3. */
   maxPerTick?: number;
+  /**
+   * Max captures per SOURCE per tick (watchdog-robustness P-009 / D-010). Stops one
+   * noisy source (a backlog of `major` red-tests) from monopolizing every slot and
+   * starving tool-error / health / structural signals — the second half of why the
+   * memory:search structural signal never landed even when it fired. Default 2.
+   */
+  perSourceCap?: number;
+  /**
+   * Keys (`${source}:${key}`) deferred on recent ticks (P-009 deferred-escalation).
+   * A signal that keeps losing a slot is ranked one severity higher so a
+   * persistent-but-minor signal eventually lands instead of ageing out forever.
+   */
+  priorDeferredKeys?: readonly string[];
 }
 
 export interface WatchdogPlan {
@@ -109,9 +124,23 @@ export interface WatchdogPlan {
   deferred: WatchdogSignal[];
 }
 
-/** Pure: dedupe by key, rank by severity, cap per tick. */
+/**
+ * Pure (close-loop D-003 + watchdog-robustness P-009 / D-010): dedupe, then admit
+ * captures under TWO bounds so no single source starves the rest:
+ *   1. PER-SOURCE cap (default 2) — a flood of `major` red-tests can take at most
+ *      `perSourceCap` slots, leaving room for tool-error / health / structural signals.
+ *   2. global `maxPerTick` cap (default 3) — the overall ceiling; any budget left
+ *      after the per-source pass is filled from the leftover by rank (never wasted).
+ * Deferred-escalation: a signal whose key was deferred on a recent tick
+ * (`priorDeferredKeys`) ranks one severity higher, so a persistent-but-minor signal
+ * climbs and eventually lands instead of being starved every tick.
+ */
 export function planWatchdogCaptures(signals: WatchdogSignal[], opts: WatchdogPlanOptions = {}): WatchdogPlan {
   const maxPerTick = Math.max(0, opts.maxPerTick ?? 3);
+  const perSourceCap = Math.max(1, opts.perSourceCap ?? 2);
+  const deferredSet = new Set(opts.priorDeferredKeys ?? []);
+
+  // Dedupe by source:key.
   const seen = new Set<string>();
   const unique: WatchdogSignal[] = [];
   for (const s of signals) {
@@ -120,8 +149,41 @@ export function planWatchdogCaptures(signals: WatchdogSignal[], opts: WatchdogPl
     seen.add(k);
     unique.push(s);
   }
-  unique.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
-  return { toCapture: unique.slice(0, maxPerTick), deferred: unique.slice(maxPerTick) };
+
+  // Effective rank = severity, +1 if this key was recently deferred (P-009 escalation).
+  const rankOf = (s: WatchdogSignal): number =>
+    SEVERITY_RANK[s.severity] + (deferredSet.has(`${s.source}:${s.key}`) ? 1 : 0);
+  const byRankDesc = (a: WatchdogSignal, b: WatchdogSignal): number => {
+    const d = rankOf(b) - rankOf(a);
+    if (d !== 0) return d;
+    // Tie → a recently-deferred signal goes first (it has waited longest).
+    const ad = deferredSet.has(`${a.source}:${a.key}`) ? 1 : 0;
+    const bd = deferredSet.has(`${b.source}:${b.key}`) ? 1 : 0;
+    return bd - ad;
+  };
+
+  // Pass 1 — per-source cap (highest-ranked first; a noisy source can't take >cap).
+  const perSourceCount = new Map<WatchdogSource, number>();
+  const admitted: WatchdogSignal[] = [];
+  const leftover: WatchdogSignal[] = [];
+  for (const s of [...unique].sort(byRankDesc)) {
+    const used = perSourceCount.get(s.source) ?? 0;
+    if (used < perSourceCap && admitted.length < maxPerTick) {
+      perSourceCount.set(s.source, used + 1);
+      admitted.push(s);
+    } else {
+      leftover.push(s);
+    }
+  }
+  // Pass 2 — fill any remaining global budget from leftover by rank (don't waste it).
+  for (const s of leftover.sort(byRankDesc)) {
+    if (admitted.length >= maxPerTick) break;
+    admitted.push(s);
+  }
+
+  const admittedSet = new Set(admitted);
+  const deferred = unique.filter((s) => !admittedSet.has(s));
+  return { toCapture: admitted, deferred };
 }
 
 // ── signal collectors (IO) ───────────────────────────────────────────────────
@@ -531,9 +593,9 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
   const { sql } = getOrgPg();
   await sql`
     INSERT INTO harness_shared.watchdog_ticks
-      (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, collectors, self_escalations)
+      (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, deferred_keys, collectors, self_escalations)
     VALUES (${rec.workspaceId}, ${rec.installSlug ?? null}, ${rec.status}, ${rec.signals},
-            ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred},
+            ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred}, ${rec.deferredKeys ?? []}::text[],
             ${JSON.stringify(rec.collectors)}::text::jsonb, ${rec.selfEscalations}::text[])
   `;
 }
@@ -542,19 +604,25 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
 export interface RecentTick {
   status: 'ran' | 'skipped';
   collectors: CollectorStatus[];
+  /** Keys deferred on that tick (P-009) — fed back as the escalation history. */
+  deferredKeys?: string[];
 }
 
 /** Default recent-ticks reader (P-002): the last `limit` ticks for a workspace, newest-first. */
 export async function readRecentWatchdogTicks(workspaceId: string, limit: number): Promise<RecentTick[]> {
   if (limit <= 0) return [];
   const { sql } = getOrgPg();
-  const rows = await sql<{ status: 'ran' | 'skipped'; collectors: CollectorStatus[] }[]>`
-    SELECT status, collectors
+  const rows = await sql<{ status: 'ran' | 'skipped'; collectors: CollectorStatus[]; deferred_keys: string[] }[]>`
+    SELECT status, collectors, deferred_keys
       FROM harness_shared.watchdog_ticks
      WHERE workspace_id = ${workspaceId}
      ORDER BY tick_at DESC
      LIMIT ${limit}`;
-  return rows.map((r) => ({ status: r.status, collectors: Array.isArray(r.collectors) ? r.collectors : [] }));
+  return rows.map((r) => ({
+    status: r.status,
+    collectors: Array.isArray(r.collectors) ? r.collectors : [],
+    deferredKeys: Array.isArray(r.deferred_keys) ? r.deferred_keys : [],
+  }));
 }
 
 /**
@@ -643,6 +711,8 @@ export interface WatchdogTickResult {
   captured: string[];
   declinedDuplicates: number;
   deferred: number;
+  /** `${source}:${key}` of each deferred signal this tick (P-009 deferred-escalation). */
+  deferredKeys?: string[];
   /** Per-collector outcomes this tick (P-001) — the read path for self-escalation (P-002). */
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed about its OWN broken collectors (P-002). */
@@ -696,7 +766,16 @@ async function runWatchdogTickBody(
     collectors = detailed.collectors;
   }
 
-  const plan = planWatchdogCaptures(signals, opts);
+  // P-009 deferred-escalation: feed the LAST tick's deferred keys so a signal that
+  // keeps losing a slot is boosted until it lands. Only when there is CONTENTION
+  // (more signals than the cap can admit) is the boost meaningful — so a healthy/quiet
+  // tick still does zero PG reads (preserving the P-002 no-read-when-healthy invariant).
+  // Best-effort — a read failure just means no escalation this tick.
+  const planCap = Math.max(0, opts.maxPerTick ?? 3);
+  const priorDeferredKeys = signals.length > planCap
+    ? await readRecentTicks(workspaceId, 1).then((t) => t[0]?.deferredKeys ?? []).catch(() => [] as string[])
+    : [];
+  const plan = planWatchdogCaptures(signals, { ...opts, priorDeferredKeys });
   const captured: string[] = [];
   let declinedDuplicates = 0;
   for (const s of plan.toCapture) {
@@ -767,6 +846,7 @@ async function runWatchdogTickBody(
     captured,
     declinedDuplicates,
     deferred: plan.deferred.length,
+    deferredKeys: plan.deferred.map((s) => `${s.source}:${s.key}`),
     collectors,
     selfEscalations,
   };
@@ -781,6 +861,7 @@ async function runWatchdogTickBody(
       captured: result.captured,
       declinedDuplicates: result.declinedDuplicates,
       deferred: result.deferred,
+      deferredKeys: result.deferredKeys,
       collectors: result.collectors,
       selfEscalations: result.selfEscalations,
     });

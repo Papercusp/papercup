@@ -60,6 +60,52 @@ describe('planWatchdogCaptures — pure anti-flood planning (close-loop D-003)',
     expect(plan.toCapture).toHaveLength(3);
     expect(plan.deferred).toHaveLength(1);
   });
+
+  it('PER-SOURCE cap stops a red-test backlog from starving a tool-error signal (P-009 — the memory:search starvation)', () => {
+    // 5 major red-tests + 1 major tool-error signal; global cap 3, per-source cap 2.
+    // OLD behaviour (global severity cap): 3 red-tests admitted, tool-error deferred.
+    // NEW: red-tests capped at 2, so the tool-error signal gets a slot.
+    const signals = [
+      sig({ key: 'rt1', source: 'red-test', severity: 'major' }),
+      sig({ key: 'rt2', source: 'red-test', severity: 'major' }),
+      sig({ key: 'rt3', source: 'red-test', severity: 'major' }),
+      sig({ key: 'rt4', source: 'red-test', severity: 'major' }),
+      sig({ key: 'rt5', source: 'red-test', severity: 'major' }),
+      sig({ key: 'mem', source: 'repeated-tool-error', severity: 'major' }),
+    ];
+    const plan = planWatchdogCaptures(signals); // default maxPerTick 3, perSourceCap 2
+    const keys = plan.toCapture.map((s) => s.key);
+    expect(keys).toContain('mem'); // the tool-error signal lands instead of being starved
+    expect(keys.filter((k) => k.startsWith('rt'))).toHaveLength(2); // red-tests capped at 2
+    expect(plan.toCapture).toHaveLength(3);
+  });
+
+  it('fills leftover budget rather than wasting it when ONE source dominates (no competition)', () => {
+    const signals = [
+      sig({ key: 'rt1', source: 'red-test' }),
+      sig({ key: 'rt2', source: 'red-test' }),
+      sig({ key: 'rt3', source: 'red-test' }),
+    ];
+    // No other source competing → use the full cap of 3 even though per-source cap is 2.
+    expect(planWatchdogCaptures(signals).toCapture).toHaveLength(3);
+  });
+
+  it('deferred-escalation: a recently-deferred minor signal outranks a fresh major one (P-009)', () => {
+    const signals = [
+      sig({ key: 'fresh', source: 'red-test', severity: 'major' }),
+      sig({ key: 'stale', source: 'repeated-tool-error', severity: 'minor' }),
+    ];
+    // Only 1 slot. The minor 'stale' was deferred on a recent tick → boosted (+1 rank,
+    // and it wins the tie) so a persistent-but-minor signal eventually lands.
+    const plan = planWatchdogCaptures(signals, {
+      maxPerTick: 1,
+      priorDeferredKeys: ['repeated-tool-error:stale'],
+    });
+    expect(plan.toCapture.map((s) => s.key)).toEqual(['stale']);
+    // Without the deferral history, the fresh major would win.
+    const baseline = planWatchdogCaptures(signals, { maxPerTick: 1 });
+    expect(baseline.toCapture.map((s) => s.key)).toEqual(['fresh']);
+  });
 });
 
 describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006)', () => {
