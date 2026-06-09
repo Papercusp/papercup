@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import type { AdvisoryClaim } from './work-item-claim-reconcile';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,15 +58,9 @@ const WORK_ITEM_CLAIMS_DDL = `
     last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT work_item_claims_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
 
-// The backlog table (claim_next via SKIP LOCKED) — same DDL shape as work-items-claim.
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz, workspace_id text NOT NULL DEFAULT 'default',
-    ts bigint, created_ts bigint, updated_ts bigint,
-    PRIMARY KEY (harness_slug, feature_id))`;
+// The backlog table (claim_next via SKIP LOCKED) — canonical complete schema (single
+// source of truth), test/_work-items-schema.ts (D-014 fixture-completeness debt).
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

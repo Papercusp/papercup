@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgLinkStore } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,20 +41,10 @@ const COORD_EVENT_LOG_DDL = `
     surface text NOT NULL, writer_key text, msg_id text NOT NULL,
     body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now())`;
 
-// A column-faithful (for the engine's reads/writes) harness_features_consolidated.
-// workspace_id carries a DEFAULT here so the engine's insert (which omits it, relying
-// on the live BEFORE-INSERT fill trigger absent in the test DB) succeeds.
-const HFC_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
-    harness_slug text NOT NULL, feature_id text NOT NULL, title text, summary text,
-    status text NOT NULL DEFAULT 'todo', attempts bigint DEFAULT 0,
-    item_kind text NOT NULL DEFAULT 'feature', payload jsonb, parent_id text,
-    taken_by text, taken_at timestamptz,
-    needs_design boolean NOT NULL DEFAULT false, needs_human_review boolean NOT NULL DEFAULT false,
-    workspace_id text NOT NULL DEFAULT 'default',
-    ts bigint, created_ts bigint, updated_ts bigint,
-    _search tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(summary,''))) STORED,
-    PRIMARY KEY (harness_slug, feature_id))`;
+// Canonical complete consolidated-features schema (single source of truth) — see
+// test/_work-items-schema.ts. Replaces a hand-rolled column subset that broke whenever
+// the engine's FEATURE_COLS widened (D-014 fixture-completeness debt).
+const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {

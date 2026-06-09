@@ -30,6 +30,9 @@ const WORK_ITEM_ROW = z.object({
   severity: z.string().nullable(),
   parent: z.string().nullable(),
   payload: z.unknown(),
+  /** Shared backlog priority (feature_order) — LOWER = claimed sooner; null = unprioritized.
+   *  Feature-family only (the Queen's steer lever, B7); issue-family is always null. */
+  priority: z.number().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
