@@ -5,25 +5,77 @@
  * old `improvement-digest` inbox PUSH notification (a dead-end the owner couldn't
  * click through, D-001): instead of being pinged, the owner opens this tab.
  *
- * Section A — Improvements (live): the captured `papercusp-improvement` backlog,
- * read through the `learning.improvements` sync resolver, which reuses the SAME
- * readImprovementItems + buildDigest path the `improvements:digest` tool uses (so
- * the tab and the tool never drift, D-003). A scoreboard strip over the digest
- * rollups, then the two triage lanes — auto-eligible (kind=bug, safe surface) vs
- * needs-a-human — each row showing severity, age, idea-type, and score.
+ * Sub-views (nuqs `?lview=`):
+ *   - **Improvements** (default): the captured `papercusp-improvement` backlog, read
+ *     through the `learning.improvements` resolver (same readImprovementItems +
+ *     buildDigest path the `improvements:digest` tool uses, D-003). Scoreboard +
+ *     the two triage lanes (auto-eligible vs needs-a-human).
+ *   - **Gym**: the prompt-optimization pipeline — recent proposals (pending /
+ *     accepted=champions / rejected) + each gym harness's autoloop status, read
+ *     through `learning.gym` (the gym control-plane readers).
  *
- * Sections B (gym experiments), C (the IQ-battery benchmark scoreboard) and D
- * (agent insights) land in later phases as those pipelines produce data.
+ * The IQ-battery benchmark scoreboard and agent insights land as later sub-views.
  *
- * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only the sync
- * lifecycle is implicit. Styled with the shared app tokens (--fg/--accent/…),
- * matching AdvShell + AdvConversationsTab.
+ * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
+ * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
 import { useMemo } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
+
+const LVIEWS = ['improvements', 'gym'] as const;
+type LView = (typeof LVIEWS)[number];
+
+export default function LearningTab() {
+  const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
+  return (
+    <div className="pc-learning">
+      <header className="pc-learning__header">
+        <div className="pc-learning__copy">
+          <h1>
+            <GraduationCap size={18} aria-hidden /> Learning
+          </h1>
+          <p>How the system improves itself — what it noticed, captured, fixed, and how it tunes its own agents. The pull-view that replaced the digest notification.</p>
+        </div>
+      </header>
+
+      <div className="pc-learning__subnav" role="tablist" aria-label="Learning view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={lview === 'improvements'}
+          className={`pc-learning__subtab${lview === 'improvements' ? ' is-active' : ''}`}
+          onClick={() => void setLview('improvements')}
+        >
+          <Sparkles size={13} aria-hidden />
+          <span>Improvements<em>captured & fixed</em></span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={lview === 'gym'}
+          className={`pc-learning__subtab${lview === 'gym' ? ' is-active' : ''}`}
+          onClick={() => void setLview('gym')}
+        >
+          <Dumbbell size={13} aria-hidden />
+          <span>Gym<em>agent training</em></span>
+        </button>
+      </div>
+
+      {lview === 'gym' ? <GymView /> : <ImprovementsView />}
+
+      <p className="pc-learning__footnote">
+        The IQ-battery benchmark scoreboard and agent insights will join this view as those pipelines produce data.
+      </p>
+
+      <LearningStyles />
+    </div>
+  );
+}
+
+// ─── Improvements view ───────────────────────────────────────────────────────
 
 const LANES = ['all', 'auto', 'human'] as const;
 type Lane = (typeof LANES)[number];
@@ -42,12 +94,8 @@ function ageLabel(days: number): string {
   return `${Math.round(days)}d`;
 }
 
-export default function LearningTab() {
-  const sync = useSyncQuery<ImprovementDigest>({
-    queryName: 'learning.improvements',
-    args: {},
-    staleTime: 30_000,
-  });
+function ImprovementsView() {
+  const sync = useSyncQuery<ImprovementDigest>({ queryName: 'learning.improvements', args: {}, staleTime: 30_000 });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
 
@@ -55,33 +103,13 @@ export default function LearningTab() {
     if (!digest) return [];
     if (lane === 'auto') return digest.autoEligible;
     if (lane === 'human') return digest.humanQueue;
-    // 'all' — auto lane first (actionable), then the human queue, highest score within each.
     return [...digest.autoEligible, ...digest.humanQueue];
   }, [digest, lane]);
 
   const resolved = digest?.byState?.resolved ?? 0;
 
   return (
-    <div className="pc-learning">
-      <header className="pc-learning__header">
-        <div className="pc-learning__copy">
-          <h1>
-            <GraduationCap size={18} aria-hidden /> Learning
-          </h1>
-          <p>How the system improves itself — what it noticed, captured, and fixed. The pull-view that replaced the digest notification.</p>
-        </div>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the improvements feed"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </header>
-
-      {/* Scoreboard strip — the digest rollups */}
+    <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Improvements summary">
         <Stat label="captured" value={digest?.total ?? '—'} />
         <Stat label="open" value={digest?.open ?? '—'} />
@@ -90,10 +118,9 @@ export default function LearningTab() {
         <Stat label="resolved" value={resolved} tone="good" />
       </div>
 
-      {/* Section A — Improvements */}
-      <section className="pc-learning__section">
-        <div className="pc-learning__sectionhead">
-          <h2>Improvements the system captured</h2>
+      <div className="pc-learning__sectionhead">
+        <h2>Improvements the system captured</h2>
+        <div className="pc-learning__inlinetools">
           <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
             {LANES.map((l) => (
               <button
@@ -108,42 +135,36 @@ export default function LearningTab() {
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the improvements feed"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
         </div>
+      </div>
 
-        {sync.loading && !digest ? (
-          <p className="pc-learning__empty">Loading the improvements backlog…</p>
-        ) : sync.error ? (
-          <p className="pc-learning__empty">Improvements feed unavailable: {sync.error.message}</p>
-        ) : rows.length === 0 ? (
-          <div className="pc-learning__empty pc-learning__empty--card">
-            <CheckCircle2 size={20} aria-hidden />
-            <strong>Nothing in this lane</strong>
-            <span>The watchdog auto-files objective signals (failing tests, down services, repeated tool errors) and agents capture friction as they work — they’ll appear here.</span>
-          </div>
-        ) : (
-          <ul className="pc-learning__list">
-            {rows.map((it) => (
-              <ImprovementRow key={it.id} item={it} />
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <p className="pc-learning__footnote">
-        Gym experiments, the IQ-battery benchmark, and agent insights will join this view as those pipelines produce data.
-      </p>
-
-      <LearningStyles />
-    </div>
-  );
-}
-
-function Stat({ label, value, tone }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good' }) {
-  return (
-    <div className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ''}`}>
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
+      {sync.loading && !digest ? (
+        <p className="pc-learning__empty">Loading the improvements backlog…</p>
+      ) : sync.error ? (
+        <p className="pc-learning__empty">Improvements feed unavailable: {sync.error.message}</p>
+      ) : rows.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <CheckCircle2 size={20} aria-hidden />
+          <strong>Nothing in this lane</strong>
+          <span>The watchdog auto-files objective signals (failing tests, down services, repeated tool errors) and agents capture friction as they work — they’ll appear here.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {rows.map((it) => (
+            <ImprovementRow key={it.id} item={it} />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -171,21 +192,182 @@ function ImprovementRow({ item }: { item: ScoredItem }) {
   );
 }
 
+// ─── Gym view ────────────────────────────────────────────────────────────────
+
+interface GymProposal {
+  id: string;
+  harnessSlug: string;
+  cycle: number;
+  role: string;
+  rationale: string | null;
+  devAnchorDelta: number | null;
+  costDelta: number | null;
+  status: string; // pending | accepted | rejected | superseded
+  createdAt: number;
+  decidedAt: number | null;
+}
+interface GymAutoloop {
+  harnessSlug: string;
+  enabled: boolean;
+  status: string; // idle | running | paused | exhausted
+  budgetUsd: number | null;
+  spentUsd: number;
+  lastCycle: number | null;
+}
+interface GymSnapshot {
+  proposals: GymProposal[];
+  autoloops: GymAutoloop[];
+}
+
+const GYM_STATUS_COLOR: Record<string, string> = {
+  accepted: '#34d399',
+  pending: '#fbbf24',
+  rejected: '#f87171',
+  superseded: '#94a3b8',
+};
+
+function whenLabel(ms: number): string {
+  if (!ms) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function deltaLabel(d: number | null): { text: string; tone: 'good' | 'bad' | 'flat' } {
+  if (d === null || d === undefined || Number.isNaN(d)) return { text: '—', tone: 'flat' };
+  const sign = d > 0 ? '+' : d < 0 ? '−' : '±';
+  return { text: `${sign}${Math.abs(d).toFixed(3)}`, tone: d > 0 ? 'good' : d < 0 ? 'bad' : 'flat' };
+}
+
+function GymView() {
+  const sync = useSyncQuery<GymSnapshot>({ queryName: 'learning.gym', args: {}, staleTime: 30_000 });
+  const snap = sync.data?.[0];
+  const proposals = snap?.proposals ?? [];
+  const autoloops = snap?.autoloops ?? [];
+
+  const champions = proposals.filter((p) => p.status === 'accepted').length;
+  const pending = proposals.filter((p) => p.status === 'pending').length;
+  const rejected = proposals.filter((p) => p.status === 'rejected').length;
+  const running = autoloops.filter((a) => a.enabled || a.status === 'running').length;
+
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__scoreboard" aria-label="Gym summary">
+        <Stat label="proposals" value={snap ? proposals.length : '—'} />
+        <Stat label="champions" value={snap ? champions : '—'} tone="good" />
+        <Stat label="pending" value={snap ? pending : '—'} tone="human" />
+        <Stat label="rejected" value={snap ? rejected : '—'} />
+        <Stat label="loops armed" value={snap ? running : '—'} tone="auto" />
+      </div>
+
+      <div className="pc-learning__sectionhead">
+        <h2>Agent-prompt optimization (gym)</h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the gym feed"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {autoloops.length > 0 && (
+        <div className="pc-learning__loops" aria-label="Gym autoloops">
+          {autoloops.map((a) => (
+            <span key={a.harnessSlug} className={`pc-learning__loop pc-learning__loop--${a.status}`}>
+              <Dumbbell size={11} aria-hidden />
+              {a.harnessSlug}
+              <em>{a.enabled ? a.status : 'off'}</em>
+              {a.budgetUsd != null && <span className="pc-learning__loopspend">${a.spentUsd.toFixed(2)}/${a.budgetUsd.toFixed(0)}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {sync.loading && !snap ? (
+        <p className="pc-learning__empty">Loading gym experiments…</p>
+      ) : sync.error ? (
+        <p className="pc-learning__empty">Gym feed unavailable: {sync.error.message}</p>
+      ) : proposals.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Dumbbell size={20} aria-hidden />
+          <strong>No gym experiments yet</strong>
+          <span>The gym A/B-tests prompt variants for the pipeline roles, scores them with a frozen judge, and promotes the winners. Proposals and champion promotions will appear here once a gym runs.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {proposals.map((p) => (
+            <GymProposalRow key={p.id} p={p} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function GymProposalRow({ p }: { p: GymProposal }) {
+  const statusColor = GYM_STATUS_COLOR[p.status] ?? '#94a3b8';
+  const delta = deltaLabel(p.devAnchorDelta);
+  return (
+    <li className="pc-learning__row pc-learning__row--gym" title={p.rationale ?? undefined}>
+      <span className="pc-learning__sev" style={{ background: statusColor }} aria-hidden />
+      <span className="pc-learning__id">{p.role}</span>
+      <span className="pc-learning__title">
+        {p.rationale || <em className="pc-learning__muted">(no rationale)</em>}
+      </span>
+      <span className="pc-learning__meta">
+        <span className="pc-learning__chip" style={{ color: statusColor, borderColor: statusColor }}>
+          {p.status === 'accepted' ? <CheckCircle2 size={10} aria-hidden /> : p.status === 'rejected' ? <XCircle size={10} aria-hidden /> : <Clock size={10} aria-hidden />}
+          {p.status}
+        </span>
+        <span className="pc-learning__chip pc-learning__chip--idea">{p.harnessSlug}</span>
+        <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`} title="dev-anchor judge composite Δ vs parent">
+          Δ {delta.text}
+        </span>
+        <span className="pc-learning__age">c{p.cycle}</span>
+        <span className="pc-learning__age">{whenLabel(p.decidedAt ?? p.createdAt)}</span>
+      </span>
+    </li>
+  );
+}
+
+// ─── Shared ──────────────────────────────────────────────────────────────────
+
+function Stat({ label, value, tone }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good' }) {
+  return (
+    <div className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ''}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 function LearningStyles() {
   return (
     <style>{`
-      .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 14px; overflow-y: auto; }
+      .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow-y: auto; }
       .pc-learning__header { display: flex; align-items: flex-start; gap: 12px; }
       .pc-learning__copy { flex: 1; min-width: 0; }
       .pc-learning__copy h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: -0.02em; color: var(--fg, #e7f7ff); }
-      .pc-learning__copy p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-mute, #7f9bb4); max-width: 70ch; }
-      .pc-learning__refresh {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 30px; height: 30px; flex-shrink: 0;
-        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
-        border-radius: 8px; background: var(--bg-popover, #0d1829); color: var(--fg-dim, #b9d4e8); cursor: pointer;
+      .pc-learning__copy p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-mute, #7f9bb4); max-width: 78ch; }
+
+      .pc-learning__subnav { display: inline-flex; gap: 6px; }
+      .pc-learning__subtab {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 7px 13px; border-radius: 10px; cursor: pointer;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
       }
-      .pc-learning__refresh:disabled { opacity: 0.5; cursor: default; }
+      .pc-learning__subtab span { display: flex; flex-direction: column; line-height: 1.15; font-size: 12.5px; font-weight: 650; text-align: left; }
+      .pc-learning__subtab em { font-style: normal; font-size: 10px; font-weight: 500; color: var(--fg-mute, #7f9bb4); text-transform: uppercase; letter-spacing: 0.04em; }
+      .pc-learning__subtab.is-active { color: var(--fg, #e7f7ff); border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.12); }
+      .pc-learning__subtab.is-active em { color: color-mix(in oklab, #34d399, white 12%); }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__stat {
@@ -203,6 +385,7 @@ function LearningStyles() {
       .pc-learning__section { display: flex; flex-direction: column; gap: 10px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; }
       .pc-learning__lanes { display: inline-flex; gap: 4px; }
       .pc-learning__lane {
         padding: 4px 10px; font-size: 11px; font-weight: 650; border-radius: 999px; cursor: pointer;
@@ -210,6 +393,25 @@ function LearningStyles() {
         background: transparent; color: var(--fg-mute, #7f9bb4);
       }
       .pc-learning__lane.is-active { color: var(--fg, #e7f7ff); border-color: rgba(125, 211, 252, 0.5); background: rgba(125, 211, 252, 0.12); }
+      .pc-learning__refresh {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; flex-shrink: 0;
+        border: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+        border-radius: 8px; background: var(--bg-popover, #0d1829); color: var(--fg-dim, #b9d4e8); cursor: pointer;
+      }
+      .pc-learning__refresh:disabled { opacity: 0.5; cursor: default; }
+
+      .pc-learning__loops { display: flex; flex-wrap: wrap; gap: 6px; }
+      .pc-learning__loop {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 9px; font-size: 11px; font-weight: 600; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
+      }
+      .pc-learning__loop em { font-style: normal; text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__loop--running { border-color: rgba(52, 211, 153, 0.5); }
+      .pc-learning__loop--running em { color: #86efac; }
+      .pc-learning__loopspend { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--fg-mute, #7f9bb4); }
 
       .pc-learning__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .pc-learning__row {
@@ -221,6 +423,7 @@ function LearningStyles() {
       .pc-learning__sev { width: 4px; height: 100%; min-height: 18px; border-radius: 3px; }
       .pc-learning__id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__title { font-size: 12.5px; color: var(--fg, #e7f7ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning__muted { color: var(--fg-mute, #7f9bb4); }
       .pc-learning__meta { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
       .pc-learning__chip {
         display: inline-flex; align-items: center; gap: 3px;
@@ -230,13 +433,17 @@ function LearningStyles() {
       .pc-learning__chip--idea { color: #a78bfa; border-color: rgba(167, 139, 250, 0.5); }
       .pc-learning__chip--auto { color: #86efac; border-color: rgba(134, 239, 172, 0.5); }
       .pc-learning__chip--human { color: #fcd34d; border-color: rgba(252, 211, 77, 0.5); }
+      .pc-learning__delta { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .pc-learning__delta--good { color: #86efac; }
+      .pc-learning__delta--bad { color: #f87171; }
+      .pc-learning__delta--flat { color: var(--fg-mute, #7f9bb4); }
       .pc-learning__age { font-size: 11px; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__score { font-size: 11px; font-weight: 700; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; min-width: 18px; text-align: right; }
 
       .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 28px 16px; color: var(--fg-mute, #7f9bb4); font-size: 12.5px; }
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }
       .pc-learning__empty strong { color: var(--fg-dim, #b9d4e8); font-size: 13px; }
-      .pc-learning__empty span { max-width: 56ch; }
+      .pc-learning__empty span { max-width: 58ch; }
 
       .pc-learning__footnote { margin: 2px 0 0; font-size: 11px; font-style: italic; color: var(--fg-mute, #7f9bb4); }
     `}</style>

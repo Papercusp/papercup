@@ -109,12 +109,12 @@ const VIEW_DEFS: ReadonlyArray<{
   desc: string;
   Icon: typeof MessageCircle;
 }> = [
-  { id: 'threads', label: 'Threads', desc: 'Questions & discussions between you and the fleet — reply, accept answers, promote to issues.', Icon: MessageCircle },
-  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord discussions attached to issues and conversations.', Icon: MessagesSquare },
-  { id: 'agentchats', label: 'Agent chats', desc: 'Multi-turn pipeline transcripts per role and work-item, with tokens and cost.', Icon: Bot },
+  { id: 'threads', label: 'Threads', desc: 'Questions & discussions — reply, accept answers, promote to issues.', Icon: MessageCircle },
+  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord discussions on issues and conversations.', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chats', desc: 'Pipeline transcripts per role, with tokens and cost.', Icon: Bot },
   { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
   { id: 'operator', label: 'Operator', desc: 'Your chat sessions with the operator.', Icon: UserRound },
-  { id: 'feed', label: 'Activity log', desc: 'Raw coordination events for debugging, newest first.', Icon: Radio },
+  { id: 'feed', label: 'Activity log', desc: 'Raw coordination events, newest first.', Icon: Radio },
 ];
 
 export default function AdvConversationsTab() {
@@ -1544,7 +1544,11 @@ function AdvConvStyles() {
         margin: 3px 0 0;
         color: var(--fg-mute, #9fb6cc);
         font-size: 12px;
-        line-height: 1.3;
+        line-height: 1.35;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
       }
       .pc-advconv__needs {
         display: inline-flex;
@@ -1553,10 +1557,10 @@ function AdvConvStyles() {
         gap: 6px;
         min-width: 0;
         min-height: 30px;
-        padding: 5px 8px;
+        padding: 5px 10px;
         border-radius: 8px;
-        border: 1px solid color-mix(in oklab, #fbbf24, transparent 64%);
-        background: color-mix(in oklab, #fbbf24, transparent 90%);
+        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b), transparent 64%);
+        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 90%);
         color: var(--fg, #e7f7ff);
         text-align: left;
         font: inherit;
@@ -1564,18 +1568,18 @@ function AdvConvStyles() {
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       .pc-advconv__needs:hover {
-        border-color: color-mix(in oklab, #fbbf24, transparent 44%);
-        background: color-mix(in oklab, #fbbf24, transparent 74%);
+        border-color: color-mix(in oklab, var(--warn, #f59e0b), transparent 44%);
+        background: color-mix(in oklab, var(--warn, #f59e0b), transparent 74%);
       }
       .pc-advconv__needs-kicker {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        color: var(--fg, #e7f7ff);
-        font-size: 11.5px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        text-transform: none;
+        color: var(--warn, #f59e0b);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
       }
       .pc-advconv__needs strong {
         color: var(--fg, #e7f7ff);
@@ -1585,7 +1589,13 @@ function AdvConvStyles() {
       }
       .pc-advconv__needs em {
         color: var(--fg-mute, #8aa3bc);
-        display: none;
+        font-style: normal;
+        font-size: 10.5px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      @media (max-width: 1180px) {
+        .pc-advconv__needs em { display: none; }
       }
       .pc-advconv {
         --advconv-button-accent: var(--advconv-accent);
@@ -1608,7 +1618,7 @@ function AdvConvStyles() {
         background: color-mix(in oklab, var(--advconv-button-accent), transparent 66%);
         color: var(--fg, #e7f7ff);
       }
-      .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; grid-column: 1 / -1; }
+      .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 1px; }
       .pc-advconv__refresh { margin-left: auto; display: inline-flex; align-items: center; }
       .pc-advconv__callout {
         display: grid;
@@ -1700,6 +1710,33 @@ function AdvConvStyles() {
       }
       .pc-advconv__empty strong { color: var(--fg, #e7f7ff); font-size: 14px; }
       .pc-advconv__empty span { max-width: 420px; line-height: 1.45; }
+      .pc-advconv__skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 3px 1px;
+      }
+      .pc-advconv__skeleton-row {
+        height: 42px;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 60%);
+        background: linear-gradient(
+          100deg,
+          color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 45%) 40%,
+          color-mix(in srgb, var(--bg-3, rgba(255, 255, 255, 0.075)), transparent 30%) 50%,
+          color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 45%) 60%
+        );
+        background-size: 200% 100%;
+        animation: pc-advconv-shimmer 1.4s ease-in-out infinite;
+      }
+      @keyframes pc-advconv-shimmer {
+        from { background-position: 200% 0; }
+        to { background-position: -200% 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .pc-advconv__skeleton-row { animation: none; }
+      }
       .pc-advconv__reply {
         margin-top: 8px;
         display: flex;
@@ -1771,13 +1808,13 @@ function AdvConvStyles() {
         cursor: not-allowed;
       }
       .pc-advconv__replybtn--resolve:not(:disabled) {
-        border-color: color-mix(in oklab, #22c55e, transparent 64%);
+        border-color: color-mix(in oklab, var(--good, #22c55e), transparent 64%);
         color: var(--fg, #e7f7ff);
-        background: color-mix(in oklab, #22c55e, transparent 90%);
+        background: color-mix(in oklab, var(--good, #22c55e), transparent 90%);
       }
       .pc-advconv__replybtn--resolve:hover:not(:disabled) {
-        border-color: color-mix(in oklab, #22c55e, transparent 30%);
-        background: color-mix(in oklab, #22c55e, transparent 64%);
+        border-color: color-mix(in oklab, var(--good, #22c55e), transparent 30%);
+        background: color-mix(in oklab, var(--good, #22c55e), transparent 64%);
       }
 
       /* View tabs */
@@ -1796,48 +1833,46 @@ function AdvConvStyles() {
         box-shadow: none;
       }
       .pc-advconv__viewtab {
-        --advconv-view-accent: var(--advconv-accent);
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
         min-height: 30px;
-        min-width: 104px;
-        padding: 5px 10px;
+        padding: 5px 11px;
         border-radius: 8px;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 600;
         letter-spacing: 0.02em;
-        border: 1px solid color-mix(in oklab, var(--advconv-view-accent), transparent 64%);
-        background: color-mix(in oklab, var(--advconv-view-accent), transparent 90%);
-        color: var(--fg, #e7f7ff);
+        border: 1px solid var(--advconv-border);
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 30%);
+        color: var(--fg-dim, #b9d4e8);
         cursor: pointer;
         box-shadow: none;
         transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
-      .pc-advconv__viewtab:first-child {
-        --advconv-view-accent: #22c55e;
-      }
-      .pc-advconv__viewtab:last-child {
-        --advconv-view-accent: var(--advconv-accent);
+      .pc-advconv__viewtab > svg {
+        color: var(--fg-mute, #7f9bb4);
+        transition: color 120ms ease;
       }
       .pc-advconv__viewtab span {
         display: inline;
         min-width: 0;
       }
-      .pc-advconv__viewtab em {
-        display: none;
-      }
       .pc-advconv__viewtab:hover {
-        border-color: color-mix(in oklab, var(--advconv-view-accent), transparent 30%);
-        background: color-mix(in oklab, var(--advconv-view-accent), transparent 72%);
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 55%);
+        background: var(--advconv-accent-softer);
         color: var(--fg, #e7f7ff);
       }
       .pc-advconv__viewtab.is-active {
-        background: color-mix(in oklab, var(--advconv-view-accent), transparent 64%);
-        border-color: color-mix(in oklab, var(--advconv-view-accent), transparent 18%);
+        background: color-mix(in oklab, var(--advconv-accent), transparent 84%);
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 45%);
         color: var(--fg, #e7f7ff);
+        font-weight: 700;
         box-shadow: none;
+      }
+      .pc-advconv__viewtab.is-active > svg,
+      .pc-advconv__viewtab:hover > svg {
+        color: var(--advconv-accent-strong);
       }
       /* Threads split fills the remaining height */
       .pc-advconv .pc-coord__split { flex: 1 1 auto; min-height: 0; }
@@ -1885,9 +1920,11 @@ function AdvConvStyles() {
         border: 1px solid var(--advconv-border);
       }
       .pc-advconv__threads .pc-coord__row {
-        position: relative;
-        grid-template-columns: auto 1fr;
-        padding: 7px 8px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 3px;
+        padding: 7px 9px;
         border-radius: 8px;
         border-color: color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 48%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 38%);
@@ -1903,12 +1940,10 @@ function AdvConvStyles() {
         box-shadow: none;
       }
       .pc-advconv__threadtop {
-        grid-row: 1 / span 2;
         display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-        min-width: 62px;
+        align-items: center;
+        gap: 5px;
+        min-width: 0;
       }
       .pc-advconv__statepill {
         display: inline-flex;
@@ -1920,7 +1955,7 @@ function AdvConvStyles() {
         border: 1px solid color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 72%);
         background: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 90%);
         color: var(--fg-dim, #b9d4e8);
-        font-size: 9px;
+        font-size: 10px;
         font-weight: 800;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -1941,10 +1976,7 @@ function AdvConvStyles() {
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-advconv__rowdate {
-        position: absolute;
-        top: 7px;
-        right: 8px;
-        max-width: 96px;
+        margin-left: auto;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -1953,9 +1985,17 @@ function AdvConvStyles() {
         font-variant-numeric: tabular-nums;
       }
       .pc-advconv__threads .pc-coord__row-title {
-        padding-right: 96px;
-        font-weight: 750;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 700;
         letter-spacing: -0.01em;
+      }
+      .pc-advconv__threads .pc-coord__row-meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
       }
       .pc-advconv__threads .pc-coord__card {
         min-height: 100%;
@@ -2114,7 +2154,7 @@ function AdvConvStyles() {
         border: 1px solid color-mix(in srgb, var(--accent-strong, #7dd3fc), transparent 82%);
         background: color-mix(in srgb, var(--bg-deeper, #040b14), transparent 15%);
         color: var(--fg, #e7f7ff);
-        font-size: 9.5px;
+        font-size: 10px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
       }
@@ -2196,9 +2236,9 @@ function AdvConvStyles() {
         align-items: center;
         gap: 4px;
         color: var(--fg-mute, #7890a8);
-        font-size: 9px;
+        font-size: 10px;
         font-weight: 800;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.1em;
         text-transform: uppercase;
       }
       .pc-advfeed__field--search {
@@ -2261,7 +2301,7 @@ function AdvConvStyles() {
       }
       .pc-advfeed__daysep {
         position: sticky; top: 0; z-index: 1;
-        font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+        font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
         color: var(--fg-mute, #7890a8); padding: 4px 2px 1px;
         background: linear-gradient(var(--advconv-bg), color-mix(in srgb, var(--advconv-bg), transparent 18%));
       }
@@ -2298,7 +2338,7 @@ function AdvConvStyles() {
         display: inline-flex;
         align-items: center;
         gap: 4px;
-        font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 7px;
+        font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 7px;
         border: 1px solid currentColor; background: color-mix(in srgb, currentColor 12%, transparent);
         white-space: nowrap; text-transform: lowercase;
       }
@@ -2309,7 +2349,7 @@ function AdvConvStyles() {
         background: var(--feed-kind-color, currentColor);
         box-shadow: none;
       }
-      .pc-advfeed__badge--sm { font-size: 9px; padding: 0 5px; }
+      .pc-advfeed__badge--sm { font-size: 10px; padding: 0 5px; }
       .pc-advfeed__route { display: inline-flex; align-items: center; gap: 4px; min-width: 0; font-size: 10.5px; }
       .pc-advfeed__from {
         border: none; background: none; color: var(--fg, #cfe8ff); font: inherit; font-size: 10.5px;
@@ -2328,15 +2368,15 @@ function AdvConvStyles() {
       .pc-advfeed__summary:hover { color: var(--fg, #e7f7ff); }
       .pc-advfeed__nosum { color: var(--fg-mute, #5f7488); }
       .pc-advfeed__planchip {
-        font-size: 9.5px; padding: 1px 6px; border-radius: 7px; white-space: nowrap;
+        font-size: 10px; padding: 1px 6px; border-radius: 7px; white-space: nowrap;
         border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 58%);
         color: var(--advconv-accent-strong);
         background: var(--advconv-accent-softer);
         cursor: pointer; font: inherit;
       }
       .pc-advfeed__planchip:hover { background: var(--advconv-accent-soft); }
-      .pc-advfeed__replyn { font-size: 9.5px; color: var(--fg-mute, #8aa3bc); white-space: nowrap; }
-      .pc-advfeed__rel { font-size: 9.5px; color: var(--fg-mute, #6f87a0); white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pc-advfeed__replyn { font-size: 10px; color: var(--fg-mute, #8aa3bc); white-space: nowrap; }
+      .pc-advfeed__rel { font-size: 10px; color: var(--fg-mute, #6f87a0); white-space: nowrap; font-variant-numeric: tabular-nums; }
       .pc-advfeed__detail {
         margin: 0 6px 3px 28px;
         padding: 8px 10px;
@@ -2471,8 +2511,6 @@ function AdvConvStyles() {
           flex-direction: column;
         }
         .pc-advfeed__needsline strong { margin-left: 0; }
-        .pc-advconv__rowdate { position: static; grid-column: 2; max-width: none; }
-        .pc-advconv__threads .pc-coord__row-title { padding-right: 0; }
         .pc-advfeed__inputs { flex-direction: column; }
         .pc-advfeed__field,
         .pc-advfeed__field--search {

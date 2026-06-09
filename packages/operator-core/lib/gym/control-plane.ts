@@ -229,6 +229,37 @@ export async function listProposals(
   return rows.map(mapProposal);
 }
 
+/**
+ * Workspace-wide recent proposals across EVERY gym harness — the read behind the
+ * Learning tab's Gym view (operator-learning-tab-2026-06-09). Newest-first, capped.
+ * (The per-harness `listProposals` is the control surface; this is the cross-harness
+ * "what has the gym been doing lately" rollup.)
+ */
+export async function listRecentProposalsForWorkspace(
+  sql: Sql,
+  q: { workspaceId: string; limit?: number },
+): Promise<GymProposalRow[]> {
+  const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
+  const rows = (await sql`
+    SELECT * FROM harness_shared.gym_proposals
+     WHERE workspace_id = ${q.workspaceId}
+     ORDER BY created_at DESC
+     LIMIT ${limit}`) as Row[];
+  return rows.map(mapProposal);
+}
+
+/** Every autoloop config in the workspace (one per gym harness), freshest first. */
+export async function listAutoloopsForWorkspace(
+  sql: Sql,
+  q: { workspaceId: string },
+): Promise<GymAutoloopConfig[]> {
+  const rows = (await sql`
+    SELECT * FROM harness_shared.gym_autoloop_config
+     WHERE workspace_id = ${q.workspaceId}
+     ORDER BY updated_at DESC`) as Row[];
+  return rows.map(mapAutoloop);
+}
+
 export interface DecideResult {
   ok: boolean;
   reason?: string;

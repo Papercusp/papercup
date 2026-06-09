@@ -1192,6 +1192,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
+  //
+  // Cross-harness rollup of the gym control plane: recent prompt-optimization
+  // proposals (pending / accepted = champions / rejected) + each gym harness's
+  // autoloop config. Reuses the gym control-plane readers (single source of truth
+  // with the gym:* routes). Returns a 1-element array { proposals, autoloops }.
+  // NOT table-backed for PG-trigger invalidation — refreshes on mount + the panel's
+  // manual `invalidate()`. Empty until a gym actually runs (graceful empty in the UI).
+  'learning.gym': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { listRecentProposalsForWorkspace, listAutoloopsForWorkspace } = await import('../gym/control-plane');
+      const ws = activeWorkspaceId();
+      return await routeWithWorkspace(async (tx) => {
+        const [proposals, autoloops] = await Promise.all([
+          listRecentProposalsForWorkspace(tx, { workspaceId: ws, limit: 50 }),
+          listAutoloopsForWorkspace(tx, { workspaceId: ws }),
+        ]);
+        return [{ proposals, autoloops }];
+      });
+    },
+  },
+
   // ── dev.* — live-ops glances for the dev admin rail ──────────────────
   //
   // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so

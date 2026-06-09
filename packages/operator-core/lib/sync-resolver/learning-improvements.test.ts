@@ -8,8 +8,10 @@ import { knownQueryNamesV2 } from './index';
  * here we just assert it's registered in the v2 resolver — a missing registration
  * is the failure mode that would silently 404 the tab.
  */
-describe('learning.improvements resolver registration', () => {
-  it('is registered in the v2 named-query resolver', () => {
-    expect(knownQueryNamesV2()).toContain('learning.improvements');
+describe('learning.* resolver registration', () => {
+  it('registers learning.improvements + learning.gym in the v2 named-query resolver', () => {
+    const names = knownQueryNamesV2();
+    expect(names).toContain('learning.improvements');
+    expect(names).toContain('learning.gym');
   });
 });
