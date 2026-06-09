@@ -509,7 +509,7 @@ function ApiaryView() {
   return (
     <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Benchmark summary">
-        <Stat label="composite" value={latest ? compositeLabel(latest.meanComposite) : '—'} tone="good" hint="Latest generation’s mean judge score (0–1). Higher is better — this is the headline benchmark." />
+        <Stat label="composite" value={latest ? compositeLabel(latest.meanComposite) : '—'} tone="good" hint="Latest generation’s mean judge composite — higher is better. This is the headline benchmark; watch the trend, not the absolute number." />
         <Stat label="success" value={latest ? pctLabel(latest.successRate) : '—'} hint="Share of battery tasks the fleet solved without escalating." />
         <Stat label="time to green" value={latest ? secsLabel(latest.meanTimeToGreenSecs) : '—'} hint="Mean wall-clock to a solved task. Lower is better." />
         <Stat label="tokens / task" value={latest ? tokensLabel(latest.meanTokens) : '—'} hint="Mean tokens per solved task. Lower is cheaper." />
