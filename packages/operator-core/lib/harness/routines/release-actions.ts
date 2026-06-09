@@ -25,6 +25,24 @@ import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 
+/** Markers the release CLIs print their result JSON behind (P-008) — parse ONE delimited
+ *  line instead of brace-slicing all of stdout (fragile to any log line with braces). MUST
+ *  match the literals in green-checkpoint.ts / deploy-cli.ts (operator-core cannot import
+ *  the apps/operator tier, so the contract is duplicated by value). */
+const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';
+
+/** Parse the JSON on the line carrying `marker`, or null if absent/unparseable. */
+function parseMarkerLine(stdout: string, marker: string): Record<string, unknown> | null {
+  const line = stdout.split('\n').find((l) => l.includes(marker));
+  if (!line) return null;
+  try {
+    return JSON.parse(line.slice(line.indexOf(marker) + marker.length).trim()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 /** The integration tree (where green-checkpoint/deploy operate). Explicit env so
  *  it stays correct even after the operator itself runs from the release checkout. */
 function integrationRoot(): string {
@@ -106,26 +124,27 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   let status = 'error';
   let candidate: string | undefined;
   let summary: string | undefined;
+  let failingTests: string[] | undefined;
   const detail: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1)) as {
-      reason?: string;
-      green?: boolean | null;
-      candidate?: string;
-      from?: string | null;
-      summary?: string;
-    };
-    if (parsed?.reason) {
-      status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
-      candidate = parsed.candidate;
-      summary = parsed.summary;
-      detail.green = parsed.green ?? null;
-      if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
-      if (parsed.from) detail.from = parsed.from.slice(0, 12);
-    } else {
-      detail.stderr = (r.stderr || r.stdout).slice(-300);
-    }
-  } catch {
+  // P-008: parse the delimited result marker, not a brace-slice of all stdout.
+  const parsed = parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) as {
+    reason?: string;
+    green?: boolean | null;
+    candidate?: string;
+    from?: string | null;
+    summary?: string;
+    failingTests?: string[];
+  } | null;
+  if (parsed?.reason) {
+    status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
+    candidate = parsed.candidate;
+    summary = parsed.summary;
+    failingTests = parsed.failingTests;
+    detail.green = parsed.green ?? null;
+    if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
+    if (parsed.from) detail.from = parsed.from.slice(0, 12);
+  } else {
+    // No parseable result marker (crash before print / non-zero exit) → 'error'.
     detail.code = r.code;
     detail.stderr = (r.stderr || r.stdout).slice(-300);
   }
@@ -141,7 +160,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // release-fixer agent to diagnose + fix the failing test — the test-failure
   // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
   if (status === 'not-green' && candidate) {
-    await dispatchReleaseFixer(ctx, candidate).catch((e) =>
+    await dispatchReleaseFixer(ctx, candidate, failingTests).catch((e) =>
       console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -303,26 +322,29 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promis
  * doesn't respawn a fixer while one is in flight for the same candidate.
  * Fail-safe: every step is best-effort and never throws into the routine tick.
  */
-async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Promise<void> {
+async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, failingTests?: string[]): Promise<void> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  // Dedup: a fresh red candidate is handled (notified + fixer-dispatched) ONCE;
-  // a candidate seen within the last 2h is "in flight" and skipped — so the
-  // hourly tick neither re-notifies the human nor re-spawns a fixer.
+  // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the
+  // candidate sha. While the gate stays red, staging advances hourly so every checkpoint
+  // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
+  // hour for the SAME failure. The signature is stable across candidates; only a CHANGED
+  // failure set re-dispatches. Falls back to the candidate sha when none was extracted.
+  const signature = failingTests && failingTests.length > 0 ? failingTests.slice().sort().join(',') : candidate;
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ lf: { candidate?: string; at?: number } | null }>;
+  )) as Array<{ lf: { signature?: string; candidate?: string; at?: number } | null }>;
   const lf = rows[0]?.lf ?? null;
-  if (lf?.candidate === candidate && typeof lf.at === 'number' && Date.now() - lf.at < 2 * 60 * 60_000) {
-    return;
+  if (lf?.signature === signature && typeof lf.at === 'number' && Date.now() - lf.at < 2 * 60 * 60_000) {
+    return; // same failure handled within the last 2h — don't re-notify or re-dispatch
   }
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [ctx.installSlug, JSON.stringify({ last_fixer: { candidate, at: Date.now(), status: 'dispatched' } })],
+    [ctx.installSlug, JSON.stringify({ last_fixer: { signature, candidate, at: Date.now(), status: 'dispatched' } })],
   );
 
   // P-003: a user-facing notification (native OS notification on desktop, mobile
@@ -334,10 +356,10 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Pr
     await notifyAttention({
       kind: 'intervention',
       title: 'Release gate held — staging→main blocked',
-      body: `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red); a release-fixer was dispatched to diagnose it.`,
+      body: `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); a release-fixer was dispatched to diagnose it.`,
       importance: 'high',
       workspaceId: ctx.workspaceId,
-      data: { candidate: candidate.slice(0, 12) },
+      data: { candidate: candidate.slice(0, 12), failing: (failingTests ?? []).slice(0, 10).join(',') },
     });
   } catch (e) {
     console.warn(`[green-checkpoint] release-red notify failed: ${e instanceof Error ? e.message : e}`);
@@ -357,7 +379,10 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Pr
     body: JSON.stringify({
       kickoff: `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`,
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
-      timeoutMs: 280_000,
+      // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
+      // the old 280s; the invoke-route ceiling is 1200s. 900s. The signature dedup (2h)
+      // already prevents re-dispatch well beyond this.
+      timeoutMs: 900_000,
     }),
   })
     .then((res) =>
@@ -458,16 +483,13 @@ registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
   const root = integrationRoot();
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);
-  let planObj: AutoServePlan | null = null;
-  try {
-    const parsed = JSON.parse(plan.stdout.slice(plan.stdout.indexOf('{'), plan.stdout.lastIndexOf('}') + 1)) as {
-      plan?: AutoServePlan;
-    };
-    planObj = parsed?.plan ?? null;
-  } catch {
-    console.warn('[release-trigger] could not parse deploy plan — skipping this tick');
+  // P-008: parse the delimited plan marker, not a brace-slice of all stdout.
+  const parsedPlan = parseMarkerLine(plan.stdout, DEPLOY_PLAN_MARKER) as { plan?: AutoServePlan } | null;
+  if (!parsedPlan) {
+    console.warn('[release-trigger] could not parse deploy plan marker — skipping this tick');
     return;
   }
+  const planObj: AutoServePlan | null = parsedPlan.plan ?? null;
   // Forward-only auto-serve: only advance to a green `main` that brings ≥1 new
   // commit via a fast-forward (or the first deploy). Skips the
   // checkout-at/ahead-of-main case that previously storm-redeployed :3070 — see

@@ -27,6 +27,7 @@ mod models;
 mod mux;
 mod notify;
 mod operator_voice_bus;
+mod reap;
 mod session_panes;
 mod sse;
 mod theme;
@@ -153,11 +154,18 @@ async fn main() -> Result<()> {
 
 /// Materialise the workbench layout and hand off to zellij. Replaces this
 /// process's foreground with the zellij session; on exit we mirror its code.
+/// The session is app-managed (named via `layout::session_name`, EI-186):
+/// stale leftovers are reaped before launch, and zellij returning — exit OR
+/// detach — ends the workbench, so the session is killed rather than left as
+/// a detached server (whose dead-pane PTYs busy-spin).
 fn run_workbench() -> Result<()> {
+    let session = layout::session_name("wb");
+    reap::reap_stale(&session);
     let path = layout::materialize()?;
-    let argv = layout::launch_argv(&path.to_string_lossy());
+    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
+    reap::kill_and_delete(&session);
     std::process::exit(status.code().unwrap_or(0));
 }
 
@@ -191,9 +199,15 @@ async fn run_chat_dock() -> Result<()> {
         Err(_) => (lexicon::Lexicon::default(), false),
     };
     let path = layout::materialize_chat_dock(&brain_argv, &lex, hive_agent_tabs)?;
-    let argv = layout::launch_argv(&path.to_string_lossy());
+    // App-managed session (EI-186): reap stale leftovers (the desktop relaunches
+    // this dock constantly — each relaunch used to leak a detached server), and
+    // kill our own when zellij returns.
+    let session = layout::session_name("dock");
+    reap::reap_stale(&session);
+    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
+    reap::kill_and_delete(&session);
     std::process::exit(status.code().unwrap_or(0));
 }
 

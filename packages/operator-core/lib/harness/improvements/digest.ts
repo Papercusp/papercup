@@ -50,6 +50,11 @@ export interface ScoredItem {
   tierReason: string;
   /** Idea type (product vs process, self-learning P-020). */
   ideaType?: 'product' | 'process';
+  /** Idea-lifecycle state (payload.ideaLifecycle.state) — undefined for legacy
+   *  captures. The scheduled triage pass picks untriaged items off this. */
+  ideaLifecycleState?: import('./lifecycle').IdeaLifecycleState;
+  /** The Queen's (or the scheduled pass's) recorded type-route, when triaged. */
+  triageDecision?: 'place' | 'gate' | 'gym' | 'reject';
 }
 
 export interface DupCluster {
@@ -352,6 +357,8 @@ export function buildDigest(
       ageDays: Math.round(ageDays * 10) / 10,
       tierReason: decision.reasons[decision.reasons.length - 1] ?? '',
       ideaType,
+      ...(c.ideaLifecycle ? { ideaLifecycleState: c.ideaLifecycle.state } : {}),
+      ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

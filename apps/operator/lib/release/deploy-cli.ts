@@ -36,6 +36,11 @@ import {
 import { realDeps } from './deploy-deps';
 import type { RealDepsOpts } from './deploy-deps';
 
+/** The marker the deploy CLI prints its plan JSON behind, so the release-trigger routine
+ *  parses ONE delimited line instead of brace-slicing all of stdout (P-008). MUST stay in
+ *  sync with the literal in release-actions.ts. */
+export const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';
+
 /**
  * Injectable seams for `main`. Every field defaults to the real wiring, so the
  * production CLI behaves exactly as before; tests override the seams to drive
@@ -91,6 +96,8 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const plan = await gatherPlan(cfg, { target, force });
 
   out(JSON.stringify({ mode: execute ? 'execute' : 'plan', config: { releaseRoot: cfg.releaseRoot, releaseRef: cfg.releaseRef, unit: cfg.systemdUnit }, plan }, null, 2));
+  // P-008: machine-readable plan on ONE delimited line for the release-trigger routine.
+  out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: execute ? 'execute' : 'plan', plan })}`);
 
   if (plan.warnings.length) {
     err('\n⚠ WARNINGS:');
@@ -111,6 +118,9 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   if (!plan.green && !force) {
     err(`\n[deploy] REFUSING: target is not the green \`${cfg.releaseRef}\` pin.`);
     err('         Override with --deploy-commit <sha> or --force (deploys an UN-GREEN state; loud + audited).');
+    // P-008: record the gate refusal so /admin/git's deploy stats fold it — the 'refused'
+    // status was counted by the fold but never written by anything. Best-effort.
+    await recordRefusedDeploy(plan.targetSha).catch(() => {});
     return 2;
   }
 
@@ -133,6 +143,27 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const res = await executeDeploy(cfg, plan, deps, { rollbackOnFailure: !has('--no-rollback') });
   out(JSON.stringify({ ok: res.ok, rolledBack: res.rolledBack, error: res.error, steps: res.steps }, null, 2));
   return res.ok ? 0 : 1;
+}
+
+/** P-008: append a `refused` deploy event to the /admin/git pipeline history when the
+ *  gate declines an un-green --execute. Lazy-imports operator-core so an `import` of this
+ *  module stays light; best-effort (a stats-log failure must never affect the gate). */
+async function recordRefusedDeploy(targetSha: string): Promise<void> {
+  const { appendPipelineEvent } = await import('@papercusp/operator-core/lib/harness/git-sync/pipeline-events');
+  let workspaceId = '*';
+  try {
+    const { activeWorkspaceId } = await import('@papercusp/operator-core/lib/workspace-registry');
+    workspaceId = activeWorkspaceId();
+  } catch {
+    /* no active workspace (standalone) — '*' is the pipeline_events default */
+  }
+  await appendPipelineEvent({
+    workspaceId,
+    installSlug: process.env.RELEASE_ROUTINE_SLUG ?? 'papercup',
+    kind: 'deploy',
+    status: 'refused',
+    detail: { targetSha: targetSha.slice(0, 12), reason: 'not-green and not --force' },
+  });
 }
 
 // Run as the CLI only — the ESM equivalent of `require.main === module`. An

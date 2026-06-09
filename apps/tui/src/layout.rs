@@ -140,14 +140,26 @@ layout {
 /// `:dock`/`:layout` (D-008). The first entry is the default arrangement.
 pub const SWAP_PRESETS: &[&str] = &["stacked", "stacked-left", "split", "grid"];
 
-/// Argv to start a zellij session with the workbench layout. The `options`
-/// subcommand layers per-session config overrides WITHOUT replacing the
-/// user's config: startup tips are suppressed — these are app-managed
-/// sessions (the workbench / the desktop chat dock), and the tips pane
-/// floats over the app's panes blocking everything until dismissed.
-pub fn launch_argv(layout_path: &str) -> Vec<String> {
+/// Name for an app-managed zellij session: `pui-<kind>-<pid>` (kind = `wb` |
+/// `dock`). Encoding OUR pid is what makes the leak reapable (EI-186): a later
+/// launch can tell a session whose owning pui died (host terminal closed, dock
+/// relaunched) from one still in use, and [`crate::reap`] kills only the former.
+pub fn session_name(kind: &str) -> String {
+    format!("pui-{kind}-{}", std::process::id())
+}
+
+/// Argv to start a zellij session with the workbench layout. The session is
+/// explicitly named (see [`session_name`]) so exits/crashes can be reaped
+/// instead of leaking an auto-named detached server. The `options` subcommand
+/// layers per-session config overrides WITHOUT replacing the user's config:
+/// startup tips are suppressed — these are app-managed sessions (the workbench
+/// / the desktop chat dock), and the tips pane floats over the app's panes
+/// blocking everything until dismissed.
+pub fn launch_argv(layout_path: &str, session: &str) -> Vec<String> {
     vec![
         "zellij".to_string(),
+        "--session".to_string(),
+        session.to_string(),
         "--layout".to_string(),
         layout_path.to_string(),
         "options".to_string(),
@@ -428,19 +440,32 @@ mod tests {
 
     #[test]
     fn launch_argv_shape() {
+        // `--session` names the session so it is reapable (EI-186);
         // `options --show-startup-tips false` layers a per-session override
         // (no user-config replacement): the tips pane floats over the
         // app-managed session blocking the panes until dismissed.
         assert_eq!(
-            launch_argv("/home/u/.papercusp/pui-workbench.kdl"),
+            launch_argv("/home/u/.papercusp/pui-workbench.kdl", "pui-wb-42"),
             vec![
                 "zellij",
+                "--session",
+                "pui-wb-42",
                 "--layout",
                 "/home/u/.papercusp/pui-workbench.kdl",
                 "options",
                 "--show-startup-tips",
                 "false"
             ]
+        );
+    }
+
+    #[test]
+    fn session_name_encodes_kind_and_own_pid() {
+        let name = session_name("dock");
+        assert_eq!(
+            name,
+            format!("pui-dock-{}", std::process::id()),
+            "owner pid in the name is what makes the session reapable"
         );
     }
 

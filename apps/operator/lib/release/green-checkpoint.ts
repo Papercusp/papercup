@@ -21,7 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import {
@@ -36,8 +36,11 @@ import type { ReleaseConfig } from './release-config';
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
   setupTree(ref: string): Promise<void>;
-  /** Run the "green" suite in `treeDir` against `base`; resolve green=true on pass. */
-  runGreen(treeDir: string, base: string | null): Promise<{ green: boolean; summary: string }>;
+  /** Run the "green" suite in `treeDir` against `base`; resolve green=true on pass.
+   *  `failingTests` is a STABLE signature of what failed (test files / workspaces),
+   *  extracted from the FULL output — used to dedup the release-fixer dispatch by the
+   *  failure rather than the candidate sha (P-012). */
+  runGreen(treeDir: string, base: string | null): Promise<{ green: boolean; summary: string; failingTests?: string[] }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
   /** Publish `ready` to origin. */
@@ -60,6 +63,24 @@ export interface CheckpointResult {
   green: boolean | null;
   reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'create-failed';
   summary?: string;
+  /** P-012: a stable signature of what failed (test files / workspaces) on the
+   *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
+  failingTests?: string[];
+}
+
+/** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
+ *  release-actions routine parses one delimited line instead of brace-slicing the whole
+ *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
+export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+
+/** Extract a stable failure signature from the FULL suite output (NOT the 2000-char
+ *  tail, which can truncate the markers): vitest `FAIL <file>` lines + the affected
+ *  runner's `>>> <ws> FAILED` workspace markers. Used for the release-fixer dedup. */
+export function extractFailingTests(out: string): string[] {
+  const set = new Set<string>();
+  for (const m of out.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
+  for (const m of out.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
+  return [...set].sort().slice(0, 50);
 }
 
 export interface CheckpointOpts {
@@ -94,7 +115,7 @@ export async function runGreenCheckpoint(
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
   await deps.setupTree(candidate);
-  const { green, summary } = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  const { green, summary, failingTests } = await deps.runGreen(cfg.checkpointRoot, lastReady);
   if (!green) {
     deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
     await deps
@@ -123,7 +144,7 @@ export async function runGreenCheckpoint(
       `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
       `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}`,
     ).catch(() => {});
-    return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary };
+    return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary, failingTests };
   }
 
   const adv = await deps.advance(candidate);
@@ -208,29 +229,60 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       // regression fails twice; a flake almost never does.
       env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
       const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
-      // Persist the FULL suite output — the 2000-char tail below repeatedly
-      // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with
-      // no test names survived the truncation; 2026-06-06/07 cost five
-      // diagnosis round-trips + manual re-runs). One file per run, tiny disk,
-      // names every failure forever.
+
+      // P-005: the SPA build is PART of "green". A build break (a bad import, a type
+      // error in a bundled module) passes the Vitest suite, then fails at the deploy's
+      // swap step (`--build-spa`) and rolls back — needlessly draining + restarting the
+      // live :3070 (2026-06-09 13:31–14:00: three rolled-back deploys of the same broken
+      // green). Build it here, in the isolated checkpoint tree, so a broken build holds
+      // `main` like any other red — before it ever reaches a deploy. Only run it once the
+      // suite is green (a red suite already holds `main`; no point building).
+      let buildOut = '';
+      let buildOk = true;
+      if (r.code === 0) {
+        const b = await runCmd('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
+          cwd: treeDir,
+          env,
+          allowNonZero: true,
+        });
+        buildOk = b.code === 0;
+        if (!buildOk) {
+          buildOut = '\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr;
+        }
+      }
+      const green = r.code === 0 && buildOk;
+      const fullOutput = r.stdout + r.stderr + buildOut;
+
+      // Persist the FULL suite (+ build) output — the 2000-char tail below repeatedly
+      // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with no test
+      // names survived the truncation; 2026-06-06/07 cost five diagnosis round-trips +
+      // manual re-runs). One file per run, tiny disk, names every failure forever.
       try {
         const logDir = path.join(homedir(), '.papercusp', 'checkpoint-logs');
         mkdirSync(logDir, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}.log`);
-        writeFileSync(logPath, r.stdout + r.stderr);
+        writeFileSync(logPath, fullOutput);
         log(`full suite output → ${logPath}`);
+        // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
+        pruneOldLogs(logDir, 14);
       } catch { /* best-effort — the gate verdict must not depend on logging */ }
-      // Strip npm's error boilerplate before truncating — it's ~10 lines of
-      // noise per failed workspace and repeatedly pushed the actual FAIL test
-      // names out of the 2000-char tail (cost two diagnosis round-trips on
-      // 2026-06-06). Keep the signal: FAIL lines, timeouts, assertion output.
-      const summary = (r.stdout + r.stderr)
+
+      // P-012: a stable failure signature from the FULL output (before truncation), so the
+      // release-fixer dedups by WHAT failed, not the candidate sha (which changes hourly).
+      const failingTests = green ? [] : extractFailingTests(fullOutput);
+      if (!buildOk && !failingTests.includes('@papercusp/operator-vite')) failingTests.push('@papercusp/operator-vite');
+
+      // Strip npm's error boilerplate before truncating — it's ~10 lines of noise per
+      // failed workspace and repeatedly pushed the actual FAIL test names out of the
+      // 2000-char tail (cost two diagnosis round-trips on 2026-06-06). Keep the signal:
+      // FAIL lines, timeouts, assertion output, and the SPA build failure tail.
+      const summary = fullOutput
         .split('\n')
         .filter((l) => !/^npm error/.test(l))
         .join('\n')
         .slice(-2000);
-      return { green: r.code === 0, summary };
+      return { green, summary, failingTests };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
@@ -281,6 +333,20 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
   };
 }
 
+/** P-014: delete checkpoint-log files older than `days` so the dir doesn't grow
+ *  unbounded (it was trending ~16MB / 43 files in 3 days). Best-effort, never throws. */
+function pruneOldLogs(dir: string, days: number): void {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  try {
+    for (const f of readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try {
+        if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+      } catch { /* skip a vanished/locked file */ }
+    }
+  } catch { /* dir gone — nothing to prune */ }
+}
+
 function runCmd(
   cmd: string,
   args: string[],
@@ -314,6 +380,10 @@ if (require.main === module) {
   })
     .then((r) => {
       console.log(JSON.stringify(r, null, 2));
+      // P-008: machine-readable result on ONE delimited line, so the release-actions
+      // routine parses this instead of brace-slicing the whole stdout (fragile to any
+      // log line that happens to contain braces).
+      console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
       process.exit(0);
     })
     .catch((e) => {

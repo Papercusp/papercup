@@ -24,8 +24,9 @@
 import { useMemo } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
+import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'knowledge'] as const;
 type LView = (typeof LVIEWS)[number];
@@ -216,7 +217,7 @@ function ageLabel(days: number): string {
 }
 
 function ImprovementsView() {
-  const sync = useSyncQuery<ImprovementDigest>({ queryName: 'learning.improvements', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({ queryName: 'learning.improvements', args: {}, staleTime: 30_000 });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
 
@@ -231,6 +232,8 @@ function ImprovementsView() {
 
   return (
     <section className="pc-learning__section">
+      {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+
       <div className="pc-learning__scoreboard" aria-label="Improvements summary">
         <Stat label="captured" value={digest?.total ?? '—'} hint="Everything ever filed — problems, friction, and ideas, open or not." />
         <Stat label="open" value={digest?.open ?? '—'} hint="Not fixed yet." />
@@ -314,6 +317,64 @@ function ImprovementRow({ item }: { item: ScoredItem }) {
         <span className="pc-learning__score" title="Triage priority (severity + age) — higher means more urgent">{item.score}</span>
       </span>
     </li>
+  );
+}
+
+// ─── Flow strip (P-041 — flows, not stocks) ──────────────────────────────────
+
+/** Watchdog liveness tone: green <30min since the last tick, amber <2h, red otherwise (incl. never). */
+function watchdogHealth(lastTickAt: string | null, nowMs: number): { tone: 'good' | 'warn' | 'bad'; label: string } {
+  const ms = lastTickAt ? Date.parse(lastTickAt) : NaN;
+  if (Number.isNaN(ms)) return { tone: 'bad', label: 'never' };
+  const ageMin = Math.max(0, (nowMs - ms) / 60_000);
+  const label = ageMin < 1 ? 'just now' : ageMin < 90 ? `${Math.round(ageMin)}m ago` : ageMin < 48 * 60 ? `${Math.round(ageMin / 60)}h ago` : `${Math.round(ageMin / (60 * 24))}d ago`;
+  if (ageMin < 30) return { tone: 'good', label };
+  if (ageMin < 120) return { tone: 'warn', label };
+  return { tone: 'bad', label };
+}
+
+/** The flow scoreboard — is the loop CYCLING (in vs out), not just how big the pile is. */
+function FlowStrip({ flow }: { flow: ImprovementFlow }) {
+  const net = flow.net7d;
+  const netTone: 'good' | 'warn' | 'flat' = net < 0 ? 'good' : net > 0 ? 'warn' : 'flat';
+  const wd = watchdogHealth(flow.watchdog.lastTickAt, Date.now());
+  return (
+    <div className="pc-learning__flow" aria-label="Improvement flow (trailing window)">
+      <span
+        className="pc-learning__flowchip"
+        title="Items captured vs resolved in the trailing 7 days — the loop's in-flow vs out-flow. A shrinking backlog (↓) means resolution is keeping up with capture."
+      >
+        <Activity size={11} aria-hidden />
+        <strong>{flow.captured7d}</strong> in / <strong>{flow.resolved7d}</strong> out
+        <em>7d</em>
+        <span className={`pc-learning__flownet pc-learning__flownet--${netTone}`} title="Net backlog change over 7 days (captured − resolved)">
+          {net > 0 ? <ArrowUp size={10} aria-hidden /> : net < 0 ? <ArrowDown size={10} aria-hidden /> : <Minus size={10} aria-hidden />}
+          {net > 0 ? `+${net}` : net}
+        </span>
+      </span>
+      <span
+        className="pc-learning__flowchip"
+        title="Median age of the open items — fresh churn or sediment? Rising median = the backlog is silting up."
+      >
+        <Hourglass size={11} aria-hidden />
+        median open <strong>{flow.medianOpenAgeDays == null ? '—' : ageLabel(flow.medianOpenAgeDays)}</strong>
+      </span>
+      <span
+        className="pc-learning__flowchip"
+        title="Friction signatures captured more than once — the same problem coming back. Recurrence is the strongest 'fix this next' signal."
+      >
+        <Repeat2 size={11} aria-hidden />
+        <strong>{flow.recurringSignatureCount}</strong> recurring
+      </span>
+      <span
+        className={`pc-learning__flowchip pc-learning__flowchip--wd-${wd.tone}`}
+        title={`The watchdog auto-files objective problems on a cadence — if it stops ticking, the capture feed has silently died. ${flow.watchdog.ticks24h} tick(s) and ${flow.watchdog.captured24h} capture(s) in the last 24h.`}
+      >
+        <span className={`pc-learning__flowdot pc-learning__flowdot--${wd.tone}`} aria-hidden />
+        watchdog <strong>{wd.label}</strong>
+        <em>{flow.watchdog.ticks24h} ticks / {flow.watchdog.captured24h} captured · 24h</em>
+      </span>
+    </div>
   );
 }
 
@@ -652,6 +713,28 @@ function LearningStyles() {
       .pc-learning__howbody { display: flex; flex-direction: column; gap: 2px; }
       .pc-learning__howbody strong { font-size: 12px; font-weight: 700; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__howbody em { font-style: normal; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #7f9bb4); }
+
+      /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
+      .pc-learning__flow { display: flex; flex-wrap: wrap; gap: 6px; }
+      .pc-learning__flowchip {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__flowchip strong { font-weight: 740; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums; }
+      .pc-learning__flowchip em { font-style: normal; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__flownet { display: inline-flex; align-items: center; gap: 1px; font-weight: 740; font-variant-numeric: tabular-nums; }
+      .pc-learning__flownet--good { color: #86efac; }
+      .pc-learning__flownet--warn { color: #fcd34d; }
+      .pc-learning__flownet--flat { color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__flowchip--wd-good { border-color: rgba(52, 211, 153, 0.4); }
+      .pc-learning__flowchip--wd-warn { border-color: rgba(252, 211, 77, 0.45); }
+      .pc-learning__flowchip--wd-bad { border-color: rgba(248, 113, 113, 0.5); }
+      .pc-learning__flowdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+      .pc-learning__flowdot--good { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
+      .pc-learning__flowdot--warn { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
+      .pc-learning__flowdot--bad { background: #f87171; box-shadow: 0 0 5px rgba(248, 113, 113, 0.6); }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__stat {

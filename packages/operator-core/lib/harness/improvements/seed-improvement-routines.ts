@@ -32,6 +32,10 @@ import { activeWorkspaceId } from '../../workspace-registry';
 const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? 'papercup';
 const ROUTINES = [
   { name: 'improvement-watchdog', target: 'system:improvement-watchdog', cron: '0 */15 * * * *', arm: 'safe' }, // every 15 min
+  // The scheduled triage pass (learning-system-audit P-011): persists the
+  // deterministic type-route on untriaged open items — routing metadata only
+  // (never rejects, never dispatches), so it arms with the safe tier.
+  { name: 'improvement-triage', target: 'system:improvement-triage', cron: '0 0 */6 * * *', arm: 'safe' }, // every 6 h
   { name: 'improvement-implement', target: 'system:improvement-implement', cron: '0 */30 * * * *', arm: 'owner' }, // every 30 min
 ] as const;
 

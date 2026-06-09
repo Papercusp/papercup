@@ -103,9 +103,10 @@ async function acquireLocks(cd: string, slug: string, acquired: string[]): Promi
   return 'acquired';
 }
 
-/** How long a 'dispatched' resolver is presumed to still be running (route caps the
- *  agent at ~90s; give generous headroom before we'd re-dispatch). */
-const RESOLVER_INFLIGHT_MS = 5 * 60_000;
+/** How long a 'dispatched' resolver is presumed to still be running before we'd
+ *  re-dispatch (P-010). MUST exceed the invoke timeoutMs below (900s) so a still-running
+ *  resolver is never double-dispatched on the next conflict tick. */
+const RESOLVER_INFLIGHT_MS = 20 * 60_000;
 
 /**
  * Whether a merge-resolver is GENUINELY in-flight for this harness — i.e. a dispatch
@@ -214,9 +215,12 @@ async function readEscalationCounters(slug: string): Promise<{ errTicks: number;
 /**
  * Spawn a merge-resolver role via the invoke route (P-012) — OBSERVABLY (GAP-2).
  *
- * The `/invoke` route is synchronous (runs the agent to completion, up to ~90s), so
- * we MUST NOT await it: git-sync holds the exclusive git-sync + submodule locks for
- * the whole handler. So this stays fire-and-forget — but it is no longer SILENT:
+ * The `/invoke` route is synchronous (it runs the agent to completion — up to the
+ * timeoutMs below, now 900s), so we MUST NOT await it: this runs inside the git-sync
+ * routine's DBOS step and blocking it for the resolver's full runtime would stall the
+ * routines tick. (The resolver acquires the git-sync resource lock ITSELF when it merges;
+ * git-sync's own locks are already released by the time control reaches here.) So this
+ * stays fire-and-forget — but it is no longer SILENT:
  *   1. a durable `last_resolver: { status:'dispatched', … }` marker is written FIRST
  *      (awaited), so the attempt is recorded even if the process restarts mid-run;
  *   2. the eventual result (HTTP status, agent exitCode/timedOut, or a network error)
@@ -258,10 +262,12 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
     body: JSON.stringify({
       kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`staging\`, submodules = their own default). Conflicted: ${filesSummary}`,
       extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
-      // A real multi-file merge by a higher-effort model needs more than the route's
-      // 90s default; give it near the route's 300s ceiling (it waits on the git-sync
-      // lock first, then does the merge).
-      timeoutMs: 280_000,
+      // P-010: a real multi-file merge by a higher-effort model needs well beyond the
+      // route's 90s default. The invoke-route ceiling is 1200s (the old "~300s ceiling"
+      // comment was stale). Give it 900s: it drains+takes the git-sync lock (≤120s) first,
+      // then merges. RESOLVER_INFLIGHT_MS (20 min) exceeds this so we never re-dispatch a
+      // still-running resolver.
+      timeoutMs: 900_000,
     }),
   })
     .then(async (res) => {

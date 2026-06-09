@@ -1173,6 +1173,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (operator-learning-tab-2026-06-09 P-002 / D-003). Reuses the SAME read+score
   // path the `improvements:digest` tool uses (readImprovementItems + buildDigest),
   // so the tab and the tool can never drift. Returns the structured ImprovementDigest
+  // — extended with a `flow` block (learning-system-audit P-041: captured-vs-resolved
+  // 7d, median open age, recurrence count, watchdog liveness — flows, not stocks;
+  // the digest fields themselves are untouched so the tool shape can't drift) —
   // as a 1-element array (client reads data[0]). NOT table-backed — engineer_issues
   // has no emit_change_notify trigger — so it refreshes on mount + the panel's manual
   // `invalidate()` + a server-side notifySyncInvalidate fired from captureImprovement.
@@ -1187,8 +1190,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
+      const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const nowMs = Date.now();
       const items = await readImprovementItems({ state: a.state, limit: a.limit });
-      return [buildDigest(items, { nowMs: Date.now() })];
+      const digest = buildDigest(items, { nowMs });
+      // Watchdog ticks are best-effort: a tick-read failure degrades the flow
+      // strip to "watchdog: never" rather than 500ing the whole improvements view.
+      let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
+      try {
+        ticks = await readWatchdogFlowTicks(activeWorkspaceId());
+      } catch (err) {
+        console.warn('[learning.improvements] watchdog tick read failed:', err instanceof Error ? err.message : err);
+      }
+      const flow = computeImprovementFlow(items, ticks, {
+        nowMs,
+        // Reuse the digest's recurrence computation (P-041) — do not re-derive.
+        recurringSignatureCount: digest.recurringSignatures.length,
+      });
+      return [{ ...digest, flow }];
     },
   },
 

@@ -35,6 +35,7 @@ import {
   type IssueState,
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
+import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload } from './lifecycle';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
@@ -83,6 +84,14 @@ function attemptsOf(issue: EngineerIssue): number {
   return typeof p.implementAttempts === 'number' ? p.implementAttempts : 0;
 }
 
+function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
+  const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
+  const l = p.ideaLifecycle;
+  return l && typeof l === 'object' && typeof (l as { state?: unknown }).state === 'string'
+    ? (l as IdeaLifecyclePayload)
+    : null;
+}
+
 export async function resolveImprovement(
   input: ResolveImprovementInput,
   deps: ResolveDeps = defaultDeps,
@@ -111,6 +120,13 @@ export async function resolveImprovement(
       (input.commit ? `\nLanded: ${input.commit} (rides the release gate)` : '');
     await deps.commentIssue(input.id, evidence, by);
     const updated = await deps.setIssueState(input.id, 'resolved', by);
+    // Advance the idea lifecycle to 'applied' (self-learning P-031) — the decay
+    // sweep then grades it verified/recurred from signature recurrence (P-013).
+    // Permissive on the prior state: a legacy item without a lifecycle gets one
+    // here so it still enters the decay pipeline.
+    await deps.mergeIssuePayload(input.id, {
+      ideaLifecycle: updateIdeaLifecycle(lifecycleOf(issue) ?? initializeIdeaLifecycle(), 'applied'),
+    });
     return { ok: true, id: input.id, outcome: 'fixed', state: updated?.state ?? 'resolved' };
   }
 

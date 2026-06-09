@@ -99,7 +99,12 @@ while IFS= read -r P; do
     log "WARN git archive $P@$S failed; rsync'ing integration HEAD (pin may drift)"
     rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$P/" "$RELEASE_ROOT/$P/"
   fi
-done < <(git -C "$INTEGRATION_ROOT" config -f .gitmodules --get-regexp '\.path$' | awk '{print $2}')
+# P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
+# integration tree's current working copy — a submodule added/removed on staging while
+# the target still pins the old set would otherwise be extracted from the wrong list
+# during the transition window. `git config --blob <sha>:.gitmodules` reads the committed
+# config; 2>/dev/null + an empty loop is the correct no-op when a sha has no .gitmodules.
+done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
 
 # 3. node_modules ----------------------------------------------------------
 need_node_modules() {

@@ -39,7 +39,10 @@ import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
-import type { ScoredItem } from '../improvements/digest';
+import { runDecaySweep } from '../improvements/decay';
+import { buildDigest, type ScoredItem } from '../improvements/digest';
+import { triageIdea } from '../improvements/triage';
+import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
 export const IMPROVEMENT_RUNNER_ASSIGNEE = 'improvement-runner';
@@ -94,6 +97,73 @@ registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
       `, ${result.declinedDuplicates} duplicate(s) declined, ${result.deferred} deferred by the per-tick cap` +
       (failed.length ? `, ${failed.length} collector(s) FAILED: ${failed.join(', ')}` : '') +
       (result.selfEscalations.length ? `, self-escalated ${result.selfEscalations.join(', ')}` : ''),
+  );
+
+  // Recurrence-decay verification rides the same cadence (P-013 of
+  // learning-system-audit-improvements-2026-06-09): grade resolved+applied items
+  // verified/recurred from post-resolution signature recurrence. Best-effort —
+  // a sweep failure must never fail the capture tick.
+  try {
+    const decay = await runDecaySweep();
+    if (decay.verified || decay.recurred || decay.initialized) {
+      console.log(
+        `[improvement-watchdog] decay sweep: ${decay.verified} verified, ${decay.recurred} recurred, ` +
+          `${decay.initialized} legacy item(s) retro-entered the pipeline (scanned ${decay.scanned})`,
+      );
+    }
+  } catch (e) {
+    console.warn('[improvement-watchdog] decay sweep failed:', e instanceof Error ? e.message : e);
+  }
+});
+
+// ── P-011 (learning-system-audit): the scheduled triage pass ─────────────────
+// The deterministic type-route (triageIdea: product→place, process→gate) applied
+// on a cadence and PERSISTED, so every open idea carries a provisional routing
+// lane instead of waiting for a Queen turn that never came. Decisions are
+// re-takeable: the Queen/owner can re-triage any item via improvements:triage
+// (triaged→triaged is a valid transition). The scheduled pass never rejects and
+// never dispatches — it only records routing metadata.
+
+/** The apply seam — injectable for tests (mirrors the implement fire seam). */
+export type TriageApplyFn = (input: ApplyTriageInput) => Promise<ApplyTriageResult>;
+
+let _applyTriage: TriageApplyFn | null = null;
+/** Override the triage persistence (tests). Pass null to restore the default. */
+export function setImprovementTriageApply(fn: TriageApplyFn | null): void {
+  _applyTriage = fn;
+}
+
+registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
+  const maxPerRun = intFromEnv('PAPERCUSP_IMPROVEMENT_TRIAGE_MAX_PER_RUN', 25, { min: 0 });
+  const items = await readImprovementItems({ state: 'open' });
+  const digest = buildDigest(items);
+  const batch = selectUntriaged(digest.autoEligible.concat(digest.humanQueue), maxPerRun);
+  if (batch.length === 0) {
+    console.log('[improvement-triage] nothing untriaged — backlog fully routed');
+    return;
+  }
+  const apply = _applyTriage ?? applyTriageDecision;
+  let applied = 0;
+  const byDecision: Record<string, number> = {};
+  for (const item of batch) {
+    const triage = triageIdea(item);
+    const res = await apply({
+      id: item.id,
+      decision: triage.decision,
+      reason: triage.reason,
+      by: 'improvement-triage',
+      comment: false, // batch pass — no per-item thread spam; the lifecycle carries the decision
+    });
+    if (res.ok) {
+      applied += 1;
+      byDecision[triage.decision] = (byDecision[triage.decision] ?? 0) + 1;
+    }
+  }
+  console.log(
+    `[improvement-triage] routed ${applied}/${batch.length} untriaged item(s): ` +
+      Object.entries(byDecision)
+        .map(([d, n]) => `${d}=${n}`)
+        .join(', '),
   );
 });
 

@@ -15,9 +15,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
-import { buildDigest, type ImprovementDigest } from '../../harness/improvements/digest';
+import { buildDigest } from '../../harness/improvements/digest';
 import { triageIdea, summarizeTriages, type TriageDecision } from '../../harness/improvements/triage';
-import { updateIdeaLifecycle, initializeIdeaLifecycle, type IdeaLifecyclePayload } from '../../harness/improvements/lifecycle';
+import { applyTriageDecision } from '../../harness/improvements/triage-core';
 
 export default defineTool({
   name: 'improvements:triage',
@@ -142,25 +142,34 @@ export default defineTool({
         };
       }
 
-      // Update the idea's lifecycle with the Queen's decision
-      // (In a real implementation, this would write to the DB via an engineer_issues update)
-      const lifecycle: IdeaLifecyclePayload = {
-        state: 'triaged',
-        stateUpdatedAt: new Date().toISOString(),
-        triageDecision: args.decision as TriageDecision,
-        triageReason: args.reason,
-      };
+      // Persist the Queen's decision durably (learning-system-audit P-010):
+      // writes payload.ideaLifecycle (state machine validated), records
+      // payload.decidedReason + CLOSES the issue on reject (queue-as-memory —
+      // the next same-signature capture recalls "already decided: <reason>").
+      const result = await applyTriageDecision({
+        id: args.ideaId,
+        decision: args.decision as TriageDecision,
+        reason: args.reason,
+        by: 'Queen',
+      });
+      if (!result.ok) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify({ ok: false, error: result.error }) },
+          ],
+        };
+      }
 
       // Generate guidance based on decision type (P-040: gym re-trigger)
       let note = '';
       if (args.decision === 'place') {
-        note = 'Decision recorded. Use work_items:create to assign and track the implementation.';
+        note = 'Decision persisted. Use work_items:create to assign and track the implementation.';
       } else if (args.decision === 'gate') {
-        note = 'Decision recorded. Escalate for human review before proceeding.';
+        note = 'Decision persisted. Escalate for human review before proceeding.';
       } else if (args.decision === 'gym') {
-        note = 'Decision recorded. Gym A/B dispatch for verification (P-040). Next: call fleet:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
+        note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call fleet:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
       } else if (args.decision === 'reject') {
-        note = 'Decision recorded. Improvement rejected; record the reason for future dedup queries.';
+        note = 'Decision persisted: issue CLOSED with decidedReason — the recall matcher surfaces it on the next same-signature capture.';
       }
 
       return {
@@ -173,7 +182,8 @@ export default defineTool({
               ideaId: args.ideaId,
               decision: args.decision,
               reason: args.reason,
-              lifecycle,
+              lifecycle: result.lifecycle,
+              closed: result.closed ?? false,
               note,
             }),
           },

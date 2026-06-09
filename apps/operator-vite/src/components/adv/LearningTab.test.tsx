@@ -43,6 +43,16 @@ const improvementsDigest = {
   likelyDuplicates: [],
   recurringSignatures: [],
   headline: 'papercusp-improvement digest: 135 captured (117 open)',
+  // P-041 flow scoreboard — flows, not stocks. lastTickAt is relative to now
+  // because the strip's watchdog-health tone is computed against Date.now().
+  flow: {
+    captured7d: 12,
+    resolved7d: 8,
+    net7d: 4,
+    medianOpenAgeDays: 14.2,
+    recurringSignatureCount: 3,
+    watchdog: { lastTickAt: new Date(Date.now() - 10 * 60_000).toISOString(), ticks24h: 96, captured24h: 5 },
+  },
 };
 
 const gymSnapshot = {
@@ -127,6 +137,30 @@ describe('LearningTab — Improvements view (default)', () => {
     };
     render(<LearningTab />);
     expect(screen.getByText('Nothing in this lane')).toBeTruthy();
+  });
+
+  it('renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health', () => {
+    render(<LearningTab />);
+    const strip = screen.getByLabelText('Improvement flow (trailing window)');
+    expect(strip).toBeTruthy();
+    expect(strip.textContent).toContain('12'); // captured 7d
+    expect(strip.textContent).toContain('8'); // resolved 7d
+    expect(strip.textContent).toContain('+4'); // net arrow (backlog grew)
+    expect(strip.textContent).toContain('median open');
+    expect(strip.textContent).toContain('14d'); // median open age label
+    expect(strip.textContent).toContain('3 recurring');
+    // last tick 10 minutes ago → green ("Nm ago" label, wd-good chip)
+    expect(strip.textContent).toMatch(/watchdog\s*\d+m ago/);
+    expect(strip.querySelector('.pc-learning__flowchip--wd-good')).toBeTruthy();
+    expect(strip.textContent).toContain('96 ticks / 5 captured · 24h');
+  });
+
+  it('omits the flow strip when the resolver row carries no flow block (older payloads)', () => {
+    const { flow: _flow, ...digestSansFlow } = improvementsDigest as Record<string, unknown> & { flow: unknown };
+    improvementsResult = { data: [digestSansFlow], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    expect(screen.queryByLabelText('Improvement flow (trailing window)')).toBeNull();
+    expect(screen.getByText('135')).toBeTruthy(); // the stock scoreboard still renders
   });
 });
 

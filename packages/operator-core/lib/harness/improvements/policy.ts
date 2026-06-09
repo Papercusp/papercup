@@ -62,6 +62,11 @@ export interface ImprovementCandidate {
   /** Source role that filed this improvement (P-010 source-tag): Queen, bee, system, or human.
    *  Tracked for per-Hive analytics and topic lens. */
   sourceRole?: 'Queen' | 'bee' | 'system' | 'human';
+  /** The idea-lifecycle journey (payload.ideaLifecycle — self-learning P-030/P-031):
+   *  open → triaged(place/gate/gym/reject) → applied → verified/recurred. Initialized
+   *  at capture; written by triage-core, resolve-core, and the decay sweep. Items
+   *  captured before the lifecycle landed have none (treated as 'open'). */
+  ideaLifecycle?: import('./lifecycle').IdeaLifecyclePayload;
 }
 
 export type Tier = 'auto' | 'human';

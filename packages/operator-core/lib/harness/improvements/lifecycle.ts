@@ -108,11 +108,17 @@ export function isValidTransition(
 }
 
 /**
- * For product-class ideas: check if the decay (14+ days without recurrence)
- * should mark the idea as "verified". Called by the Queen when reading the digest.
+ * Decay outcome for an APPLIED idea (called by the decay sweep on the watchdog
+ * cadence — learning-system-audit-improvements-2026-06-09 P-013).
  *
- * If signature recurred count is 1 (only this one), and it's been 14+ days since
- * the issue was resolved → mark as verified(worked).
+ * Class asymmetry (self-learning D-003):
+ *   - `recurred` fires for ANY class — a friction signature re-surfacing after the
+ *     fix is regression evidence regardless of product/process.
+ *   - `verified` fires ONLY for the product class — absence-of-recurrence is too
+ *     weak a positive for process/prompt ideas (those earn the gym's A/B instead).
+ *
+ * `count` is the POST-RESOLUTION recurrence count + 1 (i.e. 1 = no recurrence
+ * since the fix); `decayDays` is days since the item was resolved.
  */
 export function checkDecayOutcome(
   lifecycle: IdeaLifecyclePayload,
@@ -122,23 +128,22 @@ export function checkDecayOutcome(
     resolvedCount: number;
   },
 ): IdeaLifecyclePayload | null {
-  // Only apply decay check for product-class applied ideas
-  if (lifecycle.state !== 'applied' || lifecycle.ideaType !== 'product') {
+  if (lifecycle.state !== 'applied' || !recurrenceData) {
     return null;
   }
 
-  // Decay check: if the signature hasn't recurred (count === 1) after 14+ days
-  if (recurrenceData && recurrenceData.count === 1 && recurrenceData.decayDays >= 14) {
-    return updateIdeaLifecycle(lifecycle, 'verified', {
-      decayResult: 'worked',
+  // Regression (any class): the signature re-surfaced after the fix.
+  if (recurrenceData.count > 1) {
+    return updateIdeaLifecycle(lifecycle, 'recurred', {
+      decayResult: 'regressed',
       decayDays: recurrenceData.decayDays,
     });
   }
 
-  // If it did recur (count > 1), mark as regressed and move to recurred
-  if (recurrenceData && recurrenceData.count > 1) {
-    return updateIdeaLifecycle(lifecycle, 'recurred', {
-      decayResult: 'regressed',
+  // Positive decay-verification: product class only (D-003).
+  if (lifecycle.ideaType === 'product' && recurrenceData.count === 1 && recurrenceData.decayDays >= 14) {
+    return updateIdeaLifecycle(lifecycle, 'verified', {
+      decayResult: 'worked',
       decayDays: recurrenceData.decayDays,
     });
   }

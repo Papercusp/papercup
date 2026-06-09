@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGreenCheckpoint, type CheckpointDeps } from './green-checkpoint';
+import { runGreenCheckpoint, extractFailingTests, type CheckpointDeps } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
 
@@ -21,7 +21,7 @@ async function commit(file: string, content: string, msg: string): Promise<strin
   return revParse(repo, 'HEAD');
 }
 
-function stubDeps(green: boolean): { deps: CheckpointDeps; calls: string[] } {
+function stubDeps(green: boolean, failingTests?: string[]): { deps: CheckpointDeps; calls: string[] } {
   const calls: string[] = [];
   const deps: CheckpointDeps = {
     setupTree: async (ref) => {
@@ -29,7 +29,7 @@ function stubDeps(green: boolean): { deps: CheckpointDeps; calls: string[] } {
     },
     runGreen: async () => {
       calls.push('runGreen');
-      return { green, summary: green ? 'all pass' : '3 failed' };
+      return { green, summary: green ? 'all pass' : '3 failed', failingTests };
     },
     advance: (candidate) => {
       calls.push('advance');
@@ -108,5 +108,36 @@ describe('runGreenCheckpoint', () => {
     const r = await runGreenCheckpoint(cfg(), deps, { candidate: cDiv, noPush: true });
     expect(r.reason).toBe('not-fast-forward');
     expect(await revParse(repo, 'ready')).toBe(cFeat); // unchanged
+  });
+
+  it('P-012: threads the failure signature (failingTests) into the not-green result', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const { deps } = stubDeps(false, ['@papercusp/operator-core', 'lib/fleet/operator-spawn.test.ts']);
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(r.reason).toBe('not-green');
+    // the signature flows out so the release-fixer can dedup by FAILURE, not candidate sha
+    expect(r.failingTests).toEqual(['@papercusp/operator-core', 'lib/fleet/operator-spawn.test.ts']);
+  });
+});
+
+describe('extractFailingTests (P-012 failure signature)', () => {
+  it('pulls vitest FAIL files and affected-runner workspace markers, sorted + unique', () => {
+    const out = [
+      'some passing noise',
+      ' FAIL  lib/fleet/operator-spawn.test.ts > mints NO session id',
+      '>>> @papercusp/operator-core FAILED — retrying once (AFFECTED_RETRY_FAILED)',
+      ' FAIL  lib/fleet/operator-spawn.test.ts > another case', // dup file
+      '1 non-quarantined task(s) failed.',
+    ].join('\n');
+    expect(extractFailingTests(out)).toEqual([
+      '@papercusp/operator-core',
+      'lib/fleet/operator-spawn.test.ts',
+    ]);
+  });
+
+  it('returns [] when nothing failed', () => {
+    expect(extractFailingTests('All affected tests passed.\nTests 1200 passed')).toEqual([]);
   });
 });

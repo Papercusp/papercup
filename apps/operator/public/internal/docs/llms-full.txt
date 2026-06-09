@@ -6197,13 +6197,20 @@ The notify must `createChannel` **synchronously** (before returning/awaiting) to
 
 `Protomux.from(socket)` reuses `socket.userData` when set but does **not** set it. Hypercore’s `createProtocolStream` sets it; a standalone transport that runs first must do the same (`if (!socket.userData) socket.userData = mux`) so corestore replication / cross-hive / directory share one muxer in **any** attach order — two muxers on one stream corrupt framing.
 
+## Cadence: two-speed, not flat
+
+[Section titled “Cadence: two-speed, not flat”](#cadence-two-speed-not-flat)
+
+The refresh loop is **fast (2.5s) only inside a 30s post-join window** — several full DHT rounds — then backs off to a **60s keepalive**, so a permanent topic (the global directory) doesn’t hammer the public DHT forever. Losing a topic’s last paired channel re-arms its fast window (snappy reconnection). The cross-hive transport’s background timer applies the same logic, while its `send()` dial loop still refreshes unconditionally.
+
 ## Where this is pinned
 
 [Section titled “Where this is pinned”](#where-this-is-pinned)
 
 * `lib/sync/hyperbee/__tests__/hive-directory-live-two-peer.test.ts` — the live directory E2E: bidirectional public discovery, member-links across the wire, LWW edit convergence, invite no-leak + late invite join. Runs in the normal unit suite (\~6s).
 * `lib/cross-hive-two-hive.test.ts` (`RUN_LIVE_HYPERSWARM=1`) — the live cross-hive wire.
-* `lib/sync/hyperbee/directory-swarm.test.ts` — fake-muxer unit coverage of the gossip (per-topic keying, lazy accept, late join, refresh loop, scoped broadcast).
+* `lib/sync/hyperbee/directory-swarm.test.ts` — fake-muxer unit coverage of the gossip (per-topic keying, lazy accept, late join, two-speed refresh, scoped broadcast).
+* `papercusp-desktop/bin/two-instance-hive-directory-smoke.sh` — the **packaged full-app-stack proof** (PASSED 2026-06-09): two separately-packaged `.deb` instances, distinct real GitHub identities, isolated testnet DHT — `discovery:set_hive` on A → listed (owner-verified, member-links intact) on B’s `GET /api/discovery/hives`, bidirectional. Also exercises the `ensureHiveDirectoryWired` lazy wire (a fresh install boots zero harnesses, so the boot-join has nothing to ride; the first publish/browse self-heals it).
 
 Same-host limits still apply: a loopback **testnet** connects fine, but raw hyperswarm holepunch between two processes on one physical host over a real DHT does not — see [vm-federation-separate-machine-proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof). Plan record: D-007 @ `p2p-hive-directory-2026-06-06`.
 
@@ -27463,7 +27470,7 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group’s verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**362 MCP tools** across **69 groups**.
+**363 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -27505,7 +27512,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `harness_docs`   | 7     | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify`                                                                                                                                                                                                                                                                                                                                                             | `docs:read` `docs:write`                                                                                     |
 | `hive`           | 9     | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `status` `update` `wake`                                                                                                                                                                                                                                                                                                                                            | `harness:read` `harness:write` `routines:write` `work_items:write`                                           |
 | `hooks`          | 1     | `known`                                                                                                                                                                                                                                                                                                                                                                                                                           | `roles:read`                                                                                                 |
-| `improvements`   | 4     | `capture` `digest` `resolve` `triage`                                                                                                                                                                                                                                                                                                                                                                                             | `coord:read` `coord:write`                                                                                   |
+| `improvements`   | 5     | `capture` `digest` `resolve` `triage` `watchdog-status`                                                                                                                                                                                                                                                                                                                                                                           | `coord:read` `coord:write`                                                                                   |
 | `inbox`          | 1     | `triage`                                                                                                                                                                                                                                                                                                                                                                                                                          | `coord:write`                                                                                                |
 | `instance`       | 3     | `boot` `capture` `clone`                                                                                                                                                                                                                                                                                                                                                                                                          | `harness:read` `harness:write`                                                                               |
 | `intel`          | 2     | `artifacts` `spawn_tree`                                                                                                                                                                                                                                                                                                                                                                                                          | `intel:read`                                                                                                 |

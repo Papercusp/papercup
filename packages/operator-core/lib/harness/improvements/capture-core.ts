@@ -34,6 +34,7 @@ import {
 } from '../../issues-engineer';
 import { IMPROVEMENT_TOPIC, issueToCandidate } from './read-items';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
+import { initializeIdeaLifecycle } from './lifecycle';
 
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
@@ -239,6 +240,9 @@ export async function captureImprovement(
   if (input.watchdogKey) payload.watchdogKey = input.watchdogKey;
   // P-010 source-tag: track who filed this improvement for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
+  // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
+  // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
+  payload.ideaLifecycle = initializeIdeaLifecycle();
 
   const issue = await deps.createIssue({
     title: input.title,

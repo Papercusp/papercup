@@ -36,6 +36,8 @@ interface ImprovementPayload {
   decidedReason?: unknown;
   /** P-010 source-tag: Queen, bee, system, or human — tracks who filed this improvement. */
   sourceRole?: unknown;
+  /** Idea-lifecycle journey (self-learning P-030/P-031) — written by capture/triage-core/resolve-core/decay. */
+  ideaLifecycle?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -67,7 +69,18 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(p.needsHuman === true ? { needsHuman: true } : {}),
     ...(decidedReason ? { decidedReason } : {}),
     ...(sourceRole ? { sourceRole } : {}),
+    ...(isIdeaLifecycle(p.ideaLifecycle) ? { ideaLifecycle: p.ideaLifecycle } : {}),
   };
+}
+
+/** Narrow an unknown payload field to the lifecycle shape (cheap structural check). */
+function isIdeaLifecycle(v: unknown): v is import('./lifecycle').IdeaLifecyclePayload {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof (v as { state?: unknown }).state === 'string' &&
+    typeof (v as { stateUpdatedAt?: unknown }).stateUpdatedAt === 'string'
+  );
 }
 
 export interface ReadImprovementOpts {

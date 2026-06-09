@@ -2,19 +2,36 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
 import triageTool from './triage';
+import { applyTriageDecision } from '../../harness/improvements/triage-core';
 import type { ScoredItem } from '../../harness/improvements/digest';
 
 // Mock the dependencies
 vi.mock('../../harness/improvements/read-items');
 vi.mock('../../harness/improvements/digest');
 vi.mock('../coordination/identity');
+// The tool now PERSISTS triage-one via triage-core (learning-system-audit P-010)
+// — mock the core so the unit test stays PG-free; triage-core has its own tests.
+vi.mock('../../harness/improvements/triage-core');
 
 const mockReadImprovementItems = vi.mocked(readImprovementItems);
 const mockBuildDigest = vi.mocked(buildDigest);
+const mockApplyTriageDecision = vi.mocked(applyTriageDecision);
 
 describe('improvements:triage tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApplyTriageDecision.mockImplementation(async (input) => ({
+      ok: true,
+      id: input.id,
+      decision: input.decision,
+      lifecycle: {
+        state: 'triaged',
+        stateUpdatedAt: new Date().toISOString(),
+        triageDecision: input.decision,
+        triageReason: input.reason,
+      },
+      closed: input.decision === 'reject',
+    }));
   });
 
   const mockItem = (p: Partial<ScoredItem> & { id: string }): ScoredItem => ({
