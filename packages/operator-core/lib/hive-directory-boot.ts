@@ -50,6 +50,12 @@ export interface HiveDirectoryWiring {
   /** Join an invite-scoped directory topic from a received invite secret (the
    *  invitee side). Idempotent. */
   joinInviteTopic(inviteSecret: string): Promise<void>;
+  /**
+   * The topic-routing broadcast — the same closure handed to
+   * setHiveDirectoryTransport. Exposed so an injected (non-singleton) directory
+   * can route its `broadcast` dep through this wiring (tests, multi-instance).
+   */
+  transport(topicHex: string, frame: Parameters<DirectorySwarmHandle['broadcast']>[0]): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -98,7 +104,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
   // 2. Transport routes a frame to ITS topic's handle. An unknown topic (an
   //    invite hive added after boot) is lazily joined first — the hex is the
   //    32-byte topic, so it round-trips to a Buffer. Never silently dropped.
-  setHiveDirectoryTransport(async (topicHex, frame) => {
+  const transport = async (topicHex: string, frame: Parameters<DirectorySwarmHandle['broadcast']>[0]): Promise<void> => {
     let h = handles.get(topicHex);
     if (!h) {
       try {
@@ -108,7 +114,8 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
       }
     }
     if (h) h.broadcast(frame);
-  }, opts.keychainId);
+  };
+  setHiveDirectoryTransport(transport, opts.keychainId);
 
   // 3. Register + announce owned hives (transport is set, so public + invite go out).
   for (const hive of opts.ownedHives ?? []) {
@@ -131,6 +138,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
     async joinInviteTopic(inviteSecret: string): Promise<void> {
       await joinTopic(deriveInviteTopic(inviteSecret));
     },
+    transport,
     async stop() {
       stopTimer();
       dir.stopReannounce();

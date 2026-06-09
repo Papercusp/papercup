@@ -39,7 +39,7 @@ import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
-import { runWatchdogTick } from '../improvements/watchdog';
+import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import type { ScoredItem } from '../improvements/digest';
 
 /** The claim identity the dispatch stamps on an in-flight item (close-loop D-001). */
@@ -74,8 +74,15 @@ export function intFromEnv(name: string, fallback: number, opts: { min?: number 
 
 // ── close-loop D-003: the watchdog hard feed-in (capture only) ───────────────
 registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
-  const maxPerTick = intFromEnv('PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK', 3, { min: 0 });
-  const result = await runWatchdogTick(ctx.workspaceId, { maxPerTick, installSlug: ctx.installSlug });
+  // Audit P-012: collector bars + caps tune from the routine's payload_template
+  // (no deploy needed); the env var stays the emergency override for maxPerTick.
+  const tuned = watchdogOptionsFromPayload(ctx.payloadTemplate);
+  const maxPerTick = intFromEnv(
+    'PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK',
+    typeof tuned.maxPerTick === 'number' ? tuned.maxPerTick : 3,
+    { min: 0 },
+  );
+  const result = await runWatchdogTick(ctx.workspaceId, { ...tuned, maxPerTick, installSlug: ctx.installSlug });
   if (result.status === 'skipped') {
     console.log('[improvement-watchdog] tick skipped — another host held the cross-host lock');
     return;
@@ -84,7 +91,8 @@ registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
   console.log(
     `[improvement-watchdog] ${result.signals} signal(s) → captured ${result.captured.length}` +
       (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
-      `, ${result.declinedDuplicates} open-duplicate(s) declined, ${result.deferred} deferred by the per-tick cap` +
+      `, ${result.knownOpen} known-open pre-filtered, ${result.staleResolved} stale-resolved pre-filtered` +
+      `, ${result.declinedDuplicates} duplicate(s) declined, ${result.deferred} deferred by the per-tick cap` +
       (failed.length ? `, ${failed.length} collector(s) FAILED: ${failed.join(', ')}` : '') +
       (result.selfEscalations.length ? `, self-escalated ${result.selfEscalations.join(', ')}` : ''),
   );

@@ -133,6 +133,12 @@ pub struct RosterEntry {
     #[serde(default)]
     #[allow(dead_code)]
     pub drive_mode: Option<String>,
+    /// The bee's native claude session id (mig 203 spawned_agents.session_id) — the
+    /// `claude --resume <id>` handle for the bee pane (P-004). None for non-bee /
+    /// omp / pending entries. Consumed when the bee pane lands — allow until then.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub session_id: Option<String>,
 }
 
 impl RosterEntry {

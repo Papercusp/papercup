@@ -275,6 +275,20 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(bare.agentPaneKind).toBe('bee');
   });
 
+  it('surfaces the bee session_id from the spawned-agents map → claude --resume handle (P-004)', () => {
+    const [e] = mergeRosterEntries(
+      [presence({ ownerId: 's-bee-1' })],
+      new Map([['s-bee-1', adv({ role: 'bee' })]]),
+      NOW,
+      new Map(),
+      new Map([['s-bee-1', 'claude-uuid-xyz']]),
+    );
+    expect(e.sessionId).toBe('claude-uuid-xyz');
+    // No session recorded (omp bee / pre-flag) → null.
+    const [none] = mergeRosterEntries([presence({ ownerId: 's-2' })], new Map(), NOW);
+    expect(none.sessionId).toBeNull();
+  });
+
   it('pending entry: a --brain launch argv → queen even with a null role', () => {
     const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');

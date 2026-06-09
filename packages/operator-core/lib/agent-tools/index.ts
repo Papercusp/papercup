@@ -287,6 +287,7 @@ import './improvements/capture';
 import './improvements/digest';
 import './improvements/triage';
 import './improvements/resolve';
+import './improvements/watchdog-status';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

@@ -29,8 +29,10 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
 import { checkMigrationDrift } from '../../migration-drift';
+import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
 import type { ImprovementSeverity } from './policy';
 
@@ -58,6 +60,20 @@ export interface WatchdogSignal {
   kind?: ImprovementKind;
   /** Repo-relative paths involved, when the signal knows them (feeds the path gate). */
   paths?: string[];
+  /**
+   * Newest evidence timestamp (ISO) backing this signal (watchdog-audit P-005 /
+   * D-002). Windowed/aggregate collectors set it (red-test, tool-error,
+   * failed-spawn, smoke-fail, expired-lease) so a RESOLVED duplicate re-files
+   * only when the evidence post-dates the resolution. Live-state collectors
+   * (service-down, migration-drift, …) omit it — their firing means the problem
+   * exists NOW, so a re-file after resolve is always legitimate.
+   */
+  latestAt?: string;
+}
+
+/** `${source}:${key}` — the stable cross-tick identity of a signal (P-004 / D-001). */
+export function watchdogKeyOf(s: Pick<WatchdogSignal, 'source' | 'key'>): string {
+  return `${s.source}:${s.key}`;
 }
 
 /**
@@ -99,6 +115,10 @@ export interface WatchdogTickRecord {
   deferred: number;
   /** `${source}:${key}` of each signal the anti-flood cap deferred this tick (P-009). */
   deferredKeys?: string[];
+  /** Keys the P-004 pre-filter dropped as already-filed OPEN improvements (audit D-001). */
+  knownOpenKeys?: string[];
+  /** Keys dropped as resolved-with-stale-evidence — not regressions (audit P-005 / D-002). */
+  staleResolvedKeys?: string[];
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed ABOUT ITSELF this tick (P-002). */
   selfEscalations: string[];
@@ -192,6 +212,82 @@ export function planWatchdogCaptures(signals: WatchdogSignal[], opts: WatchdogPl
   return { toCapture: admitted, deferred };
 }
 
+// ── P-004/P-005 key-based pre-filter (watchdog-audit-2026-06-09) ─────────────
+
+/** An existing improvement matched by `payload.watchdogKey` (the dedup feed). */
+export interface WatchdogKeyDup {
+  watchdogKey: string;
+  state: string;
+  /** ISO `updated_at` — for a resolved item, the resolution recency bound (D-002). */
+  updatedAt: string;
+}
+
+/** The pre-filter's split of collected signals (P-004 / D-001 + P-005 / D-002). */
+export interface SignalPartition {
+  /** No matching key on file → genuinely new, goes to planning. */
+  fresh: WatchdogSignal[];
+  /** Key matches an OPEN improvement → standing, already filed. Never consumes budget. */
+  knownOpen: WatchdogSignal[];
+  /**
+   * Key matches only RESOLVED improvements AND the signal's newest evidence
+   * pre-dates the resolution → stale lookback-window evidence, not a regression.
+   */
+  staleResolved: WatchdogSignal[];
+}
+
+/**
+ * Pure (P-004 / D-001 + P-005 / D-002): split collected signals against the
+ * existing improvements that carry their `watchdogKey`:
+ *   - an OPEN match → `knownOpen` (already filed; do not burn a capture slot);
+ *   - only RESOLVED matches + `latestAt` <= the newest resolution `updatedAt`
+ *     → `staleResolved` (pre-fix window evidence, not a regression);
+ *   - otherwise → `fresh` (genuinely new, or a real regression with fresh
+ *     evidence — including a live-state signal with no `latestAt`, whose firing
+ *     means the problem exists NOW).
+ * Unparseable timestamps fail open (fresh): a phantom re-file beats a
+ * suppressed real regression.
+ */
+export function partitionSignalsByKnownKeys(signals: WatchdogSignal[], dups: WatchdogKeyDup[]): SignalPartition {
+  const byKey = new Map<string, WatchdogKeyDup[]>();
+  for (const d of dups) {
+    const list = byKey.get(d.watchdogKey);
+    if (list) list.push(d);
+    else byKey.set(d.watchdogKey, [d]);
+  }
+  const out: SignalPartition = { fresh: [], knownOpen: [], staleResolved: [] };
+  for (const s of signals) {
+    const matches = byKey.get(watchdogKeyOf(s)) ?? [];
+    if (matches.some((m) => m.state === 'open')) {
+      out.knownOpen.push(s);
+      continue;
+    }
+    if (matches.length > 0 && s.latestAt) {
+      const evidenceMs = Date.parse(s.latestAt);
+      const newestResolutionMs = Math.max(...matches.map((m) => Date.parse(m.updatedAt)));
+      if (Number.isFinite(evidenceMs) && Number.isFinite(newestResolutionMs) && newestResolutionMs >= evidenceMs) {
+        out.staleResolved.push(s);
+        continue;
+      }
+    }
+    out.fresh.push(s);
+  }
+  return out;
+}
+
+/**
+ * Default key-dup reader: one indexed lookup over `payload.watchdogKey`
+ * (engineer_issues_watchdog_key_idx). Injectable via `WatchdogDeps`.
+ */
+export async function readWatchdogKeyDups(keys: string[]): Promise<WatchdogKeyDup[]> {
+  if (keys.length === 0) return [];
+  const issues = await findIssuesByWatchdogKeys(keys);
+  return issues.map((i) => ({
+    watchdogKey: String((i.payload as Record<string, unknown> | null)?.watchdogKey ?? ''),
+    state: i.state,
+    updatedAt: i.updatedAt,
+  }));
+}
+
 // ── signal collectors (IO) ───────────────────────────────────────────────────
 
 export interface CollectOptions {
@@ -213,6 +309,16 @@ export interface CollectOptions {
   callerMinCount?: number;
   /** Max age of the service-health snapshot to trust for service-down (P-004). Default 2× the 60s probe interval. */
   serviceHealthMaxStaleMs?: number;
+  /** smoke-fail recency gate (audit P-007): only a failure recorded within this many hours fires. Default 48. */
+  smokeFailRecentHours?: number;
+  /** expired-lease recency window (audit P-006): count only leases expired within this many days. Default 7. */
+  expiredLeaseWindowDays?: number;
+  /** expired-lease fire threshold. Default 15. */
+  expiredLeaseMinCount?: number;
+  /** failed-spawn lookback window. Default 6h. */
+  failedSpawnWindowHours?: number;
+  /** failed-spawn fire threshold (total failures in the window). Default 5. */
+  failedSpawnMinCount?: number;
 }
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
@@ -230,12 +336,21 @@ export function normalizeRedTestPath(filePath: string): string | null {
   return filePath.replace(/^.*papercupai-workspace\/[^/]+\//, '');
 }
 
-interface RedTestRow { file_path: string; framework: string; fails: number; sample: string | null }
+interface RedTestRow { file_path: string; framework: string; fails: number; sample: string | null; latest_fail_at?: string | Date | null }
+
+/** ISO-or-undefined from a pg timestamp value (Date under postgres.js, string in tests). */
+function toIsoOrUndefined(v: string | Date | null | undefined): string | undefined {
+  if (v == null) return undefined;
+  if (v instanceof Date) return v.toISOString();
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
 
 /**
  * Pure: red-test aggregate rows → signals, keyed by the NORMALIZED repo-relative
  * path. Rows whose paths normalize to the same test (canonical + checkpoint tree)
- * merge into one signal (fail counts summed) instead of two captures.
+ * merge into one signal (fail counts summed, newest failure timestamp kept)
+ * instead of two captures.
  */
 export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number): WatchdogSignal[] {
   const byPath = new Map<string, RedTestRow>();
@@ -246,6 +361,9 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     if (prev) {
       prev.fails += r.fails;
       if (!prev.sample) prev.sample = r.sample;
+      const a = toIsoOrUndefined(prev.latest_fail_at);
+      const b = toIsoOrUndefined(r.latest_fail_at);
+      prev.latest_fail_at = a && b ? (a >= b ? a : b) : (a ?? b ?? null);
     } else {
       byPath.set(path, { ...r, file_path: path });
     }
@@ -259,6 +377,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       `${windowHours}h and its latest run is still red.\n\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
     severity: 'major' as const,
     paths: [r.file_path],
+    latestAt: toIsoOrUndefined(r.latest_fail_at),
   }));
 }
 
@@ -272,7 +391,7 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
   const minFails = opts.redTestMinFails ?? 3;
   const rows = await sql<RedTestRow[]>`
     WITH recent AS (
-      SELECT file_path, framework, status, output_tail,
+      SELECT file_path, framework, status, output_tail, started_at,
              row_number() OVER (PARTITION BY file_path ORDER BY started_at DESC) AS rn
         FROM harness_shared.test_runs
        WHERE started_at > now() - make_interval(hours => ${windowHours})
@@ -285,7 +404,8 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
     SELECT file_path,
            max(framework) AS framework,
            count(*) FILTER (WHERE status IN ('fail', 'error'))::int AS fails,
-           max(output_tail) FILTER (WHERE status IN ('fail', 'error')) AS sample
+           max(output_tail) FILTER (WHERE status IN ('fail', 'error')) AS sample,
+           max(started_at) FILTER (WHERE status IN ('fail', 'error')) AS latest_fail_at
       FROM recent
      GROUP BY file_path
     HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= ${minFails}
@@ -294,21 +414,48 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
   return redTestSignalsFromRows(rows, windowHours);
 }
 
-/** smoke-fail: a harness smoke test currently failing (the plans:attention signal). */
-export async function collectSmokeFailSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
-  const rows = await sql<{ harness_slug: string; failure_content: string | null }[]>`
-    SELECT harness_slug, failure_content
+interface SmokeFailRow { harness_slug: string; failure_content: string | null; mtime_ms: number | string | null }
+
+/**
+ * Pure (audit P-007): smoke-fail rows → signals, RECENCY-GATED via `mtime_ms`
+ * (the table has no timestamp column). Only a failure recorded within
+ * `smokeFailRecentHours` (default 48h) fires — a never-re-run failing smoke from
+ * weeks ago must not re-file forever. A row with NO mtime is treated as stale
+ * (we cannot show the failure is current). The mtime also feeds `latestAt`
+ * (P-005 regression gating).
+ */
+export function smokeFailSignalsFromRows(
+  rows: SmokeFailRow[],
+  opts: { recentHours?: number; nowMs?: number } = {},
+): WatchdogSignal[] {
+  const recentHours = opts.recentHours ?? 48;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoffMs = nowMs - recentHours * 3_600_000;
+  const out: WatchdogSignal[] = [];
+  for (const r of rows) {
+    const mtime = r.mtime_ms == null ? NaN : Number(r.mtime_ms);
+    if (!Number.isFinite(mtime) || mtime < cutoffMs) continue;
+    out.push({
+      source: 'smoke-fail' as const,
+      key: r.harness_slug,
+      title: `Smoke test failing in harness ${r.harness_slug}`,
+      body: `Watchdog signal (smoke-fail): the ${r.harness_slug} smoke test is RED.\n\n${(r.failure_content ?? '').slice(0, 2000) || '(no failure content recorded)'}`,
+      severity: 'major' as const,
+      latestAt: new Date(mtime).toISOString(),
+    });
+  }
+  return out;
+}
+
+/** smoke-fail: a harness smoke test currently failing (the plans:attention signal), recency-gated (P-007). */
+export async function collectSmokeFailSignals(sql: Sql, workspaceId: string, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+  const rows = await sql<SmokeFailRow[]>`
+    SELECT harness_slug, failure_content, mtime_ms
       FROM harness_shared.harness_smoke_test
      WHERE workspace_id = ${workspaceId}
        AND status = 'fail'
      LIMIT 20`;
-  return rows.map((r) => ({
-    source: 'smoke-fail' as const,
-    key: r.harness_slug,
-    title: `Smoke test failing in harness ${r.harness_slug}`,
-    body: `Watchdog signal (smoke-fail): the ${r.harness_slug} smoke test is RED.\n\n${(r.failure_content ?? '').slice(0, 2000) || '(no failure content recorded)'}`,
-    severity: 'major' as const,
-  }));
+  return smokeFailSignalsFromRows(rows, { recentHours: opts.smokeFailRecentHours });
 }
 
 /**
@@ -358,6 +505,8 @@ interface ClassifiedToolErrorRow {
   /** Total calls (any status) for this tool in the window — the rate denominator. */
   total: number;
   sample: string | null;
+  /** Newest failure timestamp in the window (P-005 latestAt). */
+  latest_at?: string | Date | null;
 }
 
 /**
@@ -393,6 +542,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
     const rate = r.total > 0 ? r.n / r.total : 0;
     const pct = Math.round(rate * 100);
     const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
+    const latestAt = toIsoOrUndefined(r.latest_at);
 
     if (r.class === 'structural') {
       if (!(r.n >= structuralMin || (r.total >= structuralRateCalls && rate >= structuralRate))) continue;
@@ -406,6 +556,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
           `not transient load.\n\nSample error: ${sample}`,
         severity: 'major',
         kind: 'bug',
+        latestAt,
       });
     } else if (r.class === 'transient') {
       if (r.n < transientMin) continue;
@@ -418,6 +569,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
           `(${pct}% of ${r.total} calls) recently.\n\nSample: ${sample}`,
         severity: r.n >= 50 ? 'major' : 'minor',
         kind: 'bug',
+        latestAt,
       });
     } else {
       if (r.n < callerMin) continue;
@@ -431,6 +583,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
           `mis-scoped gate, not a tool bug.\n\nSample: ${sample}`,
         severity: 'minor',
         kind: 'change',
+        latestAt,
       });
     }
   }
@@ -443,9 +596,16 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
  * per-class FIRE bar lives in `toolErrorSignalsFromRows` (pure + unit-tested). The
  * loop's own tools are excluded in SQL (efficient) and re-excluded in the pure fn
  * (defense-in-depth + the test seam).
+ *
+ * Workspace scoping (audit P-013): when `workspaceId` is given, the sweep covers
+ * that workspace PLUS the box-global buckets — `'*'` (unscoped SU sessions, the
+ * bulk of real traffic) and the coord workspace (DEFAULT_COORD_WORKSPACE) — so a
+ * tick scoped to workspace W no longer counts another workspace's errors, without
+ * going dark on the unscoped traffic where most signal lives.
  */
-export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}, workspaceId?: string): Promise<WatchdogSignal[]> {
   const windowHours = opts.toolErrorWindowHours ?? 24;
+  const scopes = workspaceId ? [...new Set([workspaceId, '*', DEFAULT_COORD_WORKSPACE])] : null;
   const rows = await sql<ClassifiedToolErrorRow[]>`
     WITH fail AS (
       SELECT tool_name,
@@ -455,10 +615,12 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
                OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%' THEN 'caller'
           ELSE 'structural'
         END AS class,
-        error_message
+        error_message,
+        invoked_at
         FROM harness_shared.tool_invocations
        WHERE status IN ('error', 'timeout')
          AND invoked_at > now() - make_interval(hours => ${windowHours})
+         AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
          AND tool_name NOT LIKE 'improvements:%'
          AND tool_name NOT LIKE 'system:improvement-%'
     ),
@@ -466,13 +628,15 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
       SELECT tool_name, count(*)::int AS total
         FROM harness_shared.tool_invocations
        WHERE invoked_at > now() - make_interval(hours => ${windowHours})
+         AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
          AND tool_name NOT LIKE 'improvements:%'
          AND tool_name NOT LIKE 'system:improvement-%'
        GROUP BY tool_name
     )
     SELECT fail.tool_name, fail.class, count(*)::int AS n,
            COALESCE(tot.total, count(*))::int AS total,
-           max(fail.error_message) AS sample
+           max(fail.error_message) AS sample,
+           max(fail.invoked_at) AS latest_at
       FROM fail LEFT JOIN tot ON tot.tool_name = fail.tool_name
      GROUP BY fail.tool_name, fail.class, tot.total
      ORDER BY count(*) DESC
@@ -629,50 +793,130 @@ export async function collectStuckPlanSignals(sql: Sql, workspaceId: string, sta
   return stuckPlanSignalsFromRows(rows);
 }
 
-/** failed-spawn: AGGREGATE — agent spawns that failed in the window. A few = a pattern,
- *  not a one-off; fires as ONE signal at a threshold. */
-export async function collectFailedSpawnSignals(sql: Sql, opts: { windowHours?: number; minCount?: number } = {}): Promise<WatchdogSignal[]> {
+/**
+ * Pure (audit P-008): classify one spawn failure message into a coarse cause
+ * class. The single global `failed-spawns` key conflated unrelated causes — a
+ * resolved timeout-storm item would mask a new auth breakage. Keying the signal
+ * by DOMINANT class gives one capture per diagnosable problem.
+ */
+export type SpawnErrorClass = 'timeout' | 'network' | 'auth' | 'missing-file' | 'config' | 'other';
+export function classifySpawnError(message: string | null | undefined): SpawnErrorClass {
+  const m = message ?? '';
+  if (/timed?\s*out|timeout/i.test(m)) return 'timeout';
+  if (/econnrefused|econnreset|enotfound|socket|network|fetch failed/i.test(m)) return 'network';
+  if (/auth|credential|api.?key|401|403|unauthorized|forbidden/i.test(m)) return 'auth';
+  if (/enoent|no such file|not found|missing/i.test(m)) return 'missing-file';
+  if (/invalid|config|schema|parse|json/i.test(m)) return 'config';
+  return 'other';
+}
+
+interface FailedSpawnRow { error_message: string | null; started_at: string | Date | null }
+
+/**
+ * Pure (audit P-008 + P-005): failed-spawn rows → at most ONE signal, keyed by the
+ * DOMINANT error class (`failed-spawns:<class>`), with the full per-class
+ * breakdown in the body and `latestAt` = the newest failure. A different dominant
+ * cause next week gets a DIFFERENT key — a resolved timeout item no longer
+ * swallows a fresh auth breakage.
+ */
+export function failedSpawnSignalsFromRows(
+  rows: FailedSpawnRow[],
+  opts: { windowHours?: number; minCount?: number } = {},
+): WatchdogSignal[] {
   const windowHours = opts.windowHours ?? 6;
   const minCount = opts.minCount ?? 5;
-  const rows = await sql<{ n: number; sample: string | null }[]>`
-    SELECT count(*)::int AS n, max(error_message) AS sample
-      FROM harness_shared.spawned_agents
-     WHERE status = 'failed' AND started_at > now() - make_interval(hours => ${windowHours})`;
-  const r = rows[0];
-  if (!r || r.n < minCount) return [];
+  if (rows.length < minCount) return [];
+  const byClass = new Map<SpawnErrorClass, { n: number; sample: string | null }>();
+  let latestAt: string | undefined;
+  for (const r of rows) {
+    const cls = classifySpawnError(r.error_message);
+    const agg = byClass.get(cls) ?? { n: 0, sample: null };
+    agg.n += 1;
+    if (!agg.sample && r.error_message) agg.sample = r.error_message;
+    byClass.set(cls, agg);
+    const iso = toIsoOrUndefined(r.started_at);
+    if (iso && (!latestAt || iso > latestAt)) latestAt = iso;
+  }
+  const ranked = [...byClass.entries()].sort((a, b) => b[1].n - a[1].n);
+  const [dominantClass, dominant] = ranked[0];
+  const breakdown = ranked.map(([cls, v]) => `${cls}: ${v.n}`).join(', ');
   return [{
     source: 'failed-spawn',
-    key: 'failed-spawns',
-    title: 'Agent spawns are failing repeatedly',
+    key: `failed-spawns:${dominantClass}`,
+    title: `Agent spawns are failing repeatedly (${dominantClass})`,
     body:
-      `Watchdog signal (failed-spawn): ${r.n} agent spawn(s) failed in the last ${windowHours}h — likely a spawn-config / ` +
-      `MCP / runtime problem, not a one-off.\n\nSample error: ${(r.sample ?? '').slice(0, 600) || '(none captured)'}`,
-    severity: r.n >= 20 ? 'major' : 'minor',
+      `Watchdog signal (failed-spawn): ${rows.length} agent spawn(s) failed in the last ${windowHours}h; ` +
+      `the dominant cause class is "${dominantClass}" (${dominant.n}/${rows.length}).\n\n` +
+      `Class breakdown: ${breakdown}\n\nSample (${dominantClass}): ${(dominant.sample ?? '').slice(0, 600) || '(none captured)'}`,
+    severity: rows.length >= 20 ? 'major' : 'minor',
     kind: 'bug',
+    latestAt,
   }];
 }
 
-/** expired-lease: AGGREGATE — plan-item claims whose lease expired (abandoned work).
- *  Conservative threshold (a handful is normal churn; a pile suggests a lifecycle bug). */
-export async function collectExpiredLeaseSignals(sql: Sql, minCount = 15): Promise<WatchdogSignal[]> {
-  const rows = await sql<{ n: number; oldest_hours: number | null }[]>`
-    SELECT count(*)::int AS n,
-           EXTRACT(EPOCH FROM (now() - min(expires_ts))) / 3600.0 AS oldest_hours
-      FROM harness_shared.plan_item_claims
-     WHERE expires_ts < now()`;
-  const r = rows[0];
-  if (!r || r.n < minCount) return [];
+/** failed-spawn: AGGREGATE — agent spawns that failed in the window, keyed by dominant cause class (P-008). */
+export async function collectFailedSpawnSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+  const windowHours = opts.failedSpawnWindowHours ?? 6;
+  const rows = await sql<FailedSpawnRow[]>`
+    SELECT error_message, started_at
+      FROM harness_shared.spawned_agents
+     WHERE status = 'failed' AND started_at > now() - make_interval(hours => ${windowHours})
+     ORDER BY started_at DESC
+     LIMIT 500`;
+  return failedSpawnSignalsFromRows(rows, { windowHours, minCount: opts.failedSpawnMinCount });
+}
+
+interface ExpiredLeaseRow { expires_ts: string | Date }
+
+/**
+ * Pure (audit P-006 + P-005): expired-lease rows → at most ONE signal, counting
+ * only leases that expired within the RECENCY WINDOW (default 7 days). Before
+ * this the count was all-time, so a pile of ancient leases made the signal fire
+ * forever and the filed item perpetually re-file after resolve. `latestAt` = the
+ * newest expiry, so post-resolve re-files need a lease that expired AFTER the
+ * resolution (D-002). The collector DETECTS; stale-claim GC belongs to the
+ * plan-item lifecycle, not here.
+ */
+export function expiredLeaseSignalsFromRows(
+  rows: ExpiredLeaseRow[],
+  opts: { windowDays?: number; minCount?: number; nowMs?: number } = {},
+): WatchdogSignal[] {
+  const windowDays = opts.windowDays ?? 7;
+  const minCount = opts.minCount ?? 15;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoffMs = nowMs - windowDays * 86_400_000;
+  const recent: number[] = [];
+  for (const r of rows) {
+    const ms = r.expires_ts instanceof Date ? r.expires_ts.getTime() : Date.parse(r.expires_ts);
+    if (Number.isFinite(ms) && ms >= cutoffMs && ms <= nowMs) recent.push(ms);
+  }
+  if (recent.length < minCount) return [];
+  const oldestHours = Math.round((nowMs - Math.min(...recent)) / 3_600_000);
   return [{
     source: 'expired-lease',
     key: 'expired-leases',
     title: 'Many plan-item claims have expired (abandoned work piling up)',
     body:
-      `Watchdog signal (expired-lease): ${r.n} plan-item claim(s) have an EXPIRED lease (the holder died/vanished ` +
-      `without releasing it). The oldest is ~${Math.round(r.oldest_hours ?? 0)}h stale — a sign lease cleanup or ` +
-      `agent liveness needs attention.`,
+      `Watchdog signal (expired-lease): ${recent.length} plan-item claim(s) expired within the last ${windowDays}d ` +
+      `(the holder died/vanished without releasing). The oldest recent expiry is ~${oldestHours}h stale — a sign ` +
+      `lease cleanup or agent liveness needs attention.`,
     severity: 'minor',
     kind: 'bug',
+    latestAt: new Date(Math.max(...recent)).toISOString(),
   }];
+}
+
+/** expired-lease: AGGREGATE — plan-item claims whose lease expired RECENTLY (P-006 window). */
+export async function collectExpiredLeaseSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
+  const windowDays = opts.expiredLeaseWindowDays ?? 7;
+  const rows = await sql<ExpiredLeaseRow[]>`
+    SELECT expires_ts
+      FROM harness_shared.plan_item_claims
+     WHERE expires_ts < now()
+       AND expires_ts > now() - make_interval(days => ${windowDays})
+     ORDER BY expires_ts DESC
+     LIMIT 500`;
+  return expiredLeaseSignalsFromRows(rows, { windowDays, minCount: opts.expiredLeaseMinCount });
 }
 
 interface EscalationRow { harness_slug: string; phase: string | null }
@@ -761,10 +1005,19 @@ export interface WatchdogDeps {
   capture: typeof captureImprovement;
   /** Tick-record sink (P-001). Defaults to the PG writer; tests inject. */
   recordTick: (rec: WatchdogTickRecord) => Promise<void>;
-  /** Recent-ticks reader for self-escalation (P-002). Defaults to the PG reader; tests inject. */
-  readRecentTicks: (workspaceId: string, limit: number) => Promise<RecentTick[]>;
+  /**
+   * Recent-ticks reader for self-escalation (P-002) + the deferred-escalation
+   * boost. `filter.status` narrows to ticks of one status — the deferred-keys
+   * read uses `{ status: 'ran' }` so a 'skipped' tick (cross-host lock loser,
+   * which records an empty deferred list) cannot wipe the boost (audit P-011).
+   */
+  readRecentTicks: (workspaceId: string, limit: number, filter?: { status?: 'ran' | 'skipped' }) => Promise<RecentTick[]>;
   /** Cross-host tick lock (P-003). Defaults to the PG advisory lock; tests inject. */
   withTickLock: <T>(workspaceId: string, fn: () => Promise<T>) => Promise<TickLockOutcome<T>>;
+  /** Key-dup feed for the P-004/P-005 pre-filter. Defaults to the indexed PG lookup; tests inject. */
+  readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
+  /** Tick-retention prune (audit P-009). Best-effort, never aborts the tick; tests inject. */
+  pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
@@ -776,11 +1029,11 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     },
     {
       name: 'papercusp-smoke-fail',
-      collect: () => collectSmokeFailSignals(getOrgPg().sql, workspaceId),
+      collect: () => collectSmokeFailSignals(getOrgPg().sql, workspaceId, opts),
     },
     {
       name: 'papercusp-repeated-tool-error',
-      collect: () => collectToolErrorSignals(getOrgPg().sql, opts),
+      collect: () => collectToolErrorSignals(getOrgPg().sql, opts, workspaceId),
     },
     {
       name: 'papercusp-service-down',
@@ -790,8 +1043,8 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },
     { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
     { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },
-    { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql) },
-    { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql) },
+    { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql, opts) },
+    { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
   ];
@@ -845,11 +1098,27 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
   const { sql } = getOrgPg();
   await sql`
     INSERT INTO harness_shared.watchdog_ticks
-      (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, deferred_keys, collectors, self_escalations)
+      (workspace_id, install_slug, status, signals, captured, declined_duplicates, deferred, deferred_keys,
+       known_open_keys, stale_resolved_keys, collectors, self_escalations)
     VALUES (${rec.workspaceId}, ${rec.installSlug ?? null}, ${rec.status}, ${rec.signals},
             ${rec.captured}::text[], ${rec.declinedDuplicates}, ${rec.deferred}, ${rec.deferredKeys ?? []}::text[],
+            ${rec.knownOpenKeys ?? []}::text[], ${rec.staleResolvedKeys ?? []}::text[],
             ${JSON.stringify(rec.collectors)}::text::jsonb, ${rec.selfEscalations}::text[])
   `;
+}
+
+/**
+ * Tick-retention prune (audit P-009): drop tick rows older than `olderThanDays`
+ * for this workspace. Called best-effort at the end of each tick (same
+ * swallow-errors contract as recordTick) — the table grew ~96 rows/day/host
+ * unbounded with no GC before this.
+ */
+export async function pruneWatchdogTicks(workspaceId: string, olderThanDays: number): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    DELETE FROM harness_shared.watchdog_ticks
+     WHERE workspace_id = ${workspaceId}
+       AND tick_at < now() - make_interval(days => ${olderThanDays})`;
 }
 
 /** A prior tick, as read for the self-escalation streak (P-002). Newest-first. */
@@ -860,20 +1129,88 @@ export interface RecentTick {
   deferredKeys?: string[];
 }
 
-/** Default recent-ticks reader (P-002): the last `limit` ticks for a workspace, newest-first. */
-export async function readRecentWatchdogTicks(workspaceId: string, limit: number): Promise<RecentTick[]> {
+/**
+ * Default recent-ticks reader (P-002): the last `limit` ticks for a workspace,
+ * newest-first. `filter.status` narrows to one status — the deferred-keys boost
+ * reads `{ status: 'ran' }` so a skipped tick can't wipe it (audit P-011).
+ */
+export async function readRecentWatchdogTicks(
+  workspaceId: string,
+  limit: number,
+  filter: { status?: 'ran' | 'skipped' } = {},
+): Promise<RecentTick[]> {
   if (limit <= 0) return [];
   const { sql } = getOrgPg();
   const rows = await sql<{ status: 'ran' | 'skipped'; collectors: CollectorStatus[]; deferred_keys: string[] }[]>`
     SELECT status, collectors, deferred_keys
       FROM harness_shared.watchdog_ticks
      WHERE workspace_id = ${workspaceId}
+       AND ${filter.status ? sql`status = ${filter.status}` : sql`TRUE`}
      ORDER BY tick_at DESC
      LIMIT ${limit}`;
   return rows.map((r) => ({
     status: r.status,
     collectors: Array.isArray(r.collectors) ? r.collectors : [],
     deferredKeys: Array.isArray(r.deferred_keys) ? r.deferred_keys : [],
+  }));
+}
+
+/** One full tick row for the observability surface (audit P-010). */
+export interface WatchdogTickStatusRow {
+  tickAt: string;
+  installSlug: string | null;
+  status: 'ran' | 'skipped';
+  signals: number;
+  captured: string[];
+  declinedDuplicates: number;
+  deferred: number;
+  deferredKeys: string[];
+  knownOpenKeys: string[];
+  staleResolvedKeys: string[];
+  collectors: CollectorStatus[];
+  selfEscalations: string[];
+}
+
+/**
+ * Observability read (audit P-010): the last `limit` tick rows IN FULL — the
+ * data backing `improvements:watchdog-status`. Before this the only consumer of
+ * `watchdog_ticks` was the watchdog itself; diagnosing it took raw psql.
+ */
+export async function readWatchdogStatus(workspaceId: string, limit = 10): Promise<WatchdogTickStatusRow[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{
+    tick_at: Date | string;
+    install_slug: string | null;
+    status: 'ran' | 'skipped';
+    signals: number;
+    captured: string[];
+    declined_duplicates: number;
+    deferred: number;
+    deferred_keys: string[];
+    known_open_keys: string[];
+    stale_resolved_keys: string[];
+    collectors: CollectorStatus[];
+    self_escalations: string[];
+  }[]>`
+    SELECT tick_at, install_slug, status, signals, captured, declined_duplicates, deferred,
+           deferred_keys, known_open_keys, stale_resolved_keys, collectors, self_escalations
+      FROM harness_shared.watchdog_ticks
+     WHERE workspace_id = ${workspaceId}
+     ORDER BY tick_at DESC
+     LIMIT ${Math.min(Math.max(1, limit), 200)}`;
+  return rows.map((r) => ({
+    tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : String(r.tick_at),
+    installSlug: r.install_slug,
+    status: r.status,
+    signals: r.signals,
+    captured: r.captured ?? [],
+    declinedDuplicates: r.declined_duplicates,
+    deferred: r.deferred,
+    deferredKeys: r.deferred_keys ?? [],
+    knownOpenKeys: r.known_open_keys ?? [],
+    staleResolvedKeys: r.stale_resolved_keys ?? [],
+    collectors: Array.isArray(r.collectors) ? r.collectors : [],
+    selfEscalations: r.self_escalations ?? [],
   }));
 }
 
@@ -965,6 +1302,12 @@ export interface WatchdogTickResult {
   deferred: number;
   /** `${source}:${key}` of each deferred signal this tick (P-009 deferred-escalation). */
   deferredKeys?: string[];
+  /** Signals dropped pre-plan: their key matches an OPEN improvement (audit P-004 / D-001). */
+  knownOpen: number;
+  knownOpenKeys: string[];
+  /** Signals dropped pre-plan: resolved dup + evidence pre-dating the resolution (audit P-005 / D-002). */
+  staleResolved: number;
+  staleResolvedKeys: string[];
   /** Per-collector outcomes this tick (P-001) — the read path for self-escalation (P-002). */
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed about its OWN broken collectors (P-002). */
@@ -979,13 +1322,17 @@ export interface WatchdogTickOptions extends WatchdogPlanOptions, CollectOptions
   failStreakToEscalate?: number;
   /** Max self-escalations filed per tick (P-002, anti-flood). Default 1. */
   maxSelfEscalationsPerTick?: number;
+  /** Tick rows older than this are pruned at the end of each tick (audit P-009). Default 14. */
+  tickRetentionDays?: number;
 }
 
 /** The collect/capture/record deps a tick body runs with, already resolved. */
 interface ResolvedTickDeps {
   capture: typeof captureImprovement;
   recordTick: (rec: WatchdogTickRecord) => Promise<void>;
-  readRecentTicks: (workspaceId: string, limit: number) => Promise<RecentTick[]>;
+  readRecentTicks: (workspaceId: string, limit: number, filter?: { status?: 'ran' | 'skipped' }) => Promise<RecentTick[]>;
+  readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
+  pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
 }
@@ -1002,7 +1349,7 @@ async function runWatchdogTickBody(
   opts: WatchdogTickOptions,
   deps: ResolvedTickDeps,
 ): Promise<WatchdogTickResult> {
-  const { capture, recordTick, readRecentTicks } = deps;
+  const { capture, recordTick, readRecentTicks, readKeyDups, pruneTicks } = deps;
 
   // Collect signals + per-collector status. When a test injects `collect` we lose
   // per-collector granularity (the seam returns signals only), so synthesize one
@@ -1018,16 +1365,34 @@ async function runWatchdogTickBody(
     collectors = detailed.collectors;
   }
 
-  // P-009 deferred-escalation: feed the LAST tick's deferred keys so a signal that
-  // keeps losing a slot is boosted until it lands. Only when there is CONTENTION
-  // (more signals than the cap can admit) is the boost meaningful — so a healthy/quiet
-  // tick still does zero PG reads (preserving the P-002 no-read-when-healthy invariant).
-  // Best-effort — a read failure just means no escalation this tick.
+  // P-004 / D-001 pre-filter: ONE indexed lookup over payload.watchdogKey drops
+  // signals that are already filed (OPEN dup) or whose evidence pre-dates the
+  // matching resolution (P-005 / D-002) BEFORE planning — so a standing signal
+  // never consumes the per-tick capture budget (live evidence: every slot burned
+  // on declined title-dups for a whole 24h window). Best-effort: a read failure
+  // degrades to the old behavior (everything planned, title net catches dups).
+  let partition: SignalPartition = { fresh: signals, knownOpen: [], staleResolved: [] };
+  if (signals.length > 0) {
+    try {
+      const dups = await readKeyDups([...new Set(signals.map(watchdogKeyOf))]);
+      partition = partitionSignalsByKnownKeys(signals, dups);
+    } catch (e) {
+      console.warn(`[improvement-watchdog] key-dup pre-filter failed (degrading to title dedup): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // P-009 deferred-escalation: feed the last RAN tick's deferred keys so a signal
+  // that keeps losing a slot is boosted until it lands. Reading status='ran'
+  // specifically means a 'skipped' tick (cross-host lock loser, empty deferred
+  // list) cannot wipe the boost (audit P-011). Only when there is CONTENTION
+  // (more fresh signals than the cap can admit) is the boost meaningful — so a
+  // healthy/quiet tick still does zero PG reads (the P-002 no-read-when-healthy
+  // invariant). Best-effort — a read failure just means no escalation this tick.
   const planCap = Math.max(0, opts.maxPerTick ?? 3);
-  const priorDeferredKeys = signals.length > planCap
-    ? await readRecentTicks(workspaceId, 1).then((t) => t[0]?.deferredKeys ?? []).catch(() => [] as string[])
+  const priorDeferredKeys = partition.fresh.length > planCap
+    ? await readRecentTicks(workspaceId, 1, { status: 'ran' }).then((t) => t[0]?.deferredKeys ?? []).catch(() => [] as string[])
     : [];
-  const plan = planWatchdogCaptures(signals, { ...opts, priorDeferredKeys });
+  const plan = planWatchdogCaptures(partition.fresh, { ...opts, priorDeferredKeys });
   const captured: string[] = [];
   let declinedDuplicates = 0;
   for (const s of plan.toCapture) {
@@ -1044,13 +1409,17 @@ async function runWatchdogTickBody(
         sourceRole: 'system',
         source: 'su',
         dedupScope: 'open',
+        // P-004: the stable identity the NEXT tick's pre-filter matches on.
+        watchdogKey: watchdogKeyOf(s),
+        // P-005: the title net's resolved dups also gate on evidence recency.
+        evidenceAt: s.latestAt,
       });
     } catch (e) {
       console.warn(`[improvement-watchdog] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);
       continue;
     }
     if (res.created && res.issue) captured.push(res.issue.id);
-    else if (res.reason === 'likely-duplicate') declinedDuplicates += 1;
+    else if (res.reason === 'likely-duplicate' || res.reason === 'stale-evidence') declinedDuplicates += 1;
   }
 
   // P-002: the watchdog watches itself. If a collector is failing THIS tick, check
@@ -1081,6 +1450,7 @@ async function runWatchdogTickBody(
             sourceRole: 'system',
             source: 'su',
             dedupScope: 'open',
+            watchdogKey: `watchdog-self:${name}`,
           });
           if (res.created && res.issue) selfEscalations.push(res.issue.id);
         } catch (e) {
@@ -1099,6 +1469,10 @@ async function runWatchdogTickBody(
     declinedDuplicates,
     deferred: plan.deferred.length,
     deferredKeys: plan.deferred.map((s) => `${s.source}:${s.key}`),
+    knownOpen: partition.knownOpen.length,
+    knownOpenKeys: partition.knownOpen.map(watchdogKeyOf),
+    staleResolved: partition.staleResolved.length,
+    staleResolvedKeys: partition.staleResolved.map(watchdogKeyOf),
     collectors,
     selfEscalations,
   };
@@ -1114,11 +1488,21 @@ async function runWatchdogTickBody(
       declinedDuplicates: result.declinedDuplicates,
       deferred: result.deferred,
       deferredKeys: result.deferredKeys,
+      knownOpenKeys: result.knownOpenKeys,
+      staleResolvedKeys: result.staleResolvedKeys,
       collectors: result.collectors,
       selfEscalations: result.selfEscalations,
     });
   } catch (e) {
     console.warn(`[improvement-watchdog] tick record failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // P-009 (audit): prune old tick rows — best-effort, same swallow-errors
+  // contract as recordTick; a GC failure must never abort the tick.
+  try {
+    await pruneTicks(workspaceId, Math.max(1, opts.tickRetentionDays ?? 14));
+  } catch (e) {
+    console.warn(`[improvement-watchdog] tick prune failed: ${e instanceof Error ? e.message : e}`);
   }
 
   return result;
@@ -1139,12 +1523,16 @@ export async function runWatchdogTick(
   const recordTick = deps?.recordTick ?? recordWatchdogTick;
   const readRecentTicks = deps?.readRecentTicks ?? readRecentWatchdogTicks;
   const withLock = deps?.withTickLock ?? withWatchdogTickLock;
+  const readKeyDups = deps?.readKeyDups ?? readWatchdogKeyDups;
+  const pruneTicks = deps?.pruneTicks ?? pruneWatchdogTicks;
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
       capture,
       recordTick,
       readRecentTicks,
+      readKeyDups,
+      pruneTicks,
       collect: deps?.collect,
       collectors: deps?.collectors,
     }),
@@ -1158,6 +1546,10 @@ export async function runWatchdogTick(
     captured: [],
     declinedDuplicates: 0,
     deferred: 0,
+    knownOpen: 0,
+    knownOpenKeys: [],
+    staleResolved: 0,
+    staleResolvedKeys: [],
     collectors: [],
     selfEscalations: [],
   };
@@ -1169,86 +1561,36 @@ export async function runWatchdogTick(
   return skipped;
 }
 
-// ── P-011 one-time historical backfill ───────────────────────────────────────
+// ── P-012 (audit): routine-tunable options ───────────────────────────────────
 
-export interface WatchdogBackfillOptions {
-  /** Lookback window for the structural tool-error backfill. Default 720h (30d). */
-  windowHours?: number;
-  /** Max captures for the one-off sweep (anti-flood). Default 25. */
-  maxCaptures?: number;
-}
-
-export interface WatchdogBackfillResult {
-  signals: number;
-  captured: string[];
-  declinedDuplicates: number;
-  /** Keys the cap dropped — LOGGED + returned, never silently truncated (D-008). */
-  dropped: string[];
-}
+/** The numeric tick options tunable from the routine's `payload_template` (audit P-012). */
+const PAYLOAD_TUNABLE_KEYS = [
+  // planning caps
+  'maxPerTick', 'perSourceCap',
+  // collector bars (CollectOptions)
+  'redTestWindowHours', 'redTestMinFails', 'toolErrorWindowHours', 'structuralMinCount',
+  'structuralMinRate', 'structuralMinCallsForRate', 'transientMinCount', 'callerMinCount',
+  'serviceHealthMaxStaleMs', 'smokeFailRecentHours', 'expiredLeaseWindowDays',
+  'expiredLeaseMinCount', 'failedSpawnWindowHours', 'failedSpawnMinCount',
+  // self-escalation + retention
+  'failStreakToEscalate', 'maxSelfEscalationsPerTick', 'tickRetentionDays',
+] as const;
 
 /**
- * One-time HISTORICAL backfill (watchdog-robustness P-011 / D-008): sweep a LONG
- * window (30d) for STRUCTURAL tool-error breakage the rolling 24h tick window can't
- * see — a tool broken weeks ago (before the watchdog existed, or outside its window)
- * is otherwise permanently invisible. Capped + deduped (dedupScope:'open'); whatever
- * the cap drops is LOGGED + returned, never silently truncated. Run ONCE (a tsx
- * one-off / a first-deploy hook), not on the 15-min cadence. Deps are injectable for
- * tests.
+ * Pure (audit P-012): extract the numeric tick tunables from a routine's
+ * `payload_template`, so collector bars + caps tune from the routines admin
+ * WITHOUT a deploy. Whitelisted keys only; non-numeric values are ignored
+ * (collector defaults hold). Env (`PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK`)
+ * still wins over the payload for maxPerTick — env is the emergency override,
+ * the payload is the standing config.
  */
-export async function runWatchdogBackfill(
-  workspaceId: string,
-  opts: WatchdogBackfillOptions = {},
-  deps?: { collect?: () => Promise<WatchdogSignal[]>; capture?: typeof captureImprovement },
-): Promise<WatchdogBackfillResult> {
-  const windowHours = opts.windowHours ?? 720;
-  const maxCaptures = Math.max(0, opts.maxCaptures ?? 25);
-  const capture = deps?.capture ?? captureImprovement;
-  const collect =
-    deps?.collect ?? (() => collectToolErrorSignals(getOrgPg().sql, { toolErrorWindowHours: windowHours }));
-
-  const signals = await collect();
-
-  // Dedupe by source:key, rank by severity, take up to the cap.
-  const seen = new Set<string>();
-  const unique = signals.filter((s) => {
-    const k = `${s.source}:${s.key}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  unique.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
-  const toCapture = unique.slice(0, maxCaptures);
-  const dropped = unique.slice(maxCaptures).map((s) => `${s.source}:${s.key}`);
-  if (dropped.length > 0) {
-    console.warn(
-      `[improvement-watchdog:backfill] cap=${maxCaptures} dropped ${dropped.length} signal(s) ` +
-        `(reported, NOT silently truncated): ${dropped.join(', ')}`,
-    );
+export function watchdogOptionsFromPayload(payload: Record<string, unknown> | null | undefined): Partial<WatchdogTickOptions> {
+  const out: Record<string, number> = {};
+  if (!payload) return out;
+  for (const k of PAYLOAD_TUNABLE_KEYS) {
+    const v = payload[k];
+    const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+    if (Number.isFinite(n)) out[k] = n;
   }
-
-  const captured: string[] = [];
-  let declinedDuplicates = 0;
-  for (const s of toCapture) {
-    let res: CaptureImprovementResult;
-    try {
-      res = await capture({
-        title: s.title,
-        kind: s.kind ?? 'bug',
-        body: s.body,
-        severity: s.severity,
-        paths: s.paths,
-        foundDuring: 'improvement-watchdog-backfill',
-        createdBy: 'system:improvement-watchdog',
-        sourceRole: 'system',
-        source: 'su',
-        dedupScope: 'open',
-      });
-    } catch (e) {
-      console.warn(`[improvement-watchdog:backfill] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);
-      continue;
-    }
-    if (res.created && res.issue) captured.push(res.issue.id);
-    else if (res.reason === 'likely-duplicate') declinedDuplicates += 1;
-  }
-  return { signals: signals.length, captured, declinedDuplicates, dropped };
+  return out as Partial<WatchdogTickOptions>;
 }

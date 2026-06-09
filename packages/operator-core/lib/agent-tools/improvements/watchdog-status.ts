@@ -1,0 +1,55 @@
+/**
+ * improvements:watchdog-status — the observability surface over the improvement
+ * watchdog's tick records (watchdog-audit-2026-06-09 P-010).
+ *
+ * Read-only. Before this the ONLY consumer of `harness_shared.watchdog_ticks`
+ * was the watchdog itself (the self-escalation read) — diagnosing "is the
+ * watchdog healthy / what did it see / why didn't X get filed?" took raw psql.
+ * This returns the last N ticks in full (collector health, captured / declined /
+ * pre-filtered / deferred keys, self-escalations) plus a rollup summary.
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { COORD_ROLES } from '../coordination/roles';
+import { readWatchdogStatus } from '../../harness/improvements/watchdog';
+import { activeWorkspaceId } from '../../workspace-registry';
+
+export default defineTool({
+  name: 'improvements:watchdog-status',
+  profile: 'engineer',
+  description:
+    'Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary. Read-only — the diagnostic surface over harness_shared.watchdog_ticks.',
+  guidance: {
+    when: 'To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for "why did/didn\'t the watchdog file X?".',
+    notWhen: 'You want the captured backlog itself — improvements:digest. You want one improvement — issues:get { id }. You want to file one — improvements:capture.',
+    chaining: 'improvements:watchdog-status → issues:get on a captured/self-escalated id → improvements:digest for the full backlog triage.',
+  },
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    limit: z.number().int().positive().max(200).optional().describe('how many recent ticks to return (default 10)'),
+    workspace: z.string().min(1).max(120).optional().describe('workspace to inspect (default: the session/active workspace)'),
+  }),
+  async handler(args, ctx) {
+    resolveAgentIdentity(ctx);
+    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const ticks = await readWatchdogStatus(workspaceId, args.limit ?? 10);
+    const lastRan = ticks.find((t) => t.status === 'ran');
+    const summary = {
+      workspaceId,
+      ticks: ticks.length,
+      lastTickAt: ticks[0]?.tickAt ?? null,
+      lastRanTickAt: lastRan?.tickAt ?? null,
+      failingCollectors: (lastRan?.collectors ?? []).filter((c) => !c.ok).map((c) => c.name),
+      captured: ticks.reduce((n, t) => n + t.captured.length, 0),
+      declinedDuplicates: ticks.reduce((n, t) => n + t.declinedDuplicates, 0),
+      knownOpenPrefiltered: ticks.reduce((n, t) => n + t.knownOpenKeys.length, 0),
+      staleResolvedPrefiltered: ticks.reduce((n, t) => n + t.staleResolvedKeys.length, 0),
+      deferred: ticks.reduce((n, t) => n + t.deferred, 0),
+      selfEscalations: ticks.flatMap((t) => t.selfEscalations),
+    };
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, summary, ticks }) }] };
+  },
+});

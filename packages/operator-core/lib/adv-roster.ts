@@ -30,6 +30,7 @@ import {
 // hive-agent-tabs-psu-tui P-001: the shared pane-kind taxonomy (one source of
 // truth) — stamp each roster entry so pui renders/colors per type.
 import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 
 export type { AgentClaim, OrphanedClaimSummary };
 
@@ -113,6 +114,35 @@ export interface RosterEntry {
   /** The DEFAULT drive mode for the kind (auto|responsive). The per-agent wake
    *  mode (D-005) can still flip an `auto` agent to manual at runtime. */
   driveMode: DriveMode;
+  /** The agent's native claude session id (mig 203 `spawned_agents.session_id`)
+   *  when it's a claude bee — the `claude --resume <id>` handle for the bee pane
+   *  (P-004). null for non-bee / omp / pre-flag / pending entries. */
+  sessionId: string | null;
+}
+
+/**
+ * Native claude session ids keyed by the bee's coord owner (= its spawnId, which
+ * is `spawned_agents.spawn_id`). Recorded by operator-spawn for CLAUDE bees only
+ * (mig 203 / P-016); lets the roster hand pui a `claude --resume <id>` handle for
+ * the bee pane (P-004). Best-effort: a read error yields an empty map (no resume
+ * handle → pui falls back to the watch-pane view).
+ */
+export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      SELECT spawn_id, session_id
+      FROM harness_shared.spawned_agents
+      WHERE session_id IS NOT NULL
+    `;
+    for (const r of rows as Array<{ spawn_id: string; session_id: string }>) {
+      if (r.spawn_id && r.session_id) out.set(r.spawn_id, r.session_id);
+    }
+  } catch {
+    /* best-effort — no resume handles, pui falls back to watch-panes */
+  }
+  return out;
 }
 
 /**
@@ -150,6 +180,7 @@ export function mergeRosterEntries(
   advByOwner: Map<string, AdvSessionRow>,
   nowMs: number,
   claimsByOwner: Map<string, AgentClaim[]> = new Map(),
+  sessionsByOwner: Map<string, string> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -189,6 +220,7 @@ export function mergeRosterEntries(
       launchArgv: [],
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
+      sessionId: sessionsByOwner.get(p.ownerId) ?? null,
     };
   });
 }
@@ -239,6 +271,7 @@ export function pendingLaunchesToRosterEntries(
       launchArgv: r.launchArgv ?? [],
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
+      sessionId: null,
     };
   });
 }
@@ -306,10 +339,11 @@ export async function mergeRosterWithAssignments(
   opts: { workspaceId?: string | null } = {},
 ): Promise<RosterWithAssignments> {
   const workspaceId = opts.workspaceId ?? null;
-  const [presenceAll, advByOwner, assignmentRows] = await Promise.all([
+  const [presenceAll, advByOwner, assignmentRows, sessionsByOwner] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
     listFleetAssignments({ workspaceId }).catch(() => []),
+    spawnedAgentSessionsByOwner(),
   ]);
   const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
   const entries = mergeRosterEntries(
@@ -317,6 +351,7 @@ export async function mergeRosterWithAssignments(
     advByOwner,
     Date.now(),
     claimsByAgent(assignmentRows),
+    sessionsByOwner,
   );
   return {
     active: enrichPidLiveness(entries, os.hostname()),
