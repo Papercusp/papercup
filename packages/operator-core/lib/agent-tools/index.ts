@@ -228,6 +228,11 @@ import './db/next_migration';
 import './coordination/tools/whoami';
 import './coordination/tools/presence';
 import './coordination/tools/declare-intent';
+// Per-agent wake mode + staged-wake review — the pause/edit gate's control surface
+// (hive-agent-tabs-psu-tui-2026-06-09 P-008/P-009 / D-005). The stage-vs-fire
+// behavior is in wakeRecipients (P-007, gated on HIVE_AGENT_TABS); these expose it.
+import './coordination/tools/wake-mode';
+import './coordination/tools/wake-queue';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"

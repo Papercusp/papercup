@@ -36,6 +36,20 @@ exports.AGENT_ROLES = [
     // Chat-surface roles.
     'operator',
     'oracle',
+    // The generic operator-world worker — the Hive's bee (local-hive-orchestration
+    // D-003 / P-011). The plain "do this task" role the Queen places ranked work +
+    // a brief onto. DECOUPLED from the pipeline guards: unlike `worker` (which
+    // operator-spawn rejects without a `chunkId`), a `bee` carries NO pipeline spine
+    // and NO chunk requirement. Pipeline roles (scoper/worker/validator/…) apply
+    // ONLY when a bee explicitly spins up a coding harness (kind:'harness'); the bee
+    // itself is the generic agent of the kind:'hive' blueprint.
+    'bee',
+    // The PLANNER (hive-agent-tabs-psu-tui-2026-06-09 P-006): an interactive,
+    // RESPONSIVE plan-authoring session launched into the dock as a Planner-kind pane
+    // (no auto-injected wakes — the owner drives). It drafts/refines ONE plan via the
+    // plans:* tools; like a bee it appears in the roster + is paned by the dock driver,
+    // but its job is the plan, not code execution. classifyAgentPane maps it → Planner.
+    'planner',
     // Coordinator + cross-cutting roles (built-in, fire on plan events).
     'orchestrator',
     // Promotes a plan's `## Promote` policy into the harness, all waves up front
@@ -67,6 +81,16 @@ exports.AGENT_ROLES = [
     // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
     // reads health and decides rollback. The script is the hands; this is the brain.
     'release-manager',
+    // The SENTINEL — the fleet watcher split out of the overloaded "operator"
+    // (unify-launch-mechanics-2026-06-09 D-004). "operator" meant both the Queen
+    // (steer: schedule + place + prioritize) AND a watcher; they are now separate.
+    // The Queen STEERS; the sentinel WATCHES — fleet health (stuck/orphaned spawns,
+    // crash-loops), misbehaving agents (lock hogs, retry storms, mute bees), and the
+    // coord substrate (presence staleness, undelivered escalations). It is READ-MOSTLY
+    // (its only writes are raising alarms: coord:escalate / coord:send), launched
+    // through the SAME unified primitive as a bee and PLACED BY THE QUEEN (fleet:spawn
+    // or the `sentinel` launch blueprint). No execution/mutation capability.
+    'sentinel',
 ];
 /**
  * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence

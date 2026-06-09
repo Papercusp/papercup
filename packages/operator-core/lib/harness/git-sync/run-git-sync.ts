@@ -127,6 +127,19 @@ const currentBranch = async (runGit: RunGit, repo: string): Promise<string | nul
   return r.code === 0 ? r.stdout.trim() : null;
 };
 
+/** The remote's default branch — `git rev-parse --abbrev-ref <remote>/HEAD` →
+ *  "<remote>/main" → "main". Resolves the sync branch for a DETACHED HEAD (P-004):
+ *  a fresh `git submodule update` leaves submodules detached, and they must sync to
+ *  their OWN default (main), not the superproject's branch. Null when <remote>/HEAD
+ *  isn't set. */
+const remoteDefaultBranch = async (runGit: RunGit, repo: string, remote: string): Promise<string | null> => {
+  const r = await runGit(['rev-parse', '--abbrev-ref', `${remote}/HEAD`], repo);
+  if (r.code !== 0) return null;
+  const ref = r.stdout.trim();
+  if (!ref || ref.endsWith('/HEAD')) return null; // unset → the literal "<remote>/HEAD"
+  return ref.startsWith(`${remote}/`) ? ref.slice(remote.length + 1) : ref;
+};
+
 const headSha = async (runGit: RunGit, repo: string): Promise<string> => {
   const r = await runGit(['rev-parse', 'HEAD'], repo);
   return r.stdout.trim();
@@ -216,7 +229,17 @@ async function syncOneRepo(
   o: { remote: string; defaultBranch: string; message: string; doPush: boolean; maxBlobBytes: number },
 ): Promise<RepoSyncResult> {
   const { remote, message, doPush } = o;
-  const branch = (await currentBranch(runGit, repoPath)) ?? o.defaultBranch;
+  // P-004: a detached HEAD (a fresh `git submodule update` leaves submodules detached)
+  // must sync to the repo's OWN remote default branch (origin/HEAD → e.g. 'main'), NOT
+  // the superproject's configured branch — o.defaultBranch carries 'staging' for the
+  // live superproject, and using it for a detached submodule would push that submodule's
+  // commits to the wrong branch and fail every tick with no clear cause. origin/HEAD
+  // resolves the right branch; o.defaultBranch is only the last resort when even that is
+  // unknown (and is now passed per-repo: 'main' for submodules, cfg.branch for the super).
+  const branch =
+    (await currentBranch(runGit, repoPath)) ??
+    (await remoteDefaultBranch(runGit, repoPath, remote)) ??
+    o.defaultBranch;
 
   let committedLocal = false;
   let oversized: OversizedFile[] = [];
@@ -231,7 +254,20 @@ async function syncOneRepo(
         : ['add', '-A', '--', '.', ...oversized.map((f) => `:(exclude,literal)${f.path}`)];
     await runGit(addArgs, repoPath);
     const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
-    if (c.code === 0) committedLocal = true;
+    if (c.code === 0) {
+      committedLocal = true;
+    } else if (!nothingToCommit(c)) {
+      // P-002: a real commit failure (index.lock race, corrupt index, a hook) is NOT
+      // a merge conflict. If the still-dirty tree fell through to the merge below it
+      // would abort as a phantom 'conflict' with zero conflicted files and dispatch a
+      // merge-resolver at nothing, while the true failure (agents' work not landing)
+      // stayed invisible. Surface it as an error.
+      return {
+        status: 'error',
+        message: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+        oversized,
+      };
+    }
   }
 
   const fetch = await runGit(['fetch', remote, branch], repoPath);
@@ -256,7 +292,14 @@ async function syncOneRepo(
   const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
   if (merge.code !== 0) {
     const conflicted = await conflictedFiles(runGit, repoPath);
+    const mergeOut = `${merge.stdout}\n${merge.stderr}`.trim();
     await runGit(['merge', '--abort'], repoPath); // clean tree
+    // P-002: a failed merge with NO unmerged paths is not a content conflict a
+    // merge-resolver can fix (e.g. "local changes would be overwritten", "not
+    // something we can merge") — surface as error, don't dispatch a resolver at it.
+    if (conflicted.length === 0) {
+      return { status: 'error', message: `merge failed (no conflicted paths): ${mergeOut.slice(0, 300)}`, oversized };
+    }
     return { status: 'conflict', conflictedFiles: conflicted, oversized };
   }
   let mergedNew = !/Already up to date/i.test(merge.stdout);
@@ -270,7 +313,11 @@ async function syncOneRepo(
       const m2 = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
       if (m2.code !== 0) {
         const conflicted = await conflictedFiles(runGit, repoPath);
+        const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
         await runGit(['merge', '--abort'], repoPath);
+        if (conflicted.length === 0) {
+          return { status: 'error', message: `merge failed (no conflicted paths): ${m2Out.slice(0, 300)}`, oversized };
+        }
         return { status: 'conflict', conflictedFiles: conflicted, oversized };
       }
       mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
@@ -349,7 +396,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       : await discoverSubmodulesRecursive(runGit, repo);
   }
   for (const sub of subPaths) {
-    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush, maxBlobBytes }));
+    // P-004: a submodule's last-resort default is its own 'main' (resolved via
+    // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
+    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: 'main', message, doPush, maxBlobBytes }));
   }
 
   // Superproject last — ONLY when every submodule reconciled (else its bumped pointers

@@ -19,5 +19,6 @@ declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<
     action: z.ZodOptional<z.ZodString>;
     sinceTs: z.ZodOptional<z.ZodNumber>;
     limit: z.ZodDefault<z.ZodNumber>;
+    workspace: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>>;
 export default _default;

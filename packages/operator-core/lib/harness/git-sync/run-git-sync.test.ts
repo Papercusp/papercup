@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runGitSync } from './run-git-sync';
+import { runGitSync, type RunGit } from './run-git-sync';
 
 /** Run git synchronously for test setup; throws on failure. */
 function git(cwd: string, ...args: string[]): string {
@@ -366,6 +366,24 @@ describe('runGitSync — EI-18 oversized-blob guard', () => {
     expect(out.oversized).toEqual([]);
   });
 
+  it('P-001: EXCLUDES an oversized file inside an UNTRACKED directory (-uall; the EI-18 bypass)', async () => {
+    // A brand-new directory: without `-uall`, `git status --porcelain` collapses it to a
+    // single `?? newdir/` entry whose lstat is a directory and is skipped — so the
+    // oversized file inside is invisible, gets committed by `add -A`, and wedges the push
+    // forever (the original EI-18 incident class). With `-uall` each file is listed.
+    mkdirSync(join(repo, 'newdir'));
+    writeFileSync(join(repo, 'newdir', 'big.bin'), Buffer.alloc(2048, 1));
+    writeFileSync(join(repo, 'small.txt'), 'ok\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(out.oversized).toEqual([{ scope: 'superproject', path: 'newdir/big.bin', sizeBytes: 2048 }]);
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('small.txt');
+    expect(originFiles).not.toContain('newdir/big.bin'); // the oversized blob never reached origin
+  });
+
   it('oversized paths with spaces are excluded correctly (-z parsing + literal pathspec)', async () => {
     writeFileSync(join(repo, 'big file with spaces.bin'), Buffer.alloc(2048, 1));
     writeFileSync(join(repo, 'small.txt'), 'ok\n');
@@ -442,5 +460,88 @@ describe('runGitSync — EI-18 oversized in a SUBMODULE does not defer the super
     // the pushed superproject pointer resolves on the submodule origin (no broken gitlink)
     const pointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
     expect(() => git(subOrigin, 'cat-file', '-e', `${pointer}^{commit}`)).not.toThrow();
+  });
+});
+
+describe('runGitSync — P-002 failure classification (injected git)', () => {
+  /** A stub RunGit driven by a per-call decision fn — deterministic, no real git. */
+  const fakeGit = (handle: (args: string[]) => { code: number; stdout?: string; stderr?: string }): RunGit =>
+    async (args) => {
+      const r = handle(args);
+      return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+
+  it('P-002a: a commit failure is reported as error, NOT a phantom conflict', async () => {
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' }; // no oversized
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' }; // dirty
+      if (j.startsWith('add')) return { code: 0 };
+      if (j.startsWith('commit')) return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    expect(out.status).toBe('error'); // NOT 'conflict' — no merge-resolver dispatched at a phantom
+    if (out.status === 'error') {
+      expect(out.errors.map((e) => e.scope)).toContain('superproject');
+      expect(out.errors[0].message).toMatch(/commit failed/i);
+    }
+  });
+
+  it('P-002a: a commit that simply had nothing to commit (all-oversized) is NOT an error', async () => {
+    // every dirty file was excluded as oversized → `git commit` exits non-zero with
+    // "nothing to commit" — benign, must fall through to fetch/merge, not error.
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('add')) return { code: 0 };
+      if (j.startsWith('commit')) return { code: 1, stdout: 'nothing to commit, working tree clean' };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { push: false, pushSubmodules: false } });
+    expect(out.status).toBe('nothing'); // benign — not an error
+  });
+
+  it('P-002b: a failed merge with NO conflicted paths is classified error, not conflict', async () => {
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' }; // clean tree
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge --no-edit')) return { code: 1, stderr: 'error: Your local changes to the following files would be overwritten by merge:\n  file.txt' };
+      if (j.startsWith('diff --name-only --diff-filter=U')) return { code: 0, stdout: '' }; // NO unmerged paths
+      if (j.startsWith('merge --abort')) return { code: 0 };
+      return { code: 0, stdout: '' };
+    });
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: [], config: { pushSubmodules: false } });
+    expect(out.status).toBe('error'); // NOT 'conflict' — nothing for a merge-resolver to merge
+    if (out.status === 'error') expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
+  });
+
+  it('P-004: a detached HEAD syncs to its OWN remote default (origin/HEAD → main), not cfg.branch', async () => {
+    const fetched: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 1, stderr: 'fatal: ref HEAD is not a symbolic ref' }; // detached
+      if (j.startsWith('rev-parse --abbrev-ref origin/HEAD')) return { code: 0, stdout: 'origin/main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' }; // clean
+      if (j.startsWith('fetch')) { fetched.push(args.join(' ')); return { code: 0 }; }
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      return { code: 0, stdout: '' };
+    });
+    // cfg.branch='staging' (the superproject's branch) must NOT be used for this detached repo.
+    const out = await runGitSync('test', {
+      repoPath: '/fake', runGit: run, submodulePaths: [],
+      config: { push: false, pushSubmodules: false, branch: 'staging' },
+    });
+    expect(out.status).toBe('nothing'); // clean + up-to-date on main
+    // it fetched origin MAIN (the remote default), never origin staging (cfg.branch)
+    expect(fetched.join('|')).toContain('fetch origin main');
+    expect(fetched.join('|')).not.toContain('staging');
   });
 });

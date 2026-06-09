@@ -140,6 +140,24 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
 // ── Process-global boot entry (called from boot-all, best-effort) ──────────────
 
 let _wiring: HiveDirectoryWiring | null = null;
+let _lastWireAttemptMs = 0;
+
+/**
+ * LAZY wire — for surfaces that need the directory live but may run before (or
+ * instead of) the boot-all join: `discovery:set_hive` (announcing needs the
+ * transport) and the discovery list reads. The boot join is once-only and
+ * skips on a gh-unauthenticated box; without this, a box that authenticates
+ * AFTER boot has a dead directory until restart. Returns the existing wiring
+ * instantly when already joined; otherwise re-attempts at most once per minute
+ * (identity resolution is the expensive/failing part). Best-effort → null.
+ */
+export async function ensureHiveDirectoryWired(workspaceId: string): Promise<HiveDirectoryWiring | null> {
+  if (_wiring) return _wiring;
+  const now = Date.now();
+  if (now - _lastWireAttemptMs < 60_000) return null;
+  _lastWireAttemptMs = now;
+  return wireHiveDirectoryForWorkspace(workspaceId);
+}
 
 /**
  * Boot the hive directory for a workspace (idempotent across the process). The
@@ -215,4 +233,5 @@ export async function wireHiveDirectoryForWorkspace(
 /** Test seam: drop the process wiring so the next call re-joins. */
 export function __resetHiveDirectoryWiring(): void {
   _wiring = null;
+  _lastWireAttemptMs = 0;
 }

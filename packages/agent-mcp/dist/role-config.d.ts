@@ -20,7 +20,7 @@
  * open — plugins contribute additional roles at runtime (namespaced
  * `<plugin>:<role>`), which stay typed as bare `string`.
  */
-export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "orchestrator", "promote", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor", "merge-resolver", "release-manager"];
+export declare const AGENT_ROLES: readonly ["scoper", "architect", "worker", "validator", "reviewer", "debugger", "documenter", "curator", "operator", "oracle", "bee", "planner", "orchestrator", "promote", "security-reviewer", "infra-reviewer", "crosscheck", "ui-qa", "auditor", "merge-resolver", "release-manager", "sentinel"];
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
 /**

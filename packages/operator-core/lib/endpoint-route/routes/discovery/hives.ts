@@ -22,6 +22,16 @@ export default defineTool({
   async handler(req) {
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
+    // Lazy-wire the directory (fire-and-forget): a box that gh-authenticated
+    // after boot starts listening on the directory topic from the first browse,
+    // instead of staying dead until restart. Instant no-op when already wired.
+    void import('../../../hive-directory-boot')
+      .then(({ ensureHiveDirectoryWired }) =>
+        import('../../../workspace-registry').then(({ activeWorkspaceId }) =>
+          ensureHiveDirectoryWired(activeWorkspaceId()),
+        ),
+      )
+      .catch(() => {});
     const url = new URL(req.url);
     const includeExpired = url.searchParams.get('includeExpired') === 'true';
     const rows = getHiveDirectory()

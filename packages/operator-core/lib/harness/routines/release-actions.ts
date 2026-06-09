@@ -49,23 +49,39 @@ function runScript(
   extraEnv: Record<string, string> = {},
 ): Promise<RunResult> {
   return new Promise((resolve) => {
+    // P-007: detached → the child is its own process-GROUP leader, so on the timeout we
+    // can SIGTERM the WHOLE group (tsx → npm → vitest workers), not just the tsx parent.
+    // Killing only the parent orphaned the test workers, which kept loading the shared
+    // box past the cap and manufactured the very load-flakes the gate then has to absorb.
     const child = spawn(tsxBin(root), [path.join(root, relScript), ...args], {
       cwd: root,
       env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: root, ...extraEnv },
+      detached: true,
     });
     let stdout = '';
     let stderr = '';
-    const killer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    let sigkiller: NodeJS.Timeout | undefined;
+    const killGroup = (sig: NodeJS.Signals) => {
+      try {
+        if (child.pid) process.kill(-child.pid, sig); // negative pid → the whole group
+      } catch {
+        /* group already gone */
+      }
+    };
+    const killer = setTimeout(() => {
+      killGroup('SIGTERM');
+      // Escalate if a wedged worker ignores SIGTERM, so the group can't linger.
+      sigkiller = setTimeout(() => killGroup('SIGKILL'), 15_000);
+    }, timeoutMs);
+    const finish = (r: RunResult): void => {
+      clearTimeout(killer);
+      if (sigkiller) clearTimeout(sigkiller);
+      resolve(r);
+    };
     child.stdout.on('data', (d) => (stdout += d.toString()));
     child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => {
-      clearTimeout(killer);
-      resolve({ code: 1, stdout, stderr: stderr + String(e) });
-    });
-    child.on('close', (code) => {
-      clearTimeout(killer);
-      resolve({ code: code ?? 1, stdout, stderr });
-    });
+    child.on('error', (e) => finish({ code: 1, stdout, stderr: stderr + String(e) }));
+    child.on('close', (code) => finish({ code: code ?? 1, stdout, stderr }));
   });
 }
 
@@ -159,8 +175,11 @@ const STALL_AGE_MS = 6 * 60 * 60 * 1000;
  */
 async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: string): Promise<void> {
   const isGreen = status === 'advanced' || status === 'up-to-date';
-  const isRed = status === 'not-green' || status === 'not-fast-forward' || status === 'create-failed';
-  if (!isGreen && !isRed) return; // 'error' (no parseable verdict) — leave the streak untouched
+  // P-006: every non-green verdict counts toward the stall streak — INCLUDING 'error'
+  // (a green-checkpoint script crash, the 25-min timeout, or unparseable JSON). The old
+  // code early-returned on 'error', so a persistently crashing/hanging suite never
+  // incremented the streak and never alerted: `main` froze silently, the exact failure
+  // this detector exists to catch. Only a green verdict resets the streak now.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(

@@ -59,11 +59,15 @@ export default defineTool({
     // Persist the listing (durable — survives restart, read by the boot-join).
     await saveOwnedHiveMeta(meta, activeWorkspaceId());
 
-    // Announce it now (best-effort — a no-op broadcast until the boot-join wires
-    // the transport; the boot-join re-announces every owned hive on its own).
+    // Announce it now (best-effort). Lazily wire the directory first — the
+    // boot-join is once-only and skips on a gh-unauthenticated boot, so a box
+    // that authenticated after boot would otherwise save but never announce
+    // until restart. Instant when already wired; throttled re-attempt when not.
     let announced = false;
     let announceError: string | undefined;
     try {
+      const { ensureHiveDirectoryWired } = await import('../../hive-directory-boot');
+      await ensureHiveDirectoryWired(activeWorkspaceId()).catch(() => null);
       const owner = await resolveOwnerIdentity();
       // Attach the Hive's identity pubkey (the cross-Hive dial address, P-006) for
       // the announce only — sourced from the keychain/hives table, NOT persisted in

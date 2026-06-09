@@ -370,7 +370,12 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     if (state === 'acquired') await releaseAll(cd, acquired);
   }
 
-  const errTicks = outcome.status === 'error' ? prev.errTicks + 1 : 0;
+  // P-003: count any tick whose errors[] is non-empty — a sibling push failure that
+  // co-occurs with a conflict produces status 'conflict' (worst-outcome), which used
+  // to RESET this counter to 0 every tick and defer the EI-18 push-failure escalation
+  // indefinitely. The error LIST drives the counter now, not the worst status.
+  const tickErrors = 'errors' in outcome ? outcome.errors : [];
+  const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
   await recordOutcome(slug, outcome, errTicks);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show

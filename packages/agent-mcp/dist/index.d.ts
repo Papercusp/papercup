@@ -15,6 +15,8 @@ import './capability-tiers-papercusp';
 export { defineTool } from '@papercusp/tooldef';
 export { AGENT_ROLES, BRAIN_PRINCIPAL_ROLE } from './role-config';
 export type { BuiltinAgentRole } from './role-config';
+export { classifyAgentPane, AGENT_PANE_KINDS, DRIVE_MODES } from './agent-pane-kind';
+export type { AgentPaneKind, DriveMode, AgentPaneClass, AgentLaunchHint } from './agent-pane-kind';
 export type { AgentRole, RoleRegistry } from '@papercusp/tooldef';
 export { defineUITool } from './define-ui-tool';
 export type { UIToolDefinitionInput, UIToolHandlerResult } from './define-ui-tool';
