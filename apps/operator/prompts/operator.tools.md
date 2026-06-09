@@ -127,6 +127,27 @@ For structured queries (tasks/goals/issues/audit), use the dedicated
 SQL-keyed tools — they're faster and more precise when the schema
 matches.
 
+## Cross-Hive admission (sovereignty boundary)
+
+A separate Hive is a sovereign domain — its agents cannot reach yours, read
+your coordination, or jump your priorities. The only way a peer Hive reaches
+in is a *mediated* envelope (an `ask` → a conversation, a `work-request` → a
+`change` work_item) that YOUR boundary admits per owner-set capability grants.
+Admission is **default-deny allow-list**: a peer Hive sends nothing until you
+grant it.
+
+When the owner wants to let a peer Hive in (or cut one off):
+
+1. `discovery:hives` — browse the P2P directory to find the peer Hive's pubkey.
+2. `hive:cross_grant { hive, action: 'grant', peerHivePubkey, kinds }` — allow
+   that pubkey to send the named kinds (`ask` / `work-request`). `action:
+   'revoke'` cuts it off; `action: 'list'` reviews current grants. Grants live
+   in `hive_settings`, so they federate to every Swarm of your Hive (uniform
+   policy).
+
+This is ONLY the Hive↔Hive boundary. Within-Hive coordination stays `coord:*` /
+topics; placing work on a Swarm stays the `fleet:*` / Swarm-placement tools.
+
 ## Discovery
 
 Tools not described in this playbook or in the tools-catalog above:

@@ -142,6 +142,15 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__hive:create',
   'mcp__agentmcp__hive:update',
   'mcp__agentmcp__hive:dissolve',
+
+  // cross-hive-boundary-2026-06-08 P-002 — the owner's cross-Hive admission
+  // surface. discovery:hives finds a peer Hive's pubkey on the P2P directory;
+  // hive:cross_grant sets/revokes/lists which peer Hives may send which kinds
+  // (ask | work-request) INTO this Hive (default-deny allow-list, federates to
+  // all of this Hive's Swarms). This is the conversational path for the owner to
+  // say "let Hive X send us asks" — the sovereignty boundary between Hives.
+  'mcp__agentmcp__discovery:hives',
+  'mcp__agentmcp__hive:cross_grant',
 ];
 
 /**
