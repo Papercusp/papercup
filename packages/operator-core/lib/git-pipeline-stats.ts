@@ -71,6 +71,20 @@ export interface GitPipelineSnapshot {
     lastScopes: string[];
   };
 
+  /** The green-checkpoint gate health (P-004): the red streak + time since the
+   *  last green + the last release-fixer dispatch — from the green-checkpoint
+   *  routine metadata (`gate_health` + `last_fixer`). `stalled` is true once the
+   *  red streak / age crossed the alert threshold. */
+  gate: {
+    consecutiveReds: number;
+    lastGreenAtMs: number | null;
+    firstRedAtMs: number | null;
+    stalled: boolean;
+    lastFixerStatus: string | null;
+    lastFixerAtMs: number | null;
+    lastFixerCandidate: string | null;
+  };
+
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
   openConflict: {
     scopes: string[];
@@ -158,6 +172,10 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
   const gitSyncRow = byName('git-sync');
   const meta = (gitSyncRow?.metadata ?? {}) as Record<string, unknown>;
   const lastResolver = (meta.last_resolver ?? null) as Record<string, unknown> | null;
+  // P-004: green-checkpoint gate health (red streak + last release-fixer).
+  const gcMeta = (byName('green-checkpoint')?.metadata ?? {}) as Record<string, unknown>;
+  const gateHealth = (gcMeta.gate_health ?? {}) as Record<string, unknown>;
+  const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
 
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
@@ -221,6 +239,15 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastHttpStatus: num(lastResolver?.httpStatus),
       lastTimedOut: typeof lastResolver?.timedOut === 'boolean' ? lastResolver.timedOut : null,
       lastScopes: strArr(lastResolver?.scopes),
+    },
+    gate: {
+      consecutiveReds: num(gateHealth.consecutiveReds) ?? 0,
+      lastGreenAtMs: num(gateHealth.lastGreenAt),
+      firstRedAtMs: num(gateHealth.firstRedAt),
+      stalled: gateHealth.stallAlerted === true,
+      lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
+      lastFixerAtMs: num(lastFixer?.at),
+      lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
     },
     openConflict,
     windows: { day, week },

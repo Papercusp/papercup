@@ -42,6 +42,13 @@ export const FLAGS = {
   // Swarm = a deployment-to-instance unit; D-007). Fully reversible presentation
   // switch; @papercusp/lexicon resolves it.
   THE_HIVE: "papercusp-the-hive",
+  // psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 (P-008): gates the new
+  // SCHEMA-DRIVEN harness settings panel (BlueprintSettingsPanel) that renders
+  // controls from the harness blueprint's declared `params` (P-006), replacing the
+  // hardcoded coding-pipeline form. OFF (default) = the legacy HarnessSettingsPanel.
+  // Flip ON once the panel is visually verified in the Tauri shell + folded over the
+  // legacy panel's residual sections (Discord/telemetry). Reversible presentation switch.
+  BLUEPRINT_AWARE_SETTINGS: "papercusp-blueprint-aware-settings",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -65,6 +72,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — classic Papercusp is the V1 ship state; flip on to adopt
   // the bee lexicon (the-hive-lexicon-2026-06-06). Presentation only.
   [FLAGS.THE_HIVE]: false,
+  // OFF by default — the legacy hardcoded HarnessSettingsPanel ships until the
+  // schema-driven BlueprintSettingsPanel (P-008) is Tauri-verified. Flip on to adopt.
+  [FLAGS.BLUEPRINT_AWARE_SETTINGS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

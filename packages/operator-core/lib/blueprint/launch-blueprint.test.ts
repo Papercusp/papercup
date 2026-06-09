@@ -56,6 +56,9 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     // Scheduled launches declare no event key — they are not in the event map.
     expect(Object.values(map)).not.toContain('deploy');
     expect(resolveLaunchTriggerEvent('git-sync:conflict')).toBe('merge-resolution');
+    // release-pipeline-resilience-2026-06-09 P-007: the gate-red event binds the release-fix clone.
+    expect(map['green-checkpoint:red']).toBe('release-fix');
+    expect(resolveLaunchTriggerEvent('green-checkpoint:red')).toBe('release-fix');
     expect(resolveLaunchTriggerEvent('nope:nonexistent')).toBeNull();
   });
 
@@ -94,6 +97,28 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'merge-resolution', role: 'merge-resolver', timeoutMs: 280_000 });
     expect(fired[0]!.extra).toEqual(['--git-sync-conflict', '{}']);
+  });
+
+  // P-007: exercise the SAME launch path for the new gate-red event end-to-end, so
+  // the release-fix clone of merge-resolution is proven (not assumed) before
+  // green-checkpoint relies on it to auto-dispatch a release-fixer.
+  it('fireLaunchBlueprintForEvent fires release-fix for the green-checkpoint:red event', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    const target = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
+      ...opts,
+      extra: ['--green-checkpoint-red', '{}'],
+      timeoutMs: 280_000,
+    });
+    expect(target).not.toBeNull();
+    expect(target!.blueprintId).toBe('release-fix');
+    expect(target!.role).toBe('release-fixer');
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ blueprintId: 'release-fix', role: 'release-fixer', timeoutMs: 280_000 });
+    expect(fired[0]!.url).toContain('role=release-fixer');
+    expect(fired[0]!.extra).toEqual(['--green-checkpoint-red', '{}']);
   });
 
   it('fireLaunchBlueprintForEvent returns null (no fire) for an unmapped event', async () => {

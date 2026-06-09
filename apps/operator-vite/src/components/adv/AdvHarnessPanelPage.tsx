@@ -7,6 +7,9 @@ import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
 import HarnessSettingsPanel from '@/app/harness/HarnessSettingsPanel';
+import BlueprintSettingsPanel from '@/app/harness/BlueprintSettingsPanel';
+import { useFlag } from '@/lib/flag-hooks';
+import { FLAGS } from '@papercusp/flags';
 import { InsightsTab, type InsightsTabProps } from '@/app/harness/insights/InsightsTab';
 import AdvDocsTab from '@/app/adv/harnesses/AdvDocsTab';
 import HarnessTestsView from '@/app/adv/harnesses/HarnessTestsView';
@@ -69,6 +72,23 @@ function AdvInsightsTab({ slug }: { slug: string }) {
 }
 
 /**
+ * Settings tab — flag-gated swap (psu-isolation-and-blueprint-aware-harness-ui-2026-06-09
+ * P-008/P-009): the SCHEMA-DRIVEN `BlueprintSettingsPanel` (renders from the harness
+ * blueprint's declared `params`) when `BLUEPRINT_AWARE_SETTINGS` is on, else the legacy
+ * hardcoded `HarnessSettingsPanel`. Either way the panel is PER-HARNESS — keyed by the
+ * selected `?harness=` member slug — so this is the per-harness settings location inside
+ * the harness/hive tab (P-009).
+ */
+function SettingsTab({ slug }: { slug: string }) {
+  const blueprintAware = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
+  return blueprintAware ? (
+    <BlueprintSettingsPanel slug={slug} phase={ADV_PHASE} />
+  ) : (
+    <HarnessSettingsPanel slug={slug} phase={ADV_PHASE} />
+  );
+}
+
+/**
  * Tabs whose body is a self-contained harness panel component. Every panel
  * renders its component DIRECTLY — the legacy `HarnessDashboard` monolith is
  * no longer mounted anywhere in /adv. (git has its own two-pane branch below;
@@ -77,7 +97,7 @@ function AdvInsightsTab({ slug }: { slug: string }) {
 const DIRECT: Partial<Record<AdvHarnessPanel, (slug: string) => ReactNode>> = {
   brainstorm: (slug) => <BrainstormFull slug={slug} />,
   prs: (slug) => <PrsTab harnessSlug={slug} />,
-  settings: (slug) => <HarnessSettingsPanel slug={slug} phase={ADV_PHASE} />,
+  settings: (slug) => <SettingsTab slug={slug} />,
   insights: (slug) => <AdvInsightsTab slug={slug} />,
   docs: (slug) => <AdvDocsTab slug={slug} />,
   testing: (slug) => <HarnessTestsView slug={slug} />,

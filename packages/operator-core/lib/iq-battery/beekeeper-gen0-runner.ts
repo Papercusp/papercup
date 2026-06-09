@@ -260,14 +260,29 @@ async function transferMetrics(sql: postgres.Sql, instanceId: string): Promise<n
         FROM harness_shared.beekeeper_scores WHERE run_id = ${run.run_id} LIMIT 1`;
     const s = scores[0];
     if (!s) continue;
+    // Idempotent transfer (D-005): iq_battery_metrics.run_id is a UUID column but the beekeeper
+    // run_id is TEXT, so we can't store the run_id directly. Derive a DETERMINISTIC uuid from it
+    // (md5(text)::uuid) so a re-run of the same beekeeper run maps to the SAME metric row and
+    // ON CONFLICT (run_id, case_id) overwrites it — instead of gen_random_uuid() appending a fresh
+    // duplicate every transfer (the bug that accreted 19 dup rows over the dev runs).
     await sql`
       INSERT INTO iq_battery_metrics (
         run_id, case_id, variant, success, tokens_per_solved_task, time_to_green_secs,
         first_attempt_pass, recurrence, escalation, recall_hit
       ) VALUES (
-        gen_random_uuid(), ${run.case_id}, ${run.case_variant}, ${s.success}, ${s.tokens_per_task},
+        md5(${run.run_id})::uuid, ${run.case_id}, ${run.case_variant}, ${s.success}, ${s.tokens_per_task},
         ${s.time_to_green_secs}, ${s.first_attempt_pass}, ${s.recurrence}, ${s.escalation}, ${s.recall_hit}
-      )`;
+      )
+      ON CONFLICT (run_id, case_id) DO UPDATE SET
+        variant = EXCLUDED.variant,
+        success = EXCLUDED.success,
+        tokens_per_solved_task = EXCLUDED.tokens_per_solved_task,
+        time_to_green_secs = EXCLUDED.time_to_green_secs,
+        first_attempt_pass = EXCLUDED.first_attempt_pass,
+        recurrence = EXCLUDED.recurrence,
+        escalation = EXCLUDED.escalation,
+        recall_hit = EXCLUDED.recall_hit,
+        collected_at = now()`;
     transferred += 1;
   }
   return transferred;

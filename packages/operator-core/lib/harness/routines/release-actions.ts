@@ -126,7 +126,75 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       console.warn(`[green-checkpoint] release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
+
+  // P-004: track the red streak + time-since-last-green across ticks and fire a
+  // LOUDER urgent alert when the gate has been HELD too long (the "stuck for a
+  // while" signal, distinct from the per-candidate notification). Runs for every
+  // verdict so it resets on green; fail-safe.
+  await trackGateStall(ctx, status, candidate).catch((e) =>
+    console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
+  );
 });
+
+/** P-004 thresholds: a gate held this many consecutive hourly checkpoints — or
+ *  with no green for this long — is STALLED and worth an urgent, one-shot alert. */
+const STALL_REDS = 3;
+const STALL_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
+ * and fire ONE urgent stall alert when the red streak / age crosses the threshold
+ * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
+ * gitPipelineSnapshot().gate. Fail-safe — the routine tick never depends on it.
+ */
+async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: string): Promise<void> {
+  const isGreen = status === 'advanced' || status === 'up-to-date';
+  const isRed = status === 'not-green' || status === 'not-fast-forward' || status === 'create-failed';
+  if (!isGreen && !isRed) return; // 'error' (no parseable verdict) — leave the streak untouched
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT metadata->'gate_health' AS gh FROM harness_shared.routines
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug],
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean } | null }>;
+  const gh = rows[0]?.gh ?? {};
+  let next: Record<string, unknown>;
+  if (isGreen) {
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false };
+  } else {
+    const consecutiveReds = (gh.consecutiveReds ?? 0) + 1;
+    const firstRedAt = gh.firstRedAt ?? Date.now();
+    const lastGreenAt = gh.lastGreenAt ?? null;
+    let stallAlerted = gh.stallAlerted ?? false;
+    const stalledByCount = consecutiveReds >= STALL_REDS;
+    const stalledByAge = lastGreenAt != null && Date.now() - lastGreenAt > STALL_AGE_MS;
+    if ((stalledByCount || stalledByAge) && !stallAlerted) {
+      stallAlerted = true;
+      try {
+        const { notifyAttention } = await import('../../attention-notify');
+        const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Release pipeline STALLED — main frozen',
+          body: `green-checkpoint has held \`main\` for ${consecutiveReds} consecutive checkpoint(s)${heldHrs != null ? ` (~${heldHrs}h since the last green)` : ''}. Staging changes are NOT reaching the release. A release-fixer is on it; manual help may be needed.`,
+          importance: 'urgent',
+          workspaceId: ctx.workspaceId,
+          data: { consecutiveReds, candidate: candidate?.slice(0, 12) ?? null },
+        });
+      } catch (e) {
+        console.warn(`[green-checkpoint] stall alert failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    next = { consecutiveReds, lastGreenAt, firstRedAt, stallAlerted };
+  }
+  await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug, JSON.stringify({ gate_health: next })],
+  );
+}
 
 /**
  * P-006: dispatch a release-fixer agent for a held (not-green) gate, mirroring
@@ -138,15 +206,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
  * Fail-safe: every step is best-effort and never throws into the routine tick.
  */
 async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Promise<void> {
-  const { resolveLaunchTargetForEvent } = await import('../../blueprint/launch-blueprint');
-  const target = await resolveLaunchTargetForEvent('green-checkpoint:red', {
-    installSlug: ctx.installSlug,
-    workspaceId: ctx.workspaceId,
-  });
-  if (!target) return; // no blueprint declares the trigger — nothing to dispatch
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  // Dedup: a fixer dispatched for THIS candidate within the last 2h is "in flight".
+  // Dedup: a fresh red candidate is handled (notified + fixer-dispatched) ONCE;
+  // a candidate seen within the last 2h is "in flight" and skipped — so the
+  // hourly tick neither re-notifies the human nor re-spawns a fixer.
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
@@ -162,6 +226,32 @@ async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string): Pr
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug, JSON.stringify({ last_fixer: { candidate, at: Date.now(), status: 'dispatched' } })],
   );
+
+  // P-003: a user-facing notification (native OS notification on desktop, mobile
+  // push) the moment the gate goes red — beyond the agent coord broadcast + the
+  // durable escalation. Fires once per fresh red candidate (the dedup above), and
+  // before the fixer dispatch so the human is told even if no fixer blueprint exists.
+  try {
+    const { notifyAttention } = await import('../../attention-notify');
+    await notifyAttention({
+      kind: 'intervention',
+      title: 'Release gate held — staging→main blocked',
+      body: `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red); a release-fixer was dispatched to diagnose it.`,
+      importance: 'high',
+      workspaceId: ctx.workspaceId,
+      data: { candidate: candidate.slice(0, 12) },
+    });
+  } catch (e) {
+    console.warn(`[green-checkpoint] release-red notify failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // P-006: dispatch the release-fixer agent (the `release-fix` launch blueprint).
+  const { resolveLaunchTargetForEvent } = await import('../../blueprint/launch-blueprint');
+  const target = await resolveLaunchTargetForEvent('green-checkpoint:red', {
+    installSlug: ctx.installSlug,
+    workspaceId: ctx.workspaceId,
+  });
+  if (!target) return; // human notified; no fixer blueprint to dispatch
   const { loopbackFetch } = await import('../../loopback-fetch');
   void loopbackFetch(target.url, {
     method: 'POST',
