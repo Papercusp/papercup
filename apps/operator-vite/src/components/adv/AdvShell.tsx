@@ -9,6 +9,7 @@ import {
   Check,
   FlaskConical,
   GitBranch,
+  GraduationCap,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -28,7 +29,7 @@ import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-
 import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'settings', 'docs', 'git', 'testing', 'plans', 'frames'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'frames'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -55,6 +56,7 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
   { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: '#ec4899', accentRgb: '236, 72, 153' },
+  { id: 'learning', label: 'Learning', icon: GraduationCap, accent: '#34d399', accentRgb: '52, 211, 153' },
   { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;
 
@@ -70,6 +72,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'plans',
   'harnesses',
   'conversations',
+  // Learning aggregates the workspace-wide papercusp-improvement backlog, so it
+  // stays visible under "All Pots" (operator-learning-tab-2026-06-09).
+  'learning',
   // Swarm live view aggregates every deployed frame in the workspace
   // (hive-frame-desktops-live-view P-006).
   'frames',

@@ -3,6 +3,7 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
+import LearningTab from '../../components/adv/LearningTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
@@ -32,6 +33,7 @@ function AdvIndexPage() {
 function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'overview') return 'Overview';
   if (tab === 'conversations') return 'Conversations';
+  if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Harnesses';
   if (tab === 'frames') return 'Frames';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
@@ -46,6 +48,8 @@ function renderAdvTab(tab: AdvTabId) {
       return <AdvOverviewTab />;
     case 'conversations':
       return <AdvConversationsTab />;
+    case 'learning':
+      return <LearningTab />;
     case 'harnesses':
       return <HarnessesWorkspace />;
     case 'frames':

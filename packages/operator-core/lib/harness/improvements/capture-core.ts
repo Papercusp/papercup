@@ -188,6 +188,13 @@ export async function captureImprovement(
     source: input.source,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
+  // Push the Learning tab's improvements feed (operator-learning-tab-2026-06-09 P-002).
+  // Fire-and-forget via a lazy import so the pure, PG-free capture core (+ its unit
+  // tests) never statically depend on the SSE layer; a missing/erroring SSE bus is a
+  // no-op (the panel still refreshes on mount + manual refresh + staleTime).
+  void import('../../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.improvements'))
+    .catch(() => {});
   return {
     ok: true,
     created: true,

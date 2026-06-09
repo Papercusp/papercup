@@ -48,6 +48,30 @@ impl AgentPaneKind {
             Self::Planner => "planner",
         }
     }
+
+    /// A distinct glyph per kind for the pane title row (P-010). pui-DRAWS this —
+    /// zellij has no per-pane styling (D-008) — and prefixes it into the zellij
+    /// pane name. Cosmetic; tunable during live verify.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Queen => "♛",
+            Self::Bee => "🐝",
+            Self::Sentinel => "🛡",
+            Self::Planner => "📋",
+        }
+    }
+
+    /// A distinct title-row color per kind, drawn by pui in the pane chrome
+    /// (P-010 / D-008 — zellij theming is session-level, so per-type color is ours).
+    pub fn color(self) -> ratatui::style::Color {
+        use ratatui::style::Color;
+        match self {
+            Self::Queen => Color::Magenta,
+            Self::Bee => Color::Yellow,
+            Self::Sentinel => Color::Cyan,
+            Self::Planner => Color::Green,
+        }
+    }
 }
 
 /// Drive mode mirror: `auto` = the system auto-injects the next turn; `responsive`
@@ -103,6 +127,26 @@ mod tests {
         assert_eq!(AgentPaneKind::from_wire(""), None);
         assert_eq!(AgentPaneKind::from_opt(&Some("queen".to_string())), Some(AgentPaneKind::Queen));
         assert_eq!(AgentPaneKind::from_opt(&None), None);
+    }
+
+    #[test]
+    fn pane_kind_glyph_and_color_are_distinct_per_kind() {
+        let kinds = [
+            AgentPaneKind::Queen,
+            AgentPaneKind::Bee,
+            AgentPaneKind::Sentinel,
+            AgentPaneKind::Planner,
+        ];
+        for k in kinds {
+            assert!(!k.glyph().is_empty(), "every kind needs a glyph");
+        }
+        // The four colors must all differ so the dock visibly separates types.
+        let colors: Vec<_> = kinds.iter().map(|k| k.color()).collect();
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(colors[i], colors[j], "pane-kind colors must be distinct");
+            }
+        }
     }
 
     #[test]
