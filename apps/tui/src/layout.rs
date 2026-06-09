@@ -416,7 +416,7 @@ mod tests {
     fn hive_lex() -> Lexicon {
         let mut terms = HashMap::new();
         for (k, one, other) in [
-            ("operator", "Sentinel Bee", "Sentinel Bees"),
+            ("operator", "Sentinel", "Sentinels"),
             ("brain", "Queen", "Queens"),
             ("fleet", "Swarm", "Swarms"),
             ("contributor", "Bee", "Bees"),
@@ -493,10 +493,11 @@ mod tests {
 
     #[test]
     fn chat_dock_pane_names_route_through_the_hive_lexicon() {
-        // With the-hive active: operator→sentinel-bee, brain→queen (lowercased,
-        // kdl-safe — owner naming 2026-06-07). The fixed "chat" stays verbatim.
+        // With the-hive active: operator→sentinel, brain→queen (lowercased,
+        // kdl-safe). The fixed "chat" stays verbatim. (renamed from "sentinel-bee",
+        // owner directive 2026-06-09 / hive-agent-tabs P-003.)
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
-        assert!(kdl.contains("name=\"sentinel-bee\""));
+        assert!(kdl.contains("name=\"sentinel\""));
         assert!(kdl.contains("name=\"queen\""));
         assert!(kdl.contains("name=\"chat\""));
         // The classic labels must NOT leak when the-hive is on.

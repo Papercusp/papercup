@@ -49,7 +49,7 @@ describe('lexicon:active_pack', () => {
     expect(out.terms.pot).toEqual({ one: 'Hive', other: 'Hives' });
     // D-007: live agents → Colony (Swarm reassigned to the deployment unit).
     expect(out.terms.fleet.one).toBe('Colony');
-    expect(out.terms.operator.one).toBe('Sentinel Bee');
+    expect(out.terms.operator.one).toBe('Sentinel'); // renamed from "Sentinel Bee" (hive-agent-tabs P-003)
     expect(out.terms.brain.one).toBe('Queen');
     expect(out.terms.human.one).toBe('Keeper');
     expect(out.terms.cupboard.one).toBe('Comb');

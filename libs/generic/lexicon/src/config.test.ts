@@ -35,7 +35,7 @@ describe('configureLexicon / ambient resolution', () => {
     configureLexicon({ activePackId: () => (on ? 'the-hive' : 'classic') });
     expect(term('operator')).toBe('Operator');
     on = true;
-    expect(term('operator')).toBe('Sentinel Bee');
+    expect(term('operator')).toBe('Sentinel'); // renamed from "Sentinel Bee" (hive-agent-tabs P-003)
     expect(term('brain')).toBe('Queen');
     expect(term('human', { plural: true })).toBe('Keepers');
   });

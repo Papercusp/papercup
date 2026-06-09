@@ -42,8 +42,9 @@ const THE_HIVE_TERMS: Record<TermKey, { one: string; other: string }> = {
   // the BRAIN — the persistent engineer session that places + supervises bees —
   // IS the Queen (matches the fleet's own Queen-dispatcher concept, e.g.
   // QUEEN_BRIEF / "the Queen reads for placement"). The operator chat — the
-  // hive's conversational front door, always watching — is the Sentinel Bee.
-  operator: { one: 'Sentinel Bee', other: 'Sentinel Bees' },
+  // hive's conversational front door, always watching — is the Sentinel
+  // (renamed from "Sentinel Bee", owner directive 2026-06-09 / hive-agent-tabs P-003).
+  operator: { one: 'Sentinel', other: 'Sentinels' },
   brain: { one: 'Queen', other: 'Queens' },
   contributor: { one: 'Bee', other: 'Bees' },
   human: { one: 'Keeper', other: 'Keepers' },

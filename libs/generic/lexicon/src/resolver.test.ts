@@ -40,7 +40,7 @@ describe('resolveTerm', () => {
     // D-007: live agents are the Colony (was Swarm); Swarm is reassigned to
     // the deployment-to-instance unit (the `node` term).
     expect(t('fleet')).toBe('Colony');
-    expect(t('operator')).toBe('Sentinel Bee');
+    expect(t('operator')).toBe('Sentinel'); // renamed from "Sentinel Bee" (hive-agent-tabs P-003)
     expect(t('brain')).toBe('Queen');
     expect(t('contributor')).toBe('Bee');
     expect(t('human')).toBe('Keeper');
