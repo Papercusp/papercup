@@ -28,10 +28,11 @@ import { buildStateOfHiveReaders } from './corpus-digest-deps';
 import { runIdeators } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
-import { routeProposals, type RouterPorts } from './router';
+import { routeProposals, wholeSystemInstanceOverride, type RouterPorts } from './router';
 import {
   buildCapturePort,
   buildGymDispatchPort,
+  buildInstanceDispatchPort,
   buildPlansNewPort,
   type CapturePortOptions,
   type PlanDraftCreator,
@@ -130,6 +131,10 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
     capture: buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
+    // whole-system → InstanceSubject (reconciliation P-005). Acknowledge-only until the
+    // apiary's intake queue is built — the routed-idea ledger (rail='instance') is the
+    // pending-candidate record the apiary reads.
+    instanceDispatch: buildInstanceDispatchPort(),
   };
 
   const readers = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();
@@ -167,6 +172,10 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
       (await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall })).critiques,
     recombine: async (scored, ctx) =>
       (await recombineProposals(scored, { llmCall: ctx.llmCall })).proposals,
-    route: async (proposals) => (await routeProposals(proposals, routerPorts)).decisions,
+    // The whole-system override realizes the P-005 split: a testable WHOLE-SYSTEM proposal
+    // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
+    // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.
+    route: async (proposals) =>
+      (await routeProposals(proposals, routerPorts, { override: wholeSystemInstanceOverride })).decisions,
   };
 }

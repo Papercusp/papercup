@@ -201,7 +201,7 @@ describe('routeProposals', () => {
     expect(byId['p-gym'].routedRef).toBe('gym:p-gym');
     expect(byId['p-imp'].routedRef).toBe('wi:EI-1');
 
-    expect(res.byRail).toEqual({ plan: 1, gym: 1, improvement: 1 });
+    expect(res.byRail).toEqual({ plan: 1, gym: 1, improvement: 1, instance: 0 });
     expect(res.failed).toEqual([]);
     // Exactly the injected ports were touched (no real writes).
     expect(calls.plansNew).toHaveLength(1);

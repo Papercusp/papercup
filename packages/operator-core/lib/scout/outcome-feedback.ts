@@ -31,8 +31,13 @@
 import type { ChangeFeedEntry } from '../curation/change-feed';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 
-/** The three rails a Scout proposal routes into (P-007 / D-007). */
-export type RoutedRail = 'plan' | 'gym' | 'improvement';
+/**
+ * The rails a Scout proposal routes into (P-007 / D-007; reconciliation P-005 adds
+ * `instance`). The two eval rails are the eval-battery's two SUBJECTS: `gym` = the
+ * HarnessSubject (component eval), `instance` = the InstanceSubject (whole-instance
+ * eval, a genome delta). Both feed lens meta-learning (reconciliation P-006).
+ */
+export type RoutedRail = 'plan' | 'gym' | 'improvement' | 'instance';
 
 /** Outcome of one routed idea, derived from the change feed. */
 export type IdeaOutcome =
@@ -142,6 +147,14 @@ export function classifyIdeaOutcome(
 ): IdeaOutcome {
   const entry = completionByRef.get(prov.routedRef);
   if (!entry) return 'pending';
+  // instance (InstanceSubject / apiary) eval — reconciliation P-006: a genome variant
+  // that the battery PROMOTED (beat the champion beyond the noise band + held the
+  // meta-eval) won; any other decided verdict lost. Both eval subjects feed lens
+  // meta-learning, so a whole-system idea's apiary outcome weights its lens too.
+  if (prov.rail === 'instance') {
+    const status = gymStatusOf(entry);
+    return status === 'promoted' || status === 'accepted' || status === 'won' ? 'won' : 'lost';
+  }
   if (entry.kind === 'proposal') {
     const status = gymStatusOf(entry);
     if (status === 'accepted') return 'won';

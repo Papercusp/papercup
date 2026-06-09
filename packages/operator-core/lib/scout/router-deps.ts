@@ -29,6 +29,8 @@ import {
   proposalTitle,
   type CapturePort,
   type GymDispatchPort,
+  type InstanceDispatchPort,
+  type InstanceVariantView,
   type PlansNewPort,
 } from './router';
 
@@ -138,4 +140,39 @@ export function buildPlansNewPort(create: PlanDraftCreator): PlansNewPort {
       .slice(0, 1000);
     return create({ slug: slugStem, title, rationale });
   };
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * whole-system → InstanceSubject (the apiary's genome-variant intake; P-005)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The InstanceSubject's variant intake the cycle supplies. A whole-system proposal becomes
+ * a GENOME-delta candidate the apiary scores (the eval-battery InstanceSubject — a
+ * whole-instance eval of the interacting wholes). The apiary loop
+ * ([[apiary-2026-06-06]] / [[apiary-generation-0-battery-2026-06-08]]) consumes these as
+ * same-origin variants. Returns the registered candidate ids.
+ *
+ * Until the apiary's intake queue is built, the routed-idea ledger (rail='instance',
+ * routedRef='instance:<id>', persisted by the scheduler's `recordRoutedIdea`) IS the
+ * pending-candidate record — so the default recorder simply ACKNOWLEDGES the candidates and
+ * the apiary reads pending `instance:*` rows from there. The seam lets the apiary bind a
+ * real enqueue without touching the router.
+ */
+export type InstanceCandidateRecorder = (candidates: InstanceVariantView[]) => Promise<string[]>;
+
+/** Default recorder: acknowledge the candidates (the routed-idea ledger persists the
+ *  rail='instance' rows; the apiary reads pending candidates from there). */
+const echoInstanceCandidates: InstanceCandidateRecorder = async (candidates) => candidates.map((c) => c.id);
+
+/**
+ * Production `instanceDispatch` port (reconciliation P-005) — registers whole-system
+ * proposals as InstanceSubject (apiary) genome-variant candidates via the injected
+ * {@link InstanceCandidateRecorder} (defaults to acknowledge-only). Batch-shaped like the
+ * gym rail; ctx-free (the ledger / apiary owns persistence).
+ */
+export function buildInstanceDispatchPort(
+  record: InstanceCandidateRecorder = echoInstanceCandidates,
+): InstanceDispatchPort {
+  return async (views) => ({ registered: await record(views) });
 }

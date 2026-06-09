@@ -216,8 +216,14 @@ export interface Proposal {
   cheapExperiment: ScoutExperiment;
   /** The critiqued ideas that recombined into this proposal (≥1). */
   sourceIdeaIds: string[];
-  /** P-007 routing hint: broad-scope → 'plan'; testable-small → 'gym'; concrete → 'improvement'. */
-  routeHint?: 'plan' | 'gym' | 'improvement';
+  /**
+   * P-007 routing hint (reconciliation P-005 — the two eval subjects are rails here):
+   *   broad-scope → 'plan'; concrete → 'improvement';
+   *   testable COMPONENT idea → 'gym' (the eval-battery HarnessSubject);
+   *   testable WHOLE-SYSTEM idea → 'instance' (the eval-battery InstanceSubject — a genome
+   *   delta over the interacting wholes; the missing rail this plan adds).
+   */
+  routeHint?: 'plan' | 'gym' | 'improvement' | 'instance';
   /** Corpus pattern refs carried from the source ideas — grounding (⊆ digest refs) + P-013 lens attribution. */
   addressesPatternRefs: string[];
 }

@@ -164,6 +164,28 @@ export interface CaptureRequest {
 export type CapturePort = (req: CaptureRequest) => Promise<{ id: string; created: boolean }>;
 
 /**
+ * A whole-system proposal shaped for the eval-battery InstanceSubject (the apiary). The
+ * InstanceSubject's variant is a GENOME delta over the interacting wholes; this view
+ * carries the proposal text the apiary turns into one (mirrors {@link ScoutIdeaView}).
+ */
+export interface InstanceVariantView {
+  id: string;
+  rationale: string;
+  text: string;
+}
+
+/** The result of registering whole-system proposals as InstanceSubject variant candidates. */
+export interface InstanceSeedResult {
+  /** The proposal ids registered as pending instance-eval (genome-variant) candidates. */
+  registered: string[];
+}
+
+/** whole-system → InstanceSubject (the eval-battery's whole-instance subject — the missing
+ *  rail, reconciliation P-005). Registers genome-variant candidates for the apiary to eval;
+ *  batch-shaped like the gym rail. */
+export type InstanceDispatchPort = (variants: InstanceVariantView[]) => Promise<InstanceSeedResult>;
+
+/**
  * The injected effect port. Every rail's side-effect goes through here so
  * {@link routeProposals} is testable with fakes (invariant #5: assert routing
  * without real writes). Production wiring: `router-deps.ts`.
@@ -172,6 +194,13 @@ export interface RouterPorts {
   plansNew: PlansNewPort;
   gymDispatch: GymDispatchPort;
   capture: CapturePort;
+  /**
+   * whole-system → InstanceSubject (reconciliation P-005). OPTIONAL: a router with no
+   * InstanceSubject wired routes nothing to 'instance' (no proposal hints/overrides to it);
+   * if one is routed there without a port, the dispatch fails defensively (recorded in
+   * `error`/`failed`, never aborting the batch).
+   */
+  instanceDispatch?: InstanceDispatchPort;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -204,6 +233,73 @@ export function proposalToGymView(p: Proposal): ScoutIdeaView {
 }
 
 /**
+ * Map a whole-system proposal onto an {@link InstanceVariantView} (the InstanceSubject's
+ * intake). The view `id` is the PROPOSAL id, so the `instance:<proposalId>` provenance ref
+ * joins the apiary's eval verdict in the change feed (reconciliation P-006).
+ */
+export function proposalToInstanceView(p: Proposal): InstanceVariantView {
+  const title = proposalTitle(p);
+  return {
+    id: p.id,
+    rationale: title,
+    text: [p.framing, p.mechanism].map((s) => (s ?? '').trim()).filter(Boolean).join(' — '),
+  };
+}
+
+/** The genome surface's "interacting wholes" vocabulary (reconciliation D-002: Queen prompt
+ *  × placement policy × memory architecture × wake policy × coordination economy) — the
+ *  markers of a WHOLE-SYSTEM (instance-level) idea vs a component one. */
+const WHOLE_SYSTEM_MARKERS = [
+  'genome',
+  'whole instance',
+  'whole-instance',
+  'whole system',
+  'whole-system',
+  'system-level',
+  'instance-level',
+  'interacting wholes',
+  'queen prompt',
+  'queen persona',
+  'queen placement',
+  'placement policy',
+  'wake policy',
+  'min-sleep',
+  'coordination economy',
+  'memory architecture',
+  'memory-seeding',
+  'memory seeding',
+  'the operator itself',
+  'papercusp itself',
+  'across harnesses',
+  'across the hive',
+] as const;
+
+/**
+ * Does this proposal vary the WHOLE INSTANCE (the genome's interacting wholes) rather than
+ * one component? The HarnessSubject/InstanceSubject split (reconciliation P-005): a
+ * component idea → the gym (HarnessSubject), a whole-system idea → the apiary
+ * (InstanceSubject). An explicit `routeHint: 'instance'` always counts; otherwise the
+ * proposal text is scanned for the genome-axis vocabulary (a conservative heuristic — the
+ * recombine step may set the hint directly for a stronger signal).
+ */
+export function isWholeSystemProposal(p: Proposal): boolean {
+  if (p.routeHint === 'instance') return true;
+  const hay = [p.framing, p.mechanism, p.whyNew].map((s) => (s ?? '').toLowerCase()).join(' \n ');
+  return WHOLE_SYSTEM_MARKERS.some((m) => hay.includes(m));
+}
+
+/**
+ * A ready-made {@link ClassifyOptions.override} that realizes the P-005 split: bump a
+ * TESTABLE proposal (hint 'gym') to the `instance` rail when it varies the whole instance
+ * ({@link isWholeSystemProposal}); leave 'plan' (design), 'improvement' (concrete), and
+ * unhinted (smallest-footprint default) ideas alone. The production cycle wires this as the
+ * router's `override`.
+ */
+export function wholeSystemInstanceOverride(p: Proposal): RoutedRail | undefined {
+  return p.routeHint === 'gym' && isWholeSystemProposal(p) ? 'instance' : undefined;
+}
+
+/**
  * Derive a valid `plans:new` slug stem from the proposal framing — lowercased,
  * non-alnum collapsed to single hyphens, trimmed, capped, and `scout-`-prefixed
  * (so Scout drafts are identifiable + the slug always satisfies plans:new's
@@ -230,6 +326,8 @@ export interface RouteResult {
   byRail: Record<RoutedRail, number>;
   /** The gym seed result (coverage gain), present when ≥1 proposal routed to the gym. */
   gymSeed?: SeedDistantResult;
+  /** The instance seed result, present when ≥1 proposal routed to the InstanceSubject (P-005). */
+  instanceSeed?: InstanceSeedResult;
   /** proposalIds whose dispatch threw (their decision carries the `error`). */
   failed: string[];
 }
@@ -269,9 +367,28 @@ export async function routeProposals(
     }
   }
 
+  // ── instance rail (batched) — whole-system → InstanceSubject (reconciliation P-005) ──
+  const instanceDecisions = decisions.filter((d) => d.rail === 'instance');
+  let instanceSeed: InstanceSeedResult | undefined;
+  if (instanceDecisions.length > 0) {
+    if (!ports.instanceDispatch) {
+      // No InstanceSubject wired — record it on each decision; never abort the batch.
+      for (const d of instanceDecisions) d.error = 'no InstanceSubject dispatch wired (instanceDispatch port missing)';
+    } else {
+      const views = instanceDecisions.map((d) => proposalToInstanceView(byProposal.get(d.proposalId)!));
+      try {
+        instanceSeed = await ports.instanceDispatch(views);
+        for (const d of instanceDecisions) d.routedRef = `instance:${d.proposalId}`;
+      } catch (e) {
+        const msg = errMsg(e);
+        for (const d of instanceDecisions) d.error = msg;
+      }
+    }
+  }
+
   // ── plan + improvement rails (per-proposal) ───────────────────────────────
   for (const d of decisions) {
-    if (d.rail === 'gym') continue; // handled above
+    if (d.rail === 'gym' || d.rail === 'instance') continue; // handled above (batched)
     const p = byProposal.get(d.proposalId)!;
     try {
       if (d.rail === 'plan') {
@@ -286,11 +403,11 @@ export async function routeProposals(
     }
   }
 
-  const byRail: Record<RoutedRail, number> = { plan: 0, gym: 0, improvement: 0 };
+  const byRail: Record<RoutedRail, number> = { plan: 0, gym: 0, improvement: 0, instance: 0 };
   for (const d of decisions) byRail[d.rail] += 1;
   const failed = decisions.filter((d) => d.error).map((d) => d.proposalId);
 
-  return { decisions, byRail, ...(gymSeed ? { gymSeed } : {}), failed };
+  return { decisions, byRail, ...(gymSeed ? { gymSeed } : {}), ...(instanceSeed ? { instanceSeed } : {}), failed };
 }
 
 /* ────────────────────────────────────────────────────────────────────────

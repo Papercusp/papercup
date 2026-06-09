@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { __test } from './prompt-studio';
+import promptStudioRoutes from './prompt-studio';
 
 const { resolveSourcePath, projectGuidePath, PROMPT_SOURCES, PROJECT_GUIDE_ID } = __test;
 const DIR = '/repo/apps/operator/prompts';
@@ -41,5 +42,36 @@ describe('prompt-studio source whitelist (P-011 security boundary)', () => {
       'overlay-omp',
       'power-playbook',
     ]);
+  });
+});
+
+describe('prompt-studio routes — loopback authz boundary (security regression)', () => {
+  // Every handler reads/rewrites the SOURCES of every agent's system prompt, so each must
+  // reject a non-loopback caller (requireLoopbackOr403). Guards the HIGH finding: auth:'public'
+  // is the codebase norm; loopback is the perimeter — don't let any route silently lose it.
+  type RouteObj = { handler: (req: Request, ctx: unknown) => Promise<Response> };
+  const routes = promptStudioRoutes as RouteObj[];
+  const hit = async (r: RouteObj, host: string) => {
+    const res = (await r.handler(
+      new Request(`http://${host}/api/prompt-studio/x`, { method: 'POST', body: '{}' }) as never,
+      {} as never,
+    )) as Response;
+    return { status: res.status, body: (await res.json().catch(() => null)) as { error?: string } | null };
+  };
+
+  it('403s a non-loopback caller on EVERY route', async () => {
+    expect(routes.length).toBe(4);
+    for (const r of routes) {
+      const { status, body } = await hit(r, 'evil.example.com');
+      expect(status).toBe(403);
+      expect(body?.error).toBe('loopback_only');
+    }
+  });
+
+  it('lets a loopback caller past the guard on every route (not 403)', async () => {
+    for (const r of routes) {
+      const { status } = await hit(r, '127.0.0.1');
+      expect(status).not.toBe(403);
+    }
   });
 });
