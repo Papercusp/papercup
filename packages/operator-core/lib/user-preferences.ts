@@ -28,7 +28,7 @@ export type UserPrefsPayload = Record<string, unknown>;
 export async function loadUserPreferences(userId: string | null): Promise<UserPrefsPayload> {
   if (!userId) return {};
   const { sql } = getOrgPg();
-  const rows = await sql<{ payload: UserPrefsPayload }>`
+  const rows = await sql<{ payload: UserPrefsPayload }[]>`
     SELECT payload
       FROM harness_shared.user_preferences
      WHERE user_id = ${userId}
@@ -42,7 +42,7 @@ export async function saveUserPreferences(
   patch: UserPrefsPayload,
 ): Promise<UserPrefsPayload> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ payload: UserPrefsPayload }>`
+  const rows = await sql<{ payload: UserPrefsPayload }[]>`
     INSERT INTO harness_shared.user_preferences (user_id, payload, updated_at)
     VALUES (${userId}, ${JSON.stringify(patch)}::text::jsonb, now())
     ON CONFLICT (user_id) DO UPDATE

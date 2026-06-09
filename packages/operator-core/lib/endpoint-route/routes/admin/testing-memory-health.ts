@@ -30,7 +30,7 @@ export default defineTool({
     // pgvector probe
     let pgvector = false;
     try {
-      const rows = await sql<{ extname: string }>`
+      const rows = await sql<{ extname: string }[]>`
         SELECT extname FROM pg_extension WHERE extname = 'vector'
       `;
       pgvector = rows.length > 0;
@@ -59,7 +59,7 @@ export default defineTool({
     // Recent feedback events (cheap COUNT)
     let recent_feedback_24h = 0;
     try {
-      const rows = await sql<{ n: string }>`
+      const rows = await sql<{ n: string }[]>`
         SELECT COUNT(*)::text AS n
           FROM harness_shared.memory_feedback
          WHERE created_at >= now() - interval '24 hours'

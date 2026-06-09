@@ -81,7 +81,7 @@ export default defineTool({
 
     // Total files with at least one row on this branch.
     try {
-      const tracked = await sql<{ n: string }>`
+      const tracked = await sql<{ n: string }[]>`
         SELECT COUNT(DISTINCT file_path)::text AS n
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${filePaths})
@@ -92,7 +92,7 @@ export default defineTool({
 
     // Sum of latest-per-file durations (proxy for last suite wallclock).
     try {
-      const durRows = await sql<{ total_ms: string | null }>`
+      const durRows = await sql<{ total_ms: string | null }[]>`
         SELECT COALESCE(SUM(d), 0)::text AS total_ms
           FROM (
             SELECT DISTINCT ON (file_path) duration_ms AS d
@@ -108,7 +108,7 @@ export default defineTool({
 
     // Most recent fail/error finished_at.
     try {
-      const failRows = await sql<{ finished_at: Date | string | null }>`
+      const failRows = await sql<{ finished_at: Date | string | null }[]>`
         SELECT finished_at
           FROM harness_shared.test_runs
          WHERE file_path = ANY(${filePaths})
@@ -122,7 +122,7 @@ export default defineTool({
 
     // Flaky files — those with >1 distinct status in the last 10 rows.
     try {
-      const flakyRows = await sql<{ n: string }>`
+      const flakyRows = await sql<{ n: string }[]>`
         SELECT COUNT(*)::text AS n FROM (
           SELECT file_path
             FROM (

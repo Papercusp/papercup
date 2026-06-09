@@ -54,9 +54,6 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     publisher_permission: null,
     publisher_device_pubkey: null,
     publisher_attestation_gist_id: null,
-    tarball_r2_key: null,
-    tarball_content_hash: null,
-    tarball_bytes: null,
     provides_tools: null,
     claim_status: 'unclaimed',
     claimant_github_user_id: null,
@@ -88,12 +85,12 @@ export class FakeStore {
   execute(sql: string, binds: unknown[]): number {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
-      // Bind order matches insertHarness() in db.ts (migrations 004/005/006).
+      // Bind order matches insertHarness() in db.ts (migrations 004/006).
       const [
         id, listing_kind, project_ref, listing_ref,
         gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
         pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
-        tarball_r2_key, tarball_content_hash, tarball_bytes, provides_tools,
+        provides_tools,
         created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push(
@@ -114,9 +111,6 @@ export class FakeStore {
           publisher_permission: pub_permission ?? null,
           publisher_device_pubkey: device_pubkey ?? null,
           publisher_attestation_gist_id: attestation_gist_id ?? null,
-          tarball_r2_key: tarball_r2_key ?? null,
-          tarball_content_hash: tarball_content_hash ?? null,
-          tarball_bytes: tarball_bytes ?? null,
           provides_tools: provides_tools ?? null,
           created_at,
           updated_at,
@@ -236,15 +230,6 @@ export class FakeStore {
 
   query(sql: string, binds: unknown[]): Row[] {
     const upper = sql.trim().toUpperCase();
-    // countActiveListingsByTarballKey (migration 005): COUNT(*) of active rows
-    // referencing one R2 tarball key.
-    if (upper.startsWith('SELECT COUNT(*) AS N FROM HARNESSES') && upper.includes('TARBALL_R2_KEY =')) {
-      const [key] = binds;
-      const n = this.tables.harnesses.filter(
-        (r) => r.tarball_r2_key === key && r.unlisted_at == null,
-      ).length;
-      return [{ n }];
-    }
     if (upper.startsWith('SELECT * FROM HARNESSES WHERE ID =')) {
       const [id] = binds;
       const row = this.tables.harnesses.find((r) => r.id === id);
@@ -387,7 +372,6 @@ export function makeEnv(overrides: Partial<Env> = {}): { env: Env; store: FakeSt
   const env = {
     DB: db,
     COUNTERS: new FakeKV() as unknown as KVNamespace,
-    SNAPSHOTS: r2 as unknown as R2Bucket,
     GITHUB_CLIENT_ID: 'test',
     GITHUB_CLIENT_SECRET: 'test',
     IP_HASH_PEPPER: 'test-pepper',

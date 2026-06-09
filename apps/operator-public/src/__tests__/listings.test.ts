@@ -1,7 +1,7 @@
 /**
  * Cupboard generalized /listings route tests (migration 004 / D-005 / D-008).
  *
- * Covers the three listing kinds (harness/blueprint/snapshot/plugin), the
+ * Covers the listing kinds (harness/blueprint/plugin/pack), the
  * project-centric 1:N model (N listings per project remote), kind filtering,
  * and kind-aware publish validation. /harnesses back-compat is in
  * harnesses.test.ts.

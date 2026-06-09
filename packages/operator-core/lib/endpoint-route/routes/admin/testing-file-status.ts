@@ -96,7 +96,7 @@ export default defineTool({
         finished_at: Date | string | null;
         source: string;
         branch: string | null;
-      }>`
+      }[]>`
         SELECT DISTINCT ON (file_path)
                file_path, status, duration_ms, finished_at, source, branch
           FROM harness_shared.test_runs
@@ -128,7 +128,7 @@ export default defineTool({
         finished_at: Date | string | null;
         source: string;
         branch: string | null;
-      }>`
+      }[]>`
         SELECT DISTINCT ON (file_path)
                file_path, status, duration_ms, finished_at, source, branch
           FROM harness_shared.test_runs

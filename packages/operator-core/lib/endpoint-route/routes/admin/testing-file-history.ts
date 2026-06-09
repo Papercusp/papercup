@@ -45,7 +45,7 @@ export default defineTool({
       source: string;
       branch: string | null;
       commit_sha: string | null;
-    }>`
+    }[]>`
       SELECT id, status, duration_ms, started_at, finished_at, output_tail,
              source, branch, commit_sha
         FROM harness_shared.test_runs

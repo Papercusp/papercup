@@ -100,7 +100,7 @@ export async function getSessionUser(headers?: Headers): Promise<User | null> {
     username: string;
     display_name: string;
     password_hash: string | null;
-  }>`
+  }[]>`
     SELECT s.user_id, s.expires_at,
            u.id, u.username, u.display_name, u.password_hash
       FROM harness_shared.user_sessions s
@@ -139,7 +139,7 @@ export async function getSessionUserOrDefault(headers?: Headers): Promise<User> 
   const user = await getSessionUser(headers);
   if (user) return user;
   await ensureDefaultUser();
-  const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }>`
+  const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }[]>`
     SELECT id, username, display_name, password_hash
       FROM harness_shared.users
      WHERE username = 'default'
@@ -164,7 +164,7 @@ export async function login(
   meta?: { user_agent?: string; remote_addr?: string; ttl_ms?: number },
 ): Promise<{ token: string; user: User; expires_at: Date }> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ id: string; display_name: string; password_hash: string | null; is_active: boolean }>`
+  const rows = await sql<{ id: string; display_name: string; password_hash: string | null; is_active: boolean }[]>`
     SELECT id, display_name, password_hash, is_active
       FROM harness_shared.users
      WHERE username = ${username}
@@ -176,7 +176,7 @@ export async function login(
 
   if (u.password_hash !== null) {
     if (!password) throw Object.assign(new Error('password required'), { code: 'bad_password' });
-    const check = await sql<{ ok: boolean }>`
+    const check = await sql<{ ok: boolean }[]>`
       SELECT crypt(${password}, ${u.password_hash}) = ${u.password_hash} AS ok
     `;
     if (!check[0]?.ok) throw Object.assign(new Error('bad password'), { code: 'bad_password' });
@@ -226,10 +226,10 @@ export async function signup(
     throw Object.assign(new Error('display name required'), { code: 'bad_display_name' });
   }
   const passwordHash = password
-    ? (await sql<{ hash: string }>`SELECT crypt(${password}, gen_salt('bf')) AS hash`)[0].hash
+    ? (await sql<{ hash: string }[]>`SELECT crypt(${password}, gen_salt('bf')) AS hash`)[0].hash
     : null;
 
-  const rows = await sql<{ id: string }>`
+  const rows = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name, password_hash)
     VALUES (${username}, ${display_name.trim()}, ${passwordHash})
     RETURNING id
@@ -248,7 +248,7 @@ export async function changePassword(
   next: string | null,
 ): Promise<void> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ password_hash: string | null }>`
+  const rows = await sql<{ password_hash: string | null }[]>`
     SELECT password_hash FROM harness_shared.users WHERE id = ${user_id} LIMIT 1
   `;
   if (rows.length === 0) throw Object.assign(new Error('not found'), { code: 'unknown_user' });
@@ -256,14 +256,14 @@ export async function changePassword(
 
   if (current_hash !== null) {
     if (!current) throw Object.assign(new Error('current password required'), { code: 'bad_password' });
-    const check = await sql<{ ok: boolean }>`
+    const check = await sql<{ ok: boolean }[]>`
       SELECT crypt(${current}, ${current_hash}) = ${current_hash} AS ok
     `;
     if (!check[0]?.ok) throw Object.assign(new Error('bad password'), { code: 'bad_password' });
   }
 
   const next_hash = next
-    ? (await sql<{ hash: string }>`SELECT crypt(${next}, gen_salt('bf')) AS hash`)[0].hash
+    ? (await sql<{ hash: string }[]>`SELECT crypt(${next}, gen_salt('bf')) AS hash`)[0].hash
     : null;
   await sql`UPDATE harness_shared.users SET password_hash = ${next_hash} WHERE id = ${user_id}`;
   await sql`DELETE FROM harness_shared.user_sessions WHERE user_id = ${user_id}`;
@@ -296,7 +296,7 @@ export async function updateDisplayName(user_id: string, display_name: string): 
 
 export async function listUsers(): Promise<User[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }>`
+  const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }[]>`
     SELECT id, username, display_name, password_hash
       FROM harness_shared.users
      WHERE is_active = true
