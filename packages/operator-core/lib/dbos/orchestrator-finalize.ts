@@ -143,3 +143,49 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
   steps.push({ kind: 'hook', hook: 'afterDone' });
   return { blocked: false, steps };
 }
+
+// ─── DONE status reconcile ────────────────────────────────────────────
+
+/** Minimal legacy-client surface the reconcile needs (injected for tests). */
+export interface ReconcileDbClient {
+  prepare(sql: string): {
+    get(...params: unknown[]): unknown | Promise<unknown>;
+    run(...params: unknown[]): unknown | Promise<unknown>;
+  };
+}
+
+/**
+ * Reconcile a feature's status on an unblocked DONE: `validating` → `passed`.
+ *
+ * The validator agent OWNS the validating→passed PG write (validator.md "Status
+ * update"), but an LLM can simply omit it — live on frame 138838461 (2026-06-09,
+ * work-on-frame run #3): the validator printed "round 1: passed — 3 pass, 0 fail"
+ * and exited without writing, leaving the feature `validating` forever while the
+ * pipeline finalized DONE. An unblocked DONE is the pipeline's own terminal
+ * verdict, so the finalizer closes the loop deterministically — but ONLY from
+ * `validating` (the worker→validator handoff state awaiting that verdict write);
+ * any other status (failing/todo/passed/…) is left untouched, so a hallucinated
+ * DONE over a recorded failure can never force-pass.
+ *
+ * Returns true when the flip was applied.
+ */
+export async function reconcileDoneStatus(
+  harnessSlug: string,
+  featureId: string,
+  dbc: ReconcileDbClient,
+  log: (msg: string) => void = () => {},
+): Promise<boolean> {
+  const existing = (await dbc
+    .prepare('SELECT status FROM harness_features WHERE harness_slug = ? AND feature_id = ?')
+    .get(harnessSlug, featureId)) as { status?: string } | undefined;
+  if (existing?.status !== 'validating') return false;
+  await dbc
+    .prepare(
+      "UPDATE harness_features SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND status = 'validating'",
+    )
+    .run(Date.now(), harnessSlug, featureId);
+  log(
+    `[dbos-finalize] ${harnessSlug}/${featureId} status reconciled validating→passed (validator omitted the PG write)`,
+  );
+  return true;
+}

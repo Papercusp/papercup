@@ -29,6 +29,13 @@ export interface ProposeInput {
   changelog: string;
   /** Model that proposes — should differ from the judge for the same decorrelation spirit. */
   proposerModel: string;
+  /**
+   * P-032 (learning-system-audit): operator improvement ideas TRIAGED TO THE GYM
+   * (payload.ideaLifecycle.triageDecision='gym'), pre-formatted one per line.
+   * Surfaced to the proposer as OPTIONAL candidate directions; empty/absent ⇒
+   * the prompt is byte-identical to before (purely additive).
+   */
+  candidateDirections?: string[];
 }
 
 export interface ParsedProposal {
@@ -64,6 +71,17 @@ export function buildProposerPrompt(input: ProposeInput): { system: string; user
         `- task ${t.taskId} (composite ${t.composite.toFixed(2)}): ${t.rationale}` +
         (t.distilledTrace ? `\n  trace: ${t.distilledTrace}` : ''),
     ),
+    // P-032: triage-routed improvement ideas as OPTIONAL candidate directions. Zero
+    // routed ideas ⇒ no section at all (the prompt stays byte-identical to before).
+    ...(input.candidateDirections?.length
+      ? [
+          '',
+          '## Candidate directions (operator improvement ideas triaged to the gym)',
+          'Optional directions from the operator’s improvement backlog. Adopt one ONLY when it',
+          'plausibly targets the failure modes evidenced above; otherwise ignore them.',
+          ...input.candidateDirections.map((d) => `- ${d}`),
+        ]
+      : []),
     '',
     '## Current role overrides (parent variant)',
     JSON.stringify(input.parentOverlay.promptOverrides, null, 2),

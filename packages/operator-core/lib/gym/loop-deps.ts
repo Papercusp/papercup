@@ -63,6 +63,11 @@ export interface BuildLoopDepsConfig {
   /** How many worst train traces to feed the proposer (default 3). */
   worstK?: number;
   /**
+   * P-032: triage-routed gym ideas (pre-formatted lines) handed to the proposer as
+   * optional candidate directions every cycle. Empty/absent ⇒ unchanged proposer prompt.
+   */
+  candidateDirections?: string[];
+  /**
    * P-025: repeats per (variant × task) — the per-task composite is the MEAN over repeats,
    * to average out the judge's per-run noise. Default 1; P-014 measured sd≤0.5 → minRepeats≈4,
    * so the loop driver should set this ≥4 for accept decisions to be trustworthy.
@@ -230,7 +235,14 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     evaluate,
     async propose(parentOverlay, worstTraces, changelog) {
       return proposeCandidate(
-        { parentOverlay, worstTraces, changelog, proposerModel: cfg.proposerModel },
+        {
+          parentOverlay,
+          worstTraces,
+          changelog,
+          proposerModel: cfg.proposerModel,
+          // P-032: routed-idea candidate directions ride every propose call (additive).
+          ...(cfg.candidateDirections?.length ? { candidateDirections: cfg.candidateDirections } : {}),
+        },
         { llmCall: cfg.proposerCall },
       );
     },

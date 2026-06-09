@@ -178,3 +178,45 @@ describe('planFinalization — declarative recipe (unify-launches P-007)', () =>
     ]);
   });
 });
+
+describe('reconcileDoneStatus (validator omitted the validating→passed write)', () => {
+  function fakeDbc(initialStatus: string | undefined) {
+    const state = { status: initialStatus, updates: 0 };
+    return {
+      state,
+      prepare(sql: string) {
+        return {
+          get: () => (state.status === undefined ? undefined : { status: state.status }),
+          run: () => {
+            if (sql.includes("SET status = 'passed'") && state.status === 'validating') {
+              state.status = 'passed';
+              state.updates++;
+            }
+            return {};
+          },
+        };
+      },
+    };
+  }
+
+  test('flips validating → passed on an unblocked DONE and reports true', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    const dbc = fakeDbc('validating');
+    const logs: string[] = [];
+    const flipped = await reconcileDoneStatus('h', 'F-001', dbc, (m) => logs.push(m));
+    expect(flipped).toBe(true);
+    expect(dbc.state.status).toBe('passed');
+    expect(logs.some((m) => m.includes('reconciled validating→passed'))).toBe(true);
+  });
+
+  test('any other status is untouched — a hallucinated DONE can never force-pass', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    for (const status of ['failing', 'todo', 'in_progress', 'passed', undefined] as const) {
+      const dbc = fakeDbc(status);
+      const flipped = await reconcileDoneStatus('h', 'F-001', dbc);
+      expect(flipped).toBe(false);
+      expect(dbc.state.status).toBe(status);
+      expect(dbc.state.updates).toBe(0);
+    }
+  });
+});

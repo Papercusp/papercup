@@ -2,11 +2,13 @@
 //
 // LearningTab render coverage — the /adv "Learning" tab (operator-learning-tab-2026-06-09).
 // Mounts the tab against realistic `learning.improvements` / `learning.gym` /
-// `learning.apiary` snapshots (useSyncQuery + nuqs mocked, the pinned sibling pattern —
-// see AdvConversationsTab.test.tsx). useSyncQuery dispatches on queryName so each
-// sub-view gets its own shape. Asserts the Improvements scoreboard + lanes (default
-// view), the Gym sub-view, the Benchmark trend, and the Knowledge cross-link — plus
-// the how-this-works strip — guarding against render-time crashes the typecheck can't catch.
+// `learning.apiary` / `learning.knowledge` / `learning.scout` snapshots (useSyncQuery +
+// nuqs mocked, the pinned sibling pattern — see AdvConversationsTab.test.tsx).
+// useSyncQuery dispatches on queryName so each sub-view gets its own shape. Asserts the
+// Improvements scoreboard + lanes (default view), the Gym sub-view, the Benchmark trend
+// (+ owner-gated empty state), the Scout rails/tick view, and the Knowledge runbooks +
+// memory health + Insights cross-link — plus the how-this-works strip — guarding against
+// render-time crashes the typecheck can't catch. Empty states are pinned per view.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -72,12 +74,42 @@ const apiarySnapshot = {
   ],
 };
 
+const knowledgeSnapshot = {
+  insights: {
+    count: 38,
+    recent: [
+      { slug: 'adding-a-sync-query', title: 'Adding a sync query', description: 'The per-entry resolver recipe.', status: 'active', tags: ['sync'], modifiedAt: new Date(3_000_000).toISOString() },
+      { slug: 'postgres-js-jsonb-binding', title: 'postgres.js jsonb binding', description: 'sql.json throws under getOrgPg.', status: 'active', tags: ['pg'], modifiedAt: new Date(2_000_000).toISOString() },
+    ],
+  },
+  memory: { totalMemories: 168, feedback30d: 3 },
+};
+
+const scoutSnapshot = {
+  totalRouted: 4,
+  railCounts: [
+    { rail: 'plan', count: 3 },
+    { rail: 'gym', count: 1 },
+  ],
+  lastTick: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: 'gated', detail: 'min-interval' },
+};
+
 let improvementsResult: Record<string, unknown> = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let gymResult: Record<string, unknown> = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let apiaryResult: Record<string, unknown> = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+let knowledgeResult: Record<string, unknown> = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+let scoutResult: Record<string, unknown> = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) =>
-    opts.queryName === 'learning.gym' ? gymResult : opts.queryName === 'learning.apiary' ? apiaryResult : improvementsResult,
+    opts.queryName === 'learning.gym'
+      ? gymResult
+      : opts.queryName === 'learning.apiary'
+        ? apiaryResult
+        : opts.queryName === 'learning.knowledge'
+          ? knowledgeResult
+          : opts.queryName === 'learning.scout'
+            ? scoutResult
+            : improvementsResult,
 }));
 
 import LearningTab from './LearningTab';
@@ -90,6 +122,8 @@ beforeEach(() => {
   improvementsResult = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   gymResult = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   apiaryResult = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  knowledgeResult = { data: [knowledgeSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  scoutResult = { data: [scoutSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 });
 afterEach(() => cleanup());
 
@@ -116,6 +150,7 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Benchmark/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Scout/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Knowledge/ })).toBeTruthy();
   });
 
@@ -206,10 +241,43 @@ describe('LearningTab — Benchmark view', () => {
     expect(screen.getAllByText('0.740').length).toBeGreaterThanOrEqual(1); // latest composite (scoreboard + trend)
   });
 
-  it('renders the benchmark empty state when there are no generations', () => {
+  it('renders the owner-gated empty state when there are no generations', () => {
     apiaryResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
-    expect(screen.getByText('No benchmark runs yet')).toBeTruthy();
+    expect(screen.getByText('No baseline runs yet')).toBeTruthy();
+    expect(screen.getByText(/owner-gated/)).toBeTruthy();
+  });
+});
+
+describe('LearningTab — Scout view', () => {
+  beforeEach(() => {
+    nuqsState.lview = 'scout';
+  });
+
+  it('renders the routed-ideas-by-rail scoreboard, the rail rows, and the last-tick chip', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('Routed ideas by rail')).toBeTruthy();
+    expect(screen.getByText('4')).toBeTruthy(); // totalRouted stat
+    expect(screen.getByText('Routed into plan drafts for review')).toBeTruthy();
+    expect(screen.getByText('Routed into gym experiments')).toBeTruthy();
+    const tickChip = screen.getByLabelText('Scout tick health');
+    expect(tickChip.textContent).toContain('last tick');
+    expect(tickChip.textContent).toContain('5m ago');
+    expect(tickChip.textContent).toContain('gated · min-interval'); // status + the self-gate that withheld the cycle
+  });
+
+  it('renders the scout how-this-works strip (watch → gate → route)', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('Watch')).toBeTruthy();
+    expect(screen.getByText('Gate')).toBeTruthy();
+    expect(screen.getByText('Route')).toBeTruthy();
+  });
+
+  it('renders the graceful empty state when nothing has been routed and no tick exists', () => {
+    scoutResult = { data: [{ totalRouted: 0, railCounts: [], lastTick: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    expect(screen.getByText('Scout has not routed ideas yet')).toBeTruthy();
+    expect(screen.getByLabelText('Scout tick health').textContent).toContain('none yet');
   });
 });
 
@@ -218,9 +286,37 @@ describe('LearningTab — Knowledge view', () => {
     nuqsState.lview = 'knowledge';
   });
 
+  it('renders the runbook count, the recent-5 list, and the memory-health chips', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('38')).toBeTruthy(); // runbook count stat
+    expect(screen.getByText('Recent runbooks')).toBeTruthy();
+    expect(screen.getByText('Adding a sync query')).toBeTruthy();
+    expect(screen.getByText('postgres.js jsonb binding')).toBeTruthy();
+    expect(screen.getByText('adding-a-sync-query')).toBeTruthy(); // slug column
+    const memCard = screen.getByLabelText('Memory health');
+    expect(memCard.textContent).toContain('168');
+    expect(memCard.textContent).toContain('memories');
+    expect(memCard.textContent).toContain('3');
+    expect(memCard.textContent).toContain('feedback events');
+  });
+
   it('renders the agent-insights cross-link to the Insights tab', () => {
     render(<LearningTab />);
     expect(screen.getByText(/Agent insights/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();
+  });
+
+  it('renders the empty runbooks state (cross-link intact) when the library is empty', () => {
+    knowledgeResult = { data: [{ insights: { count: 0, recent: [] }, memory: { totalMemories: 168, feedback30d: 0 } }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    expect(screen.getByText('No runbooks yet')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();
+  });
+
+  it('marks memory health unavailable when the memory half degraded to null', () => {
+    knowledgeResult = { data: [{ insights: knowledgeSnapshot.insights, memory: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    expect(screen.getByLabelText('Memory health').textContent).toContain('memory health unavailable');
+    expect(screen.getByText('Adding a sync query')).toBeTruthy(); // insights half still renders
   });
 });

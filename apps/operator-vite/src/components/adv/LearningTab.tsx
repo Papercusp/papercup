@@ -695,7 +695,7 @@ function ScoutView() {
         >
           <Radar size={11} aria-hidden />
           last tick <strong>{tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'none yet'}</strong>
-          {tick?.outcome ? <em>{tick.outcome}</em> : null}
+          {tick?.outcome ? <em>{tick.detail ? `${tick.outcome} · ${tick.detail}` : tick.outcome}</em> : null}
         </span>
       </div>
 

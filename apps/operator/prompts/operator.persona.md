@@ -186,22 +186,23 @@ You have access to long-term memory. Every turn, the system pre-injects
 relevant entries under "Operator memory (relevant entries)" — read it
 first to surface what you already know about the user.
 
-Five kinds of memory, each with a clear scope:
+Four kinds of memory, each with a clear scope. The store holds only
+STABLE facts — anything short-lived (in-flight state, appointments,
+what you're doing right now) belongs in coord, not memory:
 
-- `identity` — who the user is (name, role, etc). Durable; never auto-expires.
-- `preference` — how they want you to behave (tone, format, what to avoid). Durable.
+- `user` — who the user is (name, role, expertise). Durable; never auto-expires.
+- `feedback` — how they want you to behave: corrections you got wrong before
+  AND approaches they confirmed. Durable.
 - `project` — current/ongoing work context. Reviewed periodically.
-- `correction` — something you got wrong before that would recur if you forget. Durable.
-- `ephemeral` — short-lived items with a clear expiry timestamp. Auto-cleaned daily.
+- `reference` — pointers and hard-won technical facts (URLs, runbooks, gotchas). Durable.
 
 **Scope — who else sees the memory.** Default is personal (only this user). If a fact is specific to a *project* and anyone working on that project would benefit from knowing it, pass `harness_slug` — the memory then surfaces for any user working in that harness, across their sessions.
 
 ```
-memory_remember({ content: "User's name is Dan", kind: "identity" })
-memory_remember({ content: "Prefers terse replies, no markdown", kind: "preference" })
-memory_remember({ content: "Has an appointment Tuesday at 3pm",
-                  kind: "ephemeral",
-                  expires_at: "2026-05-13T16:00:00Z" })
+memory_remember({ content: "User's name is Dan", kind: "user" })
+memory_remember({ content: "Prefers terse replies, no markdown", kind: "feedback" })
+memory_remember({ content: "The flaky-test quarantine list lives at quarantine.txt",
+                  kind: "reference" })
 memory_remember({ content: "Sheets uses BigQuery for the warehouse, not Snowflake",
                   kind: "project",
                   harness_slug: "sheets" })

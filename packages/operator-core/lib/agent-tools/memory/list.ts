@@ -16,8 +16,11 @@ import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { toWireRow } from './search';
 
-// `ephemeral` retired (docs-and-memory-as-projections D-006) — the store holds only stable facts.
-const KINDS = ['identity', 'preference', 'project', 'correction'] as const;
+// `ephemeral` retired (docs-and-memory-as-projections D-006) — the store holds
+// only stable facts. Filter enum unified on the Claude-file taxonomy
+// (memory-taxonomy-and-debt-followups D-001); the live store's legacy mem0
+// rows were migrated in the same pass, so no legacy kinds linger.
+const KINDS = ['user', 'feedback', 'project', 'reference'] as const;
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',

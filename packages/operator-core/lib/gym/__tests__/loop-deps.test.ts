@@ -191,10 +191,22 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
     expect(proposerCalls).toHaveLength(1);
     expect(proposerCalls[0].user).toContain('missed the spec gap');
     expect(proposerCalls[0].user).toContain('cycle 1: baseline established');
+    // no candidateDirections configured ⇒ no routed-ideas section (P-032 additive).
+    expect(proposerCalls[0].user).not.toMatch(/Candidate directions/i);
     // merged overlay = parent ⊕ proposed (prompts-only).
     expect(candidate.overlay.promptOverrides.validator).toBe('# Validator\nbe strict');
     expect(candidate.overlay.promptOverrides.worker).toContain('re-read acceptance');
     expect(candidate.diffFromParent).toBe('worker');
+  });
+
+  it('P-032: configured candidateDirections reach the proposer prompt every cycle', async () => {
+    const { deps, proposerCalls } = makeDeps({
+      candidateDirections: ['Validator rubber-stamps — tighten the validator prompt'],
+    });
+    await deps.propose({ promptOverrides: {} }, [{ taskId: 't', composite: 2, rationale: 'r' }], '');
+    expect(proposerCalls).toHaveLength(1);
+    expect(proposerCalls[0].user).toMatch(/Candidate directions/i);
+    expect(proposerCalls[0].user).toContain('- Validator rubber-stamps — tighten the validator prompt');
   });
 
   it('persistCycle writes a gym_cycles row keyed by cycle', async () => {

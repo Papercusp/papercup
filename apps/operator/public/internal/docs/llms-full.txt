@@ -6212,7 +6212,7 @@ The refresh loop is **fast (2.5s) only inside a 30s post-join window** — sever
 * `lib/sync/hyperbee/directory-swarm.test.ts` — fake-muxer unit coverage of the gossip (per-topic keying, lazy accept, late join, two-speed refresh, scoped broadcast).
 * `papercusp-desktop/bin/two-instance-hive-directory-smoke.sh` — the **packaged full-app-stack proof** (PASSED 2026-06-09): two separately-packaged `.deb` instances, distinct real GitHub identities, isolated testnet DHT — `discovery:set_hive` on A → listed (owner-verified, member-links intact) on B’s `GET /api/discovery/hives`, bidirectional. Also exercises the `ensureHiveDirectoryWired` lazy wire (a fresh install boots zero harnesses, so the boot-join has nothing to ride; the first publish/browse self-heals it).
 
-Same-host limits still apply: a loopback **testnet** connects fine, but raw hyperswarm holepunch between two processes on one physical host over a real DHT does not — see [vm-federation-separate-machine-proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof). Plan record: D-007 @ `p2p-hive-directory-2026-06-06`.
+Same-host limits still apply: a loopback **testnet** connects fine, but raw hyperswarm holepunch between two processes on one physical host over a real DHT does not — see [vm-federation-separate-machine-proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof). On genuinely separate machines the refresh-loop driver connects over the **real public DHT** just as fast: the two-machine run (dev box behind NAT ↔ a Hetzner frame, production gossip on an invite-scoped topic) discovered bidirectionally in \~5s each way (2026-06-09). Plan record: D-007..D-010 @ `p2p-hive-directory-2026-06-06`.
 
 # fumadocs → Starlight migration (2026-05-20)
 

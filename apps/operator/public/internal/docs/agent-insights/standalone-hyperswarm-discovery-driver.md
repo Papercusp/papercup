@@ -121,4 +121,8 @@ Same-host limits still apply: a loopback **testnet** connects fine, but raw
 hyperswarm holepunch between two processes on one physical host over a real DHT
 does not — see
 [vm-federation-separate-machine-proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
-Plan record: D-007 @ `p2p-hive-directory-2026-06-06`.
+On genuinely separate machines the refresh-loop driver connects over the **real
+public DHT** just as fast: the two-machine run (dev box behind NAT ↔ a Hetzner
+frame, production gossip on an invite-scoped topic) discovered bidirectionally
+in \~5s each way (2026-06-09). Plan record: D-007..D-010 @
+`p2p-hive-directory-2026-06-06`.

@@ -41,6 +41,7 @@ import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import { runDecaySweep } from '../improvements/decay';
 import { runHygieneSweep } from '../improvements/hygiene';
+import { runRecurrenceEscalation } from '../improvements/recurrence-escalation';
 import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
@@ -180,6 +181,21 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
     }
   } catch (e) {
     console.warn('[improvement-triage] hygiene sweep failed:', e instanceof Error ? e.message : e);
+  }
+
+  // Recurrence escalation (P-053 + P-052 lite): ≥3× signatures escalate severity /
+  // route process-class to the gym / propose cross-scope lesson promotion.
+  // Best-effort — never fails the triage pass.
+  try {
+    const esc = await runRecurrenceEscalation();
+    if (esc.escalated || esc.gymRouted || esc.promotionsSuggested) {
+      console.log(
+        `[improvement-triage] recurrence escalation: ${esc.escalated} severity-escalated, ` +
+          `${esc.gymRouted} routed to gym, ${esc.promotionsSuggested} lesson-promotion(s) proposed`,
+      );
+    }
+  } catch (e) {
+    console.warn('[improvement-triage] recurrence escalation failed:', e instanceof Error ? e.message : e);
   }
 });
 

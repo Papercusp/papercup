@@ -11,11 +11,11 @@
  *     routed ideas yet" — and the count-by-rail is the first signal it isn't.
  *
  *  2. **Last tick** — `harness_shared.scout_ticks` (P-034 tick observability,
- *     landing separately, mirroring watchdog_ticks). The table may not exist
- *     yet, and its exact column names are owned by P-034 — so the read is
- *     best-effort: undefined-table (42P01) silently omits the tick half, any
- *     other error warns + omits, and {@link normalizeScoutTick} maps a row's
- *     plausible column spellings into one stable shape for the UI.
+ *     migration 208, mirroring watchdog_ticks: tick_at / status ran|gated|error /
+ *     gate / detail jsonb). The migration may not be applied yet on a given
+ *     substrate, so the read is best-effort: undefined-table (42P01) silently
+ *     omits the tick half, any other error warns + omits, and
+ *     {@link normalizeScoutTick} maps the row into one stable shape for the UI.
  *
  * Pure SQL over an injected `Sql` (mirrors iq-battery/benchmark-read) so the
  * resolver test can stub the seam. Lives next to the resolver (not lib/scout/)
@@ -32,9 +32,9 @@ export interface ScoutRailCount {
 export interface ScoutTickSummary {
   /** ISO timestamp of the tick, when derivable. */
   at: string | null;
-  /** The gate outcome / status of the tick (e.g. ran | skipped | gated). */
+  /** The tick's outcome (migration 208 `status`: ran | gated | error). */
   outcome: string | null;
-  /** Free-form gate reason / detail when the row carries one. */
+  /** The named self-gate for gated ticks (min-interval | no-trigger | circuit), or the error/reason detail. */
   detail: string | null;
 }
 
@@ -71,16 +71,22 @@ function firstString(row: Record<string, unknown>, keys: string[]): string | nul
 }
 
 /**
- * Map one scout_ticks row into the stable UI shape. The P-034 schema mirrors
- * watchdog_ticks (`tick_at` / `status`), but this read predates the table —
- * so it tolerates the plausible spellings rather than pinning one.
+ * Map one scout_ticks row into the stable UI shape. Pinned to the migration-208
+ * columns (`tick_at` / `status` / `gate` / `detail` jsonb) with mild tolerance
+ * for alternate spellings so a schema tweak degrades to nulls, never a crash.
  */
 export function normalizeScoutTick(row: Record<string, unknown> | null | undefined): ScoutTickSummary | null {
   if (!row) return null;
+  const detailObj =
+    row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail)
+      ? (row.detail as Record<string, unknown>)
+      : null;
   return {
     at: toIso(row.tick_at ?? row.ticked_at ?? row.created_at ?? row.at),
-    outcome: firstString(row, ['gate_outcome', 'outcome', 'status', 'gate', 'decision']),
-    detail: firstString(row, ['gate_reason', 'reason', 'detail', 'note']),
+    outcome: firstString(row, ['status', 'gate_outcome', 'outcome', 'decision']),
+    detail:
+      firstString(row, ['gate', 'gate_reason', 'reason', 'note']) ??
+      (detailObj ? firstString(detailObj, ['reason', 'error', 'stop']) : null),
   };
 }
 

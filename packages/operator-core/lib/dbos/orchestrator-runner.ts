@@ -48,7 +48,7 @@ import {
   type PipelineDebuggerHook,
 } from './orchestrator-workflow';
 import { handleFeaturePassed, type FeaturePassedDeps } from '../harness/fork-pr-on-feature-pass';
-import { planFinalization, needsHumanGateUrl, type FinalizeRecipe } from './orchestrator-finalize';
+import { planFinalization, needsHumanGateUrl, reconcileDoneStatus, type FinalizeRecipe } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import { acquireAgentDisplay, agentDisplayPool } from '../deployment/display-allocator';
 import {
@@ -598,6 +598,25 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
       `[dbos-finalize] DONE blocked for ${harnessSlug} (open needs-human plan item) — skipping curator/documenter`,
     );
     return;
+  }
+
+  // Unblocked DONE: close the status loop if the validator omitted its
+  // validating→passed PG write (live on frame 138838461, 2026-06-09 — see
+  // reconcileDoneStatus). Best-effort: a reconcile hiccup must not block the
+  // curator/documenter finalization steps.
+  if (outcome === 'done') {
+    try {
+      const { getLegacyClient } = await import('@papercusp/db-org');
+      const flipped = await reconcileDoneStatus(harnessSlug, featureId, getLegacyClient(harnessSlug), (m) =>
+        console.log(m),
+      );
+      if (flipped) {
+        const { auditFeatureChange } = await import('../feature-audit');
+        auditFeatureChange(harnessSlug, featureId, 'status', 'validating', 'passed', 'dbos-finalize');
+      }
+    } catch (e) {
+      console.warn(`[dbos-finalize] status reconcile failed (non-fatal): ${(e as Error).message}`);
+    }
   }
 
   for (const step of plan.steps) {

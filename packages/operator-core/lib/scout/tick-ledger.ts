@@ -61,5 +61,5 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
     VALUES
       (${ws}, ${input.installSlug ?? null}, ${input.status}, ${input.gate ?? null},
        ${input.ideasGenerated ?? 0}, ${input.ideasRouted ?? 0}, ${input.ideasDeduped ?? 0},
-       ${input.budgetUsedUsd ?? null}, ${sql.json(input.detail ?? null)})`;
+       ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb)`;
 }

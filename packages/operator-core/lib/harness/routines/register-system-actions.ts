@@ -31,6 +31,11 @@
  *     P-005 / D-006). Wakes the EXISTING pinned brain session on cadence so it
  *     takes autonomous turns. Flag-gated by HIVE_AGENT_TABS (OFF → no-op); the
  *     cadence routine seed + live verify are the remaining P-005 wip.
+ *   - `system:gym-cycle` — learning-system-audit-improvements-2026-06-09
+ *     P-031/P-032. The gym's pulse: per tick, run ONE bounded human-gated gym
+ *     cycle for the least-recently-run enabled+idle+budgeted autoloop, with
+ *     triage-routed gym ideas fed to the proposer. Seeded INACTIVE
+ *     (lib/gym/seed-gym-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -40,3 +45,4 @@ import './p2p-perf-actions';
 import '../../scout/register-scout-action';
 import './session-dir-gc-action';
 import './wake-brain-action';
+import './gym-actions';

@@ -66,7 +66,7 @@ describe('memory:remember — backend seam (D-003)', () => {
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'anything', kind: 'preference' },
+      { content: 'anything', kind: 'feedback' },
       fakeCtx,
     );
     const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -78,10 +78,10 @@ describe('memory:remember — backend seam (D-003)', () => {
     const b = fakeBackend();
     useBackend(b);
 
-    await remember.handler({ content: 'personal', kind: 'preference' }, fakeCtx);
+    await remember.handler({ content: 'personal', kind: 'feedback' }, fakeCtx);
     expect(b.remember).toHaveBeenLastCalledWith('personal', expect.objectContaining({
       scope: 'user-1',
-      kind: 'preference',
+      kind: 'feedback',
     }));
 
     await remember.handler(
@@ -132,7 +132,7 @@ describe('memory:remember — anchor extraction (P-015)', () => {
     await remember.handler(
       {
         content: 'Avi prefers terse responses',
-        kind: 'preference',
+        kind: 'feedback',
       },
       fakeCtx,
     );
@@ -183,7 +183,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'Avi prefers short responses', kind: 'preference' },
+      { content: 'Avi prefers short responses', kind: 'feedback' },
       fakeCtx,
     );
     const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -203,7 +203,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'New unrelated fact', kind: 'preference' },
+      { content: 'New unrelated fact', kind: 'feedback' },
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
@@ -219,7 +219,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     const res = await remember.handler(
       {
         content: 'Avi prefers terse responses',
-        kind: 'preference',
+        kind: 'feedback',
         force: true,
       },
       fakeCtx,
@@ -236,7 +236,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'something', kind: 'preference' },
+      { content: 'something', kind: 'feedback' },
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
@@ -251,7 +251,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     useBackend(b);
 
     const res = await remember.handler(
-      { content: 'exact match', kind: 'preference' },
+      { content: 'exact match', kind: 'feedback' },
       fakeCtx,
     );
     // With flag off, the high-similarity write should still succeed
@@ -309,7 +309,7 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
     } as unknown as ReturnType<typeof getOrgPg>);
 
     await remember.handler(
-      { content: 'Avi prefers terse responses', kind: 'preference' },
+      { content: 'Avi prefers terse responses', kind: 'feedback' },
       fakeCtx,
     );
     await new Promise((r) => setImmediate(r));
@@ -345,8 +345,8 @@ describe('memory:remember — psu reachability (crossWorkspace + workspace arg)'
 
   it('accepts an optional per-call `workspace` arg', () => {
     const schema = remember.args as z.ZodTypeAny;
-    expect(schema.safeParse({ content: 'x', kind: 'preference' }).success).toBe(true);
-    const withWs = schema.safeParse({ content: 'x', kind: 'preference', workspace: 'ws-a' });
+    expect(schema.safeParse({ content: 'x', kind: 'feedback' }).success).toBe(true);
+    const withWs = schema.safeParse({ content: 'x', kind: 'feedback', workspace: 'ws-a' });
     expect(withWs.success).toBe(true);
     if (withWs.success) expect((withWs.data as { workspace?: string }).workspace).toBe('ws-a');
   });

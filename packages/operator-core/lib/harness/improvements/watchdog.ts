@@ -41,7 +41,10 @@ export type WatchdogSource =
   // P-010 blind-source collectors (watchdog-robustness):
   | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation'
   // a role fire-path in error-backoff (autoloop_state.consecutive_errors):
-  | 'fire-circuit-open';
+  | 'fire-circuit-open'
+  // an ACTIVE agent-insight runbook citing repo files that no longer exist
+  // (learning-system-audit P-051 — insight-staleness.ts):
+  | 'insight-staleness';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1052,6 +1055,12 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
+    // P-051 (learning-system-audit): active insights citing missing repo files →
+    // kind=change review captures (fs-only, no PG; lazy import keeps boot cheap).
+    {
+      name: 'papercusp-insight-staleness',
+      collect: () => import('./insight-staleness').then((m) => m.collectInsightStalenessSignals()),
+    },
   ];
 }
 

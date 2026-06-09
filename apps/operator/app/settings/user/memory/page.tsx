@@ -92,9 +92,9 @@ interface ClaudeHygiene {
   indexBytes: number;
 }
 
-/** Kind suggestions for the add form — the live taxonomy plus the MCP
- * verb's enum; free text is also accepted (taxonomy is backend-defined). */
-const KIND_SUGGESTIONS = ['user', 'feedback', 'reference', 'project', 'identity', 'preference', 'correction'];
+/** Kind suggestions for the add form — the unified taxonomy
+ * (memory-taxonomy-and-debt-followups D-001); free text also accepted. */
+const KIND_SUGGESTIONS = ['user', 'feedback', 'project', 'reference'];
 
 export default function MemoryPage() {
   const [userId, setUserId] = useState<string | null>(null);

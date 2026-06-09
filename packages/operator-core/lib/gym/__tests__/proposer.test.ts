@@ -27,6 +27,26 @@ describe('buildProposerPrompt', () => {
     expect(user).toContain('validator rubber-stamped');
     expect(user).toContain('cycle 1: tightened worker error-handling');
   });
+
+  // P-032 (learning-system-audit): triage-routed gym ideas as candidate directions.
+  it('zero candidate directions → the prompt is byte-identical (purely additive)', () => {
+    const base = buildProposerPrompt(input);
+    expect(buildProposerPrompt({ ...input, candidateDirections: [] })).toEqual(base);
+    expect(buildProposerPrompt({ ...input, candidateDirections: undefined })).toEqual(base);
+    expect(base.user).not.toMatch(/Candidate directions/i);
+  });
+
+  it('routed gym ideas appear as an optional-directions section', () => {
+    const { user } = buildProposerPrompt({
+      ...input,
+      candidateDirections: ['Validator rubber-stamps — tighten the validator prompt', 'Workers skip re-reads'],
+    });
+    expect(user).toMatch(/## Candidate directions/);
+    expect(user).toContain('- Validator rubber-stamps — tighten the validator prompt');
+    expect(user).toContain('- Workers skip re-reads');
+    // advisory, not a mandate — the proposer may ignore them
+    expect(user).toMatch(/otherwise ignore/i);
+  });
 });
 
 describe('parseProposal', () => {

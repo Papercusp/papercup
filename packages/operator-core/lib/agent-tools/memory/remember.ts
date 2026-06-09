@@ -29,7 +29,14 @@ import { getSessionUserOrDefault } from '../../auth';
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
 // delivered, never re-pushed), not in a semantic store.
-const KINDS = ['identity', 'preference', 'project', 'correction'] as const;
+//
+// Taxonomy unified on the Claude-file generation (memory-taxonomy-and-debt-
+// followups D-001): user (who they are) / feedback (how to work — corrections
+// AND confirmed approaches) / project (ongoing work context) / reference
+// (pointers + hard-won technical facts). The legacy mem0 kinds
+// (identity/preference/correction) still read fine — typeForKind keeps their
+// mappings — but new writes use the unified set.
+const KINDS = ['user', 'feedback', 'project', 'reference'] as const;
 
 /**
  * P-016: dedup-on-write similarity threshold. Tunable via env. A score
@@ -62,7 +69,7 @@ export default defineTool({
   name: 'memory:remember',
   capability: 'memory:write',
   description:
-    'Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (identity / preference / project / correction). For transient state, use coord — not memory.',
+    'Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (user / feedback / project / reference). For transient state, use coord — not memory.',
   guidance: {
     when:
       'When the user says "remember X" / "don\'t forget Y" / "next time…" / "from now on…", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud ("I\'ll remember that"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness.',
