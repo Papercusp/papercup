@@ -93,19 +93,30 @@ export async function runUrgentCurationTick(): Promise<void> {
 }
 
 let active: { cancel: () => void; unsub: () => void } | null = null;
+let starting = false;
 
 /**
  * Wire the urgent wake. Idempotent. `opts.runTick` overrides the default
  * (tests). Returns an unsubscribe that also cancels any pending debounce.
+ *
+ * Guard against concurrent calls that could create multiple listeners: if
+ * already starting or active, returns immediately without creating a new
+ * listener. This prevents a memory leak where multiple listeners would accumulate
+ * if startCurationUrgentWake was called multiple times rapidly.
  */
 export function startCurationUrgentWake(opts: { runTick?: () => void | Promise<void>; debounceMs?: number } = {}): () => void {
-  if (active) return () => stopCurationUrgentWake();
-  const runner = opts.runTick ?? runUrgentCurationTick;
-  const { trigger, cancel } = makeDebouncedRunner(runner, opts.debounceMs ?? URGENT_DEBOUNCE_MS);
-  const unsub = onCoordInbox(() => trigger());
-  active = { cancel, unsub };
-  // eslint-disable-next-line no-console
-  console.log('[curation] urgent wake armed (coord_inbox → urgent tick)');
+  if (active || starting) return () => stopCurationUrgentWake();
+  starting = true;
+  try {
+    const runner = opts.runTick ?? runUrgentCurationTick;
+    const { trigger, cancel } = makeDebouncedRunner(runner, opts.debounceMs ?? URGENT_DEBOUNCE_MS);
+    const unsub = onCoordInbox(() => trigger());
+    active = { cancel, unsub };
+    // eslint-disable-next-line no-console
+    console.log('[curation] urgent wake armed (coord_inbox → urgent tick)');
+  } finally {
+    starting = false;
+  }
   return () => stopCurationUrgentWake();
 }
 
