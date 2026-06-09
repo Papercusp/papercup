@@ -11,11 +11,6 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-] as const;
-
 export default defineTool({
   name: 'memory:update',
   capability: 'memory:write',
@@ -26,9 +21,13 @@ export default defineTool({
     notWhen:
       'To REMOVE a memory entirely, use memory:forget. To add a NEW memory without replacing one, use memory:remember.',
   },
-  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
-  agentRoles: [...ALL_ROLES],
-  rolesQuota: { operator: { perRun: 50 } },
+  // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
+  // `requirePrincipal: true` marker was not a declared input property and made
+  // every overload fail (memory-taxonomy-and-debt-followups P-004).
+  // NOTE: agentRoles/rolesQuota are not accepted on principal-gated tools —
+  // definePrincipalGatedTool drops them (never copied to the def, never
+  // enforced); the all-roles lists + quotas formerly here were dead inputs
+  // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
     id: z.string().min(1),
     content: z.string().min(1).max(2000),

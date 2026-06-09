@@ -60,11 +60,6 @@ function dedupThreshold(): number {
 }
 const DEDUP_TOP_K = 3;
 
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-] as const;
-
 export default defineTool({
   name: 'memory:remember',
   capability: 'memory:write',
@@ -78,13 +73,17 @@ export default defineTool({
     chaining:
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
   },
-  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
+  // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
+  // `requirePrincipal: true` marker was not a declared input property and made
+  // every overload fail (memory-taxonomy-and-debt-followups P-004).
   // Cross-workspace store (see memory:search) — handler rides getMemoryBackend /
   // getOrgPg, never ctx.tx. crossWorkspace:true lets an UNSCOPED superuser (psu)
   // session write instead of failing `workspace_required`.
   crossWorkspace: true,
-  agentRoles: [...ALL_ROLES],
-  rolesQuota: { operator: { perRun: 100 } },
+  // NOTE: agentRoles/rolesQuota are not accepted on principal-gated tools —
+  // definePrincipalGatedTool drops them (never copied to the def, never
+  // enforced); the all-roles lists + quotas formerly here were dead inputs
+  // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
     content: z.string().min(1).max(2000),
     kind: z.enum(KINDS),
@@ -93,7 +92,7 @@ export default defineTool({
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
     workspace: z.string().optional()
-      .describe('Superuser-only: from an UNSCOPED session, tag the write under THIS workspace (the dispatch pins ctx.workspaceId → metadata.workspace_id). Scoped/power-user sessions ignore it.'),
+      .describe('Superuser-only: from an UNSCOPED session, tag the write under THIS workspace (the resolved workspace lands in metadata.workspace_id). Scoped/power-user sessions ignore it.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
@@ -116,7 +115,11 @@ export default defineTool({
 
     const metadata: Record<string, unknown> = {
       scope,
-      workspace_id: ctx.workspaceId,
+      // The principal carries the resolved workspace (incl. a per-call
+      // `workspace` pin from an unscoped SU session). The old read,
+      // `ctx.workspaceId`, was never populated on principal-gated handlers
+      // — every prior write stored workspace_id: undefined (P-004).
+      workspace_id: ctx.principal.workspaceId,
       created_by: user.id,
       display_name: user.display_name,
     };

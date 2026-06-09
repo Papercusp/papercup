@@ -34,6 +34,7 @@ import {
   sessionMcpJsonPath,
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
+import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
@@ -151,6 +152,11 @@ export function resumeCommandFor(handle: {
         '-p',
         '--dangerously-skip-permissions',
         '--permission-mode', 'bypassPermissions',
+        // Native-scheduler lockout (native-scheduler-lockout-2026-06-09): CLI
+        // flags don't persist into resumes, so every autonomous wake re-arms
+        // the deny. MUST stay the single `=` token — the space form is
+        // variadic and would eat the positional wakeText below (D-002).
+        nativeSchedulerDenyFlag(),
         ...mcpArgs,
         wakeText,
       ],

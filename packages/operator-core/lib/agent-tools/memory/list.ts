@@ -22,11 +22,6 @@ import { toWireRow } from './search';
 // rows were migrated in the same pass, so no legacy kinds linger.
 const KINDS = ['user', 'feedback', 'project', 'reference'] as const;
 
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-] as const;
-
 export default defineTool({
   name: 'memory:list',
   capability: 'memory:read',
@@ -38,9 +33,13 @@ export default defineTool({
     notWhen:
       'For semantic lookup ("what did I say about X?"), use memory:search instead.',
   },
-  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
-  agentRoles: [...ALL_ROLES],
-  rolesQuota: { operator: { perRun: 50 } },
+  // Principal-gated is defineTool's DEFAULT (unauthed HTTP → 401); the former
+  // `requirePrincipal: true` marker was not a declared input property and made
+  // every overload fail (memory-taxonomy-and-debt-followups P-004).
+  // NOTE: agentRoles/rolesQuota are not accepted on principal-gated tools —
+  // definePrincipalGatedTool drops them (never copied to the def, never
+  // enforced); the all-roles lists + quotas formerly here were dead inputs
+  // (memory-taxonomy-and-debt-followups P-004).
   args: z.object({
     kind: z.enum(KINDS).optional(),
     harness_slug: z.string().optional(),

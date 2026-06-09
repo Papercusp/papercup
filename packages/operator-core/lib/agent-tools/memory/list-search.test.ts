@@ -128,7 +128,7 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     const out = parse(await search.handler({ query: 'q' }, ctx));
 
     // backend.search invoked WITHOUT any floor key — no minScore / minScoreRatio.
-    const opts = b.search.mock.calls[0][1] as Record<string, unknown>;
+    const opts = (b.search.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect('minScore' in opts).toBe(false);
     expect('minScoreRatio' in opts).toBe(false);
     // the weak candidate is surfaced (not floored out), score preserved for judging.
