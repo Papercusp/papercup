@@ -1,7 +1,7 @@
 /**
  * The listing kind→action mapping (revive-cupboard-distribution-2026-06-04
  * D-005). `types.test.ts` covers the predicates around it (isHarnessListing,
- * groupListingsByKind, listingPotRef) but NEVER asserts `listingAction`,
+ * groupListingsByKind, listingHiveRef) but NEVER asserts `listingAction`,
  * `isListingKind`, or `listingKindOf` directly — yet these three drive the
  * storefront's per-kind action button (Join / Fork / Install) and the
  * default-to-harness fallback for pre-004 rows. This pins them.
@@ -58,9 +58,8 @@ describe('listingAction (kind → consumer verb, D-005)', () => {
   it('blueprint → fork', () => {
     expect(listingAction('blueprint')).toBe('fork');
   });
-  it('snapshot → fork', () => {
-    expect(listingAction('snapshot')).toBe('fork');
-  });
+  // ('snapshot → fork' removed — the snapshot kind was retired by
+  // retire-snapshots-instance-spec-2026-06-09 D-005.)
   it('plugin → install', () => {
     expect(listingAction('plugin')).toBe('install');
   });
@@ -109,7 +108,7 @@ describe('isListingKind', () => {
 describe('listingKindOf (row → kind, defaulting to harness)', () => {
   it('reads an explicit valid listing_kind', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'plugin' }))).toBe('plugin');
-    expect(listingKindOf(makeListing({ listing_kind: 'snapshot' }))).toBe('snapshot');
+    expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');
     expect(listingKindOf(makeListing({ listing_kind: 'harness' }))).toBe('harness');
     expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');

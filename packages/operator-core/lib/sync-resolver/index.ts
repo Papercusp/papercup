@@ -1364,6 +1364,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return listFederatedPresence({});
     },
   },
+
+  // planItems.byPlan — the structured plan items (id, text, status, blockedBy,
+  // …) for one plan, read straight from `harness_plans.items` jsonb. That
+  // column is the synchronous projection `with-plan-lock` rewrites in the SAME
+  // upsert as `content` on every plan write (plans-pg-canonical), so it is
+  // never stale after a completed write. Keyed by `plan_slug` alone — slugs are
+  // workspace-unique (mirrors the `source_plan_slug` lookups elsewhere), so the
+  // Create-tab kanban needs only the plan slug (no harness threading). Live:
+  // `plans:set-status` fires `notifySyncInvalidate('planItems.byPlan', { planSlug })`.
+  'planItems.byPlan': {
+    argsSchema: z.object({ planSlug: z.string() }),
+    resolve: async (args) => {
+      const { planSlug } = args as { planSlug: string };
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { eq } = await import('drizzle-orm');
+      const t = generated.harnessPlansInHarnessShared;
+      const { db } = getOrgPg();
+      // getOrgPg() is workspace-scoped (RLS on workspace_id), so filtering on
+      // plan_slug suffices. LIMIT 2 + prefer-live guards the rare cross-harness
+      // slug collision without needing a harness arg.
+      const rows = (await db
+        .select({ items: t.items, archived: t.archived })
+        .from(t)
+        .where(eq(t.planSlug, planSlug))
+        .limit(2)) as Array<{ items: unknown; archived: boolean | null }>;
+      const row = rows.find((r) => !r.archived) ?? rows[0];
+      return (Array.isArray(row?.items) ? row!.items : []) as unknown[];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────

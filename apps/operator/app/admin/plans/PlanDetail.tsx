@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useSyncQuery } from '@papercusp/sync';
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -40,8 +41,9 @@ import PlanStatusPopover, {
   type PendingStatusFlip,
   type PlanStatus as PlanItemStatus,
 } from './PlanStatusPopover';
-import { setItemStatus, usePlanRevisions } from './plans-api';
-import type { PlanStatus, PlanStartStatus, PlanItem, ItemStatus } from './plans-api';
+import { usePlanRevisions } from './plans-api';
+import type { PlanStatus, PlanStartStatus, PlanItem } from './plans-api';
+import PlanKanbanView from './PlanKanbanView';
 
 interface Props {
   slug: string;
@@ -839,7 +841,13 @@ function PlanActivityFeed({
 }) {
   const { data: revisions, loading } = usePlanRevisions(open ? slug : null);
 
-  return (
+  // Portal to <body> so the fixed drawer anchors to the VIEWPORT, not to a
+  // dockview ancestor. In the Create dock the panel content box is transformed
+  // + `overflow:hidden`, which re-anchored `position:fixed` to the panel and
+  // clipped the right-edge "Activity" tab. Rendering through a body portal makes
+  // it a true viewport overlay in both the standalone /admin/plans route and the
+  // dock, immune to ancestor transform/overflow.
+  const drawer = (
     <div
       style={{
         position: 'fixed', right: open ? 0 : -280, top: 0, bottom: 0, zIndex: 35,
@@ -899,105 +907,11 @@ function PlanActivityFeed({
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(drawer, document.body) : drawer;
 }
 
-// ---------------------------------------------------------------------------
-// P-025 — Kanban view
-// ---------------------------------------------------------------------------
-
-const KANBAN_COLS: Array<{ status: ItemStatus; label: string; accent: string }> = [
-  { status: 'todo',        label: 'To Do',       accent: 'var(--fg-mute)' },
-  { status: 'wip',         label: 'In Progress',  accent: 'var(--accent)' },
-  { status: 'needs-human', label: 'Needs Human',  accent: 'var(--warning)' },
-  { status: 'done',        label: 'Done',         accent: 'var(--success)' },
-];
-
-function PlanKanbanView({
-  items,
-  slug,
-  onChanged,
-}: {
-  items: PlanItem[];
-  slug: string;
-  onChanged: () => void;
-}) {
-  const [saving, setSaving] = useState<string | null>(null);
-
-  const byStatus = useMemo(() => {
-    const m = new Map<ItemStatus, PlanItem[]>();
-    for (const col of KANBAN_COLS) m.set(col.status, []);
-    for (const item of items) {
-      const eff = item.effectiveStatus as ItemStatus;
-      if (m.has(eff)) m.get(eff)!.push(item);
-    }
-    return m;
-  }, [items]);
-
-  const move = async (item: PlanItem, newStatus: ItemStatus) => {
-    if (item.effectiveStatus === newStatus) return;
-    setSaving(item.id);
-    try {
-      await setItemStatus({ slug, itemId: item.id, status: newStatus });
-      onChanged();
-    } catch {}
-    setSaving(null);
-  };
-
-  return (
-    <div style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '8px 0', minHeight: 200 }}>
-      {KANBAN_COLS.map((col) => (
-        <div
-          key={col.status}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            const itemId = e.dataTransfer.getData('text/plain');
-            const item = items.find((i) => i.id === itemId);
-            if (item) move(item, col.status);
-          }}
-          style={{
-            flex: '1 1 0', minWidth: 140, background: 'var(--surface-2)',
-            borderRadius: 6, padding: '10px 10px 14px',
-            borderTop: `3px solid ${col.accent}`,
-          }}
-        >
-          <div style={{ fontSize: '0.72em', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: col.accent, marginBottom: 8 }}>
-            {col.label} <span style={{ fontWeight: 400, color: 'var(--fg-mute)' }}>({byStatus.get(col.status)?.length ?? 0})</span>
-          </div>
-          {byStatus.get(col.status)?.map((item) => (
-            <div
-              key={item.id}
-              draggable
-              onDragStart={(e) => e.dataTransfer.setData('text/plain', item.id)}
-              style={{
-                background: 'var(--surface-1)', borderRadius: 4, padding: '6px 8px',
-                marginBottom: 6, cursor: 'grab', fontSize: '0.8em',
-                border: '1px solid var(--border)',
-                opacity: saving === item.id ? 0.5 : 1,
-              }}
-            >
-              <code style={{ color: 'var(--fg-mute)', fontSize: '0.85em', display: 'block', marginBottom: 2 }}>{item.id}</code>
-              <span style={{ lineHeight: 1.4 }}>{item.text.replace(/^`[^`]+`\s*/, '').slice(0, 120)}</span>
-              <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {KANBAN_COLS.filter((c) => c.status !== col.status && !['dropped', 'blocked'].includes(c.status)).map((c) => (
-                  <button
-                    key={c.status}
-                    type="button"
-                    onClick={() => move(item, c.status)}
-                    disabled={saving === item.id}
-                    style={{ fontSize: '0.7em', padding: '1px 5px', border: `1px solid ${c.accent}`, borderRadius: 3, background: 'none', cursor: 'pointer', color: c.accent }}
-                  >
-                    → {c.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
+// P-025 — Kanban view: extracted to ./PlanKanbanView (dnd-kit + @papercusp/sync).
 
 // ---------------------------------------------------------------------------
 // P-007 — Feature slide-over

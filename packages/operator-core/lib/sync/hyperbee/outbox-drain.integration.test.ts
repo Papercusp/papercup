@@ -233,6 +233,32 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     expect(a2.map((x) => x.hbKey)).toEqual(['F-2', 'F-3']);
   });
 
+  it('FORWARD-COMPAT: an unmapped table_name is SKIPPED (left undrained) — the drain does NOT halt, known rows still drain', async () => {
+    // Simulates a co-located OLDER operator hitting a NEWER capture trigger's table
+    // (the exact wedge a migration landing ahead of code would cause). The drain
+    // must skip the unmapped row + keep federating the rows it knows.
+    const idKnown1 = await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-1', row: featureRow('F-1') });
+    const idUnknown = await seedOutbox(db.sql, { table_name: 'some_future_federated_table', op: 'put', key: 'X-1', row: { workspace_id: WS, harness_slug: SLUG, id: 'X-1' } });
+    const idKnown2 = await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-2', row: featureRow('F-2') });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Does NOT throw; drains the 2 known rows, skips the unknown.
+      const count = await drainOutboxOnce(makeFakeHandle().handle, db.sql);
+      expect(count).toBe(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('some_future_federated_table'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const rows = await db.sql<{ id: number; drained_at: number | null }[]>`
+      SELECT id, drained_at FROM harness_shared.substrate_outbox ORDER BY id`;
+    const byId = new Map(rows.map((r) => [Number(r.id), r.drained_at]));
+    expect(byId.get(idKnown1)).not.toBeNull(); // drained
+    expect(byId.get(idKnown2)).not.toBeNull(); // drained (drain did NOT halt at the unknown row)
+    expect(byId.get(idUnknown)).toBeNull();    // left undrained for a newer build to federate
+  });
+
   it('respects the batch limit (drains LIMIT rows, leaves the rest for the next pass)', async () => {
     for (let i = 0; i < 5; i++) {
       await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: `F-${i}`, row: featureRow(`F-${i}`) });

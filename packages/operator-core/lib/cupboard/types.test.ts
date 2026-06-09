@@ -17,7 +17,7 @@ import {
   groupListingsByKind,
   isHarnessListing,
   isPubliclyVisible,
-  listingPotRef,
+  listingHiveRef,
   ok,
   type CupboardError,
   type HarnessListing,
@@ -238,22 +238,22 @@ describe('isHarnessListing', () => {
   });
 });
 
-describe('listingPotRef (per-Pot grouping key, D-005)', () => {
+describe('listingHiveRef (per-Hive grouping key, D-005)', () => {
   it('prefers the explicit project_ref', () => {
-    expect(listingPotRef(makeListing({ project_ref: 'papercupai/demo' }))).toBe('papercupai/demo');
+    expect(listingHiveRef(makeListing({ project_ref: 'papercupai/demo' }))).toBe('papercupai/demo');
   });
 
   it('falls back to the repo slug when project_ref is absent (legacy row)', () => {
-    expect(listingPotRef(makeListing({ project_ref: undefined }))).toBe('papercup-ai/papercup');
+    expect(listingHiveRef(makeListing({ project_ref: undefined }))).toBe('papercup-ai/papercup');
   });
 
   it('falls back to the repo slug when project_ref is null', () => {
-    expect(listingPotRef(makeListing({ project_ref: null }))).toBe('papercup-ai/papercup');
+    expect(listingHiveRef(makeListing({ project_ref: null }))).toBe('papercup-ai/papercup');
   });
 
   it('derives the repo slug from worker owner/name fields when github_repo is absent', () => {
     expect(
-      listingPotRef(
+      listingHiveRef(
         makeListing({ project_ref: null, github_repo: '', github_owner: 'acme', github_name: 'widget' }),
       ),
     ).toBe('acme/widget');
@@ -261,38 +261,38 @@ describe('listingPotRef (per-Pot grouping key, D-005)', () => {
 
   it("returns '' (ungroupable) when there is no project identity at all", () => {
     expect(
-      listingPotRef(makeListing({ project_ref: null, github_repo: '', github_owner: undefined, github_name: undefined })),
+      listingHiveRef(makeListing({ project_ref: null, github_repo: '', github_owner: undefined, github_name: undefined })),
     ).toBe('');
   });
 });
 
-describe('groupListingsByKind (per-Pot rollup, D-005)', () => {
+describe('groupListingsByKind (per-Hive rollup, D-005)', () => {
   it('groups by kind in canonical LISTING_KINDS order', () => {
     const groups = groupListingsByKind([
       makeListing({ id: 1, listing_kind: 'plugin' }),
       makeListing({ id: 2, listing_kind: 'harness' }),
-      makeListing({ id: 3, listing_kind: 'snapshot' }),
+      makeListing({ id: 3, listing_kind: 'pack' }),
       makeListing({ id: 4, listing_kind: 'blueprint' }),
     ]);
-    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'snapshot', 'plugin']);
+    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'plugin', 'pack']);
   });
 
   it('drops empty kinds', () => {
     const groups = groupListingsByKind([
       makeListing({ id: 1, listing_kind: 'blueprint' }),
-      makeListing({ id: 2, listing_kind: 'snapshot' }),
+      makeListing({ id: 2, listing_kind: 'pack' }),
     ]);
-    expect(groups.map((g) => g.kind)).toEqual(['blueprint', 'snapshot']);
+    expect(groups.map((g) => g.kind)).toEqual(['blueprint', 'pack']);
   });
 
   it('keeps every listing within its kind group', () => {
     const groups = groupListingsByKind([
-      makeListing({ id: 1, listing_kind: 'snapshot' }),
-      makeListing({ id: 2, listing_kind: 'snapshot' }),
+      makeListing({ id: 1, listing_kind: 'pack' }),
+      makeListing({ id: 2, listing_kind: 'pack' }),
       makeListing({ id: 3, listing_kind: 'blueprint' }),
     ]);
-    const snap = groups.find((g) => g.kind === 'snapshot');
-    expect(snap?.listings.map((l) => l.id)).toEqual([1, 2]);
+    const packs = groups.find((g) => g.kind === 'pack');
+    expect(packs?.listings.map((l) => l.id)).toEqual([1, 2]);
   });
 
   it('treats an absent listing_kind as harness', () => {

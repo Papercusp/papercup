@@ -283,25 +283,41 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
   }
 
   if (embeddedPg) {
-    // D-007: the frame runs its OWN embedded-pg, federating via the peer-log.
-    add('embedded-pg', 'embedded Postgres + migrations (D-007)', [
+    // D-007: the frame runs its OWN Postgres (per-frame isolation; federates via the
+    // peer-log at the operator layer). We use SYSTEM PG 16 + pgvector (pgdg), NOT the
+    // npm embedded-postgres distribution: `000-baseline.sql` hard-requires the `vector`
+    // type, and the npm distro ships neither the extension .so nor the headers to build
+    // it, so its baseline migration dies with `type "public.vector" does not exist`
+    // (found live 2026-06-06; reproduced on a fresh frame 2026-06-09 — the prior live
+    // fix was never committed to this bootstrap). `apply-migrations.mjs` creates the
+    // extensions (pgcrypto/pg_trgm/vector), applies all migrations, and pre-mints the
+    // spawn-signing-key (without which the FIRST director spawn-mcp write can't sign →
+    // claude -p --strict-mcp-config aborts on a missing .mcp.json). The operator resolves
+    // this PG via DATABASE_URL exactly like the native-PG dev box.
+    add('embedded-pg', 'system Postgres 16 + pgvector + migrations (D-007)', [
+      'export DEBIAN_FRONTEND=noninteractive',
+      // pgdg provides PG16 + the matching pgvector package on jammy (not in base repos).
+      'apt-get install -y -q postgresql-common',
+      'YES=yes /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y || true',
+      'apt-get install -y -q postgresql-16 postgresql-16-pgvector',
+      'systemctl start postgresql || pg_ctlcluster 16 main start || true',
+      // Roles + db the operator's DSN (and its hardcoded fallback) expect.
+      `sudo -u postgres psql -qc "CREATE ROLE harness_admin LOGIN PASSWORD 'harness_admin_pwd' SUPERUSER" || true`,
+      `sudo -u postgres psql -qc "CREATE ROLE harness_app LOGIN PASSWORD 'harness_app_pwd'" || true`,
+      `sudo -u postgres psql -qc "CREATE ROLE harness_zero LOGIN PASSWORD 'harness_zero_pwd'" || true`,
+      'sudo -u postgres createdb -O harness_admin papercusp || true',
+      // Export for every later step (single bootstrap shell): the operator + the
+      // invoke-once pg-bootstrap read this DSN. No ~/.papercusp/embedded-pg.json is
+      // written, so the operator's discovery cleanly falls through to DATABASE_URL.
+      'export DATABASE_URL=postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
+      'export PAPERCUSP_DATABASE_URL="$DATABASE_URL"',
       `cd ${shq(`${root}/runtime`)}`,
-      // The package has NO npm `start` script (found live 2026-06-06) — its entry
-      // is the bin, which boots PG, applies PAPERCUSP_PG_SQL_DIR migrations, and
-      // writes ~/.papercusp/embedded-pg.json on ready (the discovery contract).
       'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
-      // Frames bootstrap as root; Postgres refuses root, so the server creates
-      // + setuids a dedicated postgres OS user (found live 2026-06-06) — and the
-      // data dir must live OUTSIDE /root (0700 blocks the postgres user's initdb).
-      'export PAPERCUSP_PG_CREATE_USER=1',
-      'export PAPERCUSP_PG_DATA_DIR=/var/lib/papercusp/embedded-pg-data',
-      'mkdir -p /var/lib/papercusp',
-      '( node libs/papercusp/packages/embedded-postgres-server/bin/embedded-postgres-server.mjs >/var/log/embedded-pg.log 2>&1 & )',
-      'for i in $(seq 1 60); do [ -f "$HOME/.papercusp/embedded-pg.json" ] && break; sleep 2; done',
-      // Fail LOUD — a silent pg miss leaves a frame that "deployed" but can't work.
-      'if [ ! -f "$HOME/.papercusp/embedded-pg.json" ]; then',
-      '  echo "FATAL: embedded-pg never wrote its discovery file" >&2',
-      '  tail -30 /var/log/embedded-pg.log >&2 || true',
+      // Extensions + all migrations + spawn-signing-key premint (fails the script on error).
+      'node libs/papercusp/packages/embedded-postgres-server/bin/apply-migrations.mjs',
+      // Fail LOUD if the baseline didn't land — no silent half-migrated frame.
+      `if [ "$(psql "$DATABASE_URL" -tAc "select to_regclass('harness_shared.harness_features') is not null")" != "t" ]; then`,
+      '  echo "FATAL: migrations did not apply (harness_shared.harness_features missing)" >&2',
       '  exit 1',
       'fi',
     ]);

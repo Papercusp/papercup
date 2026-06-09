@@ -401,17 +401,34 @@ function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
 }
 
 /**
+ * Thrown when an outbox row names a `table_name` this build has no mapper for.
+ * This is BOTH a programming error (a new trigger shipped without its mapper) AND
+ * a legitimate forward-compat rolling-deploy state: a NEWER operator/migration may
+ * have a capture trigger for a table an OLDER co-located operator (sharing the same
+ * PG outbox) can't map yet. The drain catches THIS class specifically and SKIPS the
+ * row (leaving it undrained for a newer build to federate) instead of halting the
+ * whole drain — so a forward-compatible federated-table addition degrades to "that
+ * one table doesn't federate here yet" rather than "all federation stops."
+ */
+export class UnknownOutboxTableError extends Error {
+  readonly tableName: string;
+  constructor(tableName: string) {
+    super(`outboxRowToLocalWriteOp: unknown table_name '${tableName}'`);
+    this.name = 'UnknownOutboxTableError';
+    this.tableName = tableName;
+  }
+}
+
+/**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
- * own log. Throws on an unknown `table_name` (a programming error — the trigger
- * only ever writes the federated tables in `TABLE_NAME_TO_TABLE_TAG`). For a
- * `del`, `value` is undefined (the projection's delete path needs only `hbKey`).
+ * own log. Throws `UnknownOutboxTableError` on an unmapped `table_name` (the drain
+ * skips that class — see the class doc). For a `del`, `value` is undefined (the
+ * projection's delete path needs only `hbKey`).
  */
 export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
   const table = TABLE_NAME_TO_TABLE_TAG[outboxRow.table_name];
   if (!table) {
-    throw new Error(
-      `outboxRowToLocalWriteOp: unknown table_name '${outboxRow.table_name}'`,
-    );
+    throw new UnknownOutboxTableError(outboxRow.table_name);
   }
 
   const ts = typeof outboxRow.ts === 'number' ? outboxRow.ts : Number(outboxRow.ts);

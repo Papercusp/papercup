@@ -28,7 +28,11 @@
 
 import type postgres from 'postgres';
 import type { BootedHarnessHandle } from './boot';
-import { outboxRowToLocalWriteOp, type OutboxRow } from './feature-issue-op-keys';
+import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
+
+/** Unmapped outbox table_names already logged (dedupe the forward-compat skip
+ *  warning so an undrained unknown row doesn't spam the log every drain pass). */
+const loggedUnknownTables = new Set<string>();
 
 /** Drain batch size per `drainOutboxOnce` pass. Bounds memory + append latency;
  *  the LISTEN/poll loop re-drains until the table is empty. */
@@ -143,13 +147,36 @@ export async function drainOutboxOnce(
 
   let drained = 0;
   for (const r of rows) {
-    const op = outboxRowToLocalWriteOp({
-      table_name: r.table_name,
-      op: r.op,
-      key: r.key,
-      ts: typeof r.ts === 'number' ? r.ts : Number(r.ts),
-      row: r.row,
-    } satisfies OutboxRow);
+    let op: ReturnType<typeof outboxRowToLocalWriteOp>;
+    try {
+      op = outboxRowToLocalWriteOp({
+        table_name: r.table_name,
+        op: r.op,
+        key: r.key,
+        ts: typeof r.ts === 'number' ? r.ts : Number(r.ts),
+        row: r.row,
+      } satisfies OutboxRow);
+    } catch (e) {
+      // Forward-compat: a NEWER capture trigger may enqueue a table this (older,
+      // co-located) build can't map yet. SKIP that row — leave it undrained so a
+      // newer build federates it — and CONTINUE to the next row, rather than
+      // halting the whole drain (which would stop ALL federation for this scope).
+      // Any OTHER error is a genuine fault → rethrow (preserve the at-least-once
+      // halt-and-retry contract). Log each unknown table once to avoid per-pass spam.
+      if (e instanceof UnknownOutboxTableError) {
+        if (!loggedUnknownTables.has(e.tableName)) {
+          loggedUnknownTables.add(e.tableName);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[outbox-drain] skipping outbox rows for unmapped table '${e.tableName}' ` +
+              `(forward-compat: this build has no projection for it; a newer build will ` +
+              `federate them). Rows stay undrained.`,
+          );
+        }
+        continue;
+      }
+      throw e;
+    }
 
     // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
     // row + all later rows undrained for the next pass to re-attempt.

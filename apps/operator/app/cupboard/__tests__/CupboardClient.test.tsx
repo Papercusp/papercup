@@ -111,7 +111,7 @@ describe('Cupboard ListingCard — per-kind action (D-005)', () => {
   const cases: Array<{ kind: ListingKind | undefined; action: string; label: string }> = [
     { kind: 'harness', action: 'join', label: 'Join' },
     { kind: 'blueprint', action: 'fork', label: 'Fork' },
-    { kind: 'snapshot', action: 'fork', label: 'Fork' },
+    // ('snapshot → fork' removed — snapshot kind retired by retire-snapshots-instance-spec-2026-06-09 D-005.)
     { kind: 'plugin', action: 'install', label: 'Install' },
     { kind: 'pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (migration 006)
     { kind: undefined, action: 'join', label: 'Join' }, // absent kind ⇒ harness
@@ -155,46 +155,46 @@ describe('Cupboard ListingCard — per-kind action (D-005)', () => {
   });
 });
 
-describe('Cupboard ListingCard — Pot chip (per-Pot rollup, D-005)', () => {
-  it('renders a clickable Pot chip when potRef + onPot are provided', () => {
-    const onPot = vi.fn();
+describe('Cupboard ListingCard — Hive chip (per-Hive rollup, D-005)', () => {
+  it('renders a clickable Hive chip when hiveRef + onHive are provided', () => {
+    const onHive = vi.fn();
     render(
       <ListingCard
         listing={listing({ project_ref: 'papercupai/demo' })}
         onAction={() => {}}
         onDetail={() => {}}
-        potRef="papercupai/demo"
-        onPot={onPot}
+        hiveRef="papercupai/demo"
+        onHive={onHive}
       />,
     );
-    const chip = screen.getByTestId('cupboard-pot-chip');
-    expect(chip.getAttribute('data-pot')).toBe('papercupai/demo');
+    const chip = screen.getByTestId('cupboard-hive-chip');
+    expect(chip.getAttribute('data-hive')).toBe('papercupai/demo');
     chip.click();
-    expect(onPot).toHaveBeenCalledTimes(1);
+    expect(onHive).toHaveBeenCalledTimes(1);
   });
 
-  it('omits the Pot chip when onPot is not provided (rollup mode)', () => {
+  it('omits the Hive chip when onHive is not provided (rollup mode)', () => {
     render(
       <ListingCard
         listing={listing({ project_ref: 'papercupai/demo' })}
         onAction={() => {}}
         onDetail={() => {}}
-        potRef="papercupai/demo"
+        hiveRef="papercupai/demo"
       />,
     );
-    expect(screen.queryByTestId('cupboard-pot-chip')).toBeNull();
+    expect(screen.queryByTestId('cupboard-hive-chip')).toBeNull();
   });
 
-  it('omits the Pot chip when potRef is empty (ungroupable listing)', () => {
+  it('omits the Hive chip when hiveRef is empty (ungroupable listing)', () => {
     render(
       <ListingCard
         listing={listing()}
         onAction={() => {}}
         onDetail={() => {}}
-        potRef=""
-        onPot={() => {}}
+        hiveRef=""
+        onHive={() => {}}
       />,
     );
-    expect(screen.queryByTestId('cupboard-pot-chip')).toBeNull();
+    expect(screen.queryByTestId('cupboard-hive-chip')).toBeNull();
   });
 });

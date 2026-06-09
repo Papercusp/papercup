@@ -225,6 +225,19 @@ export default defineTool({
       detail: args.itemId,
     });
 
+    // Push the new item state to any live `useSyncQuery('planItems.byPlan')`
+    // subscriber (the Create-tab kanban). The `items` jsonb was already
+    // re-projected synchronously inside the lock above, so a re-pull is fresh.
+    // Fire-and-forget + fail-safe: a sync-bus hiccup never fails a status flip,
+    // and this is the SAME path the UI drag and an agent's plans:set-status both
+    // take, so the board moves live for either.
+    void (async () => {
+      const { notifySyncInvalidate } = await import('../../sync-sse');
+      await notifySyncInvalidate('planItems.byPlan', { planSlug: args.slug });
+    })().catch((e) =>
+      console.warn('[plans:set-status] sync invalidate failed:', (e as Error)?.message ?? e),
+    );
+
     // P-020 (planning-attention-importance): push a notification when an
     // item transitions INTO needs-human at importance >= high — the
     // urgent/high human-decision signal that has no push trigger today (the

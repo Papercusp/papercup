@@ -19,7 +19,7 @@ const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
 interface Listing {
   id: string;
-  listing_kind: 'harness' | 'blueprint' | 'snapshot' | 'plugin';
+  listing_kind: 'harness' | 'blueprint' | 'pack' | 'plugin';
   title: string;
   description: string;
   claim_status: 'unclaimed' | 'claimed';
@@ -45,9 +45,9 @@ const LISTINGS: Listing[] = [
     topic_hex: null, project_ref: 'papercupai/demo', listing_ref: 'web-app', last_activity_at: null, publisher_permission: 'admin',
   },
   {
-    id: 's1', listing_kind: 'snapshot', title: 'Snapshot v3', description: 'A captured snapshot',
+    id: 's1', listing_kind: 'pack', title: 'Demo pack', description: 'A runtime-less code-tool pack',
     claim_status: 'unclaimed', github_owner: 'papercupai', github_name: 'demo', github_url: 'https://github.com/papercupai/demo',
-    topic_hex: null, project_ref: 'papercupai/demo', listing_ref: 'snap-3', last_activity_at: null, publisher_permission: 'admin',
+    topic_hex: null, project_ref: 'papercupai/demo', listing_ref: 'pack-3', last_activity_at: null, publisher_permission: 'admin',
   },
   {
     id: 'p1', listing_kind: 'plugin', title: 'Slack notify', description: 'A distributable plugin',
@@ -61,7 +61,7 @@ async function stubCupboard(page: Page) {
     const url = new URL(route.request().url());
     const kind = url.searchParams.get('kind');
     const project = url.searchParams.get('project');
-    // Mirror the worker: `project` (per-Pot rollup, D-005) narrows by
+    // Mirror the worker: `project` (per-Hive rollup, D-005) narrows by
     // project_ref and supersedes `kind`; otherwise `kind` filters.
     let listings = LISTINGS;
     if (project) listings = listings.filter((l) => l.project_ref === project);
@@ -95,8 +95,8 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(4);
     // Action buttons reflect each kind's action.
     await expect(page.locator('[data-testid="cupboard-action"][data-action="join"]')).toHaveCount(1);    // harness
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(2);    // blueprint + snapshot
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(1); // plugin
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(1);    // blueprint
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(2); // plugin + pack
 
     // Filter to Blueprints → one blueprint card, action = fork.
     await page.getByTestId('cupboard-kind-tab-blueprint').click();
@@ -115,31 +115,31 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
     await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'join');
   });
 
-  test('per-Pot rollup groups a project\'s facets together (D-005)', async ({ page }) => {
+  test('per-Hive rollup groups a project\'s facets together (D-005)', async ({ page }) => {
     await stubCupboard(page);
     const mounted = await cupboardMounts(page);
     test.skip(!mounted, 'The /cupboard SPA did not mount (stale HMR :3055). Run against the prebuilt operator-vite bundle.');
 
-    // Each card carries a Pot chip; the `papercupai/demo` project has two
-    // facets (blueprint + snapshot). Click its chip to enter the rollup.
-    const potChip = page.locator('[data-testid="cupboard-pot-chip"][data-pot="papercupai/demo"]').first();
-    await expect(potChip).toBeVisible();
-    await potChip.click();
+    // Each card carries a Hive chip; the `papercupai/demo` project has two
+    // facets (blueprint + pack). Click its chip to enter the rollup.
+    const hiveChip = page.locator('[data-testid="cupboard-hive-chip"][data-hive="papercupai/demo"]').first();
+    await expect(hiveChip).toBeVisible();
+    await hiveChip.click();
 
-    // Rollup mode: header names the Pot; kind tabs are hidden.
-    await expect(page.getByTestId('cupboard-pot-header')).toBeVisible();
-    await expect(page.getByTestId('cupboard-pot-name')).toHaveText('papercupai/demo');
+    // Rollup mode: header names the Hive; kind tabs are hidden.
+    await expect(page.getByTestId('cupboard-hive-header')).toBeVisible();
+    await expect(page.getByTestId('cupboard-hive-name')).toHaveText('papercupai/demo');
     await expect(page.getByTestId('cupboard-kind-tab-all')).toHaveCount(0);
 
-    // Only the Pot's two facets are grouped; the other kinds are absent.
-    await expect(page.getByTestId('cupboard-pot-group-blueprint')).toBeVisible();
-    await expect(page.getByTestId('cupboard-pot-group-snapshot')).toBeVisible();
-    await expect(page.getByTestId('cupboard-pot-group-harness')).toHaveCount(0);
-    await expect(page.getByTestId('cupboard-pot-group-plugin')).toHaveCount(0);
+    // Only the Hive's two facets are grouped; the other kinds are absent.
+    await expect(page.getByTestId('cupboard-hive-group-blueprint')).toBeVisible();
+    await expect(page.getByTestId('cupboard-hive-group-pack')).toBeVisible();
+    await expect(page.getByTestId('cupboard-hive-group-harness')).toHaveCount(0);
+    await expect(page.getByTestId('cupboard-hive-group-plugin')).toHaveCount(0);
 
     // Back → flat browse, tabs return, header gone.
-    await page.getByTestId('cupboard-pot-back').click();
+    await page.getByTestId('cupboard-hive-back').click();
     await expect(page.getByTestId('cupboard-kind-tab-all')).toBeVisible();
-    await expect(page.getByTestId('cupboard-pot-header')).toHaveCount(0);
+    await expect(page.getByTestId('cupboard-hive-header')).toHaveCount(0);
   });
 });

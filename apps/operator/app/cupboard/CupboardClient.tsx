@@ -36,7 +36,7 @@ import {
   listingRepoSlug,
   listingContributorCount,
   listingTopLanguage,
-  listingPotRef,
+  listingHiveRef,
   groupListingsByKind,
   buildHarnessJoinLink,
   LISTING_ACTION_LABEL,
@@ -44,6 +44,7 @@ import {
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
 import { ToolsSection } from './ToolsSection';
+import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
 type KindFilter = 'all' | ListingKind;
@@ -124,6 +125,9 @@ const ghostButtonStyle: React.CSSProperties = {
 
 export default function CupboardClient() {
   const router = useRouter();
+  // The project-grouping concept renders via the lexicon (label resolves per the
+  // the-hive brand pack) — never hardcoded (unify-launch-mechanics D-003 / P-007).
+  const t = useLexicon();
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
   const [claimFilter, setClaimFilter] = useQueryState<ClaimFilter>(
     'claim',
@@ -138,11 +142,11 @@ export default function CupboardClient() {
     parseAsStringEnum<ViewFilter>(VIEW_FILTERS).withDefault('all'),
   );
   const toolsView = kindFilter === 'tools';
-  // Per-Pot rollup (D-005): when set, the storefront narrows to one project
-  // ("Pot") and presents its recipe/snapshot/plugin/harness facets grouped by
-  // kind. `null` = normal flat browse. A Pot is identified by `project_ref`
-  // (or the repo slug for legacy rows) — see `listingPotRef`.
-  const [pot, setPot] = useQueryState('pot', parseAsString);
+  // Per-Hive rollup (D-005): when set, the storefront narrows to one project
+  // ("Hive") and presents its recipe/snapshot/plugin/harness facets grouped by
+  // kind. `null` = normal flat browse. A Hive is identified by `project_ref`
+  // (or the repo slug for legacy rows) — see `listingHiveRef`.
+  const [hive, setHive] = useQueryState('hive', parseAsString);
   // Tools-view discovery filters (P-007) — URL-backed so agents can drive them.
   const [toolStatus, setToolStatus] = useQueryState(
     'toolStatus',
@@ -164,12 +168,12 @@ export default function CupboardClient() {
       const params = new URLSearchParams();
       if (q) params.set('q', q);
       if (claimFilter !== 'all') params.set('claim_status', claimFilter);
-      if (pot) {
-        // Pot rollup: fetch every kind for this project (the worker's
+      if (hive) {
+        // Hive rollup: fetch every kind for this project (the worker's
         // server-side `project` filter, forwarded by the proxy) so the rollup
         // can present all facets grouped. The kind tabs are hidden in this
         // mode, so `kind` is intentionally not forwarded.
-        params.set('project', pot);
+        params.set('project', hive);
       } else if (kindFilter !== 'all' && kindFilter !== 'tools') {
         params.set('kind', kindFilter);
       }
@@ -186,25 +190,25 @@ export default function CupboardClient() {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [q, claimFilter, kindFilter, pot]);
+  }, [q, claimFilter, kindFilter, hive]);
 
   useEffect(() => {
     // The Tools view has its own fetch (ToolsSection); skip the listings read.
-    if (toolsView && !pot) return;
+    if (toolsView && !hive) return;
     void fetchListings();
-  }, [fetchListings, toolsView, pot]);
+  }, [fetchListings, toolsView, hive]);
 
-  // Pot rollup: client-side safety filter (the server `project` filter only
+  // Hive rollup: client-side safety filter (the server `project` filter only
   // matches rows that actually carry `project_ref`; this keeps the grouping
-  // correct regardless) + group by kind. Empty unless `pot` is set.
-  const potListings = pot ? listings.filter((l) => listingPotRef(l) === pot) : [];
-  const potGroups = pot ? groupListingsByKind(potListings) : [];
+  // correct regardless) + group by kind. Empty unless `hive` is set.
+  const hiveListings = hive ? listings.filter((l) => listingHiveRef(l) === hive) : [];
+  const hiveGroups = hive ? groupListingsByKind(hiveListings) : [];
   const groupedListings = groupListingsByKind(listings);
   const facetCount = groupedListings.length;
-  const activeViewLabel = toolsView && !pot
+  const activeViewLabel = toolsView && !hive
     ? 'Tool discovery'
-    : pot
-      ? 'Pot rollup'
+    : hive
+      ? `${t('pot')} rollup`
       : kindFilter === 'all'
         ? 'All facets'
         : VIEW_FILTER_LABEL[kindFilter];
@@ -295,16 +299,16 @@ export default function CupboardClient() {
             </p>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>
-            <MetricTile label={toolsView && !pot ? 'Mode' : 'Listings'} value={toolsView && !pot ? 'Tools' : String(pot ? potListings.length : listings.length)} />
-            <MetricTile label="Facets" value={toolsView && !pot ? '1' : String(pot ? potGroups.length : facetCount)} />
+            <MetricTile label={toolsView && !hive ? 'Mode' : 'Listings'} value={toolsView && !hive ? 'Tools' : String(hive ? hiveListings.length : listings.length)} />
+            <MetricTile label="Facets" value={toolsView && !hive ? '1' : String(hive ? hiveGroups.length : facetCount)} />
             <MetricTile label="View" value={activeViewLabel} />
           </div>
         </div>
       </div>
 
-      {/* Kind filter tabs (+ the Tools discovery view) — hidden in Pot rollup
+      {/* Kind filter tabs (+ the Tools discovery view) — hidden in Hive rollup
           mode (the rollup shows all kinds, grouped) */}
-      {!pot && (
+      {!hive && (
         <div
           style={{
             display: 'flex',
@@ -334,10 +338,10 @@ export default function CupboardClient() {
         </div>
       )}
 
-      {/* Pot rollup header — "this Pot and its facets together" (D-005) */}
-      {pot && (
+      {/* Hive rollup header — "this Hive and its facets together" (D-005) */}
+      {hive && (
         <div
-          data-testid="cupboard-pot-header"
+          data-testid="cupboard-hive-header"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -351,8 +355,8 @@ export default function CupboardClient() {
           }}
         >
           <button
-            onClick={() => void setPot(null)}
-            data-testid="cupboard-pot-back"
+            onClick={() => void setHive(null)}
+            data-testid="cupboard-hive-back"
             style={ghostButtonStyle}
           >
             <ArrowLeft size={13} /> All listings
@@ -363,8 +367,8 @@ export default function CupboardClient() {
               fontFamily: FONTS.ui, fontSize: 13, color: COLORS.text,
             }}
           >
-            <Package size={14} /> Pot:{' '}
-            <strong style={{ fontFamily: FONTS.mono }} data-testid="cupboard-pot-name">{pot}</strong>
+            <Package size={14} /> {t('pot')}:{' '}
+            <strong style={{ fontFamily: FONTS.mono }} data-testid="cupboard-hive-name">{hive}</strong>
           </span>
         </div>
       )}
@@ -422,7 +426,7 @@ export default function CupboardClient() {
 
       {/* Tools discovery view (?kind=tools) — tool-level discovery with its own
           fetch/empty/error handling; the listing branches below are skipped. */}
-      {toolsView && !pot ? (
+      {toolsView && !hive ? (
         <ToolsSection
           q={q}
           onOpenListing={(id) => router.push(`/cupboard/${id}`)}
@@ -452,8 +456,8 @@ export default function CupboardClient() {
         </div>
       )}
 
-      {/* Results — empty state (kind-aware in flat mode, Pot-aware in rollup mode) */}
-      {!loading && !error && (pot ? potGroups.length === 0 : listings.length === 0) && (
+      {/* Results — empty state (kind-aware in flat mode, Hive-aware in rollup mode) */}
+      {!loading && !error && (hive ? hiveGroups.length === 0 : listings.length === 0) && (
         <div
           style={{
             color: COLORS.textMuted,
@@ -465,19 +469,19 @@ export default function CupboardClient() {
             background: 'var(--bg-2)',
           }}
         >
-          {pot
-            ? `No listings found for Pot "${pot}"${q ? ` matching "${q}"` : ''}.`
+          {hive
+            ? `No listings found for ${t('pot')} "${hive}"${q ? ` matching "${q}"` : ''}.`
             : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>
       )}
 
-      {pot ? (
-        /* Pot rollup — the Pot's facets grouped by kind (D-005) */
-        <div data-testid="cupboard-pot-rollup">
-          {potGroups.map((group) => (
+      {hive ? (
+        /* Hive rollup — the Hive's facets grouped by kind (D-005) */
+        <div data-testid="cupboard-hive-rollup">
+          {hiveGroups.map((group) => (
             <section
               key={group.kind}
-              data-testid={`cupboard-pot-group-${group.kind}`}
+              data-testid={`cupboard-hive-group-${group.kind}`}
               style={{ marginBottom: SIZES.lg }}
             >
               <h2
@@ -507,14 +511,14 @@ export default function CupboardClient() {
           ))}
         </div>
       ) : (
-        /* Flat browse — each card links to its Pot via the Pot chip */
+        /* Flat browse — each card links to its Hive via the Hive chip */
         <div style={gridStyle}>
           {listings.map((listing) => (
             <ListingCard
               key={listing.id}
               listing={listing}
-              potRef={listingPotRef(listing)}
-              onPot={() => void setPot(listingPotRef(listing))}
+              hiveRef={listingHiveRef(listing)}
+              onHive={() => void setHive(listingHiveRef(listing))}
               onAction={() => handleAction(listing)}
               onDetail={() => router.push(`/cupboard/${listing.id}`)}
             />
@@ -534,16 +538,16 @@ export function ListingCard({
   listing,
   onAction,
   onDetail,
-  potRef,
-  onPot,
+  hiveRef,
+  onHive,
 }: {
   listing: HarnessListing;
   onAction: () => void;
   onDetail: () => void;
-  /** The Pot (project) this listing belongs to. When set with `onPot`, renders
-   *  a clickable chip that enters the per-Pot rollup. Omit in rollup mode. */
-  potRef?: string;
-  onPot?: () => void;
+  /** The Hive (project) this listing belongs to. When set with `onHive`, renders
+   *  a clickable chip that enters the per-Hive rollup. Omit in rollup mode. */
+  hiveRef?: string;
+  onHive?: () => void;
 }) {
   const kind = listingKindOf(listing);
   const repoSlug = listingRepoSlug(listing);
@@ -635,14 +639,14 @@ export function ListingCard({
 
       <PublisherSignal permission={listing.publisher_permission} />
 
-      {/* Pot chip — enters the per-Pot rollup (D-005). Hidden when ungroupable
-          (no project identity) or in rollup mode (no onPot passed). */}
-      {potRef && onPot && (
+      {/* Hive chip — enters the per-Hive rollup (D-005). Hidden when ungroupable
+          (no project identity) or in rollup mode (no onHive passed). */}
+      {hiveRef && onHive && (
         <button
-          onClick={onPot}
-          data-testid="cupboard-pot-chip"
-          data-pot={potRef}
-          title={`View all of ${potRef}'s listings`}
+          onClick={onHive}
+          data-testid="cupboard-hive-chip"
+          data-hive={hiveRef}
+          title={`View all of ${hiveRef}'s listings`}
           style={{
             alignSelf: 'flex-start',
             display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -656,7 +660,7 @@ export function ListingCard({
             color: COLORS.textMuted,
           }}
         >
-          <Package size={10} /> {potRef}
+          <Package size={10} /> {hiveRef}
         </button>
       )}
 

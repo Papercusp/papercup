@@ -23,3 +23,9 @@ convention.
   `libs/papercusp/_retired/orchestrator-run-loop/`). Retired 2026-06-06
   (`archive-legacy-orchestrator-deadcode`). Restore:
   `orchestrator-run-loop/RESTORE.md`.
+- `snapshot-system/` — the whole harness-snapshot system (`@papercusp/export-state`
+  FS-tarball lib + `snapshots:*` tools + `/api/snapshots/*` routes + the Cupboard
+  `kind=snapshot` path + the worker R2 blob store + the snapshot UI). Retired
+  2026-06-09 (`retire-snapshots-instance-spec`); the reproducible clone re-homed onto
+  the lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`).
+  Restore: `snapshot-system/RESTORE.md` (git tag `snapshot-system-retired-2026-06-09`).

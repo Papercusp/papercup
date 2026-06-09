@@ -148,20 +148,20 @@ export function buildHarnessJoinLink(l: HarnessListing): string {
 }
 
 /**
- * The "Pot" a listing belongs to — the project-centric grouping key
- * (D-008 / project-centric-rethink D-014). A Pot is one project, and the
- * Cupboard is "the home for a Pot's distributable facets" (recipe/blueprint ·
+ * The "Hive" a listing belongs to — the project-centric grouping key
+ * (D-008 / project-centric-rethink D-014). A Hive is one project, and the
+ * Cupboard is "the home for a Hive's distributable facets" (recipe/blueprint ·
  * snapshot · plugin · harness). Prefer the explicit `project_ref` (the
  * papercupai project remote); fall back to the repo slug for legacy/standalone
  * listings that predate project-centric keying. '' ⇒ ungroupable (no project
- * identity) — callers should hide the per-Pot affordance.
+ * identity) — callers should hide the per-Hive affordance.
  */
-export function listingPotRef(l: HarnessListing): string {
+export function listingHiveRef(l: HarnessListing): string {
   if (l.project_ref) return l.project_ref;
   return listingRepoSlug(l);
 }
 
-/** One kind's slice of a Pot's listings, for the per-Pot rollup view. */
+/** One kind's slice of a Hive's listings, for the per-Hive rollup view. */
 export interface ListingKindGroup {
   kind: ListingKind;
   listings: HarnessListing[];
@@ -169,10 +169,10 @@ export interface ListingKindGroup {
 
 /**
  * Group listings by kind in canonical `LISTING_KINDS` order, dropping empty
- * kinds. Powers the per-Pot rollup view (distribution D-005 / revive-cupboard
- * D-005): presents a Pot's recipe / snapshot / plugin / harness facets
+ * kinds. Powers the per-Hive rollup view (distribution D-005 / revive-cupboard
+ * D-005): presents a Hive's recipe / snapshot / plugin / harness facets
  * together, each under its own kind heading. Pure — the caller pre-filters to
- * the Pot (`listingPotRef(l) === pot`) before grouping.
+ * the Hive (`listingHiveRef(l) === hive`) before grouping.
  */
 export function groupListingsByKind(listings: HarnessListing[]): ListingKindGroup[] {
   return LISTING_KINDS.map((kind) => ({

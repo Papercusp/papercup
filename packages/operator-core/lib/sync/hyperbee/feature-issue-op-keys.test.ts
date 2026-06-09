@@ -30,6 +30,7 @@ import {
   composeFeatureKey,
   composeIssueKey,
   outboxRowToLocalWriteOp,
+  UnknownOutboxTableError,
   type OutboxRow,
 } from './feature-issue-op-keys';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
@@ -366,16 +367,22 @@ describe('outboxRowToLocalWriteOp — engineer_issues (B5 work-queue federation)
 });
 
 describe('outboxRowToLocalWriteOp — error handling', () => {
-  it('throws on an unknown table_name', () => {
-    expect(() =>
+  it('throws UnknownOutboxTableError on an unknown table_name (the drain skips this class — forward-compat)', () => {
+    let caught: unknown;
+    try {
       outboxRowToLocalWriteOp({
         table_name: 'harness_unknown_consolidated',
         op: 'put',
         key: 'X-1',
         ts: 1,
         row: { harness_slug: 'demo', feature_id: 'X-1' },
-      }),
-    ).toThrow(/unknown.*table/i);
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(UnknownOutboxTableError);
+    expect((caught as UnknownOutboxTableError).tableName).toBe('harness_unknown_consolidated');
+    expect((caught as Error).message).toMatch(/unknown.*table/i);
   });
 
   it('a put accepts found_at/taken_at already given as epoch-ms numbers (idempotent)', () => {

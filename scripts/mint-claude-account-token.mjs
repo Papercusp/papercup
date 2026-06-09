@@ -28,8 +28,9 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
 const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
 const REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
-// The scopes a subscription claude-code session uses (mirrors ~/.claude/.credentials.json).
-const SCOPES = 'org:create_api_key user:profile user:inference user:sessions:claude_code';
+// The canonical claude-code setup-token scopes (NOT user:sessions:claude_code — that's the
+// interactive-login flow's scope; mixing it in makes claude.ai reject "Invalid request format").
+const SCOPES = 'org:create_api_key user:profile user:inference';
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const stateFile = (id) => join(tmpdir(), `claude-oauth-${id.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
@@ -43,16 +44,20 @@ function authorize(id) {
   const challenge = b64url(createHash('sha256').update(verifier).digest());
   const state = b64url(randomBytes(16));
   writeFileSync(stateFile(id), JSON.stringify({ verifier, state }), { mode: 0o600 });
-  const u = new URL(AUTHORIZE_URL);
-  u.searchParams.set('code', 'true'); // manual flow: the callback page DISPLAYS the code (no localhost listener)
-  u.searchParams.set('client_id', CLIENT_ID);
-  u.searchParams.set('response_type', 'code');
-  u.searchParams.set('redirect_uri', REDIRECT_URI);
-  u.searchParams.set('scope', SCOPES);
-  u.searchParams.set('code_challenge', challenge);
-  u.searchParams.set('code_challenge_method', 'S256');
-  u.searchParams.set('state', state);
-  console.log(u.toString());
+  // Build the query manually with encodeURIComponent so spaces in `scope` encode as %20 (NOT the
+  // `+` that URLSearchParams emits — claude.ai rejects `+` with "Invalid request format").
+  const params = [
+    ['code', 'true'], // manual flow: the callback page DISPLAYS the code (no localhost listener)
+    ['client_id', CLIENT_ID],
+    ['response_type', 'code'],
+    ['redirect_uri', REDIRECT_URI],
+    ['scope', SCOPES],
+    ['code_challenge', challenge],
+    ['code_challenge_method', 'S256'],
+    ['state', state],
+  ];
+  const qs = params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  console.log(`${AUTHORIZE_URL}?${qs}`);
 }
 
 async function exchange(id, rawCode, outPath) {
