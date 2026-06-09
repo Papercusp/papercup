@@ -24,7 +24,10 @@ import {
 } from '../../../memory/backend-selection';
 import { listUserMemories } from '../../../memory/list-user-memories';
 import { recordFeedback } from '../../../memory/feedback';
+import { readClaudeHygiene } from '../../../memory/claude-hygiene';
 import { notifySyncInvalidate } from '../../../sync-sse';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 /**
@@ -80,13 +83,74 @@ const backendInfo = defineTool({
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
     const backend = getMemoryBackend();
     const avail = await backend.available();
+    // Harness slugs for the add-memory scope select (P-010); claude-file
+    // hygiene pressure for the curation banner (P-012). Both best-effort.
+    let harnesses: string[] = [];
+    try {
+      const reg = await loadHarnessRegistry(activeWorkspaceId());
+      harnesses = reg.projects.map((p) => p.slug);
+    } catch { /* select just offers Personal */ }
+    const hygiene = await readClaudeHygiene().catch(() => null);
     return Response.json({
       backend: backend.name,
       currentBackend: currentMemoryBackendChoice(),
       availableBackends: registeredMemoryBackends(),
       reason: avail.ok ? null : avail.reason,
       userId: user.id,
+      harnesses,
+      hygiene,
     });
+  },
+});
+
+/**
+ * POST /api/user/memory — create a memory from the settings page (P-010).
+ * Writes through the neutral backend seam like the `memory:remember` MCP
+ * verb, but trusts the page's free-form kind (the taxonomy is backend-
+ * defined — D-001); records `create` feedback symmetrically with
+ * edit/delete so the extractor learns from hand-curated entries too.
+ */
+const create = defineTool({
+  method: 'POST',
+  path: '/user/memory',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUser(req.headers);
+    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
+    const body = (await req.json().catch(() => null)) as
+      | { text?: string; kind?: string; harness_slug?: string }
+      | null;
+    const text = body?.text?.trim();
+    if (!text) return Response.json({ error: 'text_required' }, { status: 400 });
+    const kind = body?.kind?.trim() || undefined;
+    if (kind && kind.length > 40) {
+      return Response.json({ error: 'kind_too_long' }, { status: 400 });
+    }
+    const harnessSlug = body?.harness_slug?.trim() || undefined;
+
+    const scopeKey = harnessSlug ? `harness:${harnessSlug}` : user.id;
+    const metadata: Record<string, unknown> = {
+      scope: harnessSlug ? 'harness' : 'user',
+      created_by: user.id,
+      display_name: user.display_name,
+      source: 'settings-page',
+    };
+    if (harnessSlug) metadata.harness_slug = harnessSlug;
+
+    // verbatim: the user typed exactly what they want stored — bypass the
+    // mem0 leg's LLM fact-extraction (which can extract NOTHING from short
+    // prose and silently store zero entries; observed live 2026-06-09).
+    const { ids } = await backend.remember(text, { scope: scopeKey, kind, metadata, verbatim: true });
+    for (const id of ids) {
+      await recordFeedback({
+        memId: id, userId: user.id, action: 'create', kind: kind ?? null, newText: text,
+      });
+    }
+    invalidateMemoryList();
+    return Response.json({ ok: true, ids });
   },
 });
 
@@ -211,4 +275,4 @@ const patch = defineTool({
   },
 });
 
-export default [list, del, patch, setBackend, backendInfo];
+export default [list, create, del, patch, setBackend, backendInfo];

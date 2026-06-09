@@ -23,9 +23,9 @@ describe('conflictCheckEnabled', () => {
     expect(_testing.conflictCheckEnabled()).toBe(true);
   });
 
-  it('off by default', () => {
+  it('ON by default (P-050: advisory hygiene never ships dark; =off is the kill switch)', () => {
     delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
-    expect(_testing.conflictCheckEnabled()).toBe(false);
+    expect(_testing.conflictCheckEnabled()).toBe(true);
   });
 });
 

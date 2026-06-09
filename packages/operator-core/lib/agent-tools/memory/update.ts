@@ -42,6 +42,13 @@ export default defineTool({
       };
     }
     await backend.update(args.id, { text: args.content });
+    // Learning signal (learning-system-audit P-050): an agent-driven correction
+    // feeds the extraction-adaptation loop (memory_feedback). Fire-and-forget.
+    void import('../../memory/feedback')
+      .then(({ recordFeedback }) =>
+        recordFeedback({ memId: args.id, userId: 'agent-tool', action: 'edit', newText: args.content }),
+      )
+      .catch(() => { /* best-effort */ });
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     void import('../../sync-sse')

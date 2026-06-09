@@ -29,6 +29,7 @@ import {
 } from './cadence';
 import { recordRoutedIdea } from './routed-ledger';
 import { refreshScoutOutcomes } from './routed-ledger';
+import { recordScoutTick, type ScoutTickRecord } from './tick-ledger';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
 
@@ -53,6 +54,14 @@ export interface ScoutCycleLike {
   /** Per-idea lens provenance the cycle derived (cb4b9's ScoutCycleResult.provenance). */
   provenance: ScoutRoutedRecord[];
   costUsd?: number;
+  /** Ideas the ideators produced (ScoutCycleResult.ideas) — tick observability (P-034). */
+  ideas?: readonly unknown[];
+  /** Every idea after the critics (ScoutCycleResult.scored). */
+  scored?: readonly unknown[];
+  /** keep + moonshot after the critics (ScoutCycleResult.survivors) — deduped = scored − survivors. */
+  survivors?: readonly unknown[];
+  /** Why the cycle ended (ScoutCycleResult.stop). */
+  stop?: string;
 }
 
 export interface ScoutFireGate {
@@ -74,6 +83,11 @@ export interface ScoutTickDeps {
   recordFire?: (outcome: 'attempt' | 'ok' | 'error') => Promise<void>;
   /** Optional: recompute + persist lens outcomes after the cycle (P-013). */
   refreshOutcomes?: () => Promise<void>;
+  /**
+   * Optional tick recorder (P-034 observability — `harness_shared.scout_ticks`).
+   * Best-effort: runScoutTick swallows its errors, so recording never fails a tick.
+   */
+  recordTick?: (rec: ScoutTickRecord) => Promise<void>;
   /** Mint a cycle id; default `scout-<nowMs>`. */
   newCycleId?: (nowMs: number) => string;
 }
@@ -96,18 +110,45 @@ export interface ScoutTickResult {
 /**
  * One autonomous Scout tick: cadence-gate → fire-gate → budgeted cycle → persist
  * provenance → refresh outcomes. Returns a compact result for the routine log.
- * Pure over the injected deps (no IO of its own).
+ * Pure over the injected deps (no IO of its own). Every exit also records one
+ * `scout_ticks` row via the optional `recordTick` dep (P-034): which self-gate
+ * withheld a no-op tick, or the generated/routed/deduped counts + spend of a
+ * full cycle — best-effort (a recording failure never fails the tick).
  */
 export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions = {}): Promise<ScoutTickResult> {
+  // P-034 observability: one durable row per tick, naming the self-gate that
+  // stopped a no-op or the counts of a full cycle. Best-effort by contract —
+  // a recording failure must never fail the tick itself.
+  const note = async (rec: ScoutTickRecord): Promise<void> => {
+    try {
+      await deps.recordTick?.(rec);
+    } catch {
+      /* best-effort — observability never fails the tick */
+    }
+  };
+
   const state = await deps.readCadenceState();
   const verdict = shouldRunScoutCycle(state, opts.cadence);
   if (!verdict.fire) {
+    await note({
+      status: 'gated',
+      gate: verdict.reason,
+      ...(verdict.retryAfterSec != null ? { detail: { retryAfterSec: verdict.retryAfterSec } } : {}),
+    });
     return { fired: false, reason: verdict.reason, retryAfterSec: verdict.retryAfterSec };
   }
 
   if (deps.fireGate) {
     const gate = await deps.fireGate();
     if (!gate.allow) {
+      await note({
+        status: 'gated',
+        gate: 'circuit',
+        detail: {
+          ...(gate.reason ? { reason: gate.reason } : {}),
+          ...(gate.retryAfterSec != null ? { retryAfterSec: gate.retryAfterSec } : {}),
+        },
+      });
       return { fired: false, reason: 'circuit', retryAfterSec: gate.retryAfterSec };
     }
   }
@@ -121,10 +162,21 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
     await deps.refreshOutcomes?.();
     await deps.recordFire?.('ok');
+    await note({
+      status: 'ran',
+      ideasGenerated: cycle.ideas?.length ?? 0,
+      ideasRouted: provenance.length,
+      ideasDeduped:
+        cycle.scored && cycle.survivors ? Math.max(0, cycle.scored.length - cycle.survivors.length) : 0,
+      ...(cycle.costUsd != null ? { budgetUsedUsd: cycle.costUsd } : {}),
+      detail: { cycleId, reason: verdict.reason, ...(cycle.stop ? { stop: cycle.stop } : {}) },
+    });
     return { fired: true, reason: verdict.reason, cycleId, routedCount: provenance.length };
   } catch (e) {
     await deps.recordFire?.('error');
-    return { fired: false, reason: 'cycle-error', cycleId, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    await note({ status: 'error', detail: { cycleId, error } });
+    return { fired: false, reason: 'cycle-error', cycleId, error };
   }
 }
 
@@ -198,6 +250,13 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     },
     async refreshOutcomes() {
       await refreshScoutOutcomes({ harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
+    },
+    async recordTick(rec) {
+      await recordScoutTick({
+        ...rec,
+        installSlug: harnessSlug,
+        ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+      });
     },
   };
 }

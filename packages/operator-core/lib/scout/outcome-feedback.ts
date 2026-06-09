@@ -329,6 +329,77 @@ export function lensWeightsFromReport(report: LensOutcomeReport): Record<Creativ
 }
 
 /**
+ * One persisted per-lens weight row (`harness_shared.scout_lens_weights`,
+ * migration 208) — the P-033 projection of a {@link LensOutcomeReport} the
+ * production cycle upserts after classifying routed-idea outcomes, and the
+ * ideator lens-selection path reads back. Pure data; the PG seam lives in
+ * routed-ledger.ts.
+ */
+export interface LensWeightRow {
+  lens: CreativeLens;
+  /** Routed ideas from this lens that won (terminal success in the Change Feed). */
+  wins: number;
+  /** Routed ideas decided either way (won + lost); pending excluded. */
+  decided: number;
+  /** The smoothed/floored/normalized sampling share from {@link computeLensOutcomes}. */
+  weight: number;
+}
+
+/** Project a report into the persistable per-lens weight rows (P-033 upsert math). */
+export function lensWeightRowsFromReport(report: LensOutcomeReport): LensWeightRow[] {
+  return CREATIVE_LENSES.map((l) => {
+    const s = report.byLens[l];
+    return { lens: l, wins: s.won, decided: s.won + s.lost, weight: s.weight };
+  });
+}
+
+/**
+ * The sampling floor (P-033): every lens keeps at least this fraction of its
+ * UNIFORM share when persisted weights are read back as sampling weights — so a
+ * cold/losing lens is never zeroed out of the ideator roster.
+ */
+export const SAMPLING_FLOOR_FRACTION = 0.15;
+
+/**
+ * Turn (possibly partial / stale / empty) persisted per-lens weights into
+ * sampling weights with a hard diversity floor. Pure.
+ *
+ *   - empty / missing / non-positive input → uniform (the cold-start fallback);
+ *   - otherwise the raw weights are normalized, then mixed with the floor:
+ *     `final = floor + (1 − N·floor) · normalized`, where
+ *     `floor = floorFraction / N` — exact: every lens's final share is ≥ floor,
+ *     the shares sum to 1, and the ordering of the raw weights is preserved.
+ *
+ * A lens absent from `raw` (e.g. a partial persisted set) contributes 0 raw
+ * weight and lands exactly on the floor — alive, never starved.
+ */
+export function samplingWeightsWithFloor(
+  raw: Partial<Record<CreativeLens, number>> | null | undefined,
+  opts: { floorFraction?: number } = {},
+): Record<CreativeLens, number> {
+  const lensCount = CREATIVE_LENSES.length;
+  const uniform = 1 / lensCount;
+  const requested = opts.floorFraction ?? SAMPLING_FLOOR_FRACTION;
+  const fraction =
+    Number.isFinite(requested) && requested >= 0 ? Math.min(requested, 1) : SAMPLING_FLOOR_FRACTION;
+  const floor = fraction * uniform;
+
+  const vals = CREATIVE_LENSES.map((l) => {
+    const v = raw?.[l];
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+  });
+  const sum = vals.reduce((a, b) => a + b, 0);
+  if (sum <= 0) {
+    return Object.fromEntries(CREATIVE_LENSES.map((l) => [l, uniform])) as Record<CreativeLens, number>;
+  }
+
+  const headroom = 1 - lensCount * floor; // ≥ 0 because fraction ≤ 1
+  return Object.fromEntries(
+    CREATIVE_LENSES.map((l, i) => [l, floor + headroom * (vals[i] / sum)]),
+  ) as Record<CreativeLens, number>;
+}
+
+/**
  * Top-level P-013 entry: read routed-idea provenance + the change feed and
  * compute the lens-outcome report. The caller stamps `generatedAt`.
  */

@@ -40,6 +40,14 @@ export default defineTool({
       };
     }
     await backend.forget(args.id);
+    // Learning signal (learning-system-audit P-050): an agent-driven forget is
+    // the contradiction/staleness signal the extraction-adaptation loop reads
+    // (memory_feedback → rebuildCustomInstructions). Fire-and-forget.
+    void import('../../memory/feedback')
+      .then(({ recordFeedback }) =>
+        recordFeedback({ memId: args.id, userId: 'agent-tool', action: 'delete' }),
+      )
+      .catch(() => { /* best-effort */ });
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     void import('../../sync-sse')

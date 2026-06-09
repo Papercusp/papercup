@@ -22,9 +22,11 @@ import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import {
   classifyIdeaOutcome,
   computeLensOutcomes,
-  lensWeightsFromReport,
+  lensWeightRowsFromReport,
+  samplingWeightsWithFloor,
   type LensOutcomeReport,
   type LensWeightOptions,
+  type LensWeightRow,
   type RoutedIdeaProvenance,
   type RoutedRail,
   type ScoutOutcomeReaders,
@@ -154,30 +156,91 @@ export async function getScoutLensOutcomes(
 }
 
 /**
- * The D-009 feedback hand-off for P-004: read live lens outcomes and return them
- * in the shape `runIdeators` consumes (`lensWeights` + `extraIdeatorBudget`), so
- * the next cycle's ideator fan-out favours the lenses that have been winning (the
- * diversity floor in the weights keeps every lens alive). cb4b9's cycle-deps
- * `ideate` calls this to close the meta-learning loop. With no outcome history the
- * weights are uniform, so this is safe before any idea has panned out.
+ * Upsert the persisted per-lens meta-learning weights (P-033 —
+ * `harness_shared.scout_lens_weights`, migration 208), one row per
+ * (workspace, lens), in a single batched INSERT … ON CONFLICT. Called by
+ * {@link refreshScoutOutcomes} after the ledger read path classifies outcomes;
+ * the ideator lens-selection path reads it back via {@link getScoutLensWeights}.
+ */
+export async function upsertScoutLensWeights(
+  rows: readonly LensWeightRow[],
+  opts: { workspaceId?: string } = {},
+): Promise<void> {
+  if (rows.length === 0) return;
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const lenses = rows.map((r) => r.lens as string);
+  const wins = rows.map((r) => r.wins);
+  const decided = rows.map((r) => r.decided);
+  const weights = rows.map((r) => r.weight);
+  await sql`
+    INSERT INTO harness_shared.scout_lens_weights (workspace_id, lens, wins, decided, weight, updated_at)
+    SELECT ${ws}, u.lens, u.wins, u.decided, u.weight, now()
+      FROM unnest(${lenses}::text[], ${wins}::int[], ${decided}::int[], ${weights}::numeric[])
+           AS u(lens, wins, decided, weight)
+    ON CONFLICT (workspace_id, lens) DO UPDATE SET
+      wins = EXCLUDED.wins,
+      decided = EXCLUDED.decided,
+      weight = EXCLUDED.weight,
+      updated_at = EXCLUDED.updated_at`;
+}
+
+/**
+ * Read the persisted per-lens weights for a workspace. Lenses with no row are
+ * simply absent (the sampling floor in {@link samplingWeightsWithFloor} keeps
+ * them alive); unknown lens ids in the table are ignored.
+ */
+export async function readScoutLensWeights(
+  opts: { workspaceId?: string } = {},
+): Promise<Partial<Record<CreativeLens, number>>> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ lens: string; weight: string | number }[]>`
+    SELECT lens, weight
+      FROM harness_shared.scout_lens_weights
+     WHERE workspace_id = ${ws}`;
+  const out: Partial<Record<CreativeLens, number>> = {};
+  for (const r of rows) {
+    const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
+    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
+      out[r.lens as CreativeLens] = w;
+    }
+  }
+  return out;
+}
+
+/**
+ * The D-009 feedback hand-off for P-004: read the PERSISTED per-lens weights
+ * (`scout_lens_weights`, written by {@link refreshScoutOutcomes} after each
+ * cycle's outcome classification) and return them in the shape `runIdeators`
+ * consumes (`lensWeights` + `extraIdeatorBudget`), so the next cycle's ideator
+ * fan-out favours the lenses that have been winning. The weights go through
+ * {@link samplingWeightsWithFloor}: every lens keeps ≥ {@link SAMPLING_FLOOR_FRACTION}
+ * of its uniform share (no lens is ever zeroed), and an empty/unavailable table
+ * degrades to uniform — safe before any idea has panned out, and a PG hiccup
+ * never kills a Scout cycle.
  */
 export async function getScoutLensWeights(
-  opts: ScoutLedgerOpts & { weights?: LensWeightOptions; extraIdeatorBudget?: number } = {},
+  opts: ScoutLedgerOpts & { floorFraction?: number; extraIdeatorBudget?: number } = {},
 ): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
+  let persisted: Partial<Record<CreativeLens, number>> = {};
   try {
-    const report = await getScoutLensOutcomes(opts);
-    return {
-      lensWeights: lensWeightsFromReport(report),
-      extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
-    };
+    persisted = await readScoutLensWeights(opts.workspaceId ? { workspaceId: opts.workspaceId } : {});
   } catch (err) {
-    // Defensive: the lens-weighting is an enhancement on the ideator fan-out, not
-    // a dependency — a PG hiccup must never kill a Scout cycle. Degrade to inert
-    // (extraIdeatorBudget 0 ⇒ weights ignored, the base one-per-lens roster runs).
+    // Best-effort read: fall through with no persisted signal → uniform weights.
     // eslint-disable-next-line no-console
-    console.warn('[scout/routed-ledger] getScoutLensWeights failed — running unweighted:', err instanceof Error ? err.message : err);
-    return { lensWeights: {} as Record<CreativeLens, number>, extraIdeatorBudget: 0 };
+    console.warn(
+      '[scout/routed-ledger] readScoutLensWeights failed — falling back to uniform:',
+      err instanceof Error ? err.message : err,
+    );
   }
+  return {
+    lensWeights: samplingWeightsWithFloor(
+      persisted,
+      opts.floorFraction != null ? { floorFraction: opts.floorFraction } : {},
+    ),
+    extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
+  };
 }
 
 /**
@@ -185,6 +248,10 @@ export async function getScoutLensWeights(
  * to the ledger in one batched UPDATE, returning the report. The cache makes the
  * Queen's "which lenses win" report a cheap read; the Change-Feed join remains the
  * source of truth (this just memoizes the last derivation).
+ *
+ * P-033: this is also where the lens meta-learning loop closes — the per-lens
+ * weights derived here are upserted into `scout_lens_weights` (best-effort) so
+ * the next cycle's ideator fan-out ({@link getScoutLensWeights}) reads them back.
  */
 export async function refreshScoutOutcomes(
   opts: ScoutLedgerOpts & { weights?: LensWeightOptions } = {},
@@ -212,5 +279,18 @@ export async function refreshScoutOutcomes(
   }
 
   const report = computeLensOutcomes(provenance, completions, opts.weights);
+
+  // P-033: persist the per-lens weights the ideators read back next cycle.
+  // Best-effort — a weight-upsert failure must not fail the outcome refresh.
+  try {
+    await upsertScoutLensWeights(lensWeightRowsFromReport(report), { workspaceId: ws });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[scout/routed-ledger] lens-weight upsert failed (non-fatal):',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   return { ...report, generatedAt: new Date().toISOString() };
 }

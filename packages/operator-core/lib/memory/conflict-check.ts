@@ -14,8 +14,10 @@
  * `llmJudge` callback. The remember.ts caller wires the real Anthropic
  * client; tests mock the callback.
  *
- * Feature-flagged via PAPERCUSP_MEMORY_CONFLICT_CHECK=on (default off).
- * Same ramp-up posture as dedup (P-016).
+ * Feature-flagged via PAPERCUSP_MEMORY_CONFLICT_CHECK — default ON
+ * (learning-system-audit-improvements-2026-06-09 P-050: the check is
+ * advisory hygiene, cheap per write, and never blocks the caller);
+ * set =off as the kill switch.
  */
 
 export interface NeighborMemory {
@@ -37,7 +39,7 @@ export type LlmJudge = (input: {
 }) => Promise<ConflictReport>;
 
 function conflictCheckEnabled(): boolean {
-  return process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK === 'on';
+  return process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK !== 'off';
 }
 
 /**

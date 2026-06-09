@@ -59,6 +59,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: orgSql }),
 }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../../memory/claude-hygiene', () => ({ readClaudeHygiene: vi.fn(async () => null) }));
 
 import { getSessionUser } from '../../auth';
 import { registerRoute } from '../define-route';
@@ -162,15 +164,17 @@ describe('user family ports — happy path / validation', () => {
   });
 });
 
+const fakeBackend = (entries: object[]) => ({
+  name: 'fake',
+  available: vi.fn(async () => ({ ok: true })),
+  list: vi.fn(async () => entries),
+  get: vi.fn(async () => null),
+  forget: vi.fn(async () => {}),
+  update: vi.fn(async () => {}),
+  remember: vi.fn(async () => ({ ids: ['new-1'] })),
+});
+
 describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', () => {
-  const fakeBackend = (entries: object[]) => ({
-    name: 'fake',
-    available: vi.fn(async () => ({ ok: true })),
-    list: vi.fn(async () => entries),
-    get: vi.fn(async () => null),
-    forget: vi.fn(async () => {}),
-    update: vi.fn(async () => {}),
-  });
   const ENTRIES = [
     // No canonical row → falls back to metadata.turn_at for ordering.
     { id: 'mem-older', text: 'older fact', kind: 'feedback', scope: 'u1', metadata: { turn_at: 5 } },
@@ -206,5 +210,54 @@ describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', 
     const j = await res.json();
     expect(j.results).toHaveLength(2);
     expect(j.results.every((r: { audit?: unknown }) => r.audit === undefined)).toBe(true);
+  });
+});
+
+describe('POST /user/memory — create (P-010) + invalidate (P-008)', () => {
+  it('writes through the backend seam, records create feedback, fires the list invalidate', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b', display_name: 'A' } as never);
+    const backend = fakeBackend([]);
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as never);
+    const res = await appWith(userMemory as AnyRoute[]).request(
+      '/user/memory',
+      post({ text: 'a new fact', kind: 'reference' }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).ids).toEqual(['new-1']);
+    expect(backend.remember).toHaveBeenCalledWith(
+      'a new fact',
+      expect.objectContaining({ scope: 'u1', kind: 'reference' }),
+    );
+    const { recordFeedback } = await import('../../memory/feedback');
+    expect(vi.mocked(recordFeedback)).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'create', memId: 'new-1', newText: 'a new fact' }),
+    );
+    const { notifySyncInvalidate } = await import('../../sync-sse');
+    expect(vi.mocked(notifySyncInvalidate)).toHaveBeenCalledWith('userMemory.list');
+  });
+
+  it('scopes to a harness pool when harness_slug is passed', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b', display_name: 'A' } as never);
+    const backend = fakeBackend([]);
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as never);
+    const res = await appWith(userMemory as AnyRoute[]).request(
+      '/user/memory',
+      post({ text: 'team convention', harness_slug: 'sheets' }),
+    );
+    expect(res.status).toBe(200);
+    expect(backend.remember).toHaveBeenCalledWith(
+      'team convention',
+      expect.objectContaining({ scope: 'harness:sheets' }),
+    );
+  });
+
+  it('400s without text', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend([]) as never);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory', post({ kind: 'reference' }));
+    expect(res.status).toBe(400);
   });
 });

@@ -44,10 +44,10 @@ describe('injectionEnabled', () => {
     expect(_testing.injectionEnabled()).toBe(true);
   });
 
-  it('default off when no env vars', () => {
+  it('default ON in production too (P-050: never ships dark; =off is the kill switch)', () => {
     delete process.env.PAPERCUSP_SU_MEMORY_INJECTION;
     (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
-    expect(_testing.injectionEnabled()).toBe(false);
+    expect(_testing.injectionEnabled()).toBe(true);
   });
 });
 

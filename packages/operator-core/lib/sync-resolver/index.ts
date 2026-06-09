@@ -1259,16 +1259,78 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // The yardstick for "are the agents actually getting better" (D-004). Reuses the
   // readApiaryInstanceSummaries reader. Returns a 1-element array { instances }. NOT
   // table-backed for PG-trigger invalidation — refreshes on mount + manual invalidate.
+  // Best-effort (learning-system-audit P-042): pre-baseline (gen-0 is owner-gated) a
+  // missing table / PG error degrades to instances:[] — the clean empty state, not a 500.
   'learning.apiary': {
     resolve: async () => {
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
       const { readApiaryInstanceSummaries } = await import('../iq-battery/benchmark-read');
-      const ws = activeWorkspaceId();
-      return await routeWithWorkspace(async (tx) => {
-        const instances = await readApiaryInstanceSummaries(tx, { workspaceId: ws, limit: 20 });
-        return [{ instances }];
-      });
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => {
+          const instances = await readApiaryInstanceSummaries(tx, { workspaceId: ws, limit: 20 });
+          return [{ instances }];
+        });
+      } catch (err) {
+        console.warn('[learning.apiary] benchmark read failed:', err instanceof Error ? err.message : err);
+        return [{ instances: [] }];
+      }
+    },
+  },
+
+  // ── learning.knowledge — the Learning tab's Knowledge view (operator-learning-tab P-008) ──
+  //
+  // Two best-effort halves (learning-system-audit P-042), each degrading
+  // independently so one broken substrate never blanks the other (mirrors the
+  // learning.improvements watchdog read):
+  //   - insights: count + recent-5 agent-insight runbooks (FS read over the MDX
+  //     library via readInsightsSnapshot — the SAME readInsightsDir the prelude
+  //     uses). A teaser only; the tab cross-links to ?tab=insights for the library.
+  //   - memory: total canonical memories + 30d feedback events (org PG). `null`
+  //     when PG is unreachable — the UI shows "unavailable", never a 500.
+  // Returns a 1-element array { insights, memory }. NOT table-backed — refreshes
+  // on mount + the panel's manual `invalidate()`.
+  'learning.knowledge': {
+    resolve: async () => {
+      const { readInsightsSnapshot, readMemoryHealth } = await import('../memory/knowledge-read');
+      let insights: Awaited<ReturnType<typeof readInsightsSnapshot>> = { count: 0, recent: [] };
+      try {
+        insights = await readInsightsSnapshot();
+      } catch (err) {
+        console.warn('[learning.knowledge] insights read failed:', err instanceof Error ? err.message : err);
+      }
+      let memory: Awaited<ReturnType<typeof readMemoryHealth>> | null = null;
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        memory = await readMemoryHealth(getOrgPg().sql);
+      } catch (err) {
+        console.warn('[learning.knowledge] memory health read failed:', err instanceof Error ? err.message : err);
+      }
+      return [{ insights, memory }];
+    },
+  },
+
+  // ── learning.scout — the Learning tab's Scout view (learning-system-audit P-042) ──
+  //
+  // Routed-ideas-by-rail over scout_routed_ideas (migration 194) + the newest
+  // scout_ticks row IF that table exists (P-034 lands it separately; the reader
+  // omits the tick half on undefined-table). Whole-read PG failure degrades to
+  // the empty snapshot — the tab renders "Scout has not routed ideas yet", never
+  // a 500. Returns a 1-element array (client reads data[0]). NOT table-backed —
+  // refreshes on mount + the panel's manual `invalidate()`.
+  'learning.scout': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readScoutSnapshot } = await import('./learning-scout-read');
+      try {
+        const ws = activeWorkspaceId();
+        return await routeWithWorkspace(async (tx) => [await readScoutSnapshot(tx, ws)]);
+      } catch (err) {
+        console.warn('[learning.scout] scout read failed:', err instanceof Error ? err.message : err);
+        return [{ totalRouted: 0, railCounts: [], lastTick: null }];
+      }
     },
   },
 

@@ -86,6 +86,16 @@ interface FeedbackStats {
   learning_instructions: string | null;
 }
 
+interface ClaudeHygiene {
+  activeCount: number;
+  overflowCount: number;
+  indexBytes: number;
+}
+
+/** Kind suggestions for the add form — the live taxonomy plus the MCP
+ * verb's enum; free text is also accepted (taxonomy is backend-defined). */
+const KIND_SUGGESTIONS = ['user', 'feedback', 'reference', 'project', 'identity', 'preference', 'correction'];
+
 export default function MemoryPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
@@ -102,7 +112,18 @@ export default function MemoryPage() {
   const [flaggedOnly, setFlaggedOnly] = useQueryState('flagged', parseAsBoolean.withDefault(false));
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
   const [expandedId, setExpandedId] = useQueryState('mem', parseAsString);
+  const [addOpen, setAddOpen] = useQueryState('add', parseAsBoolean.withDefault(false));
+  const [semantic, setSemantic] = useQueryState('sem', parseAsBoolean.withDefault(false));
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
+  const [harnesses, setHarnesses] = useState<string[]>([]);
+  const [hygiene, setHygiene] = useState<ClaudeHygiene | null>(null);
+  // Add-form drafts — mid-edit state, stays useState per the nuqs rules.
+  const [draftText, setDraftText] = useState('');
+  const [draftKind, setDraftKind] = useState('');
+  const [draftScope, setDraftScope] = useState('');
+  const [draftSaving, setDraftSaving] = useState(false);
+  // Semantic hits: memory id → relevance score (null = not in semantic mode).
+  const [semHits, setSemHits] = useState<Map<string, number> | null>(null);
 
   // Envelope meta (backend selection + availability + session user) is a
   // one-shot REST fetch; the ROWS ride the audited @papercusp/sync path
@@ -120,6 +141,8 @@ export default function MemoryPage() {
         setBackendName(j.backend ?? null);
         setAvailableBackends(Array.isArray(j.availableBackends) ? j.availableBackends : []);
         setCurrentBackend(j.currentBackend ?? j.backend ?? '');
+        setHarnesses(Array.isArray(j.harnesses) ? j.harnesses : []);
+        setHygiene(j.hygiene ?? null);
       }
       if (fs.ok) setStats(await fs.json());
     } finally {
@@ -296,17 +319,79 @@ export default function MemoryPage() {
   );
 
   const query = q.trim().toLowerCase();
-  const filtered = useMemo(() => rows.filter((r) => {
-    if (filter !== 'all' && (r.kind ?? 'untagged') !== filter) return false;
-    if (flaggedOnly && !isFlagged(r)) return false;
+
+  // Semantic mode (P-011): rank rows by the backend's hybrid search
+  // relevance instead of substring match. Debounced; rides the existing
+  // /api/user/search endpoint (same path as memory:search).
+  useEffect(() => {
+    if (!semantic || !query) { setSemHits(null); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const r = await fetch(`/api/user/search?q=${encodeURIComponent(query)}&limit=20`);
+          if (!r.ok || cancelled) return;
+          const j = await r.json();
+          const m = new Map<string, number>();
+          for (const h of j.memories ?? []) {
+            m.set(h.id as string, typeof h.score === 'number' ? h.score : 0);
+          }
+          if (!cancelled) setSemHits(m);
+        } catch { /* leave previous hits */ }
+      })();
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [semantic, query]);
+
+  const filtered = useMemo(() => {
+    let out = rows.filter((r) => {
+      if (filter !== 'all' && (r.kind ?? 'untagged') !== filter) return false;
+      if (flaggedOnly && !isFlagged(r)) return false;
+      return true;
+    });
     if (query) {
-      const desc = String((r.metadata as Record<string, unknown> | undefined)?.description ?? '');
-      const hay = `${r.id}\n${desc}\n${r.text}`.toLowerCase();
-      if (!hay.includes(query)) return false;
+      if (semantic && semHits) {
+        out = out
+          .filter((r) => semHits.has(r.id))
+          .sort((a, b) => (semHits.get(b.id) ?? 0) - (semHits.get(a.id) ?? 0));
+      } else {
+        out = out.filter((r) => {
+          const desc = String((r.metadata as Record<string, unknown> | undefined)?.description ?? '');
+          return `${r.id}\n${desc}\n${r.text}`.toLowerCase().includes(query);
+        });
+      }
     }
-    return true;
-  }), [rows, filter, flaggedOnly, query]);
+    return out;
+  }, [rows, filter, flaggedOnly, query, semantic, semHits]);
   const flaggedCount = useMemo(() => rows.filter(isFlagged).length, [rows]);
+
+  const onAddSave = useCallback(async () => {
+    const text = draftText.trim();
+    if (!text) return;
+    setDraftSaving(true);
+    try {
+      const r = await fetch('/api/user/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          kind: draftKind.trim() || undefined,
+          harness_slug: draftScope || undefined,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast.success('Memory saved');
+        setDraftText('');
+        void setAddOpen(false);
+        void refreshMeta();
+      } else {
+        toast.error(`Save failed: ${j.error ?? r.status}`);
+      }
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [draftText, draftKind, draftScope, setAddOpen, refreshMeta]);
 
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
@@ -317,6 +402,7 @@ export default function MemoryPage() {
     const brokenAnchors = row.audit?.broken_anchors ?? [];
     const description = typeof meta.description === 'string' ? meta.description : null;
     const rowDate = row.updated_at ?? row.created_at ?? null;
+    const semScore = semHits?.get(row.id);
     const expanded = expandedId === row.id;
     const collapsible = row.text.length > COLLAPSE_OVER;
     const bodyText = collapsible && !expanded
@@ -354,6 +440,11 @@ export default function MemoryPage() {
             {rowDate && (
               <span title={new Date(rowDate).toLocaleString()} style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                 {timeAgo(rowDate)}
+              </span>
+            )}
+            {semScore !== undefined && (
+              <span title="Semantic relevance to your search" style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', fontSize: 11, fontWeight: 600 }}>
+                {Math.round(semScore * 100)}% match
               </span>
             )}
             {meta.expires_at !== undefined && (
@@ -433,7 +524,7 @@ export default function MemoryPage() {
         </div>
       </li>
     );
-  }, [editingId, editingDraft, onSaveEdit, onDelete, expandedId, setExpandedId]);
+  }, [editingId, editingDraft, onSaveEdit, onDelete, expandedId, setExpandedId, semHits]);
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
 
@@ -501,18 +592,108 @@ export default function MemoryPage() {
         </div>
       )}
 
-      <input
-        type="search"
-        value={q}
-        onChange={(e) => void setQ(e.target.value || null)}
-        placeholder={`Search ${rows.length} memories…`}
-        aria-label="Search memories"
-        style={{
-          padding: '8px 12px', borderRadius: 6,
-          border: '1px solid var(--border)', background: 'var(--bg-2)',
-          color: 'var(--fg)', fontSize: 13, width: '100%',
-        }}
-      />
+      {hygiene && hygiene.overflowCount > 0 && (
+        <div style={{ padding: 12, border: '1px solid #f59e0b', borderRadius: 6, background: '#fffbeb', fontSize: 13 }}>
+          <strong>⚠ Memory index over capacity.</strong>{' '}
+          {hygiene.overflowCount} of {hygiene.activeCount + hygiene.overflowCount} Claude
+          file-memories are paged out of the always-loaded index
+          (<code>MEMORY-overflow.md</code>) — they&rsquo;re reachable on demand but not
+          auto-loaded each session. Curate to bring them back: merge near-duplicates,
+          retire obsolete facts, and tighten long descriptions in the topic files
+          (the index itself is regenerated, never hand-edited).
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          type="search"
+          value={q}
+          onChange={(e) => void setQ(e.target.value || null)}
+          placeholder={`Search ${rows.length} memories…`}
+          aria-label="Search memories"
+          style={{
+            padding: '8px 12px', borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--bg-2)',
+            color: 'var(--fg)', fontSize: 13, flex: 1,
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => void setSemantic(!semantic)}
+          title="Rank by semantic relevance (the same hybrid search agents use) instead of substring match."
+          style={{
+            padding: '8px 12px', borderRadius: 6,
+            border: semantic ? '2px solid var(--fg)' : '1px solid var(--border)',
+            background: semantic ? 'var(--bg-3)' : 'var(--bg-2)',
+            cursor: 'pointer', fontSize: 13, fontWeight: semantic ? 600 : 400,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          ✨ semantic
+        </button>
+        <button
+          type="button"
+          onClick={() => void setAddOpen(!addOpen)}
+          style={{
+            padding: '8px 12px', borderRadius: 6,
+            border: '1px solid var(--border)',
+            background: addOpen ? 'var(--bg-3)' : 'var(--bg-2)',
+            cursor: 'pointer', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+          }}
+        >
+          ＋ Add memory
+        </button>
+      </div>
+
+      {addOpen && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
+          <textarea
+            value={draftText}
+            onChange={(e) => setDraftText(e.target.value)}
+            rows={3}
+            placeholder="The fact to remember — durable, one fact per memory."
+            style={{ width: '100%', padding: 8, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--fg)' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              list="memory-kind-suggestions"
+              value={draftKind}
+              onChange={(e) => setDraftKind(e.target.value)}
+              placeholder="kind (optional)"
+              aria-label="Memory kind"
+              style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', color: 'var(--fg)', fontSize: 13, width: 160 }}
+            />
+            <datalist id="memory-kind-suggestions">
+              {[...new Set([...KIND_SUGGESTIONS, ...kindChips])].map((k) => <option key={k} value={k} />)}
+            </datalist>
+            <select
+              value={draftScope}
+              onChange={(e) => setDraftScope(e.target.value)}
+              aria-label="Memory scope"
+              style={{ padding: '6px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', color: 'var(--fg)', fontSize: 13 }}
+            >
+              <option value="">Personal</option>
+              {harnesses.map((h) => <option key={h} value={h}>harness: {h}</option>)}
+            </select>
+            <div style={{ flex: 1 }} />
+            <button
+              type="button"
+              onClick={() => void onAddSave()}
+              disabled={draftSaving || !draftText.trim()}
+              style={{ padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-3)', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: draftSaving || !draftText.trim() ? 0.5 : 1 }}
+            >
+              {draftSaving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void setAddOpen(false)}
+              style={{ padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 13 }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

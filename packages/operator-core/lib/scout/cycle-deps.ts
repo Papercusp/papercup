@@ -147,9 +147,10 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
     readCorpus: () => synthesizeStateOfHive(readers, opts.digestOptions),
     readNoveltyCorpus: noveltyCorpus,
     // D-009 closure (P-013 → P-004 meta-learning): bias the EXTRA ideators toward
-    // the lenses that have been winning (uniform at cold start; defensive — a PG
-    // hiccup degrades to the base one-per-lens roster). The diversity floor in the
-    // weights keeps every lens alive (D-004). BUT when the per-cycle budget clamps
+    // the lenses that have been winning, read from the PERSISTED scout_lens_weights
+    // table (written by refreshScoutOutcomes after each cycle — P-033). Uniform at
+    // cold start / on a PG hiccup, and the sampling floor (≥15% of uniform per lens)
+    // keeps every lens alive (D-004). BUT when the per-cycle budget clamps
     // the roster (D-010), the cap wins — skip the meta-learned extras so the cycle
     // never over-spends (extraIdeatorBudget would otherwise add ideators past the cap).
     ideate: async (digest, ctx) => {

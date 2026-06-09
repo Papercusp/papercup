@@ -13,10 +13,17 @@
  *   - **Gym**: the prompt-optimization pipeline — recent proposals (pending /
  *     accepted=champions / rejected) + each gym harness's autoloop status, read
  *     through `learning.gym` (the gym control-plane readers).
+ *   - **Benchmark**: the apiary / IQ-battery generation trend via `learning.apiary`
+ *     (owner-gated gen-0 baseline → clean empty state until it runs).
+ *   - **Scout**: routed-ideas-by-rail + last-tick gate outcome via `learning.scout`
+ *     (graceful empty until Scout routes its first idea / P-034 ticks land).
+ *   - **Knowledge**: agent-insight runbook count + recent-5 and a memory-health
+ *     strip via `learning.knowledge`, cross-linking to the full Insights tab
+ *     (`?tab=insights`) — a teaser, never a duplicate of that tab.
  *
  * Each sub-view carries a plain-language "how this works" step strip (nuqs `?how=`,
  * shown by default) so the tab explains itself; every stat and chip carries a hover
- * hint. The IQ-battery benchmark scoreboard and agent insights land as later sub-views.
+ * hint.
  *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
@@ -24,11 +31,13 @@
 import { useMemo } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
+import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
+import type { ScoutSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 
-const LVIEWS = ['improvements', 'gym', 'benchmark', 'knowledge'] as const;
+const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge'] as const;
 type LView = (typeof LVIEWS)[number];
 
 /** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
@@ -73,6 +82,20 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
     {
       title: 'Track',
       desc: 'Each run becomes one point on the trend. Rising scores (and falling time/tokens/escalations) are the proof the improvements and the gym are actually working.',
+    },
+  ],
+  scout: [
+    {
+      title: 'Watch',
+      desc: 'On a cadence, Scout sweeps the system through creative lenses, hunting for patterns and improvement ideas the day-to-day loop misses.',
+    },
+    {
+      title: 'Gate',
+      desc: 'Each tick passes gates (idle, friction, budget, circuit-breaker) before spending anything — most ticks correctly decide to do nothing.',
+    },
+    {
+      title: 'Route',
+      desc: 'Ideas that survive critique are routed into a rail — a plan draft, a gym experiment, or a work item — and their outcomes feed back into which lenses get used.',
     },
   ],
   knowledge: [
@@ -145,6 +168,16 @@ export default function LearningTab() {
           <button
             type="button"
             role="tab"
+            aria-selected={lview === 'scout'}
+            className={`pc-learning__subtab${lview === 'scout' ? ' is-active' : ''}`}
+            onClick={() => void setLview('scout')}
+          >
+            <Radar size={13} aria-hidden />
+            <span>Scout<em>idea radar</em></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
             aria-selected={lview === 'knowledge'}
             className={`pc-learning__subtab${lview === 'knowledge' ? ' is-active' : ''}`}
             onClick={() => void setLview('knowledge')}
@@ -182,6 +215,8 @@ export default function LearningTab() {
         <GymView />
       ) : view === 'benchmark' ? (
         <ApiaryView />
+      ) : view === 'scout' ? (
+        <ScoutView />
       ) : view === 'knowledge' ? (
         <KnowledgeView />
       ) : (
@@ -189,7 +224,7 @@ export default function LearningTab() {
       )}
 
       <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, and the benchmark checks whether it’s all working — captured knowledge is in Insights.
+        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights.
       </p>
 
       <LearningStyles />
@@ -597,8 +632,8 @@ function ApiaryView() {
       ) : instances.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Gauge size={20} aria-hidden />
-          <strong>No benchmark runs yet</strong>
-          <span>The IQ-battery runs a fixed task corpus against the fleet and judges every run, so each generation is comparable. Once a baseline run lands, the trend appears here — newest first, with the composite change vs the prior generation.</span>
+          <strong>No baseline runs yet</strong>
+          <span>The IQ-battery baseline is owner-gated — the gen-0 run spends real budget, so it only happens when the owner kicks it off. It runs a fixed task corpus against the fleet and judges every run, so each generation is comparable; once the baseline lands, the trend appears here — newest first, with the composite change vs the prior generation.</span>
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -635,12 +670,168 @@ function ApiaryView() {
   );
 }
 
-// ─── Knowledge view (agent insights cross-link) ──────────────────────────────
+// ─── Scout view (idea radar — routed ideas + tick health) ────────────────────
 
-function KnowledgeView() {
-  const [, setTab] = useQueryState('tab', parseAsString);
+/** Rail → human label + accent for the routed-ideas rows. */
+const RAIL_META: Record<string, { label: string; desc: string; color: string }> = {
+  plan: { label: 'plan', desc: 'Routed into plan drafts for review', color: '#7dd3fc' },
+  gym: { label: 'gym', desc: 'Routed into gym experiments', color: '#34d399' },
+  wi: { label: 'work item', desc: 'Routed into work items', color: '#a78bfa' },
+};
+
+function ScoutView() {
+  const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
+  const snap = sync.data?.[0];
+  const rails = snap?.railCounts ?? [];
+  const tick = snap?.lastTick ?? null;
+  const tickMs = tick?.at ? Date.parse(tick.at) : NaN;
+
   return (
     <section className="pc-learning__section">
+      <div className="pc-learning__flow" aria-label="Scout tick health">
+        <span
+          className="pc-learning__flowchip"
+          title={tick ? `The newest scout tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ''}` : 'Scout records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.'}
+        >
+          <Radar size={11} aria-hidden />
+          last tick <strong>{tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'none yet'}</strong>
+          {tick?.outcome ? <em>{tick.outcome}</em> : null}
+        </span>
+      </div>
+
+      <div className="pc-learning__scoreboard" aria-label="Scout summary">
+        <Stat label="routed ideas" value={snap ? snap.totalRouted : '—'} hint="Ideas Scout has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts." />
+        {rails.map((r) => (
+          <Stat key={r.rail} label={RAIL_META[r.rail]?.label ?? r.rail} value={r.count} tone="auto" hint={RAIL_META[r.rail]?.desc} />
+        ))}
+      </div>
+
+      <div className="pc-learning__sectionhead">
+        <h2>Routed ideas by rail</h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the scout feed"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {sync.loading && !snap ? (
+        <p className="pc-learning__empty">Loading the scout ledger…</p>
+      ) : sync.error ? (
+        <p className="pc-learning__empty">Scout feed unavailable: {sync.error.message}</p>
+      ) : rails.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Radar size={20} aria-hidden />
+          <strong>Scout has not routed ideas yet</strong>
+          <span>Scout sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, or a work item, and it appears here.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {rails.map((r) => {
+            const meta = RAIL_META[r.rail] ?? { label: r.rail, desc: 'Routed ideas', color: '#94a3b8' };
+            return (
+              <li key={r.rail} className="pc-learning__row" title={meta.desc}>
+                <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
+                <span className="pc-learning__id">{r.rail}</span>
+                <span className="pc-learning__title">{meta.desc}</span>
+                <span className="pc-learning__meta">
+                  <span className="pc-learning__score" title="Ideas routed into this rail">{r.count}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ─── Knowledge view (agent-insight runbooks + memory health, P-008) ──────────
+
+function dateShort(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function KnowledgeView() {
+  const sync = useSyncQuery<{ insights: InsightsSnapshot; memory: MemoryHealth | null }>({ queryName: 'learning.knowledge', args: {}, staleTime: 30_000 });
+  const snap = sync.data?.[0];
+  const insights = snap?.insights;
+  const memory = snap?.memory ?? null;
+  const [, setTab] = useQueryState('tab', parseAsString);
+
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__scoreboard" aria-label="Knowledge summary">
+        <Stat label="runbooks" value={insights ? insights.count : '—'} tone="good" hint="Active agent-insight runbooks in the library (retired/superseded excluded)." />
+        <Stat label="memories" value={memory ? memory.totalMemories : '—'} hint="Canonical memories in the shared store — the facts agents recall before grepping." />
+        <Stat label="feedback 30d" value={memory ? memory.feedback30d : '—'} tone="human" hint="Memory feedback events (edits, forgets, corrections) in the last 30 days — the loop’s pulse. Zero against a populated store means the feedback loop isn’t wired on yet." />
+      </div>
+
+      <div className="pc-learning__sectionhead">
+        <h2>Recent runbooks</h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the knowledge feed"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {sync.loading && !snap ? (
+        <p className="pc-learning__empty">Loading the runbook library…</p>
+      ) : sync.error ? (
+        <p className="pc-learning__empty">Knowledge feed unavailable: {sync.error.message}</p>
+      ) : !insights || insights.recent.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <BookOpen size={20} aria-hidden />
+          <strong>No runbooks yet</strong>
+          <span>When an agent works through a confusing failure or a subtle invariant, it writes a short PR-reviewed runbook so the next agent doesn’t lose the same hour. They’ll appear here as they land.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {insights.recent.map((ins) => (
+            <li key={ins.slug} className="pc-learning__row" title={ins.description || ins.title}>
+              <span className="pc-learning__sev" style={{ background: '#7dd3fc' }} aria-hidden />
+              <span className="pc-learning__id">{ins.slug}</span>
+              <span className="pc-learning__title">{ins.title}</span>
+              <span className="pc-learning__meta">
+                {ins.tags[0] ? <span className="pc-learning__chip pc-learning__chip--idea">{ins.tags[0]}</span> : null}
+                <span className="pc-learning__age" title="Last touched">{dateShort(ins.modifiedAt)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="pc-learning__flow" aria-label="Memory health">
+        <span
+          className="pc-learning__flowchip"
+          title="The shared canonical memory store agents recall from at session start."
+        >
+          <Brain size={11} aria-hidden />
+          {memory ? <><strong>{memory.totalMemories}</strong> memories</> : <>memory health unavailable</>}
+        </span>
+        {memory ? (
+          <span
+            className="pc-learning__flowchip"
+            title="Feedback events (edits, forgets, corrections) against memories in the trailing 30 days — zero means the store is written but never corrected."
+          >
+            <Activity size={11} aria-hidden />
+            <strong>{memory.feedback30d}</strong> feedback events
+            <em>30d</em>
+          </span>
+        ) : null}
+      </div>
+
       <div className="pc-learning__empty pc-learning__empty--card pc-learning__knowledge">
         <BookOpen size={22} aria-hidden />
         <strong>Agent insights — the fleet’s runbooks</strong>

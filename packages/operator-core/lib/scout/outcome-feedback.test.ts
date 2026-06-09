@@ -15,6 +15,9 @@ import {
   allocateIdeators,
   gatherLensOutcomes,
   lensWeightsFromReport,
+  lensWeightRowsFromReport,
+  samplingWeightsWithFloor,
+  SAMPLING_FLOOR_FRACTION,
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
@@ -212,6 +215,92 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       };
       const r = await gatherLensOutcomes(readers);
       expect(r.total).toBe(0);
+    });
+  });
+
+  describe('lensWeightRowsFromReport (P-033 upsert math)', () => {
+    it('projects every lens into a {wins, decided, weight} row matching the report stats', () => {
+      const provenance = [
+        prov({ lens: 'analogical', routedRef: 'gym:a', rail: 'gym' }), // won
+        prov({ lens: 'analogical', routedRef: 'gym:b', rail: 'gym', ideaId: 'a2' }), // lost
+        prov({ lens: 'reframing', routedRef: 'plan:foo', rail: 'plan' }), // won
+        prov({ lens: 'reframing', routedRef: 'plan:nope', rail: 'plan', ideaId: 'r2' }), // pending
+      ];
+      const completions = [
+        entry({ ref: 'gym:a', kind: 'proposal', detail: 'Status: accepted' }),
+        entry({ ref: 'gym:b', kind: 'proposal', detail: 'Status: rejected' }),
+        entry({ ref: 'plan:foo', kind: 'plan-run' }),
+      ];
+      const report = computeLensOutcomes(provenance, completions);
+      const rows = lensWeightRowsFromReport(report);
+
+      expect(rows.map((r) => r.lens).sort()).toEqual([...CREATIVE_LENSES].sort());
+      const byLens = Object.fromEntries(rows.map((r) => [r.lens, r]));
+      // analogical: 1 won + 1 lost → wins 1, decided 2 (pending excluded).
+      expect(byLens.analogical).toMatchObject({ wins: 1, decided: 2 });
+      // reframing: 1 won + 1 pending → wins 1, decided 1.
+      expect(byLens.reframing).toMatchObject({ wins: 1, decided: 1 });
+      // untouched lenses: 0/0, but still present (the full roster persists).
+      expect(byLens['first-principles']).toMatchObject({ wins: 0, decided: 0 });
+      expect(byLens['constraint-removal']).toMatchObject({ wins: 0, decided: 0 });
+      // The persisted weight IS the report's normalized sampling share.
+      for (const r of rows) expect(r.weight).toBe(report.byLens[r.lens].weight);
+      expect(rows.reduce((a, r) => a + r.weight, 0)).toBeCloseTo(1, 10);
+    });
+  });
+
+  describe('samplingWeightsWithFloor (P-033 read-back)', () => {
+    const uniform = 1 / CREATIVE_LENSES.length;
+    const floor = SAMPLING_FLOOR_FRACTION * uniform;
+
+    it('falls back to uniform on empty / missing / all-zero input', () => {
+      for (const raw of [undefined, null, {}, { analogical: 0 }, { analogical: -1, reframing: NaN }] as const) {
+        const w = samplingWeightsWithFloor(raw as never);
+        for (const l of CREATIVE_LENSES) expect(w[l]).toBeCloseTo(uniform, 10);
+      }
+    });
+
+    it('respects relative weights (winning lens gets the larger share) and sums to 1', () => {
+      const w = samplingWeightsWithFloor({
+        analogical: 0.6,
+        'first-principles': 0.2,
+        reframing: 0.1,
+        'constraint-removal': 0.1,
+      });
+      expect(w.analogical).toBeGreaterThan(w['first-principles']);
+      expect(w['first-principles']).toBeGreaterThan(w.reframing);
+      expect(w.reframing).toBeCloseTo(w['constraint-removal'], 10);
+      expect(CREATIVE_LENSES.reduce((a, l) => a + w[l], 0)).toBeCloseTo(1, 10);
+    });
+
+    it('clamps every lens at ≥ 15% of uniform — a zero/missing lens is never starved', () => {
+      // One dominant lens, the rest absent from the persisted set.
+      const w = samplingWeightsWithFloor({ analogical: 5 });
+      for (const l of CREATIVE_LENSES) expect(w[l]).toBeGreaterThanOrEqual(floor - 1e-12);
+      // The absent lenses sit exactly on the floor; the dominant lens takes the rest.
+      expect(w.reframing).toBeCloseTo(floor, 10);
+      expect(w.analogical).toBeCloseTo(1 - 3 * floor, 10);
+      expect(CREATIVE_LENSES.reduce((a, l) => a + w[l], 0)).toBeCloseTo(1, 10);
+    });
+
+    it('preserves the raw ordering after flooring', () => {
+      const w = samplingWeightsWithFloor({
+        analogical: 0.01,
+        'first-principles': 0.02,
+        reframing: 0.9,
+        'constraint-removal': 0.07,
+      });
+      expect(w.reframing).toBeGreaterThan(w['constraint-removal']);
+      expect(w['constraint-removal']).toBeGreaterThan(w['first-principles']);
+      expect(w['first-principles']).toBeGreaterThan(w.analogical);
+    });
+
+    it('honors a custom floorFraction (0 → pure normalization)', () => {
+      const w = samplingWeightsWithFloor({ analogical: 3, reframing: 1 }, { floorFraction: 0 });
+      expect(w.analogical).toBeCloseTo(0.75, 10);
+      expect(w.reframing).toBeCloseTo(0.25, 10);
+      expect(w['first-principles']).toBe(0);
+      expect(w['constraint-removal']).toBe(0);
     });
   });
 });

@@ -14,9 +14,11 @@
  *        and 3 (insights). Layer 2 (coord) is wired separately on
  *        per-turn delta poll, not session start.
  *
- * Feature-flagged: PAPERCUSP_SU_MEMORY_INJECTION=on (default off) so a
- * broken inject doesn't take down all papercusp-su shells at once
- * (D-004 → flag gates the whole call).
+ * Feature-flagged: PAPERCUSP_SU_MEMORY_INJECTION — default ON everywhere
+ * (learning-system-audit-improvements-2026-06-09 P-050: finished work never
+ * ships dark; the injection path is best-effort/never-throws, which is the
+ * real D-004 protection). Set =off as the kill switch if a broken inject
+ * ever threatens the papercusp-su shells.
  *
  * Best-effort: any failure returns null and the caller's MCP
  * initialize response is unaffected. Never throws.
@@ -32,12 +34,9 @@ import {
   renderInsightsPrelude,
 } from './insights-index';
 
-/** Default true in dev (NODE_ENV=development), default false in prod. */
+/** Default ON (P-050); PAPERCUSP_SU_MEMORY_INJECTION=off is the kill switch. */
 function injectionEnabled(): boolean {
-  const v = process.env.PAPERCUSP_SU_MEMORY_INJECTION;
-  if (v === 'on') return true;
-  if (v === 'off') return false;
-  return process.env.NODE_ENV === 'development';
+  return process.env.PAPERCUSP_SU_MEMORY_INJECTION !== 'off';
 }
 
 export interface PreludeInput {

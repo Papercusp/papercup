@@ -15,7 +15,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 export interface FeedbackInput {
   memId: string;
   userId: string;
-  action: 'edit' | 'delete' | 'forget_all';
+  action: 'create' | 'edit' | 'delete' | 'forget_all';
   kind?: string | null;
   priorText?: string | null;
   newText?: string | null;
