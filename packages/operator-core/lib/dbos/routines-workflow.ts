@@ -63,7 +63,29 @@ async function routineFireImpl(
             console.warn(`[routines] no handler registered for system:${action} (routine ${routineId}) — skipping`);
             return;
           }
-          await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
+          // Record a throw in `routines.metadata.last_error` so a silently-wedged
+          // system action is visible (the improvement-watchdog's `routine-failure`
+          // collector reads exactly this key — before, only git-sync wrote it).
+          // Tagged `last_error_source:'runner'` so the success-path clear never
+          // wipes an error an action manages ITSELF (git-sync records its own).
+          const { sql } = getOrgPg();
+          try {
+            await fn({ installSlug, workspaceId, triggerConfig, payloadTemplate });
+            await sql`
+              UPDATE harness_shared.routines
+                 SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
+                     updated_at = now()
+               WHERE id = ${routineId} AND metadata->>'last_error_source' = 'runner'`.catch(() => {});
+          } catch (e) {
+            const msg = (e instanceof Error ? e.message : String(e)).slice(0, 600);
+            await sql`
+              UPDATE harness_shared.routines
+                 SET metadata = COALESCE(metadata, '{}'::jsonb)
+                       || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
+                     updated_at = now()
+               WHERE id = ${routineId}`.catch(() => {});
+            throw e;
+          }
         },
         { name: `system:${action}`, retriesAllowed: true, maxAttempts: 2, intervalSeconds: 15 },
       );

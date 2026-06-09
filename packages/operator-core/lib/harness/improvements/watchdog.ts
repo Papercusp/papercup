@@ -37,7 +37,9 @@ import type { ImprovementSeverity } from './policy';
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
   // P-010 blind-source collectors (watchdog-robustness):
-  | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation';
+  | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation'
+  // a role fire-path in error-backoff (autoloop_state.consecutive_errors):
+  | 'fire-circuit-open';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -216,6 +218,51 @@ export interface CollectOptions {
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 /**
+ * Pure: normalize a `test_runs.file_path` to its REPO-RELATIVE form so one broken
+ * test has ONE identity. Runs from the green-checkpoint (or any sibling
+ * `papercupai-workspace/<tree>/`) checkout record prefixed paths — the same test
+ * the canonical tree records as `packages/...` — which used to file DUPLICATE
+ * improvements (EI-36/EI-143, EI-157/EI-163). Returns null for paths to drop
+ * entirely: synthetic fixture tests (`__synthetic__`) are loop probes, not bugs.
+ */
+export function normalizeRedTestPath(filePath: string): string | null {
+  if (filePath.includes('__synthetic__')) return null;
+  return filePath.replace(/^.*papercupai-workspace\/[^/]+\//, '');
+}
+
+interface RedTestRow { file_path: string; framework: string; fails: number; sample: string | null }
+
+/**
+ * Pure: red-test aggregate rows → signals, keyed by the NORMALIZED repo-relative
+ * path. Rows whose paths normalize to the same test (canonical + checkpoint tree)
+ * merge into one signal (fail counts summed) instead of two captures.
+ */
+export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number): WatchdogSignal[] {
+  const byPath = new Map<string, RedTestRow>();
+  for (const r of rows) {
+    const path = normalizeRedTestPath(r.file_path);
+    if (path == null) continue;
+    const prev = byPath.get(path);
+    if (prev) {
+      prev.fails += r.fails;
+      if (!prev.sample) prev.sample = r.sample;
+    } else {
+      byPath.set(path, { ...r, file_path: path });
+    }
+  }
+  return [...byPath.values()].map((r) => ({
+    source: 'red-test' as const,
+    key: r.file_path,
+    title: `Test failing repeatedly: ${r.file_path}`,
+    body:
+      `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
+      `${windowHours}h and its latest run is still red.\n\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
+    severity: 'major' as const,
+    paths: [r.file_path],
+  }));
+}
+
+/**
  * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
  * in the window is still a fail — i.e. repeatedly red and currently red, not a
  * one-off dev iteration. Carries the file path (→ the protected-path gate).
@@ -223,7 +270,7 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
 export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
   const windowHours = opts.redTestWindowHours ?? 6;
   const minFails = opts.redTestMinFails ?? 3;
-  const rows = await sql<{ file_path: string; framework: string; fails: number; sample: string | null }[]>`
+  const rows = await sql<RedTestRow[]>`
     WITH recent AS (
       SELECT file_path, framework, status, output_tail,
              row_number() OVER (PARTITION BY file_path ORDER BY started_at DESC) AS rn
@@ -244,16 +291,7 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
     HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= ${minFails}
        AND max(CASE WHEN rn = 1 THEN status END) IN ('fail', 'error')
      LIMIT 20`;
-  return rows.map((r) => ({
-    source: 'red-test' as const,
-    key: r.file_path,
-    title: `Test failing repeatedly: ${r.file_path}`,
-    body:
-      `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
-      `${windowHours}h and its latest run is still red.\n\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
-    severity: 'major' as const,
-    paths: [r.file_path],
-  }));
+  return redTestSignalsFromRows(rows, windowHours);
 }
 
 /** smoke-fail: a harness smoke test currently failing (the plans:attention signal). */
@@ -664,6 +702,48 @@ export async function collectEscalationSignals(sql: Sql, workspaceId: string): P
   return escalationSignalsFromRows(rows);
 }
 
+interface CircuitOpenRow { harness_slug: string; role: string; consecutive_errors: number; last_status: string | null }
+/** Pure: error-backoff fire-state rows → signals. */
+export function circuitOpenSignalsFromRows(rows: CircuitOpenRow[]): WatchdogSignal[] {
+  return rows.map((r) => ({
+    source: 'fire-circuit-open' as const,
+    key: `circuit:${r.harness_slug}:${r.role}`,
+    title: `Role fire-path for ${r.harness_slug}/${r.role} is stuck in error-backoff`,
+    body:
+      `Watchdog signal (fire-circuit-open): the autoloop fire path for ${r.harness_slug}/${r.role} has failed ` +
+      `${r.consecutive_errors} consecutive times — the fire gate is backing it off, so this role is effectively ` +
+      `not running on its cadence until the underlying error is fixed (or autoloop:control reset-errors).` +
+      `\n\nLast status: ${(r.last_status ?? '').slice(0, 400) || '(none recorded)'}`,
+    severity: 'major' as const,
+    kind: 'bug' as const,
+  }));
+}
+/**
+ * fire-circuit-open: a role fire-path (a role-target routine or autoloop trigger)
+ * whose `autoloop_state.consecutive_errors` shows it repeatedly failing — the
+ * fire gate (autoloop P-009) backs it off, so the role silently stops running on
+ * its cadence. The `recordFire` error path was otherwise invisible to the
+ * watchdog: `routine-failure` only sees system-action `metadata.last_error`.
+ * Recency-gated so a long-dead historical row doesn't fire forever.
+ */
+export async function collectCircuitOpenSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: { minConsecutiveErrors?: number; recentHours?: number } = {},
+): Promise<WatchdogSignal[]> {
+  const minErrors = opts.minConsecutiveErrors ?? 5;
+  const recentHours = opts.recentHours ?? 24;
+  const rows = await sql<CircuitOpenRow[]>`
+    SELECT harness_slug, role, consecutive_errors::int, last_status
+      FROM harness_shared.autoloop_state
+     WHERE workspace_id = ${workspaceId}
+       AND consecutive_errors >= ${minErrors}
+       AND last_fired_at > now() - make_interval(hours => ${recentHours})
+     ORDER BY consecutive_errors DESC
+     LIMIT 10`;
+  return circuitOpenSignalsFromRows(rows);
+}
+
 /** (P-011) Collector definition: a pluggable source of watchdog signals for a target. */
 export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
@@ -713,6 +793,7 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql) },
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
+    { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
   ];
 }
 

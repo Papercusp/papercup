@@ -11,10 +11,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all' };
+const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true };
 vi.mock('nuqs', () => ({
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+  parseAsBoolean: { withDefault: () => ({}) },
 }));
 
 const improvementsDigest = {
@@ -64,6 +65,7 @@ import LearningTab from './LearningTab';
 beforeEach(() => {
   nuqsState.lview = 'improvements';
   nuqsState.lane = 'all';
+  nuqsState.how = true;
   improvementsResult = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   gymResult = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 });
@@ -87,10 +89,21 @@ describe('LearningTab — Improvements view (default)', () => {
 
   it('shows the lane filter tabs and both sub-view tabs', () => {
     render(<LearningTab />);
-    expect(screen.getByRole('tab', { name: 'Auto-eligible' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Needs a human' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Auto-fixable' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Needs review' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
+  });
+
+  it('renders the how-this-works strip for the improvements pipeline, hidden when toggled off', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('Notice')).toBeTruthy();
+    expect(screen.getByText('Triage')).toBeTruthy();
+    expect(screen.getByText('Resolve')).toBeTruthy();
+    cleanup();
+    nuqsState.how = false;
+    render(<LearningTab />);
+    expect(screen.queryByText('Notice')).toBeNull();
   });
 
   it('renders the empty state when no improvements match the lane', () => {
@@ -110,11 +123,18 @@ describe('LearningTab — Gym view', () => {
 
   it('renders the gym scoreboard and recent proposals', () => {
     render(<LearningTab />);
-    expect(screen.getByText('Agent-prompt optimization (gym)')).toBeTruthy();
+    expect(screen.getByText('Prompt experiments')).toBeTruthy();
     expect(screen.getByText('tighten the worker acceptance check')).toBeTruthy();
     expect(screen.getByText('more explicit chunk sizing')).toBeTruthy();
     // the champion (accepted) proposal's role
     expect(screen.getByText('worker')).toBeTruthy();
+  });
+
+  it('renders the gym how-this-works strip (experiment → score → promote)', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('Experiment')).toBeTruthy();
+    expect(screen.getByText('Score')).toBeTruthy();
+    expect(screen.getByText('Promote')).toBeTruthy();
   });
 
   it('renders the gym empty state when no proposals exist', () => {

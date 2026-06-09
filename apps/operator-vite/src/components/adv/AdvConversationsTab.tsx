@@ -42,6 +42,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
+import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import '@/app/admin/coordination/coordination.css';
@@ -53,6 +54,7 @@ async function coord<T = Record<string, unknown>>(verb: string, body: Record<str
     body: JSON.stringify(body),
     cache: 'no-store',
   });
+  if (!res.ok) throw new Error(`${verb}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
@@ -65,6 +67,7 @@ async function comms<T = Record<string, unknown>>(kind: string, verb: string, bo
     body: JSON.stringify(body),
     cache: 'no-store',
   });
+  if (!res.ok) throw new Error(`${kind}/${verb}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
@@ -99,6 +102,23 @@ function LoadingRows({ rows = 4, label = 'Loading' }: { rows?: number; label?: s
   );
 }
 
+/** List-fetch failure state — without it a rejected fetch left the skeleton up forever. */
+function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail pc-advconv__empty--error" role="alert">
+      <strong>Couldn&apos;t load</strong>
+      <span>{message}</span>
+      <button type="button" className="pc-coord__chip" onClick={onRetry}>
+        <RefreshCw size={11} aria-hidden /> Retry
+      </button>
+    </div>
+  );
+}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ─── View switch ─────────────────────────────────────────────────────
 const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'operator', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
@@ -109,9 +129,9 @@ const VIEW_DEFS: ReadonlyArray<{
   desc: string;
   Icon: typeof MessageCircle;
 }> = [
-  { id: 'threads', label: 'Threads', desc: 'Questions & discussions — reply, accept answers, promote to issues.', Icon: MessageCircle },
-  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord discussions on issues and conversations.', Icon: MessagesSquare },
-  { id: 'agentchats', label: 'Agent chats', desc: 'Pipeline transcripts per role, with tokens and cost.', Icon: Bot },
+  { id: 'threads', label: 'Threads', desc: 'Questions & discussions — reply, accept, promote.', Icon: MessageCircle },
+  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord deliberations and votes.', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chats', desc: 'Pipeline transcripts per role, tokens and cost.', Icon: Bot },
   { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
   { id: 'operator', label: 'Operator', desc: 'Your chat sessions with the operator.', Icon: UserRound },
   { id: 'feed', label: 'Activity log', desc: 'Raw coordination events, newest first.', Icon: Radio },
@@ -785,6 +805,7 @@ function ThreadsView() {
   const [list, setList] = useState<ConvRow[]>([]);
   const [detail, setDetail] = useState<ConvDetailT | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reply, setReply] = useState('');
 
@@ -793,21 +814,31 @@ function ThreadsView() {
     const body: Record<string, unknown> = {};
     if (state !== 'all') body.state = state;
     if (kind !== 'all') body.kind = kind;
-    const r = await coord<{ conversations?: ConvRow[]; items?: ConvRow[] }>('conversations/list', body);
-    setList(r.conversations ?? r.items ?? []);
-    setLoading(false);
+    try {
+      const r = await coord<{ conversations?: ConvRow[]; items?: ConvRow[] }>('conversations/list', body);
+      setList(r.conversations ?? r.items ?? []);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
   }, [state, kind]);
   useEffect(() => {
     void reload();
   }, [reload]);
 
   const loadDetail = useCallback(async (id: string) => {
-    const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: id });
-    setDetail(
-      r.conversation
-        ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
-        : null,
-    );
+    try {
+      const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: id });
+      setDetail(
+        r.conversation
+          ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
+          : null,
+      );
+    } catch {
+      setDetail(null);
+    }
   }, []);
   useEffect(() => {
     if (!sel) {
@@ -827,12 +858,16 @@ function ThreadsView() {
     () => (topic ? list.filter((c) => (c.topics ?? []).includes(topic)) : list),
     [list, topic],
   );
-  const act = async (verb: string, body: Record<string, unknown>) => {
+  const act = async (verb: string, body: Record<string, unknown>): Promise<boolean> => {
     setBusy(true);
     try {
       await coord(verb, body);
       await reload();
       if (sel) await loadDetail(sel);
+      return true;
+    } catch (e) {
+      toast.error(`Action failed: ${errText(e)}`);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -884,6 +919,8 @@ function ThreadsView() {
         )}
         {loading ? (
           <LoadingRows />
+        ) : error ? (
+          <LoadError message={error} onRetry={() => void reload()} />
         ) : visible.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No threads match</strong>
@@ -1005,11 +1042,11 @@ function ThreadsView() {
                   rows={2}
                 />
                 <div className="pc-coord__actions pc-advconv__replyactions">
-                  <button type="button" className="pc-advconv__replybtn" disabled={busy || !reply.trim()} onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/post', { conversation_id: detail.id, body: b }); }}>
+                  <button type="button" className="pc-advconv__replybtn" disabled={busy || !reply.trim()} onClick={() => { void act('conversations/post', { conversation_id: detail.id, body: reply.trim() }).then((ok) => { if (ok) setReply(''); }); }}>
                     <Send size={12} aria-hidden /> Reply
                   </button>
                   {detail.kind === 'question' && (
-                    <button type="button" className="pc-advconv__replybtn pc-advconv__replybtn--resolve" disabled={busy || !reply.trim()} aria-label="Record this reply as the accepted answer and resolve the question" onClick={() => { const b = reply.trim(); setReply(''); void act('conversations/resolve', { conversation_id: detail.id, accepted_answer: b }); }}>
+                    <button type="button" className="pc-advconv__replybtn pc-advconv__replybtn--resolve" disabled={busy || !reply.trim()} aria-label="Record this reply as the accepted answer and resolve the question" onClick={() => { void act('conversations/resolve', { conversation_id: detail.id, accepted_answer: reply.trim() }).then((ok) => { if (ok) setReply(''); }); }}>
                       <CheckCircle2 size={12} aria-hidden /> Accept as answer
                     </button>
                   )}
@@ -1044,12 +1081,19 @@ function DeliberationsView() {
   const [posts, setPosts] = useState<ThreadPost[]>([]);
   const [head, setHead] = useState<ThreadRow | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const r = await comms<{ items?: ThreadRow[] }>('threads', 'list', { limit: 500 });
-    setList(r.items ?? []);
-    setLoading(false);
+    try {
+      const r = await comms<{ items?: ThreadRow[] }>('threads', 'list', { limit: 500 });
+      setList(r.items ?? []);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void reload();
@@ -1062,9 +1106,14 @@ function DeliberationsView() {
       return;
     }
     void (async () => {
-      const r = await comms<{ thread?: ThreadRow | null; posts?: ThreadPost[] }>('threads', 'get', { thread_id: sel });
-      setHead(r.thread ?? null);
-      setPosts(r.posts ?? []);
+      try {
+        const r = await comms<{ thread?: ThreadRow | null; posts?: ThreadPost[] }>('threads', 'get', { thread_id: sel });
+        setHead(r.thread ?? null);
+        setPosts(r.posts ?? []);
+      } catch {
+        setHead(null);
+        setPosts([]);
+      }
     })();
   }, [sel]);
 
@@ -1080,6 +1129,8 @@ function DeliberationsView() {
         </div>
         {loading ? (
           <LoadingRows />
+        ) : error ? (
+          <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No deliberations</strong>
@@ -1183,16 +1234,23 @@ function AgentChatsView() {
   const [list, setList] = useState<AgentChatRow[]>([]);
   const [detail, setDetail] = useState<AgentChatDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const r = await comms<{ items?: AgentChatRow[] }>('agent-chats', 'list', {
-      limit: 500,
-      ...(harness ? { harness } : {}),
-      ...(role ? { role } : {}),
-    });
-    setList(r.items ?? []);
-    setLoading(false);
+    try {
+      const r = await comms<{ items?: AgentChatRow[] }>('agent-chats', 'list', {
+        limit: 500,
+        ...(harness ? { harness } : {}),
+        ...(role ? { role } : {}),
+      });
+      setList(r.items ?? []);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
   }, [harness, role]);
   useEffect(() => {
     void reload();
@@ -1204,8 +1262,12 @@ function AgentChatsView() {
       return;
     }
     void (async () => {
-      const r = await comms<{ chat?: AgentChatDetail }>('agent-chats', 'get', { id: sel });
-      setDetail(r.chat ?? null);
+      try {
+        const r = await comms<{ chat?: AgentChatDetail }>('agent-chats', 'get', { id: sel });
+        setDetail(r.chat ?? null);
+      } catch {
+        setDetail(null);
+      }
     })();
   }, [sel]);
 
@@ -1240,6 +1302,8 @@ function AgentChatsView() {
         )}
         {loading ? (
           <LoadingRows />
+        ) : error ? (
+          <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No agent chats</strong>
@@ -1328,12 +1392,19 @@ interface MsgRow {
 function MessagesView() {
   const [list, setList] = useState<MsgRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useQueryState('msg', parseAsString);
   const reload = useCallback(async () => {
     setLoading(true);
-    const r = await comms<{ items?: MsgRow[] }>('messages', 'list', { limit: 500 });
-    setList(r.items ?? []);
-    setLoading(false);
+    try {
+      const r = await comms<{ items?: MsgRow[] }>('messages', 'list', { limit: 500 });
+      setList(r.items ?? []);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void reload();
@@ -1358,6 +1429,8 @@ function MessagesView() {
       <div className="pc-advfeed__stream">
         {loading && list.length === 0 ? (
           <LoadingRows rows={6} label="Loading messages" />
+        ) : error && list.length === 0 ? (
+          <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No messages</strong>
@@ -1428,12 +1501,19 @@ interface OpConvRow {
 function OperatorView() {
   const [list, setList] = useState<OpConvRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useQueryState('opc', parseAsString);
   const reload = useCallback(async () => {
     setLoading(true);
-    const r = await comms<{ items?: OpConvRow[] }>('operator', 'list', { limit: 500 });
-    setList(r.items ?? []);
-    setLoading(false);
+    try {
+      const r = await comms<{ items?: OpConvRow[] }>('operator', 'list', { limit: 500 });
+      setList(r.items ?? []);
+      setError(null);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useEffect(() => {
     void reload();
@@ -1458,6 +1538,8 @@ function OperatorView() {
       <div className="pc-advfeed__stream">
         {loading && list.length === 0 ? (
           <LoadingRows />
+        ) : error && list.length === 0 ? (
+          <LoadError message={error} onRetry={() => void reload()} />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No operator chats</strong>
@@ -1710,6 +1792,11 @@ function AdvConvStyles() {
       }
       .pc-advconv__empty strong { color: var(--fg, #e7f7ff); font-size: 14px; }
       .pc-advconv__empty span { max-width: 420px; line-height: 1.45; }
+      .pc-advconv__empty--error {
+        border-color: color-mix(in oklab, var(--bad, #f87171), transparent 60%);
+        background: color-mix(in oklab, var(--bad, #f87171), transparent 94%);
+      }
+      .pc-advconv__empty--error strong { color: var(--bad, #f87171); }
       .pc-advconv__skeleton {
         display: flex;
         flex-direction: column;
@@ -1950,6 +2037,10 @@ function AdvConvStyles() {
         align-items: center;
         justify-content: center;
         min-height: 18px;
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         padding: 1px 6px;
         border-radius: 999px;
         border: 1px solid color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 72%);

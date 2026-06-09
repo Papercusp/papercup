@@ -10,6 +10,9 @@ import {
   routineFailureSignalsFromRows,
   stuckPlanSignalsFromRows,
   escalationSignalsFromRows,
+  circuitOpenSignalsFromRows,
+  normalizeRedTestPath,
+  redTestSignalsFromRows,
   isServiceHealthStale,
   serviceDownCollectorResult,
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
@@ -242,6 +245,49 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     const signals = escalationSignalsFromRows([{ harness_slug: 'sheets', phase: 'production' }]);
     expect(signals[0].key).toBe('escalation:sheets:production');
     expect(signals[0].source).toBe('unresolved-escalation');
+  });
+
+  it('fire-circuit-open: one signal per backed-off (slug, role) fire path', () => {
+    const signals = circuitOpenSignalsFromRows([
+      { harness_slug: 'papercup-org', role: 'director', consecutive_errors: 7, last_status: 'error: timeout' },
+    ]);
+    expect(signals[0].key).toBe('circuit:papercup-org:director');
+    expect(signals[0].source).toBe('fire-circuit-open');
+    expect(signals[0].severity).toBe('major');
+    expect(signals[0].body).toContain('7 consecutive');
+    expect(signals[0].body).toContain('error: timeout');
+  });
+});
+
+describe('red-test path normalization — one identity per broken test', () => {
+  it('strips the green-checkpoint (and any sibling-tree) prefix to the repo-relative path', () => {
+    expect(normalizeRedTestPath('papercupai-workspace/papercup-checkpoint/packages/operator-core/lib/a.test.ts'))
+      .toBe('packages/operator-core/lib/a.test.ts');
+    expect(normalizeRedTestPath('/home/dev/papercupai-workspace/papercup/apps/operator/lib/b.test.ts'))
+      .toBe('apps/operator/lib/b.test.ts');
+    // Already repo-relative → unchanged.
+    expect(normalizeRedTestPath('packages/operator-core/lib/a.test.ts'))
+      .toBe('packages/operator-core/lib/a.test.ts');
+  });
+
+  it('drops synthetic fixture tests (loop probes, not bugs)', () => {
+    expect(normalizeRedTestPath('lib/__synthetic__/close-loop-watchdog-probe.test.ts')).toBeNull();
+  });
+
+  it('MERGES the canonical + checkpoint rows of the SAME test into ONE signal (the EI-36/EI-143 dup)', () => {
+    const signals = redTestSignalsFromRows(
+      [
+        { file_path: 'apps/operator/lib/__tests__/x.test.ts', framework: 'vitest', fails: 3, sample: 'boom' },
+        { file_path: 'papercupai-workspace/papercup-checkpoint/apps/operator/lib/__tests__/x.test.ts', framework: 'vitest', fails: 4, sample: null },
+        { file_path: 'lib/__synthetic__/probe.test.ts', framework: 'vitest', fails: 9, sample: null },
+      ],
+      6,
+    );
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe('apps/operator/lib/__tests__/x.test.ts');
+    expect(signals[0].paths).toEqual(['apps/operator/lib/__tests__/x.test.ts']);
+    expect(signals[0].body).toContain('failed 7×'); // counts summed across trees
+    expect(signals[0].body).toContain('boom');
   });
 });
 

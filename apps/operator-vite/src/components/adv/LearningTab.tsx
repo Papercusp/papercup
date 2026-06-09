@@ -9,27 +9,63 @@
  *   - **Improvements** (default): the captured `papercusp-improvement` backlog, read
  *     through the `learning.improvements` resolver (same readImprovementItems +
  *     buildDigest path the `improvements:digest` tool uses, D-003). Scoreboard +
- *     the two triage lanes (auto-eligible vs needs-a-human).
+ *     the two triage lanes (auto-fixable vs needs-review).
  *   - **Gym**: the prompt-optimization pipeline — recent proposals (pending /
  *     accepted=champions / rejected) + each gym harness's autoloop status, read
  *     through `learning.gym` (the gym control-plane readers).
  *
- * The IQ-battery benchmark scoreboard and agent insights land as later sub-views.
+ * Each sub-view carries a plain-language "how this works" step strip (nuqs `?how=`,
+ * shown by default) so the tab explains itself; every stat and chip carries a hover
+ * hint. The IQ-battery benchmark scoreboard and agent insights land as later sub-views.
  *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
 import { useMemo } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 
 const LVIEWS = ['improvements', 'gym'] as const;
 type LView = (typeof LVIEWS)[number];
 
+/** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
+const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
+  improvements: [
+    {
+      title: 'Notice',
+      desc: 'A background watchdog files objective problems (failing tests, broken tools, down services), and agents file friction they hit while working.',
+    },
+    {
+      title: 'Triage',
+      desc: 'Every item is scored by severity and age, then sorted: safe bug-fixes go to the auto-fixable lane; anything risky or judgment-shaped waits for your review.',
+    },
+    {
+      title: 'Resolve',
+      desc: 'Fixes land and items close. A problem that comes back is re-filed and climbs the queue.',
+    },
+  ],
+  gym: [
+    {
+      title: 'Experiment',
+      desc: 'The gym rewrites one agent role’s prompt and proposes the variant as a candidate.',
+    },
+    {
+      title: 'Score',
+      desc: 'A frozen judge benchmarks the variant against the current prompt — Δ is the score change, positive means better.',
+    },
+    {
+      title: 'Promote',
+      desc: 'Winners are accepted as champions and become the role’s live prompt; losers are rejected.',
+    },
+  ],
+};
+
 export default function LearningTab() {
   const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
+  const [showHow, setShowHow] = useQueryState('how', parseAsBoolean.withDefault(true));
+  const view: LView = lview === 'gym' ? 'gym' : 'improvements';
   return (
     <div className="pc-learning">
       <header className="pc-learning__header">
@@ -37,37 +73,66 @@ export default function LearningTab() {
           <h1>
             <GraduationCap size={18} aria-hidden /> Learning
           </h1>
-          <p>How the system improves itself — what it noticed, captured, fixed, and how it tunes its own agents. The pull-view that replaced the digest notification.</p>
+          <p>
+            Papercusp improves itself while it works. Problems and ideas it notices are filed here as improvements — safe
+            fixes are handled automatically, the rest wait for your review — and the gym tunes the agents’ own prompts
+            through scored experiments.
+          </p>
         </div>
       </header>
 
-      <div className="pc-learning__subnav" role="tablist" aria-label="Learning view">
+      <div className="pc-learning__controls">
+        <div className="pc-learning__subnav" role="tablist" aria-label="Learning view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lview === 'improvements'}
+            className={`pc-learning__subtab${lview === 'improvements' ? ' is-active' : ''}`}
+            onClick={() => void setLview('improvements')}
+          >
+            <Sparkles size={13} aria-hidden />
+            <span>Improvements<em>problems & fixes</em></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lview === 'gym'}
+            className={`pc-learning__subtab${lview === 'gym' ? ' is-active' : ''}`}
+            onClick={() => void setLview('gym')}
+          >
+            <Dumbbell size={13} aria-hidden />
+            <span>Gym<em>prompt tuning</em></span>
+          </button>
+        </div>
         <button
           type="button"
-          role="tab"
-          aria-selected={lview === 'improvements'}
-          className={`pc-learning__subtab${lview === 'improvements' ? ' is-active' : ''}`}
-          onClick={() => void setLview('improvements')}
+          className={`pc-learning__howtoggle${showHow ? ' is-on' : ''}`}
+          aria-expanded={!!showHow}
+          onClick={() => void setShowHow(!showHow)}
         >
-          <Sparkles size={13} aria-hidden />
-          <span>Improvements<em>captured & fixed</em></span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={lview === 'gym'}
-          className={`pc-learning__subtab${lview === 'gym' ? ' is-active' : ''}`}
-          onClick={() => void setLview('gym')}
-        >
-          <Dumbbell size={13} aria-hidden />
-          <span>Gym<em>agent training</em></span>
+          <HelpCircle size={13} aria-hidden />
+          How this works
         </button>
       </div>
 
-      {lview === 'gym' ? <GymView /> : <ImprovementsView />}
+      {showHow ? (
+        <ol className="pc-learning__how" aria-label="How this works">
+          {HOW_STEPS[view].map((s, i) => (
+            <li key={s.title} className="pc-learning__howstep">
+              <span className="pc-learning__hownum" aria-hidden>{i + 1}</span>
+              <span className="pc-learning__howbody">
+                <strong>{s.title}</strong>
+                <em>{s.desc}</em>
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+
+      {view === 'gym' ? <GymView /> : <ImprovementsView />}
 
       <p className="pc-learning__footnote">
-        The IQ-battery benchmark scoreboard and agent insights will join this view as those pipelines produce data.
+        Coming next: a benchmark scoreboard that tracks whether all of this actually makes the agents better over time.
       </p>
 
       <LearningStyles />
@@ -111,15 +176,15 @@ function ImprovementsView() {
   return (
     <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Improvements summary">
-        <Stat label="captured" value={digest?.total ?? '—'} />
-        <Stat label="open" value={digest?.open ?? '—'} />
-        <Stat label="auto-eligible" value={digest?.autoEligible.length ?? '—'} tone="auto" />
-        <Stat label="needs a human" value={digest?.humanQueue.length ?? '—'} tone="human" />
-        <Stat label="resolved" value={resolved} tone="good" />
+        <Stat label="captured" value={digest?.total ?? '—'} hint="Everything ever filed — problems, friction, and ideas, open or not." />
+        <Stat label="open" value={digest?.open ?? '—'} hint="Not fixed yet." />
+        <Stat label="auto-fixable" value={digest?.autoEligible.length ?? '—'} tone="auto" hint="Open bugs that touch no protected surface — agents may fix these without asking you." />
+        <Stat label="needs review" value={digest?.humanQueue.length ?? '—'} tone="human" hint="Open items that need your judgment — risky surfaces, behaviour changes, or new features." />
+        <Stat label="resolved" value={resolved} tone="good" hint="Fixed and closed." />
       </div>
 
       <div className="pc-learning__sectionhead">
-        <h2>Improvements the system captured</h2>
+        <h2>Captured improvements</h2>
         <div className="pc-learning__inlinetools">
           <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
             {LANES.map((l) => (
@@ -129,9 +194,10 @@ function ImprovementsView() {
                 role="tab"
                 aria-selected={lane === l}
                 className={`pc-learning__lane${lane === l ? ' is-active' : ''}`}
+                title={l === 'auto' ? 'Bugs agents may fix on their own' : l === 'human' ? 'Items waiting on your judgment' : undefined}
                 onClick={() => void setLane(l)}
               >
-                {l === 'all' ? 'All' : l === 'auto' ? 'Auto-eligible' : 'Needs a human'}
+                {l === 'all' ? 'All' : l === 'auto' ? 'Auto-fixable' : 'Needs review'}
               </button>
             ))}
           </div>
@@ -181,12 +247,15 @@ function ImprovementRow({ item }: { item: ScoredItem }) {
           {item.severity ?? '—'}
         </span>
         {item.ideaType ? <span className="pc-learning__chip pc-learning__chip--idea">{item.ideaType}</span> : null}
-        <span className={`pc-learning__chip pc-learning__chip--${human ? 'human' : 'auto'}`}>
+        <span
+          className={`pc-learning__chip pc-learning__chip--${human ? 'human' : 'auto'}`}
+          title={human ? 'Waits for your review' : 'An agent may fix this on its own'}
+        >
           {human ? <UserRound size={10} aria-hidden /> : <ShieldCheck size={10} aria-hidden />}
-          {human ? 'human' : 'auto'}
+          {human ? 'review' : 'auto'}
         </span>
-        <span className="pc-learning__age">{ageLabel(item.ageDays)}</span>
-        <span className="pc-learning__score" title="triage score (severity + age)">{item.score}</span>
+        <span className="pc-learning__age" title="How long ago this was filed">{ageLabel(item.ageDays)}</span>
+        <span className="pc-learning__score" title="Triage priority (severity + age) — higher means more urgent">{item.score}</span>
       </span>
     </li>
   );
@@ -257,15 +326,15 @@ function GymView() {
   return (
     <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Gym summary">
-        <Stat label="proposals" value={snap ? proposals.length : '—'} />
-        <Stat label="champions" value={snap ? champions : '—'} tone="good" />
-        <Stat label="pending" value={snap ? pending : '—'} tone="human" />
-        <Stat label="rejected" value={snap ? rejected : '—'} />
-        <Stat label="loops armed" value={snap ? running : '—'} tone="auto" />
+        <Stat label="experiments" value={snap ? proposals.length : '—'} hint="Prompt variants the gym has proposed and tested recently." />
+        <Stat label="champions" value={snap ? champions : '—'} tone="good" hint="Accepted variants — each is now its role’s live prompt." />
+        <Stat label="pending" value={snap ? pending : '—'} tone="human" hint="Scored, awaiting a decision." />
+        <Stat label="rejected" value={snap ? rejected : '—'} hint="Scored worse than the current prompt — discarded." />
+        <Stat label="active loops" value={snap ? running : '—'} tone="auto" hint="Gym harnesses set to keep running experiment cycles on their own, within a spend budget." />
       </div>
 
       <div className="pc-learning__sectionhead">
-        <h2>Agent-prompt optimization (gym)</h2>
+        <h2>Prompt experiments</h2>
         <button
           type="button"
           className="pc-learning__refresh"
@@ -280,7 +349,11 @@ function GymView() {
       {autoloops.length > 0 && (
         <div className="pc-learning__loops" aria-label="Gym autoloops">
           {autoloops.map((a) => (
-            <span key={a.harnessSlug} className={`pc-learning__loop pc-learning__loop--${a.status}`}>
+            <span
+              key={a.harnessSlug}
+              className={`pc-learning__loop pc-learning__loop--${a.status}`}
+              title={`This gym runs experiment cycles on its own${a.budgetUsd != null ? ` — $${a.spentUsd.toFixed(2)} spent of a $${a.budgetUsd.toFixed(0)} budget` : ''}`}
+            >
               <Dumbbell size={11} aria-hidden />
               {a.harnessSlug}
               <em>{a.enabled ? a.status : 'off'}</em>
@@ -326,11 +399,14 @@ function GymProposalRow({ p }: { p: GymProposal }) {
           {p.status === 'accepted' ? <CheckCircle2 size={10} aria-hidden /> : p.status === 'rejected' ? <XCircle size={10} aria-hidden /> : <Clock size={10} aria-hidden />}
           {p.status}
         </span>
-        <span className="pc-learning__chip pc-learning__chip--idea">{p.harnessSlug}</span>
-        <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`} title="dev-anchor judge composite Δ vs parent">
+        <span className="pc-learning__chip pc-learning__chip--idea" title="The gym harness that ran this experiment">{p.harnessSlug}</span>
+        <span
+          className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+          title="Judge-score change vs the current prompt — positive means the variant did better"
+        >
           Δ {delta.text}
         </span>
-        <span className="pc-learning__age">c{p.cycle}</span>
+        <span className="pc-learning__age" title={`Experiment cycle ${p.cycle}`}>c{p.cycle}</span>
         <span className="pc-learning__age">{whenLabel(p.decidedAt ?? p.createdAt)}</span>
       </span>
     </li>
@@ -339,9 +415,9 @@ function GymProposalRow({ p }: { p: GymProposal }) {
 
 // ─── Shared ──────────────────────────────────────────────────────────────────
 
-function Stat({ label, value, tone }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good' }) {
+function Stat({ label, value, tone, hint }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good'; hint?: string }) {
   return (
-    <div className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ''}`}>
+    <div className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ''}`} title={hint}>
       <strong>{value}</strong>
       <span>{label}</span>
     </div>
@@ -357,6 +433,7 @@ function LearningStyles() {
       .pc-learning__copy h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: -0.02em; color: var(--fg, #e7f7ff); }
       .pc-learning__copy p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-mute, #7f9bb4); max-width: 78ch; }
 
+      .pc-learning__controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
       .pc-learning__subnav { display: inline-flex; gap: 6px; }
       .pc-learning__subtab {
         display: inline-flex; align-items: center; gap: 7px;
@@ -368,6 +445,31 @@ function LearningStyles() {
       .pc-learning__subtab em { font-style: normal; font-size: 10px; font-weight: 500; color: var(--fg-mute, #7f9bb4); text-transform: uppercase; letter-spacing: 0.04em; }
       .pc-learning__subtab.is-active { color: var(--fg, #e7f7ff); border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.12); }
       .pc-learning__subtab.is-active em { color: color-mix(in oklab, #34d399, white 12%); }
+
+      .pc-learning__howtoggle {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 12px; font-size: 11.5px; font-weight: 600; border-radius: 999px; cursor: pointer;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        background: transparent; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__howtoggle.is-on { color: var(--fg-dim, #b9d4e8); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.07); }
+
+      .pc-learning__how {
+        list-style: none; margin: 0; padding: 11px 13px;
+        display: flex; flex-wrap: wrap; gap: 16px;
+        border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px;
+        background: var(--bg-2, rgba(255, 255, 255, 0.02));
+      }
+      .pc-learning__howstep { display: flex; gap: 9px; flex: 1 1 230px; min-width: 210px; }
+      .pc-learning__hownum {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px;
+        border-radius: 50%; font-size: 10.5px; font-weight: 700;
+        color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45);
+      }
+      .pc-learning__howbody { display: flex; flex-direction: column; gap: 2px; }
+      .pc-learning__howbody strong { font-size: 12px; font-weight: 700; color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__howbody em { font-style: normal; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #7f9bb4); }
 
       .pc-learning__scoreboard { display: flex; flex-wrap: wrap; gap: 8px; }
       .pc-learning__stat {

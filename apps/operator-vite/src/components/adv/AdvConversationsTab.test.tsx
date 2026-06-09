@@ -147,7 +147,7 @@ beforeEach(() => {
   nuqsState.msg = null;
   nuqsState.opc = null;
   mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
-  vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ conversations: [] }) })));
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations: [] }) })));
 });
 
 afterEach(() => {
@@ -160,7 +160,8 @@ describe('AdvConversationsTab — simplified design', () => {
     render(<AdvConversationsTab />);
 
     expect(screen.getByRole('heading', { name: 'Conversations' })).toBeTruthy();
-    expect(screen.getByText(/Questions, discussions, and agent messages/i)).toBeTruthy();
+    // The header description follows the active view (Threads is the default).
+    expect(screen.getByText(/Questions & discussions — reply, accept, promote/i)).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Threads/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Needs you/i })).toBeTruthy();
