@@ -78,23 +78,51 @@ function tokenFieldTier(qt: string, f: WeightedField): number {
 }
 
 /**
- * Relevance of one entry for a query. AND semantics across query tokens —
- * every token must hit some field, else the entry doesn't match (score 0).
- * Each token contributes the best (weight × tier) it achieves on any field;
- * a whole-query contiguous hit on the name adds a phrase boost so an exact /
- * substring name match leads its token-equal peers.
+ * Query-side stopwords — articles / prepositions / conjunctions / pronouns /
+ * copula that carry no capability signal. Dropped so a natural-language query
+ * ("send a message to a peer") matches on its content words instead of failing
+ * because every filler word must also land. Field text keeps all tokens; only
+ * the query is filtered.
+ */
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'to', 'of', 'for', 'and', 'or', 'in', 'on', 'at', 'by',
+  'with', 'from', 'into', 'my', 'your', 'our', 'me', 'i', 'is', 'are', 'be',
+  'am', 'that', 'this', 'it', 'as',
+]);
+
+/**
+ * Tokenize a query and drop stopwords. Falls back to the raw tokens when the
+ * query is *all* stopwords, so such a query still does something.
+ */
+export function contentTokens(query: string): string[] {
+  const all = tokenize(query);
+  const content = all.filter((t) => !STOPWORDS.has(t));
+  return content.length > 0 ? content : all;
+}
+
+/**
+ * Relevance of one entry for a query. **OR across content tokens** (stopwords
+ * dropped): an entry matches if AT LEAST ONE token hits some field — a
+ * natural-language query shouldn't require every word to land. Each matched
+ * token adds the best (weight × tier) it achieves on any field, so broader
+ * coverage scores higher; a whole-query contiguous hit on the name adds a
+ * phrase boost so an exact / substring name match leads.
  */
 export function scoreTool(entry: ToolDiscoveryEntry, query: string): number {
-  const qTokens = tokenize(query);
+  const qTokens = contentTokens(query);
   if (qTokens.length === 0) return 0;
   const fields = fieldsOf(entry);
   let total = 0;
+  let matched = 0;
   for (const qt of qTokens) {
     let best = 0;
     for (const f of fields) best = Math.max(best, f.weight * tokenFieldTier(qt, f));
-    if (best === 0) return 0; // a token matched nothing → not a match
-    total += best;
+    if (best > 0) {
+      total += best;
+      matched += 1;
+    }
   }
+  if (matched === 0) return 0; // no content token hit → not a match
   const raw = query.trim().toLowerCase();
   if (raw.length >= 2) {
     const name = entry.tool.toLowerCase();

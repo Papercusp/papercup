@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { ToolDiscoveryEntry } from './tools-discovery';
-import { tokenize, categoryOf, scoreTool, searchTools, FIELD_WEIGHTS } from './tools-search';
+import { tokenize, categoryOf, contentTokens, scoreTool, searchTools, FIELD_WEIGHTS } from './tools-search';
 
 function entry(over: Partial<ToolDiscoveryEntry> & { tool: string }): ToolDiscoveryEntry {
   return {
@@ -42,11 +42,32 @@ describe('categoryOf', () => {
   });
 });
 
+describe('contentTokens', () => {
+  it('drops stopwords from a natural-language query', () => {
+    expect(contentTokens('send a message to a peer')).toEqual(['send', 'message', 'peer']);
+  });
+  it('falls back to the raw tokens when the query is all stopwords', () => {
+    expect(contentTokens('to the of')).toEqual(['to', 'the', 'of']);
+  });
+});
+
 describe('scoreTool', () => {
-  it('returns 0 when any query token matches no field (AND semantics)', () => {
+  it('OR across content tokens — one hit is enough; a no-hit query scores 0', () => {
     const e = entry({ tool: 'coord:send', description: 'send a message to a peer' });
     expect(scoreTool(e, 'coord send')).toBeGreaterThan(0);
-    expect(scoreTool(e, 'coord zzzz')).toBe(0);
+    // a natural-language query matches on its content words (stopwords dropped)
+    expect(scoreTool(e, 'send a message to a peer')).toBeGreaterThan(0);
+    // a single matching token is enough (OR, not AND) …
+    expect(scoreTool(e, 'coord zzzz')).toBeGreaterThan(0);
+    // … but a query whose every token misses still scores 0
+    expect(scoreTool(e, 'zzzz yyyy')).toBe(0);
+  });
+
+  it('rewards broader coverage — an entry matching more query tokens ranks higher', () => {
+    const query = 'send message peer';
+    const both = entry({ tool: 'x:both', description: 'send a message to a peer' });
+    const one = entry({ tool: 'y:one', description: 'send something else' });
+    expect(scoreTool(both, query)).toBeGreaterThan(scoreTool(one, query));
   });
 
   it('weights a name hit above a description-only hit', () => {

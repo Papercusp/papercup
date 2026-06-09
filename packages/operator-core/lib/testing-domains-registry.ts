@@ -1072,10 +1072,11 @@ defineTestDomain({
     {
       id: 'channel-isolation',
       label: 'C1 channel isolation (coord/locks)',
-      description: 'Cross-agent isolation for coord:send/inbox/presence (real PgCoordLog) and file/resource locks (A can\'t release/heartbeat B\'s; block-on-held; authority election).',
+      description: 'Cross-agent isolation for coord:send/inbox/presence (real PgCoordLog) and file/resource locks (A can\'t release/heartbeat B\'s; block-on-held; authority election) + the file-lock PreToolUse hook decision rendering (block-on-held deny / fail-open).',
       globs: [
         'packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts',
         'packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts',
+        'apps/operator/scripts/hooks/cc/__tests__/pretooluse-locks-decision.test.ts',
       ],
     },
     {

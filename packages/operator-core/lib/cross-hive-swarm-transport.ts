@@ -167,10 +167,15 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
     }
   };
 
-  // Reachable immediately: register the handler + join our own topic.
+  // Reachable immediately: register the handler + join our own topic, then flush
+  // so our topic is announced on the DHT (a sender's lookup needs a live announce).
   opts.swarm.on('connection', handler);
   const selfTopic = deriveTopic(opts.selfHivePubkey);
   ensureJoined(selfTopic);
+  {
+    const flushable = opts.swarm as { flush?: () => Promise<unknown> };
+    if (typeof flushable.flush === 'function') void flushable.flush().catch(() => {});
+  }
 
   return {
     selfTopicHex: selfTopic.toString('hex'),
@@ -191,13 +196,22 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
     async send(toHivePubkey: string, env: CrossHiveWireEnvelope): Promise<void> {
       // Rendezvous on the target Hive's topic (it is server there; we join too).
       ensureJoined(deriveTopic(toHivePubkey));
+      const flushable = opts.swarm as { flush?: () => Promise<unknown> };
       const targets = (): OpenChannel[] => [...channels].filter((ch) => ch.remotePubkey === toHivePubkey);
-      let t = targets();
+      // Wait for the channel to the target to pair + exchange HELLOs, AWAITING a
+      // re-triggered DHT announce+lookup round (swarm.flush) each iteration:
+      // awaiting the flush is what drives the connection to completion (it
+      // resolves only after the swarm has looked up + connected to discovered
+      // peers), whereas a fire-and-forget flush leaves the connection unformed.
       const start = Date.now();
-      while (t.length === 0 && Date.now() - start < sendWaitMs) {
+      while (targets().length === 0 && Date.now() - start < sendWaitMs) {
+        if (typeof flushable.flush === 'function') {
+          await Promise.race([flushable.flush().catch(() => {}), delay(3000)]);
+        }
+        if (targets().length > 0) break;
         await delay(pollMs);
-        t = targets();
       }
+      const t = targets();
       if (t.length === 0) {
         throw new Error(
           `cross-hive: no paired channel to Hive ${toHivePubkey.slice(0, 8)}… within ${sendWaitMs}ms`,
