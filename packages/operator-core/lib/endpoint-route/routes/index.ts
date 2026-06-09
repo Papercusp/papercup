@@ -287,6 +287,10 @@ import desktopInstallOmpIntegration from './desktop/install-omp-integration';
 import { desktopGithubUser } from './desktop/github-user';
 import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
+import adminDeployAccountsList from './admin/deploy-accounts-list';
+import adminDeployAccountsStart from './admin/deploy-accounts-start';
+import adminDeployAccountsExchange from './admin/deploy-accounts-exchange';
+import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminEmbedBackfill from './admin/embed-backfill';
 import adminExecuteAction from './admin/execute-action';
 import adminLlmTestsFindings from './admin/llm-tests-findings';
@@ -673,6 +677,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   desktopGithubUser,
   ...flatten(adminBackupOrphanCleanup as AnyRoute),
   ...flatten(adminCommands as AnyRoute),
+  ...flatten(adminDeployAccountsList as AnyRoute),
+  ...flatten(adminDeployAccountsStart as AnyRoute),
+  ...flatten(adminDeployAccountsExchange as AnyRoute),
+  ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminEmbedBackfill as AnyRoute),
   ...flatten(adminExecuteAction as AnyRoute),
   ...flatten(adminLlmTestsFindings as AnyRoute),

@@ -26,6 +26,7 @@ const TABS: ReadonlyArray<{ href: string; label: string; term?: TermKey }> = [
   { href: '/admin/git', label: 'Git' },
   { href: '/admin/testing', label: 'Testing' },
   { href: '/admin/dogfood-substrate', label: 'Substrate' },
+  { href: '/admin/deploy-accounts', label: 'Deploy Accounts' },
   { href: '/admin/dbos', label: 'DBOS' },
   { href: '/admin/coordination', label: 'Coordination' },
   { href: '/admin/cupboard-moderation', label: 'Cupboard', term: 'cupboard' },

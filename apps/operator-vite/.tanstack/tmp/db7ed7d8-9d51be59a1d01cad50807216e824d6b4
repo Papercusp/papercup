@@ -69,6 +69,7 @@ import { Route as AdminPlansRouteImport } from './routes/admin/plans'
 import { Route as AdminGitRouteImport } from './routes/admin/git'
 import { Route as AdminFeaturesRouteImport } from './routes/admin/features'
 import { Route as AdminDogfoodSubstrateRouteImport } from './routes/admin/dogfood-substrate'
+import { Route as AdminDeployAccountsRouteImport } from './routes/admin/deploy-accounts'
 import { Route as AdminDbosRouteImport } from './routes/admin/dbos'
 import { Route as AdminCupboardModerationRouteImport } from './routes/admin/cupboard-moderation'
 import { Route as AdminCoordinationRouteImport } from './routes/admin/coordination'
@@ -386,6 +387,11 @@ const AdminDogfoodSubstrateRoute = AdminDogfoodSubstrateRouteImport.update({
   path: '/admin/dogfood-substrate',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminDeployAccountsRoute = AdminDeployAccountsRouteImport.update({
+  id: '/admin/deploy-accounts',
+  path: '/admin/deploy-accounts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminDbosRoute = AdminDbosRouteImport.update({
   id: '/admin/dbos',
   path: '/admin/dbos',
@@ -487,6 +493,7 @@ export interface FileRoutesByFullPath {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
+  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -564,6 +571,7 @@ export interface FileRoutesByTo {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
+  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -643,6 +651,7 @@ export interface FileRoutesById {
   '/admin/coordination': typeof AdminCoordinationRoute
   '/admin/cupboard-moderation': typeof AdminCupboardModerationRoute
   '/admin/dbos': typeof AdminDbosRoute
+  '/admin/deploy-accounts': typeof AdminDeployAccountsRoute
   '/admin/dogfood-substrate': typeof AdminDogfoodSubstrateRoute
   '/admin/features': typeof AdminFeaturesRoute
   '/admin/git': typeof AdminGitRoute
@@ -723,6 +732,7 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
+    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -800,6 +810,7 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
+    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -878,6 +889,7 @@ export interface FileRouteTypes {
     | '/admin/coordination'
     | '/admin/cupboard-moderation'
     | '/admin/dbos'
+    | '/admin/deploy-accounts'
     | '/admin/dogfood-substrate'
     | '/admin/features'
     | '/admin/git'
@@ -957,6 +969,7 @@ export interface RootRouteChildren {
   AdminCoordinationRoute: typeof AdminCoordinationRoute
   AdminCupboardModerationRoute: typeof AdminCupboardModerationRoute
   AdminDbosRoute: typeof AdminDbosRoute
+  AdminDeployAccountsRoute: typeof AdminDeployAccountsRoute
   AdminDogfoodSubstrateRoute: typeof AdminDogfoodSubstrateRoute
   AdminFeaturesRoute: typeof AdminFeaturesRoute
   AdminGitRoute: typeof AdminGitRoute
@@ -1414,6 +1427,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminDogfoodSubstrateRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/deploy-accounts': {
+      id: '/admin/deploy-accounts'
+      path: '/admin/deploy-accounts'
+      fullPath: '/admin/deploy-accounts'
+      preLoaderRoute: typeof AdminDeployAccountsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/dbos': {
       id: '/admin/dbos'
       path: '/admin/dbos'
@@ -1617,6 +1637,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminCoordinationRoute: AdminCoordinationRoute,
   AdminCupboardModerationRoute: AdminCupboardModerationRoute,
   AdminDbosRoute: AdminDbosRoute,
+  AdminDeployAccountsRoute: AdminDeployAccountsRoute,
   AdminDogfoodSubstrateRoute: AdminDogfoodSubstrateRoute,
   AdminFeaturesRoute: AdminFeaturesRoute,
   AdminGitRoute: AdminGitRoute,
