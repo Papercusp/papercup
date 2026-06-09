@@ -75,6 +75,17 @@ export async function deployHarness(
   if (!config0 || config0.target === 'local') {
     throw new Error(`deployHarness: harness '${slug}' has no cloud deployment config (target=${config0?.target ?? 'local'})`);
   }
+  // Double-deploy guard: a recorded frame means this harness is (or may still be)
+  // live on a machine. Provisioning again would OVERWRITE the handle, orphaning the
+  // old frame as an untracked billing leak. Frames are cattle — tear down first.
+  const existing = await deps.loadFrame(slug, workspaceId);
+  if (existing) {
+    throw new Error(
+      `deployHarness: harness '${slug}' already has a deployed frame recorded ` +
+        `(${existing.id}${existing.host ? ` @ ${existing.host}` : ''}) — run deploy:teardown first ` +
+        `(re-provisioning would overwrite the handle and orphan the old frame's billing)`,
+    );
+  }
   // P-020: bind an account from the pool (by rate-limit headroom) before provisioning,
   // unless the config already pins a credentialRef. No-op when no pool/hook is wired.
   const config = deps.selectAccount ? await deps.selectAccount(config0, slug, workspaceId) : config0;

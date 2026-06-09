@@ -173,15 +173,17 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     'npm i -g tsx',
   ]);
 
-  // Default agent CLIs: Meridian (OAuth router on :3456) + omp + the claude CLI
-  // fallback (HARNESS-ON-HETZNER). Both backends read the mounted credentials.
-  add('agent-clis', 'agent CLIs + Meridian', [
-    'npm i -g @rynfar/meridian @oh-my-pi/pi-coding-agent',
-    '# claude CLI (fallback backend + vendors the OAuth credentials Meridian reads)',
+  // Agent CLIs, per backend: omp needs Meridian (OAuth router on :3456) + the omp
+  // CLI + claude (which vendors the OAuth credentials Meridian reads); a claude
+  // frame needs only the claude CLI — installing/launching Meridian there was
+  // pure waste (cloud-deployment-layer follow-up, fixed 2026-06-09).
+  add('agent-clis', `agent CLIs (backend=${backend})`, [
+    ...(backend === 'omp' ? ['npm i -g @rynfar/meridian @oh-my-pi/pi-coding-agent'] : []),
+    '# claude CLI (primary or fallback backend; vendors the OAuth credentials Meridian reads)',
     'curl -fsSL https://claude.ai/install.sh | bash || npm i -g @anthropic-ai/claude-code',
     backend === 'omp'
       ? '( meridian >/var/log/meridian.log 2>&1 & ) # OAuth router on :3456'
-      : '# backend is not omp — Meridian not started',
+      : '# backend is not omp — Meridian not installed/started',
   ]);
 
   const desktop = normalizeDesktop(opts.desktop);

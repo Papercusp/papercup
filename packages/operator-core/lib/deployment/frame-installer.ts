@@ -81,6 +81,21 @@ export function defaultMakeRemoteExec(frame: Frame, config: DeploymentConfig): R
   return createSshRemoteExec(sshTargetForFrame(frame, config));
 }
 
+/**
+ * Derive the frame's agent backend from the blueprint env (the env spec is the
+ * backend authority — its `AGENT_BACKEND` already overrides the loop's export at
+ * runtime). Without this the bootstrap always assumed `omp` and installed +
+ * launched an unused Meridian on claude/codex frames (found live 2026-06-09).
+ * Values follow the runtime vocabulary: `claude-code`→claude, `codex`→codex,
+ * anything else (incl. unset) → the historical `omp` default.
+ */
+export function deriveAgentBackend(env: Record<string, string> | undefined): 'omp' | 'claude' | 'codex' {
+  const v = (env?.AGENT_BACKEND ?? '').trim().toLowerCase();
+  if (v === 'claude-code' || v === 'claude') return 'claude';
+  if (v === 'codex') return 'codex';
+  return 'omp';
+}
+
 /** Bootstrap the papercusp runtime on a provisioned frame (own loop + own embedded-pg). */
 export async function installFrame(
   frame: Frame,
@@ -134,6 +149,7 @@ export async function installFrame(
       ports: boot.ports ?? [],
       env: boot.env ?? {},
     },
+    agentBackend: deriveAgentBackend(boot.env),
     claudeCredentialsRemotePath: boot.credentialsLocalPath ? REMOTE_CRED_PATH : undefined,
     claudeTokenRemotePath: boot.oauthTokenLocalPath ? REMOTE_TOKEN_PATH : undefined,
     accountId: boot.accountId, // P-019: export PAPERCUSP_ACCOUNT_ID so the frame keys rate buckets per-account

@@ -1,12 +1,11 @@
 /**
  * Self-improvement-loop system actions (papercusp-self-improvement-loop-2026-06-04,
  * Phase 2 + Phase 3; close-the-self-improvement-loop-2026-06-05 D-001/D-003).
- * Three routines, registered here so the routines engine can fire them; all
- * SEEDED INACTIVE (seed-improvement-routines.ts):
- *
- *   - `system:improvement-digest` (Phase 2) — read the captured
- *     `papercusp-improvement` backlog, score + dedup + tier it, log the headline
- *     and best-effort surface it to the human inbox. Triage only — builds nothing.
+ * Two routines, registered here so the routines engine can fire them; both
+ * SEEDED INACTIVE (seed-improvement-routines.ts). (The former `improvement-digest`
+ * routine was REMOVED — operator-learning-tab-2026-06-09 D-001: its only job was
+ * pushing the triage headline to the human inbox, a dead-end notification. The
+ * backlog is now PULLED in the Learning tab; see the note above the watchdog.)
  *
  *   - `system:improvement-watchdog` (close-loop D-003) — the HARD feed-in: sweep
  *     the operator's own telemetry (red tests, failing smokes, repeated tool

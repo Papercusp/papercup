@@ -27,11 +27,14 @@
  *   - Joining a topic retroactively opens its channel on every existing socket
  *     (the `joinInviteTopic`-after-boot case).
  *
- * Discovery is driven by swarm-level `swarm.flush()` (an immediate flush per
- * join + a background re-flush), NEVER the per-topic `discovery.flushed()` —
- * calling that on a standalone (non-corestore) transport poisons discovery and
- * the connection never forms (the verified cross-hive-swarm-transport gotcha;
- * see the agent insight + cross-hive-swarm-transport.ts).
+ * Discovery is driven by a per-topic `discovery.refresh()` LOOP — empirically
+ * the ONLY driver that connects a standalone (non-corestore) transport on the
+ * current hyperswarm/hyperdht: the first announce/lookup round after `join`
+ * reliably misses (a fresh DHT node), nothing internal retries for minutes, and
+ * neither `discovery.flushed()` nor swarm-level `swarm.flush()` (the older
+ * cross-hive pattern — since rotted) ever forms a connection. Verified on a
+ * loopback testnet: join + refresh-loop connects in ~1.1s; join + flushed /
+ * flush(-loop) / dht.ready()+join all sit at 0 connections indefinitely.
  *
  * Pure over an injected `HyperswarmLike` (the same test seam swarm.ts uses), so
  * join/pair/send/receive/broadcast all unit-test with a fake swarm; the live
@@ -46,14 +49,20 @@ import type { SignedHiveAnnounce } from './hive-announce';
 /** Protomux protocol id for the hive-directory gossip exchange. */
 export const HIVE_DIRECTORY_PROTOCOL = 'papercusp/hive-directory';
 
-/** Background swarm re-flush cadence — keeps announce+lookup converging even
- *  when a first DHT round is missed (the cross-hive transport's proven value). */
-export const DEFAULT_REFLUSH_MS = 2500;
+/** Background per-topic discovery-refresh cadence — re-runs the DHT announce +
+ *  lookup round so peers converge even when the first round misses (it reliably
+ *  does on a fresh node; see the module header). */
+export const DEFAULT_REFRESH_MS = 2500;
 
 type DirMessage = { send(value: SignedHiveAnnounce): void };
 
+/** What swarm.join returns — flushed is legacy; refresh re-runs announce+lookup. */
+type DiscoveryLike = { flushed?: () => Promise<void>; refresh?: (opts?: object) => unknown } | undefined;
+
 interface TopicState {
   topic: Buffer;
+  /** The swarm.join handle — its refresh() drives discovery for this topic. */
+  discovery: DiscoveryLike;
   /** Paired channels for THIS topic (one per socket whose peer also joined it). */
   channels: Set<DirMessage>;
 }

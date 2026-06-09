@@ -178,7 +178,13 @@ export function defaultScaleOutDeps(log?: (level: LogLevel, msg: string) => void
     },
     async redeploy(slug, ws, deployment) {
       const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
-      const { deployHarness, defaultDeployDeps } = await import('./deploy');
+      const { deployHarness, teardownHarness, defaultDeployDeps } = await import('./deploy');
+      const deployDeps = defaultDeployDeps(log);
+      // Scale-out MOVES the member: destroy the exhausted account's frame first
+      // (ends its billing; no-op when none). Skipping this would trip the
+      // double-deploy guard — and before that guard existed it silently
+      // overwrote the handle, orphaning the old frame's billing.
+      await teardownHarness(slug, ws, deployDeps);
       const reg = await loadHarnessRegistry(ws);
       const p = reg.projects.find((x) => x.slug === slug);
       if (p) {
@@ -186,7 +192,7 @@ export function defaultScaleOutDeps(log?: (level: LogLevel, msg: string) => void
         await saveHarnessRegistry(reg, ws);
       }
       // The fresh deployment already carries credentialRef → selectAccount is a no-op here.
-      return deployHarness(slug, ws, defaultDeployDeps(log));
+      return deployHarness(slug, ws, deployDeps);
     },
   };
 }

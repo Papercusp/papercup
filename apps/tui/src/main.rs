@@ -79,7 +79,10 @@ async fn main() -> Result<()> {
         // (dossier + activity + mail), one per active bee in the dock stack.
         // The old main-pane (tab-subset) + voice-/apiary-/swarm-/bee-pane
         // modes are GONE: tab surfaces live in the pui app, not zellij.
-        Some("chat-pane") | Some("watch-pane") => {}
+        // dock-driver (hive-agent-tabs P-004/D-009): flag-on the operator pane is
+        // psu, so the reactive agent stack needs a dedicated driver pane — it runs
+        // the reactive loop + renders the Fleet roster as the dock controller.
+        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -87,6 +90,9 @@ async fn main() -> Result<()> {
     // HUD / work area); the full data wiring in run() is unchanged.
     let pinned = match subcommand.as_deref() {
         Some("chat-pane") => Some(app::Tab::Operator),
+        // dock-driver: render the Fleet roster (the dock controller) while driving
+        // the reactive bee stack (hive-agent-tabs P-004/D-009).
+        Some("dock-driver") => Some(app::Tab::Fleet),
         _ => None,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
@@ -104,7 +110,12 @@ async fn main() -> Result<()> {
     // The dock's chat-pane drives the reactive agent stack: one watch pane per
     // active bee + one interactive pane per new local launch, appended to the
     // dock's zellij stack.
-    let dock_agent_panes = subcommand.as_deref() == Some("chat-pane");
+    // Driven by the chat-pane (flag-off) OR the dedicated dock-driver pane (flag-on,
+    // hive-agent-tabs P-004/D-009 — the operator pane is psu then, so the driver moved).
+    let dock_agent_panes = matches!(subcommand.as_deref(), Some("chat-pane") | Some("dock-driver"));
+    // The dock-driver pane is materialised ONLY in the flag-on dock, so when we ARE
+    // it the flag is on → render each claude bee as a `claude --resume` Claude TUI.
+    let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -125,7 +136,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, dock_agent_panes).await;
+    let result = run(&mut terminal, pinned, watch, dock_agent_panes, hive_agent_tabs).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -191,6 +202,7 @@ async fn run<B: Backend>(
     pinned: Option<app::Tab>,
     watch: Option<String>,
     dock_agent_panes: bool,
+    hive_agent_tabs: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
@@ -206,6 +218,7 @@ async fn run<B: Backend>(
     // first frame; the dock chat-pane flag arms the reactive agent stack.
     app.watch = watch.clone();
     app.dock_agent_panes = dock_agent_panes;
+    app.hive_agent_tabs = hive_agent_tabs;
     if let Some(owner) = &app.watch {
         app.bee.set_selection(Some(owner.clone()), None);
         // The thinking feed: tail the bee's live stdout (offset-cursor poll).

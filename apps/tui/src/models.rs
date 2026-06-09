@@ -2172,6 +2172,28 @@ mod tests {
     }
 
     #[test]
+    fn roster_entry_dock_pane_argv_bee_resume_vs_watch() {
+        use super::RosterEntry;
+        let bee = RosterEntry { owner_id: "s-1".into(), session_id: Some("uuid-x".into()), ..Default::default() };
+        // flag-on + claude session id → claude --resume (Claude TUI, P-004/D-007)
+        assert_eq!(
+            bee.dock_pane_argv(true),
+            vec!["claude".to_string(), "--resume".to_string(), "uuid-x".to_string()]
+        );
+        // flag-on, no session id (omp bee / between turns) → watch-pane
+        let nosid = RosterEntry { owner_id: "s-2".into(), session_id: None, ..Default::default() };
+        assert_eq!(
+            nosid.dock_pane_argv(true),
+            vec!["pui".to_string(), "watch-pane".to_string(), "s-2".to_string()]
+        );
+        // flag-OFF → always the watch-pane (current behavior), even with a session id
+        assert_eq!(
+            bee.dock_pane_argv(false),
+            vec!["pui".to_string(), "watch-pane".to_string(), "s-1".to_string()]
+        );
+    }
+
+    #[test]
     fn parses_flags_bootstrap_shape() {
         let f: FlagsResponse = serde_json::from_str(
             r#"{"flags":{"papercusp-oracle":false,"papercusp-snapshots":true},"evaluatedAt":1,"source":"defaults"}"#,

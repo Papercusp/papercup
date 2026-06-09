@@ -68,6 +68,20 @@ describe('deployHarness', () => {
     await expect(deployHarness('h', 'ws', memDeps(undefined, []))).rejects.toThrow(/no cloud deployment/);
   });
 
+  it('refuses a double-deploy: a recorded frame must be torn down first (orphaned-billing guard)', async () => {
+    const calls: string[] = [];
+    const deps = memDeps(cloud, calls);
+    await deployHarness('papercup', 'ws', deps);
+    calls.length = 0;
+    await expect(deployHarness('papercup', 'ws', deps)).rejects.toThrow(/already has a deployed frame.*sv_1.*deploy:teardown/s);
+    expect(calls).toEqual([]); // guard fires BEFORE provision — no second machine created
+    // teardown clears the handle, after which deploy works again
+    await teardownHarness('papercup', 'ws', deps);
+    calls.length = 0;
+    await deployHarness('papercup', 'ws', deps);
+    expect(calls).toEqual(['provision', 'persist', 'install', 'join']);
+  });
+
   it('persists the frame BEFORE install, so a failed install leaves a destroyable frame', async () => {
     const calls: string[] = [];
     const failingDriver: DeploymentDriver = {

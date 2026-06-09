@@ -75,4 +75,43 @@ describe('installFrame desktop threading (hive-frame-desktops P-001/P-003)', () 
     );
     expect(exec.scripts.at(-1)!).not.toContain('Xvfb');
   });
+
+  it('blueprint env AGENT_BACKEND=claude-code → claude backend bootstrap (no Meridian install)', async () => {
+    const exec = recordingExec();
+    await installFrame(
+      FRAME,
+      { target: 'hetzner' },
+      { harnessSlug: 'h', workspaceId: 'ws', bootstrap: { env: { AGENT_BACKEND: 'claude-code' } } },
+      { makeRemoteExec: () => exec, sshWait: { attempts: 1, delayMs: 1 } },
+    );
+    const bootstrap = exec.scripts.at(-1)!;
+    expect(bootstrap).toContain("export AGENT_BACKEND='claude-code'"); // loop-level export (claude → claude-code vocabulary)
+    expect(bootstrap).not.toContain('@rynfar/meridian'); // claude frame never installs Meridian
+    expect(bootstrap).toContain('backend is not omp');
+  });
+
+  it('no AGENT_BACKEND env → historical omp default (Meridian installed + started)', async () => {
+    const exec = recordingExec();
+    await installFrame(
+      FRAME,
+      { target: 'hetzner' },
+      { harnessSlug: 'h', workspaceId: 'ws', bootstrap: {} },
+      { makeRemoteExec: () => exec, sshWait: { attempts: 1, delayMs: 1 } },
+    );
+    const bootstrap = exec.scripts.at(-1)!;
+    expect(bootstrap).toContain('@rynfar/meridian');
+    expect(bootstrap).toContain('meridian >/var/log/meridian.log');
+  });
+});
+
+describe('deriveAgentBackend (blueprint env is the backend authority)', () => {
+  it('maps the runtime vocabulary', async () => {
+    const { deriveAgentBackend } = await import('./frame-installer');
+    expect(deriveAgentBackend({ AGENT_BACKEND: 'claude-code' })).toBe('claude');
+    expect(deriveAgentBackend({ AGENT_BACKEND: 'claude' })).toBe('claude');
+    expect(deriveAgentBackend({ AGENT_BACKEND: 'Codex' })).toBe('codex');
+    expect(deriveAgentBackend({ AGENT_BACKEND: 'omp' })).toBe('omp');
+    expect(deriveAgentBackend({})).toBe('omp');
+    expect(deriveAgentBackend(undefined)).toBe('omp');
+  });
 });

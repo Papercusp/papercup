@@ -237,6 +237,22 @@ pub fn chat_dock_kdl(
     } else {
         "command \"pui\"\n            args \"chat-pane\""
     };
+    // P-004 / D-009: flag-OFF the pui chat-pane both renders the operator chat AND
+    // drives the reactive agent stack (one pane per active bee). Flag-ON the operator
+    // pane is psu, so that driver must relocate — a dedicated `pui dock-driver` pane
+    // runs the reactive loop (dock_agent_panes) with HIVE_AGENT_TABS on and renders
+    // the fleet roster as the dock's controller. It exists ONLY in the flag-on layout,
+    // so it can assume the flag is on (no fetch). The bee panes it appends resume as
+    // real Claude TUIs (RosterEntry::dock_pane_argv → claude --resume). Named via the
+    // `fleet` lexicon term. Flag-off → empty (chat-pane drives, layout unchanged).
+    let driver_name = kdl_pane_name(&lex.lex("fleet"), "fleet");
+    let driver_pane_block = if hive_agent_tabs {
+        format!(
+            "\n        pane name=\"{driver_name}\" {{\n            command \"pui\"\n            args \"dock-driver\"\n        }}"
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"// Papercusp chat dock — ONE full-width agent stack (zellij reserved for the
 // truly console-driven surface — owner ask, pui-dock-agent-stack-2026-06-07;
@@ -259,7 +275,7 @@ layout {{
         }}
         pane name="{brain_name}" {{
             command "{brain_cmd}"{args_line}
-        }}
+        }}{driver_pane_block}
     }}
     pane size=2 borderless=true {{
         plugin location="zellij:status-bar"
@@ -540,13 +556,17 @@ mod tests {
         assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
-        assert_eq!(on.matches("command \"psu\"").count(), 2);
-        assert_eq!(on.matches("command \"pui\"").count(), 0);
+        assert_eq!(on.matches("command \"psu\"").count(), 2); // sentinel + queen
+        // P-004/D-009: flag-on the reactive driver relocates to a `pui dock-driver`
+        // pane (the chat-pane no longer drives), so exactly one pui command remains.
+        assert!(on.contains("args \"dock-driver\""));
+        assert_eq!(on.matches("command \"pui\"").count(), 1);
 
-        // Flag OFF → unchanged: the pui chat-pane widget drives the dock.
+        // Flag OFF → unchanged: the pui chat-pane widget drives the dock (no driver pane).
         let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
         assert!(off.contains("args \"chat-pane\""));
         assert!(!off.contains("--role=operator"));
+        assert!(!off.contains("args \"dock-driver\""));
         assert_eq!(off.matches("command \"pui\"").count(), 1);
     }
 

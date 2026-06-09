@@ -1,11 +1,7 @@
-/** THROWAWAY probe — diagnoses the live directory gossip; delete after use. */
-import { afterEach, describe, it, expect } from 'vitest';
+/** THROWAWAY probe — bisects live hyperswarm discovery drivers; delete after use. */
+import { afterEach, describe, it } from 'vitest';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
-import { createDirectoryGossip } from '../directory-swarm';
-import { deriveDirectoryTopic } from '../derive-hive-topic';
-import type { HyperswarmLike } from '../swarm';
-import type { SignedHiveAnnounce } from '../hive-announce';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -18,62 +14,78 @@ afterEach(async () => {
   }
 });
 
-describe('probe', () => {
-  it(
-    'two gossips on one topic: connection + channel pairing + frame delivery',
-    async () => {
-      const testnet = await createTestnet(3);
-      cleanups.push(() => testnet.destroy());
+type Driver = 'dht-ready-then-join' | 'wait1500-then-join' | 'refresh-loop' | 'flushed-await';
 
-      const mk = (): HyperswarmLike & { destroy(): Promise<void>; flush(): Promise<unknown> } => {
-        const s = new Hyperswarm({ bootstrap: testnet.bootstrap }) as never;
-        cleanups.push(async () => {
-          try {
-            await (s as { destroy(): Promise<void> }).destroy();
-          } catch {
-            /* ignore */
-          }
-        });
-        return s;
-      };
-      const swarmA = mk();
-      const swarmB = mk();
-
-      const fakeFrame = { hive_id: 'probe' } as unknown as SignedHiveAnnounce;
-      const gotB: SignedHiveAnnounce[] = [];
-
-      const gA = createDirectoryGossip({
-        swarm: swarmA,
-        onAnnounce: () => {},
-        getOwnAnnounces: () => [fakeFrame],
-        reflushMs: 1000,
-      });
-      cleanups.push(() => gA.close());
-      const gB = createDirectoryGossip({
-        swarm: swarmB,
-        onAnnounce: (f) => {
-          gotB.push(f);
-        },
-        getOwnAnnounces: () => [],
-        reflushMs: 1000,
-      });
-      cleanups.push(() => gB.close());
-
-      const topic = deriveDirectoryTopic();
-      gA.joinTopic(topic);
-      gB.joinTopic(topic);
-
-      const deadline = Date.now() + 20_000;
-      for (;;) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[probe] A conn=${gA.connectionCount} ch=${gA.openChannelCount()} | B conn=${gB.connectionCount} ch=${gB.openChannelCount()} | B got=${gotB.length}`,
-        );
-        if (gotB.length > 0 || Date.now() > deadline) break;
-        await new Promise((r) => setTimeout(r, 1000));
+async function probe(driver: Driver, topic: Buffer): Promise<string> {
+  const testnet = await createTestnet(3);
+  cleanups.push(() => testnet.destroy());
+  const mk = () => {
+    const s = new Hyperswarm({ bootstrap: testnet.bootstrap });
+    cleanups.push(async () => {
+      try {
+        await s.destroy();
+      } catch {
+        /* ignore */
       }
-      expect(gotB.length).toBeGreaterThan(0);
-    },
-    30_000,
-  );
+    });
+    return s;
+  };
+  const a = mk();
+  const b = mk();
+  let conns = 0;
+  for (const s of [a, b]) {
+    s.on('connection', (sock: { on(e: string, f: (x?: unknown) => void): void }) => {
+      conns++;
+      sock.on('error', () => {});
+    });
+  }
+
+  const start = Date.now();
+  if (driver === 'dht-ready-then-join') {
+    await a.dht.ready();
+    await b.dht.ready();
+  }
+  if (driver === 'wait1500-then-join') {
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  const discos = [a, b].map((s) => s.join(topic, { server: true, client: true }));
+  if (driver === 'flushed-await') {
+    await Promise.all(discos.map((d) => d.flushed().catch(() => {})));
+    // eslint-disable-next-line no-console
+    console.log(`[probe] driver=${driver} flushed resolved at ${Date.now() - start}ms`);
+  }
+  let loop: ReturnType<typeof setInterval> | null = null;
+  if (driver === 'refresh-loop') {
+    loop = setInterval(() => {
+      for (const d of discos) void (d as { refresh?: (o?: object) => Promise<unknown> }).refresh?.()?.catch?.(() => {});
+    }, 1000);
+    cleanups.push(() => {
+      if (loop) clearInterval(loop);
+    });
+  }
+
+  const deadline = Date.now() + 8000;
+  while (conns < 2 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (loop) clearInterval(loop);
+  const verdict = conns >= 2 ? `CONNECTED in ${Date.now() - start}ms` : `NO CONNECTION after 8s (conns=${conns})`;
+  (await import('node:fs')).appendFileSync('/tmp/probe-results.txt', `driver=${driver} -> ${verdict}\n`);
+  return verdict;
+}
+
+describe('probe: discovery drivers round 2', () => {
+  const topic = Buffer.alloc(32, 7);
+  it('dht-ready-then-join', { timeout: 40_000 }, async () => {
+    await probe('dht-ready-then-join', topic);
+  });
+  it('wait1500-then-join', { timeout: 40_000 }, async () => {
+    await probe('wait1500-then-join', topic);
+  });
+  it('refresh-loop', { timeout: 40_000 }, async () => {
+    await probe('refresh-loop', topic);
+  });
+  it('flushed-await', { timeout: 40_000 }, async () => {
+    await probe('flushed-await', topic);
+  });
 });
