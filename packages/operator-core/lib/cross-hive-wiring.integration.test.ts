@@ -1,28 +1,26 @@
 /**
- * cross-hive-wiring.integration.test.ts — the FULL live cross-Hive boundary
- * (cross-hive-boundary-2026-06-08 P-006 wiring + the strengthened P-005 in-process
- * proof). Two SEPARATE Hives, each a wireCrossHiveBoundary over its OWN real
- * Hyperswarm; Hive B's admission grants live in REAL PG (loadCrossHiveGrants over
- * hive_settings). Hive A dials Hive B by pubkey; B admits per its grants and routes
- * the admitted request to its (recording) ports; an UNGRANTED kind is rejected
- * (sovereignty); then B replies and A's onReply fires.
+ * cross-hive-wiring.integration.test.ts — the FULL cross-Hive boundary WIRING
+ * (cross-hive-boundary-2026-06-08 P-006 composition + the strengthened P-005
+ * in-process proof). Two SEPARATE Hives, each a wireCrossHiveBoundary; Hive B's
+ * admission grants live in REAL PG (loadCrossHiveGrants over hive_settings). Hive A
+ * addresses Hive B; B admits per its PG grant and routes the admitted request to
+ * its (recording) ports; an UNGRANTED kind is rejected (sovereignty); then B
+ * replies and A's onReply fires.
  *
- * This composes everything the plan built — the swarm transport (real Hyperswarm),
- * the persisted grants (PG, P-002), receiveCrossHive admission, and the durable
- * outbox — and proves the literal A→B→reply round-trip minus only the two physical
- * machines (P-005's owner/cloud-gated bit).
+ * The transport here is an in-process paired mesh (deterministic) — the LIVE
+ * Hyperswarm transport is proven separately in cross-hive-two-hive.test.ts (a real
+ * envelope crossing two real swarms). This test owns the COMPOSITION: signer →
+ * sign → send → receive → verify → grant-load (PG) → admit → translate, plus the
+ * durable PG-or-memory outbox and the reply path. Only the two physical machines
+ * (P-005's owner/cloud-gated bit) are absent.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import createTestnet from 'hyperdht/testnet.js';
-import Hyperswarm from 'hyperswarm';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { makeSwarmCrossHiveTransport } from './cross-hive-swarm-transport';
-import { InMemoryCrossHiveOutbox } from './cross-hive-transport';
+import { InMemoryCrossHiveOutbox, type CrossHiveTransport, type CrossHiveWireEnvelope } from './cross-hive-transport';
 import { setCrossHiveGrant, loadCrossHiveGrants } from './cross-hive-grants';
 import { wireCrossHiveBoundary, type CrossHiveInboundReply } from './cross-hive-wiring';
 import type { CrossHiveBoundaryPorts, CrossHiveEnvelope } from './cross-hive-boundary';
-import type { HyperswarmLike } from './sync/hyperbee/swarm';
 
 const WS = 'default';
 const A_SLUG = 'hive-a';
@@ -56,22 +54,31 @@ function hiveIdentity() {
   };
 }
 
-const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
-  while (cleanups.length) {
-    try {
-      await cleanups.pop()!();
-    } catch {
-      /* best-effort teardown */
-    }
-  }
-});
+/**
+ * An in-process paired transport mesh: each transport registers its subscriber
+ * under its own Hive pubkey; send routes the wire envelope to the addressed
+ * peer's subscriber. This is the deterministic stand-in for the Hyperswarm
+ * transport (proven live in cross-hive-two-hive.test.ts) — it carries the EXACT
+ * CrossHiveWireEnvelope so signing + verification + admission are all real.
+ */
+function makeTransportMesh() {
+  const subs = new Map<string, (env: CrossHiveWireEnvelope) => void | Promise<unknown>>();
+  return (selfPubkey: string): CrossHiveTransport => ({
+    subscribe(handler) {
+      subs.set(selfPubkey, handler);
+    },
+    async send(toHivePubkey, env) {
+      const h = subs.get(toHivePubkey);
+      if (!h) throw new Error(`mesh: no peer ${toHivePubkey}`);
+      await h(env);
+    },
+  });
+}
 
 beforeAll(async () => {
   db = await createFreshPgDb('xhive-wiring');
   await db.sql.unsafe(HIVES_DDL);
   await db.sql.unsafe(HIVE_SETTINGS_DDL);
-  // Hive B must exist for its settings (grants) to attach.
   await db.sql`
     INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
     VALUES (${WS}, ${B_SLUG}, ${Buffer.alloc(32)}, 'kc-b', 0)`;
@@ -79,96 +86,66 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`DELETE FROM harness_shared.hive_settings`; });
 
-async function pollUntil(fn: () => boolean | Promise<boolean>, ms = 60_000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (await fn()) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
+describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006 / P-005 proxy)', () => {
+  it('B admits A per its PG grant, rejects an ungranted kind, and the reply reaches A', async () => {
+    const A = hiveIdentity();
+    const B = hiveIdentity();
 
-describe('live cross-Hive boundary — real transport + PG grants + admission (P-006 wiring / P-005 proxy)', () => {
-  it(
-    'B admits A per its PG grant, rejects an ungranted kind, and the reply reaches A',
-    async () => {
-      const A = hiveIdentity();
-      const B = hiveIdentity();
+    // B's owner grants Hive A only the 'ask' kind — persisted in REAL PG.
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask'], db.sql);
 
-      // B's owner grants Hive A the 'ask' kind (NOT 'work-request') — persisted in PG.
-      await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask'], db.sql);
+    const mesh = makeTransportMesh();
 
-      const testnet = await createTestnet(3);
-      cleanups.push(async () => { await testnet.destroy().catch(() => {}); });
-      const swarmA = new Hyperswarm({ bootstrap: testnet.bootstrap }) as unknown as HyperswarmLike & { destroy(): Promise<void> };
-      const swarmB = new Hyperswarm({ bootstrap: testnet.bootstrap }) as unknown as HyperswarmLike & { destroy(): Promise<void> };
-      cleanups.push(async () => { await swarmA.destroy().catch(() => {}); });
-      cleanups.push(async () => { await swarmB.destroy().catch(() => {}); });
+    // B's recording ports — what an admitted request became.
+    const admitted = { asks: [] as CrossHiveEnvelope[], workRequests: [] as CrossHiveEnvelope[] };
+    const recordingPorts: CrossHiveBoundaryPorts = {
+      async openAsk(env) { admitted.asks.push(env); return { ref: `conv-${admitted.asks.length}` }; },
+      async createWorkRequest(env) { admitted.workRequests.push(env); return { ref: `wi-${admitted.workRequests.length}` }; },
+    };
 
-      // B's recording ports — what an admitted request became.
-      const admitted = { asks: [] as CrossHiveEnvelope[], workRequests: [] as CrossHiveEnvelope[] };
-      const recordingPorts: CrossHiveBoundaryPorts = {
-        async openAsk(env) { admitted.asks.push(env); return { ref: `conv-${admitted.asks.length}` }; },
-        async createWorkRequest(env) { admitted.workRequests.push(env); return { ref: `wi-${admitted.workRequests.length}` }; },
-      };
+    const aReplies: CrossHiveInboundReply[] = [];
+    const aWiring = wireCrossHiveBoundary({
+      workspaceId: WS, hiveSlug: A_SLUG, hivePubkey: A.pubkey,
+      transport: mesh(A.pubkey), signer: A.signer,
+      requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
+      loadGrants: async () => [],
+      outbox: new InMemoryCrossHiveOutbox(),
+      onReply: (r) => aReplies.push(r),
+    });
+    const bWiring = wireCrossHiveBoundary({
+      workspaceId: WS, hiveSlug: B_SLUG, hivePubkey: B.pubkey,
+      transport: mesh(B.pubkey), signer: B.signer,
+      requestPorts: recordingPorts,
+      loadGrants: () => loadCrossHiveGrants(WS, B_SLUG, db.sql), // REAL PG grants drive admission
+      outbox: new InMemoryCrossHiveOutbox(),
+    });
 
-      // Short per-attempt wait + outer flushOutbox retries (store-and-forward) →
-      // robust under integration-config CPU contention where DHT connect is slow.
-      const transportA = makeSwarmCrossHiveTransport({ swarm: swarmA, selfHivePubkey: A.pubkey, sendWaitMs: 8_000 });
-      const transportB = makeSwarmCrossHiveTransport({ swarm: swarmB, selfHivePubkey: B.pubkey, sendWaitMs: 8_000 });
+    // 1. A sends a GRANTED ask → B verifies A's sig → loads its PG grant → admits → routes to a conversation.
+    const r1 = await aWiring.send(B.pubkey, { id: 'ask-1', kind: 'ask', subject: 'can you help', body: 'with X?' });
+    expect(r1.delivered).toBe(true);
+    expect(admitted.asks).toHaveLength(1);
+    expect(admitted.asks[0]).toMatchObject({ fromHivePubkey: A.pubkey, kind: 'ask', subject: 'can you help' });
 
-      const aReplies: CrossHiveInboundReply[] = [];
-      const aWiring = wireCrossHiveBoundary({
-        workspaceId: WS, hiveSlug: A_SLUG, hivePubkey: A.pubkey,
-        transport: transportA, signer: A.signer,
-        requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
-        loadGrants: async () => [], // A admits nothing inbound in this test
-        outbox: new InMemoryCrossHiveOutbox(),
-        onReply: (r) => aReplies.push(r),
-      });
-      const bWiring = wireCrossHiveBoundary({
-        workspaceId: WS, hiveSlug: B_SLUG, hivePubkey: B.pubkey,
-        transport: transportB, signer: B.signer,
-        requestPorts: recordingPorts,
-        loadGrants: () => loadCrossHiveGrants(WS, B_SLUG, db.sql), // REAL PG grants
-        outbox: new InMemoryCrossHiveOutbox(),
-      });
-      cleanups.push(() => aWiring.close());
-      cleanups.push(() => bWiring.close());
+    // 2. A sends an UNGRANTED work-request → B rejects at admission (sovereignty) → never routed.
+    const r2 = await aWiring.send(B.pubkey, { id: 'wr-1', kind: 'work-request', subject: 'do this', body: 'task' });
+    expect(r2.delivered).toBe(true); // delivered on the wire…
+    expect(admitted.workRequests).toHaveLength(0); // …but not admitted (no grant for the kind)
 
-      // 1. A sends a GRANTED ask → B admits per its PG grant → recorded as a conversation.
-      //    The first attempt may QUEUE (DHT connect still forming); flushOutbox
-      //    redelivers once the channel pairs (store-and-forward).
-      await aWiring.send(B.pubkey, { id: 'ask-1', kind: 'ask', subject: 'can you help', body: 'with X?' });
-      expect(
-        await pollUntil(async () => {
-          await aWiring.flushOutbox().catch(() => {});
-          return admitted.asks.length > 0;
-        }),
-      ).toBe(true);
-      expect(admitted.asks[0]).toMatchObject({ fromHivePubkey: A.pubkey, kind: 'ask', subject: 'can you help' });
+    // 3. After the owner WIDENS the grant to include work-request, the next one IS admitted.
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask', 'work-request'], db.sql);
+    await aWiring.send(B.pubkey, { id: 'wr-2', kind: 'work-request', subject: 'do this now', body: 'task2' });
+    expect(admitted.workRequests).toHaveLength(1);
+    expect(admitted.workRequests[0]).toMatchObject({ fromHivePubkey: A.pubkey, kind: 'work-request' });
 
-      // 2. A sends an UNGRANTED work-request → B rejects (sovereignty) → never routed.
-      await aWiring.send(B.pubkey, { id: 'wr-1', kind: 'work-request', subject: 'do this', body: 'task' });
-      // Ensure it actually reached B (flush until the outbox drains), then assert
-      // B did NOT route it — rejected at admission, not merely undelivered.
-      await pollUntil(async () => {
-        const { pending } = await aWiring.flushOutbox().catch(() => ({ pending: 1 }));
-        return pending === 0;
-      });
-      await new Promise((r) => setTimeout(r, 1000));
-      expect(admitted.workRequests).toHaveLength(0);
+    // 4. After REVOKE, a further ask is rejected — admission re-reads the live grant each time.
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, [], db.sql); // empty kinds = revoke
+    await aWiring.send(B.pubkey, { id: 'ask-2', kind: 'ask', subject: 'again?', body: '...' });
+    expect(admitted.asks).toHaveLength(1); // still just the first — the revoked ask is dropped
 
-      // 3. B replies (answer) correlated to the ask → A's onReply fires.
-      await bWiring.reply(A.pubkey, { kind: 'answer', subject: 're: help', body: 'yes', correlationId: 'ask-1' });
-      expect(
-        await pollUntil(async () => {
-          await bWiring.flushOutbox().catch(() => {});
-          return aReplies.length > 0;
-        }),
-      ).toBe(true);
-      expect(aReplies[0]).toMatchObject({ replyKind: 'answer', correlationId: 'ask-1', body: 'yes' });
-    },
-    90_000,
-  );
+    // 5. B replies (answer) correlated to the original ask → A's onReply fires (replies are not grant-gated).
+    const r5 = await bWiring.reply(A.pubkey, { kind: 'answer', subject: 're: help', body: 'yes', correlationId: 'ask-1' });
+    expect(r5.delivered).toBe(true);
+    expect(aReplies).toHaveLength(1);
+    expect(aReplies[0]).toMatchObject({ replyKind: 'answer', correlationId: 'ask-1', body: 'yes' });
+  });
 });

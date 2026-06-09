@@ -167,6 +167,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,
   // github_user_id) → workspace-owned + peer-log.
   'hive_members',
+  // fed-reanchor B5: the work-queue's issue/task family (work_items kind ∈ bug|change|
+  // task) federates over the Hive peer-log — closes engineer-issues-2026-06-03 D-009's
+  // "federation deferred". Keyed (workspace_id, issue_id); the capture trigger (mig 197)
+  // derives the federation slug from `scope` ('harness:<slug>' → <slug>; 'operator' →
+  // the Hive home) and stamps it as harness_slug for the projection demux. Listed here
+  // so it resolves to sync:'peer-log' BEFORE the WORKSPACE_OWNED_EXPLICIT entry would.
+  'engineer_issues',
 ];
 
 /**
@@ -182,7 +189,8 @@ const WORKSPACE_OWNED_EXPLICIT = [
   'harness_registry',          // per-workspace harness membership list (one JSONB row/workspace) — NOT slug-shared
   'autoloop_state', 'harness_dock_layouts', 'saved_prompts',
   'harness_brainstorm', 'harness_plan_review', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped
-  'engineer_issues', // engineer-issues-2026-06-03: per-workspace agent issue surface; v1 local (federation deferred, D-009)
+  // NB: engineer_issues moved to PEER_LOG_WORKSPACE_OWNED (fed-reanchor B5) — the
+  // work-queue's issue/task family now federates over the Hive peer-log.
 ];
 
 /**

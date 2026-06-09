@@ -117,14 +117,6 @@ export interface WorkItem {
   rankWriter: RankWriter | null;
   /** When `rank` was last written (tiebreak + audit). */
   rankUpdatedAt: string | null;
-  /**
-   * BACKLOG priority — `feature_order`, the GLOBAL order the decentralized claim path
-   * (claimNextWorkItem) pulls against (LOWER = claimed sooner; null = unprioritized,
-   * sorts last). The Queen's steer-don't-dispatch lever (work_items:set_priority).
-   * DISTINCT from `rank` (a per-assignee CLAIMED-list position). Feature-family only —
-   * null on issue-family items (they aren't the dispatched backlog).
-   */
-  priority: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -183,7 +175,6 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     rank: i.assigneeRank,
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
-    priority: null, // issue-family is not the dispatched backlog
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
@@ -202,7 +193,6 @@ interface FeatureRowDb {
   assignee_rank: number | null;
   rank_writer: string | null;
   rank_updated_at: unknown;
-  feature_order: number | null;
   created_ts: unknown;
   updated_ts: unknown;
 }
@@ -223,14 +213,13 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     rank: r.assignee_rank,
     rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,
     rankUpdatedAt: r.rank_updated_at == null ? null : tsIso(r.rank_updated_at),
-    priority: r.feature_order ?? null,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
 }
 
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
-  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts`;
+  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, created_ts, updated_ts`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {

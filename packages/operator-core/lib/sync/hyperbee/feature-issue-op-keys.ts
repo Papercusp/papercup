@@ -38,6 +38,7 @@ import type { CoordThreadRow } from './projections/coord-thread';
 import type { CoordThreadPostRow } from './projections/coord-thread-post';
 import type { PlanItemAssignmentRow } from './projections/plan-item-assignments';
 import type { HiveMemberRow } from './projections/hive-members';
+import type { EngineerIssueRow } from './projections/engineer-issues';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -80,6 +81,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so
   // it rides the Hive peer-log.
   hive_members: 'hive-members',
+  // fed-reanchor B5: the work-queue's issue/task family. Projection 'engineer-issues'
+  // (projections/engineer-issues.ts); key == issue_id. The capture trigger (mig 197)
+  // derives the federation slug from `scope` + stamps it into the row as harness_slug.
+  engineer_issues: 'engineer-issues',
 };
 
 /**
@@ -363,6 +368,38 @@ function toHiveMemberValue(row: Record<string, unknown>): HiveMemberRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `EngineerIssueRow` the engineer-issues projection
+ *  INSERT consumes — the federated subset of harness_shared.engineer_issues. The capture
+ *  trigger (mig 197) stamped `harness_slug` (the federation slug derived from `scope`)
+ *  into the row for the projection demux. assigned_at/created_at are TIMESTAMPTZ → ISO
+ *  strings under to_jsonb; the projection inserts them straight (PG casts ISO →
+ *  timestamptz). payload stays jsonb-opaque. created_at falls back to now ISO if absent
+ *  (a real row always carries it; defensive against a malformed op). The per-bee
+ *  work-list ordering (assignee_rank/rank_writer/rank_updated_at) is NOT federated. */
+function toEngineerIssueValue(row: Record<string, unknown>): EngineerIssueRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    issue_id: String(row.issue_id ?? ''),
+    scope: String(row.scope ?? ''),
+    kind: String(row.kind ?? 'bug'),
+    title: String(row.title ?? ''),
+    body: String(row.body ?? ''),
+    severity: String(row.severity ?? ''),
+    source: String(row.source ?? ''),
+    state: String(row.state ?? ''),
+    assignee: strOrNull(row.assignee),
+    assigned_by: strOrNull(row.assigned_by),
+    assigned_at: strOrNull(row.assigned_at),
+    payload: row.payload ?? null,
+    found_during: strOrNull(row.found_during),
+    linked_feature_id: strOrNull(row.linked_feature_id),
+    created_by: strOrNull(row.created_by),
+    created_at: typeof row.created_at === 'string' && row.created_at
+      ? row.created_at
+      : new Date().toISOString(),
+  };
+}
+
 /**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
  * own log. Throws on an unknown `table_name` (a programming error — the trigger
@@ -401,7 +438,8 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | CoordThreadPostRow
     | PlanItemAssignmentRow
     | HiveSettingRow
-    | HiveMemberRow;
+    | HiveMemberRow
+    | EngineerIssueRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
@@ -432,6 +470,9 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
       break;
     case 'hive_members':
       value = toHiveMemberValue(row);
+      break;
+    case 'engineer_issues':
+      value = toEngineerIssueValue(row);
       break;
     default:
       value = toIssueValue(row);

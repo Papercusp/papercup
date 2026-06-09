@@ -1023,6 +1023,95 @@ defineTestDomain({
   ],
 });
 
+// The SHARED-HIVE federation: sharing one Hive's work across SOVEREIGN peer Hives
+// (shared-hive-federation-2026-06-08 / cross-hive-boundary-2026-06-08). Distinct from the
+// `hive` domain (the LOCAL Queen/bee loop): this is the cross-Hive substrate — the mediated
+// boundary (owner-set capability grants → admit → translate into B's own conversation/work_item),
+// the signed wire + store-and-forward outbox, the Hyperswarm transport, the P2P hive directory,
+// per-Hive identity/membership/settings + contributor revocation, and the Hive-scoped work-item
+// claim authority. Files also appear under operator-core (overlap intentional, like `hive`);
+// this is the cohesive subsystem view a reviewer of "Shared Hive" wants in one place.
+defineTestDomain({
+  id: 'shared-hive',
+  label: 'Shared Hive (federation)',
+  description:
+    'Cross-Hive peer-to-peer federation: the mediated Hive→Hive boundary (capability-grant admission + translation), signed wire + store-and-forward outbox, Hyperswarm transport, the P2P hive directory, per-Hive identity/membership/settings + contributor revocation, and Hive-scoped work-item claim authority.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'boundary',
+      label: 'Boundary (admit + signed wire)',
+      description:
+        'The sovereignty boundary: capability-grant allow-list admission (default-deny, per-peer, per-kind), translation into B\'s ordinary conversation/work_item surfaces, the Ed25519-signed wire envelope + verify (incl. malformed-input robustness + correlationId canonicalization), the durable store-and-forward outbox (partial-failure recovery + id-keyed dedup), and the persisted grant store.',
+      globs: [
+        'packages/operator-core/lib/cross-hive-boundary*.test.ts',
+        'packages/operator-core/lib/cross-hive-transport*.test.ts',
+        'packages/operator-core/lib/cross-hive-grants.integration.test.ts',
+        'packages/operator-core/lib/cross-hive-outbox-pg.integration.test.ts',
+      ],
+    },
+    {
+      id: 'transport-swarm',
+      label: 'Hyperswarm transport + live wire',
+      description:
+        'The Hive-pubkey-topic Hyperswarm transport (dial-by-pubkey, subscribe, close) and the live two-Hive wire E2E over a real Hyperswarm testnet (bidirectional ask→answer). NOTE: the two-hive testnet wire test is timing-flaky on the DHT and is actively being stabilized.',
+      globs: [
+        'packages/operator-core/lib/cross-hive-swarm-transport.test.ts',
+        'packages/operator-core/lib/cross-hive-e2e.test.ts',
+        'packages/operator-core/lib/cross-hive-two-hive.test.ts',
+      ],
+    },
+    {
+      id: 'directory',
+      label: 'Hive directory + publish',
+      description:
+        'The P2P hive-discovery directory (verified-only ingest, LWW dedup, mute, visibility-routed announce, TTL GC, boot wiring) plus announce-on-publish and the harness→Hive swarm-binding re-key.',
+      globs: [
+        'packages/operator-core/lib/hive-directory*.test.ts',
+        'packages/operator-core/lib/hive-publish.test.ts',
+        'packages/operator-core/lib/hive-federation.test.ts',
+      ],
+    },
+    {
+      id: 'identity',
+      label: 'Identity & store',
+      description: 'Per-Hive Ed25519 identity get-or-mint + pubkey resolution, and the hive entity PG store (pubkey/keychain CRUD, workspace scoping).',
+      globs: [
+        'packages/operator-core/lib/hive-identity*.test.ts',
+        'packages/operator-core/lib/hive-store.integration.test.ts',
+      ],
+    },
+    {
+      id: 'membership',
+      label: 'Membership, settings & revocation',
+      description:
+        'Per-Hive contributor admission (device pubkeys, the revoked-pubkey union), federated per-Hive settings, and owner revocation of a Hive contributor (blocklist into the owner row).',
+      globs: [
+        'packages/operator-core/lib/hive-membership-store.integration.test.ts',
+        'packages/operator-core/lib/hive-settings-store.integration.test.ts',
+        'packages/operator-core/lib/hive-revoke-contributor.test.ts',
+      ],
+    },
+    {
+      id: 'claim-authority',
+      label: 'Work-item claim authority',
+      description:
+        'The Hive-scoped work-item claim arbitration seam (single-peer local authority + the Track-B swap-in registry) and the authority-side acquire/heartbeat/release op routing.',
+      globs: ['packages/operator-core/lib/work-item-claim-authority*.test.ts'],
+    },
+    {
+      id: 'tools',
+      label: 'Hive agent tools',
+      description: 'The agent-facing hive lifecycle tools: hive:create / hive:add-member, discovery:hives, and harness create→hive-membership wiring.',
+      globs: [
+        'packages/operator-core/lib/agent-tools/hive/**/*.test.ts',
+        'packages/operator-core/lib/agent-tools/discovery/hives.test.ts',
+        'packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts',
+      ],
+    },
+  ],
+});
+
 defineTestDomain({
   id: 'operator-ui-lib',
   label: 'Operator UI lib',
@@ -1101,6 +1190,8 @@ const PAPERCUSP_IDS = [
   'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
   'hive',
+  // The cross-Hive (shared-hive) federation substrate as a cohesive subsystem view.
+  'shared-hive',
   // The adversarial coordination test suite as a cohesive cross-subsystem view.
   'coordination-suite',
 ] as const;

@@ -44,6 +44,7 @@ import { buildCoordThreadPostProjection } from './coord-thread-post';
 import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 import { buildHiveMembersProjection } from './hive-members';
+import { buildEngineerIssuesProjection } from './engineer-issues';
 
 export interface RegisterAllOpts {
   workspaceId: string;
@@ -101,6 +102,10 @@ export const REGISTERED_PROJECTION_TAGS = [
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission
   // (hive_members) federates across the Hive's Swarms so a revocation propagates.
   'hive-members',
+  // fed-reanchor B5: the work-queue's issue/task family (engineer_issues, work_items
+  // kind ∈ bug|change|task) federates over the Hive peer-log. The capture trigger
+  // (mig 197) derives the federation slug from `scope` + stamps it as harness_slug.
+  'engineer-issues',
 ] as const;
 
 export type RegisteredProjectionTag = (typeof REGISTERED_PROJECTION_TAGS)[number];
@@ -130,6 +135,7 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildPlanItemAssignmentsProjection(opts),
     buildHiveSettingsProjection(opts),
     buildHiveMembersProjection(opts),
+    buildEngineerIssuesProjection(opts),
   ] as TableProjection<unknown>[];
 }
 

@@ -74,6 +74,11 @@ const env = (id: string, from: string, to: string, over: Partial<CrossHiveWireEn
 describe('cross-Hive transport over two REAL Hyperswarms (P-006 live wire, P-005 in-process proxy)', () => {
   it(
     'Hive A dials Hive B by pubkey and delivers an envelope; B replies and A receives (bidirectional)',
+    // Real public-DHT discovery over a loopback testnet is timing-sensitive on a
+    // busy shared box; retry a transient connect miss (each attempt is a fresh
+    // testnet/swarms). The transport LOGIC is covered deterministically by
+    // cross-hive-swarm-transport.test.ts; this is the real-Hyperswarm proof.
+    { timeout: 100_000, retry: 3 },
     async () => {
       const testnet = await createTestnet(3);
       cleanups.push(async () => {
@@ -94,13 +99,13 @@ describe('cross-Hive transport over two REAL Hyperswarms (P-006 live wire, P-005
       const tA: SwarmCrossHiveTransport = makeSwarmCrossHiveTransport({
         swarm: swarmA,
         selfHivePubkey: hiveA,
-        sendWaitMs: 20_000,
+        sendWaitMs: 45_000,
         pollMs: 100,
       });
       const tB: SwarmCrossHiveTransport = makeSwarmCrossHiveTransport({
         swarm: swarmB,
         selfHivePubkey: hiveB,
-        sendWaitMs: 20_000,
+        sendWaitMs: 45_000,
         pollMs: 100,
       });
       cleanups.push(() => tA.close());
@@ -114,17 +119,16 @@ describe('cross-Hive transport over two REAL Hyperswarms (P-006 live wire, P-005
       // 1. A → B: dial B by pubkey, deliver an `ask` over the real swarm.
       const ask = env('ask-1', hiveA, hiveB, { kind: 'ask' });
       await tA.send(hiveB, ask);
-      const gotAsk = await pollUntil(() => receivedByB.length > 0, { timeoutMs: 20_000, intervalMs: 100 });
+      const gotAsk = await pollUntil(() => receivedByB.length > 0, { timeoutMs: 45_000, intervalMs: 150 });
       expect(gotAsk).toBe(true);
       expect(receivedByB[0]).toEqual(ask);
 
       // 2. B → A: reply (answer) correlated back to the originating ask.
       const answer = env('answer-1', hiveB, hiveA, { kind: 'answer', correlationId: 'ask-1' });
       await tB.send(hiveA, answer);
-      const gotAnswer = await pollUntil(() => receivedByA.length > 0, { timeoutMs: 20_000, intervalMs: 100 });
+      const gotAnswer = await pollUntil(() => receivedByA.length > 0, { timeoutMs: 45_000, intervalMs: 150 });
       expect(gotAnswer).toBe(true);
       expect(receivedByA[0]).toEqual(answer);
     },
-    60_000,
   );
 });

@@ -6,7 +6,7 @@ A running list of prompt rewrites **deferred until their underlying surface land
 
 ## SU / psu prompt — `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`
 
-> **STATUS 2026-06-05 (late) — the consolidated rewrite (Brief 39, agent-briefs-batch3) EXECUTED: items 1–3 and 5–7 are ALL APPLIED; this list is zeroed except item 4 (mem0), which stays owner-gated.** Applied log (each cites its shipped system; full text in git history of this file):
+> **STATUS 2026-06-08 — list FULLY ZEROED. The consolidated rewrite (Brief 39) executed items 1–3 + 5–8 on 2026-06-05; the last holdout, item 4 (memory/mem0), is now APPLIED 2026-06-08 — the owner revived the backend as the HYBRID and both SU prompts' caveat was flipped to "use the live `memory:*`".** Applied log (each cites its shipped system; full text in git history of this file):
 >
 > 1. **convert-at-pickup** ✅ 2026-06-05 — both SU prompts' *Coordination* (`unify-work-items` RFC D-015).
 > 2. **coord re-scope (typed ops; auto-emits; `coord:send` only for the unpredictable)** ✅ 2026-06-05, **subscription-scoping clause added late 2026-06-05** ("auto-emits reach watchers, not the fleet" — `coord-emit-subscription-scoping-2026-06-05`; "don't narrate the predictable") — both SU prompts (`coord-lifecycle-automation-2026-06-04`).
@@ -18,11 +18,11 @@ A running list of prompt rewrites **deferred until their underlying surface land
 >
 > **Note on reach:** the SU playbooks render per-launch from the **release checkout**, so these rewrites go live on psu at the next release-gate deploy — the same deploy that puts `events:*` / `fleet:assignments` / `blueprint:catalog` on `:3070`. Prompt and surface arrive together by construction.
 
-4. **memory: mem0 layering — STILL DEFERRED (owner-gated).** Measured 2026-06-05: mem0 is stillborn (0 real rows, 0 embeddings since 2026-05-25); the Claude auto-memory is the de facto store. The owner deferred the mem0 integration ([[docs-and-memory-as-projections-2026-06-05]] D-008), so the "mem0 = sole store + layering + drop the `ephemeral` kind" rewrite waits on the **revive-vs-retire decision**, which is itself gated on the `memory-backend-benchmark-2026-06-05` scorecard (Brief 36, in flight — three agents). Both SU prompts carry the "⚠ mem0 unpopulated, rely on client-native memory" caveat in the meantime. The home `CLAUDE.md` PLUR removal is done. — *Gate:* the owner's revive-vs-retire call on mem0. **Do not execute the layering rewrite before that call.**
+> 4. **memory: backend REVIVED as the HYBRID — ✅ APPLIED 2026-06-08.** The owner's revive-vs-retire call (the gate) was made off the `memory-backend-benchmark-2026-06-05` scorecard + the `memory-backend-improve-and-hybrid-2026-06-08` build: **REVIVE**. The HYBRID backend (cosine = `harness_shared.memory_canonical` in PG, OpenAI-embedded · lexical = the owner's Claude file store) is live + populated — the owner's 142 durable memories were migrated in (`packages/operator-core/lib/memory/migrate-claude-to-cosine.ts`), the junk cleared, and `operator_settings.memory_backend` flipped to `hybrid`. Both SU prompts' caveat was FLIPPED from "⚠ mem0 unpopulated, rely on client-native memory" to "✅ memory backend is LIVE — use `memory:*`, not your client's BUILT-IN store" (covers Claude / Codex / OMP). **OPEN nuance flagged to the owner:** the user's personal `~/.claude/AGENTS.md` "edit topic files" memory guidance is a *separate layer* (the owner's direct Claude CLI + the hybrid's lexical leg), so reconcile-vs-keep is the owner's call — not auto-changed.
 
 ## Role personas — `libs/papercusp/packages/harness/prompts/<role>.md`
 
 *(append role-prompt updates here as roles/blueprints change — e.g. new demo-blueprint personas, the scanner→`scan`-blueprint persona, etc.)*
 
 ---
-*Append new deferred prompt updates above. Last updated 2026-06-05 (late — Brief 39 consolidated rewrite executed; only the mem0 item remains, owner-gated).*
+*Append new deferred prompt updates above. Last updated 2026-06-08 — list fully zeroed (item 4 memory/hybrid applied; only the owner-call nuance on `~/.claude/AGENTS.md` remains open).*
