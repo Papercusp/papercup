@@ -171,7 +171,18 @@ export async function wireHiveDirectoryForWorkspace(
       devicePubkey: id.devicePubkeyBase64,
       attestationGistId: id.attestationGistId,
     };
-    const ownedHives = await listOwnedHiveMeta(workspaceId);
+    const ownedHivesRaw = await listOwnedHiveMeta(workspaceId);
+    // Enrich each owned hive with its Ed25519 IDENTITY pubkey (the cross-Hive dial
+    // address, P-006) sourced from the keychain/hives table — only the owning Swarm
+    // holds it, and publish only runs for owned hives. Not persisted in the registry
+    // meta (it lives in hives.public_key); attached fresh at publish time.
+    const { loadHivePubkey } = await import('./identity/hive-keypair');
+    const ownedHives = await Promise.all(
+      ownedHivesRaw.map(async (h) => {
+        const pk = await loadHivePubkey(workspaceId, h.hiveId).catch(() => null);
+        return pk ? { ...h, hivePubkey: pk } : h;
+      }),
+    );
 
     if (!_wiring) {
       const { getSharedSwarm } = await import('./sync/hyperbee/swarm');

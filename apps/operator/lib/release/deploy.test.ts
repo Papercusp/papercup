@@ -85,21 +85,21 @@ const plan: DeployPlan = {
 const cfg = releaseConfig();
 
 describe('isDesktopOnlyDelta — D-003 desktop-only deploy skip', () => {
-  it('is true when the only changed path is the apps/desktop gitlink', () => {
+  it('is true when the only changed path is the papercusp-desktop gitlink', () => {
     expect(isDesktopOnlyDelta([DESKTOP_SUBMODULE_PATH])).toBe(true);
   });
   it('is true for paths under the submodule', () => {
-    expect(isDesktopOnlyDelta(['apps/desktop/src-tauri/tauri.conf.json'])).toBe(true);
+    expect(isDesktopOnlyDelta(['papercusp-desktop/src-tauri/tauri.conf.json'])).toBe(true);
   });
   it('is false when any non-desktop path also changed', () => {
-    expect(isDesktopOnlyDelta(['apps/desktop', 'apps/operator/lib/x.ts'])).toBe(false);
+    expect(isDesktopOnlyDelta(['papercusp-desktop', 'apps/operator/lib/x.ts'])).toBe(false);
     expect(isDesktopOnlyDelta(['apps/operator/lib/x.ts'])).toBe(false);
   });
   it('is false for an empty delta (the noop case, gated separately)', () => {
     expect(isDesktopOnlyDelta([])).toBe(false);
   });
-  it('does not treat a sibling prefix (apps/desktop-extras) as inside the submodule', () => {
-    expect(isDesktopOnlyDelta(['apps/desktop-extras/x'])).toBe(false);
+  it('does not treat a sibling prefix (papercusp-desktop-extras) as inside the submodule', () => {
+    expect(isDesktopOnlyDelta(['papercusp-desktop-extras/x'])).toBe(false);
   });
 });
 

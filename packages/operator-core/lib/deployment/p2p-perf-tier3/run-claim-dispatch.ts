@@ -38,7 +38,10 @@ export interface RunClaimDispatchOpts {
   backlogSize?: number;
   /** Kill the elected authority (slot 0) this long after `go` (omit / killAuthority:false → no kill). */
   killAuthority?: boolean;
+  /** Fallback cap (ms) on the wait for the authority's "≥2 grants" progress signal before killing. */
   killAfterMs?: number;
+  /** Small settle delay (ms) after the progress gate before the kill, so survivors have work in flight. */
+  killSettleMs?: number;
   readyTimeoutMs?: number;
   resultTimeoutMs?: number;
   /** Per-agent claim knobs (forwarded into each ClaimAgentConfig). */
@@ -141,10 +144,17 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
   // 4. Go — every Swarm starts work-stealing off the shared backlog.
   for (const h of handles) h.send('go');
 
-  // 5. Optionally kill the authority (slot 0) mid-run.
+  // 5. Optionally kill the authority (slot 0) mid-run — once it has actually started
+  //    serializing work (≥2 grants observed), so the kill reliably lands while the survivors
+  //    are still claiming (fail-open genuinely exercised) regardless of machine speed. The
+  //    killAfterMs cap is a fallback if the progress signal is delayed.
   let killedAuthority: { swarmIndex: number; devicePubkey: string } | null = null;
   if (opts.killAuthority) {
-    await sleep(opts.killAfterMs ?? 700);
+    const cap = opts.killAfterMs ?? 5_000;
+    const gate = await handles[0].waitFor((e) => e.evt === 'progress' && Number(e.completed) >= 2, cap);
+    if (!gate) log(`authority progress gate not seen within ${cap}ms — killing on the cap`);
+    // A tiny beat so the survivors have a contended item or two in flight at kill time.
+    await sleep(opts.killSettleMs ?? 150);
     log(`killing authority Swarm 0 (${roster[0].devicePubkey.slice(0, 12)}…) mid-run`);
     await slots[0].kill();
     killedAuthority = { swarmIndex: 0, devicePubkey: roster[0].devicePubkey };

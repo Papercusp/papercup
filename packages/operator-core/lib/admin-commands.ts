@@ -18,7 +18,7 @@ export interface AdminCommand {
 const SSH_MAC = 'ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null aviweiss@127.0.0.1';
 const SSH_WIN = 'ssh -i /home/marsh-office/.ssh/papercup-vm-win -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null User@127.0.0.1';
 
-const PAPERCUSP_DESKTOP = '/home/marsh-office/papercupai-workspace/papercusp-desktop';
+const PAPERCUSP_DESKTOP = '/home/marsh-office/papercupai-workspace/papercup/papercusp-desktop';
 const PAPERCUP_REPO = '/home/marsh-office/papercupai-workspace/papercup';
 
 export const ADMIN_COMMANDS: AdminCommand[] = [

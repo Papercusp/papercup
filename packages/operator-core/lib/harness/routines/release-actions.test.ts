@@ -217,7 +217,7 @@ describe('shouldAutoServe — forward-only auto-serve policy', () => {
     expect(shouldAutoServe({ targetSha: 't', isFastForward: true, commits: ['c1'], noop: false })).toBe(false);
   });
 
-  it('SKIPS a desktop-only pointer bump (apps/desktop gitlink only — D-003)', () => {
+  it('SKIPS a desktop-only pointer bump (papercusp-desktop gitlink only — D-003)', () => {
     // A green FF bringing ≥1 new commit that would otherwise deploy, but the only
     // changed path is the desktop submodule → must NOT bounce the :3070 operator.
     expect(shouldAutoServe({ ...base, desktopOnly: true })).toBe(false);

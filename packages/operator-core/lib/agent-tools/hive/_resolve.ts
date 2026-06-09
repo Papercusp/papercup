@@ -1,16 +1,21 @@
 /**
  * resolveHive — the single canonical read path for a local hive
- * (hive-tool-namespace-2026-06-08 P-001, D-001/D-003).
+ * (hive-tool-namespace-2026-06-08 P-001, D-001/D-003; P-012 landed).
  *
- * A "hive" today is the IMPLICIT model: a registered project whose
+ * A hive is the registry-enumerated unit — a registered project whose
  * `harness_kind === 'hive'` (the built-in `pot` blueprint, POT_BLUEPRINT_ID),
  * plus its per-home-slug `pot-wake` routine + (workspace-scoped) event
- * subscriptions, plus a live Queen woken via the parentless system path. There
- * is no `hives` table yet — the first-class Hive entity (keypair identity) is
- * still draft/owner-gated (shared-hive-federation-2026-06-08, P-001 multiplicity
- * fork). So EVERY hive read in the `hive:*` namespace goes through this one
- * descriptor: when the entity lands, only this file re-points (P-012) and the
- * tool signatures stay fixed.
+ * subscriptions, plus a live Queen woken via the parentless system path —
+ * keyed to the FIRST-CLASS Hive entity for identity. That entity shipped:
+ * `harness_shared.hives` holds each hive's stable Ed25519 keypair
+ * (shared-hive-federation-2026-06-08 P-002, owner-ratified multiplicity D-008 =
+ * many hives per workspace), and this descriptor composes the two — the registry
+ * is the enumeration source (D-008: hives ARE the `kind:'hive'` projects), the
+ * `hives` table is identity. So `resolveHive` enumerates via the registry and
+ * layers the first-class identity on each (the `pubkey`, pubkey-addressability),
+ * lazy-backfilling the keypair on first resolve. This is the P-012 re-point:
+ * every `hive:*` read goes through this one descriptor and the tool signatures
+ * stay fixed.
  *
  * This is identity + deployment + wake ONLY — the live aggregate view (bees,
  * frontier depth, harness health) is layered on top by `hive:get`, which joins
@@ -51,10 +56,10 @@ export interface HiveDescriptor {
   path: string;
   kind: typeof HIVE_KIND;
   /**
-   * The federated Hive identity, when this hive has been deployed/published and
-   * carries one (its control/deployment frame's `hive_id`). Undefined for a
-   * purely-local hive. This is the seam the first-class entity re-points (P-012);
-   * downstream code keys on `slug` today and gains `hiveId` for free later.
+   * The deployment-frame federated id, when this hive has been deployed/published
+   * and its control/deployment frame carries a `hive_id`. Undefined for a purely
+   * -local hive. Distinct from the first-class `pubkey` identity below: this is the
+   * frame-derived deployment handle; `pubkey` is the canonical dial-able Hive id.
    */
   hiveId?: string;
   /**

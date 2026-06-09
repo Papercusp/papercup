@@ -260,6 +260,47 @@ describe('HiveDirectory — PG cache seam + TTL GC', () => {
   });
 });
 
+describe('cross-Hive addressability — hive_pubkey flows announce→DiscoveredHive (P-006)', () => {
+  it('ingest populates DiscoveredHive.hivePubkey when the announce carries it', async () => {
+    const kp = keypair();
+    const dir = new HiveDirectory(makeDeps());
+    await dir.ingestAnnounce(await announce(kp, { hive_pubkey: 'aGl2ZS1wdWJrZXk=' }));
+    expect(dir.listDiscoveredHives()[0].hivePubkey).toBe('aGl2ZS1wdWJrZXk=');
+  });
+
+  it('a hive_pubkey-less announce yields no hivePubkey (browseable, not addressable)', async () => {
+    const kp = keypair();
+    const dir = new HiveDirectory(makeDeps());
+    await dir.ingestAnnounce(await announce(kp));
+    expect(dir.listDiscoveredHives()[0].hivePubkey).toBeUndefined();
+  });
+
+  it('an owned descriptor carrying hivePubkey announces it + a peer ingests the dial address', async () => {
+    const kp = keypair();
+    const dir = new HiveDirectory(makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) }));
+    const desc: LocalHiveDescriptor = {
+      hiveId: 'owned-1',
+      title: 'Owned',
+      description: 'd',
+      memberTopics: [],
+      visibility: 'public',
+      createdAt: NOW - 1000,
+      ownerGithubLogin: 'alice',
+      ownerGithubUserId: 4242,
+      ownerDevicePubkey: kp.pubkey,
+      hivePubkey: 'b3duZWQtaGl2ZS1waw==',
+      attestationGistId: 'gist-1',
+    };
+    dir.registerLocalHive(desc);
+    const frame = await dir.announceLocalHive('owned-1');
+    expect(frame?.hive_pubkey).toBe('b3duZWQtaGl2ZS1waw==');
+    // a fresh peer ingesting the same frame surfaces the dial address (round-trip)
+    const peer = new HiveDirectory(makeDeps());
+    await peer.ingestAnnounce(frame!);
+    expect(peer.listDiscoveredHives()[0].hivePubkey).toBe('b3duZWQtaGl2ZS1waw==');
+  });
+});
+
 describe('hiveDirectoryReady — the capability probe', () => {
   it('is true now that the directory substrate exists', () => {
     expect(hiveDirectoryReady()).toBe(true);

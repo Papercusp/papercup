@@ -46,6 +46,16 @@ export interface HiveAnnounceBody {
   owner_github_user_id: number;
   /** Raw 32-byte Ed25519 device public key, base64 (== a peer announce's device_pubkey). */
   owner_device_pubkey: string;
+  /**
+   * Raw 32-byte Ed25519 HIVE-IDENTITY public key, base64 — the Hive's own keypair
+   * (shared-hive-federation D-002), distinct from `owner_device_pubkey`. This is
+   * the cross-Hive DIAL ADDRESS: a peer derives `deriveHiveFederationTopic(hive_pubkey)`
+   * to reach this Hive's boundary (cross-hive-boundary-2026-06-08 P-006). OPTIONAL +
+   * additive — only a Hive that minted its identity carries it; included in the
+   * canonical signing bytes only when present (like `member_links`/`nonce`), so an
+   * announce that omits it signs the exact bytes earlier versions did.
+   */
+  hive_pubkey?: string;
   /** P-011 device-attestation gist id (the channel-2 anchor a browser verifies). */
   attestation_gist_id: string;
   /**
@@ -107,10 +117,11 @@ export function hiveAnnounceSigningBytes(body: HiveAnnounceBody): Buffer {
     created_at: body.created_at,
     ts: body.ts,
   };
-  // member_links + nonce are optional → included only when present, so an
-  // announce that omits them signs the exact bytes earlier versions did.
+  // member_links + nonce + hive_pubkey are optional → included only when present,
+  // so an announce that omits them signs the exact bytes earlier versions did.
   if (Array.isArray(body.member_links)) ordered.member_links = body.member_links;
   if (typeof body.nonce === 'string') ordered.nonce = body.nonce;
+  if (typeof body.hive_pubkey === 'string') ordered.hive_pubkey = body.hive_pubkey;
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
@@ -152,6 +163,7 @@ export function verifyHiveAnnounce(
       typeof frame.owner_github_login !== 'string' ||
       typeof frame.owner_github_user_id !== 'number' ||
       typeof frame.owner_device_pubkey !== 'string' ||
+      (frame.hive_pubkey !== undefined && typeof frame.hive_pubkey !== 'string') ||
       typeof frame.attestation_gist_id !== 'string' ||
       !Array.isArray(frame.member_topics) ||
       frame.member_topics.some((t) => typeof t !== 'string') ||

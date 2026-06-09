@@ -154,21 +154,32 @@ loader's `<unit>.<tool>` naming convention via `manifestToolNames`); pass
 
 The marketplace's **Tools** view is the resolver fanned out — every known
 tool resolved to its provider, merging the local pack catalog (built-ins +
-installed units) with the Cupboard's `provides_tools` declarations:
+installed units) with the Cupboard's `provides_tools` declarations. Each
+entry carries its `category` (the tool namespace) and a one-line
+`description` (the tool's own, or the providing unit's), and the payload rides
+back `categories` facets:
 
 ```jsonc
-// GET /api/cupboard/tools?q=md&status=installable
+// GET /api/cupboard/tools?q=render+markdown&status=installable&category=md
 {
   "tools": [{
     "tool": "md.render",
     "status": "installable",                                  // or "available"
+    "category": "md",                                         // namespace prefix
+    "description": "Render markdown to HTML",                 // capability text (searchable)
+    "capability": null,                                       // gate string, for built-ins
     "provider": { "kind": "pack", "name": "markdown-tools", "listingId": "…" },
     "unit": { "name": "markdown-tools", "kind": "pack", "source": "cupboard", "listingId": "…" }
   }],
-  "counts": { "available": 344, "installable": 1 },
+  "counts": { "available": 0, "installable": 1 },
+  "categories": [{ "name": "md", "count": 1 }],               // facets over the searched set
   "cupboardReachable": true                                    // false ⇒ local-only view
 }
 ```
+
+`q` runs **capability search** (see below) rather than a bare substring match;
+`status` + `category` narrow; `categories` facets the searched/status set so
+the UI can offer one-click namespace filters.
 
 A tool never installs in isolation (D-005): the storefront's Tools view
 (`/cupboard?kind=tools`) routes an installable tool's action to its
@@ -217,23 +228,94 @@ the **prod** Cupboard worker still needs the federation-owner-gated deploy
 discovery D-003). Until applied, `?kind=pack` 400s at the prod worker and the
 loop's `installable` units resolve only against locally-listed packs.
 
+## Capability discovery
+
+Discovery answers the question the install loop's *inverse* asks: not "for this
+declared tool, what do I install?" but **"I want capability X — what provides
+it, and is it already available?"** Over the \~380-tool merged catalog, that
+needs ranked search, not a substring filter
+(`tool-distribution-discovery-2026-06-08` P-005..P-008).
+
+### Capability search + ranking (P-005)
+
+`searchTools` (`packages/operator-core/lib/cupboard/tools-search.ts`) is a pure,
+field-weighted relevance scorer over the resolved discovery entries. Each entry
+is matched on five fields, weighted so the right provider surfaces first:
+
+| Field                | Weight | Why                                                      |
+| -------------------- | ------ | -------------------------------------------------------- |
+| tool name            | 10     | an exact/prefix name hit is the strongest signal         |
+| category (namespace) | 5      | `coord` should surface every `coord:*` tool              |
+| capability gate      | 4      | built-ins carry a `capability` string (`tasks:read`)     |
+| providing unit name  | 3      | "markdown-tools" finds `md.render`                       |
+| description          | 2      | the capability text — "pack a repo" finds `repomix.pack` |
+
+Search is **AND across query tokens** (every token must hit some field, so
+precision stays high) and each token scores the best `weight × tier` it
+achieves on any field (`exact token` ≫ `token prefix` ≫ `substring`). A
+whole-query hit on the name adds a phrase boost, so an exact tool name always
+leads its token-equal peers. The per-tool capability text comes from the live
+registries (`collectToolMeta` — `getCatalog()` descriptions + capability gates,
+plus `listAllProjectedTools()` for installed plugin/pack tools); a Cupboard-only
+tool falls back to its providing unit's description.
+
+> Why a bespoke scorer and not `@papercusp/rrf`: rank fusion deliberately
+> discards score magnitude and field semantics, but here a name-exact match
+> must *always* outrank a description hit — an ordering the field weights above
+> express directly.
+
+### "What provides X": `GET /api/cupboard/provides` (P-006)
+
+The human-facing inverse of the dependency resolver. Given a tool name
+(`?tool=`, exact) or a capability phrase (`?q=`), it returns the providing
+pack/plugin/listing + the install action:
+
+```jsonc
+// GET /api/cupboard/provides?tool=md.render   (or ?q=render+markdown)
+{
+  "query": "md.render",
+  "resolved": {                                  // exact-name resolution (null for a ?q= phrase)
+    "tool": "md.render", "status": "installable", "category": "md",
+    "provider": { "kind": "pack", "name": "markdown-tools", "listingId": "lst-1" },
+    "unit": { "name": "markdown-tools", "kind": "pack", "source": "cupboard", "listingId": "lst-1" }
+  },
+  "matches": [ /* ranked candidates; the exact resolution leads */ ],
+  "cupboardReachable": true
+}
+```
+
+An installable match carries `provider.listingId` + `unit` — that *is* the
+install action: the UI routes it to the listing's install-consent flow, the
+same surface `cupboard:install-deps` acts on.
+
+### Cupboard UI discovery (P-007)
+
+The storefront's **Tools** view (`/cupboard?kind=tools`) wires the above to the
+chrome: the shared search box runs capability search, a **status filter** (All /
+Available / Installable) and **category facet chips** (the tool namespaces)
+narrow the result, and each row shows its capability description. All three are
+URL-backed (`?q=` / `?toolStatus=` / `?cat=`, nuqs) so an agent can drive them
+via `ui:dispatch`.
+
 ## Source map
 
-| Concern                                   | Source                                                                                                                                            |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pure pack model + resolver                | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                |
-| Live pack catalog (operator wiring)       | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                             |
-| Pack purity validation                    | `packages/plugin-loader/src/index.ts` (`validate`, `runtimeDispatch`)                                                                             |
-| Manifest schema (`kind`, `dependencies`)  | `packages/plugin-sdk/papercusp-plugin.schema.json`                                                                                                |
-| Install gate                              | `packages/operator-core/lib/cupboard/install-plugin-core.ts` + `…/routes/cupboard-install-plugin.ts`                                              |
-| Install loop (pure)                       | `packages/operator-core/lib/cupboard/resolve-and-install.ts`                                                                                      |
-| Install IO (shared seam)                  | `packages/operator-core/lib/cupboard/install-io.ts`                                                                                               |
-| `cupboard:install-deps` tool/route        | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts`                                                                       |
-| `harness:create { autoInstallDeps }`      | `packages/operator-core/lib/agent-tools/harness/create.ts`                                                                                        |
-| End-to-end loop proof                     | `packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts`                                                                             |
-| Reference pack                            | `libs/papercusp/plugins/example-tool-pack/`                                                                                                       |
-| Dep validator (pure)                      | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                            |
-| Worker schema + routes (`provides_tools`) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts`                                |
-| Publish route (pack-aware)                | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts`                                                                     |
-| Tools discovery (route + projection)      | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/tools`) + `packages/operator-core/lib/cupboard/tools-discovery.ts` |
-| Storefront UI (Packs tab + Tools view)    | `apps/operator/app/cupboard/CupboardClient.tsx` + `apps/operator/app/cupboard/ToolsSection.tsx`                                                   |
+| Concern                                                    | Source                                                                                                                                            |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure pack model + resolver                                 | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                |
+| Live pack catalog (operator wiring)                        | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                             |
+| Pack purity validation                                     | `packages/plugin-loader/src/index.ts` (`validate`, `runtimeDispatch`)                                                                             |
+| Manifest schema (`kind`, `dependencies`)                   | `packages/plugin-sdk/papercusp-plugin.schema.json`                                                                                                |
+| Install gate                                               | `packages/operator-core/lib/cupboard/install-plugin-core.ts` + `…/routes/cupboard-install-plugin.ts`                                              |
+| Install loop (pure)                                        | `packages/operator-core/lib/cupboard/resolve-and-install.ts`                                                                                      |
+| Install IO (shared seam)                                   | `packages/operator-core/lib/cupboard/install-io.ts`                                                                                               |
+| `cupboard:install-deps` tool/route                         | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts`                                                                       |
+| `harness:create { autoInstallDeps }`                       | `packages/operator-core/lib/agent-tools/harness/create.ts`                                                                                        |
+| End-to-end loop proof                                      | `packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts`                                                                             |
+| Reference pack                                             | `libs/papercusp/plugins/example-tool-pack/`                                                                                                       |
+| Dep validator (pure)                                       | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                            |
+| Worker schema + routes (`provides_tools`)                  | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts`                                |
+| Publish route (pack-aware)                                 | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts`                                                                     |
+| Tools discovery (route + projection)                       | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/tools`) + `packages/operator-core/lib/cupboard/tools-discovery.ts` |
+| Capability search (pure scorer)                            | `packages/operator-core/lib/cupboard/tools-search.ts` (`searchTools`, `categoryOf`)                                                               |
+| "What provides X" resolver                                 | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/provides`) → `buildToolProvenance` in `tools-discovery.ts`         |
+| Storefront UI (Packs tab + Tools view + discovery filters) | `apps/operator/app/cupboard/CupboardClient.tsx` + `apps/operator/app/cupboard/ToolsSection.tsx`                                                   |

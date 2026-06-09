@@ -266,6 +266,9 @@ async function main(): Promise<void> {
       via: route.via,
       completedAtMs: Date.now(),
     });
+    // Emit progress on every completion so the orchestrator can trigger the authority-kill
+    // the instant work distribution is established (robust vs a fixed wall-clock delay).
+    out({ evt: 'progress', completed: completions.size, sweeps: stats.sweeps });
     return 'mine';
   }
 

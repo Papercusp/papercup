@@ -83,9 +83,10 @@ describe('≥3-Swarm claim dispatch — $0 local parity (no cloud, no SSH)', () 
         launcher,
         backlogSize: 15,
         killAuthority: true,
-        killAfterMs: 350,
-        // Generous per-item work so the Swarms are still mid-run when the authority is
-        // killed (so fail-open is genuinely exercised, not raced past).
+        // The kill is progress-gated (fires once the authority has granted ≥2 items); this
+        // is just the fallback cap. Generous per-item work so the survivors are still mid-run
+        // when the authority dies (so fail-open is genuinely exercised, not raced past).
+        killAfterMs: 4000,
         workMinMs: 80,
         workMaxMs: 180,
         sweepDelayMs: 60,

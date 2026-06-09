@@ -669,8 +669,8 @@ function resolveRepoRoot(): string {
 function resolveDesktopRoot(repoRoot: string): string {
   const fromEnv = process.env.PAPERCUSP_DESKTOP_ROOT;
   if (fromEnv && fromEnv.length > 0) return fromEnv;
-  const sibling = path.resolve(repoRoot, '..', 'papercusp-desktop');
-  return sibling;
+  // papercusp-desktop is an in-repo submodule now (desktop-submodule-of-papercup-2026-06-09).
+  return path.resolve(repoRoot, 'papercusp-desktop');
 }
 
 async function runCommand(

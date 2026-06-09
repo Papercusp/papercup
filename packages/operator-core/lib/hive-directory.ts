@@ -53,6 +53,12 @@ export interface DiscoveredHive {
   ownerGithubLogin: string;
   ownerGithubUserId: number;
   ownerDevicePubkey: string;
+  /**
+   * Raw 32-byte base64 Ed25519 HIVE-identity pubkey — the cross-Hive DIAL ADDRESS
+   * (cross-hive-boundary-2026-06-08 P-006). Present only when the announcing Hive
+   * carried its identity; absent ⇒ the Hive is browseable but not cross-Hive-addressable.
+   */
+  hivePubkey?: string;
   /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
   memberTopics: string[];
   /** Full join links per member harness, when the hive carries them (one-click join). */
@@ -81,6 +87,12 @@ export interface LocalHiveDescriptor {
   ownerGithubLogin: string;
   ownerGithubUserId: number;
   ownerDevicePubkey: string;
+  /**
+   * The Hive's own Ed25519 identity pubkey (raw-32-byte base64), carried on the
+   * announce so peers can dial this Hive for cross-Hive (P-006). Set by the publish
+   * path from the `hives.public_key` column; absent for a hive with no minted identity.
+   */
+  hivePubkey?: string;
   attestationGistId: string;
   /** Required for `invite` visibility — the secret whose topic invitees join. */
   inviteSecret?: string;
@@ -175,6 +187,7 @@ export class HiveDirectory {
       ownerGithubLogin: frame.owner_github_login,
       ownerGithubUserId: frame.owner_github_user_id,
       ownerDevicePubkey: frame.owner_device_pubkey,
+      ...(frame.hive_pubkey ? { hivePubkey: frame.hive_pubkey } : {}),
       memberTopics: [...frame.member_topics],
       ...(frame.member_links ? { memberLinks: [...frame.member_links] } : {}),
       visibility: frame.visibility,
@@ -250,6 +263,7 @@ export class HiveDirectory {
       owner_github_login: desc.ownerGithubLogin,
       owner_github_user_id: desc.ownerGithubUserId,
       owner_device_pubkey: desc.ownerDevicePubkey,
+      ...(desc.hivePubkey ? { hive_pubkey: desc.hivePubkey } : {}),
       attestation_gist_id: desc.attestationGistId,
       member_topics: [...desc.memberTopics],
       ...(desc.memberLinks ? { member_links: [...desc.memberLinks] } : {}),

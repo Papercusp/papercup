@@ -130,7 +130,7 @@ export interface AutoServePlan {
   isFastForward?: boolean;
   commits?: string[];
   noop?: boolean;
-  /** Every changed path in this plan is the apps/desktop submodule gitlink — a
+  /** Every changed path in this plan is the papercusp-desktop submodule gitlink — a
    *  shell-only pointer bump the operator deploy must skip (desktop-submodule-of-
    *  papercup-2026-06-09 D-003). Set by gatherPlan; absent on old plan JSON. */
   desktopOnly?: boolean;
@@ -159,7 +159,7 @@ export interface AutoServePlan {
  *
  * Also skips a DESKTOP-ONLY pointer bump (desktop-submodule-of-papercup-2026-06-09
  * D-003): once papercusp-desktop is a submodule, every desktop edit bumps the
- * superproject `apps/desktop` gitlink → FFs onto green `main`. Without this guard
+ * superproject `papercusp-desktop` gitlink → FFs onto green `main`. Without this guard
  * a shell-only change would drain + restart the live `:3070` operator (which never
  * builds or uses the desktop). A forced/manual `deploy-cli --execute` still can.
  */

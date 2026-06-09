@@ -21,6 +21,12 @@ export interface DiscoveredHiveRow {
   description: string;
   owner: string;
   visibility: 'public' | 'invite';
+  /**
+   * The Hive's Ed25519 identity pubkey (raw-32-byte base64) — the cross-Hive DIAL
+   * ADDRESS. Pass it to `hive:cross_grant { peerHivePubkey }` to admit this Hive.
+   * Empty string when the announce carried no identity (not cross-Hive-addressable).
+   */
+  hivePubkey: string;
   /** Member harness topics (hex) — the display signal. */
   memberTopics: string[];
   /** Full join links per member harness (one-click join), when the hive carries them. */
@@ -59,6 +65,7 @@ export default defineTool({
       description: h.description,
       owner: h.ownerGithubLogin,
       visibility: h.visibility === 'invite' ? 'invite' : 'public',
+      hivePubkey: h.hivePubkey ?? '',
       memberTopics: h.memberTopics,
       memberLinks: h.memberLinks ?? [],
       memberCount: h.memberTopics.length,

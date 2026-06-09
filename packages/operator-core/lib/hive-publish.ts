@@ -28,6 +28,13 @@ export interface HiveDirectoryMeta {
   visibility: HiveVisibility;
   /** Member harness swarm-topics (hex) — the display signal (how many harnesses). */
   memberTopics: string[];
+  /**
+   * The Hive's Ed25519 identity pubkey (raw-32-byte base64) — carried on the
+   * announce so peers can DIAL this Hive for cross-Hive (P-006). Sourced at the
+   * publish call-site from `loadHivePubkey(ws, hiveId)` (the `hives.public_key`
+   * column); NOT persisted in the registry meta (it lives in the hives table).
+   */
+  hivePubkey?: string;
   /** Full `papercusp://harness?...` join links per member harness (one-click join). */
   memberLinks?: string[];
   /** Epoch-ms the hive was created (stable; for display + ordering). */
@@ -73,6 +80,7 @@ export async function publishHiveToDirectory(
     title: meta.title,
     description: meta.description,
     memberTopics: [...meta.memberTopics],
+    ...(meta.hivePubkey ? { hivePubkey: meta.hivePubkey } : {}),
     ...(meta.memberLinks ? { memberLinks: [...meta.memberLinks] } : {}),
     visibility: meta.visibility,
     createdAt: meta.createdAt,

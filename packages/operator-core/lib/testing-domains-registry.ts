@@ -1033,6 +1033,64 @@ defineTestDomain({
   ],
 });
 
+// The adversarial coordination test suite (coordination-test-suite-2026-06-08) as a
+// cohesive cross-subsystem VIEW, grouped by the test CLASSES that were missing when
+// EI-152/EI-153 shipped. Files also appear under their home domains (hive/wake-loop,
+// papercusp-su, operator-core) — overlap is intentional, exactly like the `hive`
+// domain. The companion coverage matrix is /internal/docs/testing/coordination-coverage-matrix.
+defineTestDomain({
+  id: 'coordination-suite',
+  label: 'Coordination suite (adversarial)',
+  description:
+    'The adversarial, multi-session, real-seam coordination suite that closes the EI-152/EI-153 escape classes: cross-agent isolation, real-seam integration, multi-session concurrency, and the liveness matrix. Cross-subsystem view; files overlap their home domains by design.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'wake-liveness',
+      label: 'C4 liveness matrix + EI-152',
+      description: 'The wake-executor liveness×handle/socket matrix over the REAL socket seam; EI-152 (no-handle + live socket → socket-inject, not park) verified red-on-pre-fix.',
+      globs: ['packages/operator-core/lib/events/await/wake-executor-matrix.test.ts'],
+    },
+    {
+      id: 'wake-identity',
+      label: 'C5 identity + EI-153',
+      description: 'Cross-agent wake isolation + identity across resume (per-owner CLAUDE_CONFIG_DIR / CODEX_HOME, exact-session resume never --continue) + the launch-side per-spawn config isolation.',
+      globs: [
+        'packages/operator-core/lib/events/await/wake-resume-isolation.test.ts',
+        'libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts',
+      ],
+    },
+    {
+      id: 'wake-realseam',
+      label: 'C2/C6 real-seam pump + host',
+      description: 'The real psu-pty-host idle-gate + mode:turn CR-submit + discovery handshake; the real emit→pump path with armInboxWake idempotency and cross-agent isolation.',
+      globs: [
+        'apps/operator/lib/psu-pty-host-turn.integration.test.ts',
+        'packages/operator-core/lib/events/await/wake-pump-isolation.integration.test.ts',
+      ],
+    },
+    {
+      id: 'channel-isolation',
+      label: 'C1 channel isolation (coord/locks)',
+      description: 'Cross-agent isolation for coord:send/inbox/presence (real PgCoordLog) and file/resource locks (A can\'t release/heartbeat B\'s; block-on-held; authority election).',
+      globs: [
+        'packages/operator-core/lib/agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts',
+        'packages/operator-core/lib/agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts',
+      ],
+    },
+    {
+      id: 'concurrency-federation',
+      label: 'C3 concurrency + federation',
+      description: 'N-session claim concurrency (no double-claim), federation data-plane (peer-log→projection→PG, admission/revocation, no-loss/no-dup), and the full multi-session concurrency capstone (wakes+sends+claims+locks → zero loss/dup/misroute).',
+      globs: [
+        'packages/operator-core/lib/work-item-claims-concurrency.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts',
+        'packages/operator-core/lib/multi-session-concurrency.integration.test.ts',
+      ],
+    },
+  ],
+});
+
 const PAPERCUSP_IDS = [
   'test-runs', 'vitals', 'chaos-desktop', 'ai-explore',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
@@ -1042,6 +1100,8 @@ const PAPERCUSP_IDS = [
   'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
   'hive',
+  // The adversarial coordination test suite as a cohesive cross-subsystem view.
+  'coordination-suite',
 ] as const;
 
 export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {

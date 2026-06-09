@@ -65,7 +65,16 @@ export default defineTool({
     let announceError: string | undefined;
     try {
       const owner = await resolveOwnerIdentity();
-      const res = await publishHiveToDirectory(getHiveDirectory(), meta, owner);
+      // Attach the Hive's identity pubkey (the cross-Hive dial address, P-006) for
+      // the announce only — sourced from the keychain/hives table, NOT persisted in
+      // the registry meta (it lives in hives.public_key).
+      const { loadHivePubkey } = await import('../../identity/hive-keypair');
+      const hivePubkey = await loadHivePubkey(activeWorkspaceId(), meta.hiveId).catch(() => null);
+      const res = await publishHiveToDirectory(
+        getHiveDirectory(),
+        hivePubkey ? { ...meta, hivePubkey } : meta,
+        owner,
+      );
       announced = res.announced;
     } catch (e) {
       announceError = e instanceof Error ? e.message : String(e);

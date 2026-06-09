@@ -148,3 +148,44 @@ describe('hive-announce — shape + visibility guards', () => {
     expect(isHiveVisibility('other')).toBe(false);
   });
 });
+
+describe('hive-announce — hive_pubkey addressability field (cross-hive-boundary P-006)', () => {
+  it('includes hive_pubkey in the signed bytes only when present (back-compat preserved)', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const pk = rawPubkeyBase64(publicKey);
+    const without = hiveAnnounceSigningBytes(makeBody(pk));
+    const withPk = hiveAnnounceSigningBytes(makeBody(pk, { hive_pubkey: 'aGl2ZS1wdWJrZXk=' }));
+    expect(withPk.equals(without)).toBe(false); // present → covered by the sig
+    // a body that omits hive_pubkey signs the exact bytes earlier versions did
+    expect(hiveAnnounceSigningBytes(makeBody(pk)).equals(without)).toBe(true);
+  });
+
+  it('round-trips + verifies an announce carrying hive_pubkey', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const frame = await buildHiveAnnounce(
+      makeBody(rawPubkeyBase64(publicKey), { hive_pubkey: 'aGl2ZS1wdWJrZXk=' }),
+      signer(privateKey),
+    );
+    expect(verifyHiveAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+    expect(frame.hive_pubkey).toBe('aGl2ZS1wdWJrZXk=');
+  });
+
+  it('a tampered hive_pubkey fails verification (the dial address is sig-bound)', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const frame = await buildHiveAnnounce(
+      makeBody(rawPubkeyBase64(publicKey), { hive_pubkey: 'b3JpZ2luYWw=' }),
+      signer(privateKey),
+    );
+    expect(verifyHiveAnnounce({ ...frame, hive_pubkey: 'ZXZpbA==' }, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  it('rejects a non-string hive_pubkey', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const frame = {
+      ...makeBody(rawPubkeyBase64(publicKey)),
+      hive_pubkey: 42,
+      sig: 'x',
+    } as unknown as SignedHiveAnnounce;
+    expect(verifyHiveAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+});

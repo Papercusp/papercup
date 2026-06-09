@@ -43,7 +43,7 @@ import type { HealthResult } from './health-probe';
  * pointer bump to the submodule appears in the superproject's
  * `git diff --name-only` as exactly this single path.
  */
-export const DESKTOP_SUBMODULE_PATH = 'apps/desktop';
+export const DESKTOP_SUBMODULE_PATH = 'papercusp-desktop';
 
 /**
  * True when EVERY changed path is the desktop submodule gitlink (or under it):
@@ -81,7 +81,7 @@ export interface DeployPlan {
   warnings: string[];
   noop: boolean;
   /** Every changed path between the running release checkout and target is the
-   *  apps/desktop submodule gitlink — a shell-only pointer bump the operator
+   *  papercusp-desktop submodule gitlink — a shell-only pointer bump the operator
    *  deploy can skip (D-003). false when nothing, or anything non-desktop, changed. */
   desktopOnly: boolean;
   /** Phase 5: auto vs review tier (auto = docs/tests only, no migrations → unattended-safe). */
@@ -202,7 +202,7 @@ export async function gatherPlan(
   // Phase 5 risk-tier: classify from ALL changed files + the staged migrations'
   // content (so destructive DDL is flagged) — auto vs review.
   const allChanged = await changedFiles(cfg.integrationRoot, currentReleaseSha, targetSha);
-  // D-003: a desktop-only pointer bump (every changed path under apps/desktop)
+  // D-003: a desktop-only pointer bump (every changed path under papercusp-desktop)
   // must not auto-redeploy the operator (which never builds/uses the shell).
   const desktopOnly = isDesktopOnlyDelta(allChanged);
   const migrationContents: Record<string, string> = {};
