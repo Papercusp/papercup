@@ -393,6 +393,19 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
     });
   });
 
+  it('EI-155: finds an isolated-config-dir claude session + carries its configDir for the resume', () => {
+    // No shared ~/.claude/projects copy — the transcript lives ONLY under the
+    // per-session isolated dir (<home>/.papercusp/session-claude/<owner>/projects).
+    const owner = 'su-owner-1';
+    const configDir = join(home, '.papercusp', 'session-claude', owner);
+    const projDir = join(configDir, 'projects', '-iso-dir');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/iso-repo"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'claude', sessionId: UUID, cwd: '/home/me/iso-repo', untracked: true, configDir,
+    });
+  });
+
   it('a non-UUID id → an omp thread name, resumed in the current dir', () => {
     expect(findUntrackedSession('my-thread', { home, cwd: '/here' })).toEqual({
       agent: 'omp', ompThreadId: 'my-thread', cwd: '/here', untracked: true,
@@ -446,6 +459,18 @@ describe('claudeStoreHasSession (check if claude can resume a specific session)'
 
   it('returns false when .claude/projects does not exist', () => {
     expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+  });
+
+  it('EI-155: finds the transcript in the isolated configDir (not the shared store)', () => {
+    // The transcript exists ONLY in the per-session isolated config dir.
+    const configDir = join(home, '.papercusp', 'session-claude', 'su-owner-2');
+    const projDir = join(configDir, 'projects', '-iso');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    // Without the configDir hint, the shared store has nothing → false…
+    expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+    // …with it, the brain transcript-check finds the isolated session → true.
+    expect(claudeStoreHasSession(UUID, { home, configDir })).toBe(true);
   });
 });
 

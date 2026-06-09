@@ -268,6 +268,25 @@ function safeReaddir(dir) {
   try { return readdirSync(dir, { withFileTypes: true }); } catch { return []; }
 }
 
+/**
+ * The per-session isolated `CLAUDE_CONFIG_DIR` root + dir for a tracked claude
+ * session, keyed by its coord owner id — the .mjs mirror of the TS helper
+ * `@papercusp/orchestrator/session-launch-dirs` `sessionClaudeConfigDir` (EI-155).
+ *
+ * An interactive claude session launches with `CLAUDE_CONFIG_DIR` pointed here
+ * (bootstrap-su/role → writeInteractiveClaudeConfig), so it writes its transcript
+ * under `<dir>/projects/**` — NOT the shared `~/.claude`. Every resume reader
+ * (launchResume, claudeStoreHasSession, findUntrackedSession) must therefore look
+ * here, or `claude --resume <uuid>` finds nothing. Pure — `home` for tests; honors
+ * the same `PAPERCUSP_SESSION_CLAUDE_DIR` override the materializer uses.
+ */
+function sessionClaudeRoot(home = homedir()) {
+  return process.env.PAPERCUSP_SESSION_CLAUDE_DIR || join(home, '.papercusp', 'session-claude');
+}
+function sessionClaudeConfigDir(ownerId, home = homedir()) {
+  return join(sessionClaudeRoot(home), ownerId);
+}
+
 /** First `"cwd":"…"` in a session jsonl (claude events + codex rollout meta both
  *  carry it), so we recover the launch dir WITHOUT knowing where it started. */
 function cwdFromSessionFile(file) {
@@ -307,6 +326,22 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
       const f = join(claudeProjects, d.name, `${id}.jsonl`);
       if (existsSync(f)) return { agent: 'claude', sessionId: id, cwd: cwdFromSessionFile(f) || cwd, untracked: true };
     }
+    // EI-155: interactive claude sessions write transcripts under per-session
+    // isolated dirs (`<session-claude>/<owner>/projects`), not the shared store —
+    // scan those too, so an isolated session whose adv row was pruned still
+    // resolves by its native uuid (and carries its `configDir` so the resume
+    // points CLAUDE_CONFIG_DIR back at it).
+    const isoRoot = sessionClaudeRoot(home);
+    for (const owner of safeReaddir(isoRoot)) {
+      if (!owner.isDirectory()) continue;
+      const configDir = join(isoRoot, owner.name);
+      const projects = join(configDir, 'projects');
+      for (const d of safeReaddir(projects)) {
+        if (!d.isDirectory()) continue;
+        const f = join(projects, d.name, `${id}.jsonl`);
+        if (existsSync(f)) return { agent: 'claude', sessionId: id, cwd: cwdFromSessionFile(f) || cwd, untracked: true, configDir };
+      }
+    }
     const codexRollout = findCodexRollout(join(home, '.codex', 'sessions'), id);
     if (codexRollout) return { agent: 'codex', sessionId: id, cwd: cwdFromSessionFile(codexRollout) || cwd, untracked: true };
     return null;
@@ -322,11 +357,16 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
  * `~/.claude/projects/<dir>/<id>.jsonl`, and `claude --resume <id>` then
  * fails "No conversation found". Pure-ish (reads FS); exported for tests.
  */
-export function claudeStoreHasSession(id, { home = homedir() } = {}) {
+export function claudeStoreHasSession(id, { home = homedir(), configDir = null } = {}) {
   if (!id) return false;
-  const claudeProjects = join(home, '.claude', 'projects');
-  for (const d of safeReaddir(claudeProjects)) {
-    if (d.isDirectory() && existsSync(join(claudeProjects, d.name, `${id}.jsonl`))) return true;
+  // EI-155: an interactive session's transcript lives in its isolated configDir,
+  // not the shared ~/.claude — check that first (when known) before the shared store.
+  const roots = [configDir, join(home, '.claude')].filter(Boolean);
+  for (const root of roots) {
+    const projects = join(root, 'projects');
+    for (const d of safeReaddir(projects)) {
+      if (d.isDirectory() && existsSync(join(projects, d.name, `${id}.jsonl`))) return true;
+    }
   }
   return false;
 }
@@ -709,6 +749,18 @@ function launchResume(session) {
     PAPERCUSP_SID: `su-${randomUUID()}`,
     ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
   };
+  // EI-155: a claude session launched with per-session transcript isolation wrote
+  // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
+  // NOT the shared ~/.claude — point the resume back at it or `claude --resume
+  // <uuid>` finds "No conversation found". `session.configDir` (an untracked
+  // isolated session resolved by findUntrackedSession) wins; else derive from the
+  // tracked row's coordOwnerId. Only when it exists — sessions launched before
+  // EI-155 used the shared store and want no override.
+  if (session.agent === 'claude') {
+    const dir = session.configDir
+      || (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId) : null);
+    if (dir && existsSync(dir)) env.CLAUDE_CONFIG_DIR = dir;
+  }
   // codex resumes from its per-session CODEX_HOME — derived from the session id
   // (that home still holds the session's history; only re-launching the SAME
   // session rebuilds it). The home's config.toml carries the baked superuser
@@ -838,7 +890,11 @@ async function brainFlow(args = {}) {
     // the pane is non-interactive (observed 2026-06-06). Verify claude's own
     // store first; a transcript-less session has zero turns, so falling
     // through to the fresh+re-pin path loses nothing.
-    if (tracked && (tracked.agent !== 'claude' || claudeStoreHasSession(pin))) {
+    // EI-155: the brain's transcript lives in its per-session isolated config dir
+    // (keyed by coordOwnerId), not the shared ~/.claude — check there, else every
+    // dock open would see "no transcript" and fork a fresh brain forever.
+    const brainConfigDir = tracked?.coordOwnerId ? sessionClaudeConfigDir(tracked.coordOwnerId) : null;
+    if (tracked && (tracked.agent !== 'claude' || claudeStoreHasSession(pin, { configDir: brainConfigDir }))) {
       launchResume(tracked);
       return;
     }

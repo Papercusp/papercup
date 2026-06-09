@@ -24,10 +24,21 @@
  *
  * `invoke()` (autonomous spawns) keeps its own richer inline assembly
  * (substrate + feature-history + notes + identity, appropriate for a
- * headless run); the shared LEAVES (`buildPrompt`, the signing key, the
- * role `.md` files) are what both paths hold in common. Folding the
- * orchestrator's hot path onto this builder would require unifying the
- * autonomous-vs-chat context injection — a behavior change, deferred.
+ * headless run); the shared LEAVES (`buildPrompt`, `resolvePromptFile`, the
+ * signing key, the role `.md` files) are what both paths hold in common.
+ *
+ * ASSESSED (unify-launch-mechanics follow-on, prompt-assembly fold): the fold is
+ * intentionally NOT a goal, not a deferred TODO. The convergence that matters is
+ * already done — BOTH paths build their prompt through the SAME `resolvePromptFile`
+ * + `buildPrompt` leaves over the SAME role `.md` personas; there is no duplicate
+ * prompt builder. What differs is mode-specific CONTEXT fed into that one builder,
+ * and it SHOULD differ: the autonomous path injects substrate + feature-history +
+ * the G3 `<untrusted-peer-content>` security wrapping (a headless agent has no
+ * human to ask, and the G3 boundary is load-bearing), while the chat path injects
+ * planContext + brief (a human drives + asks). Folding them would regress —
+ * either bloating the interactive prompt with substrate it doesn't need or
+ * stripping the autonomous prompt of state it requires (and blurring G3). Keep
+ * the two callers; the shared leaf is the right unification layer.
  *
  * Server-only.
  */

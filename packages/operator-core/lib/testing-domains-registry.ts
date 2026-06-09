@@ -1151,6 +1151,14 @@ defineTestDomain({
       ],
     },
     {
+      id: 'resume-live',
+      label: 'C5 real resume spawn (live)',
+      description: 'LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.',
+      runners: [
+        { kind: 'node', cmd: 'npx', args: ['tsx', 'apps/operator/scripts/resume-spawn-live.ts'], label: 'real claude/codex resume (live · needs creds)' },
+      ],
+    },
+    {
       id: 'wake-realseam',
       label: 'C2/C6 real-seam pump + host',
       description: 'The real psu-pty-host idle-gate + mode:turn CR-submit + discovery handshake; the real emit→pump path with armInboxWake idempotency and cross-agent isolation.',

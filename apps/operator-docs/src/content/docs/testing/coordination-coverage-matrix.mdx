@@ -163,10 +163,24 @@ route assertions (CLAUDE_CONFIG_DIR present for claude, absent for omp/codex,
 non-fatal on materialize failure).
 </Aside>
 
+<Aside type="tip" title="Full real claude/codex resume spawn: CLOSED (live-smoke)">
+**The real-CLI resume rung now has a live-smoke.** The CI test
+(`wake-resume-isolation.test.ts`) still asserts the wake-executor *builds* the
+right resume command + hands it to `spawnDetached` (bin/args/env captured via an
+injected `spawnDetached`). Its complement — does that command, run for real,
+actually continue the session? — is `apps/operator/scripts/resume-spawn-live.ts`,
+surfaced as the coordination-suite **C5 real resume spawn (live)** runner. It
+builds the resume command via the SAME `resumeCommandFor`, runs it against the
+REAL `claude` / `codex` binary in the EI-155 isolated `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME`, and asserts the resume CONTINUED the exact session **deterministically**
+— the session transcript / rollout file GROWS — independent of the model's output.
+Gated (needs creds → not CI); each agent leg SKIPS when its CLI is absent/unauthed.
+Both legs verified green on this box (claude 2.1.169, codex).
+</Aside>
+
 ## Accepted gaps (logged — not silent)
 
 <Aside type="note" title="Accepted gaps">
-- **Full real `claude`/`codex` resume spawn.** The resume rungs are asserted via
-  injected `spawnDetached` (capturing bin/args/env); a real CLI resume needs
-  credentials and is the **live-smoke** tier (gated runner), not CI.
+- _None outstanding for this suite._ The two gaps logged at first publication
+  (interactive-claude config isolation, real resume spawn) are both closed above.
 </Aside>

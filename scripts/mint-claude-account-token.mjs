@@ -24,13 +24,15 @@ import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// Canonical claude-code OAuth params (captured from `claude setup-token`'s own browser-open call):
+// base = claude.com/cai/oauth/authorize, single scope user:inference. The localhost redirect that
+// setup-token uses needs a same-machine listener; for a REMOTE browser we use the console
+// paste-callback variant (the page DISPLAYS the code).
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const AUTHORIZE_URL = 'https://claude.ai/oauth/authorize';
+const AUTHORIZE_URL = 'https://claude.com/cai/oauth/authorize';
 const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
 const REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
-// The canonical claude-code setup-token scopes (NOT user:sessions:claude_code — that's the
-// interactive-login flow's scope; mixing it in makes claude.ai reject "Invalid request format").
-const SCOPES = 'org:create_api_key user:profile user:inference';
+const SCOPES = 'user:inference';
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const stateFile = (id) => join(tmpdir(), `claude-oauth-${id.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
