@@ -89,16 +89,18 @@ File: `agent-tools/coordination/__tests__/cross-agent-isolation.integration.test
 
 ### Locks (C1)
 
-File: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`).
+Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator).
 
-| Cell                                                   | Before  | Now                                     |
-| ------------------------------------------------------ | ------- | --------------------------------------- |
-| A cannot release/heartbeat B's lock (lock\_id keying)  | 🟢 aba  | ✅ adversarial (replay B's lock\_id)     |
-| file-lock block-on-held                                | partial | ✅                                       |
-| ABA stale-handle no-op                                 | 🟢      | ✅                                       |
-| named-resource drain (exclusive vs shared)             | 🟢      | ✅                                       |
-| lock-authority election (lowest live pubkey, failover) | 🟢      | ✅ pure `decideAuthority`                |
-| file-lock hook **fail-open** when operator unreachable | ❌       | ⚪ accepted gap (hook-script, see below) |
+| Cell                                                                                        | Before            | Now                                                    |
+| ------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------ |
+| A cannot release/heartbeat B's lock (lock\_id keying)                                       | 🟢 aba            | ✅ adversarial (replay B's lock\_id)                    |
+| store-layer block-on-held (B's acquire on A's path → busy)                                  | partial           | ✅                                                      |
+| ABA stale-handle no-op                                                                      | 🟢                | ✅                                                      |
+| named-resource drain (exclusive vs shared)                                                  | 🟢                | ✅                                                      |
+| lock-authority election (lowest live pubkey, failover)                                      | 🟢                | ✅ pure `decideAuthority`                               |
+| **file-lock hook fail-open** (operator unreachable → allow + marker; bounded retry)         | partial           | ✅ (`cc-hooks.test.ts`)                                 |
+| **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) |
+| file-lock hook allow-on-grant caches lock\_id for release (+ SSE-framed parsing)            | ❌                 | 🔴                                                     |
 
 ### Federation (C2/C3)
 
@@ -137,16 +139,16 @@ File: `multi-session-concurrency.integration.test.ts` (4 channels, N isolated te
 
 ## Accepted gaps (logged — not silent)
 
-* **Interactive-SU launch-side claude config isolation.** Per-session
+* **Interactive-SU launch-side claude config isolation (EI-155).** Per-session
   `CLAUDE_CONFIG_DIR` isolation is implemented for **orchestrator-spawned bees**
   (`spawn-mcp.ts`/`invoke.ts` → `~/.papercusp/session-claude/<spawnId>`) and
   restored on **wake-executor resume**, but **not** for interactive `psu`/SU
   claude sessions (`bootstrap-su` sets none). Repointing it is credential-
   sensitive (the human's `~/.claude` login), so it is a deliberate design
-  follow-up, not a test detail. Tracked via `improvements:capture`. The EI-153
-  regression therefore asserts isolation at the seams where it **is** the
-  implemented fix (per-spawn config-dir, per-owner resume config-dir + exact
-  session id, per-owner discovery socket).
+  follow-up, not a test detail — filed as **EI-155**. The EI-153 regression
+  therefore asserts isolation at the seams where it **is** the implemented fix
+  (per-spawn config-dir, per-owner resume config-dir + exact session id,
+  per-owner discovery socket).
 * **Full real `claude`/`codex` resume spawn.** The resume rungs are asserted via
   injected `spawnDetached` (capturing bin/args/env); a real CLI resume needs
   credentials and is the **live-smoke** tier (gated runner), not CI.

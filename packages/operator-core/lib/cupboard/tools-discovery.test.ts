@@ -201,8 +201,9 @@ describe('buildToolProvenance — "what provides X" (P-006)', () => {
     expect(payload.matches.map((m) => m.tool)).toEqual(expect.arrayContaining(['md.render', 'md.lint']));
   });
 
-  it('an unknown tool name resolves to null with no matches', () => {
-    const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { tool: 'does.not.exist' });
+  it('an unknown tool name resolves to null (no fabricated resolution)', () => {
+    // a name with no token overlap → null resolved + no capability matches
+    const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { tool: 'zzz.qqq' });
     expect(payload.resolved).toBeNull();
     expect(payload.matches).toEqual([]);
   });

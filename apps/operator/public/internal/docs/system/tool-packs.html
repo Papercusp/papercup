@@ -295,14 +295,17 @@ is matched on five fields, weighted so the right provider surfaces first:</p>
 
 
 <table><thead><tr><th>Field</th><th>Weight</th><th>Why</th></tr></thead><tbody><tr><td>tool name</td><td>10</td><td>an exact/prefix name hit is the strongest signal</td></tr><tr><td>category (namespace)</td><td>5</td><td><code dir="auto">coord</code> should surface every <code dir="auto">coord:*</code> tool</td></tr><tr><td>capability gate</td><td>4</td><td>built-ins carry a <code dir="auto">capability</code> string (<code dir="auto">tasks:read</code>)</td></tr><tr><td>providing unit name</td><td>3</td><td>”markdown-tools” finds <code dir="auto">md.render</code></td></tr><tr><td>description</td><td>2</td><td>the capability text — “pack a repo” finds <code dir="auto">repomix.pack</code></td></tr></tbody></table>
-<p>Search is <strong>AND across query tokens</strong> (every token must hit some field, so
-precision stays high) and each token scores the best <code dir="auto">weight × tier</code> it
-achieves on any field (<code dir="auto">exact token</code> ≫ <code dir="auto">token prefix</code> ≫ <code dir="auto">substring</code>). A
-whole-query hit on the name adds a phrase boost, so an exact tool name always
-leads its token-equal peers. The per-tool capability text comes from the live
-registries (<code dir="auto">collectToolMeta</code> — <code dir="auto">getCatalog()</code> descriptions + capability gates,
-plus <code dir="auto">listAllProjectedTools()</code> for installed plugin/pack tools); a Cupboard-only
-tool falls back to its providing unit’s description.</p>
+<p>Search is <strong>OR across content query tokens</strong> — stopwords (<code dir="auto">a</code>, <code dir="auto">to</code>, <code dir="auto">the</code>, …)
+are dropped, and an entry matches if <em>at least one</em> remaining token hits some
+field, so a natural-language query (“send a message to a peer”) matches on its
+content words instead of failing because every filler word must also land. Each
+matched token adds the best <code dir="auto">weight × tier</code> it achieves on any field
+(<code dir="auto">exact token</code> ≫ <code dir="auto">token prefix</code> ≫ <code dir="auto">substring</code>), so broader coverage scores
+higher; a whole-query hit on the name adds a phrase boost, so an exact tool name
+always leads. The per-tool capability text comes from the live registries
+(<code dir="auto">collectToolMeta</code> — <code dir="auto">getCatalog()</code> descriptions + capability gates, plus
+<code dir="auto">listAllProjectedTools()</code> for installed plugin/pack tools); a Cupboard-only tool
+falls back to its providing unit’s description.</p>
 <blockquote>
 <p>Why a bespoke scorer and not <code dir="auto">@papercusp/rrf</code>: rank fusion deliberately
 discards score magnitude and field semantics, but here a name-exact match

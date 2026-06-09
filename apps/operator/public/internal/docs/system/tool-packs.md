@@ -250,14 +250,17 @@ is matched on five fields, weighted so the right provider surfaces first:
 | providing unit name  | 3      | "markdown-tools" finds `md.render`                       |
 | description          | 2      | the capability text — "pack a repo" finds `repomix.pack` |
 
-Search is **AND across query tokens** (every token must hit some field, so
-precision stays high) and each token scores the best `weight × tier` it
-achieves on any field (`exact token` ≫ `token prefix` ≫ `substring`). A
-whole-query hit on the name adds a phrase boost, so an exact tool name always
-leads its token-equal peers. The per-tool capability text comes from the live
-registries (`collectToolMeta` — `getCatalog()` descriptions + capability gates,
-plus `listAllProjectedTools()` for installed plugin/pack tools); a Cupboard-only
-tool falls back to its providing unit's description.
+Search is **OR across content query tokens** — stopwords (`a`, `to`, `the`, …)
+are dropped, and an entry matches if *at least one* remaining token hits some
+field, so a natural-language query ("send a message to a peer") matches on its
+content words instead of failing because every filler word must also land. Each
+matched token adds the best `weight × tier` it achieves on any field
+(`exact token` ≫ `token prefix` ≫ `substring`), so broader coverage scores
+higher; a whole-query hit on the name adds a phrase boost, so an exact tool name
+always leads. The per-tool capability text comes from the live registries
+(`collectToolMeta` — `getCatalog()` descriptions + capability gates, plus
+`listAllProjectedTools()` for installed plugin/pack tools); a Cupboard-only tool
+falls back to its providing unit's description.
 
 > Why a bespoke scorer and not `@papercusp/rrf`: rank fusion deliberately
 > discards score magnitude and field semantics, but here a name-exact match

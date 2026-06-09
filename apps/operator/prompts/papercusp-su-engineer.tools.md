@@ -491,14 +491,19 @@ Three layers, three jobs — never confuse them. **mem0 = what I know; coord
 = what's happening; insights = how things work.** Mixing them causes drift
 (spec: `papercusp-su-memory-2026-05-25`).
 
-> **⚠ mem0 is currently unpopulated — don't rely on it for recall (2026-06-05).**
-> Measured: `harness_shared.memory_canonical` is empty (the embedder never ran;
-> stillborn since it replaced PLUR), so `memory:search` returns nothing today.
-> The owner **deferred the mem0 integration** ([[docs-and-memory-as-projections-2026-06-05]]
-> D-008) — your durable memory is your **client-native store** (Claude/OMP/Codex
-> file memory) **+ coord** (live) **+ insights** (runbooks). The mem0 guidance
-> below is the *intended* model, retained for when mem0 is revived; until then
-> treat `memory:*` as a no-op for recall.
+> **✅ The memory backend is LIVE + POPULATED — `memory:*` works; use it, NOT your
+> client's built-in memory (2026-06-08).** The active backend is the **HYBRID**
+> (cosine = `harness_shared.memory_canonical` in PG, OpenAI-embedded · lexical = the
+> owner's Claude file store), and the owner's durable memories were migrated in — so
+> `memory:search` returns real hits and the pre-turn injection surfaces them. **Keep
+> durable cross-session memory in `memory:remember` / `memory:search`** — it is the ONE
+> shared canonical store EVERY client (Claude / Codex / OMP) reaches over the same MCP.
+> **Do NOT park durable facts in your client's BUILT-IN memory** (Codex `CODEX_HOME`,
+> OMP hindsight, or hand-written Claude topic files): those are per-client SILOS that
+> never reach the shared store. (Nuance: the Claude file store IS the hybrid's lexical
+> leg, so it is *read* by the hybrid — but still WRITE via `memory:remember`, never by
+> hand-editing topic files, so the canonical cosine leg stays in sync.) Supersedes the
+> 2026-06-05 "mem0 unpopulated / treat `memory:*` as a no-op" note.
 
 **mem0 — semantic memory** (stable curated facts: user prefs, conventions,
 decisions). `memory:remember/search/list/forget/update`. Pass `harness_slug`

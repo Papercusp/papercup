@@ -157,25 +157,37 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   // topic is not an impersonation: every connection still Noise-handshakes our
   // own key and our HELLO carries our real pubkey; addressing is still validated
   // by the receiver, so a stray connection mis-delivers nothing.
+  //
+  // CRITICAL: do NOT call the per-topic `discovery.flushed()` here. Calling it
+  // alongside `swarm.flush()` POISONS discovery on this swarm — the connection
+  // never forms (verified: a bare two-swarm pair connects in ~1.5s, but adding
+  // `void discovery.flushed()` to the same joins keeps connectionCount at 0).
+  // We drive discovery exclusively through `swarmFlush()` (the swarm-level flush),
+  // which is the pattern that reliably connects.
   const ensureJoined = (topic: Buffer): void => {
     const hex = topic.toString('hex');
     if (joined.has(hex)) return;
-    const discovery = opts.swarm.join(topic, { server: true, client: true });
-    joined.set(hex, discovery);
-    if (discovery && typeof (discovery as { flushed?: () => Promise<void> }).flushed === 'function') {
-      void (discovery as { flushed: () => Promise<void> }).flushed().catch(() => {});
+    joined.set(hex, opts.swarm.join(topic, { server: true, client: true }));
+  };
+
+  /** Drive a full DHT announce+lookup+connect round (awaited). Best-effort. */
+  const swarmFlush = async (): Promise<void> => {
+    const f = (opts.swarm as { flush?: () => Promise<unknown> }).flush;
+    if (typeof f === 'function') {
+      try {
+        await f.call(opts.swarm);
+      } catch {
+        /* best-effort */
+      }
     }
   };
 
-  // Reachable immediately: register the handler + join our own topic, then flush
-  // so our topic is announced on the DHT (a sender's lookup needs a live announce).
+  // Reachable immediately: register the handler + join our own topic (server) so
+  // peers can dial us, then flush in the background to announce it on the DHT.
   opts.swarm.on('connection', handler);
   const selfTopic = deriveTopic(opts.selfHivePubkey);
   ensureJoined(selfTopic);
-  {
-    const flushable = opts.swarm as { flush?: () => Promise<unknown> };
-    if (typeof flushable.flush === 'function') void flushable.flush().catch(() => {});
-  }
+  void swarmFlush();
 
   return {
     selfTopicHex: selfTopic.toString('hex'),
@@ -191,23 +203,22 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
       // Flush anything that arrived before we had a handler.
       const buffered = inboundBuffer.splice(0);
       for (const env of buffered) void Promise.resolve(handlerFn(env)).catch(() => {});
+      // Now that we're listening, (re)announce our self-topic so senders find us.
+      void swarmFlush();
     },
 
     async send(toHivePubkey: string, env: CrossHiveWireEnvelope): Promise<void> {
       // Rendezvous on the target Hive's topic (it is server there; we join too).
       ensureJoined(deriveTopic(toHivePubkey));
-      const flushable = opts.swarm as { flush?: () => Promise<unknown> };
       const targets = (): OpenChannel[] => [...channels].filter((ch) => ch.remotePubkey === toHivePubkey);
       // Wait for the channel to the target to pair + exchange HELLOs, AWAITING a
-      // re-triggered DHT announce+lookup round (swarm.flush) each iteration:
-      // awaiting the flush is what drives the connection to completion (it
-      // resolves only after the swarm has looked up + connected to discovered
-      // peers), whereas a fire-and-forget flush leaves the connection unformed.
+      // re-triggered DHT announce+lookup+connect round (swarm.flush) each
+      // iteration — awaiting the flush is what drives the connection to
+      // completion (it resolves only after the swarm has looked up + connected to
+      // discovered peers). Never use discovery.flushed() (it poisons discovery).
       const start = Date.now();
       while (targets().length === 0 && Date.now() - start < sendWaitMs) {
-        if (typeof flushable.flush === 'function') {
-          await Promise.race([flushable.flush().catch(() => {}), delay(3000)]);
-        }
+        await swarmFlush();
         if (targets().length > 0) break;
         await delay(pollMs);
       }

@@ -117,6 +117,14 @@ export interface WorkItem {
   rankWriter: RankWriter | null;
   /** When `rank` was last written (tiebreak + audit). */
   rankUpdatedAt: string | null;
+  /**
+   * BACKLOG priority — `feature_order`, the GLOBAL order the decentralized claim path
+   * (claimNextWorkItem) pulls against (LOWER = claimed sooner; null = unprioritized,
+   * sorts last). The Queen's steer-don't-dispatch lever (work_items:set_priority).
+   * DISTINCT from `rank` (a per-assignee CLAIMED-list position). Feature-family only —
+   * null on issue-family items (they aren't the dispatched backlog).
+   */
+  priority: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -175,6 +183,7 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     rank: i.assigneeRank,
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
+    priority: null, // issue-family is not the dispatched backlog
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
@@ -193,6 +202,7 @@ interface FeatureRowDb {
   assignee_rank: number | null;
   rank_writer: string | null;
   rank_updated_at: unknown;
+  feature_order: number | null;
   created_ts: unknown;
   updated_ts: unknown;
 }
@@ -213,13 +223,14 @@ function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     rank: r.assignee_rank,
     rankWriter: isRankWriter(r.rank_writer) ? r.rank_writer : null,
     rankUpdatedAt: r.rank_updated_at == null ? null : tsIso(r.rank_updated_at),
+    priority: r.feature_order ?? null,
     createdAt: tsIso(r.created_ts),
     updatedAt: tsIso(r.updated_ts),
   };
 }
 
 const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
-  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, created_ts, updated_ts`;
+  parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
@@ -781,6 +792,94 @@ export async function getWorkItemSwarmAffinity(
     SELECT swarm_affinity FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id} LIMIT 1`;
   return { id, harness: wi.harness, swarmAffinity: rows[0]?.swarm_affinity ?? null };
+}
+
+/* ── Backlog priority (the Queen's steer-don't-dispatch lever) ──────────────────────
+ * The Queen STEERS the SHARED backlog by setting each feature-family item's
+ * `feature_order` — the column the decentralized claim path (claimNextWorkItem) orders
+ * by (ASC NULLS LAST: LOWER feature_order = claimed sooner; NULL = unprioritized, sorts
+ * last). This is the "sets priorities" half of the steering loop
+ * (autoloop-pot-operator-rebuild B7 / decentralized-dispatch-scaling D-003/D-004 + P-009/
+ * P-010): she reads the rolled-up change feed and reorders the backlog the fleet claims
+ * against, never assigning item-by-item.
+ *
+ * It is DISTINCT from `reorderWorkItem` (work_items:reorder), which ranks ONE bee's
+ * already-CLAIMED work-list (`assignee_rank`). Priority = the GLOBAL backlog order
+ * (pre-claim); rank = a per-assignee queue (post-claim). Feature-family only — the
+ * issue-family table (bugs/changes) has no `feature_order` and is not the dispatched
+ * backlog, so for an issue-family id these are no-ops returning `applicable: false`.
+ */
+export interface WorkItemPriorityResult {
+  id: string;
+  harness: string | null;
+  /** The backlog priority (`feature_order`) now stored — LOWER = higher priority; null = unprioritized. */
+  priority: number | null;
+  /** Whether backlog priority APPLIES — feature-family (the dispatched backlog) = true; issue-family = false. */
+  applicable: boolean;
+}
+
+/** Set (or clear, with `priority: null`) a feature-family work-item's backlog priority (`feature_order`). */
+export async function setWorkItemPriority(
+  id: string,
+  priority: number | null,
+  opts: { harness?: string } = {},
+): Promise<WorkItemPriorityResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  const ord = priority === null ? null : Math.trunc(priority);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_order: number | null }[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET feature_order = ${ord}, updated_ts = ${Date.now()}
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+    RETURNING feature_order`;
+  if (!rows[0]) return null;
+  return { id, harness: wi.harness, priority: rows[0].feature_order, applicable: true };
+}
+
+/**
+ * Bump a feature-family work-item to the HEAD or TAIL of its harness's backlog by setting
+ * `feature_order` just past the current extreme (top = min−1, bottom = max+1, over the OTHER
+ * feature-family items in the harness). The ergonomic steering verb — the Queen thinks "make
+ * this the most urgent", not in absolute order integers. Empty/all-null backlog ⇒ 0.
+ */
+export async function bumpWorkItemPriority(
+  id: string,
+  position: 'top' | 'bottom',
+  opts: { harness?: string } = {},
+): Promise<WorkItemPriorityResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const ext = await sql<{ min_ord: number | null; max_ord: number | null }[]>`
+    SELECT MIN(feature_order) AS min_ord, MAX(feature_order) AS max_ord
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${wi.harness}
+       AND workspace_id = ${ws}
+       AND item_kind IN ('feature', 'research-task', 'chunk')
+       AND feature_id <> ${id}`;
+  const min = ext[0]?.min_ord ?? null;
+  const max = ext[0]?.max_ord ?? null;
+  const target = position === 'top' ? (min === null ? 0 : min - 1) : (max === null ? 0 : max + 1);
+  return setWorkItemPriority(id, target, opts);
+}
+
+/** Read a feature-family work-item's current backlog priority (`feature_order`; null when none / issue-family). */
+export async function getWorkItemPriority(
+  id: string,
+  opts: { harness?: string } = {},
+): Promise<WorkItemPriorityResult | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family !== 'feature') return { id, harness: wi.harness, priority: null, applicable: false };
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_order: number | null }[]>`
+    SELECT feature_order FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id} LIMIT 1`;
+  return { id, harness: wi.harness, priority: rows[0]?.feature_order ?? null, applicable: true };
 }
 
 export interface ReorderWorkItemResult {

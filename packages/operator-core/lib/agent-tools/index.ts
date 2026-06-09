@@ -334,6 +334,11 @@ import './work_items/observe';
 // swarm_affinity so tightly-coupled work co-locates on one Swarm; honored by claim_next
 // under the per-Hive claim lease.
 import './work_items/co_locate';
+// The Queen's steer-don't-dispatch lever (autoloop-pot-operator-rebuild B7 /
+// decentralized-dispatch-scaling D-003/D-004, P-009/P-010): set a feature-family item's
+// BACKLOG priority (feature_order) — the order claim_next pulls against — reading the
+// rolled-up change feed. Distinct from work_items:reorder (per-bee claimed work-list).
+import './work_items/set_priority';
 // Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
 // decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
 import './work_items/register-claim-authority-ops';
