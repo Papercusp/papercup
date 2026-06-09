@@ -272,7 +272,7 @@ function stubComms(byUrl: Record<string, unknown>) {
     'fetch',
     vi.fn(async (url: string) => {
       const match = Object.keys(byUrl).find((frag) => url.includes(frag));
-      return { json: async () => (match ? byUrl[match] : { conversations: [] }) };
+      return { ok: true, status: 200, json: async () => (match ? byUrl[match] : { conversations: [] }) };
     }),
   );
 }
@@ -441,5 +441,14 @@ describe('AdvConversationsTab — unified communication views', () => {
     stubComms({ '/comms/agent-chats/list': { items: [] } });
     render(<AdvConversationsTab />);
     await waitFor(() => expect(screen.getByText(/No agent chats/i)).toBeTruthy());
+  });
+
+  it('a failed list fetch surfaces a retry-able error instead of a stuck loader', async () => {
+    nuqsState.conv = 'deliberations';
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    render(<AdvConversationsTab />);
+    await waitFor(() => expect(screen.getByText(/Couldn't load/i)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
+    expect(screen.getByText(/HTTP 500/)).toBeTruthy();
   });
 });
