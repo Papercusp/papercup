@@ -415,7 +415,14 @@ plan `fleet-coordination-painpoints-2026-06-02`.
 
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Project history + plan docs
-  live behind `plans:*` (see *Named workflows*).
+  live behind `plans:*` (see *Named workflows*). Your client's plan mode
+  (Claude's `ExitPlanMode`, etc.) and native task/to-do tools are for
+  *ephemeral* in-session approval + checklists ONLY — they persist nothing,
+  no peer can see them, and they vanish when the session ends. Any **durable**
+  plan must live in `plans:*` (PG-canonical, fleet-visible, reviewable, with
+  items / decisions / status / lint) — never let a plan exist only in your
+  client's plan mode. Use plan mode, if at all, to *draft* what you then write
+  to `plans:*`; use the native task tool only for the in-session checklist.
 - **Deferring is the user's call, not yours — ASK before you defer.** When
   something in scope is hard, risky, or big, do NOT quietly decide it's "out
   of scope" and move on. Surface it *before* deferring — name the item, why

@@ -285,12 +285,19 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     AGENT_MODELS: process.env.AGENT_MODELS,
     PAPERCUSP_AGENT_GOVERNOR: process.env.PAPERCUSP_AGENT_GOVERNOR,
     PAPERCUSP_AGENT_GOVERNOR_PG: process.env.PAPERCUSP_AGENT_GOVERNOR_PG,
+    LLM_TEST_BACKEND: process.env.LLM_TEST_BACKEND,
   };
   try {
     const merged = { ...(priorEnv.AGENT_MODELS ? safeJson(priorEnv.AGENT_MODELS) : {}), bee: 'opus:xhigh' };
     process.env.AGENT_MODELS = JSON.stringify(merged);
     process.env.PAPERCUSP_AGENT_GOVERNOR = '1';
     process.env.PAPERCUSP_AGENT_GOVERNOR_PG = '1';
+    // The judge is an IN-PROCESS llmCall on THIS box, and llm-client defaults its backend to
+    // Meridian (:3456) — which is down here. Its internal retry loop then never returns and wedges
+    // the whole SEQUENTIAL battery (observed: the gen-0 baseline hung ~8min after bee 1, parked in
+    // ep_poll with no socket). Route the judge through the claude CLI on the same clean OAuth token
+    // the bees already use (CLAUDE_CODE_OAUTH_TOKEN), unless the caller explicitly set a backend.
+    process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
     const { sql } = getOrgPg();
     await assertSchema(sql);
@@ -342,13 +349,28 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
 
     // Real judge (opus-4-8) unless dry-run; wrapped to pre-check + charge judge cost.
     const realJudge: JudgeLlmCall = (await import('../llm-testing/llm-client')).llmCall;
+    // Bound each judge llmCall so a stuck/slow judge (e.g. an unreachable backend's internal retry
+    // loop) errors only THIS case (battery → status 'errored', continues) instead of wedging the
+    // whole sequential run. A real opus-4-8 judge returns in <2min; 4min is a generous ceiling.
+    const JUDGE_TIMEOUT_MS = 240_000;
     const judge: JudgeLlmCall = args.dryRun
       ? dryRunJudge
       : async (opts) => {
           if (spend.usd + JUDGE_COST_ESTIMATE_USD > args.capUsd) {
             throw new SpendCapError(args.capUsd, spend.usd + JUDGE_COST_ESTIMATE_USD);
           }
-          const r = await realJudge(opts);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const r = await Promise.race([
+            realJudge(opts),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`judge llmCall timed out after ${JUDGE_TIMEOUT_MS / 1000}s`)),
+                JUDGE_TIMEOUT_MS,
+              );
+            }),
+          ]).finally(() => {
+            if (timer) clearTimeout(timer);
+          });
           spend.charge(r.costUsd, 'judge');
           return r;
         };

@@ -229,7 +229,12 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
 
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Prior work + plan docs live
-  behind `plans:*` (see *Named workflows*).
+  behind `plans:*` (see *Named workflows*). Your client's plan mode (Claude's
+  `ExitPlanMode`, etc.) and native task/to-do tools are for *ephemeral*
+  in-session approval + checklists ONLY — they persist nothing and no peer can
+  see them. Any **durable** plan must live in `plans:*` (PG-canonical,
+  fleet-visible, reviewable); never let a plan exist only in your client's plan
+  mode — use it, if at all, to *draft* what you then write to `plans:*`.
 - **Deferring is the user's call — ASK before you defer.** Don't quietly
   decide an in-scope item is "out of scope". Surface it *before* deferring
   (the item + why + the cost of doing it now) and get an explicit yes. Silent
