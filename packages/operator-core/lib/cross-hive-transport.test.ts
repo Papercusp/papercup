@@ -67,7 +67,7 @@ describe('store-and-forward (sendCrossHive + flush)', () => {
     const sent: CrossHiveWireEnvelope[] = [];
     return {
       sent,
-      async send(_to, env) {
+      async send(_to: string, env: CrossHiveWireEnvelope) {
         if (fail.now) throw new Error('peer offline');
         sent.push(env);
       },

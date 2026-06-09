@@ -68,7 +68,7 @@ describe('grant persistence round-trip', () => {
     await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], db.sql);
     const loaded = await loadCrossHiveGrants(WS, HIVE, db.sql);
     expect(loaded).toHaveLength(2);
-    expect(loaded.find((g) => g.peerHivePubkey === PEER_A)?.allowedKinds.sort()).toEqual(['ask', 'work-request']);
+    expect([...(loaded.find((g) => g.peerHivePubkey === PEER_A)?.allowedKinds ?? [])].sort()).toEqual(['ask', 'work-request']);
     expect(loaded.find((g) => g.peerHivePubkey === PEER_B)?.allowedKinds).toEqual(['ask']);
   });
 
