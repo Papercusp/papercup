@@ -465,6 +465,59 @@ export function shouldAutoServe(plan: AutoServePlan): boolean {
   return plan.isFastForward === true && Array.isArray(plan.commits) && plan.commits.length > 0;
 }
 
+/** P-013 back-off window: how long after a failed/rolled-back deploy of a target we
+ *  refuse to re-attempt the SAME target. */
+const DEPLOY_BACKOFF_MS = 60 * 60_000;
+
+function safeJson(s: string): Record<string, unknown> {
+  try {
+    return JSON.parse(s) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+export interface DeployEventRow {
+  status: string;
+  detail: Record<string, unknown> | string | null;
+  created_at: Date | string;
+}
+
+/**
+ * P-013 pure decision: given the MOST-RECENT deploy event, should we skip re-attempting
+ * `targetSha`? A deploy that fails/rolls-back reverts the release checkout BACKWARD, so
+ * the next 15-min trigger sees green `main` still ahead and redeploys the SAME broken
+ * target — draining + restarting :3070 every tick (2026-06-09 13:31–14:00: three
+ * rolled-back retries of one broken green). True iff that event was a failure/rollback of
+ * the SAME target within DEPLOY_BACKOFF_MS of `nowMs`. A new green (different sha) or the
+ * window elapsing clears the back-off. Exported for unit testing.
+ */
+export function shouldBackOff(latest: DeployEventRow | null, targetSha: string, nowMs: number): boolean {
+  if (!latest || (latest.status !== 'failed' && latest.status !== 'rolled-back')) return false;
+  const detail = typeof latest.detail === 'string' ? safeJson(latest.detail) : latest.detail ?? {};
+  const lastTarget = String((detail as Record<string, unknown>).targetSha ?? ''); // stored sliced(0,12)
+  const ageMs = nowMs - new Date(latest.created_at).getTime();
+  return lastTarget.length > 0 && targetSha.startsWith(lastTarget) && ageMs < DEPLOY_BACKOFF_MS;
+}
+
+/** DB glue over shouldBackOff — reads the latest deploy event; never blocks a deploy on a
+ *  stats-read failure (fail-open). */
+async function recentDeployFailedFor(slug: string, targetSha: string): Promise<boolean> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE install_slug = $1 AND kind = 'deploy'
+        ORDER BY created_at DESC LIMIT 1`,
+      [slug],
+    )) as DeployEventRow[];
+    return shouldBackOff(rows[0] ?? null, targetSha, Date.now());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * system:release-trigger — AUTO-SERVE (staging-branch-pipeline-2026-06-06 D-002):
  * when green `main` is ahead of what the operator runs, launch the SCRIPTED
@@ -479,7 +532,7 @@ export function shouldAutoServe(plan: AutoServePlan): boolean {
  * (swap+migrate land before restart, which is why it half-worked). A transient
  * unit survives the restart and completes the whole lifecycle.
  */
-registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
+registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
   const root = integrationRoot();
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);
@@ -495,6 +548,16 @@ registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
   // checkout-at/ahead-of-main case that previously storm-redeployed :3070 — see
   // `shouldAutoServe`.
   if (!planObj || !shouldAutoServe(planObj)) return;
+
+  // P-013: don't storm-redeploy a target that just failed/rolled-back — wait for a new
+  // green (different sha) or the back-off window. This is what stops the every-15-min
+  // retry of a broken green from draining + restarting the live operator each tick.
+  if (typeof planObj.targetSha === 'string' && (await recentDeployFailedFor(ctx.installSlug, planObj.targetSha))) {
+    console.warn(
+      `[release-trigger] target ${planObj.targetSha.slice(0, 12)} failed/rolled-back within ${DEPLOY_BACKOFF_MS / 60_000}m — backing off (awaiting a new green or the window)`,
+    );
+    return;
+  }
 
   const targetSha = typeof planObj.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : '?';
   const commits = Array.isArray(planObj.commits) ? planObj.commits.length : '?';
@@ -513,7 +576,9 @@ registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
       `--working-directory=${root}`,
       'bash',
       '-lc',
-      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' npx tsx apps/operator/lib/release/deploy-cli.ts --execute >> /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
+      // P-014: `>` (truncate), not `>>` — each deploy's log is self-contained, so the
+      // file can't grow unbounded; the durable record is pipeline_events + the journal.
+      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' npx tsx apps/operator/lib/release/deploy-cli.ts --execute > /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
     ]);
     let stderr = '';
     child.stderr?.on('data', (d) => (stderr += String(d)));

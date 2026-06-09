@@ -29,8 +29,11 @@ vi.mock('../git-sync/pipeline-events', () => ({
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
 import './release-actions';
-import { shouldAutoServe, type AutoServePlan } from './release-actions';
+import { shouldAutoServe, shouldBackOff, type AutoServePlan, type DeployEventRow } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
+
+/** Must match DEPLOY_PLAN_MARKER in deploy-cli.ts / release-actions.ts (P-008). */
+const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';
 
 /**
  * A spawn() fake: returns a child whose stdout emits `stdout`, then closes with
@@ -64,7 +67,12 @@ function planJson(noop: boolean): string {
   const plan: AutoServePlan = noop
     ? { targetSha: 'deadbeef', currentReleaseSha: 'deadbeef', isFastForward: true, commits: [], noop: true }
     : { targetSha: 'deadbeef', currentReleaseSha: 'cafef00d', isFastForward: true, commits: ['c1', 'c2'], noop: false };
-  return JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2);
+  // The CLI prints the pretty block AND the P-008 marker line; release-trigger parses the
+  // marker. Emit both so the fake mirrors the real deploy-cli output.
+  return (
+    JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2) +
+    `\n${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: 'plan', plan })}\n`
+  );
 }
 
 /** A plan in the redeploy-storm shape: the detached release checkout sits AHEAD
@@ -78,7 +86,10 @@ function aheadOfMainPlanJson(): string {
     commits: [],
     noop: false,
   };
-  return JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2);
+  return (
+    JSON.stringify({ mode: 'plan', config: { releaseRef: 'main' }, plan }, null, 2) +
+    `\n${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: 'plan', plan })}\n`
+  );
 }
 
 beforeEach(() => {
@@ -226,5 +237,38 @@ describe('shouldAutoServe — forward-only auto-serve policy', () => {
   it('still deploys when desktopOnly is false or absent (real operator change)', () => {
     expect(shouldAutoServe({ ...base, desktopOnly: false })).toBe(true);
     expect(shouldAutoServe({ ...base })).toBe(true); // absent → not skipped
+  });
+});
+
+describe('shouldBackOff — P-013 deploy-failure back-off', () => {
+  const now = 1_700_000_000_000;
+  // deploy events store targetSha sliced(0,12); the plan's targetSha is the full sha.
+  const stored = 'deadbeefcafe';
+  const full = 'deadbeefcafe1234567890abcdef000011112222';
+  const evt = (status: string, targetSha: string, agoMs: number, detailAsString = false): DeployEventRow => {
+    const detail = { targetSha };
+    return { status, detail: detailAsString ? JSON.stringify(detail) : detail, created_at: new Date(now - agoMs) };
+  };
+
+  it('backs off a rolled-back deploy of the SAME target within the window', () => {
+    expect(shouldBackOff(evt('rolled-back', stored, 5 * 60_000), full, now)).toBe(true);
+  });
+  it('backs off a failed deploy of the same target within the window', () => {
+    expect(shouldBackOff(evt('failed', stored, 5 * 60_000), full, now)).toBe(true);
+  });
+  it('does NOT back off when the latest deploy SUCCEEDED', () => {
+    expect(shouldBackOff(evt('ok', stored, 5 * 60_000), full, now)).toBe(false);
+  });
+  it('does NOT back off when there is no prior deploy event', () => {
+    expect(shouldBackOff(null, full, now)).toBe(false);
+  });
+  it('does NOT back off a failure of a DIFFERENT target (a new green is free to deploy)', () => {
+    expect(shouldBackOff(evt('rolled-back', '0000beefcafe', 5 * 60_000), full, now)).toBe(false);
+  });
+  it('does NOT back off once the window has elapsed (retry after cooldown)', () => {
+    expect(shouldBackOff(evt('rolled-back', stored, 90 * 60_000), full, now)).toBe(false);
+  });
+  it('tolerates a double-encoded JSON detail string', () => {
+    expect(shouldBackOff(evt('failed', stored, 5 * 60_000, true), full, now)).toBe(true);
   });
 });

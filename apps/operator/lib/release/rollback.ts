@@ -13,7 +13,7 @@
  */
 
 import { releaseConfig, type ReleaseConfig } from './release-config';
-import { git, lockfilesChanged } from './git-ops';
+import { git } from './git-ops';
 import type { DeployDeps, SnapshotInfo } from './deploy';
 
 export interface RollbackResult {
@@ -27,12 +27,12 @@ export interface RollbackResult {
 export async function executeRollback(
   cfg: ReleaseConfig,
   deps: DeployDeps,
-  opts: { toSha: string; fromSha: string | null; snapshot?: SnapshotInfo | null; lockfileChanged: boolean },
+  opts: { toSha: string; fromSha: string | null; snapshot?: SnapshotInfo | null },
 ): Promise<RollbackResult> {
   return deps.withDrain(async (): Promise<RollbackResult> => {
     try {
       deps.log(`↩ reverting release checkout → ${opts.toSha.slice(0, 8)}`);
-      await deps.runSetup(opts.toSha, { lockfileChanged: opts.lockfileChanged });
+      await deps.runSetup(opts.toSha);
       let restoredSnapshot = false;
       if (opts.snapshot) {
         await deps.restoreSnapshot(opts.snapshot);
@@ -70,16 +70,15 @@ if (require.main === module) {
     }
     const kopiaId = arg('--snapshot');
     const snapshot: SnapshotInfo | null = kopiaId ? { snapshotId: 0, kopiaSnapshotId: kopiaId } : null;
-    const lockfileChanged = fromSha ? await lockfilesChanged(cfg.integrationRoot, toSha, fromSha) : true;
 
     if (!process.argv.includes('--execute')) {
-      console.log(JSON.stringify({ mode: 'plan', fromSha, toSha, restoreSnapshot: !!snapshot, lockfileChanged }, null, 2));
+      console.log(JSON.stringify({ mode: 'plan', fromSha, toSha, restoreSnapshot: !!snapshot }, null, 2));
       console.error('\n[rollback] PLAN ONLY — pass --execute to revert. (Add --snapshot <kopiaId> to also restore the DB.)');
       process.exit(0);
     }
 
     const { realDeps } = (await import('./deploy-deps')) as typeof import('./deploy-deps');
-    const res = await executeRollback(cfg, realDeps(cfg), { toSha, fromSha, snapshot, lockfileChanged });
+    const res = await executeRollback(cfg, realDeps(cfg), { toSha, fromSha, snapshot });
     console.log(JSON.stringify(res, null, 2));
     process.exit(res.ok ? 0 : 1);
   })().catch((e) => {

@@ -387,6 +387,7 @@ import devTables from './dev/tables';
 import devTableSchema from './dev/table-schema';
 import devTableRows from './dev/table-rows';
 import devDrizzleStudio from './dev/drizzle-studio';
+import devGitPipeline from './dev/git-pipeline';
 // Legacy /templates routes + the dead :3057 marketplace install/slug/uninstall
 // are RETIRED (revive-cupboard-distribution D-004). Only catalog (bundled) +
 // spawnable survive — ungated internal scaffold-support endpoints, no :3057.
@@ -779,6 +780,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(devTableSchema as AnyRoute),
   ...flatten(devTableRows as AnyRoute),
   ...flatten(devDrizzleStudio as AnyRoute[]),
+  ...flatten(devGitPipeline as AnyRoute[]),
   ...flatten(marketplaceCatalog as AnyRoute),
   ...flatten(marketplaceSpawnable as AnyRoute),
   // Gym control-plane (gym-ui-handoff backend). /gym/harnesses (literal) precedes

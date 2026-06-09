@@ -13,7 +13,6 @@ import {
   isAncestor,
   advanceReady,
   changedFiles,
-  lockfilesChanged,
   migrationsBetween,
   commitsBetween,
 } from './git-ops';
@@ -90,7 +89,7 @@ describe('isAncestor', () => {
 });
 
 describe('diff helpers', () => {
-  it('changedFiles + lockfilesChanged + migrationsBetween + commitsBetween', async () => {
+  it('changedFiles + migrationsBetween + commitsBetween', async () => {
     const c1 = await commit('a.txt', '1', 'c1');
     await commit('package-lock.json', '{}', 'lock');
     await commit('libs/papercusp/libs/db/sql/200-thing.sql', 'SELECT 1;', 'mig');
@@ -100,19 +99,11 @@ describe('diff helpers', () => {
     expect(files).toContain('package-lock.json');
     expect(files).toContain('libs/papercusp/libs/db/sql/200-thing.sql');
 
-    expect(await lockfilesChanged(repo, c1, c4)).toBe(true);
-    expect(await lockfilesChanged(repo, c1, c1)).toBe(false);
-
     const migs = await migrationsBetween(repo, c1, c4);
     expect(migs).toEqual(['libs/papercusp/libs/db/sql/200-thing.sql']);
 
     const commits = await commitsBetween(repo, c1, c4);
     expect(commits.length).toBe(3); // lock, mig, code
     expect(await commitsBetween(repo, null, c4)).toEqual([]);
-  });
-
-  it('lockfilesChanged is true when from is null (first deploy)', async () => {
-    const c1 = await commit('a.txt', '1', 'c1');
-    expect(await lockfilesChanged(repo, null, c1)).toBe(true);
   });
 });

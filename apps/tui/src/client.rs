@@ -265,6 +265,20 @@ impl OperatorClient {
     pub async fn roster(&self) -> Result<serde_json::Value> {
         self.get_json("/api/adv/roster").await
     }
+
+    /// Invoke any palette-eligible server tool over the loopback run-tool route
+    /// (POST /api/agent-mcp/run-tool → `{ ok, result }`, where `result` holds the
+    /// tool's content). The generic pui→server-tool bridge: the wake-mode UI
+    /// (`coord:wake-mode` / `coord:wake-queue`, hive-agent-tabs P-008/P-009) + any
+    /// future pui tool-call go through it.
+    pub async fn run_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args))
+            .await
+    }
     pub async fn plans_list(&self) -> Result<serde_json::Value> {
         self.get_json("/api/admin/plans/list").await
     }
@@ -1551,6 +1565,13 @@ impl OperatorClient {
 }
 
 /// Minimal percent-encoding for a docs relative path.
+/// Build the run-tool request body (POST /api/agent-mcp/run-tool). Pure —
+/// unit-tested. `confirmed:false` so the server's §3 re-check still gates a
+/// destructive/high-risk tool (it replies 409 confirmation_required if so).
+fn run_tool_body(name: &str, args: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "name": name, "args": args, "confirmed": false })
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1576,6 +1597,18 @@ mod tests {
         );
         assert_eq!(urlencode("a b.md"), "a%20b.md");
         assert_eq!(urlencode("x?y&z"), "x%3Fy%26z");
+    }
+
+    #[test]
+    fn run_tool_body_has_name_args_and_unconfirmed() {
+        let b = super::run_tool_body(
+            "coord:wake-mode",
+            serde_json::json!({ "agent": "s-1", "mode": "manual" }),
+        );
+        assert_eq!(b["name"], "coord:wake-mode");
+        assert_eq!(b["args"]["agent"], "s-1");
+        assert_eq!(b["args"]["mode"], "manual");
+        assert_eq!(b["confirmed"], false);
     }
 
     // End-to-end IPC round-trips for the client live in ipc.rs (fake Unix-socket

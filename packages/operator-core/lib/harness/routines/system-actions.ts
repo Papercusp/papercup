@@ -18,7 +18,7 @@ export interface SystemActionCtx {
   installSlug: string;
   /** Owning workspace (routines.workspace_id); the call already runs inside its ALS scope. */
   workspaceId: string;
-  /** The routine's trigger_config (e.g. `{ cron, push, push_submodules, merge_strategy }`). */
+  /** The routine's trigger_config (e.g. `{ cron, push, push_submodules }`). */
   triggerConfig: Record<string, unknown>;
   /** The routine's payload_template, if any. */
   payloadTemplate: Record<string, unknown> | null;

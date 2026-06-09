@@ -139,6 +139,11 @@ pub struct RosterEntry {
     #[serde(default)]
     #[allow(dead_code)]
     pub session_id: Option<String>,
+    /// The agent's effective wake mode ("auto" | "manual"), the P-008 badge. None
+    /// for pending entries / pre-flag payloads. Rendered in the Fleet roster.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub wake_mode: Option<String>,
 }
 
 impl RosterEntry {

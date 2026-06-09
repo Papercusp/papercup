@@ -91,21 +91,32 @@ import '@/app/harness/harness.css';
  *     `<style id="op-chat-width-reserve">`, since that reservation CSS is
  *     otherwise component-scoped and absent pre-paint.
  */
-// Dev-only admin rail (plan dev-admin-sidebar-2026-06-05). Gated on
-// `import.meta.env.MODE !== 'production'` HERE so the whole rail — and its
-// lazily-imported panels — is statically dead code in a production build: the
-// ternary resolves to `null`, the `lazy(() => import(...))` call is never
-// emitted, and Rollup drops the chunk (verified: 0 `pcdar`/rail strings in a
-// production `vite build`). Result: the rail is ABSENT from user builds (D-001).
+// Dev admin rail (plan dev-admin-sidebar-2026-06-05; RUNTIME gate added by
+// desktop-build-switcher-wrapper-2026-06-09 P-007 / D-004). Two ways in:
 //
-// Why MODE, not `import.meta.env.DEV` (which the plan named): Vite ties DEV/PROD
-// to the COMMAND (`vite` serve vs `vite build`), NOT to `--mode`. The desktop dev
-// shell runs `vite build --watch --mode development` — a *build*, so DEV===false
-// there, and a DEV gate would make the rail never appear in the desktop. MODE is
-// the real discriminator: it's 'development' in BOTH dev shells (nohmr build +
-// :3055 HMR serve) and 'production' only in the shipped `vite build`.
+//   - `MODE !== 'production'` — both dev shells (the nohmr `vite build
+//     --watch --mode development` and the :3055 HMR serve), as before.
+//     (Why MODE, not `import.meta.env.DEV`: Vite ties DEV/PROD to the
+//     COMMAND — `vite` serve vs `vite build` — NOT to `--mode`, so the
+//     nohmr BUILD has DEV===false and a DEV gate would hide the rail in
+//     the desktop.)
+//   - `window.__PAPERCUSP_DEV_WRAPPER__` — a document-start user script the
+//     desktop's dev wrapper injects on EVERY navigation (papercusp-desktop
+//     src-tauri/src/dev_wrapper.rs), so the rail is present on ANY build
+//     the wrapper's switcher shows — the production :3070 green build
+//     included. Document-start runs before any module here, so reading it
+//     at module scope is safe. The signal is compiled out of real-
+//     production desktop builds (`dev-wrapper` Cargo feature, D-005), so a
+//     shipped build can never flip it.
+//
+// Consequence vs the old build-time-only gate: the rail's lazy chunk is now
+// EMITTED by a production `vite build` (the ternary is no longer statically
+// false), but it is FETCHED only when the gate is true at runtime — a real
+// production run (no wrapper, MODE==='production') never loads it.
 const DevAdminRail =
-  import.meta.env.MODE !== 'production'
+  import.meta.env.MODE !== 'production' ||
+  (typeof window !== 'undefined' &&
+    (window as { __PAPERCUSP_DEV_WRAPPER__?: boolean }).__PAPERCUSP_DEV_WRAPPER__ === true)
     ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
     : null;
 
@@ -209,11 +220,11 @@ function RootComponent() {
               <DesktopAttentionNotifier />
               <PerfObserverProvider />
               <RecorderHost />
-              {/* Dev-only admin rail — collapsible right cockpit (flags / run /
+              {/* Dev admin rail — collapsible right cockpit (flags / run /
                   health / deploy-state / db / fleet). Mounted inside NuqsAdapter
                   (its open/section state is nuqs-backed) + RootSyncProvider (its
-                  glance panels use useSyncQuery). Absent from production builds —
-                  see the DevAdminRail lazy const above. */}
+                  glance panels use useSyncQuery). Runtime-gated (dev mode OR the
+                  desktop dev wrapper's signal) — see the DevAdminRail const above. */}
               {DevAdminRail && (
                 <Suspense fallback={null}>
                   <DevAdminRail />

@@ -26,6 +26,39 @@ vi.mock('../../memory/learning', () => ({
 }));
 vi.mock('../../memory/reembed', () => ({ reembedMemories: vi.fn(async () => ({ from: 'a', to: 'b', count: 0 })) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
+vi.mock('../../memory/backend', () => ({
+  getMemoryBackend: vi.fn(),
+  registeredMemoryBackends: vi.fn(() => ['fake']),
+}));
+vi.mock('../../memory/backend-selection', () => ({
+  currentMemoryBackendChoice: vi.fn(() => 'fake'),
+  writeMemoryBackendChoice: vi.fn(async () => {}),
+  initMemoryBackendSelection: vi.fn(async () => {}),
+}));
+// The list route's audit enrichment queries memory_canonical/memory_anchors
+// through the pooled org connection — stub the tagged-template `sql`.
+const { orgSql } = vi.hoisted(() => ({
+  orgSql: vi.fn(async (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    const text = strings.join('?');
+    if (text.includes('memory_anchors')) return [];
+    if (text.includes('memory_canonical')) {
+      return [{
+        id: 'mem-newer',
+        state: 'active',
+        last_validated_at: null,
+        last_surfaced_at: null,
+        created_at: new Date('2026-06-01T00:00:00Z'),
+        updated_at: new Date('2026-06-08T00:00:00Z'),
+      }];
+    }
+    return [];
+  }),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: orgSql }),
+}));
 
 import { getSessionUser } from '../../auth';
 import { registerRoute } from '../define-route';
@@ -126,5 +159,52 @@ describe('user family ports — happy path / validation', () => {
     vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({ from: 'openai', to: 'openai' }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', () => {
+  const fakeBackend = (entries: object[]) => ({
+    name: 'fake',
+    available: vi.fn(async () => ({ ok: true })),
+    list: vi.fn(async () => entries),
+    get: vi.fn(async () => null),
+    forget: vi.fn(async () => {}),
+    update: vi.fn(async () => {}),
+  });
+  const ENTRIES = [
+    // No canonical row → falls back to metadata.turn_at for ordering.
+    { id: 'mem-older', text: 'older fact', kind: 'feedback', scope: 'u1', metadata: { turn_at: 5 } },
+    // Canonical row exists (orgSql stub) → gets dates + audit state.
+    { id: 'mem-newer', text: 'newer fact', kind: 'reference', scope: 'u1', metadata: { description: 'a one-liner' } },
+  ];
+
+  it('passes kinds through untouched, lifts canonical dates, sorts newest-first', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend(ENTRIES) as never);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory');
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.results).toHaveLength(2);
+    // The canonical-dated row (2026-06-08) outranks the turn_at=5 row.
+    expect(j.results[0].id).toBe('mem-newer');
+    expect(j.results[0].kind).toBe('reference'); // kind-agnostic — no taxonomy filter
+    expect(j.results[0].created_at).toBe('2026-06-01T00:00:00.000Z');
+    expect(j.results[0].updated_at).toBe('2026-06-08T00:00:00.000Z');
+    expect(j.results[0].audit.state).toBe('active');
+    expect(j.results[1].id).toBe('mem-older');
+    expect(j.results[1].audit).toBeUndefined();
+  });
+
+  it('still serves the list when the canonical enrichment query throws (the uuid=text regression)', async () => {
+    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend(ENTRIES) as never);
+    orgSql.mockRejectedValueOnce(new Error('operator does not exist: uuid = text'));
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory');
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.results).toHaveLength(2);
+    expect(j.results.every((r: { audit?: unknown }) => r.audit === undefined)).toBe(true);
   });
 });

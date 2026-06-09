@@ -519,11 +519,24 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 }
                 _ => Span::raw(agent_cell),
             };
+            // P-008: flag-on, a wake-mode badge — `manual` is the notable (paused)
+            // state; `auto` is the default → no badge, uncluttered. Toggling it from
+            // the pane is the keybinding piece (deferred to owner verify); the mode is
+            // settable now via coord:wake-mode.
+            let wake_badge = if app.hive_agent_tabs && r.wake_mode.as_deref() == Some("manual") {
+                Span::styled(
+                    " ⏸MANUAL",
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Yellow),
+                )
+            } else {
+                Span::raw("")
+            };
             ListItem::new(Line::from(vec![
                 dot,
                 agent_span,
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),
+                wake_badge,
             ]))
         })
         .collect();

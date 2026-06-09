@@ -30,7 +30,6 @@ import {
   commitsBetween,
   migrationsBetween,
   changedFiles,
-  lockfilesChanged,
 } from './git-ops';
 import { assessRisk, type RiskAssessment } from './risk-tier';
 import type { ReleaseConfig } from './release-config';
@@ -77,7 +76,6 @@ export interface DeployPlan {
   forced: boolean;
   commits: string[];
   migrations: string[];
-  lockfileChanged: boolean;
   warnings: string[];
   noop: boolean;
   /** Every changed path between the running release checkout and target is the
@@ -110,8 +108,10 @@ export interface DeployDeps {
   withDrain<T>(fn: () => Promise<T>): Promise<T>;
   /** Snapshot before swapping (D-008). null when snapshotting is disabled. */
   snapshot(reason: string): Promise<SnapshotInfo | null>;
-  /** Swap the release checkout to `targetSha` (setup-release-checkout.sh). */
-  runSetup(targetSha: string, opts: { lockfileChanged: boolean }): Promise<void>;
+  /** Swap the release checkout to `targetSha` (setup-release-checkout.sh). node_modules
+   *  sync is the setup script's own on-disk decision (`--node-modules auto`); the old
+   *  git-based lockfile signal was structurally blind and is removed (P-015). */
+  runSetup(targetSha: string): Promise<void>;
   /** Apply staged migrations to the operator DB, fail-loud (D-007). */
   migrate(): Promise<MigrateResult>;
   /** Restart the operator (systemctl) so it boots the release checkout. */
@@ -197,7 +197,6 @@ export async function gatherPlan(
     : true;
   const commits = await commitsBetween(cfg.integrationRoot, currentReleaseSha, targetSha);
   const migrations = await migrationsBetween(cfg.integrationRoot, currentReleaseSha, targetSha);
-  const lockfileChanged = await lockfilesChanged(cfg.integrationRoot, currentReleaseSha, targetSha);
 
   // Phase 5 risk-tier: classify from ALL changed files + the staged migrations'
   // content (so destructive DDL is flagged) — auto vs review.
@@ -232,7 +231,6 @@ export async function gatherPlan(
     forced: !!opts.force,
     commits,
     migrations,
-    lockfileChanged,
     warnings,
     noop: currentReleaseSha === targetSha,
     desktopOnly,
@@ -277,7 +275,7 @@ export async function executeDeploy(
     let migrations: MigrateResult | undefined;
     try {
       snapshot = await step('snapshot', () => deps.snapshot(`pre-deploy ${short(plan.targetSha)}`));
-      await step('swap', () => deps.runSetup(plan.targetSha, { lockfileChanged: plan.lockfileChanged }));
+      await step('swap', () => deps.runSetup(plan.targetSha));
       migrations = await step('migrate', () => deps.migrate());
       await step('restart', () => deps.restart());
 
@@ -324,7 +322,7 @@ export async function executeDeploy(
       let rolledBack = false;
       if (rollbackOnFailure && prevReleaseSha) {
         try {
-          await step('rollback-code', () => deps.runSetup(prevReleaseSha, { lockfileChanged: plan.lockfileChanged }));
+          await step('rollback-code', () => deps.runSetup(prevReleaseSha));
           // DB restore only when schema actually changed — otherwise a code-ref
           // revert + restart is enough and avoids a destructive workspace restore.
           if (snapshot && plan.migrations.length > 0) {

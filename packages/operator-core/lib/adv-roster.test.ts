@@ -289,6 +289,24 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(none.sessionId).toBeNull();
   });
 
+  it('resolves each agent wake mode (override ?? default ?? auto) for the P-008 badge', () => {
+    // per-agent override wins
+    const [overridden] = mergeRosterEntries(
+      [presence({ ownerId: 's-1' })], new Map(), NOW, new Map(), new Map(),
+      new Map([['s-1', 'manual']]) as Map<string, 'auto' | 'manual'>,
+      'auto',
+    );
+    expect(overridden.wakeMode).toBe('manual');
+    // no override → the global default
+    const [def] = mergeRosterEntries(
+      [presence({ ownerId: 's-2' })], new Map(), NOW, new Map(), new Map(), new Map(), 'manual',
+    );
+    expect(def.wakeMode).toBe('manual');
+    // nothing configured → auto (default-preserving)
+    const [bare] = mergeRosterEntries([presence({ ownerId: 's-3' })], new Map(), NOW);
+    expect(bare.wakeMode).toBe('auto');
+  });
+
   it('pending entry: a --brain launch argv → queen even with a null role', () => {
     const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');

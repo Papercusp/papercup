@@ -43,7 +43,8 @@ export async function upsertGitSyncRoutine(sql: Sql, input: GitSyncRoutineInput)
         cron: input.cron ?? DEFAULT_GIT_SYNC_CRON,
         push: input.push ?? true,
         push_submodules: input.pushSubmodules ?? true,
-        merge_strategy: 'merge',
+        // P-015: `merge_strategy` removed — it was read by nothing (configFromTrigger
+        // never consumed it); the pipeline always merges (`git merge --no-edit`).
       },
       targetRole: GIT_SYNC_TARGET,
       active: input.active ?? false,

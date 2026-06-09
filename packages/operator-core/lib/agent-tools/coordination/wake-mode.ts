@@ -78,3 +78,24 @@ export async function setWakeMode(ownerId: string, mode: WakeMode): Promise<void
 export async function resolveWakeMode(ownerId: string): Promise<WakeMode> {
   return resolveWakeModeFrom(await getWakeModeOverride(ownerId), await getDefaultWakeMode());
 }
+
+/**
+ * ALL per-agent overrides in one read, keyed by ownerId — for the roster, where
+ * resolveWakeMode per agent would be N round-trips (P-008 badge). Agents without a
+ * row fall back to the global default (resolve in-memory with getDefaultWakeMode).
+ */
+export async function getAllWakeModeOverrides(): Promise<Map<string, WakeMode>> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT key, value FROM harness_shared.operator_settings
+    WHERE key LIKE 'wake_mode:agent:%'
+  `;
+  const out = new Map<string, WakeMode>();
+  const prefix = 'wake_mode:agent:';
+  for (const r of rows as Array<{ key: string; value: string }>) {
+    const ownerId = r.key.slice(prefix.length);
+    const mode = coerceWakeMode(r.value);
+    if (ownerId && mode) out.set(ownerId, mode);
+  }
+  return out;
+}

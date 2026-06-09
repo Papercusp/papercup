@@ -118,10 +118,15 @@ describe('checkDecayOutcome — the recurrence-decay outcome edge (P-030, D-003)
     expect(checkDecayOutcome(applied(), { count: 1, decayDays: 5, resolvedCount: 1 })).toBeNull();
   });
 
-  it('does NOT apply to the process/prompt class — that class earns gym A/B instead (D-003)', () => {
+  it('class asymmetry (D-003): process NEVER decay-VERIFIES (earns gym A/B) but DOES mark recurred', () => {
     const processIdea = applied({ ideaType: 'process' });
-    expect(checkDecayOutcome(processIdea, { count: 2, decayDays: 3, resolvedCount: 1 })).toBeNull();
+    // Positive verification by decay is product-only — quiet 30 days is still null.
     expect(checkDecayOutcome(processIdea, { count: 1, decayDays: 30, resolvedCount: 1 })).toBeNull();
+    // Regression evidence is class-independent: a re-surfaced signature marks recurred.
+    const out = checkDecayOutcome(processIdea, { count: 2, decayDays: 3, resolvedCount: 1 });
+    expect(out).not.toBeNull();
+    expect(out!.state).toBe('recurred');
+    expect(out!.decayResult).toBe('regressed');
   });
 
   it('only an APPLIED idea has a decay outcome (open/triaged/verified are not re-judged)', () => {

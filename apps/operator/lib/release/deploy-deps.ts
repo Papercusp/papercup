@@ -129,28 +129,26 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       return { snapshotId: r.snapshotId, kopiaSnapshotId: r.kopiaSnapshotId };
     },
 
-    async runSetup(targetSha, { lockfileChanged }): Promise<void> {
+    async runSetup(targetSha): Promise<void> {
       const script = path.join(cfg.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
       await run('bash', [
         script,
         '--ref', targetSha,
         '--integration', cfg.integrationRoot,
         '--release', cfg.releaseRoot,
-        // NEVER 'skip' here: the git-based `lockfileChanged` is structurally
-        // blind — package-lock.json is GITIGNORED, so changedFiles() can never
-        // see it and the flag is permanently false. Passing 'skip' on that
-        // signal meant a dep added on staging never reached the release tree's
-        // node_modules and the SPA build broke on its first import (2026-06-09:
-        // @dnd-kit/core — every auto-deploy failed + rolled back for hours).
-        // 'auto' defers to the setup script's ON-DISK comparison (lockfile cmp
-        // + @papercusp/@papercup scope listing), which is the real truth.
-        '--node-modules', lockfileChanged ? 'force' : 'auto',
-        // operator-vite/dist is UNTRACKED — without this the swap serves a STALE
-        // SPA (server code moves, UI doesn't; bitten 2026-06-06: /admin/git was
-        // missing from the deployed SPA). Deploys build it; checkpoints skip it.
+        // ALWAYS 'auto' (P-015): the git-based lockfile signal was structurally blind —
+        // package-lock.json is GITIGNORED, so `git diff` could never see it (the flag was
+        // permanently false). 'auto' defers to the setup script's ON-DISK comparison
+        // (lockfile cmp + @papercusp/@papercup scope listing), which is the real truth.
+        // ('skip' once broke the SPA build when a staging dep never reached the release
+        // node_modules — 2026-06-09 @dnd-kit/core, every auto-deploy failed for hours.)
+        '--node-modules', 'auto',
+        // operator-vite/dist is UNTRACKED — without this the swap serves a STALE SPA
+        // (server code moves, UI doesn't; bitten 2026-06-06: /admin/git was missing from
+        // the deployed SPA). Deploys build it; checkpoints skip it.
         '--build-spa',
       ]);
-      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: ${lockfileChanged ? 'force-resynced' : 'auto'}; SPA rebuilt)`);
+      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: auto; SPA rebuilt)`);
     },
 
     async migrate() {

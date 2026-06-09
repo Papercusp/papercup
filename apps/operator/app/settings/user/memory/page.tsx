@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useCallback, type ReactElement } from 'react';
+import { useEffect, useState, useCallback, useMemo, type ReactElement } from 'react';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
@@ -27,13 +28,24 @@ interface MemoryRow {
   metadata?: Record<string, unknown>;
   scope: 'user' | 'harness' | 'workspace';
   harness_slug?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
   audit?: AuditFields;
 }
 
+// Styling hints only — never a filter source (the kind taxonomy is
+// backend-defined and has already changed once; chips are derived from
+// the data, memory-settings-page-refresh D-001). Unknown kinds get the
+// gray fallback.
 const KIND_COLORS: Record<string, string> = {
+  // Claude-file / hybrid taxonomy (the live store)
+  user:       '#a78bfa',
+  feedback:   '#34d399',
+  reference:  '#60a5fa',
+  project:    '#fbbf24',
+  // Legacy mem0 taxonomy (older rows)
   identity:   '#a78bfa',
   preference: '#34d399',
-  project:    '#fbbf24',
   correction: '#f87171',
   ephemeral:  '#9ca3af',
 };
@@ -51,6 +63,22 @@ function isFlagged(row: MemoryRow): boolean {
   return state !== 'active';
 }
 
+/** Compact relative timestamp — '3d ago', 'just now'. */
+function timeAgo(ts: string): string {
+  const ms = Date.parse(ts);
+  if (Number.isNaN(ms)) return '';
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+/** Bodies longer than this render collapsed until the row is expanded. */
+const COLLAPSE_OVER = 280;
+const COLLAPSED_PREVIEW = 240;
+
 interface FeedbackStats {
   total_edits: number;
   total_deletes: number;
@@ -67,8 +95,12 @@ export default function MemoryPage() {
   const [availableBackends, setAvailableBackends] = useState<string[]>([]);
   const [currentBackend, setCurrentBackend] = useState<string>('');
   const [switchingBackend, setSwitchingBackend] = useState(false);
-  const [filter, setFilter] = useState<string>('all');
-  const [flaggedOnly, setFlaggedOnly] = useState<boolean>(false);
+  // URL-backed view state (nuqs) so agents can read + drive the page and
+  // the view survives reloads. Lifecycle/edit-draft state stays useState.
+  const [filter, setFilter] = useQueryState('kind', parseAsString.withDefault('all'));
+  const [flaggedOnly, setFlaggedOnly] = useQueryState('flagged', parseAsBoolean.withDefault(false));
+  const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
+  const [expandedId, setExpandedId] = useQueryState('mem', parseAsString);
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
@@ -232,21 +264,49 @@ export default function MemoryPage() {
     }
   }, [askConfirm, refresh]);
 
-  const filteredByKind = filter === 'all'
-    ? rows
-    : rows.filter((r) => r.kind === filter);
-  const filtered = flaggedOnly
-    ? filteredByKind.filter(isFlagged)
-    : filteredByKind;
-  const flaggedCount = rows.filter(isFlagged).length;
+  // Chips are derived from the kinds actually present (D-001) — the
+  // taxonomy is the backend's, not the page's. Counts over ALL rows so
+  // a chip doesn't vanish while it's the active filter.
+  const kindCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const k = r.kind ?? 'untagged';
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    return counts;
+  }, [rows]);
+  const kindChips = useMemo(
+    () => [...kindCounts.keys()].sort((a, b) => (kindCounts.get(b)! - kindCounts.get(a)!) || a.localeCompare(b)),
+    [kindCounts],
+  );
+
+  const query = q.trim().toLowerCase();
+  const filtered = useMemo(() => rows.filter((r) => {
+    if (filter !== 'all' && (r.kind ?? 'untagged') !== filter) return false;
+    if (flaggedOnly && !isFlagged(r)) return false;
+    if (query) {
+      const desc = String((r.metadata as Record<string, unknown> | undefined)?.description ?? '');
+      const hay = `${r.id}\n${desc}\n${r.text}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  }), [rows, filter, flaggedOnly, query]);
+  const flaggedCount = useMemo(() => rows.filter(isFlagged).length, [rows]);
 
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
-    const kind = row.kind ?? 'unknown';
+    const kind = row.kind ?? 'untagged';
     const color = KIND_COLORS[kind] ?? '#6b7280';
     const state = row.audit?.state ?? 'active';
     const stateBadge = STATE_BADGES[state];
     const brokenAnchors = row.audit?.broken_anchors ?? [];
+    const description = typeof meta.description === 'string' ? meta.description : null;
+    const rowDate = row.updated_at ?? row.created_at ?? null;
+    const expanded = expandedId === row.id;
+    const collapsible = row.text.length > COLLAPSE_OVER;
+    const bodyText = collapsible && !expanded
+      ? `${row.text.slice(0, COLLAPSED_PREVIEW).trimEnd()}…`
+      : row.text;
     return (
       <li
         key={row.id}
@@ -274,6 +334,11 @@ export default function MemoryPage() {
                 }}
               >
                 {stateBadge.icon} {stateBadge.label}
+              </span>
+            )}
+            {rowDate && (
+              <span title={new Date(rowDate).toLocaleString()} style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+                {timeAgo(rowDate)}
               </span>
             )}
             {meta.expires_at !== undefined && (
@@ -309,7 +374,26 @@ export default function MemoryPage() {
               </div>
             </div>
           ) : (
-            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.text}</div>
+            <>
+              {description && (
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{description}</div>
+              )}
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {bodyText}
+                {collapsible && (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      onClick={() => void setExpandedId(expanded ? null : row.id)}
+                      style={{ border: 'none', background: 'transparent', color: 'var(--fg-mute)', cursor: 'pointer', fontSize: 12, padding: 0, textDecoration: 'underline' }}
+                    >
+                      {expanded ? 'show less' : 'show more'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
           )}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
@@ -334,7 +418,7 @@ export default function MemoryPage() {
         </div>
       </li>
     );
-  }, [editingId, editingDraft, onSaveEdit, onDelete]);
+  }, [editingId, editingDraft, onSaveEdit, onDelete, expandedId, setExpandedId]);
 
   if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
 
@@ -402,15 +486,26 @@ export default function MemoryPage() {
         </div>
       )}
 
+      <input
+        type="search"
+        value={q}
+        onChange={(e) => void setQ(e.target.value || null)}
+        placeholder={`Search ${rows.length} memories…`}
+        aria-label="Search memories"
+        style={{
+          padding: '8px 12px', borderRadius: 6,
+          border: '1px solid var(--border)', background: 'var(--bg-2)',
+          color: 'var(--fg)', fontSize: 13, width: '100%',
+        }}
+      />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {/* `ephemeral` retired (docs-and-memory-as-projections D-006); legacy
-              rows still render via the KIND_COLORS fallback but get no chip. */}
-          {['all', 'identity', 'preference', 'project', 'correction'].map((f) => (
+          {['all', ...kindChips].map((f) => (
             <button
               key={f}
               type="button"
-              onClick={() => setFilter(f)}
+              onClick={() => void setFilter(f)}
               style={{
                 padding: '4px 10px', borderRadius: 6,
                 border: filter === f ? '2px solid var(--fg)' : '1px solid var(--border)',
@@ -419,12 +514,12 @@ export default function MemoryPage() {
                 fontWeight: filter === f ? 600 : 400,
               }}
             >
-              {f} {f !== 'all' && `(${rows.filter((r) => r.kind === f).length})`}
+              {f} {f !== 'all' && `(${kindCounts.get(f) ?? 0})`}
             </button>
           ))}
           <button
             type="button"
-            onClick={() => setFlaggedOnly((v) => !v)}
+            onClick={() => void setFlaggedOnly(!flaggedOnly)}
             title="Show only memories with broken anchors / contradictions / etc."
             style={{
               padding: '4px 10px', borderRadius: 6,
@@ -492,7 +587,11 @@ export default function MemoryPage() {
         if (filtered.length === 0) {
           return (
             <p style={{ color: 'var(--fg-mute)' }}>
-              {rows.length === 0 ? 'No memories stored yet.' : `No memories matching '${filter}'.`}
+              {rows.length === 0
+                ? 'No memories stored yet.'
+                : query
+                  ? `No memories matching “${q.trim()}”.`
+                  : `No memories matching '${filter}'.`}
             </p>
           );
         }

@@ -72,6 +72,12 @@ async fn main() -> Result<()> {
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.
         Some("chat") => return run_chat_dock().await,
+        // Manual sweep of leaked app-managed zellij sessions (EI-186) — the same
+        // sweep every workbench/dock launch runs. For ops + smoke-testing.
+        Some("reap") => {
+            reap::reap_stale(&layout::session_name("reap"));
+            return Ok(());
+        }
         Some("hud") => {}
         // Dock pane modes (pui-dock-agent-stack-2026-06-07) — fall through to
         // the normal run loop: `chat-pane` is the dock's operator chat (single

@@ -39,7 +39,7 @@ describe('executeRollback', () => {
   it('reverts code + restores snapshot + restarts', async () => {
     const { deps: d, calls } = deps();
     const snap: SnapshotInfo = { snapshotId: 1, kopiaSnapshotId: 'k' };
-    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: '2222222222', snapshot: snap, lockfileChanged: false });
+    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: '2222222222', snapshot: snap });
     expect(r.ok).toBe(true);
     expect(r.restoredSnapshot).toBe(true);
     expect(calls).toEqual(['drain', 'setup:1111', 'restore', 'restart', 'broadcast']);
@@ -47,7 +47,7 @@ describe('executeRollback', () => {
 
   it('code-only rollback skips snapshot restore', async () => {
     const { deps: d, calls } = deps();
-    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: '2222222222', snapshot: null, lockfileChanged: false });
+    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: '2222222222', snapshot: null });
     expect(r.ok).toBe(true);
     expect(r.restoredSnapshot).toBe(false);
     expect(calls).not.toContain('restore');
@@ -55,7 +55,7 @@ describe('executeRollback', () => {
 
   it('reports failure loudly when post-rollback health is bad', async () => {
     const { deps: d } = deps({ health: async () => ({ healthy: false, attempts: 1, elapsedMs: 1, error: 'down' }) });
-    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: null, snapshot: null, lockfileChanged: false });
+    const r = await executeRollback(cfg, d, { toSha: '1111111111', fromSha: null, snapshot: null });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/health/);
   });

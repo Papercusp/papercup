@@ -99,17 +99,6 @@ export async function changedFiles(
   return out ? out.split('\n').filter(Boolean) : [];
 }
 
-/** True if any package-lock.json changed between commits → node_modules re-sync. */
-export async function lockfilesChanged(
-  repo: string,
-  from: string | null,
-  to: string,
-): Promise<boolean> {
-  if (!from) return true;
-  const files = await changedFiles(repo, from, to);
-  return files.some((f) => f === 'package-lock.json' || f.endsWith('/package-lock.json'));
-}
-
 /** SQL migration files newly added/changed between commits (deploy-staged schema). */
 export async function migrationsBetween(
   repo: string,

@@ -26,62 +26,57 @@ import {
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { recordFeedback } from '../../../memory/feedback';
-import { pgClientFields } from '../../../memory/mem0-connection';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface AuditEnrichment {
   state: string;
   last_validated_at: string | null;
   last_surfaced_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   broken_anchors: Array<{ kind: string; value: string; reason: string | null }>;
 }
 
+const iso = (v: unknown): string | null =>
+  v instanceof Date ? v.toISOString() : typeof v === 'string' ? v : null;
+
+/**
+ * Enrichment over the mem0 canonical tables — audit state + anchors +
+ * timestamps. Best-effort BY CONTRACT: any failure (pre-085 schema,
+ * non-uuid ids from another backend, PG down) returns what it has so far
+ * and can never break the list response. The uuid columns are compared
+ * as text (`id::text = ANY(...)`) because entry ids are opaque backend
+ * strings, not guaranteed uuids.
+ */
 async function loadAuditEnrichment(
   ids: string[],
 ): Promise<Map<string, AuditEnrichment>> {
   const out = new Map<string, AuditEnrichment>();
   if (ids.length === 0) return out;
-  let Client: typeof import('pg').Client;
   try {
-    ({ Client } = await import('pg'));
-  } catch {
-    return out;
-  }
-  const fields = await pgClientFields();
-  const client = new Client(fields);
-  try {
-    await client.connect();
-  } catch {
-    return out;
-  }
-  try {
-    // Probe migration 085 — quietly degrade if not applied yet.
-    try {
-      await client.query(
-        `SELECT 1 FROM harness_shared.memory_canonical
-         WHERE state IS NOT NULL LIMIT 1`,
-      );
-    } catch {
-      return out;
-    }
+    const { sql } = getOrgPg();
 
     type CanonRow = {
       id: string;
       state: string | null;
-      last_validated_at: string | null;
-      last_surfaced_at: string | null;
+      last_validated_at: Date | string | null;
+      last_surfaced_at: Date | string | null;
+      created_at: Date | string | null;
+      updated_at: Date | string | null;
     };
-    const canon = await client.query<CanonRow>(
-      `SELECT id, state, last_validated_at, last_surfaced_at
-       FROM harness_shared.memory_canonical
-       WHERE id = ANY($1::text[])`,
-      [ids],
-    );
-    for (const r of canon.rows) {
+    const canon = await sql<CanonRow[]>`
+      SELECT id::text AS id, state, last_validated_at, last_surfaced_at,
+             created_at, updated_at
+      FROM harness_shared.memory_canonical
+      WHERE id::text = ANY(${ids})`;
+    for (const r of canon) {
       out.set(r.id, {
         state: r.state ?? 'active',
-        last_validated_at: r.last_validated_at,
-        last_surfaced_at: r.last_surfaced_at,
+        last_validated_at: iso(r.last_validated_at),
+        last_surfaced_at: iso(r.last_surfaced_at),
+        created_at: iso(r.created_at),
+        updated_at: iso(r.updated_at),
         broken_anchors: [],
       });
     }
@@ -94,13 +89,11 @@ async function loadAuditEnrichment(
         value: string;
         last_check_ok: boolean | null;
       };
-      const anchors = await client.query<AnchorRow>(
-        `SELECT memory_id, kind, value, last_check_ok
-         FROM harness_shared.memory_anchors
-         WHERE memory_id = ANY($1::text[]) AND last_check_ok = false`,
-        [ids],
-      );
-      for (const a of anchors.rows) {
+      const anchors = await sql<AnchorRow[]>`
+        SELECT memory_id::text AS memory_id, kind, value, last_check_ok
+        FROM harness_shared.memory_anchors
+        WHERE memory_id::text = ANY(${ids}) AND last_check_ok = false`;
+      for (const a of anchors) {
         const e = out.get(a.memory_id);
         if (!e) continue;
         e.broken_anchors.push({
@@ -110,9 +103,7 @@ async function loadAuditEnrichment(
         });
       }
     } catch { /* memory_anchors absent → leave list empty */ }
-  } finally {
-    try { await client.end(); } catch { /* swallow */ }
-  }
+  } catch { /* canonical store absent / unreachable → no enrichment */ }
   return out;
 }
 
@@ -173,20 +164,18 @@ const list = defineTool({
       metadata: e.metadata,
       ...displayScope(e, user.id),
     }));
-    combined.sort((a, b) => {
-      const tA = ((a.metadata as Record<string, unknown> | undefined)?.turn_at as number) ?? 0;
-      const tB = ((b.metadata as Record<string, unknown> | undefined)?.turn_at as number) ?? 0;
-      return tB - tA;
-    });
 
-    // Enrich with canonical audit state (state column + broken anchors).
-    // mem0-specific; silently absent for other backends / pre-085 schemas.
+    // Enrich with canonical audit state (state column + broken anchors)
+    // and timestamps. mem0-specific; silently absent for other backends /
+    // pre-085 schemas.
     const audit = await loadAuditEnrichment(combined.map((r) => r.id));
     const enriched = combined.map((r) => {
       const e = audit.get(r.id);
-      if (!e) return r;
+      if (!e) return r as typeof r & { created_at?: string | null; updated_at?: string | null };
       return {
         ...r,
+        created_at: e.created_at,
+        updated_at: e.updated_at,
         audit: {
           state: e.state,
           last_validated_at: e.last_validated_at,
@@ -195,6 +184,19 @@ const list = defineTool({
         },
       };
     });
+
+    // Newest first. Canonical timestamps where the store has them; the
+    // legacy metadata.turn_at epoch for backends without a canonical row.
+    const sortKey = (r: (typeof enriched)[number]): number => {
+      const ts = r.updated_at ?? r.created_at;
+      if (ts) {
+        const ms = Date.parse(ts);
+        if (!Number.isNaN(ms)) return ms;
+      }
+      const turn = (r.metadata as Record<string, unknown> | undefined)?.turn_at;
+      return typeof turn === 'number' ? turn : 0;
+    };
+    enriched.sort((a, b) => sortKey(b) - sortKey(a));
 
     return Response.json({
       results: enriched,

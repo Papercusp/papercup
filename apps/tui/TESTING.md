@@ -31,6 +31,12 @@ should run. The `#[ignore]`d live smokes require the operator running (an
   live-probed JSON fixture (plans, roster, attention, features, issues, projects,
   activity, testing domains, claude-settings, docs, toast-log), with null/missing
   fields defaulting (shape drift never hard-fails a deserialize).
+- **`reap.rs` — leaked-session reaping (EI-186).** Owner-pid parsing of
+  app-managed session names (`pui-<kind>-<pid>`), and the reap `plan()` over
+  `zellij list-sessions --no-formatting` fixtures: dead-owner sessions are
+  killed, EXITED husks deleted, foreign (non `pui-*`) sessions never touched.
+  Liveness is injected, so decisions are tested without spawning zellij; the
+  exec path is smoke-tested live via `pui reap` against a planted session.
 - **`framing.rs` / `ipc.rs` — the IPC transport.** Frame encode/decode
   (round-trip, partial, oversize, unknown type) + an end-to-end client over a
   **fake Unix-socket server**: `sys_http` body reassembly, non-2xx errors, and

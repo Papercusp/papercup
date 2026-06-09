@@ -37,7 +37,6 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
     forced: false,
     commits: ['c1', 'c2'],
     migrations: [],
-    lockfileChanged: false,
     warnings: [],
     noop: false,
     desktopOnly: false,

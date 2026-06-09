@@ -16,6 +16,7 @@
  * Each fn takes an optional `sql` (the emitUsageEvent seam) — defaults to the
  * operator's org client, injected to a testcontainer client in integration tests.
  */
+import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
@@ -23,6 +24,14 @@ export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'green_checkpoin
 
 function db(sql?: Sql): Sql {
   return sql ?? (getOrgPg().sql as unknown as Sql);
+}
+
+/** P-015: which operator process emitted an event. On the shared dev box the desktop +
+ *  the systemd :3070 / :3170 operators all run background machinery from DIFFERENT code
+ *  trees (release-green vs staging), so "which host ran this tick" was an invisible
+ *  lottery when diagnosing. The port discriminates the deployment; pid the process. */
+export function hostTag(): string {
+  return `${hostname()}:${process.env.PAPERCUSP_HONO_PORT ?? 'dev'}#${process.pid}`;
 }
 
 export interface AppendPipelineEvent {
@@ -46,10 +55,13 @@ export interface PipelineEventRow {
 /** Append one pipeline event. Best-effort — never throws (warns on failure). */
 export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): Promise<void> {
   try {
+    // P-015: stamp every event with the emitting host/process so the Git tab + a
+    // post-mortem can tell WHICH operator ran a given tick (desktop vs :3070 vs :3170).
+    const detail = { ...(ev.detail ?? {}), host: hostTag() };
     await db(sql)`
       INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, detail)
       VALUES (${ev.workspaceId || '*'}, ${ev.installSlug}, ${ev.kind}, ${ev.status},
-              ${JSON.stringify(ev.detail ?? {})}::jsonb)
+              ${JSON.stringify(detail)}::jsonb)
     `;
   } catch (e) {
     console.warn(`[pipeline-events] append failed (${ev.kind}/${ev.status}): ${e instanceof Error ? e.message : e}`);

@@ -76,7 +76,6 @@ const plan: DeployPlan = {
   forced: false,
   commits: ['c1', 'c2'],
   migrations: ['libs/papercusp/libs/db/sql/200-x.sql'],
-  lockfileChanged: false,
   warnings: [],
   noop: false,
   desktopOnly: false,
