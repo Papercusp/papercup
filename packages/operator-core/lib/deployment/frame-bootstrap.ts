@@ -163,6 +163,12 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
     // the egress proxy — or every agent spawn aborts instantly ("sandbox required
     // but unavailable"). Found live 2026-06-07 on the first frame work item.
     'apt-get install -y --no-install-recommends git curl ca-certificates build-essential python3 jq ripgrep openssh-client bubblewrap socat',
+    // The frame's loop COMMITS chunks (worker-chunk-loop defaultCommitChunk) —
+    // a fresh machine has no git identity and `git commit` refuses without one
+    // (found live 2026-06-09, run #2 curator: "Git config: still missing").
+    `git config --global user.email ${shq('frame@papercusp.local')}`,
+    `git config --global user.name ${shq('Papercusp Frame')}`,
+    'git config --global init.defaultBranch main',
   ]);
 
   add('node', `Node.js ${node}`, [

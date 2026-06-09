@@ -477,6 +477,12 @@ async fn run<B: Backend>(
                 tokio::spawn(send_bee_message(to, body, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::SetWakeMode { agent, mode } => {
+                // P-008: set the agent's wake mode via coord:wake-mode (run_tool).
+                // Best-effort; the next roster poll refreshes the ⏸MANUAL badge.
+                tokio::spawn(set_wake_mode(agent, mode, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchHives => {
                 // The federated p2p roster for the Hives tab — fetched off the
                 // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
@@ -2104,6 +2110,26 @@ async fn send_bee_message(to: String, body: String, tx: UnboundedSender<Event>) 
         Err(e) => Err(e.to_string()),
     };
     let _ = tx.send(Event::BeeMessageSent(res));
+}
+
+/// P-008: set an agent's wake mode via `coord:wake-mode` (the run_tool bridge).
+/// Best-effort — an error surfaces in the status bar; the next roster poll
+/// refreshes the ⏸MANUAL badge (no dedicated re-fetch event needed).
+async fn set_wake_mode(agent: String, mode: String, tx: UnboundedSender<Event>) {
+    let res = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .run_tool(
+                "coord:wake-mode",
+                serde_json::json!({ "agent": agent, "mode": mode }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = res {
+        let _ = tx.send(Event::Error(format!("wake-mode: {e}")));
+    }
 }
 
 /// The watch pane's thinking feed: poll the RUNNING bee's appended raw output

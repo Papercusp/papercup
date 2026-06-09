@@ -205,6 +205,9 @@ pub enum Action {
     /// Watch-pane chat (pui-dock-agent-stack): send the composer draft to the
     /// watched bee via coord:message-agent → `Event::BeeMessageSent`.
     SendBeeMessage { to: String, body: String },
+    /// P-008: set an agent's wake mode (auto|manual) via coord:wake-mode. The run
+    /// loop spawns the run_tool call; the next roster poll refreshes the badge.
+    SetWakeMode { agent: String, mode: String },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -3782,6 +3785,26 @@ impl App {
             self.should_quit = true;
             return Action::Quit;
         }
+        // P-008 (hive-agent-tabs): flag-on, 'w' on the Fleet tab toggles the SELECTED
+        // agent's wake mode (auto↔manual) via coord:wake-mode — the owner-driven
+        // pause/edit gate, controlled from the roster. Guarded so flag-off + other
+        // tabs are unchanged; skipped while the operator dock holds focus.
+        if self.hive_agent_tabs
+            && self.tab == Tab::Fleet
+            && !self.operator_dock_focused
+            && code == KeyCode::Char('w')
+        {
+            let sel = self.fleet.agent_sel;
+            let roster = self.visible_roster();
+            if let Some(entry) = roster.get(sel) {
+                let mode = next_wake_mode(entry.wake_mode.as_deref());
+                return Action::SetWakeMode {
+                    agent: entry.owner_id.clone(),
+                    mode: mode.to_string(),
+                };
+            }
+            return Action::None;
+        }
         // Operator dock focus (operator-always-visible-2026-06-05, Brief 24): when
         // the docked operator pane holds focus on a non-Operator tab, route the
         // chat keys to it BEFORE the active tab's own list-nav sees them — so the
@@ -4583,6 +4606,16 @@ impl Default for App {
 }
 
 /// Shorten an owner id for a pane title: "su-8b77dde5-…" → "su-8b77d".
+/// Flip a wake mode for the P-008 toggle: `manual`→`auto`, anything else
+/// (auto / unset) → `manual`. Pure — unit-tested.
+fn next_wake_mode(current: Option<&str>) -> &'static str {
+    if current == Some("manual") {
+        "auto"
+    } else {
+        "manual"
+    }
+}
+
 fn short_owner(owner: &str) -> String {
     let mut n = 0usize;
     for (i, c) in owner.char_indices() {
@@ -4604,6 +4637,14 @@ mod tests {
 
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
+
+    #[test]
+    fn next_wake_mode_flips_manual_else_defaults_to_manual() {
+        // P-008 toggle: manual → auto; auto / unset → manual.
+        assert_eq!(next_wake_mode(Some("manual")), "auto");
+        assert_eq!(next_wake_mode(Some("auto")), "manual");
+        assert_eq!(next_wake_mode(None), "manual");
     }
 
     fn plan(slug: &str) -> PlanSummary {

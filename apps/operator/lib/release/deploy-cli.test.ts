@@ -76,6 +76,7 @@ describe('deploy-cli main() — the gate chokepoint', () => {
   it('REFUSES a non-green target without --force → exit 2, executeDeploy NEVER called', async () => {
     const executeDeploy = vi.fn<ExecuteFn>();
     const makeDeps = vi.fn(() => makeStubDeps());
+    const recordRefused = vi.fn(async () => {}); // stub: never write live pipeline_events
     const code = await main({
       ...silent,
       argv: ['node', 'deploy-cli.ts', '--execute'],
@@ -83,12 +84,15 @@ describe('deploy-cli main() — the gate chokepoint', () => {
       gatherPlan: async () => makePlan({ green: false, forced: false }),
       makeDeps,
       executeDeploy,
+      recordRefused,
     });
 
     expect(code).toBe(2);
     expect(executeDeploy).not.toHaveBeenCalled();
     // The refusal happens before any real-effect dep is built.
     expect(makeDeps).not.toHaveBeenCalled();
+    // The 'refused' event is recorded (the fold counts it), via the injected stub.
+    expect(recordRefused).toHaveBeenCalledWith(makePlan({ green: false, forced: false }).targetSha);
   });
 
   it('PLAN ONLY (no --execute) → exit 0, never deploys even when green', async () => {

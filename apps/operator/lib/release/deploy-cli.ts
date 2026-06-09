@@ -62,6 +62,11 @@ export interface DeployCliDeps {
   out?: (s: string) => void;
   /** stderr sink (default `console.error`). */
   err?: (s: string) => void;
+  /** Record the `refused` pipeline event on the exit-2 gate (default the real
+   *  recordRefusedDeploy). Tests inject a no-op so they never write live telemetry —
+   *  otherwise the refused-path test (and the gate's own `test:affected` run) would spew
+   *  fake `refused` rows with the fixture sha into production pipeline_events. */
+  recordRefused?: (targetSha: string) => Promise<void>;
 }
 
 /**
@@ -80,6 +85,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const gatherPlan = injected.gatherPlan ?? realGatherPlan;
   const makeDeps = injected.makeDeps ?? realDeps;
   const executeDeploy = injected.executeDeploy ?? realExecuteDeploy;
+  const recordRefused = injected.recordRefused ?? recordRefusedDeploy;
 
   const arg = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
@@ -120,7 +126,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
     err('         Override with --deploy-commit <sha> or --force (deploys an UN-GREEN state; loud + audited).');
     // P-008: record the gate refusal so /admin/git's deploy stats fold it — the 'refused'
     // status was counted by the fold but never written by anything. Best-effort.
-    await recordRefusedDeploy(plan.targetSha).catch(() => {});
+    await recordRefused(plan.targetSha).catch(() => {});
     return 2;
   }
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo, type ReactElement } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
@@ -86,9 +87,9 @@ interface FeedbackStats {
 }
 
 export default function MemoryPage() {
-  const [rows, setRows] = useState<MemoryRow[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [metaLoaded, setMetaLoaded] = useState(false);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
-  const [loading, setLoading] = useState(true);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [backendName, setBackendName] = useState<string | null>(null);
@@ -103,27 +104,40 @@ export default function MemoryPage() {
   const [expandedId, setExpandedId] = useQueryState('mem', parseAsString);
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  // Envelope meta (backend selection + availability + session user) is a
+  // one-shot REST fetch; the ROWS ride the audited @papercusp/sync path
+  // below (P-007) and refresh themselves on server-side invalidates.
+  const refreshMeta = useCallback(async () => {
     try {
       const [r, fs] = await Promise.all([
-        fetch('/api/user/memory'),
+        fetch('/api/user/memory/backend'),
         fetch('/api/user/memory/feedback'),
       ]);
-      if (!r.ok) { setRows([]); return; }
-      const j = await r.json();
-      setRows(j.results ?? []);
-      setReason(j.reason ?? null);
-      setBackendName(j.backend ?? null);
-      setAvailableBackends(Array.isArray(j.availableBackends) ? j.availableBackends : []);
-      setCurrentBackend(j.currentBackend ?? j.backend ?? '');
+      if (r.ok) {
+        const j = await r.json();
+        setUserId(typeof j.userId === 'string' ? j.userId : null);
+        setReason(j.reason ?? null);
+        setBackendName(j.backend ?? null);
+        setAvailableBackends(Array.isArray(j.availableBackends) ? j.availableBackends : []);
+        setCurrentBackend(j.currentBackend ?? j.backend ?? '');
+      }
       if (fs.ok) setStats(await fs.json());
     } finally {
-      setLoading(false);
+      setMetaLoaded(true);
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refreshMeta(); }, [refreshMeta]);
+
+  // The row set — server writes (REST routes AND the memory:* MCP verbs)
+  // fire notifySyncInvalidate('userMemory.list'), so agent-side edits
+  // appear here live without manual refresh (P-008).
+  const { data: rows, loading: rowsLoading } = useSyncQuery<MemoryRow>({
+    queryName: 'userMemory.list',
+    args: { userId: userId ?? '' },
+    enabled: !!userId,
+  });
+  const loading = !metaLoaded || (!!userId && rowsLoading);
 
   const switchBackend = useCallback(async (choice: string) => {
     if (!choice || choice === currentBackend) return;
@@ -145,11 +159,11 @@ export default function MemoryPage() {
       } else {
         toast.success(`Memory backend → ${choice}`);
       }
-      await refresh();
+      await refreshMeta();
     } finally {
       setSwitchingBackend(false);
     }
-  }, [currentBackend, refresh]);
+  }, [currentBackend, refreshMeta]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState('');
@@ -162,8 +176,8 @@ export default function MemoryPage() {
     });
     if (r.ok) {
       toast.success('Updated');
-      setRows((rs) => rs.map((x) => (x.id === id ? { ...x, text: editingDraft } : x)));
       setEditingId(null);
+      // Rows refresh via the server's userMemory.list invalidate.
     } else {
       toast.error('Update failed');
     }
@@ -180,11 +194,12 @@ export default function MemoryPage() {
     const r = await fetch(`/api/user/memory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (r.ok) {
       toast.success('Deleted');
-      setRows((rs) => rs.filter((x) => x.id !== id));
+      // Rows refresh via the server's invalidate; stats changed too.
+      void refreshMeta();
     } else {
       toast.error('Delete failed');
     }
-  }, [askConfirm]);
+  }, [askConfirm, refreshMeta]);
 
   const onForgetAll = useCallback(async () => {
     const ok = await askConfirm({
@@ -199,9 +214,9 @@ export default function MemoryPage() {
     if (r.ok) {
       const j = await r.json();
       toast.success(`Deleted ${j.deleted} memories`);
-      await refresh();
+      await refreshMeta();
     }
-  }, [refresh, askConfirm]);
+  }, [refreshMeta, askConfirm]);
 
   const [reembedBusy, setReembedBusy] = useState<null | 'openai-to-local' | 'local-to-openai'>(null);
   const onReembed = useCallback(async (from: 'openai' | 'local', to: 'openai' | 'local') => {
@@ -221,7 +236,7 @@ export default function MemoryPage() {
       const j = await r.json();
       if (r.ok) {
         toast.success(`Re-embedded ${j.reembedded} of ${j.totalSource} (${j.skipped} skipped, ${j.errors} errors) in ${Math.round(j.durationMs / 100) / 10}s`);
-        await refresh();
+        await refreshMeta();
       } else {
         toast.error(`Re-embed failed: ${j.message ?? j.error}`);
       }
@@ -230,7 +245,7 @@ export default function MemoryPage() {
     } finally {
       setReembedBusy(null);
     }
-  }, [refresh, askConfirm]);
+  }, [refreshMeta, askConfirm]);
 
   const onAuditAll = useCallback(async () => {
     const ok = await askConfirm({
@@ -253,7 +268,7 @@ export default function MemoryPage() {
         } else {
           toast.success(`Audit complete: ${j.summary ?? 'done'}`);
         }
-        await refresh();
+        // Badge changes arrive via the audit route's invalidate.
       } else {
         toast.error(`Audit failed: ${j.message ?? j.error}`);
       }
@@ -262,7 +277,7 @@ export default function MemoryPage() {
     } finally {
       setAuditBusy(false);
     }
-  }, [askConfirm, refresh]);
+  }, [askConfirm]);
 
   // Chips are derived from the kinds actually present (D-001) — the
   // taxonomy is the backend's, not the page's. Counts over ALL rows so

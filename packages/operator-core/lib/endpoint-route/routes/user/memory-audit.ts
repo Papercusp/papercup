@@ -75,6 +75,11 @@ export default defineTool({
         reason: 'migration_085_not_applied',
       });
     }
+    // Audit flips canonical state/anchor rows the userMemory.list sync
+    // query projects — refresh any open settings page (P-008).
+    void import('../../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+      .catch(() => { /* best-effort */ });
     return Response.json({
       ok: true,
       skipped: false,
