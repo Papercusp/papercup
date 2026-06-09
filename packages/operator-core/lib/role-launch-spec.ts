@@ -43,6 +43,8 @@
  * Server-only.
  */
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import {
   sessionClaudeConfigDir,
@@ -334,10 +336,31 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   //    overlay), rendered fresh from the SAME prompts files the installer
   //    splices (renderSuPlaybook → spliceToolingOverlay), plus the
   //    per-launch scope/plan addendum the wrappers used to compose.
+  //
+  //    Project-guide splice (psu-isolation P-001 / D-002): the ENGINEER profile
+  //    auto-resolves papercup's own CLAUDE.md (renderSuPlaybook default). The
+  //    POWER profile manages an EXTERNAL repo, so its guide is the launch cwd's
+  //    CLAUDE.md/AGENTS.md — resolved here and passed explicitly; '' (no guide)
+  //    when the managed repo carries neither, so we never splice papercup's
+  //    guide into a session steering a different repo.
+  let projectGuideSource: string | undefined;
+  if ((input.profile ?? 'engineer') === 'power') {
+    projectGuideSource = '';
+    for (const cand of [path.join(cwd, 'CLAUDE.md'), path.join(cwd, 'AGENTS.md')]) {
+      try {
+        await fs.access(cand);
+        projectGuideSource = cand;
+        break;
+      } catch {
+        /* next candidate */
+      }
+    }
+  }
   const rendered = await renderSuPlaybook({
     agent: input.agent,
     profile: input.profile,
     operatorAppRoot: input.operatorAppRoot,
+    projectGuideSource,
   });
   const launchCtx = composeLaunchContext({
     harnessSlug,

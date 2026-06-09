@@ -175,6 +175,23 @@ describe('installPapercuspFiles', () => {
     expect(playbook).toContain('## Tail');
   });
 
+  it('removes the PROJECT-GUIDE marker on the install path even when no guide resolves (P-001)', async () => {
+    // The install path's project-guide candidates walk up from <appRoot>/prompts
+    // — in the fake tmp tree no repo CLAUDE.md exists there, so the marker must
+    // be REMOVED, never shipped literally. (Guide-present splicing is covered by
+    // the renderSuPlaybook tests below, which control the source path directly.)
+    const GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Base\n\n${GUIDE_MARKER}\n\n## Tail\n`,
+    );
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const playbook = await fs.readFile(result.playbookPath, 'utf8');
+    expect(playbook).not.toContain(GUIDE_MARKER);
+    expect(playbook).toContain('# Base');
+    expect(playbook).toContain('## Tail');
+  });
+
   it('resolveInstallPaths returns expected layout', () => {
     const p = resolveInstallPaths('/tmp/somehome');
     expect(p.papercuspDir).toBe('/tmp/somehome/.papercusp');
@@ -263,5 +280,69 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     await expect(renderSuPlaybook({ agent: 'claude', profile: 'ghost', operatorAppRoot: tmpAppRoot })).rejects.toThrow(
       /papercusp-su-ghost\.tools\.md/,
     );
+  });
+});
+
+describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', () => {
+  const GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
+
+  beforeEach(async () => {
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Engineer base\n\n${GUIDE_MARKER}\n`,
+    );
+  });
+
+  it('splices an explicit project guide at the marker; marker never shipped', async () => {
+    const guidePath = path.join(tmpAppRoot, 'PROJECT_CLAUDE.md');
+    await fs.writeFile(guidePath, '# Repo conventions\nUse nuqs for state.\n');
+    const r = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: guidePath,
+    });
+    expect(r.text).not.toContain(GUIDE_MARKER);
+    expect(r.text).toContain('Project guide — repo conventions'); // wrapper header
+    expect(r.text).toContain('Use nuqs for state.'); // guide body
+    expect(r.projectGuideSource).toBe(guidePath);
+  });
+
+  it('explicit empty source ("") → no guide spliced, marker removed', async () => {
+    const r = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: '',
+    });
+    expect(r.text).not.toContain(GUIDE_MARKER);
+    expect(r.text).not.toContain('Project guide — repo conventions');
+    expect(r.projectGuideSource).toBe('');
+  });
+
+  it('auto-resolves the repo CLAUDE.md by walking up from the prompts dir (engineer default)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcusp-guide-root-'));
+    const promptsDir = path.join(root, 'apps', 'operator', 'prompts');
+    await fs.mkdir(promptsDir, { recursive: true });
+    await fs.writeFile(path.join(promptsDir, 'papercusp-su-engineer.tools.md'), `# Base\n\n${GUIDE_MARKER}\n`);
+    await fs.writeFile(path.join(root, 'CLAUDE.md'), '# Papercup guide\nTauri only.\n');
+    try {
+      const r = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: path.join(root, 'apps', 'operator') });
+      expect(r.text).toContain('Tauri only.');
+      expect(r.projectGuideSource).toBe(path.join(root, 'CLAUDE.md'));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('base WITHOUT the marker: the (large) guide is neither read nor spliced', async () => {
+    await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'), `# No marker base\n`);
+    const guidePath = path.join(tmpAppRoot, 'PROJECT_CLAUDE.md');
+    await fs.writeFile(guidePath, '# Should NOT appear\n');
+    const r = await renderSuPlaybook({
+      agent: 'claude',
+      operatorAppRoot: tmpAppRoot,
+      projectGuideSource: guidePath,
+    });
+    expect(r.text).not.toContain('Should NOT appear');
+    expect(r.projectGuideSource).toBe('');
   });
 });

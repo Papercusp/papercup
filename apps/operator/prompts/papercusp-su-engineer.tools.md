@@ -789,6 +789,8 @@ add a scenario when a new SU failure mode shows up.
 - **Don't paper over missing context with a default.** A missing slug /
   feature id / workspace means the user hasn't said enough yet — ask.
 
+<!-- PAPERCUSP-SU:PROJECT-GUIDE -->
+
 ## Mid-call interactivity
 
 Some tools pause mid-run and prompt via `ctx.askUser`

@@ -18,7 +18,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
-import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER } from './splice-tooling-overlay';
+import { spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROJECT_GUIDE_MARKER } from './splice-tooling-overlay';
 import { renderWorkspaceMapSection } from './workspace-map';
 import { renderWireSchemasSection } from '../prompt-assembly';
 import { renderCoordLegend } from '../coord-schema';
@@ -139,6 +139,67 @@ async function readAgentOverlay(baseSrc: string, agent: string): Promise<string>
 }
 
 /**
+ * Wrap the project guide (the repo's `CLAUDE.md`) for splicing into a psu
+ * playbook (psu-isolation P-001 / D-002). Empty guide → '' so the marker is
+ * removed, never shipped literally. The provenance header tells the agent this
+ * is the repo's editable guide delivered by splice (NOT client auto-load), so
+ * a session knows where to edit it and that personal config was deliberately
+ * left out.
+ */
+export function renderProjectGuideSection(guideText: string): string {
+  const body = guideText.replace(/\n+$/, '').trim();
+  if (!body) return '';
+  return (
+    '## Project guide — repo conventions\n\n' +
+    "> The following is the working repo's project guide (`CLAUDE.md` at the\n" +
+    "> repo root — the single editable source; `AGENTS.md` is a symlink to it).\n" +
+    '> It is spliced in here so a psu session gets these conventions WITHOUT the\n' +
+    '> client auto-loading the file (which would also drag in the launching\n' +
+    "> user's personal/global config). To change it, edit the repo's `CLAUDE.md`.\n\n" +
+    body +
+    '\n'
+  );
+}
+
+/**
+ * Candidate project-guide (`CLAUDE.md`) paths for the ENGINEER profile — the
+ * working repo's own guide, resolved relative to the resolved base playbook
+ * (which lives at `<repo>/apps/operator/prompts/`) and `process.cwd()`. The
+ * power profile passes an explicit `projectGuideSource` (the managed repo's
+ * guide) instead of relying on this. First existing wins; none → no guide.
+ */
+function projectGuideCandidates(baseSource: string): string[] {
+  const promptsDir = path.dirname(baseSource);
+  return [
+    path.resolve(promptsDir, '..', '..', '..', 'CLAUDE.md'), // <repo>/apps/operator/prompts → <repo>
+    path.resolve(promptsDir, '..', 'CLAUDE.md'), // <sidecar>/prompts → <sidecar>
+    path.join(process.cwd(), 'CLAUDE.md'),
+  ];
+}
+
+/**
+ * Resolve + read the project guide for splicing. `explicitSource` (when not
+ * undefined) wins — including '' which means "no guide" (e.g. a power launch
+ * whose managed repo has none). Otherwise auto-resolve the engineer candidates.
+ * Reads only when the base actually carries the marker (the caller gates this),
+ * so a markerless base never pays the file read.
+ */
+async function resolveProjectGuideText(
+  baseSource: string,
+  explicitSource: string | undefined,
+): Promise<{ text: string; source: string }> {
+  const source =
+    explicitSource !== undefined ? explicitSource : ((await firstExisting(projectGuideCandidates(baseSource))) ?? '');
+  if (!source) return { text: '', source: '' };
+  try {
+    return { text: await fs.readFile(source, 'utf8'), source };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { text: '', source: '' };
+    throw e;
+  }
+}
+
+/**
  * Write the base playbook with the OMP tooling overlay spliced in at
  * the marker (or appended, if a pre-marker base is ever encountered).
  * Node port of `render_playbook` from install-standalone-mcp.sh.
@@ -156,6 +217,11 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   let out = spliceGeneratedSection(spliceToolingOverlay(base, overlay), WIRE_SCHEMAS_MARKER, renderWireSchemasSection());
   out = spliceGeneratedSection(out, COORD_LEGEND_MARKER, renderCoordLegend());
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // Project guide (P-001): engineer-profile install splices the repo's CLAUDE.md.
+  if (out.includes(PROJECT_GUIDE_MARKER)) {
+    const { text } = await resolveProjectGuideText(baseSrc, undefined);
+    out = spliceGeneratedSection(out, PROJECT_GUIDE_MARKER, renderProjectGuideSection(text));
+  }
   await fs.writeFile(dst, out, { mode: 0o644 });
   await fs.chmod(dst, 0o644);
   return true;
@@ -271,6 +337,15 @@ export interface RenderSuPlaybookInput {
   operatorAppRoot?: string;
   /** Override the resolved base path directly (tests / explicit callers). */
   baseSource?: string;
+  /**
+   * Project-guide source to splice at PROJECT_GUIDE_MARKER (P-001 / D-002).
+   * - `undefined` (default) → auto-resolve the ENGINEER candidates: the repo's
+   *   own `CLAUDE.md`.
+   * - an explicit path → read that (the POWER profile passes the managed repo's
+   *   guide, resolved from the launch cwd).
+   * - `''` → no guide (marker removed). Only read when the base carries the marker.
+   */
+  projectGuideSource?: string;
 }
 
 export interface RenderedSuPlaybook {
@@ -280,6 +355,8 @@ export interface RenderedSuPlaybook {
   baseSource: string;
   /** Resolved overlay path, '' when the agent has no overlay file. */
   overlaySource: string;
+  /** Resolved project-guide path, '' when none was spliced. */
+  projectGuideSource: string;
 }
 
 /**
@@ -319,6 +396,16 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
     renderWireSchemasSection(),
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
-  const text = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
-  return { text, baseSource, overlaySource };
+  const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
+  // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
+  // gets the full project conventions via psu, not client auto-load. Only read
+  // the (large) guide file when the base actually carries the marker.
+  let text = withMap;
+  let projectGuideSource = '';
+  if (withMap.includes(PROJECT_GUIDE_MARKER)) {
+    const guide = await resolveProjectGuideText(baseSource, input.projectGuideSource);
+    projectGuideSource = guide.source;
+    text = spliceGeneratedSection(withMap, PROJECT_GUIDE_MARKER, renderProjectGuideSection(guide.text));
+  }
+  return { text, baseSource, overlaySource, projectGuideSource };
 }

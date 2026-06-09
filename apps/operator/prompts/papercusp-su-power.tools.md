@@ -473,6 +473,8 @@ BM25) → `search:semantic` if paraphrased → read code at the cited paths
   step) or `psu --role <role> [--feature F-NNN]`. It's interactive +
   tracked, so it's safe for exploration, unlike a raw spawn.
 
+<!-- PAPERCUSP-SU:PROJECT-GUIDE -->
+
 ## Mid-call interactivity
 
 Some tools pause mid-run and prompt via `ctx.askUser` (cards) or publish

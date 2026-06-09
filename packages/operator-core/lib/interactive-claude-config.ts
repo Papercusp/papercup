@@ -23,13 +23,39 @@
  *     (theme picker / trust prompt / login) that BLOCKS an interactive launch.
  *
  * So instead of a minimal dir we build a **symlink mirror** of `~/.claude` with
- * exactly ONE thing isolated: the conversation transcript store, `projects/`.
+ * TWO things isolated: the conversation transcript store `projects/` (EI-153),
+ * and the user's PERSONAL MEMORY files (psu-isolation P-002 / D-001 — below).
  * Every other top-level entry — `.credentials.json`, `settings.json`, `plugins/`,
  * `commands/`, … — is symlinked back to the real `~/.claude/<entry>` (writes pass
  * through, so an OAuth refresh / settings change is never divergent), the sibling
  * `~/.claude.json` is symlinked in, and `projects/` is a fresh real directory.
- * The session is byte-for-byte the user's environment, but its transcripts land
- * under `<configDir>/projects/**` instead of the shared `~/.claude/projects/**`.
+ *
+ * ── psu prompt isolation (P-002 / D-001) ──────────────────────────────────────
+ * A psu session must be governed ONLY by the psu playbook (+ the P-001 project-
+ * guide splice), NOT by the launching user's personal config. But a plain mirror
+ * symlinks `~/.claude/CLAUDE.md` in, and claude auto-loads `$CLAUDE_CONFIG_DIR/
+ * CLAUDE.md` as global memory (on this box `CLAUDE.md` = `@AGENTS.md`, the owner's
+ * memory rules / prefs) — the exact leak the owner raised. So we DON'T link the
+ * personal-memory entries (`CLAUDE.md` / `AGENTS.md` / `CLAUDE.local.md`); the
+ * session then has no global memory file and is steered solely by psu.
+ *
+ * Why this (a non-inheriting CLAUDE_CONFIG_DIR) and NOT `--bare`: the plan's
+ * primary was `claude --bare` (it drops CLAUDE.md auto-discovery wholesale). But
+ * `--bare` on claude-code 2.1.169 ALSO refuses to read OAuth / keychain auth
+ * (`--help`: "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper") —
+ * and psu Claude sessions on this box authenticate ONLY via the Claude-Max OAuth
+ * in `~/.claude/.credentials.json` (no ANTHROPIC_API_KEY). So `--bare` would make
+ * every interactive psu Claude session unauthenticated — the dead-end P-002's
+ * fallback anticipated. This config-dir approach keeps OAuth + the file-lock hooks
+ * (`settings.json`) + the `papercusp-su` MCP (`~/.claude.json`) intact while
+ * killing only the personal-memory leak — the same shape Codex already uses
+ * (a dedicated CODEX_HOME). RESIDUAL: the cwd-discovered PROJECT `CLAUDE.md` (the
+ * repo's own guide) still auto-loads for a repo-cwd session; that's benign (it's
+ * the repo guide, also delivered by the P-001 splice for non-repo cwds / non-claude
+ * clients), not personal leakage.
+ *
+ * The session is the user's environment for AUTH + TOOLS + HOOKS, but its
+ * transcripts land under `<configDir>/projects/**` and it loads NO personal memory.
  *
  * That is exactly the isolation EI-153 needs:
  *   - `/resume` and the picker no longer surface peers' sessions (transcripts are
@@ -59,6 +85,16 @@ export interface InteractiveClaudeConfig {
 /** Top-level `~/.claude` entry that gets a fresh real dir (NOT a symlink) so the
  *  session's conversation transcripts are isolated from the shared store. */
 const ISOLATED_ENTRY = 'projects';
+
+/**
+ * Top-level `~/.claude` entries that are the launching user's PERSONAL global
+ * memory / instructions — deliberately NOT mirrored into a psu session's config
+ * dir (psu-isolation P-002 / D-001). `CLAUDE.md` is claude's global-memory file
+ * (here `@AGENTS.md`); skipping it (and its include target / local variant) means
+ * the session loads no personal memory and is governed only by the psu playbook +
+ * the P-001 project-guide splice. Auth/hooks/MCP/plugins still link through.
+ */
+const PERSONAL_MEMORY_ENTRIES = new Set(['CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md']);
 
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
  *  symlink — `existsSync` returns false for a dangling link, but on resume we
@@ -112,6 +148,10 @@ export function writeInteractiveClaudeConfig(opts: {
   }
   for (const name of entries) {
     if (name === ISOLATED_ENTRY) continue;
+    // psu-isolation P-002 / D-001: never mirror the user's personal global
+    // memory — a psu session is steered only by the psu playbook + the P-001
+    // project-guide splice, not the launching user's CLAUDE.md/AGENTS.md.
+    if (PERSONAL_MEMORY_ENTRIES.has(name)) continue;
     linkInto(join(srcClaude, name), join(configDir, name));
   }
 

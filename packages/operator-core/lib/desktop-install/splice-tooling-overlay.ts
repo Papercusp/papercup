@@ -45,6 +45,22 @@ export const COORD_LEGEND_MARKER = '<!-- PAPERCUSP-SU:COORD-LEGEND -->';
 export const WORKSPACE_MAP_MARKER = '<!-- PAPERCUSP-SU:WORKSPACE-MAP -->';
 
 /**
+ * Marker for the spliced PROJECT GUIDE (psu-isolation P-001) — the repo's
+ * `CLAUDE.md` (the single editable source; `AGENTS.md` is a symlink to it).
+ * Spliced by `renderSuPlaybook` from `renderProjectGuideSection(guideText)`.
+ *
+ * This is the D-002 mechanism: psu sessions get the 600+-line project guide
+ * (the full nuqs / storage / testing / sync conventions the playbook only
+ * headlines) WITHOUT the client auto-loading it — auto-load also drags in the
+ * launching user's personal/global config (the leakage P-002/P-003/P-004 fix).
+ * engineer profile → papercup's own `CLAUDE.md`; power profile → the managed
+ * repo's guide (resolved from the launch cwd). Same splice contract as the
+ * other generated sections: an absent marker leaves the section out; an empty
+ * guide removes the marker (never shipped literally).
+ */
+export const PROJECT_GUIDE_MARKER = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
+
+/**
  * Splice generated `content` into `base` at `marker`. Replaces ALL marker
  * occurrences; with an absent marker the content is appended (when non-empty);
  * an empty content with a present marker just removes it. Generalizes the

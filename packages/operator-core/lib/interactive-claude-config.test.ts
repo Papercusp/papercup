@@ -43,6 +43,10 @@ function seedHome(h: string) {
   writeFileSync(join(c, 'settings.json'), '{"hooks":{"PreToolUse":[]}}');
   writeFileSync(join(c, 'plugins', 'config.json'), '{"verdict":true}');
   writeFileSync(join(c, 'commands', 'foo.md'), '# /foo');
+  // The user's PERSONAL global memory — must NOT leak into a psu session
+  // (psu-isolation P-002 / D-001). On this box CLAUDE.md = `@AGENTS.md`.
+  writeFileSync(join(c, 'CLAUDE.md'), '@AGENTS.md\n');
+  writeFileSync(join(c, 'AGENTS.md'), '# Personal rules\nAlways edit topic files, never MEMORY.md.\n');
   // A PEER's transcript already in the shared store — must NOT appear isolated.
   writeFileSync(join(c, 'projects', 'proj-hash', 'peer-uuid.jsonl'), '{"peer":1}');
   writeFileSync(join(h, '.claude.json'), '{"mcpServers":{"papercusp-su":{}}}');
@@ -85,6 +89,22 @@ describe('writeInteractiveClaudeConfig', () => {
     // file-lock hooks + skills are intact — the whole point vs. the bee path).
     expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('PreToolUse');
     expect(readFileSync(join(configDir, 'plugins', 'config.json'), 'utf8')).toContain('verdict');
+  });
+
+  it('does NOT mirror the personal global memory (CLAUDE.md / AGENTS.md) — the P-002 / D-001 leak fix', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-iso', home });
+    // The psu session must load NO personal memory: neither the CLAUDE.md
+    // global-memory entrypoint nor its `@AGENTS.md` include target is present in
+    // the config dir, so claude has no `$CLAUDE_CONFIG_DIR/CLAUDE.md` to auto-load.
+    expect(existsSync(join(configDir, 'CLAUDE.md'))).toBe(false);
+    expect(existsSync(join(configDir, 'AGENTS.md'))).toBe(false);
+    // present() guards against a dangling symlink too — assert it's truly absent.
+    expect(() => lstatSync(join(configDir, 'CLAUDE.md'))).toThrow();
+    // But auth + hooks + tools still link through (isolation is surgical, not a
+    // creds-only strip): the personal-memory skip must not collateral-damage these.
+    expect(lstatSync(join(configDir, '.credentials.json')).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(configDir, 'settings.json')).isSymbolicLink()).toBe(true);
   });
 
   it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', () => {
