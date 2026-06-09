@@ -112,6 +112,23 @@ export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
 }
 
 /**
+ * Native-scheduler lockout (native-scheduler-lockout-2026-06-09 D-001/D-002):
+ * AGENT sessions (role panes + the brain/Queen) lose claude-code's own
+ * scheduling surfaces — Cron* tools, ScheduleWakeup, the schedule/loop
+ * skills, and Bash-reachable OS schedulers — so a wake can only live in the
+ * harness routines table (the one scheduler Pause/`hive:status`/the liveness
+ * backstop can see). The human `psu su` session keeps them (D-003).
+ *
+ * MUST stay one `=` token: the flag is variadic and the space form greedily
+ * eats every following argv element. This plain-node script can't import TS,
+ * so the literal mirrors NATIVE_SCHEDULER_DENY + OS_SCHEDULER_BASH_DENY in
+ * `@papercusp/orchestrator/native-scheduler-deny`; the lockstep test in
+ * `lib/psu-launcher.test.ts` pins the two copies together. Exported for tests.
+ */
+export const NATIVE_SCHEDULER_DENY_FLAG =
+  '--disallowedTools=CronCreate,CronDelete,CronList,ScheduleWakeup,Skill(schedule),Skill(loop),Bash(crontab:*),Bash(systemd-run:*),Bash(batch:*)';
+
+/**
  * Per-backend args for an interactive ROLE session — exec the raw CLI
  * (NOT the *-su wrapper, which bakes the engineer playbook + superuser
  * MCP) with the role prompt as system prompt + the signed role-scoped
@@ -140,6 +157,9 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
         // most-recent-in-cwd (a random peer on the shared tree). claude-only.
         ...(nativeSessionId ? ['--session-id', nativeSessionId] : []),
         '--permission-mode', 'bypassPermissions',
+        // Agent sessions must schedule ONLY via the harness routines table —
+        // never claude's own cron/schedule/loop surfaces (D-001).
+        NATIVE_SCHEDULER_DENY_FLAG,
       ],
     };
   }
@@ -735,13 +755,17 @@ function fmtAge(iso) {
 
 /** Resume a resolved session: cd to its recorded cwd + exec the RAW agent's
  *  resume command there (P-042 — no `*-su` wrapper), re-establishing the same
- *  per-session config the wrapper used to bake. */
-function launchResume(session) {
+ *  per-session config the wrapper used to bake. `brain` marks the resumed
+ *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
+ *  native-scheduler lockout the human resume path deliberately skips
+ *  (flags don't persist into resumes; every brain dock-open re-arms it). */
+function launchResume(session, { brain = false } = {}) {
   // omp re-loads the coordination extension per invocation; claude/codex don't
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
   const { bin, args } = resumeArgsFor(session, { coordExtPath });
+  if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
 
   // Per-session coord/lock owner (a fresh process gets a fresh SID).
   const env = {
@@ -895,7 +919,7 @@ async function brainFlow(args = {}) {
     // dock open would see "no transcript" and fork a fresh brain forever.
     const brainConfigDir = tracked?.coordOwnerId ? sessionClaudeConfigDir(tracked.coordOwnerId) : null;
     if (tracked && (tracked.agent !== 'claude' || claudeStoreHasSession(pin, { configDir: brainConfigDir }))) {
-      launchResume(tracked);
+      launchResume(tracked, { brain: true });
       return;
     }
     if (tracked) {
@@ -907,7 +931,7 @@ async function brainFlow(args = {}) {
       const untracked = findUntrackedSession(pin);
       if (untracked) {
         console.error(`psu: brain ${pin} lost its tracked row — resuming from the ${untracked.agent} session store.`);
-        launchResume(untracked);
+        launchResume(untracked, { brain: true });
         return;
       }
       console.error(`psu: pinned brain ${pin} no longer resolves anywhere — launching a fresh brain (re-pinning).`);
@@ -1076,6 +1100,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
   const launchArgs = [...baseArgs, ...extra];
+  // The brain (Queen) is an AGENT riding the su launch machinery — it gets the
+  // native-scheduler lockout the human su session deliberately keeps (D-003).
+  if (brain && res.agent === 'claude') launchArgs.push(NATIVE_SCHEDULER_DENY_FLAG);
   // A kickoff launch-context (server-generated) layers in as a SECOND system
   // prompt for claude/omp; codex would need it folded into AGENTS.md (deferred).
   if (args.launchContext && res.agent !== 'codex') {

@@ -18,7 +18,9 @@ import {
   PTY_DEFAULT_ON,
   AGENTS,
   NO_PLAN,
+  NATIVE_SCHEDULER_DENY_FLAG,
 } from '../scripts/psu-launcher.mjs';
+import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 
 describe('psu-launcher arg parsing', () => {
   it('defaults to the interactive picker', () => {
@@ -231,7 +233,7 @@ describe('psu-launcher arg parsing', () => {
 describe('roleLaunchArgs (interactive role session)', () => {
   const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
 
-  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms', () => {
+  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms, scheduler lockout', () => {
     const { bin, args } = roleLaunchArgs('claude', files);
     expect(bin).toBe('claude');
     expect(args).toEqual([
@@ -240,7 +242,19 @@ describe('roleLaunchArgs (interactive role session)', () => {
       '--mcp-config', '/proj/.mcp.json',
       '--strict-mcp-config',
       '--permission-mode', 'bypassPermissions',
+      NATIVE_SCHEDULER_DENY_FLAG,
     ]);
+  });
+
+  it('the scheduler lockout literal stays in LOCKSTEP with the canonical TS module (native-scheduler-lockout P-005)', () => {
+    // psu-launcher.mjs is a plain-node script that can't import TS, so it
+    // duplicates the rendered flag; this pins the copy to the source of truth.
+    expect(NATIVE_SCHEDULER_DENY_FLAG).toBe(nativeSchedulerDenyFlag());
+  });
+
+  it('the scheduler lockout is one `=` token (the variadic space form would eat following args)', () => {
+    expect(NATIVE_SCHEDULER_DENY_FLAG.startsWith('--disallowedTools=')).toBe(true);
+    expect(/\s/.test(NATIVE_SCHEDULER_DENY_FLAG)).toBe(false);
   });
 
   it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
@@ -297,6 +311,11 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     // so the user's full toolkit loads (D-005) and the server isn't doubled.
     expect(args).not.toContain('--mcp-config');
     expect(args).not.toContain('--strict-mcp-config');
+  });
+
+  it('claude su: the HUMAN session keeps native schedulers — NO lockout flag (native-scheduler-lockout D-003)', () => {
+    const { args } = suLaunchArgs('claude', files);
+    expect(args.some((a) => a.startsWith('--disallowedTools'))).toBe(false);
   });
 
   it('omp: yolo + playbook prompt + coordination extension (-e, P-021)', () => {

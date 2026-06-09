@@ -43,8 +43,11 @@ const useBackend = (b: FakeBackend): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
+// The projected wrapper hands principal-gated handlers { principal, tx, log };
+// the workspace rides principal.workspaceId (P-004 — the old top-level
+// ctx.workspaceId was never populated at runtime).
 const fakeCtx = {
-  workspaceId: 'ws-test',
+  principal: { workspaceId: 'ws-test' },
 } as unknown as Parameters<typeof remember.handler>[1];
 
 beforeEach(() => {

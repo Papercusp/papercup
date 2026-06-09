@@ -152,6 +152,20 @@ describe('resumeCommandFor', () => {
     expect(r!.promptViaPty).toBe(false);
   });
 
+  it('claude: re-arms the native-scheduler lockout on every wake as ONE `=` token before the positional prompt', () => {
+    const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
+    const denyIdx = r!.args.findIndex((a) => a.startsWith('--disallowedTools='));
+    expect(denyIdx).toBeGreaterThan(-1);
+    // The single-token form is load-bearing: the variadic space form would
+    // consume the trailing wake text as deny rules (D-002,
+    // native-scheduler-lockout-2026-06-09).
+    expect(r!.args[denyIdx]).toContain('ScheduleWakeup');
+    expect(r!.args[denyIdx]).toContain('CronCreate');
+    expect(/\s/.test(r!.args[denyIdx])).toBe(false);
+    expect(denyIdx).toBeLessThan(r!.args.length - 1); // wake text still trails
+    expect(r!.args[r!.args.length - 1]).toBe('WAKE');
+  });
+
   it('claude WITHOUT a native session id is NOT resumable (no --continue on a shared cwd)', () => {
     expect(resumeCommandFor({ agent: 'claude', sessionId: null, ompThreadId: null }, 'WAKE')).toBeNull();
   });

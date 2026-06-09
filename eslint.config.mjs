@@ -10,6 +10,7 @@
  */
 
 import papercuspRules from './tools/eslint-rules/index.js';
+import tseslint from 'typescript-eslint';
 
 export default [
   {
@@ -21,6 +22,21 @@ export default [
       '**/*.d.ts',
       '**/.turbo/**',
     ],
+  },
+  {
+    // TypeScript syntax support — PARSER ONLY, no type-aware linting and no
+    // recommended rule sets (the rule surface stays exactly the custom
+    // papercusp rules below). Without this, espree choked on any TS-only
+    // syntax (inline `type` imports, generics, interfaces…), so the guard
+    // rules silently never ran on most TS/TSX files
+    // (memory-taxonomy-and-debt-followups P-005).
+    files: ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+    },
   },
   {
     files: [

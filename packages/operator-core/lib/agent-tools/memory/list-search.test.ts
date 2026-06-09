@@ -48,7 +48,7 @@ const useBackend = (b: ReturnType<typeof fakeBackend>): void => {
   vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
 };
 
-const ctx = { workspaceId: 'ws-test' } as unknown as Parameters<typeof search.handler>[1];
+const ctx = { principal: { workspaceId: 'ws-test' } } as unknown as Parameters<typeof search.handler>[1];
 
 const parse = (res: unknown): { ok: boolean; reason?: string; results: Array<Record<string, unknown>> } =>
   JSON.parse((res as { content: { text: string }[] }).content[0].text);

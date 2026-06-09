@@ -759,6 +759,15 @@ export async function pollInboxDelta(): Promise<{ reminder: string }> {
  *   5. On operator-unreachable → log + return {} (fail open;
  *      cooperative discipline only works when the system is up).
  */
+/**
+ * Persistent OS schedulers, matched at COMMAND POSITION (start of command,
+ * after a `;`/`&`/`|`/newline separator, or behind `sudo`) — never mid-word
+ * or in prose args, so `cat`, `atuin`, or `echo "look at this"` can't trip
+ * it (native-scheduler-lockout-2026-06-09 P-010 / OQ-3: the unambiguous set
+ * only; widen only on observed escapes). Exported for unit tests.
+ */
+export const OS_SCHEDULER_CMD_RE = /(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b/;
+
 export interface ToolCallEvent {
   type: 'tool_call';
   toolName: string;
@@ -1202,6 +1211,32 @@ export async function onToolCall(
       reason:
         'Do not use Claude task-panel or subagent Task tools in OMP. Use todo_write for task tracking instead.',
     };
+  }
+
+  // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): an
+  // AGENT session must schedule wakes ONLY via the harness routines table
+  // (hive:declare-wake) — never a persistent OS scheduler, which outlives the
+  // hive as a zombie that Pause/`hive:status`/the liveness backstop can't see.
+  // omp has no first-class scheduler tool (toolset audit 2026-06-09), so its
+  // whole exposure is the shell — deny at command position (start / after
+  // ;&|/newline / sudo) so prose args ("look at this") never false-positive.
+  // Gated on the agent-session marker env: the owner's own sessions never set
+  // it (D-003) and stay fully unrestricted. Local decision, no operator call.
+  if (
+    process.env.PAPERCUSP_AGENT_SESSION === '1' &&
+    event.toolName.toLowerCase().startsWith('bash')
+  ) {
+    const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
+    if (OS_SCHEDULER_CMD_RE.test(cmd)) {
+      return {
+        block: true,
+        reason:
+          'native-scheduler lockout: agent sessions must not create OS schedules ' +
+          '(crontab / at / batch / systemd-run). Declare your wake via ' +
+          'hive:declare-wake instead — the routines table is the only scheduler ' +
+          'the hive’s pause/status/liveness machinery can see.',
+      };
+    }
   }
 
   // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui

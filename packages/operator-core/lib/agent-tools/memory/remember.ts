@@ -119,7 +119,7 @@ export default defineTool({
       // `workspace` pin from an unscoped SU session). The old read,
       // `ctx.workspaceId`, was never populated on principal-gated handlers
       // — every prior write stored workspace_id: undefined (P-004).
-      workspace_id: ctx.principal.workspaceId,
+      workspace_id: ctx.principal?.workspaceId,
       created_by: user.id,
       display_name: user.display_name,
     };

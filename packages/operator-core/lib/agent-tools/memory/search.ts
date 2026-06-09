@@ -94,7 +94,7 @@ export default defineTool({
         // `workspace` pin from an unscoped SU session); the old
         // `ctx.workspaceId` read was never populated on principal-gated
         // handlers, so the fan-out silently degraded to user-pool-only (P-004).
-        const reg = await loadHarnessRegistry(ctx.principal.workspaceId);
+        const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
         harnessSlugs = reg.projects.map((p) => p.slug);
       } catch {
         harnessSlugs = [];

@@ -4,6 +4,15 @@
 # would collide with an in-flight EXCLUSIVE hold on a registered resource
 # (e.g. a peer is mid `dev:restart`), block it; otherwise proceed.
 #
+# ALSO: the native-scheduler lockout (native-scheduler-lockout-2026-06-09
+# P-010) — when this session is an AGENT session (PAPERCUSP_AGENT_SESSION=1:
+# role panes, the brain/Queen; the owner's own sessions never set it), deny
+# persistent OS schedulers (crontab/at/batch/systemd-run) at command position.
+# Local regex, no HTTP. Catches the compound forms (`cd x && crontab …`) the
+# launch-time Bash(crontab:*) prefix deny-patterns can't. Wakes belong in the
+# harness routines table (hive:declare-wake) — the only scheduler that
+# Pause/hive:status/the liveness backstop can see.
+#
 # Cheap by design: a local keyword pre-filter lets the overwhelming majority
 # of commands (ls/git/grep/…) return immediately with NO HTTP call. Only a
 # command that looks destructive (systemctl/overmind/psql/npm run dev) is
@@ -60,6 +69,21 @@ if tool_name != 'Bash':
 command = tool_input.get('command') if isinstance(tool_input, dict) else None
 if not isinstance(command, str) or not command.strip():
     allow()
+
+# Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): agent
+# sessions must not create persistent OS schedules — a crontab entry outlives
+# the hive as a zombie wake source that Pause/hive:status/the liveness
+# backstop can't see. Command-position match (start / after ;&|/newline /
+# sudo) so prose args ("look at this") never false-positive. Local decision,
+# no HTTP; the owner's own sessions never carry the marker (D-003).
+if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
+        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b', command):
+    deny(
+        'native-scheduler lockout: agent sessions must not create OS schedules '
+        '(crontab / at / batch / systemd-run). Declare your wake via '
+        'hive:declare-wake instead — the routines table is the only scheduler '
+        "the hive's pause/status/liveness machinery can see."
+    )
 
 # Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
 # that can't touch a registered resource. Tokens mirror the seeded patterns.
