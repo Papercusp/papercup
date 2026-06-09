@@ -156,12 +156,20 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
     }
   });
 
-  it('mints NO session id for the default omp backend (omp resumes by thread id)', async () => {
-    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
-    expect(res.ok).toBe(true);
-    const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
-    expect(opts?.forceSessionId).toBeUndefined();
-    expect(findUpdate()).toBeUndefined();
+  it('mints NO session id for the omp backend (omp resumes by thread id)', async () => {
+    // Force the omp backend explicitly — resolveSpawnBackendModel reads the AMBIENT
+    // AGENT_CMD, which on any real agent box is `claude …` (the box runs claude bees),
+    // so relying on the unset-env default would mint a uuid and fail in the gate.
+    vi.stubEnv('AGENT_CMD', 'omp -p');
+    try {
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      expect(res.ok).toBe(true);
+      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      expect(opts?.forceSessionId).toBeUndefined();
+      expect(findUpdate()).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
