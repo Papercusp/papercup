@@ -26,7 +26,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // survey the blackboard (work_items frontier, curation feed, activity
   // bridge, coord, plans) and create/manage harnesses from blueprints
   // (blueprint:catalog/validate → harness:read; blueprint:extend +
-  // harness:create → harness:write; pot:declare-wake → routines:write).
+  // harness:create → harness:write; hive:declare-wake → routines:write).
   // Declared here AS WELL AS in the provisioned OPERATOR_CAPS (provision.ts)
   // because provision-without-force is a no-op for an existing row — the pot
   // must not depend on a re-provision to function. The two union cleanly.

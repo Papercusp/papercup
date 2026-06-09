@@ -66,7 +66,7 @@ const CAN: Array<{ path: string; via: string }> = [
 const CANNOT_CAP: Array<{ path: string }> = [
   { path: '../../../agent-tools/operator/converse.js' }, // operator:converse
   { path: '../../../agent-tools/operator/nudge.js' }, // operator:write
-  { path: '../../../agent-tools/pot/declare_wake.js' }, // routines:write
+  { path: '../../../agent-tools/hive/declare_wake.js' }, // routines:write
   { path: '../../../agent-tools/processes/kill.js' }, // processes:kill
   { path: '../../../agent-tools/autoloop/control.js' }, // autoloop:write
   { path: '../../../agent-tools/curation/feed.js' }, // curation:read

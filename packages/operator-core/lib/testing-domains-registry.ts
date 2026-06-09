@@ -1000,10 +1000,10 @@ defineTestDomain({
       globs: ['packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts'],
     },
     {
-      id: 'pot-wake',
+      id: 'hive-wake',
       label: 'Pot wake',
-      description: 'The Queen wake routine — pot:wake / declare-wake / urgent-wake scheduling and the pot-wake PG path.',
-      globs: ['packages/operator-core/lib/pot/**/*.test.ts'],
+      description: 'The Queen wake routine — hive:wake / declare-wake / urgent-wake scheduling and the hive-wake PG path.',
+      globs: ['packages/operator-core/lib/hive/**/*.test.ts'],
     },
     {
       id: 'host-health',

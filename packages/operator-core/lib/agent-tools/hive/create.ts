@@ -25,13 +25,13 @@ export default defineTool({
   name: 'hive:create',
   profile: 'engineer',
   description:
-    "Stand up a NEW local hive (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
+    "Stand up a NEW local hive (root-only): provision a home harness running the hive (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Queen. Composes the harness-provision primitives + hive:wake, transactional with rollback. NOT callable from a bee/parented agent — hives are peers, never nested. Cloud placement is a separate step (deploy:hive).",
   guidance: {
     when: 'Standing up a NEW local hive (its home harness + Queen) in one call. Operator/user only.',
     notWhen:
       'Deploying an EXISTING hive to a cloud frame — deploy:hive. A plain non-hive harness — harness:create. From a bee — not allowed (spin a kind:harness subharness instead).',
     chaining:
-      'hive:get { slug } to inspect; pot:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down.',
+      'hive:get { slug } to inspect; hive:declare-wake to set the cadence; deploy:hive to place it on a Swarm; hive:dissolve to tear it down.',
   },
   capability: 'harness:write',
   requirePrincipal: false,
@@ -53,7 +53,7 @@ export default defineTool({
       .min(0)
       .max(86_400)
       .optional()
-      .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with pot:wake / pot:declare-wake.'),
+      .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with hive:wake / hive:declare-wake.'),
     kickoff: z.string().max(2000).optional().describe('Kickoff context for the first wake.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),

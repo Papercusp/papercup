@@ -49,7 +49,7 @@ describe('blueprint:catalog — built-in tier', () => {
     const r = await run();
     expect(r.ok).toBe(true);
     const ids = r.blueprints.map((b: Entry) => b.id);
-    for (const id of ['base', 'coding', 'research', 'pot', 'vote', 'scan', 'migration']) {
+    for (const id of ['base', 'coding', 'research', 'hive', 'vote', 'scan', 'migration']) {
       expect(ids).toContain(id);
     }
 
@@ -67,7 +67,7 @@ describe('blueprint:catalog — built-in tier', () => {
     expect(coding.dispatch).toMatchObject({ concurrency: 4, priority: 'plan-order' });
 
     // The Pot itself is discoverable — a one-shot launch blueprint, not a pipeline.
-    const pot = byId(r, 'pot')!;
+    const hive = byId(r, 'hive')!;
     expect(pot.launchable).toBe(true);
     expect(pot.decider).toBe('operator');
     // A launch/hive blueprint declares NO dispatch policy — the catalog reflects

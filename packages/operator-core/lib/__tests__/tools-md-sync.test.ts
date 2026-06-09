@@ -55,7 +55,7 @@ const NON_CHAT_ROLES = [
 function parseChatSurfaceAllowedTools(filepath: string): Set<string> {
   const src = readFileSync(join(REPO, filepath), 'utf8');
   const names = new Set<string>();
-  // `-` included: hyphenated tool names (pot:declare-wake, coord:declare-intent)
+  // `-` included: hyphenated tool names (hive:declare-wake, coord:declare-intent)
   // must parse whole — the catalog's name regex already allows it.
   for (const m of src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.\-]+)/g)) names.add(m[1]);
   return names;

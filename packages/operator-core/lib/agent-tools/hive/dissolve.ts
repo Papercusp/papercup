@@ -3,7 +3,7 @@
  * D-002/D-006). The durable inverse of hive:create.
  *
  * Steps (idempotent; each tolerant of already-done):
- *   1. clear the per-slug pot time-wake routine → the Queen won't re-wake (an
+ *   1. clear the per-slug hive time-wake routine → the Queen won't re-wake (an
  *      in-flight Queen turn finishes naturally; event-wake subs are
  *      workspace-scoped, not per-hive, so they're left to avoid clobbering
  *      sibling hives — known limitation).
@@ -22,7 +22,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listFleetAssignments } from '../../fleet/assignments';
 import { cancelSubtree } from '../../fleet/nursery';
-import { clearPotTimeWake } from '../../pot/wake';
+import { clearHiveTimeWake } from '../../hive/wake';
 import { dropHarnessSchema } from '../../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../../harness-membership';
 import { resolveHive } from './_resolve';
@@ -39,7 +39,7 @@ export default defineTool({
   guidance: {
     when: 'Permanently tearing down a local hive — stop the Queen, cancel its bees, deregister it. Operator/user only.',
     notWhen:
-      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — pot:declare-wake { mode:none }. From a bee — not allowed.',
+      'Destroying a deployed cloud frame (the Queen/member execution planes) — deploy:teardown_hive. Pausing a hive without tearing down — hive:declare-wake { mode:none }. From a bee — not allowed.',
     chaining: 'hive:get { slug } to inspect before; deploy:teardown_hive first if the hive is deployed to a Swarm.',
   },
   capability: 'harness:write',
@@ -92,7 +92,7 @@ export default defineTool({
 
     // 1. Stop the Queen re-waking (per-slug time-wake routine).
     try {
-      await clearPotTimeWake(sql, hive.slug);
+      await clearHiveTimeWake(sql, hive.slug);
       steps.wakeCleared = true;
     } catch (e) {
       steps.wakeCleared = false;

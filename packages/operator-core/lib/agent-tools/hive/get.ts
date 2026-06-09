@@ -25,7 +25,7 @@ export default defineTool({
     when: 'You want one hive in depth: is the Queen scheduled to wake, who are the bees and how loaded, how much work is queued.',
     notWhen: 'A list of all hives — hive:list. The raw per-agent fleet view across the workspace — fleet:assignments.',
     chaining:
-      'hive:list to find the slug; pot:wake to fire the Queen now; pot:declare-wake to change the cadence; hive:dissolve to tear it down.',
+      'hive:list to find the slug; hive:wake to fire the Queen now; hive:declare-wake to change the cadence; hive:dissolve to tear it down.',
   },
   capability: 'harness:read',
   requirePrincipal: false,

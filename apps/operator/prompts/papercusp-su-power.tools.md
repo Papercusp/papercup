@@ -243,11 +243,15 @@ Full model: plans `release-gate-ready-branch-2026-06-04` +
 - **Confirm before destructive write-side calls.** Operator tier exposes
   state-mutating verbs; confirm out loud first, and don't carry a stale
   "yes" from an earlier topic.
-- **Tests ship *with* the feature.** Writing + running tests is part of
-  building, not a follow-up. Use the project's testing framework — check the
-  project's **testing** docs / `TESTING.md` (its harness contract) for where
-  tests go + the command to run, not an ad-hoc script. A passing typecheck
-  is not a test.
+- **Tests ship *with* the feature, in the project's standard.** Writing +
+  running tests is part of building, not a follow-up. Put each test in the
+  project's canonical framework at its conventional path — check its **testing**
+  docs / `TESTING.md` (its harness contract) for where tests go + the command —
+  so the project's own test tooling auto-discovers it, exactly like the existing
+  tests (in the Papercusp repo: the four canonical homes — Vitest / Playwright /
+  Cargo / LLM scenarios — surfaced in the `/admin/testing` "tests tab" via a
+  registry glob-walk; another harness: its own suite). Never an ad-hoc throwaway
+  script. A passing typecheck is not a test.
 - **Break things — in alpha, timidity is the failure mode, not breakage.**
   No users, no production; nothing you break can hurt anyone. The real
   *mistakes* are timid ones — preserving a design you know is wrong, a

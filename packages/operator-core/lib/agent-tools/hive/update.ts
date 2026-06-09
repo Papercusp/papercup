@@ -28,7 +28,7 @@ export default defineTool({
   guidance: {
     when: "Changing a hive's deployment target or its per-instance config overrides (budget/parallelism knobs).",
     notWhen:
-      'Waking/pausing the Queen — pot:wake / pot:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
+      'Waking/pausing the Queen — hive:wake / hive:declare-wake. Placing/removing bees — fleet:*. Deploying to a cloud frame — deploy:hive.',
     chaining: 'hive:get { slug } to see the current config; deploy:hive to act on a changed deployment target.',
   },
   capability: 'harness:write',

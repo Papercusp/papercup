@@ -62,7 +62,7 @@ describe('Horizontal plane — agents coordinate directly; the Queen is never in
 
     // The Queen is never an implicit hop: whatever identity the pot operator runs
     // under, a peer→peer message addressed to bee-B does not land in its inbox.
-    for (const queenId of ['operator', 'queen', 'pot']) {
+    for (const queenId of ['operator', 'queen', 'hive']) {
       expect(await readInbox(queenId)).toEqual([]);
     }
     // And the sender doesn't see its own message (excludeOwn default).

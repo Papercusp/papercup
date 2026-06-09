@@ -330,3 +330,26 @@ describe('assembleRolePrompt — yield policy (turn-lifecycle-control P-017, D-0
     expect(out.sections.some((s) => s.name === 'yield-policy')).toBe(true);
   });
 });
+
+describe('assembleRolePrompt — testing standard (write tests the project way)', () => {
+  it('injects the testing-standard clause into the SHARED base every role inherits', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    expect(out.text).toContain('## Tests follow the project standard');
+    expect(out.text).toContain('canonical test framework');
+    expect(out.text).toContain('A green typecheck is not a test.');
+    expect(out.sections.some((s) => s.name === 'testing-standard')).toBe(true);
+  });
+
+  it('the clause is project-agnostic — it does NOT hardcode one project\'s framework list', async () => {
+    mockTools.length = 0;
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
+    const idx = out.text.indexOf('## Tests follow the project standard');
+    const after = out.text.slice(idx);
+    const end = after.indexOf('\n\n---\n\n');
+    const clause = end >= 0 ? after.slice(0, end) : after;
+    expect(clause).not.toMatch(/Vitest|Playwright|Cargo|\/admin\/testing/);
+  });
+});

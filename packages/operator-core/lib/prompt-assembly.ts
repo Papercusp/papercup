@@ -48,6 +48,7 @@ import {
 import { renderCoordLegend } from './coord-schema';
 import { renderFrictionTripwire } from './harness/improvements/friction-markers';
 import { renderYieldPolicy } from './turn-yield-policy';
+import { renderTestingStandard } from './testing-standard-policy';
 
 // Resolve at first call, not at module load. process.cwd() at module
 // scope is visible to Turbopack's NFT tracer, which pulls the entire
@@ -120,6 +121,8 @@ export interface AssembledSection {
     | 'tools-playbook'
     | 'coord-legend'
     | 'friction-tripwire'
+    | 'yield-policy'
+    | 'testing-standard'
     | 'runtime';
   chars: number;
 }
@@ -403,6 +406,16 @@ export function assembleRolePrompt(opts: AssembleOptions): AssembledPrompt {
   if (yieldPolicy) {
     parts.push(yieldPolicy);
     sections.push({ name: 'yield-policy', chars: yieldPolicy.length });
+  }
+
+  // Testing standard (the "write tests the project way" clause) — the SHARED base
+  // every operator-launched role inherits, mirroring the spawned-bee base
+  // (buildPrompt). Sourced from the one TESTING_STANDARD constant (orchestrator) so
+  // this base, the spawned-bee base, and the su playbooks can't desync.
+  const testingStandard = renderTestingStandard();
+  if (testingStandard) {
+    parts.push(testingStandard);
+    sections.push({ name: 'testing-standard', chars: testingStandard.length });
   }
 
   if (opts.runtime && opts.runtime.length > 0) {

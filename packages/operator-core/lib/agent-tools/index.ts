@@ -68,9 +68,9 @@ import './discovery/hives';
 import './discovery/set_hive';
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — the Pot operator's self-declared
 // wake surface (declare-wake / wake / status):
-import './pot/declare_wake';
-import './pot/wake';
-import './pot/status';
+import './hive/declare_wake';
+import './hive/wake';
+import './hive/status';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
 import './hive/get';
@@ -525,11 +525,11 @@ import './lexicon/active_pack';
 // `backgroundWorkspaceIds()` names (per-window-workspace-context P-020) —
 // under the shared-operator model a non-global workspace's pot must still
 // wake on its subscribed events.
-import { registerPotWakeRules } from '../pot/wake';
+import { registerHiveWakeRules } from '../hive/wake';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 try {
   for (const ws of backgroundWorkspaceIds()) {
-    void registerPotWakeRules(ws).catch(() => {});
+    void registerHiveWakeRules(ws).catch(() => {});
   }
 } catch {
   /* never block boot */

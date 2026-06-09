@@ -19,9 +19,9 @@ export default defineTool({
   name: 'hive:list',
   profile: 'engineer',
   description:
-    "The workspace-local hives (kind:'hive' harnesses — the Pots): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one hive in depth use hive:get.",
+    "The workspace-local hives (kind:'hive' harnesses — the Hives): each with its home slug, deployment target, wake (scheduled? next/last fire), and a live-agent count. The local-lifecycle view; for joinable network hives use discovery:hives, for per-bee placement detail use fleet:assignments, for one hive in depth use hive:get.",
   guidance: {
-    when: 'You want the workspace-local hives (the Pots) and their wake/load at a glance.',
+    when: 'You want the workspace-local hives (the Hives) and their wake/load at a glance.',
     notWhen:
       'Browsing joinable hives across the P2P network — that is discovery:hives. The raw per-agent fleet view — fleet:assignments. One hive in depth — hive:get.',
     chaining: 'hive:get { slug } to drill into one; hive:create to add one; hive:dissolve to tear one down.',

@@ -68,7 +68,7 @@ describe('loadRoleCapabilities', () => {
     expect(caps.size).toBe(1);
   });
 
-  test('operator: a provisioned row is unioned with the pot-decider baseline', async () => {
+  test('operator: a provisioned row is unioned with the hive-decider baseline', async () => {
     // autoloop-pot-operator-rebuild-2026-06-05 P-004: operator became a
     // blueprint-declared role (the pot's decider), so a STALE provisioned row
     // (pre-P-004 caps) still gets the superpower/survey baseline unioned in.
@@ -83,7 +83,7 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('coord:write')).toBe(true); // baseline — survey/coord surface
   });
 
-  test('operator with NO row gets the full pot-decider baseline (fresh workspace, pre-provision)', async () => {
+  test('operator with NO row gets the full hive-decider baseline (fresh workspace, pre-provision)', async () => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'operator');
     for (const c of [
       'harness:read', // blueprint:catalog / blueprint:validate / harness:status
@@ -95,7 +95,7 @@ describe('loadRoleCapabilities', () => {
       'coord:read',
       'coord:write',
       'plans:read',
-      'routines:write', // pot:declare-wake
+      'routines:write', // hive:declare-wake
     ]) {
       expect(caps.has(c), `missing ${c}`).toBe(true);
     }

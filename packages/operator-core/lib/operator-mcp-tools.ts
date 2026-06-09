@@ -116,15 +116,15 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // apps/operator/lib/agent-tools/chat/ask_choice.ts.
   'mcp__agentmcp__chat:ask_choice',
 
-  // The Pot's self-declared wake (autoloop-pot-operator-rebuild-2026-06-05 P0).
+  // The Hive's self-declared wake (autoloop-pot-operator-rebuild-2026-06-05 P0).
   // The chat operator schedules/inspects/fires its own background wakes — the
-  // user says "check the fleet in an hour" → pot:declare-wake; "wake up now" →
-  // pot:wake. pot:status is read-only.
-  'mcp__agentmcp__pot:declare-wake',
-  'mcp__agentmcp__pot:wake',
-  'mcp__agentmcp__pot:status',
+  // user says "check the fleet in an hour" → hive:declare-wake; "wake up now" →
+  // hive:wake. hive:status is read-only.
+  'mcp__agentmcp__hive:declare-wake',
+  'mcp__agentmcp__hive:wake',
+  'mcp__agentmcp__hive:status',
 
-  // The Pot's superpower surface (autoloop-pot-operator-rebuild-2026-06-05
+  // The Hive's superpower surface (autoloop-pot-operator-rebuild-2026-06-05
   // P-004): discover the blueprint shapes (catalog), inspect/author one
   // (validate/extend), then create the harness whose blueprint carries its own
   // autoloop. harness:status (above) is the matching read-back.
@@ -136,7 +136,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // hive-tool-namespace-2026-06-08 — local hive lifecycle. The operator manages
   // its hives: list/get to inspect; create/update/dissolve to manage. create/
   // dissolve/update are root-only (the operator is root; bees are refused). Wake
-  // stays pot:wake / pot:declare-wake; bee placement stays fleet:* (no aliases).
+  // stays hive:wake / hive:declare-wake; bee placement stays fleet:* (no aliases).
   'mcp__agentmcp__hive:list',
   'mcp__agentmcp__hive:get',
   'mcp__agentmcp__hive:create',

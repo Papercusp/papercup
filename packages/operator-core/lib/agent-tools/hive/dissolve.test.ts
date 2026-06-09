@@ -46,8 +46,8 @@ beforeEach(() => {
       return { cancelled: [{ spawnId: opts.rootSpawnId }] };
     },
   }));
-  vi.doMock('../../pot/wake', () => ({
-    clearPotTimeWake: async (_sql: unknown, slug: string) => {
+  vi.doMock('../../hive/wake', () => ({
+    clearHiveTimeWake: async (_sql: unknown, slug: string) => {
       clearWakeCalls.push(slug);
     },
   }));
@@ -74,7 +74,7 @@ afterEach(() => {
     './_resolve',
     '../../fleet/assignments',
     '../../fleet/nursery',
-    '../../pot/wake',
+    '../../hive/wake',
     '../../scaffold-harness-schema',
     '../../harness-membership',
     '../../fleet/operator-spawn',
