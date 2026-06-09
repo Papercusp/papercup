@@ -235,6 +235,24 @@ describe('executeWake — the liveness ladder', () => {
     expect((out as { reason: string }).reason).toContain('dead waiter');
   });
 
+  it('no handle BUT a live psu-host socket → inject via the socket, not park (EI-152)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({ findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock' })) as never, injectPsuHost: injectPsuHost as never }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(injectPsuHost).toHaveBeenCalledWith('/tmp/x.sock', expect.objectContaining({ mode: 'turn' }));
+  });
+
+  it('no handle + live socket but inject FAILS → falls through to park (live presence)', async () => {
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({ findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock' })) as never, injectPsuHost: vi.fn(async () => false) as never }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+  });
+
   it('plan-run handle → resumed via the plans:resume path', async () => {
     const resumePlanRun = vi.fn(async () => ({ ok: true as const }));
     const out = await executeWake(

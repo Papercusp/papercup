@@ -227,8 +227,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   try {
     const handle = d.wakeHandle;
     if (!handle) {
-      // Registered without a resumable session (warned at registration).
-      // Presence fresh → the inbox nudge will reach it; gone → drop visibly.
+      // Registered without a resumable session (warned at registration). BUT a
+      // live psu-pty host socket can still wake it in place — it injects into the
+      // live session by ownerId and needs no resumable handle (EI-152: handle-less
+      // always-armed inbox-wakes were parking even with a live socket available,
+      // because the socket inject below sat under this early-return).
+      const psuHost = findPsuHost(d.subscriberId);
+      if (psuHost) {
+        const ok = await injectPsuHost(psuHost.sock, { mode: 'turn', data: wakeTurnText(d) });
+        if (ok) return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+      // No injectable socket: presence fresh → the inbox nudge reaches it; gone → drop.
       const p = await presence(d.subscriberId).catch(() => null);
       if (p && !p.stale && !p.revoked) return { kind: 'park', reason: 'no wake handle; presence live — inbox only' };
       return { kind: 'drop', reason: 'no wake handle and presence gone/stale — dead waiter' };
