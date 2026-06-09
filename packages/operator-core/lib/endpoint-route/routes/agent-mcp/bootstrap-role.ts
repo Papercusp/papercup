@@ -23,7 +23,6 @@
  * Principal-gated; CORS-open (operator binds loopback-only).
  */
 import { mkdirSync, writeFileSync, existsSync, renameSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, workspaceById } from '../../../workspace-registry';
@@ -182,11 +181,21 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
     }
 
-    // Per-session coord/lock owner (P-022) — minted BEFORE the adv_sessions row
-    // so it's stored as coord_owner_id, the live-roster join key to
-    // coord_presence.owner_id (adv-sessions-live-roster P-001). The lock hooks +
-    // the session's MCP calls share this one owner via PAPERCUSP_SID (below).
-    const sid = `role-${randomUUID()}`;
+    // Per-session coord/lock owner (P-022) — now MINTED BY THE LAUNCH-SPEC
+    // PRIMITIVE (unify-launch-mechanics P-002), not here, so the one place that
+    // signs the MCP URL also owns the identity: spec.sid === the URL's
+    // `client=` param (EI-4) === PAPERCUSP_SID (below) === the codex-home baked
+    // client. It's stored as coord_owner_id, the live-roster join key to
+    // coord_presence.owner_id (adv-sessions-live-roster P-001).
+    const sid = spec.sid;
+
+    // Forced native session UUID for EXACT resumability (claude --session-id;
+    // unify-launch-mechanics P-003 invariant d). Recording it as the adv row's
+    // session_id lets wake-executor resume THIS conversation by uuid instead of
+    // degrading to inbox — previously role sessions carried no native id and so
+    // could not be woken-by-resume. claude-only: codex recovers its uuid from
+    // the rollout, omp resumes by thread id.
+    const nativeSessionId = agent === 'claude' ? spec.nativeSessionId : null;
 
     // Record the tracked session first so the prompt/mcp files key off its id.
     const sessionId = await recordAdvSession({
@@ -199,6 +208,7 @@ const post = defineTool({
       cwd: spec.cwd,
       label: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
       coordOwnerId: sid,
+      ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
     });
 
     // Materialize the launch artifacts. claude/omp consume a `.mcp.json` +
@@ -240,6 +250,23 @@ const post = defineTool({
         writeFileSync(mcpJsonPath, spec.mcpJsonContents, { mode: 0o600 });
       } catch (e: any) {
         return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
+      }
+
+      // Also stash the signed .mcp.json at the per-session MCP dir (keyed by
+      // sid via the shared helper, the same path wake-executor's resume leg
+      // remounts via `--mcp-config … --strict-mcp-config`). Without this a woken
+      // claude role session resumed TOOLLESS (its original launch loaded the
+      // role MCP via --mcp-config; the resume must too). unify-launch-mechanics
+      // P-003/P-004 — claude only (omp resumes by thread, codex by CODEX_HOME).
+      if (agent === 'claude') {
+        try {
+          mkdirSync(spec.sessionMcpDir, { recursive: true });
+          writeFileSync(join(spec.sessionMcpDir, '.mcp.json'), spec.mcpJsonContents, { mode: 0o600 });
+        } catch (e: any) {
+          // Non-fatal: the launch still works; only a later wake-by-resume would
+          // degrade to a toolless turn. stderr (not console.*) for the vitest guard.
+          process.stderr.write(`[bootstrap-role] session-mcp stash failed (non-fatal): ${e?.message}\n`);
+        }
       }
 
       // Write the role prompt to a launch-context file the launcher injects
@@ -296,6 +323,10 @@ const post = defineTool({
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
+        // claude exact-resume: the launcher forces `--session-id <this>` so the
+        // session's conversation id is known up-front and wake-executor resumes
+        // EXACTLY it (never `--continue`'s most-recent-in-cwd peer). P-003 inv d.
+        ...(nativeSessionId ? { PAPERCUSP_NATIVE_SESSION_ID: nativeSessionId } : {}),
       },
     };
     return jsonRes(result);

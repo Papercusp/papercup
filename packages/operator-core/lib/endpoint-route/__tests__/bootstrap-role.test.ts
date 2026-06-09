@@ -68,6 +68,10 @@ beforeEach(() => {
     cwd: LC_DIR, promptText: 'WORKER PROMPT', promptFile: '/h/prompts/worker.md',
     mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
     mcpJsonContents: JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: 'http://localhost:3070/api/mcp?role=worker&sig=x' } } }),
+    // Launch invariants the primitive now produces (unify-launch-mechanics P-002).
+    sid: 'role-abc', nativeSessionId: 'nsid-abc',
+    claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
+    sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
   });
 });
 
@@ -83,11 +87,29 @@ describe('bootstrap-role', () => {
     expect(json.cwd).toBe(LC_DIR);
     expect(json.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
     expect(json.envelopeEnv.PAPERCUSP_FEATURE_ID).toBe('F-001');
+    // Identity comes from the spec primitive now (P-002): PAPERCUSP_SID === spec.sid.
+    expect(json.envelopeEnv.PAPERCUSP_SID).toBe('role-abc');
+    // claude exact-resume (P-003 inv d): the forced native session id is exported
+    // (the launcher turns it into `--session-id`) AND recorded on the adv row.
+    expect(json.envelopeEnv.PAPERCUSP_NATIVE_SESSION_ID).toBe('nsid-abc');
     expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', harnessSlug: 'papercup', featureId: 'F-001' }),
     );
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'claude' }),
+      expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'claude', coordOwnerId: 'role-abc', sessionId: 'nsid-abc' }),
+    );
+  });
+
+  it('omp role session: no forced native session id (omp resumes by thread id)', async () => {
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
+    const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    // sid still bound; but no native session id forced for omp.
+    expect(json.envelopeEnv.PAPERCUSP_SID).toBe('role-abc');
+    expect(json.envelopeEnv.PAPERCUSP_NATIVE_SESSION_ID).toBeUndefined();
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ sessionId: expect.anything() }),
     );
   });
 
@@ -106,6 +128,9 @@ describe('bootstrap-role', () => {
       cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
       mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&sig=y',
       mcpJsonContents: '{}',
+      sid: 'role-sco', nativeSessionId: 'nsid-sco',
+      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-sco'),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-sco'),
     });
     const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup' });
     expect(res.status).toBe(200);
@@ -120,6 +145,9 @@ describe('bootstrap-role', () => {
       role: 'scoper', runId: 'scoper-1', spawnId: 'sp-3', harnessSlug: 'papercup', featureId: null,
       cwd: LC_DIR, promptText: 'SCOPER PROMPT', promptFile: '/h/prompts/scoper.md',
       mcpUrl: 'http://localhost:3070/api/mcp?role=scoper&sig=z', mcpJsonContents: '{}',
+      sid: 'role-sco2', nativeSessionId: 'nsid-sco2',
+      claudeConfigDir: join(LC_DIR, 'session-claude', 'role-sco2'),
+      sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-sco2'),
     });
     const res = await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup', plan: 'my-plan' });
     expect(res.status).toBe(200);
@@ -159,9 +187,11 @@ describe('bootstrap-role', () => {
     expect(json.promptFile).toBe('/tmp/role-codex-homes/session-7/AGENTS.md');
     expect(json.mcpJsonPath).toBe('/tmp/role-codex-homes/session-7/config.toml');
     expect(json.envelopeEnv.CODEX_HOME).toBe('/tmp/role-codex-homes/session-7');
-    // The CODEX_HOME is built from the SAME signed role-scoped url as claude/omp.
+    // The CODEX_HOME is built from the SAME signed role-scoped url as claude/omp,
+    // and bakes the SAME sid the primitive minted (EI-4: url client === PAPERCUSP_SID
+    // === codex-home baked client).
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x', promptText: 'WORKER PROMPT' }),
+      expect.objectContaining({ mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x', promptText: 'WORKER PROMPT', sid: 'role-abc' }),
     );
     // No .mcp.json written into the harness cwd for codex.
     expect(recordAdvSessionMock).toHaveBeenCalledWith(

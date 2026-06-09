@@ -1,0 +1,166 @@
+/**
+ * file-lock-authority-wiring — the boot binding that lights up cross-machine file-lock
+ * serialization (fed-reanchor-2026-06-06 P-060 cutover 2; the live half of
+ * `hive-scoped-federation`'s Track B).
+ *
+ * Two halves, both wired here at module load (side-effect import from the agent-tools
+ * barrel):
+ *
+ *  1. REQUESTING side — `routeFileLockOp` (called from locks:acquire / locks:release)
+ *     needs to map a `coordination_domain` (repo realpath) → harness → (if a Hive
+ *     member) Hive, to pick the authority. Those resolvers default to `null` (→ run
+ *     locally), so until wired the cutover is dormant. Here we wire them to the harness
+ *     registry via a sync-readable snapshot (the resolver signature is sync; the
+ *     registry read is async, so we keep a `Map` refreshed on a timer + at boot).
+ *
+ *  2. AUTHORITY side — when a REMOTE peer routes its acquire/release to THIS machine as
+ *     the elected authority, `registerFileLockAuthorityOps` runs the op against our local
+ *     su-lock store on the requester's behalf. `adaptSuLockStore` is that store adapter.
+ *
+ * N=1 invariant: on a single box there are no remote peers in `shared_presence`, so
+ * `routeFileLockOp`'s remote-peers-cache fast-path always resolves "no peers" → runs
+ * `op.local()` directly. The resolver values are irrelevant when there are no peers, so
+ * this whole module is a **dormant passthrough** at single-hive — it only engages once a
+ * second Swarm appears (the hardware-gated cross-machine path). The authority handlers
+ * registered here are likewise never invoked without an inbound peer RPC.
+ *
+ * Deliberately NOT covered (documented residual): the locks:acquire WAIT / wake_on_grant
+ * queue stays machine-local — cross-machine waiter-queue coherence is a further step. Only
+ * the fast-path acquire + release route to the authority (the per-edit hot path).
+ */
+
+import { realpathSync } from 'node:fs';
+
+import {
+  registerFileLockAuthorityOps,
+  type FileLockCoordinator,
+} from '../../authority/file-lock-authority-ops';
+import {
+  configureFileLockDomainResolver,
+  configureFileLockHiveResolver,
+} from '../../authority/file-lock-routing';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { inWorkspaceTxn } from './in-workspace-txn';
+import { tryAcquire, tryRelease, readQueue, getTxPool } from './su-lock-store';
+
+// ── Authority-side store adapter ────────────────────────────────────────────────
+/**
+ * Adapt the operator's PG-backed su-lock store to the `FileLockCoordinator` seam the
+ * authority op-handlers drive. Every method binds to the op's OWN `coordinationDomain`
+ * (threaded on the wire) so the authority serves the requester's physical repo, and wraps
+ * the store call in `inWorkspaceTxn` exactly as the live locks:* tools do.
+ */
+export function adaptSuLockStore(): FileLockCoordinator {
+  return {
+    async acquire(p) {
+      const r = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain: p.coordinationDomain,
+          owner: p.owner,
+          ownerLabel: p.ownerLabel ?? null,
+          paths: p.paths,
+          intent: p.intent,
+          ttlSec: p.ttlSec,
+        }),
+      );
+      if (r.ok) {
+        return { ok: true, lockId: r.lock_id, expiresTs: r.expires_ts.toISOString() };
+      }
+      return { ok: false, busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })) };
+    },
+
+    async release(p) {
+      const r = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) =>
+        tryRelease(tx, {
+          coordinationDomain: p.coordinationDomain,
+          owner: p.owner,
+          lockId: p.lockId,
+          paths: p.paths,
+          allMine: p.allMine,
+        }),
+      );
+      return { ok: true, released: r.released };
+    },
+
+    async queue(p) {
+      const sql = getTxPool();
+      return readQueue(sql, { coordinationDomain: p.coordinationDomain, paths: p.paths ?? [] });
+    },
+  };
+}
+
+// ── Requesting-side resolver snapshot ───────────────────────────────────────────
+// The resolvers are synchronous; the registry read is async. Keep a `Map` snapshot
+// refreshed at boot + on a timer. A miss → null → the op runs locally (safe default).
+let _domainToSlug = new Map<string, string>();
+let _slugToHive = new Map<string, string>();
+
+/** Resolve a repo realpath → its registry slug (best-effort; realpath both sides). */
+function realpathOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p; // path gone / not yet present — fall back to the raw string
+  }
+}
+
+async function refreshResolverSnapshot(): Promise<void> {
+  const reg = await loadHarnessRegistry(activeWorkspaceId());
+  const d2s = new Map<string, string>();
+  const s2h = new Map<string, string>();
+  for (const proj of reg.projects) {
+    if (proj.path) d2s.set(realpathOrSelf(proj.path), proj.slug);
+    // The home Hive for this harness (mirrors hiveHomeSlugForHarness, sync from the
+    // registry row): a kind:'hive' harness is its own home; a member points via hive_slug.
+    const hiveHome = proj.harness_kind === 'hive' ? proj.slug : (proj.hive_slug ?? null);
+    if (hiveHome) s2h.set(proj.slug, hiveHome);
+  }
+  _domainToSlug = d2s;
+  _slugToHive = s2h;
+}
+
+/** Refresh cadence for the resolver snapshot (ms). Membership/checkout changes are rare. */
+const RESOLVER_REFRESH_MS = 60_000;
+
+let _wired = false;
+
+/**
+ * Wire both halves at boot. Idempotent. Safe to call before PG is reachable — the first
+ * snapshot refresh is best-effort (a failure leaves the empty maps → everything resolves
+ * local, the correct pre-cutover behavior — and the next tick retries).
+ */
+export function wireFileLockAuthority(): void {
+  if (_wired) return;
+  _wired = true;
+
+  configureFileLockDomainResolver((domain) => _domainToSlug.get(realpathOrSelf(domain)) ?? null);
+  configureFileLockHiveResolver((slug) => _slugToHive.get(slug) ?? null);
+  registerFileLockAuthorityOps(adaptSuLockStore());
+
+  void refreshResolverSnapshot().catch(() => {
+    /* best-effort: empty maps → resolve local; the timer retries */
+  });
+  const timer = setInterval(() => {
+    void refreshResolverSnapshot().catch(() => undefined);
+  }, RESOLVER_REFRESH_MS);
+  // Never keep the process alive on this timer alone.
+  if (typeof (timer as { unref?: () => void }).unref === 'function') {
+    (timer as { unref: () => void }).unref();
+  }
+}
+
+/** Test seam: force a synchronous snapshot refresh (awaitable) + read the maps. */
+export const _testing = {
+  refreshResolverSnapshot,
+  domainToSlug: () => _domainToSlug,
+  slugToHive: () => _slugToHive,
+  reset: () => {
+    _domainToSlug = new Map();
+    _slugToHive = new Map();
+    _wired = false;
+  },
+};
+
+// Boot side-effect — mirror locks/configure.ts. Importing this module wires the cutover.
+wireFileLockAuthority();

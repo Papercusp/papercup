@@ -14,6 +14,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
 import { broadcastResourceBackUp } from './resource-broadcast';
+import { routeFileLockOp } from '../../authority/file-lock-routing';
+import { FILE_LOCK_OP_KINDS, type FileLockReleaseParams } from '../../authority/file-lock-authority-ops';
 
 const SU_ROLES = [
   'scoper',
@@ -61,15 +63,44 @@ export default defineTool({
       };
     }
 
-    const result = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-      tryRelease(tx, {
+    // fed-reanchor-2026-06-06 P-060 (cutover 2): release through the SAME file-lock
+    // authority the matching acquire routed to, so a lock taken on a remote authority's
+    // store is actually freed there (else it lingers to TTL). N=1 → op.local() passthrough
+    // (no peers); a routing fault degrades to the raw local release.
+    const localRelease = (): Promise<Awaited<ReturnType<typeof tryRelease>>> =>
+      inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+        tryRelease(tx, {
+          coordinationDomain,
+          owner: ownerId,
+          lockId: args.lock_id,
+          paths: args.paths,
+          allMine: args.all_mine,
+        }),
+      );
+
+    let result: Awaited<ReturnType<typeof tryRelease>>;
+    try {
+      const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
         coordinationDomain,
-        owner: ownerId,
-        lockId: args.lock_id,
-        paths: args.paths,
-        allMine: args.all_mine,
-      }),
-    );
+        {
+          local: localRelease,
+          remote: {
+            kind: FILE_LOCK_OP_KINDS.release,
+            payload: {
+              owner: ownerId,
+              lockId: args.lock_id,
+              paths: args.paths,
+              allMine: args.all_mine,
+              coordinationDomain,
+            } satisfies FileLockReleaseParams,
+            decode: (raw) => ({ released: (raw as { released?: string[] }).released ?? [] }),
+          },
+        },
+      );
+      result = routed.value;
+    } catch {
+      result = await localRelease();
+    }
 
     // Session-end (all_mine) also clears this owner's NAMED-resource locks
     // (P-019) — file locks and resource locks live in separate tables, so one

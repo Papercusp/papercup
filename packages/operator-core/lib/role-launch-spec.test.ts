@@ -91,6 +91,16 @@ describe('buildRoleLaunchSpec', () => {
     const mcp = JSON.parse(spec.mcpJsonContents);
     expect(mcp.mcpServers.papercusp.url).toBe(spec.mcpUrl);
     expect(mcp.mcpServers.papercusp.type).toBe('http');
+
+    // Launch invariants the primitive now produces (unify-launch-mechanics P-002).
+    expect(spec.sid).toMatch(/^role-/);
+    expect(spec.nativeSessionId).toBeTruthy();
+    expect(spec.nativeSessionId).not.toBe(spec.sid);
+    // EI-4: the MCP url's client= IS the minted sid (URL owner === PAPERCUSP_SID).
+    expect(u.searchParams.get('client')).toBe(spec.sid);
+    // Per-session dirs are keyed by the sid so launch + the resume leg agree.
+    expect(spec.claudeConfigDir).toContain(spec.sid);
+    expect(spec.sessionMcpDir).toContain(spec.sid);
   });
 
   it('omits the feature param for a no-feature role', async () => {

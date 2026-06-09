@@ -34,16 +34,28 @@ export interface FileLockAcquireParams {
   ttlSec: number;
   /** Optional bounded wait, mirroring locks:acquire. */
   waitMaxSec?: number;
+  /**
+   * The requester's coordination domain (repo realpath). Threaded on the wire so the
+   * AUTHORITY runs the op against the lock store for the SAME physical repo — the lock
+   * namespace is a property of the file on disk, and the authority + requester edit the
+   * same shared checkout (different machines, same realpath). Required on the remote leg;
+   * the authority builds its store binding from it.
+   */
+  coordinationDomain: string;
 }
 export interface FileLockReleaseParams {
   owner: string;
   lockId?: string;
   paths?: string[];
   allMine?: boolean;
+  /** See FileLockAcquireParams.coordinationDomain. */
+  coordinationDomain: string;
 }
 export interface FileLockQueueParams {
   owner: string;
   paths?: string[];
+  /** See FileLockAcquireParams.coordinationDomain. */
+  coordinationDomain: string;
 }
 
 export interface FileLockAcquireResult {
@@ -58,7 +70,9 @@ export interface FileLockAcquireResult {
  *  the real su-lock-store to this at boot; tests inject a fake. */
 export interface FileLockCoordinator {
   acquire(p: FileLockAcquireParams): Promise<FileLockAcquireResult>;
-  release(p: FileLockReleaseParams): Promise<{ ok: boolean; released?: number }>;
+  /** `released` is the list of paths actually released — carried (not a count) so the
+   *  requester's routed-release response matches the local-release shape exactly. */
+  release(p: FileLockReleaseParams): Promise<{ ok: boolean; released?: string[] }>;
   queue(p: FileLockQueueParams): Promise<unknown>;
 }
 
@@ -77,8 +91,14 @@ export const FILE_LOCK_OP_KINDS = {
 export function registerFileLockAuthorityOps(coordinator: FileLockCoordinator): void {
   registerAuthorityOp(FILE_LOCK_OP_KINDS.acquire, async (payload) => {
     const p = payload as Partial<FileLockAcquireParams>;
-    if (!p || typeof p.owner !== 'string' || !Array.isArray(p.paths) || typeof p.intent !== 'string') {
-      throw new Error('lock.acquire: invalid payload (owner, paths[], intent required)');
+    if (
+      !p ||
+      typeof p.owner !== 'string' ||
+      !Array.isArray(p.paths) ||
+      typeof p.intent !== 'string' ||
+      typeof p.coordinationDomain !== 'string'
+    ) {
+      throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
     }
     return coordinator.acquire({
       owner: p.owner,
@@ -87,22 +107,29 @@ export function registerFileLockAuthorityOps(coordinator: FileLockCoordinator): 
       intent: p.intent,
       ttlSec: typeof p.ttlSec === 'number' ? p.ttlSec : 1200,
       waitMaxSec: p.waitMaxSec,
+      coordinationDomain: p.coordinationDomain,
     });
   });
 
   registerAuthorityOp(FILE_LOCK_OP_KINDS.release, async (payload) => {
     const p = payload as Partial<FileLockReleaseParams>;
-    if (!p || typeof p.owner !== 'string') {
-      throw new Error('lock.release: invalid payload (owner required)');
+    if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
+      throw new Error('lock.release: invalid payload (owner, coordinationDomain required)');
     }
-    return coordinator.release({ owner: p.owner, lockId: p.lockId, paths: p.paths, allMine: p.allMine });
+    return coordinator.release({
+      owner: p.owner,
+      lockId: p.lockId,
+      paths: p.paths,
+      allMine: p.allMine,
+      coordinationDomain: p.coordinationDomain,
+    });
   });
 
   registerAuthorityOp(FILE_LOCK_OP_KINDS.queue, async (payload) => {
     const p = payload as Partial<FileLockQueueParams>;
-    if (!p || typeof p.owner !== 'string') {
-      throw new Error('lock.queue: invalid payload (owner required)');
+    if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
+      throw new Error('lock.queue: invalid payload (owner, coordinationDomain required)');
     }
-    return coordinator.queue({ owner: p.owner, paths: p.paths });
+    return coordinator.queue({ owner: p.owner, paths: p.paths, coordinationDomain: p.coordinationDomain });
   });
 }

@@ -49,6 +49,10 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     }
   });
 
+  it('the work-queue issue/task family (engineer_issues) federates over the peer-log (fed-reanchor B5)', () => {
+    expect(resolveTableSpec('engineer_issues')).toMatchObject({ key: 'workspace-owned', sync: 'peer-log' });
+  });
+
   it('SECURITY tables never sync and win over the operator_ prefix', () => {
     for (const t of ['operator_credentials', 'oauth_nonces', 'system_principals', 'mobile_pair_tokens']) {
       const s = resolveTableSpec(t);

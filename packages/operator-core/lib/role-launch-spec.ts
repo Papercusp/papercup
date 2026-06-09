@@ -187,6 +187,12 @@ export async function buildRoleLaunchSpec(
   params.set('role', input.role);
   params.set('run', runId);
   params.set('spawn', spawnId);
+  // EI-4 fix: bind the session's coord identity to the MCP URL as the stable
+  // `client=` param, so the URL owner === PAPERCUSP_SID === the lock-hook owner
+  // === the codex-home baked client. Without it a role session's MCP-call owner
+  // (signed-spawn-derived) and its lock-hook owner (role-<uuid>) diverged — the
+  // self-deadlock class the SU path already eliminated (P-022).
+  params.set('client', sid);
   if (featureId) params.set('feature', featureId);
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
   const base = input.operatorBaseUrl.replace(/\/$/, '');
@@ -208,6 +214,10 @@ export async function buildRoleLaunchSpec(
     promptFile: assembled.meta.promptFile,
     mcpUrl,
     mcpJsonContents,
+    sid,
+    nativeSessionId,
+    claudeConfigDir: sessionClaudeConfigDir(sid),
+    sessionMcpDir: sessionMcpDir(sid),
   };
 }
 

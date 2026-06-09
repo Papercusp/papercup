@@ -54,12 +54,17 @@ async function installFakeHooks() {
 }
 
 describe('writeRoleCodexHome', () => {
-  it('writes AGENTS.md (role prompt) + config.toml (role-scoped url) under ~/.papercusp', async () => {
+  it('writes AGENTS.md (role prompt) + config.toml (role-scoped url) under the SHARED codex-homes root', async () => {
     const writeRoleCodexHome = await load();
     const url = 'http://127.0.0.1:3070/api/mcp?harness=h&workspace=w&role=worker&run=r&spawn=s&exp=1&sig=abc';
     const out = writeRoleCodexHome({ sessionKey: 42, mcpUrl: url, promptText: 'WORKER ROLE PROMPT BODY' });
 
-    expect(out.codexHome).toBe(join(fakeHome, '.papercusp', 'role-codex-homes', 'session-42'));
+    // unify-launch-mechanics P-004: role AND su codex homes now share ONE root
+    // (`codexHomeForSessionKey` → su-codex-homes), the SAME root the wake-executor
+    // resume leg reads (`codexHomeForAdvSession`). Previously the role path wrote to
+    // a separate `role-codex-homes/` the resume leg never looked in, so a woken
+    // codex role session resumed from nothing (a launch↔resume key drift).
+    expect(out.codexHome).toBe(join(fakeHome, '.papercusp', 'su-codex-homes', 'session-42'));
     expect(out.agentsPath).toBe(join(out.codexHome, 'AGENTS.md'));
     expect(out.configPath).toBe(join(out.codexHome, 'config.toml'));
 

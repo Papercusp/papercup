@@ -49,6 +49,12 @@ import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { routeFileLockOp } from '../../authority/file-lock-routing';
+import {
+  FILE_LOCK_OP_KINDS,
+  type FileLockAcquireParams,
+  type FileLockAcquireResult,
+} from '../../authority/file-lock-authority-ops';
 
 const DEFAULT_TTL_SEC = 1200;
 const MAX_TTL_SEC = 3600;
@@ -196,9 +202,16 @@ export default defineTool({
     const startedAt = Date.now();
 
     // ── Fast path: try once, no wait ─────────────────────────────────
-    let first: Awaited<ReturnType<typeof tryAcquire>>;
-    try {
-      first = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+    // fed-reanchor-2026-06-06 P-060 (cutover 2): route the acquire DECISION through the
+    // file-lock authority. On a single box (no remote peers) routeFileLockOp's cached
+    // fast-path runs `op.local()` directly — byte-identical to the pre-cutover path.
+    // Cross-machine, the elected Hive authority serializes the acquire (one winner across
+    // Swarms editing the same physical repo). DEFENSIVE: any fault in the routing layer
+    // degrades to the raw local acquire, so the worst case on the fleet's hot per-edit
+    // path is exactly today's behavior. The WAIT / wake_on_grant queue below stays local
+    // (cross-machine waiter coherence is a documented further step).
+    const localAcquire = (): Promise<Awaited<ReturnType<typeof tryAcquire>>> =>
+      inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
         tryAcquire(tx, {
           coordinationDomain,
           owner: ownerId,
@@ -208,12 +221,41 @@ export default defineTool({
           ttlSec,
         }),
       );
+
+    let first: Awaited<ReturnType<typeof tryAcquire>>;
+    try {
+      const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>>>(
+        coordinationDomain,
+        {
+          local: localAcquire,
+          remote: {
+            kind: FILE_LOCK_OP_KINDS.acquire,
+            payload: {
+              owner: ownerId,
+              ownerLabel,
+              paths,
+              intent: args.intent,
+              ttlSec,
+              coordinationDomain,
+            } satisfies FileLockAcquireParams,
+            decode: (raw) => decodeRemoteAcquire(raw, paths, ttlSec),
+          },
+        },
+      );
+      first = routed.value;
     } catch (err) {
       // Same-workspace contention timed out the advisory lock (P-015): surface a
       // structured busy result rather than leaking a raw PG error to the agent.
       // The holder isn't enumerable here (we never got the lock), so busy is empty.
       if (err instanceof WorkspaceContendedError) return await busy([]);
-      throw err;
+      // Defensive fallback: a fault in the authority-routing layer must never break the
+      // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior).
+      try {
+        first = await localAcquire();
+      } catch (err2) {
+        if (err2 instanceof WorkspaceContendedError) return await busy([]);
+        throw err2;
+      }
     }
 
     if (first.ok) {
@@ -591,5 +633,38 @@ async function tooManyWorkspaces(busyRows: AcquireBusy[]) {
         }),
       },
     ],
+  };
+}
+
+/**
+ * Map a remote-authority `FileLockAcquireResult` back to the local `tryAcquire` result
+ * shape. Only runs on the cross-machine path (a remote Swarm is the authority) — never at
+ * N=1, where routeFileLockOp short-circuits to `op.local()`. Busy rows cross the wire as
+ * path+owner only; the caller's `enrichBusy` re-hydrates owner_label/intent from presence.
+ */
+function decodeRemoteAcquire(
+  raw: unknown,
+  paths: string[],
+  ttlSec: number,
+): Awaited<ReturnType<typeof tryAcquire>> {
+  const r = raw as FileLockAcquireResult;
+  if (r.ok) {
+    return {
+      ok: true,
+      lock_id: r.lockId ?? '',
+      expires_ts: r.expiresTs ? new Date(r.expiresTs) : new Date(Date.now() + ttlSec * 1000),
+      held: paths,
+    };
+  }
+  const fallbackExpiry = new Date(Date.now() + ttlSec * 1000);
+  return {
+    ok: false,
+    busy: (r.busy ?? []).map((b) => ({
+      path: b.path,
+      owner: b.owner,
+      owner_label: null,
+      intent: '',
+      expires_ts: fallbackExpiry,
+    })),
   };
 }

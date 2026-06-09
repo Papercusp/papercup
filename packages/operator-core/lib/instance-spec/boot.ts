@@ -74,7 +74,10 @@ export async function bootInstanceSpec(spec: InstanceSpec, target: BootTarget): 
     ...(target.autoInstallDeps != null ? { autoInstallDeps: target.autoInstallDeps } : {}),
   };
 
-  const res = await createHarnessTool.handler(createArgs as never);
+  // The create handler ignores its ctx (it acts on args only); call it with the
+  // args alone via a loose cast (the role-gated signature declares ctx required).
+  const runCreate = createHarnessTool.handler as (a: unknown, c?: unknown) => Promise<unknown>;
+  const res = await runCreate(createArgs);
   const text = (res as { content?: { text?: string }[] })?.content?.[0]?.text ?? '{}';
   let parsed: Record<string, unknown>;
   try {

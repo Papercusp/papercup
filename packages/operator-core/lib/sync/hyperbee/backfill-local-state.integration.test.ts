@@ -88,6 +88,19 @@ async function seedHiveMember(
        ${`u${githubUserId}`}, ${opts.origin ?? 'local'})`;
 }
 
+async function seedEngineerIssue(
+  sql: postgres.Sql,
+  id: string,
+  opts: { scope?: string; origin?: string; workspace_id?: string } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.engineer_issues
+      (workspace_id, issue_id, scope, title, origin)
+    VALUES
+      (${opts.workspace_id ?? WS}, ${id}, ${opts.scope ?? `harness:${SLUG}`},
+       ${`EI ${id}`}, ${opts.origin ?? 'local'})`;
+}
+
 async function outboxRows(sql: postgres.Sql) {
   return sql<{
     table_name: string;
@@ -172,6 +185,23 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         origin         TEXT   NOT NULL DEFAULT 'local',
         PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
       );
+      -- fed-reanchor B5 added engineer_issues to the backfill (a dedicated block,
+      -- the federation slug derived from the scope column; operator scope resolves
+      -- via hives). The fixture must create both or the backfill count/resolve queries
+      -- hit a missing relation. Subset of the real columns the SELECT / to_jsonb touch.
+      CREATE TABLE harness_shared.engineer_issues (
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        issue_id     TEXT NOT NULL,
+        scope        TEXT NOT NULL DEFAULT 'operator',
+        title        TEXT NOT NULL DEFAULT '',
+        origin       TEXT NOT NULL DEFAULT 'local',
+        PRIMARY KEY (workspace_id, issue_id)
+      );
+      CREATE TABLE harness_shared.hives (
+        workspace_id TEXT NOT NULL,
+        home_slug    TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, home_slug)
+      );
       CREATE TABLE harness_shared.substrate_outbox (
         id           BIGSERIAL PRIMARY KEY,
         workspace_id TEXT   NOT NULL,
@@ -203,6 +233,8 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     await db.sql`TRUNCATE harness_shared.harness_plans`;
     await db.sql`TRUNCATE harness_shared.hive_settings`;
     await db.sql`TRUNCATE harness_shared.hive_members`;
+    await db.sql`TRUNCATE harness_shared.engineer_issues`;
+    await db.sql`TRUNCATE harness_shared.hives`;
     await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
     await db.sql`TRUNCATE harness_shared.substrate_meta`;
   });
@@ -331,6 +363,42 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     // Second call skipped.
     const second = await backfillLocalState(fakeHandle(), db.sql);
     expect(second.skipped).toBe(true);
+  });
+
+  it('backfills local engineer_issues — harness-scoped always, operator-scope iff this harness is the single Hive home (B5)', async () => {
+    // Harness-scoped local rows for THIS harness → enqueued (scope derived to SLUG).
+    await seedEngineerIssue(db.sql, 'EI-1', { scope: `harness:${SLUG}` });
+    await seedEngineerIssue(db.sql, 'EI-2', { scope: `harness:${SLUG}` });
+    // remote → echo-loop guard; other harness → not ours; operator (no hive yet) → local.
+    await seedEngineerIssue(db.sql, 'EI-R', { scope: `harness:${SLUG}`, origin: 'remote' });
+    await seedEngineerIssue(db.sql, 'EI-O', { scope: 'harness:other' });
+    await seedEngineerIssue(db.sql, 'EI-OP', { scope: 'operator' });
+
+    // With NO Hive home, operator-scope stays local: only the 2 harness-scoped rows.
+    const res1 = await backfillLocalState(fakeHandle(), db.sql);
+    expect(res1.skipped).toBe(false);
+    const eiRows1 = (await outboxRows(db.sql)).filter((r) => r.table_name === 'engineer_issues');
+    expect(eiRows1.map((r) => r.key).sort()).toEqual(['EI-1', 'EI-2']);
+    for (const r of eiRows1) {
+      expect(r.harness_slug).toBe(SLUG);
+      expect(r.row?.harness_slug).toBe(SLUG); // stamped for the projection demux
+    }
+
+    // Now make THIS harness the workspace's single Hive home + clear the marker so a
+    // re-backfill picks up the operator-scope row too.
+    await db.sql`INSERT INTO harness_shared.hives (workspace_id, home_slug) VALUES (${WS}, ${SLUG})`;
+    await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
+    await db.sql`DELETE FROM harness_shared.substrate_meta WHERE key = 'backfill_done'`;
+
+    const res2 = await backfillLocalState(fakeHandle(), db.sql);
+    expect(res2.skipped).toBe(false);
+    const eiRows2 = (await outboxRows(db.sql)).filter((r) => r.table_name === 'engineer_issues');
+    // The operator-scope row now rides the Hive home too.
+    expect(eiRows2.map((r) => r.key).sort()).toEqual(['EI-1', 'EI-2', 'EI-OP']);
+    const op = eiRows2.find((r) => r.key === 'EI-OP');
+    expect(op?.harness_slug).toBe(SLUG);
+    expect(op?.row?.harness_slug).toBe(SLUG);
+    expect(op?.row?.scope).toBe('operator'); // the row keeps operator scope
   });
 
   it('backfills local hive_members scoped by hive_home_slug (P-006 multi-Swarm admission)', async () => {

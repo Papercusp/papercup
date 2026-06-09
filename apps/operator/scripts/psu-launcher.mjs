@@ -126,7 +126,7 @@ export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
  * approvals/sandbox bypass MCP tool calls need (mirrors the codex-su
  * wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath }) {
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId } = {}) {
   if (backend === 'claude') {
     return {
       bin: 'claude',
@@ -135,6 +135,10 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath 
         '--append-system-prompt-file', promptFile,
         '--mcp-config', mcpJsonPath,
         '--strict-mcp-config',
+        // Force the spec-minted session id (mirrors suLaunchArgs) so `psu --resume`
+        // and wake-executor resume the EXACT conversation, not `--continue`'s
+        // most-recent-in-cwd (a random peer on the shared tree). claude-only.
+        ...(nativeSessionId ? ['--session-id', nativeSessionId] : []),
         '--permission-mode', 'bypassPermissions',
       ],
     };
@@ -909,6 +913,11 @@ async function roleFlow(args, role, rolesMeta) {
     promptFile: res.promptFile,
     mcpJsonPath: res.mcpJsonPath,
     coordExtPath: roleCoordExtPath,
+    // Force the native session id the spec minted (claude only) so the session's
+    // conversation id is known up-front and wake-executor can `--resume <uuid>`
+    // EXACTLY it — never `--continue`'s most-recent-in-cwd peer on the shared
+    // tree (unify-launch-mechanics P-003 invariant d).
+    nativeSessionId: res.envelopeEnv?.PAPERCUSP_NATIVE_SESSION_ID || null,
   });
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +

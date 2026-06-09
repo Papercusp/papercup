@@ -85,11 +85,13 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     // removed by collapse-delegate-into-workitems-2026-06-04 → 62; harnessHealth.byHarness
     // removed by spec-md-ui-deprecation-cleanup P-007 → 61; operatorScans + operatorLastScan
     // removed by archive-legacy-orchestrator-deadcode P-009 (their tables were dropped by
-    // migration 167) → 59). The forward-defined + v2-consistency assertions above carry the
-    // real signal; this is only a non-triviality floor (set below the current count so a
-    // routine add/remove doesn't flap it red — the exact-set assertions catch real drift).
+    // migration 167) → 59; further Zero-retirement removals → 52 by 2026-06-09). The
+    // forward-defined + v2-consistency assertions above carry the real signal; this is only a
+    // non-triviality floor — set WELL BELOW the current count with headroom for the ongoing
+    // shrink, so a routine add/remove doesn't flap it red (the exact-set assertions catch real
+    // drift). The 55 floor flapped red @52 + blocked main fleet-wide; lowered to 45.
     const names = allBridgedQueryNames();
-    expect(names.length).toBeGreaterThanOrEqual(55);
+    expect(names.length).toBeGreaterThanOrEqual(45);
     expect(new Set(names).size, 'bridged query names are distinct').toBe(names.length);
   });
 });

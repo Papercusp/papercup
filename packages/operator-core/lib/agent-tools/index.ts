@@ -342,6 +342,10 @@ import './work_items/set_priority';
 // Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
 // decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
 import './work_items/register-claim-authority-ops';
+// Wire the FILE-LOCK authority (fed-reanchor P-060 cutover 2): the domain→harness→Hive
+// resolvers + the authority-side store adapter, so locks:acquire/release serialize at the
+// Hive authority cross-machine. Side-effecting; dormant passthrough at single-hive (N=1).
+import './locks/file-lock-authority-wiring';
 // BOINC-style redundancy for HIGH-STAKES items (decentralized-dispatch-scaling P-014):
 // run one item independently on N Swarms then judge + adopt the best (reuse gym:judge).
 // Opt-in, off by default (PAPERCUSP_WORKITEM_REDUNDANCY + the per-item redundancy column).
