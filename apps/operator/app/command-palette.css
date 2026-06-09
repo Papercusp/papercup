@@ -41,8 +41,8 @@
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  background: radial-gradient(circle at 50% 8%, color-mix(in oklab, var(--accent), transparent 80%), transparent 28rem), color-mix(in srgb, var(--bg-deepest), transparent 28%);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--bg-deepest, #02060c), transparent 16%);
+  backdrop-filter: none;
 }
 
 .h-cmd {
@@ -62,10 +62,10 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border: 1px solid color-mix(in oklab, var(--border), white 12%);
+  border: 1px solid var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
   border-radius: 18px;
-  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 7%), color-mix(in oklab, var(--bg-2), black 3%));
-  box-shadow: 0 34px 90px rgba(0,0,0,0.58), inset 0 1px 0 rgba(255,255,255,0.045);
+  background: var(--bg-popover, #0d1829);
+  box-shadow: 0 34px 90px rgba(0,0,0,0.68);
 }
 
 .h-cmd-inputbar {
@@ -73,7 +73,8 @@
   align-items: center;
   gap: 10px;
   padding: 14px 16px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 10%);
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-raised, #112235);
 }
 
 .h-cmd-key,
@@ -82,7 +83,7 @@
   flex-shrink: 0;
   border: 1px solid color-mix(in oklab, var(--border), white 9%);
   border-radius: 999px;
-  background: color-mix(in oklab, var(--bg-3), transparent 10%);
+  background: var(--bg-3, rgba(255, 255, 255, 0.075));
   color: color-mix(in oklab, var(--fg-dim), white 14%);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
@@ -133,7 +134,8 @@
   justify-content: space-between;
   gap: 12px;
   padding: 8px 16px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 38%);
+  border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-1, #0b1220);
   color: var(--fg-dim);
   font-size: 11px;
 }
@@ -150,6 +152,7 @@
   min-height: 0;
   overflow: auto;
   padding: 8px;
+  background: var(--bg-popover, #0d1829);
 }
 
 .h-cmd-section {
@@ -181,8 +184,7 @@
 .h-cmd-row:hover,
 .h-cmd-row.selected {
   border-color: color-mix(in oklab, var(--accent), transparent 58%);
-  background: linear-gradient(90deg, color-mix(in oklab, var(--accent), transparent 88%), color-mix(in oklab, var(--bg-3), transparent 22%));
-  transform: translateY(-1px);
+  background: color-mix(in oklab, var(--accent), transparent 84%);
 }
 
 .h-cmd-icon {
@@ -240,7 +242,8 @@
   align-items: center;
   gap: 16px;
   padding: 10px 16px;
-  border-top: 1px solid color-mix(in oklab, var(--border), transparent 20%);
+  border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+  background: var(--bg-1, #0b1220);
   color: var(--fg-dim);
   font-size: 11px;
 }
@@ -268,7 +271,8 @@
 
 /* ── cmdk → existing .h-cmd-* mappings ──────────────────────────────────── */
 .h-cmd-row[data-selected="true"] {
-  background: var(--bg-3);
+  border-color: color-mix(in oklab, var(--accent), transparent 52%);
+  background: color-mix(in oklab, var(--accent), transparent 84%);
   color: var(--fg);
 }
 
