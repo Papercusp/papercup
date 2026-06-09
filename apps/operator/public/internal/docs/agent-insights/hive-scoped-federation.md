@@ -109,13 +109,19 @@ elected** — it's a deterministic function of live presence:
   **remote-peers-cache** fast-path makes the common single-box case a cached
   boolean, not a `shared_presence` query.
 
-`routeFileLockOp` is the **ready, tested** wrapper, but the `locks:acquire`
-handler is **NOT yet changed to call it**. The lock hook fires on *every* edit;
-on the single shared-PG dev box the authority is always self, so wrapping the hot
-path adds a presence query per edit for **zero functional change** — a regression
-risk on the fleet's most safety-critical path. The cutover lights up when machines
-run **separate embedded-pg** and remote Swarms appear in `shared_presence`. Don't
-flip it casually — it's a documented, intentional deferral, not an oversight.
+`locks:acquire` **and** `locks:release` now route their fast path through
+`routeFileLockOp` (`agent-tools/locks/{acquire,release}.ts`). The boot binding —
+the domain→harness→Hive resolvers (off the harness registry, sync snapshot) + the
+authority-side store adapter (`adaptSuLockStore`) — is wired in
+`agent-tools/locks/file-lock-authority-wiring.ts`; the authority op carries its
+`coordinationDomain` on the wire so the elected authority serves the requester's
+physical repo. **N=1 is a guaranteed passthrough**: with no remote peers the
+remote-peers-cache short-circuits to `op.local()` (and an unmanaged domain resolves
+to `null` → local), so the per-edit hot path is byte-identical to before; a fault in
+the routing layer falls back to the raw local acquire (defensive). What is NOT yet
+cross-machine-coherent (documented residual): the `wait` / `wake_on_grant` waiter
+queue stays machine-local, and the genuine multi-machine serialization proof remains
+the owner-gated 2-machine (Hetzner) run — single-box can only prove the passthrough.
 
 ## Why a no-op today, load-bearing tomorrow
 
@@ -231,12 +237,21 @@ harnessSlug"). The harness path and its Hive twin coexist:
 | `hardened-authority.ts`    | `resolveHardenedAuthority(harnessSlug)` :83, fetch/load/save :52-55                             | generic — reused for hive                                                                                                                        |
 | `peer-rpc-transport.ts`    | `PeerRpcRequest.harnessSlug` :28; `http-peer-rpc-transport.ts` serializes `{harnessSlug,…}` :91 | wire field carries the scope key                                                                                                                 |
 
-**Two live cutovers remain READY-but-deferred** (both single-box-correct as `Local`/self
-today): the work-item-claim swarm router is gated behind `PAPERCUSP_WORKITEM_CLAIM_LEASE=1`
-(`agent-tools/work_items/register-claim-authority-ops.ts:27`, default
-`LocalWorkItemClaimAuthority`), and `routeFileLockOp` is not yet wired into the live
-`locks:acquire` hot path (see the caution above). Legacy plan-item claims still append
-LWW-advisory to the own log (`orchestrator/distributed-claim.ts`).
+**Both Track-B cutovers are now LANDED** (fed-reanchor P-060, 2026-06-08 — both single-box
+no-ops by construction; cross-Swarm proof stays the owner-gated 2-machine run):
+
+* **File-lock authority** — `locks:acquire` + `locks:release` route through `routeFileLockOp`
+  (boot binding in `agent-tools/locks/file-lock-authority-wiring.ts`; the authority op carries
+  its `coordinationDomain`). N=1 passthrough + defensive fallback. See the note above.
+* **Work-item-claim lease** — the swarm router + `claim_next`/executor lease paths are fully
+  wired (`register-claim-authority-ops.ts:27` installs `SwarmWorkItemClaimAuthority`); the
+  owner ratified the switch by setting `PAPERCUSP_WORKITEM_CLAIM_LEASE=1` in the operator env
+  (effective next restart). The CODE default stays off — that's the ratification-switch test's
+  invariant + decentralized-dispatch-scaling's deterministic-test contract; env is the documented
+  flip. On a single box it's a local lease (authority = self).
+
+Legacy plan-item claims still append LWW-advisory to the own log
+(`orchestrator/distributed-claim.ts`) — distinct seam, unchanged.
 
 ## Key files
 

@@ -13,7 +13,6 @@
     "libs/papercup-db",
     "libs/papercup-shared",
     "libs/papercusp-publish-auth",
-    "libs/papercusp-export-state",
     "libs/zero-harness",
     "libs/generic/sync",
     "libs/generic/result-encoding",

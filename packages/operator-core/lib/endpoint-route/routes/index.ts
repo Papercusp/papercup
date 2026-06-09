@@ -26,14 +26,6 @@ import flagsSet from './flags/set';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
-import snapshotsList from './snapshots/index';
-import snapshotsCreate from './snapshots/create';
-import snapshotsById from './snapshots/by-id';
-import snapshotsShape from './snapshots/shape';
-import snapshotsPublish from './snapshots/publish';
-import snapshotsRetract from './snapshots/retract';
-import snapshotsInstantiate from './snapshots/instantiate';
-import snapshotsForkFromCupboard from './snapshots/fork-from-cupboard';
 import operatorBudgetTiers from './operator/budget-tiers';
 import operatorStateSnapshot from './operator/state-snapshot';
 import operatorSettingsByKey from './operator/settings-by-key';
@@ -472,14 +464,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
-  ...flatten(snapshotsList as AnyRoute),
-  ...flatten(snapshotsCreate as AnyRoute),
-  ...flatten(snapshotsById as AnyRoute[]),
-  ...flatten(snapshotsShape as AnyRoute),
-  ...flatten(snapshotsPublish as AnyRoute),
-  ...flatten(snapshotsRetract as AnyRoute),
-  ...flatten(snapshotsInstantiate as AnyRoute),
-  ...flatten(snapshotsForkFromCupboard as AnyRoute),
   ...flatten(operatorBudgetTiers as AnyRoute),
   ...flatten(operatorStateSnapshot as AnyRoute),
   ...flatten(operatorSettingsByKey as AnyRoute),

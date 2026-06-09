@@ -46,6 +46,10 @@ vi.mock('./papercusp-root', () => ({
 import { buildRoleLaunchSpec, buildLaunchSpec } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
+// The SHARED launch-mechanics keying helper — the SAME module invoke.ts
+// (orchestrator launch) + wake-executor (resume) import. Asserting the spec's
+// dirs equal these proves "one HOW" across launch paths (P-005). NOT mocked.
+import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -98,9 +102,12 @@ describe('buildRoleLaunchSpec', () => {
     expect(spec.nativeSessionId).not.toBe(spec.sid);
     // EI-4: the MCP url's client= IS the minted sid (URL owner === PAPERCUSP_SID).
     expect(u.searchParams.get('client')).toBe(spec.sid);
-    // Per-session dirs are keyed by the sid so launch + the resume leg agree.
-    expect(spec.claudeConfigDir).toContain(spec.sid);
-    expect(spec.sessionMcpDir).toContain(spec.sid);
+    // Per-session dirs are keyed by the sid via the SHARED helper — byte-for-byte
+    // the same path the orchestrator launch (invoke.ts) + the wake-executor resume
+    // leg compute for that owner. This is the P-005 "one HOW" guarantee: launch
+    // and resume can't drift because they call the same function.
+    expect(spec.claudeConfigDir).toBe(sessionClaudeConfigDir(spec.sid));
+    expect(spec.sessionMcpDir).toBe(sessionMcpDir(spec.sid));
   });
 
   it('omits the feature param for a no-feature role', async () => {

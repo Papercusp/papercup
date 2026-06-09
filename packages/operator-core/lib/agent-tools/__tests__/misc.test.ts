@@ -1,6 +1,5 @@
 /**
- * Misc tools — autoloop:status/control, snapshots:list/get,
- * wiki:backlinks, omp:config.
+ * Misc tools — autoloop:status/control, wiki:backlinks, omp:config.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +24,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('../../autoloop');
   vi.doUnmock('@papercusp/db-org');
-  vi.doUnmock('../../snapshot-discovery');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../wiki-backlinks');
   vi.doUnmock('../../omp-config');
@@ -139,50 +137,6 @@ describe('autoloop:control', () => {
     const { default: tool } = await import('../autoloop/control');
     expect(tool.agentRoles).toEqual(['operator']);
     expect(tool.requires?.[0]?.id).toBe('harness-slug');
-  });
-});
-
-describe('snapshots:list', () => {
-  it('returns listAllSnapshots output', async () => {
-    const snaps = [{ id: 'snap1', slug: 'sheets', version: '0.1.0' }];
-    vi.doMock('../../snapshot-discovery', () => ({
-      listAllSnapshots: vi.fn(async () => snaps),
-      findSnapshot: vi.fn(),
-    }));
-    // snapshots:* is flag-gated (cut for V1, default-off); enable it so the tool
-    // runs its real path instead of returning {ok:false, reason:'feature-disabled'}.
-    vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true }));
-    const { default: tool } = await import('../snapshots/list');
-    const result = await tool.handler({}, MAKE_CTX());
-    const payload = parsePayload(result as never);
-    expect(payload).toEqual({ snapshots: snaps });
-  });
-});
-
-describe('snapshots:get', () => {
-  it('returns found:true with snapshot when match', async () => {
-    const snap = { id: 'snap1', slug: 'sheets' };
-    vi.doMock('../../snapshot-discovery', () => ({
-      listAllSnapshots: vi.fn(),
-      findSnapshot: vi.fn(async () => snap),
-    }));
-    vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true }));
-    const { default: tool } = await import('../snapshots/get');
-    const result = await tool.handler({ id: 'snap1' }, MAKE_CTX());
-    const payload = parsePayload(result as never);
-    expect(payload).toEqual({ id: 'snap1', found: true, snapshot: snap });
-  });
-
-  it('returns found:false on null', async () => {
-    vi.doMock('../../snapshot-discovery', () => ({
-      listAllSnapshots: vi.fn(),
-      findSnapshot: vi.fn(async () => null),
-    }));
-    vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true }));
-    const { default: tool } = await import('../snapshots/get');
-    const result = await tool.handler({ id: 'missing' }, MAKE_CTX());
-    const payload = parsePayload(result as never);
-    expect(payload.found).toBe(false);
   });
 });
 

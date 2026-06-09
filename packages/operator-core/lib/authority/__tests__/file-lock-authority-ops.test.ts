@@ -16,7 +16,7 @@ afterEach(() => __resetAuthorityOpsForTests());
 function fakeCoordinator(over: Partial<FileLockCoordinator> = {}): FileLockCoordinator {
   return {
     acquire: vi.fn(async () => ({ ok: true, lockId: 'lk-1', expiresTs: '2026-06-05T00:00:00Z' })),
-    release: vi.fn(async () => ({ ok: true, released: 1 })),
+    release: vi.fn(async () => ({ ok: true, released: ['apps/x.ts'] })),
     queue: vi.fn(async () => ({ held: [], waiters: [] })),
     ...over,
   };
@@ -29,7 +29,7 @@ describe('registerFileLockAuthorityOps', () => {
     const res = await handleAuthorityRpc({
       harnessSlug: 'papercup',
       kind: FILE_LOCK_OP_KINDS.acquire,
-      payload: { owner: 'peer-A', paths: ['apps/x.ts'], intent: 'edit', ttlSec: 600 },
+      payload: { owner: 'peer-A', paths: ['apps/x.ts'], intent: 'edit', ttlSec: 600, coordinationDomain: '/repo' },
     });
     expect(res.ok).toBe(true);
     expect(res.result).toEqual({ ok: true, lockId: 'lk-1', expiresTs: '2026-06-05T00:00:00Z' });
@@ -40,23 +40,24 @@ describe('registerFileLockAuthorityOps', () => {
       intent: 'edit',
       ttlSec: 600,
       waitMaxSec: undefined,
+      coordinationDomain: '/repo',
     });
   });
 
   it('defaults ttlSec to 1200 when omitted', async () => {
     const coord = fakeCoordinator();
     registerFileLockAuthorityOps(coord);
-    await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.acquire', payload: { owner: 'A', paths: ['x'], intent: 'e' } });
+    await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.acquire', payload: { owner: 'A', paths: ['x'], intent: 'e', coordinationDomain: '/repo' } });
     expect((coord.acquire as ReturnType<typeof vi.fn>).mock.calls[0][0].ttlSec).toBe(1200);
   });
 
   it('lock.release + lock.queue dispatch to the coordinator', async () => {
     const coord = fakeCoordinator();
     registerFileLockAuthorityOps(coord);
-    const rel = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.release', payload: { owner: 'A', lockId: 'lk-1' } });
-    expect(rel.result).toEqual({ ok: true, released: 1 });
-    expect(coord.release).toHaveBeenCalledWith({ owner: 'A', lockId: 'lk-1', paths: undefined, allMine: undefined });
-    const q = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.queue', payload: { owner: 'A' } });
+    const rel = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.release', payload: { owner: 'A', lockId: 'lk-1', coordinationDomain: '/repo' } });
+    expect(rel.result).toEqual({ ok: true, released: ['apps/x.ts'] });
+    expect(coord.release).toHaveBeenCalledWith({ owner: 'A', lockId: 'lk-1', paths: undefined, allMine: undefined, coordinationDomain: '/repo' });
+    const q = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.queue', payload: { owner: 'A', coordinationDomain: '/repo' } });
     expect(q.ok).toBe(true);
     expect(coord.queue).toHaveBeenCalledOnce();
   });
@@ -64,7 +65,7 @@ describe('registerFileLockAuthorityOps', () => {
   it('returns a busy result (ok:false) faithfully — the authority denied the lock', async () => {
     const coord = fakeCoordinator({ acquire: vi.fn(async () => ({ ok: false, busy: [{ path: 'apps/x.ts', owner: 'peer-B' }] })) });
     registerFileLockAuthorityOps(coord);
-    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.acquire', payload: { owner: 'A', paths: ['apps/x.ts'], intent: 'e' } });
+    const res = await handleAuthorityRpc({ harnessSlug: 'h', kind: 'lock.acquire', payload: { owner: 'A', paths: ['apps/x.ts'], intent: 'e', coordinationDomain: '/repo' } });
     expect(res.ok).toBe(true); // the RPC itself succeeded
     expect(res.result).toEqual({ ok: false, busy: [{ path: 'apps/x.ts', owner: 'peer-B' }] });
   });

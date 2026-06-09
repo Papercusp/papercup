@@ -312,7 +312,7 @@ defineTestDomain({
         'packages/operator-core/lib/agent-tools/projects/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/roles/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/search/**/*.test.ts',
-        'packages/operator-core/lib/agent-tools/snapshots/**/*.test.ts',
+        'packages/operator-core/lib/agent-tools/instance/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/tasks/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/ui/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/wiki/**/*.test.ts',
@@ -489,16 +489,16 @@ defineTestDomain({
 });
 
 defineTestDomain({
-  id: 'snapshots',
-  label: 'Snapshots',
-  description: 'Snapshot shape, locks, fork, export-state, routes.',
+  id: 'instance-spec',
+  label: 'Instance spec',
+  description: 'The reproducible InstanceSpec: genome surface, capture/boot/vary, eval-battery subject.',
   tier: 'domain',
   sections: [
-    { id: 'shape', label: 'Shape', globs: ['packages/operator-core/lib/snapshot-shape*.test.ts'] },
-    { id: 'locks', label: 'Locks', globs: ['packages/operator-core/lib/snapshot-lock*.test.ts'] },
-    { id: 'fork', label: 'Fork', globs: ['packages/operator-core/lib/snapshot-fork*.test.ts'] },
-    { id: 'export-state', label: 'Export-state', globs: ['libs/papercusp-export-state/src/**/*.test.ts'] },
-    { id: 'routes', label: 'Routes', globs: ['packages/operator-core/lib/endpoint-route/__tests__/snapshot*.test.ts'] },
+    { id: 'genome', label: 'Genome', globs: ['packages/operator-core/lib/instance-spec/genome*.test.ts'] },
+    { id: 'vary', label: 'Vary', globs: ['packages/operator-core/lib/instance-spec/vary.test.ts'] },
+    { id: 'capture', label: 'Capture', globs: ['packages/operator-core/lib/instance-spec/capture.test.ts'] },
+    { id: 'subject', label: 'Subject', globs: ['packages/operator-core/lib/instance-spec/instance-subject.test.ts'] },
+    { id: 'roundtrip', label: 'Round-trip', globs: ['packages/operator-core/lib/instance-spec/roundtrip.test.ts'] },
   ],
 });
 
@@ -1184,7 +1184,7 @@ defineTestDomain({
 const PAPERCUSP_IDS = [
   'test-runs', 'vitals', 'chaos-desktop', 'ai-explore',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
-  'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
+  'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
   'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',

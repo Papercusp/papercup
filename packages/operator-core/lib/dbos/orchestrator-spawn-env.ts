@@ -14,6 +14,17 @@
  * The runner/finalizer already know the authoritative registry slug (it's how
  * `resolveProject` found the path), so we pass it explicitly as `HARNESS_SLUG` —
  * `harnessSlug()` prefers the env over basename, fixing the schema resolution.
+ *
+ * SCOPE (unify-launch-mechanics-2026-06-09 D-001, P-004): this builder is
+ * WHO/WHEN only — schema routing, chunk-lock backend, idempotency, workspace
+ * pinning. It is NOT a parallel launch-MECHANICS path: the HOW (identity,
+ * per-session CLAUDE_CONFIG_DIR + signed-MCP dir keying, native session id,
+ * least-privilege env, signed MCP URL) is produced by the ONE converged
+ * primitive — `invoke.ts` keys the per-session dirs through the shared
+ * `@papercusp/orchestrator/session-launch-dirs` helper, the exact same helper
+ * `buildRoleLaunchSpec` (the interactive primitive) and the wake-executor resume
+ * leg use. So launch and resume can never drift (the EI-153 fix lands once), and
+ * the orchestrator keeps only placement/scheduling here — by design, not legacy.
  */
 export interface PipelineSpawnEnvInput {
   /** The authoritative registry slug (NOT the dir basename). */

@@ -1,6 +1,6 @@
 ---
 title: Don't infer the fleet's inference plan from credential presence — check the wire
-description: Agents repeatedly conclude "the fleet runs on the Claude Max subscription" from the presence of a `subscriptionType: max` OAuth in `~/.claude/.credentials.json`, without checking what the spawned `claude -p` bee actually presents on the wire. Credential presence ≠ the subscription serving the workload. Cost telemetry and 429s reinforce the wrong conclusion. Run `npm run check:fleet-auth` for the ground truth.
+description: 'Agents repeatedly conclude "the fleet runs on the Claude Max subscription" from the presence of a `subscriptionType: max` OAuth in `~/.claude/.credentials.json`, without checking what the spawned `claude -p` bee actually presents on the wire. Credential presence ≠ the subscription serving the workload. Cost telemetry and 429s reinforce the wrong conclusion. Run `npm run check:fleet-auth` for the ground truth.'
 discovered: 2026-06-08
 tags: [auth, claude-code, fleet, rate-limit, max-subscription, api-key, gotcha, oauth]
 status: active
