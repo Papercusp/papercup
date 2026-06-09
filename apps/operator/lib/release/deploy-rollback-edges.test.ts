@@ -76,6 +76,7 @@ function basePlan(): DeployPlan {
     warnings: [],
     noop: false,
     desktopOnly: false,
+    risk: { tier: 'review', autoDeployable: false, reasons: ['1 staged migration(s)'], blocked: [] },
   };
 }
 const cfg = releaseConfig();

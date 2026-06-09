@@ -103,6 +103,29 @@ beforeEach(() => {
 });
 
 describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
+  it('hydrates the discovered set from the PG offline cache before the swarm reconnects', async () => {
+    const f = fakeSwarm();
+    const cached = {
+      hiveId: 'cached-hive',
+      title: 'Cached Hive',
+      description: 'seen last session',
+      ownerGithubLogin: 'alice',
+      ownerGithubUserId: 4242,
+      ownerDevicePubkey: 'pk',
+      memberTopics: [],
+      visibility: 'public' as const,
+      createdAt: NOW - 86_400_000,
+      announcedTs: NOW - 60_000,
+      lastSeenMs: NOW - 60_000,
+      attested: true as const,
+    };
+    const dir = new HiveDirectory({ ...fakeDirDeps(), loadCache: async () => [cached] });
+    const wiring = await wireHiveDirectoryAtBoot({ swarm: f.swarm, keychainId: 'kc', owner: ownerIdentity(), dir });
+    // Offline listing works immediately — the cache hydrated at wire time.
+    expect(dir.listDiscoveredHives().map((h) => h.hiveId)).toContain('cached-hive');
+    await wiring.stop();
+  });
+
   it('joins the global directory topic and registers a connection handler', async () => {
     const f = fakeSwarm();
     const dir = new HiveDirectory(fakeDirDeps());

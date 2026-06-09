@@ -193,6 +193,12 @@ export default defineTool({
       metadata,
     });
 
+    // Live-refresh the settings memory page (userMemory.list sync query) —
+    // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
+    void import('../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+      .catch(() => { /* best-effort */ });
+
     // Phase 4 P-015: persist anchors to harness_shared.memory_anchors so
     // Layer 1 (audit-memory-anchors.ts) and the settings-UI broken_anchors
     // enrichment can find them. Fire-and-forget — never load-bearing on

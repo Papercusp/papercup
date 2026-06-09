@@ -29,6 +29,10 @@ export const DEFAULT_RUNTIME_EXCLUDES = [
   // ROOT-anchored: bare 'backups' ate apps/operator/app/settings/backups (a
   // SOURCE dir) and broke the frame's SPA build — found live 2026-06-06.
   './backups',
+  // Desktop sidecar build output (a ~500MB omp binary + bundled node/code-server
+  // runtimes) — tripled the tarball (222MB → 562MB) when a peer's sidecar build
+  // landed in the shared tree (found 2026-06-09). A frame never runs the desktop.
+  './papercusp-desktop/src-tauri/sidecar',
   'test-results',
   'playwright-report',
   '*.log',

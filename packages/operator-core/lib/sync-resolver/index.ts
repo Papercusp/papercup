@@ -1033,6 +1033,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userMemory.list — the settings memory page's row set: the user's
+  // personal pool + every harness pool, enriched with canonical audit
+  // state + timestamps, newest-first (memory-settings-page-refresh P-007).
+  // userId arrives as an arg because resolvers carry no session identity
+  // (D-002 — acceptable in the single-owner desktop model). Writes fire
+  // notifySyncInvalidate('userMemory.list') from the REST routes AND the
+  // memory:* MCP verbs, so the page updates live on agent writes.
+  'userMemory.list': {
+    argsSchema: z.object({ userId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { userId } = args as { userId: string };
+      const { listUserMemories } = await import('../memory/list-user-memories');
+      return (await listUserMemories(userId)) as unknown[];
+    },
+  },
+
   // plansDrafts.bySlug — draft plans for a harness, newest-first.
   // Used by ProposalsPanel (plan-feature-pipeline-unification P-022).
   // Reads from PG (plans went PG-canonical — plans-pg-canonical-migration-2026-06-03)

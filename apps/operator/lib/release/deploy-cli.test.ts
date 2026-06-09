@@ -40,6 +40,7 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
     warnings: [],
     noop: false,
     desktopOnly: false,
+    risk: { tier: 'auto', autoDeployable: true, reasons: [], blocked: [] },
     ...over,
   };
 }

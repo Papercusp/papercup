@@ -42,6 +42,11 @@ export default defineTool({
       };
     }
     await backend.update(args.id, { text: args.content });
+    // Live-refresh the settings memory page (userMemory.list sync query) —
+    // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
+    void import('../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('userMemory.list'))
+      .catch(() => { /* best-effort */ });
     return {
       content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
     };

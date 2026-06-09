@@ -42,9 +42,11 @@ describe('defaultWorkbenchLayout (native-terminal-desktop-2026-06-06 — termina
     expect(root.children).toHaveLength(2);
   });
 
-  it('has exactly the app · voice GUI panes (pui/terminal retired to a native sibling window, D-002/D-008)', () => {
+  it('has exactly the app · voice · hives GUI panes (pui/terminal retired to a native sibling window, D-002/D-008)', () => {
     const types = allPanels(defaultWorkbenchLayout()).map((p) => p.type);
-    expect(types).toEqual(['workbench:app', 'workbench:voice']);
+    // hive-directory rides as a second TAB in the voice pane (p2p-hive-directory
+    // P-007) — without a seed entry the registered panel type is unreachable.
+    expect(types).toEqual(['workbench:app', 'workbench:voice', 'workbench:hive-directory']);
     // The retired operator-chat pane must NOT be present.
     expect(types).not.toContain('workbench:operator');
     expect(types).not.toContain('data:chat');

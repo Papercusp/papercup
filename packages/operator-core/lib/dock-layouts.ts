@@ -496,6 +496,15 @@ export function defaultWorkbenchLayout(harnessSlug = ''): LayoutDoc {
               title: 'Peers',
               params: { harnessSlug },
             },
+            {
+              // The P2P hive-directory browse list (p2p-hive-directory P-007).
+              // Without a seed entry the registered panel type is UNREACHABLE —
+              // nothing else ever adds it to a layout.
+              id: 'p-wb-hives',
+              type: 'workbench:hive-directory',
+              title: 'Hives',
+              params: {},
+            },
           ],
         },
       ],

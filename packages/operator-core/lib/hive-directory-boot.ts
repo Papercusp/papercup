@@ -67,6 +67,11 @@ export interface HiveDirectoryWiring {
 export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Promise<HiveDirectoryWiring> {
   const dir = opts.dir ?? getHiveDirectory();
 
+  // 0. Hydrate the discovered set from the PG offline cache FIRST, so the
+  //    browse list answers "what did I last see" before the swarm reconnects
+  //    (the cache is a cache, never the transport — live announces LWW over it).
+  await dir.hydrateFromCache().catch(() => 0);
+
   // ONE gossip instance for every directory topic. `getOwnAnnounces` is SCOPED
   // per topic so a global-topic pair only ever receives PUBLIC hives and an
   // invite-topic pair only that invite's hive(s) — an invite hive never leaks

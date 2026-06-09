@@ -17,112 +17,24 @@ import { getSessionUser } from '../../../auth';
 import {
   getMemoryBackend,
   registeredMemoryBackends,
-  type MemoryEntry,
 } from '../../../memory/backend';
 import {
   currentMemoryBackendChoice,
   writeMemoryBackendChoice,
 } from '../../../memory/backend-selection';
-import { activeWorkspaceId } from '../../../workspace-registry';
-import { loadHarnessRegistry } from '../../../harness-registry';
+import { listUserMemories } from '../../../memory/list-user-memories';
 import { recordFeedback } from '../../../memory/feedback';
-import { getOrgPg } from '@papercusp/db-org';
+import { notifySyncInvalidate } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
-interface AuditEnrichment {
-  state: string;
-  last_validated_at: string | null;
-  last_surfaced_at: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-  broken_anchors: Array<{ kind: string; value: string; reason: string | null }>;
-}
-
-const iso = (v: unknown): string | null =>
-  v instanceof Date ? v.toISOString() : typeof v === 'string' ? v : null;
-
 /**
- * Enrichment over the mem0 canonical tables — audit state + anchors +
- * timestamps. Best-effort BY CONTRACT: any failure (pre-085 schema,
- * non-uuid ids from another backend, PG down) returns what it has so far
- * and can never break the list response. The uuid columns are compared
- * as text (`id::text = ANY(...)`) because entry ids are opaque backend
- * strings, not guaranteed uuids.
+ * Mark every cached `userMemory.list` stale (args omitted = all users /
+ * all instances — see SSEAdapter). Best-effort: a notify failure must
+ * never fail the write that triggered it.
  */
-async function loadAuditEnrichment(
-  ids: string[],
-): Promise<Map<string, AuditEnrichment>> {
-  const out = new Map<string, AuditEnrichment>();
-  if (ids.length === 0) return out;
-  try {
-    const { sql } = getOrgPg();
-
-    type CanonRow = {
-      id: string;
-      state: string | null;
-      last_validated_at: Date | string | null;
-      last_surfaced_at: Date | string | null;
-      created_at: Date | string | null;
-      updated_at: Date | string | null;
-    };
-    const canon = await sql<CanonRow[]>`
-      SELECT id::text AS id, state, last_validated_at, last_surfaced_at,
-             created_at, updated_at
-      FROM harness_shared.memory_canonical
-      WHERE id::text = ANY(${ids})`;
-    for (const r of canon) {
-      out.set(r.id, {
-        state: r.state ?? 'active',
-        last_validated_at: iso(r.last_validated_at),
-        last_surfaced_at: iso(r.last_surfaced_at),
-        created_at: iso(r.created_at),
-        updated_at: iso(r.updated_at),
-        broken_anchors: [],
-      });
-    }
-
-    // Pull broken anchors so the UI can surface a per-row reason.
-    try {
-      type AnchorRow = {
-        memory_id: string;
-        kind: string;
-        value: string;
-        last_check_ok: boolean | null;
-      };
-      const anchors = await sql<AnchorRow[]>`
-        SELECT memory_id::text AS memory_id, kind, value, last_check_ok
-        FROM harness_shared.memory_anchors
-        WHERE memory_id::text = ANY(${ids}) AND last_check_ok = false`;
-      for (const a of anchors) {
-        const e = out.get(a.memory_id);
-        if (!e) continue;
-        e.broken_anchors.push({
-          kind: a.kind,
-          value: a.value,
-          reason: a.last_check_ok === false ? 'check_failed' : null,
-        });
-      }
-    } catch { /* memory_anchors absent → leave list empty */ }
-  } catch { /* canonical store absent / unreachable → no enrichment */ }
-  return out;
-}
-
-/**
- * Map a neutral entry's opaque scope string onto the display grouping
- * the settings page renders: the session user's pool → 'user',
- * `harness:<slug>` → 'harness' (+ slug), legacy `workspace:<id>` →
- * 'workspace', anything else → 'user' (still the user's own view).
- */
-function displayScope(e: MemoryEntry, userId: string): {
-  scope: 'user' | 'harness' | 'workspace';
-  harness_slug?: string;
-} {
-  if (e.scope.startsWith('harness:')) {
-    return { scope: 'harness', harness_slug: e.scope.slice('harness:'.length) };
-  }
-  if (e.scope.startsWith('workspace:')) return { scope: 'workspace' };
-  return e.scope === userId ? { scope: 'user' } : { scope: 'user' };
-}
+const invalidateMemoryList = (): void => {
+  void notifySyncInvalidate('userMemory.list').catch(() => { /* best-effort */ });
+};
 
 const list = defineTool({
   method: 'GET',
@@ -142,67 +54,38 @@ const list = defineTool({
         availableBackends: registeredMemoryBackends(),
       });
     }
-    const ws = activeWorkspaceId();
-
-    // User pool + one pool per harness. The per-pool fan-out is the
-    // backend's concern; the deprecated workspace-shared pool was
-    // drained (docs-and-memory-as-projections D-005).
-    let harnessSlugs: string[] = [];
-    try {
-      const reg = await loadHarnessRegistry(ws);
-      harnessSlugs = reg.projects.map((p) => p.slug);
-    } catch { /* leave empty — section will just be empty */ }
-
-    const entries = await backend.list({
-      scope: [user.id, ...harnessSlugs.map((slug) => `harness:${slug}`)],
-    });
-
-    const combined = entries.map((e) => ({
-      id: e.id,
-      text: e.text,
-      kind: e.kind,
-      metadata: e.metadata,
-      ...displayScope(e, user.id),
-    }));
-
-    // Enrich with canonical audit state (state column + broken anchors)
-    // and timestamps. mem0-specific; silently absent for other backends /
-    // pre-085 schemas.
-    const audit = await loadAuditEnrichment(combined.map((r) => r.id));
-    const enriched = combined.map((r) => {
-      const e = audit.get(r.id);
-      if (!e) return r as typeof r & { created_at?: string | null; updated_at?: string | null };
-      return {
-        ...r,
-        created_at: e.created_at,
-        updated_at: e.updated_at,
-        audit: {
-          state: e.state,
-          last_validated_at: e.last_validated_at,
-          last_surfaced_at: e.last_surfaced_at,
-          broken_anchors: e.broken_anchors,
-        },
-      };
-    });
-
-    // Newest first. Canonical timestamps where the store has them; the
-    // legacy metadata.turn_at epoch for backends without a canonical row.
-    const sortKey = (r: (typeof enriched)[number]): number => {
-      const ts = r.updated_at ?? r.created_at;
-      if (ts) {
-        const ms = Date.parse(ts);
-        if (!Number.isNaN(ms)) return ms;
-      }
-      const turn = (r.metadata as Record<string, unknown> | undefined)?.turn_at;
-      return typeof turn === 'number' ? turn : 0;
-    };
-    enriched.sort((a, b) => sortKey(b) - sortKey(a));
+    const enriched = await listUserMemories(user.id);
 
     return Response.json({
       results: enriched,
       backend: backend.name,
       currentBackend: currentMemoryBackendChoice(),
       availableBackends: registeredMemoryBackends(),
+    });
+  },
+});
+
+/**
+ * GET /api/user/memory/backend — backend availability + selection meta
+ * for the settings page. The row data itself rides the `userMemory.list`
+ * sync query (P-007); this endpoint carries only the envelope the old
+ * list response bundled (backend name / choices / unavailable-reason).
+ */
+const backendInfo = defineTool({
+  method: 'GET',
+  path: '/user/memory/backend',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUser(req.headers);
+    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    return Response.json({
+      backend: backend.name,
+      currentBackend: currentMemoryBackendChoice(),
+      availableBackends: registeredMemoryBackends(),
+      reason: avail.ok ? null : avail.reason,
+      userId: user.id,
     });
   },
 });
@@ -233,6 +116,7 @@ const setBackend = defineTool({
       );
     }
     await writeMemoryBackendChoice(choice);
+    invalidateMemoryList();
     // Probe the newly-selected store so the UI can warn if it's unavailable
     // (e.g. selecting claude-file on a box with no ~/.claude store).
     let availability: { ok: boolean; reason?: string } = { ok: true };
@@ -274,6 +158,7 @@ const del = defineTool({
         } catch { /* best-effort */ }
       }
       backend.invalidate?.();
+      invalidateMemoryList();
       return Response.json({ ok: true, deleted: n });
     }
     if (!id) return Response.json({ error: 'id_or_all_required' }, { status: 400 });
@@ -288,6 +173,7 @@ const del = defineTool({
     await recordFeedback({
       memId: id, userId: user.id, action: 'delete', kind: priorKind, priorText,
     });
+    invalidateMemoryList();
     return Response.json({ ok: true });
   },
 });
@@ -320,8 +206,9 @@ const patch = defineTool({
       memId: body.id, userId: user.id, action: 'edit',
       kind: priorKind, priorText, newText: nextText,
     });
+    invalidateMemoryList();
     return Response.json({ ok: true });
   },
 });
 
-export default [list, del, patch, setBackend];
+export default [list, del, patch, setBackend, backendInfo];
