@@ -14,6 +14,7 @@ import {
 } from '../../harness/dock/dock-actions';
 import FeaturesPanel from './FeaturesPanel';
 import IssuesPanel from './IssuesPanel';
+import WorkItemsPanel from './WorkItemsPanel';
 import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
@@ -76,6 +77,12 @@ function ensureRegistered() {
   panelRegistry.register('adv:insights', AdvInsightsPanel, { title: 'Insights' });
   // Phase-8 Contributors tab (P-048) — openable from the panel menu (additive).
   panelRegistry.register('adv:contributors', AdvContributorsPanel, { title: 'Contributors' });
+  // P-010 (blueprint-aware-harness-ui-2026-06-09): the unified work_items view — the
+  // features/issues view ported onto the unified work_items surface (one table across
+  // both families, surfacing kind/assignee/claim/severity/priority/rank). Additive +
+  // openable from the panel menu; full replacement of adv:features/adv:issues + the
+  // spine-position/plan-link joins are the follow-up.
+  panelRegistry.register('adv:work-items', WorkItemsPanel, { title: 'Work items' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
   // drain fills the first free one).

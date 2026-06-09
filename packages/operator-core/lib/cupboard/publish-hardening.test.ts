@@ -4,7 +4,7 @@
  * P1/P2). The settled positive test covers the harness 404→/harnesses fallback +
  * the happy POST; this NEW file hardens the branches around it:
  *
- *   - a NON-harness kind (snapshot) that 404s surfaces the 404 and makes
+ *   - a NON-harness kind (pack) that 404s surfaces the 404 and makes
  *     EXACTLY ONE fetch — it must NOT fall back to /harnesses (the old worker
  *     can't store a non-harness kind, so a silent /harnesses retry would mint a
  *     wrong-shaped row). This is the security/correctness edge of the
@@ -29,17 +29,15 @@ import { publishListingToCupboard } from './publish-listing';
 import * as ghToken from '../identity/gh-token';
 import * as cupboardPublish from '../endpoint-route/routes/harness/cupboard-publish';
 
-const snapshotInput = {
-  listing_kind: 'snapshot' as const,
-  listing_ref: 'snap_abc',
+const nonHarnessInput = {
+  listing_kind: 'pack' as const,
+  listing_ref: 'my-pack',
   github_repository_id: 7,
   github_owner: 'acme',
   github_name: 'widget',
   github_url: 'https://github.com/acme/widget',
-  title: 'A snapshot',
-  tarball_content_hash: 'a'.repeat(64),
-  tarball_r2_key: `snapshots/${'a'.repeat(64)}.tar.gz`,
-  tarball_bytes: 1234,
+  title: 'A tool pack',
+  provides_tools: ['acme:do-thing'],
 };
 
 const originalFetch = global.fetch;
@@ -55,11 +53,11 @@ afterEach(() => {
   global.fetch = originalFetch;
 });
 
-describe('publishListingToCupboard — snapshot 404 does NOT fall back to /harnesses', () => {
+describe('publishListingToCupboard — non-harness kind 404 does NOT fall back to /harnesses', () => {
   it('surfaces the 404 as cupboard_error with a single fetch (no /harnesses retry)', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'no_route' }), { status: 404 }));
 
-    const r = await publishListingToCupboard(snapshotInput);
+    const r = await publishListingToCupboard(nonHarnessInput);
 
     expect(r).toMatchObject({ ok: false, status: 404, error: 'cupboard_error' });
     // Exactly one call, and it is the /listings POST — never /harnesses.
@@ -90,7 +88,7 @@ describe('publishListingToCupboard — cupboard_bad_response (200 but non-JSON b
   it('maps a 200 with a non-JSON body to a 502 cupboard_bad_response', async () => {
     fetchMock.mockResolvedValueOnce(new Response('<html>proxy error</html>', { status: 200 }));
 
-    const r = await publishListingToCupboard(snapshotInput);
+    const r = await publishListingToCupboard(nonHarnessInput);
 
     expect(r).toMatchObject({ ok: false, status: 502, error: 'cupboard_bad_response' });
     if (r.ok) return;
@@ -100,7 +98,7 @@ describe('publishListingToCupboard — cupboard_bad_response (200 but non-JSON b
 
   it('maps an EMPTY 200 body to cupboard_bad_response (truncated stream)', async () => {
     fetchMock.mockResolvedValueOnce(new Response('', { status: 200 }));
-    const r = await publishListingToCupboard(snapshotInput);
+    const r = await publishListingToCupboard(nonHarnessInput);
     expect(r).toMatchObject({ ok: false, status: 502, error: 'cupboard_bad_response' });
     if (r.ok) return;
     expect(r.upstream_status).toBe(200);
@@ -110,7 +108,7 @@ describe('publishListingToCupboard — cupboard_bad_response (200 but non-JSON b
     // The source parses the body BEFORE branching on upstream.ok, so a 400 with
     // an HTML body becomes bad_response (502), not cupboard_error (400). Pin it.
     fetchMock.mockResolvedValueOnce(new Response('<html>bad gateway page</html>', { status: 400 }));
-    const r = await publishListingToCupboard(snapshotInput);
+    const r = await publishListingToCupboard(nonHarnessInput);
     expect(r).toMatchObject({ ok: false, status: 502, error: 'cupboard_bad_response' });
     if (r.ok) return;
     expect(r.upstream_status).toBe(400);

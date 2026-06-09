@@ -151,7 +151,7 @@ export function buildHarnessJoinLink(l: HarnessListing): string {
  * The "Hive" a listing belongs to — the project-centric grouping key
  * (D-008 / project-centric-rethink D-014). A Hive is one project, and the
  * Cupboard is "the home for a Hive's distributable facets" (recipe/blueprint ·
- * snapshot · plugin · harness). Prefer the explicit `project_ref` (the
+ * plugin · harness). Prefer the explicit `project_ref` (the
  * papercupai project remote); fall back to the repo slug for legacy/standalone
  * listings that predate project-centric keying. '' ⇒ ungroupable (no project
  * identity) — callers should hide the per-Hive affordance.
@@ -170,7 +170,7 @@ export interface ListingKindGroup {
 /**
  * Group listings by kind in canonical `LISTING_KINDS` order, dropping empty
  * kinds. Powers the per-Hive rollup view (distribution D-005 / revive-cupboard
- * D-005): presents a Hive's recipe / snapshot / plugin / harness facets
+ * D-005): presents a Hive's recipe / plugin / harness facets
  * together, each under its own kind heading. Pure — the caller pre-filters to
  * the Hive (`listingHiveRef(l) === hive`) before grouping.
  */
@@ -227,11 +227,11 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | snapshot | plugin | pack. Absent ⇒ treat as 'harness'. */
+  /** harness | blueprint | plugin | pack. Absent ⇒ treat as 'harness'. */
   listing_kind?: ListingKind;
   /** Papercupai project remote this listing belongs to (D-008); null = legacy/standalone. */
   project_ref?: string | null;
-  /** Within-project discriminator (blueprint stream / snapshot id / plugin/pack slug). */
+  /** Within-project discriminator (blueprint stream / plugin/pack slug). */
   listing_ref?: string | null;
   /**
    * Pack model (worker migration 006): JSON-encoded string[] of the MCP tool
@@ -240,18 +240,6 @@ export interface HarnessListing {
    * "which Cupboard unit provides tool X?". Absent/null ⇒ no declared tools.
    */
   provides_tools?: string | null;
-
-  // ── Snapshot tarball blob pointer (Cupboard worker migration 005). Present
-  // only on kind='snapshot' listings whose tarball lives in the Cupboard R2
-  // store; the fork-from-cupboard bridge downloads GET /blobs/snapshots/<hash>,
-  // verifies the sha256, and restores. Absent ⇒ a metadata-only snapshot listing
-  // (local-fork only). See `snapshot-blob.ts`. ──
-  /** Content-addressed R2 key, `snapshots/<sha256>.tar.gz`. */
-  tarball_r2_key?: string | null;
-  /** sha256 of the tarball (hex); fork verifies the download against it. */
-  tarball_content_hash?: string | null;
-  /** Tarball size in bytes. */
-  tarball_bytes?: number | null;
 
   // ── Live-worker row fields (the deployed Cupboard returns these; the
   // aspirational fields above predate the worker and may be absent on real

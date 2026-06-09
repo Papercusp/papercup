@@ -7,9 +7,7 @@
  * (Join / Fork / Install — D-005). Renders against either the live-worker row
  * shape or the aspirational HarnessListing shape via the cupboard/types helpers.
  *
- * Two kinds execute their action directly from here:
- *   - snapshot Fork  → POST /api/snapshots/fork-from-cupboard (cross-machine
- *     tarball pull + restore, revive-cupboard D-008);
+ * One kind executes its action directly from here:
  *   - blueprint Fork → POST /api/cupboard/install-blueprint (clone + validate +
  *     dep-check → ~/.papercusp/blueprints/<id>/, the installed tier of the
  *     local→installed→built-in resolution —
@@ -54,8 +52,8 @@ export default function CupboardDetailPage() {
   const [listing, setListing] = useState<HarnessListing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // In-flight lifecycle flag for the direct-execution actions (snapshot fork /
-  // blueprint install) — render-lifecycle state, not URL state.
+  // In-flight lifecycle flag for the direct-execution action (blueprint
+  // install) — render-lifecycle state, not URL state.
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -76,13 +74,6 @@ export default function CupboardDetailPage() {
       if (link) router.push(`/harness?join=${encodeURIComponent(link)}`);
       return;
     }
-    // Snapshot fork is CROSS-MACHINE (revive-cupboard D-008): pull the tarball
-    // from the Cupboard R2 blob store, verify the sha256, and restore() into a
-    // new local harness.
-    if (kind === 'snapshot') {
-      void forkSnapshotFromCupboard();
-      return;
-    }
     // Blueprint fork installs the listing into the local installed tier
     // (~/.papercusp/blueprints/<id>/), where it shadows a same-id built-in and
     // becomes resolvable to harness:create / blueprint:extend.
@@ -91,29 +82,6 @@ export default function CupboardDetailPage() {
       return;
     }
     router.push(`/harness?cupboardListing=${encodeURIComponent(listing.id)}&action=${listingAction(kind)}`);
-  };
-
-  const forkSnapshotFromCupboard = async () => {
-    if (!listing || busy) return;
-    setBusy(true);
-    try {
-      const r = await fetch('/api/snapshots/fork-from-cupboard', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ listing_id: listing.id }),
-      });
-      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; newSlug?: string; error?: string; hint?: string };
-      if (!r.ok || !d.ok) {
-        toast.error(`Fork failed: ${d.error ?? `HTTP ${r.status}`}${d.hint ? ` — ${d.hint}` : ''}`);
-        return;
-      }
-      toast.success(`Forked snapshot → ${d.newSlug}`);
-      router.push(`/harness/${encodeURIComponent(d.newSlug ?? '')}`);
-    } catch (e) {
-      toast.error(`Fork crashed: ${(e as Error)?.message ?? String(e)}`);
-    } finally {
-      setBusy(false);
-    }
   };
 
   const installBlueprintFromCupboard = async () => {
@@ -310,7 +278,7 @@ export default function CupboardDetailPage() {
             }}
           >
             {busy ? (
-              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> {kind === 'blueprint' ? 'Installing blueprint…' : 'Forking snapshot…'}</>
+              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing blueprint…</>
             ) : (
               <><ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : action === 'fork' ? ` ${kind}` : ' harness'}</>
             )}

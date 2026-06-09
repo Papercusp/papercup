@@ -2,8 +2,8 @@
  * Reusable Cupboard listing-publish core (revive-cupboard-distribution-2026-06-04).
  *
  * The ShareWizard's harness publish has its own route
- * (`harness/cupboard-publish.ts`); the snapshot (P1) and plugin (P2) publish
- * bridges need the SAME server-side publish behavior — add the gh-token +
+ * (`harness/cupboard-publish.ts`); the plugin/pack publish bridges need the
+ * SAME server-side publish behavior — add the gh-token +
  * channel-2 attestation, POST the generalized `/listings` surface — without
  * going through an internal HTTP hop. This extracts that core as a plain
  * function, reusing cupboard-publish's already-exported `resolveCupboardBaseUrl`
@@ -24,7 +24,7 @@ export interface CupboardListingInput {
   listing_kind: ListingKind;
   /** Papercupai project remote (D-008). */
   project_ref?: string;
-  /** Within-project discriminator — REQUIRED for non-harness kinds (snapshot id / plugin slug). */
+  /** Within-project discriminator — REQUIRED for non-harness kinds (plugin slug / pack id). */
   listing_ref?: string;
   github_repository_id: number;
   github_owner: string;
@@ -34,17 +34,6 @@ export interface CupboardListingInput {
   description?: string;
   /** Required only for kind='harness' (the Hypercore join topic). */
   topic_hex?: string;
-  // ── snapshot R2 blob fields (revive-cupboard-distribution, owner decision
-  //    2026-06-04: snapshots are cross-machine forkable NOW via an R2 blob store
-  //    behind the Cupboard). Optional + snapshot-only; the R2 blob layer
-  //    (worker mig 005 + upload/download routes + the publish.ts tarball upload)
-  //    is owned by su-d998e63a. Carried here so the listing publish passes them.
-  /** Content-addressed R2 object key for the snapshot tarball (`snapshots/<sha256>.tar.gz`). */
-  tarball_r2_key?: string;
-  /** sha256 of the snapshot tarball (integrity check on fork-download). */
-  tarball_content_hash?: string;
-  /** Compressed byte size of the snapshot tarball. */
-  tarball_bytes?: number;
   /**
    * Pack model (worker migration 006 / tool-distribution-granularity): the MCP
    * tool names the unit registers when installed. Kinds plugin|pack only — the

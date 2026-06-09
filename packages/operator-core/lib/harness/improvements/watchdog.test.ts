@@ -5,9 +5,16 @@ import {
   runWatchdogTick,
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
+  isServiceHealthStale,
+  serviceDownCollectorResult,
+  DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
+  planSelfEscalations,
+  withWatchdogTickLock,
   type WatchdogSignal,
   type WatchdogCollector,
   type WatchdogTickRecord,
+  type RecentTick,
+  type CollectorStatus,
 } from './watchdog';
 import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
@@ -107,6 +114,59 @@ describe('collectServiceDownSignals', () => {
     expect(out.map((s) => s.key)).toEqual(['vite']);
     expect(out[0].title).toBe('Service vite is down');
     expect(out[0].severity).toBe('major');
+  });
+});
+
+describe('service-down freshness gate (watchdog-robustness P-004)', () => {
+  const probe = (p: Partial<ProbeResult> & { name: string }): ProbeResult => ({
+    up: true,
+    status: 200,
+    latencyMs: 5,
+    ...p,
+  });
+
+  it('isServiceHealthStale: never-probed (null) is stale; fresh is not; beyond the window is', () => {
+    const now = 1_000_000;
+    const maxStale = 120_000;
+    expect(isServiceHealthStale(null, now, maxStale)).toBe(true);
+    expect(isServiceHealthStale(now - 30_000, now, maxStale)).toBe(false);
+    expect(isServiceHealthStale(now - 200_000, now, maxStale)).toBe(true);
+    expect(isServiceHealthStale(now, now, maxStale)).toBe(false);
+  });
+
+  it('a FRESH snapshot yields the down signals as before', () => {
+    const now = 1_000_000;
+    const res = serviceDownCollectorResult({
+      results: [probe({ name: 'vite', up: false, status: null })],
+      at: now - 10_000,
+      now,
+      maxStaleMs: 120_000,
+    });
+    expect(res.signals.map((s) => s.key)).toEqual(['vite']);
+    expect(res.note).toBeUndefined();
+  });
+
+  it('a STALE snapshot yields NO signals + a stale-service-health note', () => {
+    const now = 1_000_000;
+    const res = serviceDownCollectorResult({
+      results: [probe({ name: 'vite', up: false, status: null })],
+      at: now - 200_000, // older than the 120s window
+      now,
+      maxStaleMs: 120_000,
+    });
+    expect(res.signals).toEqual([]);
+    expect(res.note).toMatch(/stale-service-health/);
+    expect(res.note).toMatch(/200s old/);
+  });
+
+  it('a NEVER-populated snapshot (at=null) skips with a "never populated" note', () => {
+    const res = serviceDownCollectorResult({ results: [], at: null, now: 1_000_000, maxStaleMs: 120_000 });
+    expect(res.signals).toEqual([]);
+    expect(res.note).toMatch(/never populated/);
+  });
+
+  it('default window is 2× the 60s probe interval', () => {
+    expect(DEFAULT_SERVICE_HEALTH_MAX_STALE_MS).toBe(120_000);
   });
 });
 
@@ -278,6 +338,219 @@ describe('runWatchdogTick — tick record (watchdog-robustness P-001)', () => {
       });
       expect(res.captured).toHaveLength(1); // tick still completed + returned
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/tick record failed: pg down/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002)', () => {
+  const fail = (name: string): CollectorStatus => ({ name, ok: false, signalCount: 0, error: 'boom' });
+  const okc = (name: string): CollectorStatus => ({ name, ok: true, signalCount: 1 });
+  const tick = (collectors: CollectorStatus[], status: 'ran' | 'skipped' = 'ran'): RecentTick => ({ status, collectors });
+
+  it('escalates a collector failing this tick + the (need-1) prior ticks', () => {
+    const out = planSelfEscalations([fail('bad')], [tick([fail('bad')]), tick([fail('bad')])], { failStreakToEscalate: 3 });
+    expect(out).toEqual(['bad']);
+  });
+
+  it('does NOT escalate before the streak is reached', () => {
+    const out = planSelfEscalations([fail('bad')], [tick([fail('bad')])], { failStreakToEscalate: 3 });
+    expect(out).toEqual([]); // streak = 2 < 3
+  });
+
+  it('a recovered (ok) prior tick breaks the streak', () => {
+    const out = planSelfEscalations([fail('bad')], [tick([okc('bad')]), tick([fail('bad')])], { failStreakToEscalate: 3 });
+    expect(out).toEqual([]); // most-recent prior shows it recovered → streak resets
+  });
+
+  it('a skipped prior tick (no sweep) breaks the streak', () => {
+    const out = planSelfEscalations([fail('bad')], [tick([], 'skipped'), tick([fail('bad')])], { failStreakToEscalate: 3 });
+    expect(out).toEqual([]);
+  });
+
+  it('a collector healthy this tick never escalates', () => {
+    const out = planSelfEscalations([okc('good')], [tick([fail('good')]), tick([fail('good')])], { failStreakToEscalate: 3 });
+    expect(out).toEqual([]);
+  });
+
+  it('failStreakToEscalate=1 escalates on the first failing tick', () => {
+    expect(planSelfEscalations([fail('bad')], [], { failStreakToEscalate: 1 })).toEqual(['bad']);
+  });
+});
+
+describe('runWatchdogTick — self-escalation through the shared core (P-002)', () => {
+  const throwingCollector: WatchdogCollector = {
+    name: 'papercusp-red-test',
+    collect: async () => { throw new Error('relation test_runs does not exist'); },
+  };
+  const priorFails = (n: number): RecentTick[] =>
+    Array.from({ length: n }, () => ({ status: 'ran' as const, collectors: [{ name: 'papercusp-red-test', ok: false, signalCount: 0, error: 'x' }] }));
+
+  function captureRecorder(result: Partial<CaptureImprovementResult> = {}) {
+    const calls: unknown[] = [];
+    const capture = async (input: unknown): Promise<CaptureImprovementResult> => {
+      calls.push(input);
+      return {
+        ok: true,
+        created: result.created ?? true,
+        reason: result.reason,
+        issue: result.created === false ? undefined : ({ id: 'EI-SELF' } as never),
+        possibleDuplicates: [],
+        ...result,
+      } as CaptureImprovementResult;
+    };
+    return { calls, capture };
+  }
+
+  it('files exactly one kind=bug self-escalation when a collector hits the fail streak', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { calls, capture } = captureRecorder();
+      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, {
+        collectors: [throwingCollector],
+        capture,
+        recordTick: async () => {},
+        readRecentTicks: async () => priorFails(2), // 2 priors + this tick = streak 3
+      });
+      expect(res.selfEscalations).toEqual(['EI-SELF']);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        kind: 'bug',
+        dedupScope: 'open',
+        sourceRole: 'system',
+        title: 'Watchdog collector "papercusp-red-test" is failing',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT self-escalate before the streak (no prior failing ticks)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { calls, capture } = captureRecorder();
+      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, {
+        collectors: [throwingCollector],
+        capture,
+        recordTick: async () => {},
+        readRecentTicks: async () => [], // no priors → streak 1 < 3
+      });
+      expect(res.selfEscalations).toEqual([]);
+      expect(calls).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('an OPEN-duplicate self-escalation is not re-filed (dedup across ticks)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { capture } = captureRecorder({ created: false, reason: 'likely-duplicate' });
+      const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, {
+        collectors: [throwingCollector],
+        capture,
+        recordTick: async () => {},
+        readRecentTicks: async () => priorFails(3),
+      });
+      expect(res.selfEscalations).toEqual([]); // declined as an open duplicate
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a healthy tick does not read recent ticks or self-escalate', async () => {
+    let readCalled = false;
+    const { calls, capture } = captureRecorder();
+    const res = await runWatchdogTick('ws', { failStreakToEscalate: 3 }, {
+      collect: async () => [sig({ key: 'a' })], // injected → collectors = [{injected, ok:true}]
+      capture,
+      recordTick: async () => {},
+      readRecentTicks: async () => { readCalled = true; return []; },
+    });
+    expect(res.selfEscalations).toEqual([]);
+    expect(readCalled).toBe(false); // short-circuited: nothing failed this tick
+    expect(calls).toHaveLength(1); // only the real signal capture
+  });
+
+  it('caps self-escalations per tick (maxSelfEscalationsPerTick)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { calls, capture } = captureRecorder();
+      const twoBad: WatchdogCollector[] = [
+        { name: 'col-a', collect: async () => { throw new Error('a'); } },
+        { name: 'col-b', collect: async () => { throw new Error('b'); } },
+      ];
+      const res = await runWatchdogTick('ws', { failStreakToEscalate: 1, maxSelfEscalationsPerTick: 1 }, {
+        collectors: twoBad,
+        capture,
+        recordTick: async () => {},
+        readRecentTicks: async () => [],
+      });
+      expect(res.selfEscalations).toHaveLength(1); // both crossed, but capped at 1
+      expect(calls).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('runWatchdogTick — cross-host lock (watchdog-robustness P-003)', () => {
+  const captureOk = (counter: { n: number }) =>
+    async (): Promise<CaptureImprovementResult> => {
+      counter.n += 1;
+      return { ok: true, created: true, issue: { id: `EI-${counter.n}` } as never, possibleDuplicates: [] } as CaptureImprovementResult;
+    };
+
+  it('runs the tick (and captures) when it HOLDS the lock', async () => {
+    const counter = { n: 0 };
+    const res = await runWatchdogTick('ws', {}, {
+      collect: async () => [sig({ key: 'a' })],
+      capture: captureOk(counter),
+      recordTick: async () => {},
+      withTickLock: async (_ws, fn) => ({ ran: true, value: await fn() }),
+    });
+    expect(res.status).toBe('ran');
+    expect(res.captured).toEqual(['EI-1']);
+    expect(counter.n).toBe(1);
+  });
+
+  it('SKIPS the tick (zero captures) + records a skipped tick when another host holds the lock', async () => {
+    const counter = { n: 0 };
+    const records: WatchdogTickRecord[] = [];
+    const res = await runWatchdogTick('ws', { installSlug: 'papercup' }, {
+      collect: async () => [sig({ key: 'a' })],
+      capture: captureOk(counter),
+      recordTick: async (r) => { records.push(r); },
+      withTickLock: async () => ({ ran: false }), // another host owns it
+    });
+    expect(res.status).toBe('skipped');
+    expect(res.captured).toEqual([]);
+    expect(counter.n).toBe(0); // body never ran → nothing captured (no duplicate race)
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ status: 'skipped', installSlug: 'papercup', signals: 0 });
+  });
+
+  it('default lock FAILS OPEN when the DB is unavailable (runs fn unlocked, never double-runs)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let runs = 0;
+      const out = await withWatchdogTickLock('ws', async () => { runs += 1; return 42; });
+      expect(out).toEqual({ ran: true, value: 42 });
+      expect(runs).toBe(1); // ran exactly once (fail-open, no double-run)
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('default lock propagates a fn error without double-running it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let runs = 0;
+      await expect(
+        withWatchdogTickLock('ws', async () => { runs += 1; throw new Error('body boom'); }),
+      ).rejects.toThrow('body boom');
+      expect(runs).toBe(1);
     } finally {
       warn.mockRestore();
     }

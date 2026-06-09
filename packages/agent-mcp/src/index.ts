@@ -25,6 +25,10 @@ export { defineTool } from '@papercusp/tooldef';
 // resolves to Papercusp's suggestion-union program-wide.
 export { AGENT_ROLES, BRAIN_PRINCIPAL_ROLE } from './role-config';
 export type { BuiltinAgentRole } from './role-config';
+// hive-agent-tabs-psu-tui P-001: the shared AgentPaneKind taxonomy — one source
+// of truth for the backend roster shaping + pui pane render/color.
+export { classifyAgentPane, AGENT_PANE_KINDS, DRIVE_MODES } from './agent-pane-kind';
+export type { AgentPaneKind, DriveMode, AgentPaneClass, AgentLaunchHint } from './agent-pane-kind';
 export type { AgentRole, RoleRegistry } from '@papercusp/tooldef';
 export { defineUITool } from './define-ui-tool';
 export type { UIToolDefinitionInput, UIToolHandlerResult } from './define-ui-tool';

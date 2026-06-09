@@ -56,6 +56,13 @@ export const FLAGS = {
   // restructure) + Tauri-verified. The /api/prompt-studio/* routes are gated on this flag
   // TOO (security review — closed-gate default; the prompt-source backend never ships dark).
   PROMPT_STUDIO: "papercusp-prompt-studio",
+  // hive-agent-tabs-psu-tui-2026-06-09: gates the unified agent-tabs dock where
+  // EVERY agent surface (Queen · Bee · Sentinel · Planner) is a real psu/Claude
+  // TUI session, plus the per-agent wake-mode gate, per-type color/grouping, and
+  // per-frame tabs. OFF (default) = the current dock (pui chat-pane operator +
+  // read-only watch-pane bees) is unchanged. Flip ON once the new renderer is
+  // Tauri-verified. Reversible — the legacy surfaces stay until Phase 5 retires them.
+  HIVE_AGENT_TABS: "papercusp-hive-agent-tabs",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -85,6 +92,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the settings
   // nav + Tauri-verified. The /api/prompt-studio/* routes are flag-gated on it too.
   [FLAGS.PROMPT_STUDIO]: false,
+  // OFF by default — the current dock (operator chat-pane + read-only watch-pane
+  // bees) ships until the unified psu/Claude TUI agent-tabs dock is Tauri-verified.
+  [FLAGS.HIVE_AGENT_TABS]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

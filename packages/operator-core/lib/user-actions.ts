@@ -12,7 +12,7 @@
  *       return { invocationId, response: c.json({ ok: true, invocationId }) };
  *     }));
  *
- * For background-job actions (replan, cleanup, snapshot.create), the wrapper
+ * For background-job actions (replan, cleanup), the wrapper
  * captures the invocationId and stamps it onto the row; the job's completion
  * handler updates status when it finishes (see updateUserAction).
  */
@@ -28,10 +28,6 @@ export type ActionKind =
   | 'replan'
   | 'cleanup'
   | 'consolidate'
-  | 'snapshot.create'
-  | 'snapshot.fork'
-  | 'snapshot.fork-from-cupboard'
-  | 'snapshot.publish'
   | 'plugin.install'
   | 'plugin.enable'
   | 'plugin.disable'
@@ -124,7 +120,7 @@ export async function recordUserAction<T>(
 
 /**
  * Finalize an async action started with `{ async: true }`. Background jobs
- * (scoper-result poll, snapshot capture worker) call this when the work
+ * (scoper-result poll, plugin install) call this when the work
  * actually finishes.
  */
 export async function updateUserAction(args: {

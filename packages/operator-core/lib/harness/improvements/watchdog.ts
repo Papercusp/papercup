@@ -311,8 +311,11 @@ export function serviceDownCollectorResult(opts: {
 export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
   name: string;
-  /** Collect signals. Errors are caught + logged by runWatchdogTick. */
-  collect: () => Promise<WatchdogSignal[]>;
+  /**
+   * Collect signals. May return a bare array or a `CollectorResult` to carry a
+   * non-error note (P-004). Errors are caught + logged by collectWatchdogSignalsDetailed.
+   */
+  collect: () => Promise<WatchdogSignal[] | CollectorResult>;
 }
 
 /** Injectable collector seam (the routine handler uses the default; tests inject). */
@@ -321,6 +324,10 @@ export interface WatchdogDeps {
   capture: typeof captureImprovement;
   /** Tick-record sink (P-001). Defaults to the PG writer; tests inject. */
   recordTick: (rec: WatchdogTickRecord) => Promise<void>;
+  /** Recent-ticks reader for self-escalation (P-002). Defaults to the PG reader; tests inject. */
+  readRecentTicks: (workspaceId: string, limit: number) => Promise<RecentTick[]>;
+  /** Cross-host tick lock (P-003). Defaults to the PG advisory lock; tests inject. */
+  withTickLock: <T>(workspaceId: string, fn: () => Promise<T>) => Promise<TickLockOutcome<T>>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
@@ -340,7 +347,7 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     },
     {
       name: 'papercusp-service-down',
-      collect: () => Promise.resolve(collectServiceDownSignals()),
+      collect: () => Promise.resolve(serviceDownCollectorResult({ maxStaleMs: opts.serviceHealthMaxStaleMs })),
     },
   ];
 }
@@ -365,8 +372,10 @@ export async function collectWatchdogSignalsDetailed(
     const s = settled[i];
     const name = activeCollectors[i]?.name ?? `collector[${i}]`;
     if (s.status === 'fulfilled') {
-      signals.push(...s.value);
-      statuses.push({ name, ok: true, signalCount: s.value.length });
+      // Normalize a bare array or the richer { signals, note } shape (P-004).
+      const out = Array.isArray(s.value) ? { signals: s.value } : s.value;
+      signals.push(...out.signals);
+      statuses.push({ name, ok: true, signalCount: out.signals.length, ...(out.note ? { note: out.note } : {}) });
     } else {
       const error = s.reason instanceof Error ? s.reason.message : String(s.reason);
       console.warn(`[improvement-watchdog] collector "${name}" failed: ${error}`);
@@ -398,6 +407,104 @@ export async function recordWatchdogTick(rec: WatchdogTickRecord): Promise<void>
   `;
 }
 
+/** A prior tick, as read for the self-escalation streak (P-002). Newest-first. */
+export interface RecentTick {
+  status: 'ran' | 'skipped';
+  collectors: CollectorStatus[];
+}
+
+/** Default recent-ticks reader (P-002): the last `limit` ticks for a workspace, newest-first. */
+export async function readRecentWatchdogTicks(workspaceId: string, limit: number): Promise<RecentTick[]> {
+  if (limit <= 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<{ status: 'ran' | 'skipped'; collectors: CollectorStatus[] }[]>`
+    SELECT status, collectors
+      FROM harness_shared.watchdog_ticks
+     WHERE workspace_id = ${workspaceId}
+     ORDER BY tick_at DESC
+     LIMIT ${limit}`;
+  return rows.map((r) => ({ status: r.status, collectors: Array.isArray(r.collectors) ? r.collectors : [] }));
+}
+
+/**
+ * Pure (watchdog-robustness P-002 / D-003): which collectors have failed for
+ * `failStreakToEscalate` CONSECUTIVE ticks (this tick + the most-recent priors),
+ * and so should self-escalate. A tick counts toward a collector's streak only when
+ * it OBSERVED that collector failing (`ok:false`); an absent collector or a
+ * 'skipped' tick (no sweep) breaks the streak — we never saw it fail there.
+ * `priorTicks` must be newest-first (the `readRecentWatchdogTicks` order).
+ */
+export function planSelfEscalations(
+  thisTick: CollectorStatus[],
+  priorTicks: RecentTick[],
+  opts: { failStreakToEscalate?: number } = {},
+): string[] {
+  const need = Math.max(1, opts.failStreakToEscalate ?? 3);
+  const escalate: string[] = [];
+  for (const c of thisTick) {
+    if (c.ok) continue;
+    let streak = 1; // this tick observed it failing
+    for (const t of priorTicks) {
+      const prior = t.collectors.find((x) => x.name === c.name);
+      if (prior && !prior.ok) streak += 1;
+      else break;
+    }
+    if (streak >= need) escalate.push(c.name);
+  }
+  return escalate;
+}
+
+/**
+ * The outcome of attempting to run the tick under the cross-host lock (P-003):
+ * `{ ran:true, value }` when we held the lock (or fail-open ran unlocked), or
+ * `{ ran:false }` when another host held it and we deferred the sweep.
+ */
+export type TickLockOutcome<T> = { ran: true; value: T } | { ran: false };
+
+/**
+ * Run `fn` while holding the cross-host watchdog advisory lock (watchdog-robustness
+ * P-003 / D-004). Two operator hosts (`:3070` + `:3170`, or a deploy overlap) can
+ * fire `system:improvement-watchdog` against the ONE shared DB; without this they
+ * both sweep and the capture core's search-then-create races into duplicate
+ * captures. We hold a SESSION advisory lock on a reserved connection for the whole
+ * tick (the captures themselves run on the pool — the lock is just the mutex).
+ *
+ * `{ ran:false }` ⇒ another host owns this tick → the caller records a skipped tick.
+ * FAIL-OPEN: if the lock plumbing itself errors (can't reserve / lock query fails),
+ * run `fn` unlocked — a missed mutex is better than a missed sweep. A `fn` error is
+ * NEVER swallowed or double-run; it propagates cleanly.
+ */
+export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<TickLockOutcome<T>> {
+  let reserved: Awaited<ReturnType<ReturnType<typeof getOrgPg>['sql']['reserve']>>;
+  try {
+    reserved = await getOrgPg().sql.reserve();
+  } catch (e) {
+    console.warn(`[improvement-watchdog] could not reserve a connection for the tick lock, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
+    return { ran: true, value: await fn() };
+  }
+
+  let acquired = false;
+  let lockErrored = false;
+  try {
+    try {
+      const rows = await reserved<{ ok: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtext('improvement-watchdog'), hashtext(${workspaceId})) AS ok`;
+      if (rows[0]?.ok) acquired = true;
+    } catch (e) {
+      lockErrored = true;
+      console.warn(`[improvement-watchdog] advisory-lock query failed, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
+    }
+    if (lockErrored) return { ran: true, value: await fn() };
+    if (!acquired) return { ran: false };
+    return { ran: true, value: await fn() };
+  } finally {
+    if (acquired) {
+      await reserved`SELECT pg_advisory_unlock(hashtext('improvement-watchdog'), hashtext(${workspaceId}))`.catch(() => {});
+    }
+    reserved.release();
+  }
+}
+
 export interface WatchdogTickResult {
   /** 'ran' = swept + captured; 'skipped' = another host held the cross-host lock (P-003). */
   status: 'ran' | 'skipped';
@@ -415,33 +522,45 @@ export interface WatchdogTickResult {
 export interface WatchdogTickOptions extends WatchdogPlanOptions, CollectOptions {
   /** The routine's install slug, recorded on the tick (observability only). */
   installSlug?: string | null;
+  /** Consecutive failing ticks before a collector self-escalates (P-002). Default 3. */
+  failStreakToEscalate?: number;
+  /** Max self-escalations filed per tick (P-002, anti-flood). Default 1. */
+  maxSelfEscalationsPerTick?: number;
+}
+
+/** The collect/capture/record deps a tick body runs with, already resolved. */
+interface ResolvedTickDeps {
+  capture: typeof captureImprovement;
+  recordTick: (rec: WatchdogTickRecord) => Promise<void>;
+  readRecentTicks: (workspaceId: string, limit: number) => Promise<RecentTick[]>;
+  collect?: () => Promise<WatchdogSignal[]>;
+  collectors?: WatchdogCollector[];
 }
 
 /**
  * One watchdog tick: collect → plan (cap) → capture each through the shared core
  * (`dedupScope:'open'` — an open duplicate declines; a resolved one re-files the
- * regression) → record the tick (P-001, best-effort). Returns a compact result
- * for the routine log.
- * (P-011) Accepts optional collectors for per-target-project sources.
+ * regression) → self-escalate a persistently-failing collector (P-002) → record
+ * the tick (P-001, best-effort). The cross-host lock (P-003) wraps this — see
+ * `runWatchdogTick`.
  */
-export async function runWatchdogTick(
+async function runWatchdogTickBody(
   workspaceId: string,
-  opts: WatchdogTickOptions = {},
-  deps?: Partial<WatchdogDeps> & { collectors?: WatchdogCollector[] },
+  opts: WatchdogTickOptions,
+  deps: ResolvedTickDeps,
 ): Promise<WatchdogTickResult> {
-  const capture = deps?.capture ?? captureImprovement;
-  const recordTick = deps?.recordTick ?? recordWatchdogTick;
+  const { capture, recordTick, readRecentTicks } = deps;
 
   // Collect signals + per-collector status. When a test injects `collect` we lose
   // per-collector granularity (the seam returns signals only), so synthesize one
   // 'injected' status so the tick record is still coherent.
   let signals: WatchdogSignal[];
   let collectors: CollectorStatus[];
-  if (deps?.collect) {
+  if (deps.collect) {
     signals = await deps.collect();
     collectors = [{ name: 'injected', ok: true, signalCount: signals.length }];
   } else {
-    const detailed = await collectWatchdogSignalsDetailed(workspaceId, opts, deps?.collectors);
+    const detailed = await collectWatchdogSignalsDetailed(workspaceId, opts, deps.collectors);
     signals = detailed.signals;
     collectors = detailed.collectors;
   }
@@ -472,6 +591,45 @@ export async function runWatchdogTick(
     else if (res.reason === 'likely-duplicate') declinedDuplicates += 1;
   }
 
+  // P-002: the watchdog watches itself. If a collector is failing THIS tick, check
+  // whether it has now failed `failStreakToEscalate` consecutive ticks and, if so,
+  // file ONE kind=bug capture about it through the same core (a forever-failing
+  // collector is exactly the kind of broken-thing the watchdog exists to surface).
+  // Skipped entirely when nothing failed this tick — no PG read in the healthy case.
+  const selfEscalations: string[] = [];
+  if (collectors.some((c) => !c.ok)) {
+    const failStreak = Math.max(1, opts.failStreakToEscalate ?? 3);
+    const maxSelf = Math.max(0, opts.maxSelfEscalationsPerTick ?? 1);
+    try {
+      const priors = failStreak > 1 ? await readRecentTicks(workspaceId, failStreak - 1) : [];
+      const toEscalate = planSelfEscalations(collectors, priors, { failStreakToEscalate: failStreak }).slice(0, maxSelf);
+      for (const name of toEscalate) {
+        const failed = collectors.find((c) => c.name === name);
+        try {
+          const res = await capture({
+            title: `Watchdog collector "${name}" is failing`,
+            kind: 'bug',
+            body:
+              `The self-improvement watchdog collector "${name}" has failed ${failStreak} consecutive ticks — ` +
+              `its signal feed is dark until it is fixed.\n\nLatest error: ${failed?.error ?? '(none captured)'}`,
+            severity: 'major',
+            paths: ['packages/operator-core/lib/harness/improvements/watchdog.ts'],
+            foundDuring: 'improvement-watchdog',
+            createdBy: 'system:improvement-watchdog',
+            sourceRole: 'system',
+            source: 'su',
+            dedupScope: 'open',
+          });
+          if (res.created && res.issue) selfEscalations.push(res.issue.id);
+        } catch (e) {
+          console.warn(`[improvement-watchdog] self-escalation capture failed for ${name}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[improvement-watchdog] self-escalation skipped (recent-ticks read failed): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   const result: WatchdogTickResult = {
     status: 'ran',
     signals: signals.length,
@@ -479,7 +637,7 @@ export async function runWatchdogTick(
     declinedDuplicates,
     deferred: plan.deferred.length,
     collectors,
-    selfEscalations: [],
+    selfEscalations,
   };
 
   // P-001: record the tick (best-effort — a bookkeeping failure never aborts it).
@@ -500,4 +658,49 @@ export async function runWatchdogTick(
   }
 
   return result;
+}
+
+/**
+ * Run one watchdog tick under the cross-host advisory lock (P-003). If another
+ * host holds the lock this tick is SKIPPED (a `skipped` tick is recorded) so the
+ * two hosts can't double-sweep and race the capture core into duplicate captures.
+ * (P-011) Accepts optional collectors for per-target-project sources.
+ */
+export async function runWatchdogTick(
+  workspaceId: string,
+  opts: WatchdogTickOptions = {},
+  deps?: Partial<WatchdogDeps> & { collectors?: WatchdogCollector[] },
+): Promise<WatchdogTickResult> {
+  const capture = deps?.capture ?? captureImprovement;
+  const recordTick = deps?.recordTick ?? recordWatchdogTick;
+  const readRecentTicks = deps?.readRecentTicks ?? readRecentWatchdogTicks;
+  const withLock = deps?.withTickLock ?? withWatchdogTickLock;
+
+  const outcome = await withLock(workspaceId, () =>
+    runWatchdogTickBody(workspaceId, opts, {
+      capture,
+      recordTick,
+      readRecentTicks,
+      collect: deps?.collect,
+      collectors: deps?.collectors,
+    }),
+  );
+  if (outcome.ran) return outcome.value;
+
+  // Another host owns this tick — record a skipped tick and return (P-003).
+  const skipped: WatchdogTickResult = {
+    status: 'skipped',
+    signals: 0,
+    captured: [],
+    declinedDuplicates: 0,
+    deferred: 0,
+    collectors: [],
+    selfEscalations: [],
+  };
+  try {
+    await recordTick({ workspaceId, installSlug: opts.installSlug ?? null, ...skipped });
+  } catch (e) {
+    console.warn(`[improvement-watchdog] skipped-tick record failed: ${e instanceof Error ? e.message : e}`);
+  }
+  return skipped;
 }
