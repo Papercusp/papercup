@@ -14,7 +14,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { assemblePackCatalog, type PackCatalogInputs } from './pack-catalog';
-import { buildToolsDiscovery } from './tools-discovery';
+import {
+  buildToolsDiscovery,
+  buildToolProvenance,
+  resolveToolEntries,
+  type ToolMetaIndex,
+} from './tools-discovery';
 
 function makeInputs(over: Partial<PackCatalogInputs> = {}): PackCatalogInputs {
   return {
@@ -126,5 +131,79 @@ describe('buildToolsDiscovery', () => {
   it('propagates cupboardReachable=false for the degraded banner', () => {
     const cat = assemblePackCatalog(makeInputs({ cupboardUnits: [], cupboardReachable: false }));
     expect(buildToolsDiscovery(cat).cupboardReachable).toBe(false);
+  });
+});
+
+describe('buildToolsDiscovery — categories (P-007 facets)', () => {
+  it('faceted by namespace, busiest first then alphabetical', () => {
+    const payload = buildToolsDiscovery(assemblePackCatalog(makeInputs()));
+    // md.render + md.lint → md(2); the rest one each.
+    expect(payload.categories[0]).toEqual({ name: 'md', count: 2 });
+    const names = payload.categories.map((c) => c.name);
+    expect(names).toEqual(['md', 'coord', 'plans', 'repomix', 'slack']);
+  });
+
+  it('a category filter narrows the tools but the facets stay over the full search set', () => {
+    const cat = assemblePackCatalog(makeInputs());
+    const payload = buildToolsDiscovery(cat, { category: 'md' });
+    expect(payload.tools.map((t) => t.tool)).toEqual(['md.lint', 'md.render']);
+    expect(payload.counts).toEqual({ available: 0, installable: 2 });
+    // facets are computed pre-narrow → still every category, so the UI can switch.
+    expect(payload.categories.map((c) => c.name)).toContain('coord');
+  });
+
+  it('every entry carries its category', () => {
+    const entries = resolveToolEntries(assemblePackCatalog(makeInputs()));
+    expect(entries.find((e) => e.tool === 'coord:send')?.category).toBe('coord');
+    expect(entries.find((e) => e.tool === 'md.render')?.category).toBe('md');
+  });
+});
+
+describe('buildToolsDiscovery — capability search over descriptions (P-005)', () => {
+  const meta: ToolMetaIndex = new Map([
+    ['coord:send', { description: 'send a message to a peer', capability: 'coord:write' }],
+    ['repomix.pack', { description: 'pack a repo into one document', capability: null }],
+  ]);
+
+  it('enriches built-in entries with description + capability from the meta index', () => {
+    const entries = resolveToolEntries(assemblePackCatalog(makeInputs()), meta);
+    const coord = entries.find((e) => e.tool === 'coord:send');
+    expect(coord?.description).toBe('send a message to a peer');
+    expect(coord?.capability).toBe('coord:write');
+  });
+
+  it('finds a tool by a capability word only present in its description', () => {
+    const payload = buildToolsDiscovery(assemblePackCatalog(makeInputs()), { q: 'message' }, meta);
+    expect(payload.tools.map((t) => t.tool)).toEqual(['coord:send']);
+  });
+
+  it('a Cupboard-only tool falls back to its unit description when meta is absent', () => {
+    const entries = resolveToolEntries(assemblePackCatalog(makeInputs()), meta);
+    const md = entries.find((e) => e.tool === 'md.render');
+    expect(md?.description).toBe('Markdown helpers'); // from the markdown-tools unit
+  });
+});
+
+describe('buildToolProvenance — "what provides X" (P-006)', () => {
+  it('resolves an exact tool name to its providing unit + install action', () => {
+    const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { tool: 'md.render' });
+    expect(payload.resolved?.tool).toBe('md.render');
+    expect(payload.resolved).toMatchObject({
+      status: 'installable',
+      provider: { kind: 'pack', name: 'markdown-tools', listingId: 'lst-1' },
+    });
+    expect(payload.matches[0]?.tool).toBe('md.render'); // exact resolution leads
+  });
+
+  it('answers a capability phrase with ranked candidate providers', () => {
+    const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { q: 'markdown' });
+    expect(payload.resolved).toBeNull();
+    expect(payload.matches.map((m) => m.tool)).toEqual(expect.arrayContaining(['md.render', 'md.lint']));
+  });
+
+  it('an unknown tool name resolves to null with no matches', () => {
+    const payload = buildToolProvenance(assemblePackCatalog(makeInputs()), { tool: 'does.not.exist' });
+    expect(payload.resolved).toBeNull();
+    expect(payload.matches).toEqual([]);
   });
 });

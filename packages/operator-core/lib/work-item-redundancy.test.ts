@@ -20,6 +20,12 @@ vi.mock('@papercusp/db-org', async () => {
 const { compareReplicaVerdicts, pickRedundancyWinner, workItemRedundancyEnabled, MIN_REDUNDANCY } =
   await import('./work-item-redundancy');
 
+// NOTE: runtime tool-registration of the 5 work_items:* redundancy tools is covered
+// AUTHORITATIVELY by the full-catalog tests (lib/__tests__/tool-auth-gating.test.ts +
+// tool-input-schema-rejection.test.ts + tool-harness-scope.test.ts), which `import
+// '../agent-tools/index'` and validate the whole catalog (capability/auth/schema/scope)
+// against the SAME tooldef registry. This file keeps the network/PG-free pure cores.
+
 type V = { replicaIndex: number; composite: number; acquiredTs: string; owner: string };
 
 describe('pickRedundancyWinner — deterministic winner selection', () => {

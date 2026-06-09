@@ -146,6 +146,12 @@ export default function CupboardClient() {
   // kind. `null` = normal flat browse. A Pot is identified by `project_ref`
   // (or the repo slug for legacy rows) — see `listingPotRef`.
   const [pot, setPot] = useQueryState('pot', parseAsString);
+  // Tools-view discovery filters (P-007) — URL-backed so agents can drive them.
+  const [toolStatus, setToolStatus] = useQueryState(
+    'toolStatus',
+    parseAsStringEnum<'all' | 'available' | 'installable'>(['all', 'available', 'installable']).withDefault('all'),
+  );
+  const [cat, setCat] = useQueryState('cat', parseAsString);
   const [listings, setListings] = useState<HarnessListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -420,7 +426,14 @@ export default function CupboardClient() {
       {/* Tools discovery view (?kind=tools) — tool-level discovery with its own
           fetch/empty/error handling; the listing branches below are skipped. */}
       {toolsView && !pot ? (
-        <ToolsSection q={q} onOpenListing={(id) => router.push(`/cupboard/${id}`)} />
+        <ToolsSection
+          q={q}
+          onOpenListing={(id) => router.push(`/cupboard/${id}`)}
+          status={toolStatus}
+          category={cat}
+          onStatusChange={(s) => void setToolStatus(s === 'all' ? null : s)}
+          onCategoryChange={(c) => void setCat(c)}
+        />
       ) : (
         <>
       {/* Error */}

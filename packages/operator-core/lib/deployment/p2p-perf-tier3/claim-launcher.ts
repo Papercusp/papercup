@@ -201,36 +201,39 @@ export interface SshClaimSlotSpec {
   /** The frame's public IP (the agent's reachable host + bind 0.0.0.0). */
   host: string;
   target: SshTarget;
+  /** The port THIS slot's agent serves on. Co-located slots (same host) MUST differ. */
+  httpPort: number;
   installRoot?: string;
 }
 
 /**
- * SSH launcher: one agent per frame, on the frame's public IP. Mirrors sshPeerLauncher —
+ * SSH launcher: one agent per slot on a real frame's public IP. Mirrors sshPeerLauncher —
  * the agent config rides an inline env assignment, `exec node` replaces the remote shell.
- * `kill()` pkills the remote agent over a fresh SSH (the VM stays up for teardown; only the
- * agent + its HTTP authority server die — survivors then fail open).
+ *
+ * A slot list — NOT a frame list — so ≥3 Swarms can run across FEWER instances when a cloud
+ * account caps the server count (e.g. Hetzner's 2-server limit): place the authority alone on
+ * one frame and the survivors on another, each its own port. The agent's port is appended as
+ * an argv marker so `kill()` can pkill EXACTLY that one agent (precise even when two share a
+ * host) — its HTTP authority server dies → the survivors' RPC to it is refused → they fail open.
  */
-export function sshClaimLauncher(opts: {
-  frames: SshClaimSlotSpec[];
-  httpPort: number;
-  log?: (line: string) => void;
-}): ClaimLauncher {
+export function sshClaimLauncher(opts: { slots: SshClaimSlotSpec[]; log?: (line: string) => void }): ClaimLauncher {
   const log = opts.log ?? (() => {});
-  const handles: Array<ClaimAgentHandle | null> = opts.frames.map(() => null);
-  const slots: ClaimSlot[] = opts.frames.map((f, i) => ({
+  const handles: Array<ClaimAgentHandle | null> = opts.slots.map(() => null);
+  const slots: ClaimSlot[] = opts.slots.map((f, i) => ({
     index: i,
     label: f.label,
     host: f.host,
     bindHost: '0.0.0.0',
-    httpPort: opts.httpPort,
+    httpPort: f.httpPort,
     launch(cfg: ClaimAgentConfig): ClaimAgentHandle {
       const runtimeDir = benchRuntimeDir(f.installRoot);
       const agentPath = remoteClaimAgentPath(f.installRoot);
+      // The port is also passed as an argv marker (the agent ignores argv, reading env) so a
+      // precise `pkill -f 'claim-agent.ts <port>'` kills only this agent on a shared host.
       const remoteCommand =
         `cd ${shq(runtimeDir)} && ` +
         `CLAIM_AGENT=${shq(JSON.stringify(cfg))} NODE_ENV=test ` +
-        `exec node --import tsx ${shq(agentPath)}`;
-      // Long-lived stream: keepalive so a silent drop is detected, not hung.
+        `exec node --import tsx ${shq(agentPath)} ${f.httpPort}`;
       const target: SshTarget = {
         ...f.target,
         sudo: false,
@@ -251,10 +254,11 @@ export function sshClaimLauncher(opts: {
       return h;
     },
     async kill(): Promise<void> {
-      // pkill the remote agent — its HTTP authority server dies → unreachable → fail-open.
+      // pkill EXACTLY this agent (by its port marker) — its HTTP authority server dies →
+      // unreachable → the survivors fail open. The VM stays up for teardown.
       try {
         const exec = createSshRemoteExec({ ...f.target, sudo: false });
-        await exec.runScript("pkill -f 'claim-agent.ts' || true\n");
+        await exec.runScript(`pkill -f 'claim-agent.ts ${f.httpPort}' || true\n`);
       } catch (e) {
         log(`[claim kill ${f.label}] ${e instanceof Error ? e.message : String(e)}`);
       }

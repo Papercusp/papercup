@@ -21,12 +21,24 @@
  * `assemblePackCatalog`-built inputs.
  */
 import { resolveToolProvider, type PackDescriptor } from '@papercusp/blueprint-distribution';
+import { getCatalog, listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { DerivedPackCatalog } from './pack-catalog';
+import { categoryOf, searchTools } from './tools-search';
 
 export interface ToolDiscoveryEntry {
   /** The MCP tool name (e.g. `repomix.pack`, `coord:send`). */
   tool: string;
   status: 'available' | 'installable';
+  /** Namespace prefix used as the discovery category (`coord:send` → `coord`). */
+  category: string;
+  /**
+   * One-line capability description — the tool's own (built-ins/installed
+   * plugin tools) or, for a Cupboard-only tool with no per-tool text, the
+   * providing unit's. Drives capability search + the UI's description line.
+   */
+  description?: string | null;
+  /** The capability gate string (e.g. `tasks:read`), for built-ins. */
+  capability?: string | null;
   /** Who provides it (the resolver's answer). */
   provider: {
     kind: 'builtin' | 'plugin' | 'pack';
@@ -49,19 +61,37 @@ export interface ToolDiscoveryEntry {
   };
 }
 
+/** One category facet: a namespace + how many matched tools fall under it. */
+export interface CategoryFacet {
+  name: string;
+  count: number;
+}
+
 export interface ToolsDiscoveryPayload {
   tools: ToolDiscoveryEntry[];
   counts: { available: number; installable: number };
+  /** Category facets over the searched/status-filtered set (pre category-filter). */
+  categories: CategoryFacet[];
   /** False when the Cupboard fetch failed — the UI shows a degraded banner. */
   cupboardReachable: boolean;
 }
 
 export interface ToolsDiscoveryFilters {
-  /** Case-insensitive substring match on tool name OR providing unit name. */
+  /** Capability search — relevance-ranks by name/category/capability/provider/description. */
   q?: string;
   /** Narrow to one resolution status. */
   status?: 'available' | 'installable';
+  /** Narrow to one category (namespace). */
+  category?: string;
 }
+
+/**
+ * Per-tool capability text + gate, keyed by tool name. Built from the live
+ * registries by `collectToolMeta()`; injected into the pure builders so they
+ * stay unit-testable. Cupboard-only tools (names with no local registration)
+ * are absent — they fall back to the providing unit's description.
+ */
+export type ToolMetaIndex = Map<string, { description?: string | null; capability?: string | null }>;
 
 function unitOf(pack: PackDescriptor): ToolDiscoveryEntry['unit'] {
   return {
@@ -74,40 +104,141 @@ function unitOf(pack: PackDescriptor): ToolDiscoveryEntry['unit'] {
   };
 }
 
-/** Every tool name the catalog knows, resolved + filtered + sorted. */
-export function buildToolsDiscovery(
+/**
+ * Resolve every tool name the catalog knows into an enriched
+ * `ToolDiscoveryEntry` (provider + category + description + capability). No
+ * filtering or sorting — the shared substrate for both the Tools view
+ * (`buildToolsDiscovery`) and the "what provides X" surface
+ * (`buildToolProvenance`).
+ */
+export function resolveToolEntries(
   cat: DerivedPackCatalog,
-  filters: ToolsDiscoveryFilters = {},
-): ToolsDiscoveryPayload {
+  meta?: ToolMetaIndex,
+): ToolDiscoveryEntry[] {
   const names = new Set<string>(cat.builtinTools);
   for (const t of cat.view.installedToolIndex.keys()) names.add(t);
   for (const t of cat.view.cupboardToolIndex.keys()) names.add(t);
 
-  const q = filters.q?.trim().toLowerCase();
-  const tools: ToolDiscoveryEntry[] = [];
-  let available = 0;
-  let installable = 0;
-
-  for (const tool of [...names].sort()) {
+  const entries: ToolDiscoveryEntry[] = [];
+  for (const tool of names) {
     const res = resolveToolProvider(tool, cat.view);
     if (res.status === 'unknown') continue; // unreachable: names come from the view
     const entry: ToolDiscoveryEntry = {
       tool,
       status: res.status,
+      category: categoryOf(tool),
       provider: { ...res.provider },
     };
     if (res.provider.kind !== 'builtin') {
       const pack = cat.view.byName.get(res.provider.name);
       if (pack) entry.unit = unitOf(pack);
     }
-    if (filters.status && entry.status !== filters.status) continue;
-    if (q && !entry.tool.toLowerCase().includes(q) && !(entry.unit?.name.toLowerCase().includes(q) ?? false)) {
-      continue;
-    }
-    if (entry.status === 'available') available += 1;
-    else installable += 1;
-    tools.push(entry);
+    const m = meta?.get(tool);
+    entry.description = m?.description ?? entry.unit?.description ?? null;
+    entry.capability = m?.capability ?? null;
+    entries.push(entry);
+  }
+  return entries;
+}
+
+/**
+ * Every tool the catalog knows, resolved → status-filtered → capability-ranked
+ * (when `q` is set) or name-sorted (browse) → category-faceted →
+ * category-filtered. The facets are computed over the searched/status-filtered
+ * set *before* the category narrow, so a UI can switch categories within the
+ * current search.
+ */
+export function buildToolsDiscovery(
+  cat: DerivedPackCatalog,
+  filters: ToolsDiscoveryFilters = {},
+  meta?: ToolMetaIndex,
+): ToolsDiscoveryPayload {
+  let entries = resolveToolEntries(cat, meta);
+  if (filters.status) entries = entries.filter((e) => e.status === filters.status);
+
+  // Capability search ranks; an absent query is the neutral name-sorted browse.
+  const q = filters.q?.trim();
+  entries = q ? searchTools(entries, q) : entries.sort((a, b) => a.tool.localeCompare(b.tool));
+
+  // Facets over the searched/status set, pre category-filter.
+  const facetCounts = new Map<string, number>();
+  for (const e of entries) facetCounts.set(e.category, (facetCounts.get(e.category) ?? 0) + 1);
+  const categories: CategoryFacet[] = [...facetCounts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  if (filters.category) {
+    const want = filters.category.toLowerCase();
+    entries = entries.filter((e) => e.category === want);
   }
 
-  return { tools, counts: { available, installable }, cupboardReachable: cat.cupboardReachable };
+  let available = 0;
+  let installable = 0;
+  for (const e of entries) {
+    if (e.status === 'available') available += 1;
+    else installable += 1;
+  }
+
+  return { tools: entries, counts: { available, installable }, categories, cupboardReachable: cat.cupboardReachable };
+}
+
+/** "What provides X" — the human-facing inverse of the dep resolver (P-006). */
+export interface ToolProvenancePayload {
+  /** The query that was resolved (the `tool` name or the `q` capability phrase). */
+  query: string;
+  /**
+   * Exact-name resolution: the entry whose tool name == `tool`, if known.
+   * `null` for a capability (`q`) query or an unknown name.
+   */
+  resolved: ToolDiscoveryEntry | null;
+  /**
+   * Ranked candidate providers (capability search). Each installable match
+   * carries `provider.listingId` + `unit` — that *is* the install action. The
+   * exact resolution, when present, always leads.
+   */
+  matches: ToolDiscoveryEntry[];
+  cupboardReachable: boolean;
+}
+
+/**
+ * Given a tool name (`tool`, exact) or a capability phrase (`q`), return the
+ * providing unit(s) + install action — the inverse of the dependency resolver
+ * (it asks "what installs this declared tool?"; this asks "I want capability
+ * X, what provides it?"). `tool` takes precedence; `q` is the fallback query.
+ */
+export function buildToolProvenance(
+  cat: DerivedPackCatalog,
+  opts: { tool?: string; q?: string },
+  meta?: ToolMetaIndex,
+): ToolProvenancePayload {
+  const entries = resolveToolEntries(cat, meta);
+  const query = (opts.tool ?? opts.q ?? '').trim();
+  const resolved = opts.tool ? entries.find((e) => e.tool === opts.tool) ?? null : null;
+  const ranked = searchTools(entries, query);
+  const matches = resolved
+    ? [resolved, ...ranked.filter((e) => e.tool !== resolved.tool)]
+    : ranked;
+  return { query, resolved, matches, cupboardReachable: cat.cupboardReachable };
+}
+
+/**
+ * Build the per-tool capability index from the LIVE registries: the legacy
+ * catalog (`getCatalog()` — built-ins, with description + capability gate) and
+ * the projected-tool registry (`listAllProjectedTools()` — adds installed
+ * plugin/pack tools, description only). Built-ins win on name collision (they
+ * carry the capability gate). Not pure — the route calls this and injects the
+ * result into the pure builders above.
+ */
+export function collectToolMeta(): ToolMetaIndex {
+  const meta: ToolMetaIndex = new Map();
+  for (const t of getCatalog()) {
+    meta.set(t.name, { description: t.description ?? null, capability: t.capability ?? null });
+  }
+  for (const t of listAllProjectedTools()) {
+    const name = t.expose?.mcp?.name;
+    if (typeof name === 'string' && name.length > 0 && !meta.has(name)) {
+      meta.set(name, { description: t.description ?? null, capability: null });
+    }
+  }
+  return meta;
 }

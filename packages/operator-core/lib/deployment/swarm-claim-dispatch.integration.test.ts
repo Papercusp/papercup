@@ -20,11 +20,15 @@
  *     loopback, real HTTP authority RPC between them. Two sub-runs: NO-KILL proves
  *     exactly-once (the authority serializes → zero double-claims), and KILL-AUTHORITY
  *     proves fail-open + deterministic reconcile + no starvation. No cloud, no creds.
- *  2. CRED-GATED REAL HETZNER (skipped without creds). ≥3 distinct public-IP frames, the
- *     authority RPC over the real public internet, the authority frame's agent killed
- *     mid-run, then the same verdicts — and DESTROYS everything in a finally.
+ *  2. CRED-GATED REAL HETZNER (skipped without creds). ≥3 Swarms across real public-IP
+ *     frames — by default 3 Swarms over 2 frames (the AUTHORITY alone on frame 0, the two
+ *     survivors on frame 1), because this account's Hetzner server limit is 2. The authority
+ *     RPC crosses the real machine boundary (survivors on frame 1 → authority on frame 0 over
+ *     its public IP); the authority's agent is killed mid-run → the survivors fail open →
+ *     reconcile. DESTROYS everything in a finally. Raise CLAIM_E2E_FRAMES (after raising the
+ *     account limit) to put one Swarm per distinct VM — the placement degrades to that.
  *     Needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE
- *     (+ opt HETZNER_E2E_SERVER_TYPE=cpx31, CLAIM_E2E_FRAMES=3, P2P_PERF_HETZNER_LOCATIONS).
+ *     (+ opt HETZNER_E2E_SERVER_TYPE=cpx31, CLAIM_E2E_FRAMES, CLAIM_E2E_SWARMS, P2P_PERF_HETZNER_LOCATIONS).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -125,7 +129,7 @@ describe.skipIf(!haveHetzner)(
   '≥3-Swarm claim dispatch — REAL Hetzner frames (needs HCLOUD_TOKEN + HETZNER_SSH_KEY_ID + HETZNER_SSH_IDENTITY_FILE)',
   () => {
     it(
-      '≥3 SEPARATE Hetzner machines claim off one backlog; kill the authority mid-run → fail-open reconcile, no double-complete, no starvation; DESTROYS always',
+      '≥3 Swarms across real Hetzner machines claim off one backlog; kill the authority mid-run → fail-open reconcile, no double-complete, no starvation; DESTROYS always',
       async () => {
         const { provisionBenchFleet } = await import('./p2p-perf-tier3/bench-frames');
         const { HetznerDriver } = await import('./hetzner/hetzner-driver');
@@ -133,16 +137,22 @@ describe.skipIf(!haveHetzner)(
           ? resolve(process.cwd(), '..', '..')
           : process.cwd();
         const size = process.env.HETZNER_E2E_SERVER_TYPE ?? 'cpx31';
-        const frameCount = Math.max(3, Number(process.env.CLAIM_E2E_FRAMES ?? 3));
-        // Distinct VMs in (by default) one region — the holepunch wall is per-HOST, so same
-        // datacenter is a valid N-machine run; the authority RPC is plain HTTP over public IPs.
-        const locations = (process.env.P2P_PERF_HETZNER_LOCATIONS ?? 'ash,ash,ash')
+        // ≥3 Swarms across ≥2 frames. Default 3 Swarms on 2 frames (this account's Hetzner
+        // server limit is 2): the AUTHORITY runs ALONE on frame 0, the survivors on frame 1 —
+        // so killing frame 0's agent partitions the survivors from the authority across a real
+        // machine boundary. Raise CLAIM_E2E_FRAMES (after raising the account limit) for 1
+        // Swarm per distinct VM; the placement degrades to that automatically.
+        const frameCount = Math.max(2, Number(process.env.CLAIM_E2E_FRAMES ?? 2));
+        const swarmCount = Math.max(3, Number(process.env.CLAIM_E2E_SWARMS ?? 3));
+        // Distinct VMs in (by default) one region — the authority RPC is plain HTTP over the
+        // VMs' public IPs; cross-machine is per-HOST, so same datacenter is a valid run.
+        const locations = (process.env.P2P_PERF_HETZNER_LOCATIONS ?? 'ash,ash')
           .split(',')
           .map((s) => s.trim());
         const sshKeyId = Number(hetznerSshKeyId) || hetznerSshKeyId!;
         // Hetzner 409s on a duplicate server name → suffix the index when locations repeat.
         const needsIndexSuffix = new Set(locations.slice(0, frameCount)).size < frameCount;
-        const httpPort = Number(process.env.CLAIM_E2E_HTTP_PORT ?? 47_990);
+        const basePort = Number(process.env.CLAIM_E2E_HTTP_PORT ?? 47_990);
 
         const fleet = await provisionBenchFleet({
           driver: HetznerDriver,
@@ -162,12 +172,24 @@ describe.skipIf(!haveHetzner)(
         });
 
         try {
-          const frames: SshClaimSlotSpec[] = fleet.frames.map((f) => ({
-            label: f.spec.label,
-            host: f.target.host,
-            target: f.target,
-          }));
-          const launcher = sshClaimLauncher({ frames, httpPort, log: (l) => console.log(`[claim-xm] ${l}`) });
+          // Place Swarm 0 (the authority) alone on frame 0; Swarms 1.. round-robin the rest.
+          // Co-located Swarms get distinct ports; killing Swarm 0 thus kills ONLY the authority.
+          const portByFrame = new Map<number, number>();
+          const frameOf = (swarmIdx: number) =>
+            swarmIdx === 0 ? 0 : 1 + ((swarmIdx - 1) % Math.max(1, frameCount - 1));
+          const slotSpecs: SshClaimSlotSpec[] = Array.from({ length: swarmCount }, (_, a) => {
+            const fi = frameOf(a);
+            const portOffset = portByFrame.get(fi) ?? 0;
+            portByFrame.set(fi, portOffset + 1);
+            const frame = fleet.frames[fi];
+            return {
+              label: `${frame.spec.label}-s${a}`,
+              host: frame.target.host,
+              target: frame.target,
+              httpPort: basePort + portOffset,
+            };
+          });
+          const launcher = sshClaimLauncher({ slots: slotSpecs, log: (l) => console.log(`[claim-xm] ${l}`) });
 
           const v = await runClaimDispatch({
             launcher,
@@ -185,14 +207,15 @@ describe.skipIf(!haveHetzner)(
           });
 
           console.log(
-            `[claim-xm] ${v.swarmCount} Swarms; killed authority ${v.killedAuthority?.devicePubkey.slice(0, 12)}…; ` +
-              `completed ${v.completedItems.length}/${v.backlog.length}; raw-double=${v.rawDoubleClaimed.length}; ` +
-              `route ${JSON.stringify(v.routeStats)}`,
+            `[claim-xm] ${v.swarmCount} Swarms over ${frameCount} frames; killed authority ` +
+              `${v.killedAuthority?.devicePubkey.slice(0, 12)}…; completed ${v.completedItems.length}/${v.backlog.length}; ` +
+              `raw-double=${v.rawDoubleClaimed.length}; route ${JSON.stringify(v.routeStats)}`,
           );
 
           // THE P-013 cross-machine proof.
+          expect(v.swarmCount).toBeGreaterThanOrEqual(3);
           expect(v.killedAuthority).not.toBeNull();
-          expect(v.results.length).toBe(frameCount - 1); // survivors reported
+          expect(v.results.length).toBe(swarmCount - 1); // survivors reported
           expect(v.starvedItems).toEqual([]); // no starvation across real machines
           expect(v.completedItems.length).toBe(v.backlog.length);
           expect(v.failOpenObserved).toBe(true); // killing the authority frame partitioned them

@@ -1,0 +1,128 @@
+// @vitest-environment node
+/**
+ * wake-pump-isolation.integration.test.ts — C6 (idempotency / coalescing) + the
+ * cross-agent adversarial pump path against REAL Postgres
+ * (coordination-test-suite-2026-06-08 P-006).
+ *
+ * The EI-152 regression lives in wake-executor-matrix.test.ts; the store-level
+ * one-shot / coalesce / retry / backoff state machine is covered in
+ * await-store.integration.test.ts and the pump's pacing/governor logic in
+ * engine.test.ts. THIS file adds the missing adversarial cells:
+ *   - `armInboxWake` re-arm idempotency at the ARM (wrapper) level, not just the
+ *     store upsert — re-arming on every tick yields ONE standing row.
+ *   - **cross-agent emit isolation through the real `emitAwaitedEvent`**: an emit
+ *     to A's inbox-wake key fires + delivers ONLY to A; B is never touched. (EI-153
+ *     class, at the engine entry point an agent actually calls.)
+ *   - **end-to-end pump delivers A's wake via A's live socket, never B's** (real
+ *     store + real pump + the keystone testbed's real socket).
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OrgTestDb } from '../../../test/_org-test-db';
+import { MultiSessionTestbed } from '../../../test/_multi-session-testbed';
+
+const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-pump-iso' }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: () => h.ws,
+  backgroundWorkspaceIds: () => [h.ws],
+}));
+
+const store = await import('./store');
+const engine = await import('./engine');
+const { armInboxWake, cancelInboxWake } = await import('./inbox-wake-arm');
+const { inboxWakeKey } = await import('../../agent-tools/coordination/inbox-wake');
+const { createOrgTestDb } = await import('../../../test/_org-test-db');
+
+describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () => {
+  let db: OrgTestDb;
+  let tb: MultiSessionTestbed;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  // The pump narrates each delivery via console.warn (engine.ts `log`) — expected
+  // operational noise, so silence it (fail-on-console default). Installed per-test
+  // because the integration config auto-restores spies between tests.
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    if (tb) await tb.destroy();
+  });
+
+  const uid = () => `su-${Math.random().toString(36).slice(2, 10)}`;
+
+  it('armInboxWake re-arm is idempotent: every tick refreshes ONE standing row', async () => {
+    const owner = uid();
+    const first = await armInboxWake({ ownerId: owner, note: 'tick 1', workspaceId: h.ws });
+    const second = await armInboxWake({ ownerId: owner, note: 'tick 2', workspaceId: h.ws });
+    const third = await armInboxWake({ ownerId: owner, note: 'tick 3', workspaceId: h.ws });
+
+    // Same standing row, refreshed in place — never duplicated.
+    expect(second.awaitId).toBe(first.awaitId);
+    expect(third.awaitId).toBe(first.awaitId);
+    expect(first.eventKey).toBe(inboxWakeKey(owner));
+    const active = (await store.listActiveAwaits(owner)).filter((a) => a.eventKey === inboxWakeKey(owner));
+    expect(active).toHaveLength(1);
+    expect(active[0].note).toBe('tick 3');
+
+    // Cancel removes it; a later arm starts fresh.
+    expect(await cancelInboxWake(owner, h.ws)).toBe(1);
+    expect((await store.listActiveAwaits(owner)).filter((a) => a.eventKey === inboxWakeKey(owner))).toHaveLength(0);
+    const rearmed = await armInboxWake({ ownerId: owner, workspaceId: h.ws });
+    expect(rearmed.awaitId).not.toBe(first.awaitId);
+  });
+
+  it('cross-agent: an emit to A\'s inbox-wake key fires + delivers ONLY to A, never B', async () => {
+    const a = uid();
+    const b = uid();
+    await armInboxWake({ ownerId: a, workspaceId: h.ws });
+    await armInboxWake({ ownerId: b, workspaceId: h.ws });
+
+    // The real engine entry point an agent calls.
+    const res = await engine.emitAwaitedEvent({ key: inboxWakeKey(a), summary: 'for A only', workspaceId: h.ws });
+    // Drain the pump deterministically (emit kicks it via setImmediate).
+    await engine.pumpWakeDeliveries(h.ws);
+
+    // Exactly A was woken; B's standing watch is untouched.
+    expect(res.woken).toBe(1);
+    const aDeliveries = await store.listRecentDeliveries(a);
+    const bDeliveries = await store.listRecentDeliveries(b);
+    expect(aDeliveries.length).toBe(1);
+    expect(bDeliveries.length).toBe(0); // A's emit can NEVER produce a B delivery
+    // B's standing await is still armed (never consumed by A's emit).
+    expect((await store.listActiveAwaits(b)).filter((x) => x.eventKey === inboxWakeKey(b))).toHaveLength(1);
+  });
+
+  it('end-to-end: the pump delivers A\'s wake via A\'s LIVE socket, and B\'s socket receives nothing', async () => {
+    tb = MultiSessionTestbed.create();
+    const a = uid();
+    const b = uid();
+    const hostA = await tb.spawnSocketHost(a);
+    const hostB = await tb.spawnSocketHost(b);
+
+    // A standing wake delivery for A (handle-less inbox-wake — the EI-152 shape).
+    await armInboxWake({ ownerId: a, workspaceId: h.ws });
+    const fired = await store.fireAwaitsForKey({ eventKey: inboxWakeKey(a), workspaceId: h.ws });
+    expect(fired.map((x) => x.subscriberId)).toEqual([a]);
+    await store.insertDeliveries({ awaits: fired });
+
+    // Drive the REAL pump with the executor's psu-host discovery pointed at the
+    // testbed's isolated dir (real findLiveHost + real injectIntoHost).
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+
+    // A's delivery landed on A's socket; B's socket got nothing.
+    const recent = await store.listRecentDeliveries(a);
+    expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'psu-socket-inject' });
+    expect(hostA.received).toHaveLength(1);
+    expect(hostA.received[0]).toMatchObject({ v: 1, mode: 'turn' });
+    expect(hostB.received).toHaveLength(0);
+  });
+});

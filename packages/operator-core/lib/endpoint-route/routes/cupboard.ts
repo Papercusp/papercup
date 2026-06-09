@@ -22,7 +22,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getGhAuthToken } from '../../identity/gh-token';
 import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
 import { derivePackCatalog } from '../../cupboard/pack-catalog';
-import { buildToolsDiscovery } from '../../cupboard/tools-discovery';
+import {
+  buildToolsDiscovery,
+  buildToolProvenance,
+  collectToolMeta,
+} from '../../cupboard/tools-discovery';
 import { getPluginHost } from '../../plugin-host-runtime';
 
 // Base URL for the external Cupboard worker. Single source of truth is
@@ -129,10 +133,13 @@ const getCupboardListing = defineTool({
 
 // ─── GET /cupboard/tools ─────────────────────────────────────────
 // The marketplace's Tools discovery section (tool-distribution-granularity
-// P-006/D-005): every known tool resolved to its provider — the merged local
-// pack catalog (built-ins + installed plugins/packs) plus the Cupboard's
-// provides_tools declarations. NOT a proxy: the local registries are half the
-// answer, so this derives the catalog in-process and folds the Cupboard in.
+// P-006/D-005 + tool-distribution-discovery P-005/P-007): every known tool
+// resolved to its provider — the merged local pack catalog (built-ins +
+// installed plugins/packs) plus the Cupboard's provides_tools declarations.
+// NOT a proxy: the local registries are half the answer, so this derives the
+// catalog in-process and folds the Cupboard in. `q` runs capability search
+// (relevance-ranked over name/category/capability/provider/description);
+// `category` + `status` narrow; `categories` facets ride back for the UI.
 
 const listCupboardTools = defineTool({
   method: 'GET',
@@ -141,6 +148,7 @@ const listCupboardTools = defineTool({
   async handler(req) {
     const url = new URL(req.url);
     const q = url.searchParams.get('q') ?? undefined;
+    const category = url.searchParams.get('category') ?? undefined;
     const statusRaw = url.searchParams.get('status');
     const status =
       statusRaw === 'available' || statusRaw === 'installable' ? statusRaw : undefined;
@@ -153,7 +161,41 @@ const listCupboardTools = defineTool({
       // first discovery call doesn't under-report installed units.
       await getPluginHost();
       const cat = await derivePackCatalog({ timeoutMs: 8_000 });
-      return Response.json(buildToolsDiscovery(cat, { q, status }));
+      const meta = collectToolMeta();
+      return Response.json(buildToolsDiscovery(cat, { q, status, category }, meta));
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 503 });
+    }
+  },
+});
+
+// ─── GET /cupboard/provides ──────────────────────────────────────
+// "What provides X" — the human-facing inverse of the dependency resolver
+// (tool-distribution-discovery P-006). Given a tool name (`?tool=`, exact) or
+// a capability phrase (`?q=`), return the providing pack/plugin/listing +
+// install action. An installable match carries `provider.listingId` + `unit`,
+// which the UI routes to the listing's install-consent flow (D-005) — the same
+// surface the dep gate's `cupboard:install-deps` acts on.
+
+const resolveCupboardProvides = defineTool({
+  method: 'GET',
+  path: '/cupboard/provides',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const tool = url.searchParams.get('tool')?.trim() || undefined;
+    const q = url.searchParams.get('q')?.trim() || undefined;
+    if (!tool && !q) {
+      return Response.json(
+        { error: 'missing_query', detail: 'pass ?tool=<name> or ?q=<capability>' },
+        { status: 400 },
+      );
+    }
+    try {
+      await getPluginHost();
+      const cat = await derivePackCatalog({ timeoutMs: 8_000 });
+      const meta = collectToolMeta();
+      return Response.json(buildToolProvenance(cat, { tool, q }, meta));
     } catch (err) {
       return Response.json({ error: String(err) }, { status: 503 });
     }
@@ -247,6 +289,7 @@ export default [
   listCupboardListings,
   getCupboardListing,
   listCupboardTools,
+  resolveCupboardProvides,
   listCupboardReports,
   resolveCupboardReport,
   unlistCupboardHarness,
