@@ -98,7 +98,6 @@ export default function PlanActions({
   disabledReason,
 }: Props) {
   const [open, setOpen] = useState<Dialog>(null);
-  const [launchingAgent, setLaunchingAgent] = useState(false);
   const [launchingWorkbench, setLaunchingWorkbench] = useState(false);
   const [startPending, setStartPending] = useState(false);
   const [approvePending, setApprovePending] = useState(false);
@@ -175,27 +174,6 @@ export default function PlanActions({
       toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setStartPending(false);
-    }
-  };
-
-  const onLaunchAgent = async () => {
-    if (launchingAgent) return;
-    setLaunchingAgent(true);
-    try {
-      const label = planTitle?.trim() || slug;
-      const result = await launchAgent({ slug: null, planSlug: slug, label });
-      if (result.ok) {
-        toast.success(`Launched agent for ${slug}.`, { duration: 4000 });
-      } else if (result.installCmd) {
-        toast.error(
-          `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
-          { duration: 12000 },
-        );
-      } else {
-        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`, { duration: 10000 });
-      }
-    } finally {
-      setLaunchingAgent(false);
     }
   };
 
@@ -343,20 +321,11 @@ export default function PlanActions({
       <button
         type="button"
         className="pc-plan-actions__btn pc-plan-actions__btn--launch"
-        onClick={onLaunchAgent}
-        disabled={launchingAgent}
-        title={`Launch a power-user agent terminal tagged with ${slug}; appears in /adv/sessions`}
-      >
-        {launchingAgent ? 'Launching…' : 'Launch agent'}
-      </button>
-      <button
-        type="button"
-        className="pc-plan-actions__btn pc-plan-actions__btn--launch"
         onClick={onLaunchWorkbench}
         disabled={launchingWorkbench}
-        title={`Open a session for ${slug} as a pane in the pui workbench (no separate terminal)`}
+        title={`Launch an agent session for ${slug} as a pane in the pui workbench`}
       >
-        {launchingWorkbench ? 'Opening…' : 'Launch in workbench'}
+        {launchingWorkbench ? 'Launching…' : 'Launch agent'}
       </button>
 
       <SetNowDialog

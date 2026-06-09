@@ -31,7 +31,10 @@ import { tmpdir } from 'node:os';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const AUTHORIZE_URL = 'https://claude.com/cai/oauth/authorize';
 const TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
-const REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback';
+// claude-code registers a loopback redirect (any port, RFC 8252). No listener is needed on a remote
+// browser — after login the address bar shows `http://localhost:PORT/callback?code=…&state=…`,
+// and the owner copies the `code` out of it.
+const REDIRECT_URI = 'http://localhost:45289/callback';
 const SCOPES = 'user:inference';
 
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
