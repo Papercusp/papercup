@@ -59,13 +59,18 @@ export interface SwarmCrossHiveTransportOpts {
   /** Poll cadence while waiting for a channel (default 50ms). */
   pollMs?: number;
   /**
-   * Background re-announce cadence (default 2500ms). The transport periodically
-   * re-flushes the swarm so BOTH a receiver (re-announcing its topic) and a
-   * sender (re-driving its lookup) stay continuously discoverable — repeated
-   * mutual flushing is what makes the cross-topic rendezvous connect reliably
-   * (a single announce can be missed). 0 disables it.
+   * Background FAST re-announce cadence (default 2500ms). The transport
+   * periodically re-runs each joined topic's DHT announce+lookup round
+   * (discovery.refresh()) so BOTH a receiver (re-announcing its topic) and a
+   * sender (re-driving its lookup) stay continuously discoverable — the first
+   * rounds after a join reliably miss. 0 disables the background loop.
    */
   reannounceMs?: number;
+  /** How long the fast cadence runs after a topic join before backing off
+   *  (default 30s). send() still refreshes unconditionally while dialing. */
+  fastWindowMs?: number;
+  /** Steady-state keepalive cadence after the fast window (default 60s). */
+  slowRefreshMs?: number;
 }
 
 export interface SwarmCrossHiveTransport extends CrossHiveTransport {
@@ -95,9 +100,16 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   const sendWaitMs = opts.sendWaitMs ?? 5000;
   const pollMs = opts.pollMs ?? 50;
   const reannounceMs = opts.reannounceMs ?? 2500;
+  const fastWindowMs = opts.fastWindowMs ?? 30_000;
+  const slowRefreshMs = opts.slowRefreshMs ?? 60_000;
 
   const channels = new Set<OpenChannel>();
-  const joined = new Map<string, unknown>(); // topicHex → discovery handle
+  interface JoinedTopic {
+    discovery: { refresh?: (o?: object) => unknown } | undefined;
+    fastWindowStartMs: number;
+    lastRefreshMs: number;
+  }
+  const joined = new Map<string, JoinedTopic>(); // topicHex → discovery + cadence state
   let inbound: ((env: CrossHiveWireEnvelope) => void | Promise<unknown>) | null = null;
   const inboundBuffer: CrossHiveWireEnvelope[] = [];
   let connectionCount = 0;
@@ -180,15 +192,24 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   const ensureJoined = (topic: Buffer): void => {
     const hex = topic.toString('hex');
     if (joined.has(hex)) return;
-    joined.set(hex, opts.swarm.join(topic, { server: true, client: true }));
+    joined.set(hex, {
+      discovery: opts.swarm.join(topic, { server: true, client: true }) as JoinedTopic['discovery'],
+      fastWindowStartMs: Date.now(),
+      lastRefreshMs: 0,
+    });
   };
 
-  /** Re-run every joined topic's DHT announce + lookup round (best-effort). */
+  /** Re-run every joined topic's DHT announce + lookup round (best-effort).
+   *  UNCONDITIONAL — used by send()'s dial loop + subscribe(), where the caller
+   *  actively needs convergence now. The background timer applies the two-speed
+   *  cadence itself. */
   const refreshAll = async (): Promise<void> => {
+    const now = Date.now();
     await Promise.all(
-      [...joined.values()].map(async (d) => {
+      [...joined.values()].map(async (t) => {
+        t.lastRefreshMs = now;
         try {
-          await (d as { refresh?: (o?: object) => unknown } | undefined)?.refresh?.();
+          await t.discovery?.refresh?.();
         } catch {
           /* best-effort per topic */
         }
@@ -207,7 +228,20 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
   // converge even when a round is missed. Cleared on close.
   let reannounceTimer: ReturnType<typeof setInterval> | null = null;
   if (reannounceMs > 0) {
-    reannounceTimer = setInterval(() => void refreshAll(), reannounceMs);
+    reannounceTimer = setInterval(() => {
+      const now = Date.now();
+      for (const t of joined.values()) {
+        const inFastWindow = now - t.fastWindowStartMs < fastWindowMs;
+        const slowDue = now - t.lastRefreshMs >= slowRefreshMs;
+        if (!inFastWindow && !slowDue) continue;
+        t.lastRefreshMs = now;
+        try {
+          void Promise.resolve(t.discovery?.refresh?.()).catch(() => {});
+        } catch {
+          /* best-effort per topic */
+        }
+      }
+    }, reannounceMs);
     reannounceTimer.unref?.();
   }
 

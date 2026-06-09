@@ -296,6 +296,43 @@ describe('createDirectoryGossip', () => {
     }
   });
 
+  it('backs off to the slow keepalive after the fast window, and re-arms on last-peer loss', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fakeSwarm();
+      const g = createDirectoryGossip({
+        swarm: f.swarm,
+        onAnnounce: () => {},
+        getOwnAnnounces: () => [],
+        refreshMs: 50,
+        fastWindowMs: 200,
+        slowRefreshMs: 1000,
+      });
+      g.joinTopic(TOPIC);
+      // Fast window: ticks at 50/100/150 are inside it (200 is not).
+      await vi.advanceTimersByTimeAsync(200);
+      const fastCount = f.refreshed.length;
+      expect(fastCount).toBeGreaterThanOrEqual(3);
+      // Past the window, before the slow keepalive is due → silent.
+      await vi.advanceTimersByTimeAsync(800);
+      expect(f.refreshed.length).toBe(fastCount);
+      // Slow keepalive fires once due (lastRefresh + slowRefreshMs).
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.refreshed.length).toBe(fastCount + 1);
+      // Losing the topic's LAST peer re-arms the fast window.
+      const socket = f.connect();
+      socket.userData!.channels[0].pairRemote();
+      await vi.advanceTimersByTimeAsync(0);
+      socket.userData!.channels[0].fireClose();
+      const n = f.refreshed.length;
+      await vi.advanceTimersByTimeAsync(150);
+      expect(f.refreshed.length).toBeGreaterThanOrEqual(n + 2);
+      await g.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('close leaves every topic and detaches the handler', async () => {
     const f = fakeSwarm();
     const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });

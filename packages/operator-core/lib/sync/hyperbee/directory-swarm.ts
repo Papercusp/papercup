@@ -49,10 +49,16 @@ import type { SignedHiveAnnounce } from './hive-announce';
 /** Protomux protocol id for the hive-directory gossip exchange. */
 export const HIVE_DIRECTORY_PROTOCOL = 'papercusp/hive-directory';
 
-/** Background per-topic discovery-refresh cadence — re-runs the DHT announce +
- *  lookup round so peers converge even when the first round misses (it reliably
- *  does on a fresh node; see the module header). */
+/** FAST per-topic discovery-refresh cadence — re-runs the DHT announce + lookup
+ *  round so peers converge even when the first round misses (it reliably does
+ *  on a fresh node; see the module header). Active during the post-join window. */
 export const DEFAULT_REFRESH_MS = 2500;
+/** How long after a topic join (or after losing its last peer) the FAST cadence
+ *  runs before backing off — long enough for several full DHT rounds. */
+export const DEFAULT_FAST_WINDOW_MS = 30_000;
+/** Steady-state keepalive cadence — re-announces + re-looks-up each topic so a
+ *  late-arriving peer still finds us, without hammering the public DHT forever. */
+export const DEFAULT_SLOW_REFRESH_MS = 60_000;
 
 type DirMessage = { send(value: SignedHiveAnnounce): void };
 
@@ -65,6 +71,11 @@ interface TopicState {
   discovery: DiscoveryLike;
   /** Paired channels for THIS topic (one per socket whose peer also joined it). */
   channels: Set<DirMessage>;
+  /** Start of the topic's FAST-refresh window (join time; re-armed when the
+   *  topic loses its last paired channel, so reconnection is snappy too). */
+  fastWindowStartMs: number;
+  /** Last refresh tick for this topic (drives the slow keepalive). */
+  lastRefreshMs: number;
 }
 
 export interface DirectoryGossipHandle {
@@ -95,8 +106,12 @@ export interface CreateDirectoryGossipOpts {
    *  topic so a global-topic pair only ever receives PUBLIC hives and an
    *  invite-topic pair only that invite's hive(s). */
   getOwnAnnounces: (topicHex: string) => SignedHiveAnnounce[] | Promise<SignedHiveAnnounce[]>;
-  /** Per-topic discovery-refresh cadence (ms). Default DEFAULT_REFRESH_MS; 0 disables. */
+  /** FAST per-topic discovery-refresh cadence (ms). Default DEFAULT_REFRESH_MS; 0 disables refreshing entirely. */
   refreshMs?: number;
+  /** How long the fast cadence runs after a join / last-peer loss (ms). Default DEFAULT_FAST_WINDOW_MS. */
+  fastWindowMs?: number;
+  /** Steady-state keepalive cadence once the fast window lapses (ms). Default DEFAULT_SLOW_REFRESH_MS. */
+  slowRefreshMs?: number;
 }
 
 /**
@@ -177,6 +192,9 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
         onopen: sendOurs,
         onclose: () => {
           if (message) st.channels.delete(message);
+          // Lost the topic's last peer → re-arm the FAST refresh window so
+          // rediscovery/reconnection is snappy again.
+          if (st.channels.size === 0) st.fastWindowStartMs = Date.now();
         },
       });
       if (!channel) return; // already open for this (socket, topic) — idempotent
@@ -208,12 +226,23 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
 
   // Keep every topic's announce + lookup converging in the background (cleared
   // on close). discovery.refresh() re-runs the full DHT round for that topic —
-  // the only driver that reliably connects (see the module header).
+  // the only driver that reliably connects (see the module header). Cadence is
+  // TWO-SPEED: fast (refreshMs) inside a topic's post-join window — the first
+  // rounds reliably miss on a fresh node — then a slow keepalive so a long-lived
+  // topic (the global directory) doesn't hammer the public DHT forever. Losing a
+  // topic's last peer re-arms its fast window (see the channel onclose).
   const refreshMs = opts.refreshMs ?? DEFAULT_REFRESH_MS;
+  const fastWindowMs = opts.fastWindowMs ?? DEFAULT_FAST_WINDOW_MS;
+  const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SLOW_REFRESH_MS;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   if (refreshMs > 0) {
     refreshTimer = setInterval(() => {
+      const now = Date.now();
       for (const st of topics.values()) {
+        const inFastWindow = now - st.fastWindowStartMs < fastWindowMs;
+        const slowDue = now - st.lastRefreshMs >= slowRefreshMs;
+        if (!inFastWindow && !slowDue) continue;
+        st.lastRefreshMs = now;
         try {
           void Promise.resolve(st.discovery?.refresh?.()).catch(() => {});
         } catch {
@@ -248,7 +277,13 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
       // NO discovery.flushed() here — it never connects a standalone transport
       // (see the module header); the background refresh loop is the driver.
       const discovery = opts.swarm.join(topic, { server: true, client: true }) as DiscoveryLike;
-      const st: TopicState = { topic, discovery, channels: new Set() };
+      const st: TopicState = {
+        topic,
+        discovery,
+        channels: new Set(),
+        fastWindowStartMs: Date.now(),
+        lastRefreshMs: 0,
+      };
       topics.set(hex, st);
       // A topic joined after connections exist still gets its channel everywhere.
       for (const socket of sockets) openTopicChannel(socket, st);

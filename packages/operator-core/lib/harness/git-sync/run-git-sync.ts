@@ -141,6 +141,13 @@ function rejectedNonFastForward(r: { stdout: string; stderr: string }): boolean 
   return /non-fast-forward|\[rejected\]|fetch first|Updates were rejected/i.test(`${r.stdout}\n${r.stderr}`);
 }
 
+/** A non-zero `git commit` that simply had nothing staged (e.g. every dirty file was
+ *  excluded as oversized) — benign, NOT a real commit failure. Anything else (index.lock
+ *  race, corrupt index, hook abort) IS a failure we must surface (P-002). */
+function nothingToCommit(r: { stdout: string; stderr: string }): boolean {
+  return /nothing to commit|no changes added to commit|nothing added to commit/i.test(`${r.stdout}\n${r.stderr}`);
+}
+
 /**
  * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
  * reads the live submodule tree (`git submodule status --recursive`), never a
@@ -171,10 +178,14 @@ type RepoSyncResult = { oversized: OversizedFile[] } & (
  * the auto-commit can EXCLUDE them (EI-18: GitHub hard-rejects >100MB blobs, and one
  * committed oversized blob makes the unpushed range permanently unpushable; recovery
  * is manual history surgery). Uses `status --porcelain -z` (NUL-separated, unquoted —
- * robust to spaces/specials in paths).
+ * robust to spaces/specials in paths) with `-uall` (P-001): WITHOUT it a brand-new
+ * directory collapses to a single `?? dir/` entry whose `lstat` is a directory and is
+ * skipped, hiding an oversized file INSIDE it — then `add -A` commits it and wedges the
+ * push forever (the exact EI-18 incident class). `-uall` lists every untracked file
+ * individually so each oversized blob is seen + excluded.
  */
 async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, maxBytes: number): Promise<OversizedFile[]> {
-  const r = await runGit(['status', '--porcelain', '-z'], repoPath);
+  const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
   const out: OversizedFile[] = [];
