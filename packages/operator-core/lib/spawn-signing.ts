@@ -41,29 +41,19 @@
  * minting end).
  */
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
+// The signing PRIMITIVES (allowlist + canonicalize + HMAC) live in ONE shared
+// module the orchestrator process imports too — so the rule can't drift between
+// the two signers (unify-launch-mechanics follow-on, signing dedup). Only the
+// per-process PG key-loading (below) stays local.
+import { canonicalizeSpawnParams, hmacSpawnBytes } from '@papercusp/orchestrator/spawn-signing-core';
 
 const os = generated.operatorSecretsInHarnessShared;
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
 
 const KEY_NAME = 'spawn-signing-key';
-
-/** Params that are part of the signed envelope. Order doesn't matter — */
-/** the canonicalization sorts them. */
-const SIGNED_PARAM_ALLOWLIST = new Set([
-  'harness',
-  'workspace',
-  'role',
-  'run',
-  'spawn',
-  'feature',
-  'chunk',
-  'parent_spawn',
-  'client',
-  'exp',
-]);
 
 interface KeyCache {
   buf: Buffer;
@@ -131,35 +121,12 @@ async function loadOrCreateKey(): Promise<Buffer> {
   return buf;
 }
 
-/**
- * Canonical string built from the signed-allowlist params (sorted by
- * name, joined with `&`, value-encoded with `encodeURIComponent`).
- * Ignores `sig` itself and any param not in the allowlist — a forger
- * can't sneak in extra signed params, and a verifier can't be tricked
- * by reordering. Rejects duplicate keys (would otherwise let a forger
- * append `&role=operator` AFTER the signed one and have the parser
- * pick the later value).
- */
-function canonicalize(params: URLSearchParams): { ok: true; canonical: string } | { ok: false; reason: string } {
-  const seen = new Set<string>();
-  const pairs: Array<[string, string]> = [];
-  for (const [k, v] of params.entries()) {
-    if (k === 'sig') continue;
-    if (!SIGNED_PARAM_ALLOWLIST.has(k)) continue;
-    if (seen.has(k)) return { ok: false, reason: `duplicate_param:${k}` };
-    seen.add(k);
-    pairs.push([k, v]);
-  }
-  pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return {
-    ok: true,
-    canonical: pairs.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&'),
-  };
-}
-
-function hmac(key: Buffer, msg: string): Buffer {
-  return createHmac('sha256', key).update(msg).digest();
-}
+// canonicalize + hmac now come from the shared `@papercusp/orchestrator/spawn-signing-core`
+// (imported above) — `canonicalizeSpawnParams` + `hmacSpawnBytes` — so this signer and the
+// orchestrator's spawn-time signer use byte-identical rules. Local aliases keep the call
+// sites below unchanged.
+const canonicalize = canonicalizeSpawnParams;
+const hmac = hmacSpawnBytes;
 
 export interface SignedSpawnParams {
   exp: number;

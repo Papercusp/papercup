@@ -11,33 +11,32 @@ Feature flags are how Papercusp ships V1 with a minimal feature set while keepin
 
 The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
 
-| Key                                    | TS constant                        | Default    | What it gates                                                                                                                                                      |
-| -------------------------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `papercusp-snapshots`                  | `FLAGS.SNAPSHOTS`                  | **`true`** | Save / restore mission state — now the Cupboard's `kind=snapshot` fork-source (capture + local instantiate are live; defaults **on**).                             |
-| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false`    | Publish-to-Cloudflare flow.                                                                                                                                        |
-| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false`    | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                |
-| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false`    | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                        |
-| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false`    | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                           |
-| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false`    | In-harness "design" tab + `/design` route + `/api/design/*` routes.                                                                                                |
-| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false`    | Testing-only surfaces: the `pi` tab + the "add plugin" button.                                                                                                     |
-| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false`    | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                           |
-| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false`    | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                            |
-| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `false`    | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes.                                                                |
-| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `false`    | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass.                                                      |
-| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `false`    | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
+| Key                                    | TS constant                        | Default | What it gates                                                                                                                                                      |
+| -------------------------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false` | Publish-to-Cloudflare flow.                                                                                                                                        |
+| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                |
+| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                        |
+| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                           |
+| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false` | In-harness "design" tab + `/design` route + `/api/design/*` routes.                                                                                                |
+| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false` | Testing-only surfaces: the `pi` tab + the "add plugin" button.                                                                                                     |
+| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                           |
+| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                            |
+| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `false` | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes.                                                                |
+| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `false` | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass.                                                      |
+| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `false` | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
 
-> `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. Their keys no longer exist in `FLAGS`.
+> `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. `papercusp-snapshots` (`FLAGS.SNAPSHOTS`) was **retired** (`retire-snapshots-instance-spec` D-005): the harness-snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible clone is the ungated, lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`). Their keys no longer exist in `FLAGS`.
 
 All keys also live in `libs/flags/src/types.ts` as the single source of truth — adding a new flag means editing **one file**, then creating the matching definition in PostHog. The TypeScript `FlagKey` type is derived from the object, so call sites get autocomplete and any rename is a compile error at every site.
 
 ## Defaults and the V1 ship contract
 
-`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state. Every flag defaults `false` **except `papercusp-snapshots`, which defaults `true`** (snapshots back the Cupboard's fork-source). The operator returns this map whenever PostHog is unreachable or unconfigured: every other cut feature stays cut, no network call required to discover it.
+`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state: **every flag defaults `false`**. The operator returns this map whenever PostHog is unreachable or unconfigured: every cut feature stays cut, no network call required to discover it.
 
 Two statements that hold for every shipped binary:
 
 1. A freshly installed Papercusp binary on Linux / macOS / Windows makes **zero** outbound HTTP requests to `flags.papercuspai.com` under normal use.
-2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false` except `papercusp-snapshots`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
+2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
 
 Both hold without any post-install configuration. Verified by the build-agent handoff via a clean-machine smoke test.
 
@@ -130,13 +129,13 @@ Each cut feature has gating at multiple layers; the goal is that no path — dir
 The operator frontend is the Vite SPA (Next.js is retired). Gated routes call `requireFlag(FLAGS.X)` in their `beforeLoad`; the helper (`apps/operator-vite/src/lib/require-flag.ts`) `loadFlags()`-then-`throw notFound()` if the flag is off, which renders the root route's `notFoundComponent`:
 
 ```tsx
-// apps/operator-vite/src/routes/installed/snapshots.tsx
+// apps/operator-vite/src/routes/design/index.tsx
 import { FLAGS } from '@papercusp/flags';
 import { requireFlag } from '@/lib/require-flag';
 
-export const Route = createFileRoute('/installed/snapshots')({
-  beforeLoad: () => requireFlag(FLAGS.SNAPSHOTS),
-  component: SnapshotsClient,
+export const Route = createFileRoute('/design/')({
+  beforeLoad: () => requireFlag(FLAGS.DESIGN),
+  component: DesignClient,
 });
 ```
 
@@ -157,18 +156,18 @@ const oracleFlag = useFlag(FLAGS.ORACLE);
 
 ### Component layer (defense-in-depth)
 
-Modal panels like `<SnapshotsPanel>` and `<TemplatesModal>` use `useQueryState` for their open/closed state, so anyone can deep-link `?snapshots=true` and trigger a render. The render conditions additionally check the flag:
+Modal panels like `<DesignPanel>` use `useQueryState` for their open/closed state, so anyone can deep-link `?design=true` and trigger a render. The render conditions additionally check the flag:
 
 ```tsx
-{showSnapshots && activeSlug && snapshotsEnabled && (
-  <SnapshotsPanel … />
+{showDesign && activeSlug && designEnabled && (
+  <DesignPanel … />
 )}
 ```
 
 Command-palette entries that would open these panels are similarly gated:
 
 ```tsx
-if (snapshotsEnabled) cs.push({ id: 'snapshots', … });
+if (designEnabled) cs.push({ id: 'design', … });
 ```
 
 ### API route layer
@@ -180,7 +179,7 @@ import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '../../../require-flag';
 
 async handler(req) {
-  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
   if (blocked) return blocked;
   // …handler logic…
 }
@@ -202,7 +201,7 @@ Each gated MCP tool checks the flag at registration time and at runtime. Tools t
 
 ### Configuration
 
-The single source of truth for which surfaces each flag gates is **not** documented in code comments — it's expressed in the gating itself. `grep -rln "FLAGS.SNAPSHOTS" apps/operator` is the canonical answer.
+The single source of truth for which surfaces each flag gates is **not** documented in code comments — it's expressed in the gating itself. `grep -rln "FLAGS.DESIGN" apps/operator` is the canonical answer.
 
 ## File structure
 
@@ -314,7 +313,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 beforeEach(() => {
   setFlagOverridesForTest({
-    [FLAGS.SNAPSHOTS]: true,
+    [FLAGS.DESIGN]: true,
     [FLAGS.ORACLE]: false,
   });
 });
@@ -366,7 +365,7 @@ curl -s http://localhost:3055/api/flags/bootstrap | jq
 ### "Discover what a flag gates"
 
 ```bash
-grep -rln "FLAGS.SNAPSHOTS" apps/operator
+grep -rln "FLAGS.DESIGN" apps/operator
 ```
 
 The gating sites are the documentation.

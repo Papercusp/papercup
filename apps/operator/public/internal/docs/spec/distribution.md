@@ -16,7 +16,7 @@ claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and
 `apps/papercup` reference install is retired to `_retired/papercup/`.
 
 The Cupboard is **one storefront with several listing kinds**
-(`harness` → join, `blueprint`/`snapshot` → fork, `plugin`/`pack` →
+(`harness` → join, `blueprint` → fork, `plugin`/`pack` →
 install), keyed on the GitHub-backed project remote. Auth is a GitHub
 bearer (validated against `https://api.github.com/user`), **not**
 namespace OAuth + Ed25519-server-signing as §11.6 describes; publisher

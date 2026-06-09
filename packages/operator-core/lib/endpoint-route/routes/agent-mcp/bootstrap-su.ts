@@ -30,6 +30,7 @@ import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
 import { writeSuCodexHome } from '../../../role-codex-home';
+import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import {
   materializeCodexPrompts,
   materializeWorkspacePrompts,
@@ -100,9 +101,10 @@ export interface BootstrapSuResult {
   /**
    * Env the launcher exports into the CHILD process (the raw CLI). Carries
    * the MCP/context vars + PAPERCUSP_AGENT + PAPERCUSP_SID (per-session
-   * coord/lock owner) + PAPERCUSP_ADV_SESSION_ID + CODEX_HOME (codex). No
-   * secrets — the superuser bearer is read from the 0600 token file by the
-   * launcher, never sent over HTTP.
+   * coord/lock owner) + PAPERCUSP_ADV_SESSION_ID + CODEX_HOME (codex) +
+   * CLAUDE_CONFIG_DIR (claude — the per-session transcript-isolated config dir,
+   * EI-155). No secrets — the superuser bearer is read from the 0600 token file
+   * by the launcher, never sent over HTTP.
    */
   envelopeEnv: Record<string, string>;
 }
@@ -445,11 +447,30 @@ const post = defineTool({
     const coordExt = resolveInstallPaths(homedir()).extensionPath;
     const coordExtPath = existsSync(coordExt) ? coordExt : null;
 
+    // EI-155: an interactive claude session gets a per-session, transcript-
+    // isolated CLAUDE_CONFIG_DIR (keyed by sid via the shared helper, so the
+    // wake-executor resume leg resolves the SAME dir). It is a symlink mirror of
+    // ~/.claude with only `projects/` isolated — the user-level papercusp-su MCP,
+    // the lock/coord hooks, plugins, and onboarding/trust all carry through (a
+    // creds-only dir like the bee path would strip all of those — see
+    // writeInteractiveClaudeConfig). codex isolates via its CODEX_HOME; omp's
+    // store is its own. Best-effort: a materialize failure must not block a
+    // launch (the session falls back to the shared ~/.claude, exactly as before).
+    let claudeConfigDir: string | null = null;
+    if (agent === 'claude') {
+      try {
+        claudeConfigDir = writeInteractiveClaudeConfig({ sid }).configDir;
+      } catch (e: any) {
+        process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
+      }
+    }
+
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
       PAPERCUSP_AGENT: agent,
       PAPERCUSP_SID: sid,
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+      ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
     };
 

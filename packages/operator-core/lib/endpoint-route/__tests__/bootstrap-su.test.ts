@@ -40,6 +40,12 @@ const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
   configPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/config.toml`,
 }));
+// EI-155: the interactive-claude config-dir materializer. Mocked so the unit
+// test never touches the dev box's real ~/.claude (the materializer's own
+// symlink-farm behavior is covered by interactive-claude-config.test.ts).
+const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
+  configDir: `/fake/.papercusp/session-claude/${opts.sid}`,
+}));
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -72,6 +78,9 @@ vi.mock('../../role-launch-spec', () => ({
 }));
 vi.mock('../../role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+}));
+vi.mock('../../interactive-claude-config', () => ({
+  writeInteractiveClaudeConfig: (...args: unknown[]) => writeInteractiveClaudeConfigMock(...(args as [any])),
 }));
 // The bootstrap handler fires a best-effort saved-prompts materialize side
 // effect; this unit test isn't exercising it (the materialize integration test
@@ -194,6 +203,41 @@ describe('bootstrap-su', () => {
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).
     expect(json.coordExtPath).toBe(COORD_EXT);
+  });
+
+  it('EI-155: claude gets a per-session CLAUDE_CONFIG_DIR keyed by the minted sid', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    const sid = json.envelopeEnv.PAPERCUSP_SID;
+    // The materializer is keyed by the SAME sid recorded as coord_owner_id, so
+    // the wake-executor resume leg (sessionClaudeConfigDir(coordOwnerId)) lands
+    // on the identical dir the launch wrote to.
+    expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({ sid }));
+    expect(json.envelopeEnv.CLAUDE_CONFIG_DIR).toBe(`/fake/.papercusp/session-claude/${sid}`);
+  });
+
+  it('EI-155: omp/codex get NO CLAUDE_CONFIG_DIR (codex isolates via CODEX_HOME; omp by its own store)', async () => {
+    const omp = await (await callPost({ agent: 'omp', harness_slug: 'papercup', plan_slug: null })).json();
+    expect(omp.envelopeEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+
+    vi.clearAllMocks();
+    recordAdvSessionMock.mockResolvedValue(42);
+    const codex = await (await callPost({ agent: 'codex', harness_slug: null, plan_slug: null })).json();
+    expect(codex.envelopeEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(writeInteractiveClaudeConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('EI-155: a materialize failure is non-fatal — the launch still succeeds without CLAUDE_CONFIG_DIR', async () => {
+    writeInteractiveClaudeConfigMock.mockImplementationOnce(() => {
+      throw new Error('symlink EACCES');
+    });
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.envelopeEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+    // The session still has its identity + native id — only transcript isolation degraded.
+    expect(json.envelopeEnv.PAPERCUSP_SID).toMatch(/^su-/);
+    expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('no harness + no plan → playbook prompt still written; spec gets nulls', async () => {

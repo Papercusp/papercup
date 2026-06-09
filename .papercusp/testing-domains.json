@@ -1472,10 +1472,11 @@
         {
           "id": "wake-identity",
           "label": "C5 identity + EI-153",
-          "description": "Cross-agent wake isolation + identity across resume (per-owner CLAUDE_CONFIG_DIR / CODEX_HOME, exact-session resume never --continue) + the launch-side per-spawn config isolation.",
+          "description": "Cross-agent wake isolation + identity across resume (per-owner CLAUDE_CONFIG_DIR / CODEX_HOME, exact-session resume never --continue) + the launch-side per-spawn config isolation (headless bees) AND the interactive psu/SU + role claude config-dir materializer (EI-155 — a symlink mirror of ~/.claude with an isolated transcript store).",
           "globs": [
             "packages/operator-core/lib/events/await/wake-resume-isolation.test.ts",
-            "libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts"
+            "libs/papercusp/packages/orchestrator/src/spawn-config-isolation.test.ts",
+            "packages/operator-core/lib/interactive-claude-config.test.ts"
           ]
         },
         {

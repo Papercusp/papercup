@@ -127,7 +127,7 @@ Files are correct for these specific cases:
 | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Bootstrap state needed before a PG connection exists                    | `~/.papercusp-workspaces/registry.json`, `~/.papercusp/db-encryption-key`    |
 | Postgres's own data                                                     | `pglite-data/`, `embedded-pg-data/`                                          |
-| Code, scripts, templates, snapshots                                     | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
+| Code, scripts, templates                                                | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
 | Harness contract artifacts read by tools running inside the harness     | `<harness>/.papercusp/config.json`, `SPEC.md`, `supervisor-notes.md`         |
 | Append-only logs at high volume where SQL log tables would dwarf state  | `.papercusp/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
 | Per-process resource leases (in-process / O\_EXCL)                      | `deployment/display-allocator.ts` per-agent DISPLAY leases                   |

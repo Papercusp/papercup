@@ -315,9 +315,13 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
       // Extensions + all migrations + spawn-signing-key premint (fails the script on error).
       'node libs/papercusp/packages/embedded-postgres-server/bin/apply-migrations.mjs',
-      // Fail LOUD if the baseline didn't land — no silent half-migrated frame.
-      `if [ "$(psql "$DATABASE_URL" -tAc "select to_regclass('harness_shared.harness_features') is not null")" != "t" ]; then`,
-      '  echo "FATAL: migrations did not apply (harness_shared.harness_features missing)" >&2',
+      // Fail LOUD if provisioning didn't land — no silent half-migrated frame. Check the
+      // spawn-signing-key row: apply-migrations.mjs inserts it LAST (after extensions +
+      // all migrations), so its presence proves operator_secrets exists AND the full run
+      // completed. (Do NOT check harness_shared.harness_features — features unified into
+      // work_items / live in per-harness schemas; that table isn't in harness_shared.)
+      `if [ "$(psql "$DATABASE_URL" -tAc "select count(*) from harness_shared.operator_secrets where name='spawn-signing-key'")" != "1" ]; then`,
+      '  echo "FATAL: provisioning incomplete (spawn-signing-key row missing)" >&2',
       '  exit 1',
       'fi',
     ]);

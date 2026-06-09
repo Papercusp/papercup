@@ -11,7 +11,7 @@ The built-in harness blueprints — each a declarative harness shape (work-item 
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (15 concrete + 2 abstract).
 
 ## Built-in blueprints
 
@@ -23,13 +23,14 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 con
 | `deliberate` | base | decision (`DLIB`) | — | inherited | 0 | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split. |
 | `deploy` | single-agent | deploy-run (`DEP`) | release-manager | inherited | 1 | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet. |
 | `gym` | base | gym-task (`G`) | gym-director | inherited | 6 | A meta-harness that optimizes another harness's blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric. |
+| `hive` | base | hive-wake (`POT`) | operator | inherited | 2 | The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation). |
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
-| `pot` | base | pot-wake (`POT`) | operator | inherited | 2 | The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation). |
 | `research` | base | research-task (`R`) | research-director | concurrency 1 | 4 | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less. |
 | `review` | base | review-task (`RV`) | review-director | inherited | 4 | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report. |
 | `scan` | single-agent | scan-run (`SCAN`) | scanner | inherited | 1 | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog. |
+| `sentinel` | single-agent | task (`SENTINEL`) | sentinel | inherited | 1 | Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches. |
 | `vote` | base | decision (`VOTE`) | — | inherited | 2 | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human. |
 
 ### Abstract (not directly runnable)
@@ -111,6 +112,17 @@ A meta-harness that optimizes another harness's blueprint: a gym-director drives
 - **Finalize gates:** done: committer
 - **Roles (6):** `gym-director`, `task-generator`, `variant-runner`, `judge`, `proposer`, `committer`
 
+### `hive`
+
+The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation).
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `hive-wake` (id prefix `POT`)
+- **Spine decider:** `operator` (maxTurns 50)
+- **Planner:** inline
+- **Roles (2):** `operator`, `queen`
+
 ### `implement`
 
 Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.
@@ -142,17 +154,6 @@ A migration/codemod harness: a migration-director drives a discoverer (find all 
 - **Planner:** inline
 - **Dispatch:** concurrency 4
 - **Roles (4):** `migration-director`, `discoverer`, `transformer`, `migration-verifier`
-
-### `pot`
-
-The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation).
-
-- **Extends:** `base`
-- **Version:** 0.1.0
-- **Work item:** `pot-wake` (id prefix `POT`)
-- **Spine decider:** `operator` (maxTurns 50)
-- **Planner:** inline
-- **Roles (2):** `operator`, `queen`
 
 ### `research`
 
@@ -186,6 +187,16 @@ Proactive workspace scan: the scanner sweeps for latent problems + improvement o
 - **Work item:** `scan-run` (id prefix `SCAN`)
 - **Spine decider:** `scanner` (maxTurns 30)
 - **Roles (1):** `scanner`
+
+### `sentinel`
+
+Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches.
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `task` (id prefix `SENTINEL`)
+- **Spine decider:** `sentinel` (maxTurns 40)
+- **Roles (1):** `sentinel`
 
 ### `single-agent`
 

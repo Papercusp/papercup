@@ -17,6 +17,11 @@ const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const buildRoleLaunchSpecMock = vi.fn();
 const roleConsumesMock = vi.fn();
 const writeRoleCodexHomeMock = vi.fn();
+// EI-155: mock the interactive-claude config-dir materializer so this unit test
+// never symlinks the dev box's real ~/.claude into a session dir.
+const writeInteractiveClaudeConfigMock = vi.fn((opts: { sid: string }) => ({
+  configDir: `/tmp/session-claude/${opts.sid}`,
+}));
 
 vi.mock('../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -30,6 +35,7 @@ vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock })
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+vi.mock('../../interactive-claude-config', () => ({ writeInteractiveClaudeConfig: (...a: unknown[]) => writeInteractiveClaudeConfigMock(...a) }));
 // No-op the best-effort saved-prompts materialize side effect — this unit test
 // isn't exercising it (the materialize integration test is), and running it for
 // real would query the DB + write/prune the dev box's ~/.claude/commands.
@@ -98,6 +104,23 @@ describe('bootstrap-role', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'claude', coordOwnerId: 'role-abc', sessionId: 'nsid-abc' }),
     );
+  });
+
+  it('EI-155: claude role session gets a per-session CLAUDE_CONFIG_DIR keyed by spec.sid', async () => {
+    const json = await (await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' })).json();
+    // Keyed by spec.sid (=== coord_owner_id), so wake-by-resume resolves the same
+    // dir — completing the half-wired spec.claudeConfigDir invariant.
+    expect(writeInteractiveClaudeConfigMock).toHaveBeenCalledWith(expect.objectContaining({ sid: 'role-abc' }));
+    expect(json.envelopeEnv.CLAUDE_CONFIG_DIR).toBe('/tmp/session-claude/role-abc');
+  });
+
+  it('EI-155: omp/codex role sessions get NO CLAUDE_CONFIG_DIR', async () => {
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
+    const omp = await (await callPost({ role: 'scoper', agent: 'omp', harness_slug: 'papercup' })).json();
+    expect(omp.envelopeEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+
+    const codex = await (await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001' })).json();
+    expect(codex.envelopeEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 
   it('omp role session: no forced native session id (omp resumes by thread id)', async () => {

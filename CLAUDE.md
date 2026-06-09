@@ -67,6 +67,17 @@ If a state encodes a complex object (like a `{kind:'review'|'thread', id}` selec
 
 See `apps/operator/docs/nuqs-audit-2026-05-11.md` for the rationale + the 46+ params already migrated this session.
 
+## All client data sync goes through `@papercusp/sync`
+
+**Any component that reads server state reads it via `useSyncQuery({ queryName, args })` from `@papercusp/sync`; any write that other views should see fires `notifySyncInvalidate(...)`.** Do **not** hand-roll `fetch + setInterval`, SWR, React-Query, a raw `EventSource` for query data, or a manual `useAsyncJson` refetch-on-change. The library is the one audited path (SSE-primary on desktop, WS in browser, REST fallback, payload-on-invalidate, reconnect resilience); every parallel poll forks all of that and drifts.
+
+The wiring (Zero is **retired** — ignore any `libs/zero-harness` reference):
+- **Read** — add a resolver entry in `packages/operator-core/lib/sync-resolver/index.ts` (`'queryName.variant': { argsSchema, resolve }` → flat row array). Read the **structured DB projection** where one exists (e.g. `harness_plans.items` jsonb), not a re-parse.
+- **Write** — `notifySyncInvalidate('queryName.variant', args)` from `packages/operator-core/lib/sync-sse.ts` after the write commits; `useSyncMutate('group.verb', restFallback)` for the mutation hook.
+- **Component** — `const { data } = useSyncQuery({ queryName, args })`.
+
+**Genuine exceptions** (don't bypass quietly otherwise — surface it first): byte streams (log/pty/LLM-token tails via raw `EventSource`), pure UI timers, and `apps/operator-mobile/`'s own polled path. Full guide + the per-entry recipe: `/internal/docs/data-sync` and the [adding-a-sync-query](/internal/docs/agent-insights/adding-a-sync-query) insight.
+
 ## Deployment model: **desktop is the product. The standalone webapp is RETIRED.**
 
 **Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19** (the "Transport selection by deployment context" doc-comment).

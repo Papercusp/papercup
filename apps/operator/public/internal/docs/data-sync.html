@@ -100,12 +100,22 @@ consumers stay on that pattern.</li>
 it as a question first</strong> instead of forking quietly. Drift here costs
 real CPU, battery, and latency that the user only sees as “the app feels
 sluggish.”</p><p><strong>The migration template</strong> (3-line summary):</p><ol>
-<li>Add a Zero query in <code dir="auto">libs/zero-harness/src/queries.ts</code>.</li>
-<li>Add <code dir="auto">notifySyncInvalidate('queryName.variant', args, optionalRows?)</code>
-from <code dir="auto">packages/operator-core/lib/sync-sse.ts</code> at the write site (REST
-route or chokidar watcher).</li>
-<li>Component: <code dir="auto">const { data } = useSyncQuery({queryName, args})</code>. Done.</li>
-</ol><p>Full recipe in the <a href="/internal/docs/data-sync/cookbook">Cookbook</a>.</p></div> </aside>
+<li><strong>Read</strong> — add a resolver entry in
+<code dir="auto">packages/operator-core/lib/sync-resolver/index.ts</code> (the <strong>Zero-free</strong>
+dispatcher): <code dir="auto">'queryName.variant': { argsSchema, resolve }</code> returning a flat
+row array. Prefer the structured DB projection if one exists (e.g. read
+<code dir="auto">harness_plans.items</code> jsonb rather than re-parsing markdown). The legacy
+<code dir="auto">libs/zero-harness/src/queries.ts</code> ZQL path is <strong>retired</strong> — do not add there.</li>
+<li><strong>Write</strong> — at the write site (the REST route / <code dir="auto">defineTool</code> handler, or a
+watcher), fire <code dir="auto">notifySyncInvalidate('queryName.variant', args)</code> from
+<code dir="auto">packages/operator-core/lib/sync-sse.ts</code> after the write commits. For an
+optimistic write surface use <code dir="auto">useSyncMutate('group.verb', restFallback)</code>;
+with Zero retired it takes the REST fallback, and the invalidate above is
+what pushes the new state back to subscribers.</li>
+<li><strong>Component</strong> — <code dir="auto">const { data } = useSyncQuery({queryName, args})</code>. Done.</li>
+</ol><p>Full recipe in the <a href="/internal/docs/data-sync/cookbook">Cookbook</a>; the Zero-free
+dispatcher’s per-entry recipe is in the
+<a href="/internal/docs/agent-insights/adding-a-sync-query">adding-a-sync-query</a> insight.</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-this-section-covers">What this section covers</h2><a class="sl-anchor-link" href="#what-this-section-covers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What this section covers”</span></a></div>
 <p>This is a reference for agents and humans building UI panels in the harness
 operator (<code dir="auto">apps/operator/app/harness/</code>) and the Papercup demo

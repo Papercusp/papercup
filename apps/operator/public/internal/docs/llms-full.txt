@@ -12559,11 +12559,11 @@ If you think you have another reason to bypass the library, **surface it as a qu
 
 **The migration template** (3-line summary):
 
-1. Add a Zero query in `libs/zero-harness/src/queries.ts`.
-2. Add `notifySyncInvalidate('queryName.variant', args, optionalRows?)` from `packages/operator-core/lib/sync-sse.ts` at the write site (REST route or chokidar watcher).
-3. Component: `const { data } = useSyncQuery({queryName, args})`. Done.
+1. **Read** — add a resolver entry in `packages/operator-core/lib/sync-resolver/index.ts` (the **Zero-free** dispatcher): `'queryName.variant': { argsSchema, resolve }` returning a flat row array. Prefer the structured DB projection if one exists (e.g. read `harness_plans.items` jsonb rather than re-parsing markdown). The legacy `libs/zero-harness/src/queries.ts` ZQL path is **retired** — do not add there.
+2. **Write** — at the write site (the REST route / `defineTool` handler, or a watcher), fire `notifySyncInvalidate('queryName.variant', args)` from `packages/operator-core/lib/sync-sse.ts` after the write commits. For an optimistic write surface use `useSyncMutate('group.verb', restFallback)`; with Zero retired it takes the REST fallback, and the invalidate above is what pushes the new state back to subscribers.
+3. **Component** — `const { data } = useSyncQuery({queryName, args})`. Done.
 
-Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook).
+Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook); the Zero-free dispatcher’s per-entry recipe is in the [adding-a-sync-query](/internal/docs/agent-insights/adding-a-sync-query) insight.
 
 ## What this section covers
 
@@ -25999,7 +25999,7 @@ The operator code reads its PostHog configuration from a single source — the d
 
 1. **Env vars** — `PAPERCUSP_POSTHOG_HOST` + `PAPERCUSP_POSTHOG_KEY` + optional `PAPERCUSP_POSTHOG_TESTING_FEATURES`. For CI and explicit dev overrides.
 2. **Discovery file** — `~/.papercusp/posthog.json`. The canonical home for the project key + personal API key + the `testingFeatures` flag.
-3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (the V1 ship state — every flag off except `papercusp-snapshots`, which defaults `true`). No outbound request happens. `/api/flags/bootstrap` returns `source: "defaults"`. (The discovery-file *resolver* reports `source: "unconfigured"` for the un-configured case, but the flag-bootstrap payload’s `source` is always one of `defaults` / `posthog` / `override`.)
+3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (the V1 ship state — every flag off). No outbound request happens. `/api/flags/bootstrap` returns `source: "defaults"`. (The discovery-file *resolver* reports `source: "unconfigured"` for the un-configured case, but the flag-bootstrap payload’s `source` is always one of `defaults` / `posthog` / `override`.)
 
 A fresh install on an end-user machine ends up in path 3 by default. To opt into PostHog contact, the user (or admin) must either:
 
@@ -26085,22 +26085,21 @@ Feature flags are how Papercusp ships V1 with a minimal feature set while keepin
 
 The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
 
-| Key                                    | TS constant                        | Default    | What it gates                                                                                                                                                      |
-| -------------------------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `papercusp-snapshots`                  | `FLAGS.SNAPSHOTS`                  | **`true`** | Save / restore mission state — now the Cupboard’s `kind=snapshot` fork-source (capture + local instantiate are live; defaults **on**).                             |
-| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false`    | Publish-to-Cloudflare flow.                                                                                                                                        |
-| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false`    | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                |
-| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false`    | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                        |
-| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false`    | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                           |
-| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false`    | In-harness “design” tab + `/design` route + `/api/design/*` routes.                                                                                                |
-| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false`    | Testing-only surfaces: the `pi` tab + the “add plugin” button.                                                                                                     |
-| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false`    | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                           |
-| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false`    | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                            |
-| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `false`    | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes.                                                                |
-| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `false`    | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass.                                                      |
-| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `false`    | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
+| Key                                    | TS constant                        | Default | What it gates                                                                                                                                                      |
+| -------------------------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false` | Publish-to-Cloudflare flow.                                                                                                                                        |
+| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                |
+| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                        |
+| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                           |
+| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false` | In-harness “design” tab + `/design` route + `/api/design/*` routes.                                                                                                |
+| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false` | Testing-only surfaces: the `pi` tab + the “add plugin” button.                                                                                                     |
+| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                           |
+| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                            |
+| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `false` | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes.                                                                |
+| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `false` | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass.                                                      |
+| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `false` | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
 
-> `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. Their keys no longer exist in `FLAGS`.
+> `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. `papercusp-snapshots` (`FLAGS.SNAPSHOTS`) was **retired** (`retire-snapshots-instance-spec` D-005): the harness-snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible clone is the ungated, lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`). Their keys no longer exist in `FLAGS`.
 
 All keys also live in `libs/flags/src/types.ts` as the single source of truth — adding a new flag means editing **one file**, then creating the matching definition in PostHog. The TypeScript `FlagKey` type is derived from the object, so call sites get autocomplete and any rename is a compile error at every site.
 
@@ -26108,12 +26107,12 @@ All keys also live in `libs/flags/src/types.ts` as the single source of truth �
 
 [Section titled “Defaults and the V1 ship contract”](#defaults-and-the-v1-ship-contract)
 
-`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state. Every flag defaults `false` **except `papercusp-snapshots`, which defaults `true`** (snapshots back the Cupboard’s fork-source). The operator returns this map whenever PostHog is unreachable or unconfigured: every other cut feature stays cut, no network call required to discover it.
+`FLAG_DEFAULTS` in `libs/flags/src/types.ts` is the V1 ship state: **every flag defaults `false`**. The operator returns this map whenever PostHog is unreachable or unconfigured: every cut feature stays cut, no network call required to discover it.
 
 Two statements that hold for every shipped binary:
 
 1. A freshly installed Papercusp binary on Linux / macOS / Windows makes **zero** outbound HTTP requests to `flags.papercuspai.com` under normal use.
-2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false` except `papercusp-snapshots`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
+2. Every flag resolves to its `FLAG_DEFAULTS` value (all `false`), so every cut surface is unreachable: routes 404, nav entries are absent, API routes return 404, Hono endpoints return 404, MCP tools are not registered.
 
 Both hold without any post-install configuration. Verified by the build-agent handoff via a clean-machine smoke test.
 
@@ -26224,16 +26223,16 @@ Each cut feature has gating at multiple layers; the goal is that no path — dir
 
 The operator frontend is the Vite SPA (Next.js is retired). Gated routes call `requireFlag(FLAGS.X)` in their `beforeLoad`; the helper (`apps/operator-vite/src/lib/require-flag.ts`) `loadFlags()`-then-`throw notFound()` if the flag is off, which renders the root route’s `notFoundComponent`:
 
-apps/operator-vite/src/routes/installed/snapshots.tsx
+apps/operator-vite/src/routes/design/index.tsx
 
 ```tsx
 import { FLAGS } from '@papercusp/flags';
 import { requireFlag } from '@/lib/require-flag';
 
 
-export const Route = createFileRoute('/installed/snapshots')({
-  beforeLoad: () => requireFlag(FLAGS.SNAPSHOTS),
-  component: SnapshotsClient,
+export const Route = createFileRoute('/design/')({
+  beforeLoad: () => requireFlag(FLAGS.DESIGN),
+  component: DesignClient,
 });
 ```
 
@@ -26259,18 +26258,18 @@ const oracleFlag = useFlag(FLAGS.ORACLE);
 
 [Section titled “Component layer (defense-in-depth)”](#component-layer-defense-in-depth)
 
-Modal panels like `<SnapshotsPanel>` and `<TemplatesModal>` use `useQueryState` for their open/closed state, so anyone can deep-link `?snapshots=true` and trigger a render. The render conditions additionally check the flag:
+Modal panels like `<DesignPanel>` use `useQueryState` for their open/closed state, so anyone can deep-link `?design=true` and trigger a render. The render conditions additionally check the flag:
 
 ```tsx
-{showSnapshots && activeSlug && snapshotsEnabled && (
-  <SnapshotsPanel … />
+{showDesign && activeSlug && designEnabled && (
+  <DesignPanel … />
 )}
 ```
 
 Command-palette entries that would open these panels are similarly gated:
 
 ```tsx
-if (snapshotsEnabled) cs.push({ id: 'snapshots', … });
+if (designEnabled) cs.push({ id: 'design', … });
 ```
 
 ### API route layer
@@ -26285,7 +26284,7 @@ import { gateApiRoute } from '../../../require-flag';
 
 
 async handler(req) {
-  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
   if (blocked) return blocked;
   // …handler logic…
 }
@@ -26311,7 +26310,7 @@ Each gated MCP tool checks the flag at registration time and at runtime. Tools t
 
 [Section titled “Configuration”](#configuration)
 
-The single source of truth for which surfaces each flag gates is **not** documented in code comments — it’s expressed in the gating itself. `grep -rln "FLAGS.SNAPSHOTS" apps/operator` is the canonical answer.
+The single source of truth for which surfaces each flag gates is **not** documented in code comments — it’s expressed in the gating itself. `grep -rln "FLAGS.DESIGN" apps/operator` is the canonical answer.
 
 ## File structure
 
@@ -26449,7 +26448,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 beforeEach(() => {
   setFlagOverridesForTest({
-    [FLAGS.SNAPSHOTS]: true,
+    [FLAGS.DESIGN]: true,
     [FLAGS.ORACLE]: false,
   });
 });
@@ -26514,7 +26513,7 @@ curl -s http://localhost:3055/api/flags/bootstrap | jq
 [Section titled “”Discover what a flag gates””](#discover-what-a-flag-gates)
 
 ```bash
-grep -rln "FLAGS.SNAPSHOTS" apps/operator
+grep -rln "FLAGS.DESIGN" apps/operator
 ```
 
 The gating sites are the documentation.
@@ -26656,28 +26655,29 @@ The **agent-insights** are the fleet’s procedural runbook — one short page p
 
 A **blueprint** is a harness’s declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (14 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (15 concrete + 2 abstract).
 
 ## Built-in blueprints
 
 [Section titled “Built-in blueprints”](#built-in-blueprints)
 
-| Blueprint          | Extends      | Work item              | Decider            | Dispatch                  | Roles | Description                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------ | ------------ | ---------------------- | ------------------ | ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audit`            | base         | audit-task (`AUD`)     | auditor            | inherited                 | 1     | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it.                                                                                                                                                                                                                          |
-| `bee`              | single-agent | task (`BEE`)           | bee                | inherited                 | 1     | Launch one generic Hive worker (the `bee` role) — a plain implementation agent the Queen places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/bee.md. A bee is kind:‘harness’ (NOT a hive).                                                                                                                                                                |
-| `coding`           | base         | feature (`F`)          | director           | concurrency 4, plan-order | 11    | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).                                                                                                                                                                                                                                           |
-| `deliberate`       | base         | decision (`DLIB`)      | —                  | inherited                 | 0     | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split.                                                                                                                                                                                                                                                                                                   |
-| `deploy`           | single-agent | deploy-run (`DEP`)     | release-manager    | inherited                 | 1     | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet.                                                                                                                                                                                                    |
-| `gym`              | base         | gym-task (`G`)         | gym-director       | inherited                 | 6     | A meta-harness that optimizes another harness’s blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric.                                                                                                                                                                                                    |
-| `implement`        | single-agent | improvement (`IMP`)    | worker             | inherited                 | 1     | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.                                                                                                                                                                                                                                                        |
-| `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver     | inherited                 | 1     | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.                                                                                                                                                                                                                                                                                        |
-| `migration`        | base         | migration-task (`M`)   | migration-director | concurrency 4             | 4     | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change.                                                                                                                                                                                           |
-| `pot`              | base         | pot-wake (`POT`)       | operator           | inherited                 | 2     | The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation). |
-| `research`         | base         | research-task (`R`)    | research-director  | concurrency 1             | 4     | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less.                                                                                                                                                                                                                                                                                               |
-| `review`           | base         | review-task (`RV`)     | review-director    | inherited                 | 4     | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report.                                                                                                                                                                                                      |
-| `scan`             | single-agent | scan-run (`SCAN`)      | scanner            | inherited                 | 1     | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog.                                                                                                                                                                                                                        |
-| `vote`             | base         | decision (`VOTE`)      | —                  | inherited                 | 2     | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human.                                                                                                                                                                                                                                                       |
+| Blueprint          | Extends      | Work item              | Decider            | Dispatch                  | Roles | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------ | ------------ | ---------------------- | ------------------ | ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `audit`            | base         | audit-task (`AUD`)     | auditor            | inherited                 | 1     | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it.                                                                                                                                                                                                                                                                                                                                                            |
+| `bee`              | single-agent | task (`BEE`)           | bee                | inherited                 | 1     | Launch one generic Hive worker (the `bee` role) — a plain implementation agent the Queen places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/bee.md. A bee is kind:‘harness’ (NOT a hive).                                                                                                                                                                                                                                                                                                  |
+| `coding`           | base         | feature (`F`)          | director           | concurrency 4, plan-order | 11    | The default coding harness: a per-feature director drives scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).                                                                                                                                                                                                                                                                                                                                                                             |
+| `deliberate`       | base         | decision (`DLIB`)      | —                  | inherited                 | 0     | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `deploy`           | single-agent | deploy-run (`DEP`)     | release-manager    | inherited                 | 1     | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet.                                                                                                                                                                                                                                                                                                                                      |
+| `gym`              | base         | gym-task (`G`)         | gym-director       | inherited                 | 6     | A meta-harness that optimizes another harness’s blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric.                                                                                                                                                                                                                                                                                                                                      |
+| `hive`             | base         | hive-wake (`POT`)      | operator           | inherited                 | 2     | The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don’t-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation). |
+| `implement`        | single-agent | improvement (`IMP`)    | worker             | inherited                 | 1     | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive.                                                                                                                                                                                                                                                                                                                                                                                          |
+| `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver     | inherited                 | 1     | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `migration`        | base         | migration-task (`M`)   | migration-director | concurrency 4             | 4     | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change.                                                                                                                                                                                                                                                                                                                             |
+| `research`         | base         | research-task (`R`)    | research-director  | concurrency 1             | 4     | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `review`           | base         | review-task (`RV`)     | review-director    | inherited                 | 4     | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report.                                                                                                                                                                                                                                                                                                                                        |
+| `scan`             | single-agent | scan-run (`SCAN`)      | scanner            | inherited                 | 1     | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog.                                                                                                                                                                                                                                                                                                                                                          |
+| `sentinel`         | single-agent | task (`SENTINEL`)      | sentinel           | inherited                 | 1     | Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches.                                                                                                                                                                                                                                                               |
+| `vote`             | base         | decision (`VOTE`)      | —                  | inherited                 | 2     | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human.                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ### Abstract (not directly runnable)
 
@@ -26776,6 +26776,19 @@ A meta-harness that optimizes another harness’s blueprint: a gym-director driv
 * **Finalize gates:** done: committer
 * **Roles (6):** `gym-director`, `task-generator`, `variant-runner`, `judge`, `proposer`, `committer`
 
+### `hive`
+
+[Section titled “hive”](#hive)
+
+The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don’t-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation).
+
+* **Extends:** `base`
+* **Version:** 0.1.0
+* **Work item:** `hive-wake` (id prefix `POT`)
+* **Spine decider:** `operator` (maxTurns 50)
+* **Planner:** inline
+* **Roles (2):** `operator`, `queen`
+
 ### `implement`
 
 [Section titled “implement”](#implement)
@@ -26813,19 +26826,6 @@ A migration/codemod harness: a migration-director drives a discoverer (find all 
 * **Planner:** inline
 * **Dispatch:** concurrency 4
 * **Roles (4):** `migration-director`, `discoverer`, `transformer`, `migration-verifier`
-
-### `pot`
-
-[Section titled “pot”](#pot)
-
-The Pot/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles: the `operator` (legacy, for direct user invocation) and the `queen` (specialized for placement and automation).
-
-* **Extends:** `base`
-* **Version:** 0.1.0
-* **Work item:** `pot-wake` (id prefix `POT`)
-* **Spine decider:** `operator` (maxTurns 50)
-* **Planner:** inline
-* **Roles (2):** `operator`, `queen`
 
 ### `research`
 
@@ -26865,6 +26865,18 @@ Proactive workspace scan: the scanner sweeps for latent problems + improvement o
 * **Work item:** `scan-run` (id prefix `SCAN`)
 * **Spine decider:** `scanner` (maxTurns 30)
 * **Roles (1):** `scanner`
+
+### `sentinel`
+
+[Section titled “sentinel”](#sentinel)
+
+Launch one fleet WATCHER (the `sentinel` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Queen steers, the sentinel watches.
+
+* **Extends:** `single-agent`
+* **Version:** 0.1.0
+* **Work item:** `task` (id prefix `SENTINEL`)
+* **Spine decider:** `sentinel` (maxTurns 40)
+* **Roles (1):** `sentinel`
 
 ### `single-agent`
 
@@ -27266,7 +27278,7 @@ Plans are the durable record of project history — each `## Decisions` block is
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role’s **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (20 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (38 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (21 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (39 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -27296,6 +27308,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `auditor`           | ✓       | You are the **Auditor** — Papercusp’s read-only adversarial gate.                                                                                                                                         |
 | `merge-resolver`    | ✓       | You are the **Merge-Resolver** — Papercusp’s automated git-sync conflict fixer.                                                                                                                           |
 | `release-manager`   | ✓       | You are the **Release Manager** — Papercusp’s deploy decision-maker.                                                                                                                                      |
+| `sentinel`          | ✓       | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive’s watcher, placed and woken by the **Queen**                                                                                           |
 
 Built-in roles with no persona file (chat/runtime surfaces): `operator`, `oracle`, `orchestrator`.
 
@@ -27341,7 +27354,7 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group’s verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**352 MCP tools** across **70 groups**.
+**362 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -27366,7 +27379,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `conversations`  | 7     | `answer` `get` `join` `list` `post` `promote` `resolve`                                                                                                                                                                                                                                                                                                                                                                           | `coord:read` `coord:write`                                                                                   |
 | `coord`          | 24    | `ack` `ask` `ask-owner` `await-inbox` `declare-intent` `deliberate` `emit` `escalate` `escalations` `feed` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `watermark` `watermark-set` `whoami`                                                                                                                                                              | `audit:read` `coord:read` `coord:write`                                                                      |
 | `cross_harness`  | 10    | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes`                                                                                                                                                                                                                                                                                             | `cross_harness:read` `harness:read` `plans:read`                                                             |
-| `curation`       | 2     | `change-feed` `feed`                                                                                                                                                                                                                                                                                                                                                                                                              | `curation:read`                                                                                              |
+| `curation`       | 3     | `change-feed` `feed` `state-of-hive`                                                                                                                                                                                                                                                                                                                                                                                              | `curation:read`                                                                                              |
 | `db`             | 3     | `check_drift` `migrate` `next-migration`                                                                                                                                                                                                                                                                                                                                                                                          | `locks:read` `locks:write`                                                                                   |
 | `deploy`         | 5     | `harness` `hive` `status` `teardown` `teardown_hive`                                                                                                                                                                                                                                                                                                                                                                              | `harness:read` `harness:write`                                                                               |
 | `dev`            | 21    | `activity` `audit` `build_status` `coord_categorize` `dogfood_substrate_status` `event_emitter` `harnesses` `hello-card` `ipc_echo` `omp_session` `pg_active_queries` `pg_health` `pg_table_sizes` `processes` `rate_governor_status` `restart` `service_health` `session_detail` `sessions` `state_counter` `telemetry`                                                                                                          | `audit:read` `harness:read` `intel:read` `locks:write` `tasks:read`                                          |
@@ -27381,10 +27394,11 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `gym`            | 2     | `judge` `signals`                                                                                                                                                                                                                                                                                                                                                                                                                 | `harness:read`                                                                                               |
 | `harness`        | 14    | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `plan_reviews` `status`                                                                                                                                                                                                                                       | `harness:read` `harness:write`                                                                               |
 | `harness_docs`   | 7     | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify`                                                                                                                                                                                                                                                                                                                                                             | `docs:read` `docs:write`                                                                                     |
-| `hive`           | 5     | `create` `dissolve` `get` `list` `update`                                                                                                                                                                                                                                                                                                                                                                                         | `harness:read` `harness:write`                                                                               |
+| `hive`           | 9     | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `status` `update` `wake`                                                                                                                                                                                                                                                                                                                                            | `harness:read` `harness:write` `routines:write` `work_items:write`                                           |
 | `hooks`          | 1     | `known`                                                                                                                                                                                                                                                                                                                                                                                                                           | `roles:read`                                                                                                 |
 | `improvements`   | 4     | `capture` `digest` `resolve` `triage`                                                                                                                                                                                                                                                                                                                                                                                             | `coord:read` `coord:write`                                                                                   |
 | `inbox`          | 1     | `triage`                                                                                                                                                                                                                                                                                                                                                                                                                          | `coord:write`                                                                                                |
+| `instance`       | 3     | `boot` `capture` `clone`                                                                                                                                                                                                                                                                                                                                                                                                          | `harness:read` `harness:write`                                                                               |
 | `intel`          | 2     | `artifacts` `spawn_tree`                                                                                                                                                                                                                                                                                                                                                                                                          | `intel:read`                                                                                                 |
 | `issues`         | 13    | `claim` `close` `comment` `create` `get` `link` `list` `promote` `release` `search` `subscribe` `tag` `update`                                                                                                                                                                                                                                                                                                                    | `coord:read` `coord:write`                                                                                   |
 | `lexicon`        | 1     | `active_pack`                                                                                                                                                                                                                                                                                                                                                                                                                     | `work_items:read`                                                                                            |
@@ -27401,14 +27415,12 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `plan_items`     | 11    | `adopt_name` `assign` `claim` `convert` `heartbeat` `join_group` `leave_group` `my_items` `release` `status` `unassign`                                                                                                                                                                                                                                                                                                           | `coord:read` `coord:write`                                                                                   |
 | `plans`          | 33    | `add-decision` `add-item` `apply-plan-block` `attention` `backfill-revisions` `edit` `export` `get` `items` `launch` `lint` `list` `new` `pause` `promote` `resume` `revision-diff` `revision-transcript` `revisions` `run-transcript` `runs` `search` `set-content` `set-content-chunk` `set-frontmatter` `set-importance` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-status` `start` `summarize-revision` | `coord:write` `plans:read` `plans:write`                                                                     |
 | `plugins`        | 4     | `fire_event` `invoke_action` `runtime_status` `tui_panes`                                                                                                                                                                                                                                                                                                                                                                         | `plugins:read` `plugins:write`                                                                               |
-| `pot`            | 3     | `declare-wake` `status` `wake`                                                                                                                                                                                                                                                                                                                                                                                                    | `harness:read` `routines:write`                                                                              |
 | `processes`      | 1     | `kill`                                                                                                                                                                                                                                                                                                                                                                                                                            | `processes:kill`                                                                                             |
 | `projects`       | 4     | `get` `list` `spec_revision` `spec_revisions`                                                                                                                                                                                                                                                                                                                                                                                     | `projects:read`                                                                                              |
 | `rationale`      | 2     | `feed` `reproject`                                                                                                                                                                                                                                                                                                                                                                                                                | `coord:read` `coord:write`                                                                                   |
 | `roles`          | 4     | `firing_on` `get` `known` `list`                                                                                                                                                                                                                                                                                                                                                                                                  | `roles:read`                                                                                                 |
 | `saved_prompts`  | 1     | `list`                                                                                                                                                                                                                                                                                                                                                                                                                            | `intel:read`                                                                                                 |
 | `search`         | 3     | `fulltext` `query` `semantic`                                                                                                                                                                                                                                                                                                                                                                                                     | `search:read`                                                                                                |
-| `snapshots`      | 2     | `get` `list`                                                                                                                                                                                                                                                                                                                                                                                                                      | `snapshots:read`                                                                                             |
 | `substrate`      | 2     | `revoke_contributor` `revoke_self_device`                                                                                                                                                                                                                                                                                                                                                                                         | `intel:write`                                                                                                |
 | `tasks`          | 3     | `create` `get` `list`                                                                                                                                                                                                                                                                                                                                                                                                             | `tasks:read` `tasks:write`                                                                                   |
 | `topics`         | 7     | `create` `feed` `list` `merge` `subscribe` `tag` `unsubscribe`                                                                                                                                                                                                                                                                                                                                                                    | `coord:read` `coord:write`                                                                                   |
@@ -27418,7 +27430,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `voice`          | 5     | `agent` `channels` `join` `leave` `status`                                                                                                                                                                                                                                                                                                                                                                                        | `operator:read` `operator:write`                                                                             |
 | `watch`          | 1     | `create`                                                                                                                                                                                                                                                                                                                                                                                                                          | `coord:write`                                                                                                |
 | `wiki`           | 1     | `backlinks`                                                                                                                                                                                                                                                                                                                                                                                                                       | `wiki:read`                                                                                                  |
-| `work_items`     | 16    | `claim` `claim_next` `comment` `complete` `create` `get` `link` `list` `observe` `promote` `release` `reorder` `search` `set_state` `subscribe` `tag`                                                                                                                                                                                                                                                                             | `work_items:read` `work_items:write`                                                                         |
+| `work_items`     | 23    | `claim` `claim_next` `claim_replica` `co_locate` `comment` `complete` `create` `get` `judge_redundancy` `link` `list` `observe` `promote` `record_replica_result` `redundancy_status` `release` `reorder` `search` `set_priority` `set_redundancy` `set_state` `subscribe` `tag`                                                                                                                                                  | `work_items:read` `work_items:write`                                                                         |
 
 # Distribution trust posture
 
@@ -30928,7 +30940,7 @@ Superseded by the in-app Cupboard
 
 The hosted `papercuspai.com/marketplace` + `marketplace-api` (`:3057`) design described below — including the §11.4 “live as of 2026-04-26” claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and `tenantId`/`tenantSecret` ideas elsewhere in the spec, and the `papercusp publish` / `papercusp install <name>@<ver>` CLI — has been **superseded** by the in-app **Cupboard** (`apps/operator-public`, `@papercusp/cupboard-worker` — Cloudflare Workers + D1). The `marketplace-api`/`marketplace-site` apps are gone; the old `apps/papercup` reference install is retired to `_retired/papercup/`.
 
-The Cupboard is **one storefront with several listing kinds** (`harness` → join, `blueprint`/`snapshot` → fork, `plugin`/`pack` → install), keyed on the GitHub-backed project remote. Auth is a GitHub bearer (validated against `https://api.github.com/user`), **not** namespace OAuth + Ed25519-server-signing as §11.6 describes; publisher trust is the GitHub repo-permission signal plus an optional Ed25519 device-pubkey ↔ login attestation (gist-bound). See `apps/operator-public/README.md` and the `/listings` route (`apps/operator-public/src/routes/listings.ts`).
+The Cupboard is **one storefront with several listing kinds** (`harness` → join, `blueprint` → fork, `plugin`/`pack` → install), keyed on the GitHub-backed project remote. Auth is a GitHub bearer (validated against `https://api.github.com/user`), **not** namespace OAuth + Ed25519-server-signing as §11.6 describes; publisher trust is the GitHub repo-permission signal plus an optional Ed25519 device-pubkey ↔ login attestation (gist-bound). See `apps/operator-public/README.md` and the `/listings` route (`apps/operator-public/src/routes/listings.ts`).
 
 The sections below are **retained as design history**; treat the namespace-policy / federation / SBOM / webhook material as aspirational, not current behavior.
 
@@ -39606,7 +39618,7 @@ Files are correct for these specific cases:
 | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Bootstrap state needed before a PG connection exists                    | `~/.papercusp-workspaces/registry.json`, `~/.papercusp/db-encryption-key`    |
 | Postgres’s own data                                                     | `pglite-data/`, `embedded-pg-data/`                                          |
-| Code, scripts, templates, snapshots                                     | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
+| Code, scripts, templates                                                | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
 | Harness contract artifacts read by tools running inside the harness     | `<harness>/.papercusp/config.json`, `SPEC.md`, `supervisor-notes.md`         |
 | Append-only logs at high volume where SQL log tables would dwarf state  | `.papercusp/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
 | Per-process resource leases (in-process / O\_EXCL)                      | `deployment/display-allocator.ts` per-agent DISPLAY leases                   |

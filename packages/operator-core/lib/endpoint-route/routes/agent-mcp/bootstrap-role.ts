@@ -33,6 +33,7 @@ import { roleConsumes } from '../../../role-registry';
 import { buildRoleLaunchSpec } from '../../../role-launch-spec';
 import { getPlanContextBySlug } from '../../../plan-context-for-feature';
 import { writeRoleCodexHome } from '../../../role-codex-home';
+import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import {
   materializeCodexPrompts,
   materializeWorkspacePrompts,
@@ -280,6 +281,23 @@ const post = defineTool({
       }
     }
 
+    // EI-155: an interactive claude role session gets the SAME per-session,
+    // transcript-isolated CLAUDE_CONFIG_DIR the SU path does (the role path
+    // already COMPUTES spec.claudeConfigDir = sessionClaudeConfigDir(sid) but
+    // never materialized it — a half-wired unify-launch-mechanics invariant).
+    // It carries the lock/coord hooks (user-level ~/.claude/settings.json) +
+    // onboarding/trust through, isolating only the transcript store; the role
+    // MCP stays scoped via the launcher's --mcp-config --strict-mcp-config (the
+    // symlinked .claude.json servers are ignored under strict). Best-effort.
+    let claudeConfigDir: string | null = null;
+    if (agent === 'claude') {
+      try {
+        claudeConfigDir = writeInteractiveClaudeConfig({ sid }).configDir;
+      } catch (e: any) {
+        process.stderr.write(`[bootstrap-role] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
+      }
+    }
+
     // Materialize this harness's + the workspace's saved prompts into the
     // locations this client reads, so the session starts with the `/name`
     // commands available (plan saved-prompts-cross-client; interactive only,
@@ -321,6 +339,7 @@ const post = defineTool({
         // don't collide. Same value recorded as adv_sessions.coord_owner_id.
         PAPERCUSP_SID: sid,
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+        ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
         // claude exact-resume: the launcher forces `--session-id <this>` so the

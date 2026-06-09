@@ -45,13 +45,23 @@ sluggish."
 
 **The migration template** (3-line summary):
 
-1. Add a Zero query in `libs/zero-harness/src/queries.ts`.
-2. Add `notifySyncInvalidate('queryName.variant', args, optionalRows?)`
-   from `packages/operator-core/lib/sync-sse.ts` at the write site (REST
-   route or chokidar watcher).
-3. Component: `const { data } = useSyncQuery({queryName, args})`. Done.
+1. **Read** — add a resolver entry in
+   `packages/operator-core/lib/sync-resolver/index.ts` (the **Zero-free**
+   dispatcher): `'queryName.variant': { argsSchema, resolve }` returning a flat
+   row array. Prefer the structured DB projection if one exists (e.g. read
+   `harness_plans.items` jsonb rather than re-parsing markdown). The legacy
+   `libs/zero-harness/src/queries.ts` ZQL path is **retired** — do not add there.
+2. **Write** — at the write site (the REST route / `defineTool` handler, or a
+   watcher), fire `notifySyncInvalidate('queryName.variant', args)` from
+   `packages/operator-core/lib/sync-sse.ts` after the write commits. For an
+   optimistic write surface use `useSyncMutate('group.verb', restFallback)`;
+   with Zero retired it takes the REST fallback, and the invalidate above is
+   what pushes the new state back to subscribers.
+3. **Component** — `const { data } = useSyncQuery({queryName, args})`. Done.
 
-Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook).
+Full recipe in the [Cookbook](/internal/docs/data-sync/cookbook); the Zero-free
+dispatcher's per-entry recipe is in the
+[adding-a-sync-query](/internal/docs/agent-insights/adding-a-sync-query) insight.
 
 ## What this section covers
 

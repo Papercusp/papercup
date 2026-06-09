@@ -11,7 +11,7 @@ The built-in agent roles (AGENT_ROLES) joined with their spawn personas. Generat
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (20 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (38 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (21 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (39 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -39,6 +39,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `auditor` | ✓ | You are the **Auditor** — Papercusp's read-only adversarial gate. |
 | `merge-resolver` | ✓ | You are the **Merge-Resolver** — Papercusp's automated git-sync conflict fixer. |
 | `release-manager` | ✓ | You are the **Release Manager** — Papercusp's deploy decision-maker. |
+| `sentinel` | ✓ | Sentinel (the fleet watcher) — You are the **sentinel** — the Hive's watcher, placed and woken by the **Queen** |
 
 Built-in roles with no persona file (chat/runtime surfaces): `operator`, `oracle`, `orchestrator`.
 

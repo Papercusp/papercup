@@ -63,7 +63,7 @@ The operator code reads its PostHog configuration from a single source — the d
 
 1. **Env vars** — `PAPERCUSP_POSTHOG_HOST` + `PAPERCUSP_POSTHOG_KEY` + optional `PAPERCUSP_POSTHOG_TESTING_FEATURES`. For CI and explicit dev overrides.
 2. **Discovery file** — `~/.papercusp/posthog.json`. The canonical home for the project key + personal API key + the `testingFeatures` flag.
-3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (the V1 ship state — every flag off except `papercusp-snapshots`, which defaults `true`). No outbound request happens. `/api/flags/bootstrap` returns `source: "defaults"`. (The discovery-file *resolver* reports `source: "unconfigured"` for the un-configured case, but the flag-bootstrap payload's `source` is always one of `defaults` / `posthog` / `override`.)
+3. **Unconfigured** — no file, no env. The operator falls through to `FLAG_DEFAULTS` (the V1 ship state — every flag off). No outbound request happens. `/api/flags/bootstrap` returns `source: "defaults"`. (The discovery-file *resolver* reports `source: "unconfigured"` for the un-configured case, but the flag-bootstrap payload's `source` is always one of `defaults` / `posthog` / `override`.)
 
 A fresh install on an end-user machine ends up in path 3 by default. To opt into PostHog contact, the user (or admin) must either:
 
