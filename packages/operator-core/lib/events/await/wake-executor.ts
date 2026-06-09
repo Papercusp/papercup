@@ -375,6 +375,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // the server offline for the WHOLE resumed session (no retry) — a woken
       // Queen with no voice (Stage-A finding, 2026-06-07, load ~200).
       MCP_TIMEOUT: process.env.PAPERCUSP_WAKE_MCP_TIMEOUT_MS || '120000',
+      // An autonomous wake turn IS an agent session, whoever the recipient:
+      // arm the hook-level scheduler guard (native-scheduler-lockout P-010).
+      PAPERCUSP_AGENT_SESSION: '1',
     };
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at

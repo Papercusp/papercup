@@ -160,7 +160,7 @@ function freshCodexHome(codexHome: string): string {
  */
 export function writeCodexLockHooks(
   codexHome: string,
-  opts: { coordSid?: string; activitySid?: string } = {},
+  opts: { coordSid?: string; activitySid?: string; agentSession?: boolean } = {},
 ): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
@@ -199,11 +199,33 @@ export function writeCodexLockHooks(
     });
   }
 
+  const preToolUse: CodexHook[] = [
+    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
+  ];
+
+  // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
+  // AGENT homes (role sessions — never the human su home, D-003) get the
+  // bash-resource-gate with the agent marker BAKED (codex hands hooks a
+  // minimal env, same reason the coord/activity hooks bake PAPERCUSP_SID), so
+  // shell-created OS schedules (crontab/at/batch/systemd-run) are denied and
+  // wakes can only live in the harness routines table. INERT today like the
+  // lock hooks above (codex PreToolUse emission is broken upstream, D-011) —
+  // correct + ready for when it fires; the prompt layer carries the rule
+  // meanwhile.
+  const gate = join(dir, 'pretooluse-bash-resource-gate.sh');
+  if (opts.agentSession && existsSync(gate)) {
+    preToolUse.push({
+      matcher: 'Bash|exec_command|local_shell|shell',
+      hooks: [{
+        type: 'command',
+        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT_SESSION=1 ${gate}`,
+      }],
+    });
+  }
+
   const hooks = {
     hooks: {
-      PreToolUse: [
-        { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
-      ],
+      PreToolUse: preToolUse,
       PostToolUse: postToolUse,
     },
   };
@@ -260,7 +282,7 @@ export function writeRoleCodexHome(opts: {
   // a silent gap). Launcher must pass --dangerously-bypass-hook-trust. A role
   // session is a WORKER, so it also reports to the activity bridge (under its
   // session identity); no coord-inbox hook (roles don't ride the SU coord bus).
-  writeCodexLockHooks(codexHome, { activitySid: opts.sid });
+  writeCodexLockHooks(codexHome, { activitySid: opts.sid, agentSession: true });
 
   return { codexHome, agentsPath, configPath };
 }

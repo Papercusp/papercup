@@ -50,6 +50,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-coord-inbox.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
 }
 
@@ -156,6 +157,21 @@ describe('writeRoleCodexHome', () => {
     const out = writeRoleCodexHome({ sessionKey: 8, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
   });
+
+  it('a ROLE home gets the native-scheduler guard (bash gate + baked agent marker) — native-scheduler-lockout P-010', async () => {
+    await installFakeHooks();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 9, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const gate = hooks.hooks.PreToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('pretooluse-bash-resource-gate.sh'),
+    );
+    expect(gate).toBeTruthy();
+    expect(gate.matcher).toContain('exec_command');
+    // Marker BAKED (codex hands hooks a minimal env): the gate's scheduler
+    // deny only fires for agent sessions.
+    expect(gate.hooks[0].command).toContain('PAPERCUSP_AGENT_SESSION=1');
+  });
 });
 
 describe('writeSuCodexHome', () => {
@@ -215,6 +231,15 @@ describe('writeSuCodexHome', () => {
     const out = writeSuCodexHome({ sessionKey: 6, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(true);
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+  });
+
+  it('the HUMAN su home gets NO native-scheduler guard (native-scheduler-lockout D-003)', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 61, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(JSON.stringify(hooks)).not.toContain('pretooluse-bash-resource-gate.sh');
+    expect(JSON.stringify(hooks)).not.toContain('PAPERCUSP_AGENT_SESSION');
   });
 
   it('adds the coord-inbox PUSH + activity hooks (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {

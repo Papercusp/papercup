@@ -27,6 +27,7 @@ import {
   onToolCall,
   onToolResult,
   onTurnStart,
+  OS_SCHEDULER_CMD_RE,
   pollInboxDelta,
   summarisePlanEvents,
   _resetHookOwnerIdForTests,
@@ -34,6 +35,102 @@ import {
   _resetToolCallCacheForTests,
   type InboxEntry,
 } from '../coord-hook';
+
+// ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
+
+describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
+  it('matches schedulers at command position, incl. compound + sudo forms', () => {
+    for (const cmd of [
+      'crontab -e',
+      'crontab',
+      'at 10pm -f job.sh',
+      'batch < jobs.txt',
+      'systemd-run --on-calendar=daily echo hi',
+      'cd /tmp && crontab newtab',
+      'git status; crontab -l',
+      'echo done | at midnight',
+      'sudo crontab -u root -e',
+      'true\ncrontab -l',
+    ]) {
+      expect(cmd).toMatch(OS_SCHEDULER_CMD_RE);
+    }
+  });
+
+  it('never matches prose args, mid-word hits, or lookalike commands', () => {
+    for (const cmd of [
+      'cat file.txt',
+      'atuin search foo',
+      'attach session-3',
+      'echo "look at this"',
+      'git commit -m "fix crontab docs"', // 'crontab' not at command position
+      'ls -la',
+      'systemctl --user restart papercup-staging-api.service', // systemctl ≠ systemd-run
+    ]) {
+      expect(cmd).not.toMatch(OS_SCHEDULER_CMD_RE);
+    }
+  });
+});
+
+describe('onToolCall native-scheduler guard (agent sessions only)', () => {
+  const originalFetch = global.fetch;
+  const prevMarker = process.env.PAPERCUSP_AGENT_SESSION;
+  beforeEach(() => {
+    // The allow paths fall through to the fire-and-forget activity report —
+    // stub fetch so no test ever touches the network.
+    global.fetch = (async () => ({ ok: true, text: async () => '{}' })) as unknown as typeof fetch;
+    _resetToolCallCacheForTests();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevMarker === undefined) delete process.env.PAPERCUSP_AGENT_SESSION;
+    else process.env.PAPERCUSP_AGENT_SESSION = prevMarker;
+  });
+
+  it('blocks an OS-scheduler bash command when the agent-session marker is set', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'sched-1',
+      input: { command: 'cd /tmp && crontab evil-tab' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('hive:declare-wake');
+  });
+
+  it('covers bash variants (bash_interactive etc.) via the prefix match', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash_interactive',
+      toolCallId: 'sched-2',
+      input: { command: 'at 5pm' },
+    });
+    expect(r.block).toBe(true);
+  });
+
+  it('allows non-scheduler commands in agent sessions', async () => {
+    process.env.PAPERCUSP_AGENT_SESSION = '1';
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'sched-3',
+      input: { command: 'git status' },
+    });
+    expect(r.block).toBeUndefined();
+  });
+
+  it("never fires for the owner's own sessions (marker unset — D-003)", async () => {
+    delete process.env.PAPERCUSP_AGENT_SESSION;
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'bash',
+      toolCallId: 'sched-4',
+      input: { command: 'crontab -l' },
+    });
+    expect(r.block).toBeUndefined();
+  });
+});
 
 /**
  * Build a temp papercup-style workspace with one `.git` worktree and a

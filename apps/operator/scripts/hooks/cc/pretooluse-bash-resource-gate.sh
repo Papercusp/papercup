@@ -63,7 +63,9 @@ except Exception:
 
 tool_name = payload.get('tool_name', '') or ''
 tool_input = payload.get('tool_input', {})
-if tool_name != 'Bash':
+# 'Bash' is claude's name; exec_command/local_shell/shell are codex's shell
+# tool names (the codex hooks.json attaches this script too — README table).
+if tool_name.lower() not in ('bash', 'exec_command', 'local_shell', 'shell'):
     allow()
 
 command = tool_input.get('command') if isinstance(tool_input, dict) else None

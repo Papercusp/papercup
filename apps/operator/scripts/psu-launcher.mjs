@@ -772,6 +772,10 @@ function launchResume(session, { brain = false } = {}) {
     PAPERCUSP_AGENT: session.agent,
     PAPERCUSP_SID: `su-${randomUUID()}`,
     ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
+    // Agent-session marker: the hook-level scheduler guard (bash gate / omp
+    // coord-hook) only fires when this is set — never for the owner's own
+    // sessions (native-scheduler-lockout D-003).
+    ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}),
   };
   // EI-155: a claude session launched with per-session transcript isolation wrote
   // its transcript under an isolated CLAUDE_CONFIG_DIR (keyed by coord owner id),
@@ -1004,7 +1008,15 @@ async function roleFlow(args, role, rolesMeta) {
       `  ·  harness ${res.harnessSlug}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
-  runWrapper({ wrapperBin: bin, args: launchArgs, cwd: res.cwd, envelopeEnv: res.envelopeEnv });
+  // Role sessions are AGENT sessions across all backends: the marker arms the
+  // hook-level scheduler guard (bash gate / omp coord-hook / codex hooks.json)
+  // (native-scheduler-lockout P-010).
+  runWrapper({
+    wrapperBin: bin,
+    args: launchArgs,
+    cwd: res.cwd,
+    envelopeEnv: { ...res.envelopeEnv, PAPERCUSP_AGENT_SESSION: '1' },
+  });
 }
 
 /** True when an --agent value can't back a role session (claude/omp/codex can). */
@@ -1111,7 +1123,15 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
 
   // codex's superuser bearer is baked into its per-session config.toml
   // server-side (D-006); nothing for psu to export here.
-  runWrapper({ wrapperBin: bin, args: launchArgs, cwd: res.cwd, envelopeEnv: { ...res.envelopeEnv } });
+  runWrapper({
+    wrapperBin: bin,
+    args: launchArgs,
+    cwd: res.cwd,
+    // The brain (Queen) is an agent: arm the hook-level scheduler guard. A
+    // plain human su launch never sets the marker (native-scheduler-lockout
+    // D-003).
+    envelopeEnv: { ...res.envelopeEnv, ...(brain ? { PAPERCUSP_AGENT_SESSION: '1' } : {}) },
+  });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
