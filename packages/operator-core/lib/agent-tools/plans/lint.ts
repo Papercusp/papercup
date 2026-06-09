@@ -16,6 +16,8 @@
  *   - decision refs resolve to known decision IDs
  *   - status tokens in vocabulary
  *   - ASCII-only IDs
+ *   - supersession recorded (`superseded-by:` frontmatter / a "superseded by
+ *     [[X]]" Now note) but status not `superseded` → warn (EI-154)
  *
  * Returns { errors, warnings } per plan + overall pass/fail.
  */
@@ -151,6 +153,48 @@ export async function lintParsed(
       code: 'missing_decisions_section',
       message: 'No `## Decisions` section / no decisions recorded.',
     });
+  }
+
+  // EI-154: a plan that RECORDS its own supersession — via the `superseded-by:`
+  // frontmatter field OR a "superseded by [[X]]" note in its `## Now` block — but
+  // whose STATUS is not `superseded` is a trap. The next agent reads it as a live
+  // `ready`/`active` plan and may build the design that was already rejected. This
+  // is the fleet-federation-reanchor case (2026-06-09): its NULL=fleet-domain
+  // federation design sat `ready` for days after `shared-hive-federation` shipped
+  // the opposite (Hive-pubkey) approach, and an assigned agent nearly built the
+  // rejected design before a code-grounded read caught the supersession. Flipping
+  // the status makes the supersession machine-visible (it drops out of
+  // plans:items actionable/needs-human) instead of buried in prose.
+  //
+  // WARNING, never error: supersession state is transiently inconsistent mid-edit
+  // (you record it in prose, then flip the status), and plan lints advise rather
+  // than gate (CLAUDE.md). The prose signal requires a `[[wikilink]]` after
+  // "superseded by" so a passing narrative mention can't false-positive; the
+  // frontmatter signal is exact. Tightly scoped to the `## Now` state (the
+  // self-referential cold-resume anchor), so it never fires on a decision that
+  // merely discusses some *other* plan's supersession.
+  const status = parsed.frontmatter.status;
+  if (status && status !== 'superseded') {
+    // Strip markdown emphasis (`**bold**` / `_italic_` / `` `code` ``) so the
+    // natural Now phrasing "**SUPERSEDED** by [[X]]" still matches `superseded by`.
+    const nowState = (parsed.now?.state ?? '').replace(/[*_`]/g, '');
+    const fmSupersededBy =
+      typeof parsed.frontmatter.supersededBy === 'string'
+        ? parsed.frontmatter.supersededBy.trim()
+        : '';
+    const proseLink = /\bsuperseded\s+by\b[^[\n]*\[\[([^\]]+)\]\]/i.exec(nowState)?.[1]?.trim();
+    if (fmSupersededBy || proseLink) {
+      const by = fmSupersededBy || proseLink || 'another plan';
+      const where = fmSupersededBy ? 'its `superseded-by:` frontmatter' : 'its `## Now` block';
+      report.warnings.push({
+        level: 'warning',
+        code: 'superseded_status_mismatch',
+        message:
+          `This plan records that it is superseded by ${by} (in ${where}) but its status is '${status}'. ` +
+          `Flip it with plans:set-plan-status status=superseded — a stale '${status}' plan whose design was ` +
+          `superseded misleads the next agent into building the rejected approach (the fleet-federation-reanchor trap).`,
+      });
+    }
   }
 
   for (const w of parsed.parseWarnings) {

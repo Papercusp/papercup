@@ -165,8 +165,10 @@ async function readSpawnRow(sql: postgres.Sql, spawnId: string): Promise<BeeSpaw
   return {
     status: r.status,
     runId: r.run_id,
-    startedAt: r.started_at,
-    finishedAt: r.finished_at,
+    // The org pool returns timestamptz as STRINGS (not Date) — the collectors call .getTime(),
+    // so coerce. (The testcontainer connection returns Dates, which is why tests didn't catch it.)
+    startedAt: r.started_at ? new Date(r.started_at) : null,
+    finishedAt: r.finished_at ? new Date(r.finished_at) : null,
     durationMs: r.duration_ms != null ? Number(r.duration_ms) : null,
     outputTail: r.output_tail,
     errorMessage: r.error_message,
