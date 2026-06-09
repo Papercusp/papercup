@@ -33,7 +33,6 @@ import type { Env } from '../env.ts';
 import {
   audit,
   clientIp,
-  countActiveListingsByTarballKey,
   getActiveListingByRefs,
   getHarnessById,
   getHarnessByGithubRepoId,
@@ -51,9 +50,7 @@ import {
   resolveGithubBearer,
   checkRepoPermission,
 } from '../auth.ts';
-import { snapshotBlobKey, SHA256_RE as SHA256_HEX_RE, MAX_TARBALL_BYTES, r2BlobStore } from './blobs.ts';
 import { checkAndRecordUserPublishHourly, checkIpListPerMinute, RateLimitError } from '../ratelimit.ts';
-import { gcIfUnreferenced } from '@papercusp/artifact-registry';
 
 interface PublishBody {
   listing_kind?: string;             // migration 004; defaults to 'harness'
@@ -68,10 +65,6 @@ interface PublishBody {
   topic_hex?: string;                // 32-byte hex Hypercore topic; REQUIRED for kind='harness'
   attestation_gist_id?: string;      // channel-2 (item 1): gist binding device pubkey ↔ login
   publisher_device_pubkey?: string;  // channel-2 (item 1): device Ed25519 pubkey (base64)
-  // Snapshot tarball blob pointer (migration 005). snapshot kind only; all-or-none.
-  tarball_r2_key?: string;           // MUST be `snapshots/<tarball_content_hash>.tar.gz`
-  tarball_content_hash?: string;     // sha256 hex of the tarball
-  tarball_bytes?: number;            // tarball size in bytes
   // Pack model (migration 006). MCP tool names the unit registers when
   // installed; kinds plugin|pack only. Stored as a JSON TEXT column and
   // returned verbatim on GET (the operator's resolver parses it).
@@ -271,37 +264,6 @@ function registerListingEndpoints(
       return c.json({ error: 'invalid_field', field: 'project_ref' }, 400);
     }
 
-    // Snapshot tarball blob pointer (migration 005) — snapshot kind only,
-    // all-or-none, content-addressed (key MUST match the hash), and the blob
-    // must already be uploaded to R2 (the publisher PUTs /blobs before listing).
-    const tarballPresence = [body.tarball_r2_key, body.tarball_content_hash, body.tarball_bytes];
-    if (tarballPresence.some((v) => v != null)) {
-      if (kind !== 'snapshot') {
-        return c.json({ error: 'invalid_field', field: 'tarball_*', reason: 'snapshot_kind_only' }, 400);
-      }
-      if (!tarballPresence.every((v) => v != null)) {
-        return c.json({ error: 'invalid_field', field: 'tarball_*', reason: 'all_or_none' }, 400);
-      }
-      if (typeof body.tarball_content_hash !== 'string' || !SHA256_HEX_RE.test(body.tarball_content_hash)) {
-        return c.json({ error: 'invalid_field', field: 'tarball_content_hash' }, 400);
-      }
-      if (body.tarball_r2_key !== snapshotBlobKey(body.tarball_content_hash)) {
-        return c.json({ error: 'invalid_field', field: 'tarball_r2_key', reason: 'must_be_content_addressed' }, 400);
-      }
-      if (
-        typeof body.tarball_bytes !== 'number' ||
-        !Number.isInteger(body.tarball_bytes) ||
-        body.tarball_bytes <= 0 ||
-        body.tarball_bytes > MAX_TARBALL_BYTES
-      ) {
-        return c.json({ error: 'invalid_field', field: 'tarball_bytes' }, 400);
-      }
-      const head = await c.env.SNAPSHOTS.head(body.tarball_r2_key);
-      if (!head) {
-        return c.json({ error: 'tarball_blob_missing', key: body.tarball_r2_key }, 400);
-      }
-    }
-
     // provides_tools (migration 006) — pack-model tool metadata. Only the
     // installable kinds (plugin|pack) register tools; a bounded array of
     // non-empty tool-name strings, stored as JSON TEXT.
@@ -412,9 +374,6 @@ function registerListingEndpoints(
       publisher_permission,
       publisher_device_pubkey: body.publisher_device_pubkey ?? null,
       publisher_attestation_gist_id: body.attestation_gist_id ?? null,
-      tarball_r2_key: kind === 'snapshot' ? (body.tarball_r2_key ?? null) : null,
-      tarball_content_hash: kind === 'snapshot' ? (body.tarball_content_hash ?? null) : null,
-      tarball_bytes: kind === 'snapshot' ? (body.tarball_bytes ?? null) : null,
       provides_tools: providesToolsJson,
       created_at: now,
     });
@@ -448,18 +407,6 @@ function registerListingEndpoints(
     const now = Date.now();
     await markHarnessUnlisted(c.env.DB, id, 'by_publisher', now);
     await audit(c.env.DB, now, 'unlisted', { id, listing_kind: row.listing_kind, by_user_id: user.id });
-    // Snapshot blob GC (migration 005): once this listing is unlisted, drop its
-    // R2 tarball iff no other active listing references the (content-addressed)
-    // key — so the bytes don't outlive every listing that pointed at them.
-    if (row.tarball_r2_key) {
-      const key = row.tarball_r2_key;
-      const collected = await gcIfUnreferenced(
-        r2BlobStore(c.env.SNAPSHOTS),
-        key,
-        async () => (await countActiveListingsByTarballKey(c.env.DB, key)) > 0,
-      );
-      if (collected) await audit(c.env.DB, now, 'snapshot_blob_gc', { id, key });
-    }
     return c.json({ ok: true });
   });
 

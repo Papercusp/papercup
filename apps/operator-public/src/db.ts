@@ -7,8 +7,11 @@
 
 import type { Env } from './env.ts';
 
-/** The five storefront listing kinds (migrations 004 + 006 / D-005). */
-export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin', 'pack'] as const;
+/** The storefront listing kinds (migrations 004 + 006 / D-005). The `snapshot`
+ *  kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005): the Cupboard
+ *  distributes recipes (blueprints), not binary tarballs. The D1 `tarball_*` columns
+ *  (migration 005) remain in the schema as vestigial/nullable; no kind writes them. */
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -35,12 +38,6 @@ export interface HarnessRow {
   publisher_permission: string | null;   // GitHub perm at publish: admin|maintain|write|triage|read|none; null = legacy/unknown
   publisher_device_pubkey: string | null;        // channel-2 device Ed25519 pubkey (base64); null = none provided
   publisher_attestation_gist_id: string | null;  // gist binding device_pubkey ↔ login; verified/revoked by the indexer
-  // Snapshot tarball blob pointer (migration 005). NULL for non-snapshot kinds
-  // and snapshot listings without a blob. The tarball lives in R2 (binding
-  // SNAPSHOTS), content-addressed; the fork side fetches + verifies against the hash.
-  tarball_r2_key: string | null;          // R2 object key, `snapshots/<sha256>.tar.gz`
-  tarball_content_hash: string | null;    // sha256 of the tarball (hex)
-  tarball_bytes: number | null;           // tarball size in bytes
   // Pack model (migration 006): JSON-encoded string[] of the MCP tool names the
   // unit registers when installed (e.g. ["repomix.pack"]). Kinds plugin|pack
   // only; NULL elsewhere and for pre-006 listings. The operator's tool→provider
@@ -95,10 +92,6 @@ export interface NewHarnessInput {
   publisher_permission?: string | null;
   publisher_device_pubkey?: string | null;
   publisher_attestation_gist_id?: string | null;
-  /** Snapshot tarball blob pointer (migration 005); snapshot kind only. */
-  tarball_r2_key?: string | null;
-  tarball_content_hash?: string | null;
-  tarball_bytes?: number | null;
   /** Pack model (migration 006): JSON string[] of provided tool names; plugin|pack only. */
   provides_tools?: string | null;
   created_at: number;
@@ -113,10 +106,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
-          tarball_r2_key, tarball_content_hash, tarball_bytes, provides_tools,
+          provides_tools,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -135,9 +128,6 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_permission ?? null,
       h.publisher_device_pubkey ?? null,
       h.publisher_attestation_gist_id ?? null,
-      h.tarball_r2_key ?? null,
-      h.tarball_content_hash ?? null,
-      h.tarball_bytes ?? null,
       h.provides_tools ?? null,
       h.created_at,
       h.created_at,
@@ -246,29 +236,6 @@ export async function getActiveListingByRefs(
   return row ?? null;
 }
 
-/**
- * Count active (listed) listings that reference an R2 snapshot tarball key.
- * Two callers, both R2 blob-lifecycle (migration 005):
- *   - the blob GET visibility gate — serve the tarball only if a LIVE listing
- *     points at it (so unlisting a snapshot also makes its bytes unreachable);
- *   - the unlist blob-GC — after marking a listing unlisted, delete the R2 blob
- *     iff this returns 0 (no remaining active listing references the key). The
- *     key is content-addressed, so two listings of the same tarball share it;
- *     the refcount keeps a sibling's blob alive.
- */
-export async function countActiveListingsByTarballKey(
-  db: D1Database,
-  tarballKey: string,
-): Promise<number> {
-  const row = await db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM harnesses
-         WHERE tarball_r2_key = ? AND unlisted_at IS NULL`,
-    )
-    .bind(tarballKey)
-    .first<{ n: number }>();
-  return row?.n ?? 0;
-}
 
 export async function markHarnessUnlisted(
   db: D1Database,

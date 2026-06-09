@@ -27,7 +27,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
@@ -50,12 +50,11 @@ type KindFilter = 'all' | ListingKind;
 /** The tab row's domain: listing-kind filters + the tool-level discovery view. */
 type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'snapshot', 'plugin', 'pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'pack', 'tools'];
 const VIEW_FILTER_LABEL: Record<ViewFilter, string> = {
   all: 'All',
   harness: 'Harnesses',
   blueprint: 'Blueprints',
-  snapshot: 'Snapshots',
   plugin: 'Plugins',
   pack: 'Packs',
   tools: 'Tools',
@@ -66,7 +65,6 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
   switch (kind) {
     case 'harness': return <Globe size={size} />;
     case 'blueprint': return <Boxes size={size} />;
-    case 'snapshot': return <Camera size={size} />;
     case 'plugin': return <Plug size={size} />;
     case 'pack': return <Box size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
@@ -85,7 +83,6 @@ function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
 const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   blueprint: { fg: 'var(--success)', bg: 'color-mix(in srgb, var(--success), transparent 86%)', border: 'color-mix(in srgb, var(--success), transparent 74%)' },
-  snapshot: { fg: 'var(--warn)', bg: 'var(--warn-bg)', border: 'var(--warn-border)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
 };
@@ -294,7 +291,7 @@ export default function CupboardClient() {
               Cupboard
             </h1>
             <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
-              Discover installable harnesses, blueprints, snapshots, plugins, packs, and tools from the shared Papercusp registry.
+              Discover installable harnesses, blueprints, plugins, packs, and tools from the shared Papercusp registry.
             </p>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>

@@ -46,7 +46,7 @@ const listCupboardListings = defineTool({
     const url = new URL(req.url);
     // The Cupboard worker serves the generalized /listings surface (kind-aware,
     // migration 004) and returns { results, next_cursor }. We forward all query
-    // params verbatim — incl. `kind` (harness|blueprint|snapshot|plugin|all) and
+    // params verbatim — incl. `kind` (harness|blueprint|plugin|pack|all) and
     // `project` (project_ref) — plus q / claim / cursor / limit.
     const base = resolveCupboardBaseUrl();
     const upstream = new URL(`${base}/listings`);

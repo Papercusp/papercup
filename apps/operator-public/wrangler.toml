@@ -9,9 +9,7 @@
 # Bindings (run once before first deploy):
 #   wrangler d1 create papercusp-cupboard
 #   wrangler kv:namespace create papercusp-cupboard-counters
-#   wrangler r2 bucket create papercusp-cupboard-snapshots
 # Then paste the returned ids into [[d1_databases]] and [[kv_namespaces]] below.
-# (R2 buckets bind by name — no id to paste.)
 #
 # Secrets (install via `wrangler secret put`):
 #   GITHUB_CLIENT_ID      — for OAuth app (future: web-flow login)
@@ -51,14 +49,6 @@ database_id = "cebe92a9-52c2-4f2e-81c4-d9d3a668d720"
 [[kv_namespaces]]
 binding = "COUNTERS"
 id = "4c9faf66981b4f3ca29f2bcc632d2504"
-
-# Snapshot tarball blob store (revive-cupboard-distribution-2026-06-04, snapshot
-# facet). Cross-machine snapshot fork needs the .tar.gz bytes to travel, and the
-# D1 listing row is metadata-only — so the tarball lives here, content-addressed
-# at `snapshots/<sha256>.tar.gz`, and the listing carries the key/hash/bytes.
-[[r2_buckets]]
-binding = "SNAPSHOTS"
-bucket_name = "papercusp-cupboard-snapshots"
 
 # Custom domain bound via dashboard / API after first deploy (see below).
 # [[routes]]
