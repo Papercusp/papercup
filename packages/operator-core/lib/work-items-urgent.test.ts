@@ -1,21 +1,21 @@
 /**
  * work-items-urgent.test.ts — the URGENT-enqueue hook on the unified create
  * chokepoint (swarm-coordination P-006/D-005): createWorkItem { urgent:true }
- * fires requestUrgentPotWake for BOTH families, fire-and-forget (a wake failure
+ * fires requestUrgentHiveWake for BOTH families, fire-and-forget (a wake failure
  * never breaks the create), and the work_items:create tool threads the flag.
  *
  * PG-touching seams are mocked (db-org sql, issues-engineer, fanout-projection);
- * the urgent-wake module itself is unit-covered in pot/urgent-wake.test.ts —
+ * the urgent-wake module itself is unit-covered in hive/urgent-wake.test.ts —
  * here it is a spy seam.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const requestUrgentPotWake = vi.fn(async (_opts: { reason: string; harness: string | null }) => ({
+const requestUrgentHiveWake = vi.fn(async (_opts: { reason: string; harness: string | null }) => ({
   fired: true,
   coalesced: false,
 }));
-vi.mock('./pot/urgent-wake', () => ({
-  requestUrgentPotWake: (...a: Parameters<typeof requestUrgentPotWake>) => requestUrgentPotWake(...a),
+vi.mock('./hive/urgent-wake', () => ({
+  requestUrgentHiveWake: (...a: Parameters<typeof requestUrgentHiveWake>) => requestUrgentHiveWake(...a),
 }));
 
 // Fake org-PG: a tagged-template sql that answers the id-mint, with .unsafe for
@@ -78,8 +78,8 @@ import { createWorkItem } from './work-items';
 import createTool from './agent-tools/work_items/create';
 
 beforeEach(() => {
-  requestUrgentPotWake.mockClear();
-  requestUrgentPotWake.mockResolvedValue({ fired: true, coalesced: false });
+  requestUrgentHiveWake.mockClear();
+  requestUrgentHiveWake.mockResolvedValue({ fired: true, coalesced: false });
   createIssue.mockClear();
 });
 
@@ -87,31 +87,31 @@ describe('createWorkItem urgent hook (P-006)', () => {
   it('issue-family urgent create fires the brain wake with the item id + title', async () => {
     const wi = await createWorkItem({ kind: 'bug', title: 'prod is on fire', urgent: true });
     expect(wi.id).toBe('WI-9001');
-    await vi.waitFor(() => expect(requestUrgentPotWake).toHaveBeenCalledTimes(1));
-    const arg = requestUrgentPotWake.mock.calls[0][0] as unknown as { reason: string; harness: string | null };
+    await vi.waitFor(() => expect(requestUrgentHiveWake).toHaveBeenCalledTimes(1));
+    const arg = requestUrgentHiveWake.mock.calls[0][0] as unknown as { reason: string; harness: string | null };
     expect(arg.reason).toContain('WI-9001');
     expect(arg.reason).toContain('prod is on fire');
     expect(arg.harness).toBeNull(); // operator-scoped bug → env fallback decides the home slug
   });
 
-  it('feature-family urgent create passes the item harness as the pot home slug', async () => {
+  it('feature-family urgent create passes the item harness as the hive home slug', async () => {
     await createWorkItem({ kind: 'feature', title: 'hotfix', harness: 'papercup', urgent: true });
-    await vi.waitFor(() => expect(requestUrgentPotWake).toHaveBeenCalledTimes(1));
-    expect((requestUrgentPotWake.mock.calls[0][0] as unknown as { harness: string | null }).harness).toBe('papercup');
+    await vi.waitFor(() => expect(requestUrgentHiveWake).toHaveBeenCalledTimes(1));
+    expect((requestUrgentHiveWake.mock.calls[0][0] as unknown as { harness: string | null }).harness).toBe('papercup');
   });
 
   it('a non-urgent create never touches the wake path', async () => {
     await createWorkItem({ kind: 'bug', title: 'routine filing' });
     await createWorkItem({ kind: 'feature', title: 'routine feature', harness: 'papercup' });
     await new Promise((r) => setTimeout(r, 10)); // give a stray fire-and-forget a beat
-    expect(requestUrgentPotWake).not.toHaveBeenCalled();
+    expect(requestUrgentHiveWake).not.toHaveBeenCalled();
   });
 
   it('fire-and-forget: a rejecting wake never fails the create', async () => {
-    requestUrgentPotWake.mockRejectedValueOnce(new Error('wake path down'));
+    requestUrgentHiveWake.mockRejectedValueOnce(new Error('wake path down'));
     const wi = await createWorkItem({ kind: 'bug', title: 'still lands', urgent: true });
     expect(wi.id).toBe('WI-9001');
-    await vi.waitFor(() => expect(requestUrgentPotWake).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(requestUrgentHiveWake).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -123,12 +123,12 @@ describe('work_items:create tool threads urgent', () => {
     const res = await createTool.handler(parse({ kind: 'bug', title: 'tool urgent', urgent: true }), ctx);
     const body = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(body.ok).toBe(true);
-    await vi.waitFor(() => expect(requestUrgentPotWake).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(requestUrgentHiveWake).toHaveBeenCalledTimes(1));
   });
 
   it('urgent omitted → no wake', async () => {
     await createTool.handler(parse({ kind: 'bug', title: 'tool routine' }), ctx);
     await new Promise((r) => setTimeout(r, 10));
-    expect(requestUrgentPotWake).not.toHaveBeenCalled();
+    expect(requestUrgentHiveWake).not.toHaveBeenCalled();
   });
 });

@@ -1,28 +1,28 @@
 /**
- * The Pot's self-declared wake — autoloop-pot-operator-rebuild-2026-06-05 P0
+ * The Hive's self-declared wake — autoloop-hive-operator-rebuild-2026-06-05 P0
  * (D-002/D-003).
  *
- * The pot's "loop" is the operator deciding its OWN next wake before ending a
+ * The hive's "loop" is the operator deciding its OWN next wake before ending a
  * turn — a time, an event-subscription, or nothing. No timer drives it:
  *
- *   - **Time wake** — a ONE-SHOT `pot-wake` routine row (`harness_shared.routines`,
+ *   - **Time wake** — a ONE-SHOT `hive-wake` routine row (`harness_shared.routines`,
  *     cron-kind with NO cron expr + an explicit `next_fire_at`). The shipped
  *     durable `routinesTick` claims it once (deactivating it — see
- *     `claimDueRoutine`) and fires `system:blueprint-run { blueprintId: 'pot' }`,
- *     which launches the pot blueprint's decider (the operator role) via the
+ *     `claimDueRoutine`) and fires `system:blueprint-run { blueprintId: 'hive' }`,
+ *     which launches the hive blueprint's decider (the operator role) via the
  *     launch-blueprint primitive. Durable: a host restart never loses the wake.
  *
- *   - **Event wake** — persisted subscriptions (`harness_shared.pot_wake`, one
+ *   - **Event wake** — persisted subscriptions (`operator-state key hive_wake`, one
  *     row per workspace) projected into LIVE event-reaction rules
- *     (`registerReactionRule`) that fire the `pot:wake` tool when the subscribed
- *     tool-event matches. Re-registered at boot (`registerPotWakeRules`) since
+ *     (`registerReactionRule`) that fire the `hive:wake` tool when the subscribed
+ *     tool-event matches. Re-registered at boot (`registerHiveWakeRules`) since
  *     the rule registry is in-memory.
  *
- *   - **Nothing** — both cleared; the pot sleeps until the user (or a manual
- *     `pot:wake`) wakes it.
+ *   - **Nothing** — both cleared; the hive sleeps until the user (or a manual
+ *     `hive:wake`) wakes it.
  *
  * A **wake floor** (D-002's clamp) stops a confused operator from spinning: a
- * declared time is clamped to ≥ now+floor, and `pot:wake` skips a fire that
+ * declared time is clamped to ≥ now+floor, and `hive:wake` skips a fire that
  * lands within the floor of the previous one (the event-burst debounce).
  */
 import type { Sql } from 'postgres';
@@ -34,57 +34,57 @@ import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { registerReactionRule, unregisterReactionRule, listReactionRules } from '../events/registry';
 
-/** The pot launch blueprint id (blueprints/pot/blueprint.yaml). */
-export const POT_BLUEPRINT_ID = 'pot';
+/** The hive launch blueprint id (blueprints/hive/blueprint.yaml). */
+export const HIVE_BLUEPRINT_ID = 'hive';
 /** The one-shot wake routine's name (per-harness unique with install_slug). */
-export const POT_WAKE_ROUTINE_NAME = 'pot-wake';
+export const HIVE_WAKE_ROUTINE_NAME = 'hive-wake';
 
 /** One persisted event-wake subscription. Serializable (PG JSONB) — so `when`
  *  is the declarative DataCondition form only, never a JS predicate. */
-export interface PotEventSubscription {
+export interface HiveEventSubscription {
   /** Trigger tool name(s) — the event-reaction `on` key (e.g. 'coord:escalate'). */
   on: string | string[];
   /** Optional declarative condition over the tool event ({args,result,ctx}). */
   when?: DataCondition;
-  /** Why the pot subscribed — surfaced in pot:status + the wake kickoff. */
+  /** Why the hive subscribed — surfaced in hive:status + the wake kickoff. */
   note?: string;
 }
 
-/** The per-workspace pot_wake state row payload. */
-export interface PotWakeState {
-  subscriptions: PotEventSubscription[];
-  /** ms epoch of the last pot launch fire — the pot:wake floor-debounce input. */
+/** The per-workspace hive_wake state row payload. */
+export interface HiveWakeState {
+  subscriptions: HiveEventSubscription[];
+  /** ms epoch of the last hive launch fire — the hive:wake floor-debounce input. */
   lastWakeAt?: number;
   /** ms epoch of the last declare-wake call (observability). */
   declaredAt?: number;
 }
 
-const EMPTY_STATE: PotWakeState = { subscriptions: [] };
+const EMPTY_STATE: HiveWakeState = { subscriptions: [] };
 
 /** The self-wake floor in seconds (D-002's clamp). Env-tunable, hard min 5s. */
-export function potWakeFloorSec(): number {
-  const n = Number(process.env.PAPERCUSP_POT_WAKE_FLOOR_SEC ?? 60);
+export function hiveWakeFloorSec(): number {
+  const n = Number(process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC ?? 60);
   return Number.isFinite(n) && n >= 5 ? n : 60;
 }
 
 /** Clamp a requested wake time to ≥ now + the floor. Delegates the floor math to the
- *  shared `@papercusp/debounce-coalesce` core (the pot is no longer a special case —
+ *  shared `@papercusp/debounce-coalesce` core (the hive is no longer a special case —
  *  unify-watch-primitive-2026-06-06 P-006/D-009). */
 export function clampWakeAt(requested: Date, now: Date = new Date()): { at: Date; clamped: boolean } {
   const { at, clamped } = clampToFloor({
     requestedAt: requested.getTime(),
-    minSleepMs: potWakeFloorSec() * 1_000,
+    minSleepMs: hiveWakeFloorSec() * 1_000,
     now: now.getTime(),
   });
   return { at: new Date(at), clamped };
 }
 
 /**
- * Declare (or replace) the pot's one-shot TIME wake: upsert the `pot-wake`
+ * Declare (or replace) the hive's one-shot TIME wake: upsert the `hive-wake`
  * routine with an explicit clamped `next_fire_at` and no cron (one-shot —
  * `claimDueRoutine` deactivates it on fire). Returns the effective time.
  */
-export async function declarePotTimeWake(
+export async function declareHiveTimeWake(
   sql: Sql,
   opts: { workspaceId: string; installSlug: string; at: Date; kickoff?: string; now?: Date },
 ): Promise<{ at: Date; clamped: boolean }> {
@@ -94,12 +94,12 @@ export async function declarePotTimeWake(
     {
       workspaceId: opts.workspaceId,
       installSlug: opts.installSlug,
-      name: POT_WAKE_ROUTINE_NAME,
+      name: HIVE_WAKE_ROUTINE_NAME,
       triggerKind: 'cron',
       triggerConfig: {}, // no cron expr ⇒ one-shot
       targetRole: 'system:blueprint-run',
       payloadTemplate: {
-        blueprintId: POT_BLUEPRINT_ID,
+        blueprintId: HIVE_BLUEPRINT_ID,
         kickoff:
           opts.kickoff ??
           `Self-declared wake (declared ${new Date().toISOString()}). You are the operator in charge; survey the fleet and figure out what to do.`,
@@ -114,20 +114,20 @@ export async function declarePotTimeWake(
   return { at, clamped };
 }
 
-/** Clear the pot's time wake (mode 'none', or a declare with no time). */
-export async function clearPotTimeWake(sql: Sql, installSlug: string): Promise<void> {
-  await setRoutineActive(sql, installSlug, POT_WAKE_ROUTINE_NAME, false);
+/** Clear the hive's time wake (mode 'none', or a declare with no time). */
+export async function clearHiveTimeWake(sql: Sql, installSlug: string): Promise<void> {
+  await setRoutineActive(sql, installSlug, HIVE_WAKE_ROUTINE_NAME, false);
 }
 
-/** Read the pot's time-wake routine state (null = never declared). */
-export async function getPotTimeWake(
+/** Read the hive's time-wake routine state (null = never declared). */
+export async function getHiveTimeWake(
   sql: Sql,
   installSlug: string,
 ): Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null> {
   const rows = await sql<Array<{ active: boolean; next_fire_at: Date | null; last_fired_at: Date | null }>>`
     SELECT active, next_fire_at, last_fired_at
       FROM harness_shared.routines
-     WHERE install_slug = ${installSlug} AND name = ${POT_WAKE_ROUTINE_NAME}
+     WHERE install_slug = ${installSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
   `;
   if (rows.length === 0) return null;
   return { active: rows[0].active, nextFireAt: rows[0].next_fire_at, lastFiredAt: rows[0].last_fired_at };
@@ -135,21 +135,21 @@ export async function getPotTimeWake(
 
 // ── event-wake subscriptions ─────────────────────────────────────────────────
 
-const RULE_PREFIX = 'pot-wake';
+const RULE_PREFIX = 'hive-wake';
 const ruleId = (workspaceId: string, i: number): string => `${RULE_PREFIX}:${workspaceId}#${i}`;
 
-/** Read the persisted pot wake state for a workspace. */
-export async function readPotWakeState(workspaceId?: string): Promise<PotWakeState> {
-  return (await readOperatorState<PotWakeState>('pot_wake', workspaceId)) ?? EMPTY_STATE;
+/** Read the persisted hive wake state for a workspace. */
+export async function readHiveWakeState(workspaceId?: string): Promise<HiveWakeState> {
+  return (await readOperatorState<HiveWakeState>('hive_wake', workspaceId)) ?? EMPTY_STATE;
 }
 
 /**
  * Project a workspace's persisted subscriptions into LIVE reaction rules.
- * Idempotent: removes every `pot-wake:<ws>#*` rule first, then registers the
- * current set. Each rule fires the `pot:wake` tool (the floor-debounce lives
+ * Idempotent: removes every `hive-wake:<ws>#*` rule first, then registers the
+ * current set. Each rule fires the `hive:wake` tool (the floor-debounce lives
  * there) with static args carrying the subscription's provenance.
  */
-export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription[]): number {
+export function syncHiveWakeRules(workspaceId: string, subs: HiveEventSubscription[]): number {
   for (const r of listReactionRules()) {
     if (r.id.startsWith(`${RULE_PREFIX}:${workspaceId}#`)) unregisterReactionRule(r.id);
   }
@@ -159,16 +159,16 @@ export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription
       id: ruleId(workspaceId, i),
       on: sub.on,
       when: sub.when,
-      fire: 'pot:wake',
+      fire: 'hive:wake',
       args: {
         reason: `subscribed event (${Array.isArray(sub.on) ? sub.on.join(', ') : sub.on})${sub.note ? ` — ${sub.note}` : ''}`,
         source: 'event',
       },
       // Durable would survive a restart, but a wake is cheap to lose and MUST
-      // not retry-storm the pot — in-process fire-and-forget is right here.
+      // not retry-storm the hive — in-process fire-and-forget is right here.
       mode: 'sync',
       onlyOnSuccess: true,
-      source: 'pot-wake',
+      source: 'hive-wake',
     });
     n++;
   }
@@ -180,16 +180,16 @@ export function syncPotWakeRules(workspaceId: string, subs: PotEventSubscription
  * REPLACE semantics, like coord:declare-intent: each declare describes the
  * whole wake; omitted ⇒ cleared.
  */
-export async function setPotEventSubscriptions(
+export async function setHiveEventSubscriptions(
   workspaceId: string,
-  subs: PotEventSubscription[],
+  subs: HiveEventSubscription[],
 ): Promise<number> {
-  await updateOperatorState<PotWakeState>('pot_wake', EMPTY_STATE, (cur) => ({
+  await updateOperatorState<HiveWakeState>('hive_wake', EMPTY_STATE, (cur) => ({
     ...cur,
     subscriptions: subs,
     declaredAt: Date.now(),
   }));
-  return syncPotWakeRules(workspaceId, subs);
+  return syncHiveWakeRules(workspaceId, subs);
 }
 
 /**
@@ -197,42 +197,42 @@ export async function setPotEventSubscriptions(
  * subscriptions must be projected again on every host start. Fail-soft (a
  * missing table pre-migration must never block boot).
  */
-export async function registerPotWakeRules(workspaceId?: string): Promise<number> {
+export async function registerHiveWakeRules(workspaceId?: string): Promise<number> {
   const ws = workspaceId ?? activeWorkspaceId();
   try {
-    const state = await readPotWakeState(ws);
-    return syncPotWakeRules(ws, state.subscriptions);
+    const state = await readHiveWakeState(ws);
+    return syncHiveWakeRules(ws, state.subscriptions);
   } catch (e) {
-    console.warn(`[pot] wake-rule registration skipped: ${e instanceof Error ? e.message : e}`);
+    console.warn(`[hive] wake-rule registration skipped: ${e instanceof Error ? e.message : e}`);
     return 0;
   }
 }
 
 // ── the fire-side floor debounce ─────────────────────────────────────────────
 
-/** Whether a pot fire at `now` falls inside the floor window of the last one. Delegates
- *  to the shared `@papercusp/debounce-coalesce` floor (P-006/D-009): the pot consumes the
+/** Whether a hive fire at `now` falls inside the floor window of the last one. Delegates
+ *  to the shared `@papercusp/debounce-coalesce` floor (P-006/D-009): the hive consumes the
  *  SAME core every other wake-subscription now uses, rather than a bespoke comparison. */
-export function withinWakeFloor(state: PotWakeState, now: number = Date.now()): boolean {
+export function withinWakeFloor(state: HiveWakeState, now: number = Date.now()): boolean {
   return withinFloor({
     lastWokenAt: state.lastWakeAt ?? null,
-    minSleepMs: potWakeFloorSec() * 1_000,
+    minSleepMs: hiveWakeFloorSec() * 1_000,
     now,
   });
 }
 
-/** Record a pot launch fire (the debounce input for the next one). */
-export async function recordPotWake(workspaceId?: string): Promise<void> {
-  await updateOperatorState<PotWakeState>(
-    'pot_wake',
+/** Record a hive launch fire (the debounce input for the next one). */
+export async function recordHiveWake(workspaceId?: string): Promise<void> {
+  await updateOperatorState<HiveWakeState>(
+    'hive_wake',
     EMPTY_STATE,
     (cur) => ({ ...cur, lastWakeAt: Date.now() }),
   );
 }
 
-/** Resolve the harness slug the pot runs against: explicit arg → ctx harness →
- *  env default. The pot is workspace-level but the invoke route is
+/** Resolve the harness slug the hive runs against: explicit arg → ctx harness →
+ *  env default. The hive is workspace-level but the invoke route is
  *  harness-scoped, so a home slug must be named somewhere. */
-export function resolvePotHomeSlug(explicit?: string | null, ctxSlug?: string | null): string | null {
-  return explicit?.trim() || ctxSlug?.trim() || process.env.PAPERCUSP_POT_HOME_SLUG?.trim() || null;
+export function resolveHiveHomeSlug(explicit?: string | null, ctxSlug?: string | null): string | null {
+  return explicit?.trim() || ctxSlug?.trim() || process.env.PAPERCUSP_HIVE_HOME_SLUG?.trim() || null;
 }

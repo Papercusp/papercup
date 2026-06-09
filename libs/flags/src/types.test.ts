@@ -39,9 +39,9 @@ describe('flag registry invariants', () => {
     }
   });
 
-  it('V1 ship-state defaults: only SNAPSHOTS is on (revive-cupboard-distribution P1/D-002)', () => {
+  it('V1 ship-state defaults: every flag is OFF (snapshots retired — retire-snapshots-instance-spec)', () => {
     for (const key of ALL_FLAG_KEYS) {
-      expect(FLAG_DEFAULTS[key]).toBe(key === FLAGS.SNAPSHOTS);
+      expect(FLAG_DEFAULTS[key]).toBe(false);
     }
   });
 });
@@ -61,10 +61,10 @@ describe('resolveWithDefaults', () => {
   });
 
   it('honours an explicit false override (not treated as "unset")', () => {
-    // SNAPSHOTS defaults true; an explicit false must win, proving the guard
-    // keys off `typeof === boolean`, not truthiness.
-    const out = resolveWithDefaults({ [FLAGS.SNAPSHOTS]: false });
-    expect(out[FLAGS.SNAPSHOTS]).toBe(false);
+    // An explicit `false` must be applied (the guard keys off `typeof === boolean`,
+    // not truthiness) — distinct from an absent key, which keeps the default.
+    const out = resolveWithDefaults({ [FLAGS.ORACLE]: false });
+    expect(out[FLAGS.ORACLE]).toBe(false);
   });
 
   it('ignores non-boolean values (undefined / null / string) and keeps the default', () => {
@@ -89,7 +89,7 @@ describe('resolveWithDefaults', () => {
 
   it('does not mutate FLAG_DEFAULTS', () => {
     const before = { ...FLAG_DEFAULTS };
-    resolveWithDefaults({ [FLAGS.ORACLE]: true, [FLAGS.SNAPSHOTS]: false });
+    resolveWithDefaults({ [FLAGS.ORACLE]: true, [FLAGS.DESIGN]: false });
     expect(FLAG_DEFAULTS).toEqual(before);
   });
 

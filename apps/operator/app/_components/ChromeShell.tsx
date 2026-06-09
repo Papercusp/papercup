@@ -96,7 +96,6 @@ export default function ChromeShell() {
   // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
   // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
-  const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const oracleFlag = useFlag(FLAGS.ORACLE);
   const testingFlag = useFlag(FLAGS.TESTING);
   const t = useLexicon();
@@ -199,9 +198,6 @@ export default function ChromeShell() {
         <nav className="pc-header-right" aria-label="Primary navigation">
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
-          ) : null}
-          {snapshotsFlag ? (
-            <RouteLink href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</RouteLink>
           ) : null}
           <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
           <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>

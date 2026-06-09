@@ -18,13 +18,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
-  clearPotTimeWake,
-  declarePotTimeWake,
-  potWakeFloorSec,
-  resolvePotHomeSlug,
-  setPotEventSubscriptions,
-  type PotEventSubscription,
-} from '../../pot/wake';
+  clearHiveTimeWake,
+  declareHiveTimeWake,
+  hiveWakeFloorSec,
+  resolveHiveHomeSlug,
+  setHiveEventSubscriptions,
+  type HiveEventSubscription,
+} from '../../hive/wake';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -38,7 +38,7 @@ const subscriptionSchema = z.object({
 });
 
 export default defineTool({
-  name: 'pot:declare-wake',
+  name: 'hive:declare-wake',
   profile: 'engineer',
   description:
     "Declare the Pot operator's next wake (REPLACE semantics — omitted parts are cleared): a time (`at` ISO / `inSeconds`), event subscriptions (`events: [{on, when?, note?}]`), both, or nothing (`mode:'none'`). The time is clamped to a wake floor; event wakes fire pot:wake when the subscribed tool-event matches.",
@@ -56,7 +56,7 @@ export default defineTool({
       inSeconds: z.number().positive().max(60 * 60 * 24 * 30).optional().describe('Relative wake time in seconds from now.'),
       events: z.array(subscriptionSchema).max(20).optional().describe('Event-wake subscriptions (replaces the current set; omit to clear).'),
       mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual pot:wake."),
-      harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
+      harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
       kickoff: z.string().max(2000).optional().describe('Kickoff text the woken operator reads (why this wake exists).'),
     })
     .refine((a) => !(a.at != null && a.inSeconds != null), { message: 'pass either at or inSeconds, not both' })
@@ -65,7 +65,7 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {
         content: [
@@ -74,7 +74,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the wake routine is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the wake routine is harness-scoped.',
             }),
           },
         ],
@@ -86,18 +86,18 @@ export default defineTool({
     let time: { at: string; clamped: boolean } | null = null;
     if (wantsTime) {
       const requested = args.at != null ? new Date(args.at) : new Date(Date.now() + (args.inSeconds as number) * 1_000);
-      const r = await declarePotTimeWake(sql, { workspaceId, installSlug, at: requested, kickoff: args.kickoff });
+      const r = await declareHiveTimeWake(sql, { workspaceId, installSlug, at: requested, kickoff: args.kickoff });
       time = { at: r.at.toISOString(), clamped: r.clamped };
     } else {
-      await clearPotTimeWake(sql, installSlug);
+      await clearHiveTimeWake(sql, installSlug);
     }
 
-    const subs: PotEventSubscription[] = (args.events ?? []).map((s) => ({
+    const subs: HiveEventSubscription[] = (args.events ?? []).map((s) => ({
       on: s.on,
       when: s.when as DataCondition | undefined,
       note: s.note,
     }));
-    const eventRules = await setPotEventSubscriptions(workspaceId, subs);
+    const eventRules = await setHiveEventSubscriptions(workspaceId, subs);
 
     return {
       content: [
@@ -108,7 +108,7 @@ export default defineTool({
             harness: installSlug,
             time,
             eventRules,
-            floorSec: potWakeFloorSec(),
+            floorSec: hiveWakeFloorSec(),
             mode: time && eventRules > 0 ? 'time+event' : time ? 'time' : eventRules > 0 ? 'event' : 'none',
           }),
         },

@@ -59,7 +59,7 @@ type StateTable =
   | 'setup_wizard_state'
   | 'telemetry_reports'
   // Migration 158 — the Pot's self-declared-wake state (autoloop-pot-operator-rebuild P0):
-  | 'pot_wake'
+  | 'hive_wake'
   // Migration 161 — the live-editable fleet rate-limit knobs (rate-limit-layer-v2 D-004):
   | 'operator_rate_limit_config'
   // Migration 164 — P2P voice-channel registry (holepunch-voice-channels P-007/D-011):

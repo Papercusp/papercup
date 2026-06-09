@@ -1,14 +1,14 @@
 /**
- * pot-wake-pg.integration.test.ts — autoloop-pot-operator-rebuild-2026-06-05 P0.
+ * hive-wake-pg.integration.test.ts — autoloop-hive-operator-rebuild-2026-06-05 P0.
  *
  * Proves, against a real Postgres (testcontainer) with migration 158 applied +
  * the baseline `routines` table shape, that the self-declared wake round-trips:
- *   - declarePotTimeWake: one-shot routine row (no cron) with the clamped
- *     explicit next_fire_at, payload {blueprintId:'pot'}, target system:blueprint-run.
+ *   - declareHiveTimeWake: one-shot routine row (no cron) with the clamped
+ *     explicit next_fire_at, payload {blueprintId:'hive'}, target system:blueprint-run.
  *   - listDueCronRoutines + claimDueRoutine: the one-shot is not-due in the
  *     future, due once past, DEACTIVATED on claim (no refire loop), and a
  *     second claim loses. A cron routine stays active and advances.
- *   - pot_wake state (migration 158): subscriptions + lastWakeAt round-trip.
+ *   - hive_wake state (migration 158): subscriptions + lastWakeAt round-trip.
  *
  * Mirrors curation-pg.integration.test.ts's testcontainer setup (mocks
  * `@papercusp/db-org` getOrgPg + `workspace-registry` activeWorkspaceId).
@@ -29,8 +29,8 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line))
     .join('\n');
 
-const WS = 'ws-pottest';
-const SLUG = 'pot-test-harness';
+const WS = 'ws-hivetest';
+const SLUG = 'hive-test-harness';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -48,13 +48,13 @@ vi.mock('../workspace-registry', async () => {
 
 const { listDueCronRoutines } = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
 const {
-  declarePotTimeWake,
-  clearPotTimeWake,
-  getPotTimeWake,
-  readPotWakeState,
-  setPotEventSubscriptions,
-  recordPotWake,
-  POT_WAKE_ROUTINE_NAME,
+  declareHiveTimeWake,
+  clearHiveTimeWake,
+  getHiveTimeWake,
+  readHiveWakeState,
+  setHiveEventSubscriptions,
+  recordHiveWake,
+  HIVE_WAKE_ROUTINE_NAME,
 } = await import('./wake');
 const { claimDueRoutine } = await import('../harness/routines/claim');
 const { _resetReactionsForTests } = await import('../events/registry');
@@ -64,7 +64,7 @@ let dbName: string;
 
 beforeAll(async () => {
   const adminUri = await getTestPg();
-  dbName = `pot_${randomBytes(5).toString('hex')}`;
+  dbName = `hive_${randomBytes(5).toString('hex')}`;
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
@@ -100,7 +100,7 @@ beforeAll(async () => {
       CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
     )
   `);
-  await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
+  await rootSql.unsafe(readMigration('158-hive-wake-state.sql')).simple();
   h.sql = rootSql;
 }, 90_000);
 
@@ -109,29 +109,29 @@ afterAll(async () => {
   await rootSql?.end({ timeout: 5 });
 });
 
-describe('declarePotTimeWake (the one-shot time wake)', () => {
-  it('writes a one-shot routine: no cron, explicit clamped next_fire_at, pot payload', async () => {
+describe('declareHiveTimeWake (the one-shot time wake)', () => {
+  it('writes a one-shot routine: no cron, explicit clamped next_fire_at, hive payload', async () => {
     const now = new Date();
     const requested = new Date(now.getTime() + 3600_000);
-    const r = await declarePotTimeWake(rootSql, { workspaceId: WS, installSlug: SLUG, at: requested, now });
+    const r = await declareHiveTimeWake(rootSql, { workspaceId: WS, installSlug: SLUG, at: requested, now });
     expect(r.clamped).toBe(false);
     expect(r.at).toEqual(requested);
 
     const rows = await rootSql<
       Array<{ trigger_config: Record<string, unknown>; target_role: string; payload_template: Record<string, unknown>; active: boolean; next_fire_at: Date }>
     >`SELECT trigger_config, target_role, payload_template, active, next_fire_at
-        FROM harness_shared.routines WHERE install_slug = ${SLUG} AND name = ${POT_WAKE_ROUTINE_NAME}`;
+        FROM harness_shared.routines WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     expect(rows).toHaveLength(1);
     expect(rows[0].active).toBe(true);
     expect(rows[0].trigger_config.cron).toBeUndefined();
     expect(rows[0].target_role).toBe('system:blueprint-run');
-    expect(rows[0].payload_template.blueprintId).toBe('pot');
+    expect(rows[0].payload_template.blueprintId).toBe('hive');
     expect(new Date(rows[0].next_fire_at).getTime()).toBe(requested.getTime());
   });
 
   it('clamps a too-soon wake to now + floor', async () => {
     const now = new Date();
-    const r = await declarePotTimeWake(rootSql, {
+    const r = await declareHiveTimeWake(rootSql, {
       workspaceId: WS,
       installSlug: SLUG,
       at: new Date(now.getTime() - 1000),
@@ -144,26 +144,26 @@ describe('declarePotTimeWake (the one-shot time wake)', () => {
   it('is not due in the future; due + claimable once past; DEACTIVATED on claim (one-shot, no refire)', async () => {
     // Future wake: not in the due list.
     const due0 = await listDueCronRoutines(rootSql);
-    expect(due0.some((r) => r.name === POT_WAKE_ROUTINE_NAME)).toBe(false);
+    expect(due0.some((r) => r.name === HIVE_WAKE_ROUTINE_NAME)).toBe(false);
 
     // Force it due (the tick's view once the wall clock passes next_fire_at).
     await rootSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second'
-                   WHERE install_slug = ${SLUG} AND name = ${POT_WAKE_ROUTINE_NAME}`;
+                   WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     const due1 = await listDueCronRoutines(rootSql);
-    const routine = due1.find((r) => r.name === POT_WAKE_ROUTINE_NAME);
+    const routine = due1.find((r) => r.name === HIVE_WAKE_ROUTINE_NAME);
     expect(routine).toBeDefined();
 
     // First claim wins and DEACTIVATES (one-shot).
     expect(await claimDueRoutine(rootSql, routine!)).toBe(true);
     const after = await rootSql<Array<{ active: boolean; next_fire_at: Date | null }>>`
       SELECT active, next_fire_at FROM harness_shared.routines
-       WHERE install_slug = ${SLUG} AND name = ${POT_WAKE_ROUTINE_NAME}`;
+       WHERE install_slug = ${SLUG} AND name = ${HIVE_WAKE_ROUTINE_NAME}`;
     expect(after[0].active).toBe(false);
     expect(after[0].next_fire_at).toBeNull();
 
     // No refire loop: it is gone from the due list, and a second claim loses.
     const due2 = await listDueCronRoutines(rootSql);
-    expect(due2.some((r) => r.name === POT_WAKE_ROUTINE_NAME)).toBe(false);
+    expect(due2.some((r) => r.name === HIVE_WAKE_ROUTINE_NAME)).toBe(false);
     expect(await claimDueRoutine(rootSql, routine!)).toBe(false);
   });
 
@@ -197,42 +197,42 @@ describe('declarePotTimeWake (the one-shot time wake)', () => {
     expect(new Date(after[0].next_fire_at!).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('re-declaring reactivates (upsert) and clearPotTimeWake deactivates', async () => {
-    const r = await declarePotTimeWake(rootSql, {
+  it('re-declaring reactivates (upsert) and clearHiveTimeWake deactivates', async () => {
+    const r = await declareHiveTimeWake(rootSql, {
       workspaceId: WS,
       installSlug: SLUG,
       at: new Date(Date.now() + 7200_000),
     });
     expect(r.clamped).toBe(false);
-    let state = await getPotTimeWake(rootSql, SLUG);
+    let state = await getHiveTimeWake(rootSql, SLUG);
     expect(state?.active).toBe(true);
 
-    await clearPotTimeWake(rootSql, SLUG);
-    state = await getPotTimeWake(rootSql, SLUG);
+    await clearHiveTimeWake(rootSql, SLUG);
+    state = await getHiveTimeWake(rootSql, SLUG);
     expect(state?.active).toBe(false);
   });
 });
 
-describe('pot_wake state (migration 158)', () => {
+describe('hive_wake state (migration 158)', () => {
   it('subscriptions + lastWakeAt round-trip per workspace', async () => {
-    expect((await readPotWakeState(WS)).subscriptions).toEqual([]);
+    expect((await readHiveWakeState(WS)).subscriptions).toEqual([]);
 
-    const n = await setPotEventSubscriptions(WS, [
+    const n = await setHiveEventSubscriptions(WS, [
       { on: 'coord:escalate', note: 'integration round-trip' },
     ]);
     expect(n).toBe(1);
 
-    const s1 = await readPotWakeState(WS);
+    const s1 = await readHiveWakeState(WS);
     expect(s1.subscriptions).toHaveLength(1);
     expect(s1.subscriptions[0].on).toBe('coord:escalate');
     expect(s1.declaredAt).toBeTypeOf('number');
 
-    await recordPotWake(WS);
-    const s2 = await readPotWakeState(WS);
+    await recordHiveWake(WS);
+    const s2 = await readHiveWakeState(WS);
     expect(s2.lastWakeAt).toBeTypeOf('number');
     expect(s2.subscriptions).toHaveLength(1); // merge, not clobber
 
-    await setPotEventSubscriptions(WS, []);
-    expect((await readPotWakeState(WS)).subscriptions).toEqual([]);
+    await setHiveEventSubscriptions(WS, []);
+    expect((await readHiveWakeState(WS)).subscriptions).toEqual([]);
   });
 });

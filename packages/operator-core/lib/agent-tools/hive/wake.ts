@@ -11,16 +11,16 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import {
-  POT_BLUEPRINT_ID,
-  potWakeFloorSec,
-  readPotWakeState,
-  recordPotWake,
-  resolvePotHomeSlug,
+  HIVE_BLUEPRINT_ID,
+  hiveWakeFloorSec,
+  readHiveWakeState,
+  recordHiveWake,
+  resolveHiveHomeSlug,
   withinWakeFloor,
-} from '../../pot/wake';
+} from '../../hive/wake';
 
 export default defineTool({
-  name: 'pot:wake',
+  name: 'hive:wake',
   profile: 'engineer',
   description:
     'Fire the Pot operator immediately (launches the pot blueprint via the invoke route). Floor-debounced: a wake within the floor window of the previous one is skipped unless force:true. The target of event-wake reaction rules and the manual user override.',
@@ -35,12 +35,12 @@ export default defineTool({
   args: z.object({
     reason: z.string().max(2000).optional().describe('Why this wake fired — becomes the kickoff context.'),
     source: z.enum(['user', 'event', 'manual']).optional().describe("Provenance label (event-wake rules pass 'event')."),
-    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
     force: z.boolean().optional().describe('Bypass the wake-floor debounce.'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {
         content: [
@@ -49,16 +49,16 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the pot launch is harness-scoped.',
+              message: 'Pass `harness` (or set PAPERCUSP_HIVE_HOME_SLUG) — the pot launch is harness-scoped.',
             }),
           },
         ],
       };
     }
 
-    const state = await readPotWakeState(workspaceId);
+    const state = await readHiveWakeState(workspaceId);
     if (!args.force && withinWakeFloor(state)) {
-      const floorSec = potWakeFloorSec();
+      const floorSec = hiveWakeFloorSec();
       const nextAllowedAt = new Date((state.lastWakeAt ?? 0) + floorSec * 1_000).toISOString();
       return {
         content: [
@@ -71,8 +71,8 @@ export default defineTool({
     }
 
     const kickoff = `Wake (${args.source ?? 'manual'}): ${args.reason ?? 'no reason given'}. You are the operator in charge; survey the fleet and figure out what to do.`;
-    const target = await fireLaunchBlueprint(POT_BLUEPRINT_ID, { installSlug, workspaceId, kickoff });
-    await recordPotWake(workspaceId);
+    const target = await fireLaunchBlueprint(HIVE_BLUEPRINT_ID, { installSlug, workspaceId, kickoff });
+    await recordHiveWake(workspaceId);
     return {
       content: [
         {

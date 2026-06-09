@@ -48,16 +48,19 @@ export const CUPBOARD_CLAIM_STATUSES = [
 export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
 
 /**
- * The five storefront listing kinds (Cupboard worker migrations 004 + 006 /
+ * The storefront listing kinds (Cupboard worker migrations 004 + 006 /
  * distribution plan D-005, tool-distribution-granularity D-001). ONE
- * storefront, five kinds, each with its own consumer action:
+ * storefront, each kind with its own consumer action:
  *   harness   → join     (shared-harness via the Hypercore topic)
  *   blueprint → fork     (a blueprint stream within a project)
- *   snapshot  → fork     (a captured snapshot)
  *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
  *   pack      → install  (a runtime-less code-tool pack; n≥1 tools)
+ *
+ * The `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005):
+ * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
+ * reproducible clone is the lightweight InstanceSpec, not a published snapshot.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin', 'pack'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -72,7 +75,6 @@ export function listingAction(kind: ListingKind): ListingAction {
     case 'harness':
       return 'join';
     case 'blueprint':
-    case 'snapshot':
       return 'fork';
     case 'plugin':
     case 'pack':

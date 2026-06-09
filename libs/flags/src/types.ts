@@ -3,10 +3,11 @@
 // (key MUST match the string literal exactly). Defaults are V1 ship-state (off).
 
 export const FLAGS = {
-  SNAPSHOTS: "papercusp-snapshots",
-  // TEMPLATES + MARKETPLACE retired (revive-cupboard-distribution D-004): the
-  // legacy :3057 marketplace + /templates routes/UI are deleted; distribution
-  // lives in the (ungated) Cupboard.
+  // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
+  // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible
+  // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
+  // legacy :3057 marketplace + /templates were already deleted (revive-cupboard D-004);
+  // distribution lives in the (ungated) Cupboard.
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   ORACLE: "papercusp-oracle",
   RUST_PORT_UI: "papercusp-rust-port-ui",
@@ -46,11 +47,6 @@ export const FLAGS = {
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
-  // Snapshots are ON by default: they are the Cupboard's `kind=snapshot`
-  // fork-source (revive-cupboard-distribution-2026-06-04 P1 / D-002). Capture +
-  // local instantiate are verified working; the prod CF-worker deploy + the live
-  // PostHog flip on the shared service stay federation-owner actions.
-  [FLAGS.SNAPSHOTS]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.ORACLE]: false,
   [FLAGS.RUST_PORT_UI]: false,

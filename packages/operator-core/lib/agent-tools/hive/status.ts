@@ -11,14 +11,14 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listReactionRules } from '../../events/registry';
 import {
-  getPotTimeWake,
-  potWakeFloorSec,
-  readPotWakeState,
-  resolvePotHomeSlug,
-} from '../../pot/wake';
+  getHiveTimeWake,
+  hiveWakeFloorSec,
+  readHiveWakeState,
+  resolveHiveHomeSlug,
+} from '../../hive/wake';
 
 export default defineTool({
-  name: 'pot:status',
+  name: 'hive:status',
   profile: 'engineer',
   description:
     "The Pot operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
@@ -30,15 +30,15 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_POT_HOME_SLUG).'),
+    harness: z.string().max(120).optional().describe('Home harness slug (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    const installSlug = resolveHiveHomeSlug(args.harness, ctx.harnessSlug);
     const { sql } = getOrgPg();
 
-    const time = installSlug ? await getPotTimeWake(sql, installSlug) : null;
-    const state = await readPotWakeState(workspaceId);
+    const time = installSlug ? await getHiveTimeWake(sql, installSlug) : null;
+    const state = await readHiveWakeState(workspaceId);
     const ruleIds = listReactionRules()
       .filter((r) => r.id.startsWith(`pot-wake:${workspaceId}#`))
       .map((r) => r.id);
@@ -61,7 +61,7 @@ export default defineTool({
             liveRuleIds: ruleIds,
             lastWakeAt: state.lastWakeAt ? new Date(state.lastWakeAt).toISOString() : null,
             declaredAt: state.declaredAt ? new Date(state.declaredAt).toISOString() : null,
-            floorSec: potWakeFloorSec(),
+            floorSec: hiveWakeFloorSec(),
           }),
         },
       ],

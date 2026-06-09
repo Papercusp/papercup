@@ -213,7 +213,7 @@ describe('setFlag — PostHog REST round-trip', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ results: [{ id: 3, key: FLAGS.SNAPSHOTS, active: true }] }), {
+        new Response(JSON.stringify({ results: [{ id: 3, key: FLAGS.ORACLE, active: true }] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -221,7 +221,7 @@ describe('setFlag — PostHog REST round-trip', () => {
       .mockResolvedValueOnce(new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const res = await setFlag(FLAGS.SNAPSHOTS, false);
+    const res = await setFlag(FLAGS.ORACLE, false);
     expect(res).toEqual({ ok: true });
     const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
     expect(body.active).toBe(false);

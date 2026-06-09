@@ -23,7 +23,6 @@ import { Route as EditorDemoRouteImport } from './routes/editor-demo'
 import { Route as DevRouteImport } from './routes/dev'
 import { Route as CoordRouteImport } from './routes/coord'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as SnapshotsIndexRouteImport } from './routes/snapshots/index'
 import { Route as HarnessIndexRouteImport } from './routes/harness/index'
 import { Route as DevIndexRouteImport } from './routes/dev/index'
 import { Route as CupboardIndexRouteImport } from './routes/cupboard/index'
@@ -46,7 +45,6 @@ import { Route as SettingsMeridianRouteImport } from './routes/settings/meridian
 import { Route as SettingsBackupsRouteImport } from './routes/settings/backups'
 import { Route as SettingsApiKeysRouteImport } from './routes/settings/api-keys'
 import { Route as SettingsAgentRouteImport } from './routes/settings/agent'
-import { Route as InstalledSnapshotsRouteImport } from './routes/installed/snapshots'
 import { Route as InstalledKpisRouteImport } from './routes/installed/kpis'
 import { Route as InstalledHarnessesRouteImport } from './routes/installed/harnesses'
 import { Route as DevTokensRouteImport } from './routes/dev/tokens'
@@ -79,7 +77,6 @@ import { Route as SettingsPluginsIndexRouteImport } from './routes/settings/plug
 import { Route as InstalledPluginsIndexRouteImport } from './routes/installed/plugins/index'
 import { Route as HarnessSlugIndexRouteImport } from './routes/harness/$slug/index'
 import { Route as UsersGithubIdRouteImport } from './routes/users/github/$id'
-import { Route as SnapshotsIdForkRouteImport } from './routes/snapshots/$id/fork'
 import { Route as SettingsUserSearchRouteImport } from './routes/settings/user/search'
 import { Route as SettingsUserMemoryRouteImport } from './routes/settings/user/memory'
 import { Route as SettingsPluginsToolsRouteImport } from './routes/settings/plugins/tools'
@@ -157,11 +154,6 @@ const CoordRoute = CoordRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SnapshotsIndexRoute = SnapshotsIndexRouteImport.update({
-  id: '/snapshots/',
-  path: '/snapshots/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HarnessIndexRoute = HarnessIndexRouteImport.update({
@@ -273,11 +265,6 @@ const SettingsAgentRoute = SettingsAgentRouteImport.update({
   id: '/agent',
   path: '/agent',
   getParentRoute: () => SettingsRoute,
-} as any)
-const InstalledSnapshotsRoute = InstalledSnapshotsRouteImport.update({
-  id: '/installed/snapshots',
-  path: '/installed/snapshots',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const InstalledKpisRoute = InstalledKpisRouteImport.update({
   id: '/installed/kpis',
@@ -439,11 +426,6 @@ const UsersGithubIdRoute = UsersGithubIdRouteImport.update({
   path: '/users/github/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SnapshotsIdForkRoute = SnapshotsIdForkRouteImport.update({
-  id: '/snapshots/$id/fork',
-  path: '/snapshots/$id/fork',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SettingsUserSearchRoute = SettingsUserSearchRouteImport.update({
   id: '/user/search',
   path: '/user/search',
@@ -529,7 +511,6 @@ export interface FileRoutesByFullPath {
   '/dev/tokens': typeof DevTokensRoute
   '/installed/harnesses': typeof InstalledHarnessesRoute
   '/installed/kpis': typeof InstalledKpisRoute
-  '/installed/snapshots': typeof InstalledSnapshotsRoute
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
@@ -552,13 +533,11 @@ export interface FileRoutesByFullPath {
   '/cupboard/': typeof CupboardIndexRoute
   '/dev/': typeof DevIndexRoute
   '/harness/': typeof HarnessIndexRoute
-  '/snapshots/': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
-  '/snapshots/$id/fork': typeof SnapshotsIdForkRoute
   '/users/github/$id': typeof UsersGithubIdRoute
   '/harness/$slug/': typeof HarnessSlugIndexRoute
   '/installed/plugins/': typeof InstalledPluginsIndexRoute
@@ -609,7 +588,6 @@ export interface FileRoutesByTo {
   '/dev/tokens': typeof DevTokensRoute
   '/installed/harnesses': typeof InstalledHarnessesRoute
   '/installed/kpis': typeof InstalledKpisRoute
-  '/installed/snapshots': typeof InstalledSnapshotsRoute
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
@@ -632,13 +610,11 @@ export interface FileRoutesByTo {
   '/cupboard': typeof CupboardIndexRoute
   '/dev': typeof DevIndexRoute
   '/harness': typeof HarnessIndexRoute
-  '/snapshots': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
-  '/snapshots/$id/fork': typeof SnapshotsIdForkRoute
   '/users/github/$id': typeof UsersGithubIdRoute
   '/harness/$slug': typeof HarnessSlugIndexRoute
   '/installed/plugins': typeof InstalledPluginsIndexRoute
@@ -691,7 +667,6 @@ export interface FileRoutesById {
   '/dev/tokens': typeof DevTokensRoute
   '/installed/harnesses': typeof InstalledHarnessesRoute
   '/installed/kpis': typeof InstalledKpisRoute
-  '/installed/snapshots': typeof InstalledSnapshotsRoute
   '/settings/agent': typeof SettingsAgentRoute
   '/settings/api-keys': typeof SettingsApiKeysRoute
   '/settings/backups': typeof SettingsBackupsRoute
@@ -714,13 +689,11 @@ export interface FileRoutesById {
   '/cupboard/': typeof CupboardIndexRoute
   '/dev/': typeof DevIndexRoute
   '/harness/': typeof HarnessIndexRoute
-  '/snapshots/': typeof SnapshotsIndexRoute
   '/harness/$slug/dock-preview': typeof HarnessSlugDockPreviewRoute
   '/harness/$slug/insights': typeof HarnessSlugInsightsRoute
   '/settings/plugins/tools': typeof SettingsPluginsToolsRoute
   '/settings/user/memory': typeof SettingsUserMemoryRoute
   '/settings/user/search': typeof SettingsUserSearchRoute
-  '/snapshots/$id/fork': typeof SnapshotsIdForkRoute
   '/users/github/$id': typeof UsersGithubIdRoute
   '/harness/$slug/': typeof HarnessSlugIndexRoute
   '/installed/plugins/': typeof InstalledPluginsIndexRoute
@@ -774,7 +747,6 @@ export interface FileRouteTypes {
     | '/dev/tokens'
     | '/installed/harnesses'
     | '/installed/kpis'
-    | '/installed/snapshots'
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
@@ -797,13 +769,11 @@ export interface FileRouteTypes {
     | '/cupboard/'
     | '/dev/'
     | '/harness/'
-    | '/snapshots/'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
-    | '/snapshots/$id/fork'
     | '/users/github/$id'
     | '/harness/$slug/'
     | '/installed/plugins/'
@@ -854,7 +824,6 @@ export interface FileRouteTypes {
     | '/dev/tokens'
     | '/installed/harnesses'
     | '/installed/kpis'
-    | '/installed/snapshots'
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
@@ -877,13 +846,11 @@ export interface FileRouteTypes {
     | '/cupboard'
     | '/dev'
     | '/harness'
-    | '/snapshots'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
-    | '/snapshots/$id/fork'
     | '/users/github/$id'
     | '/harness/$slug'
     | '/installed/plugins'
@@ -935,7 +902,6 @@ export interface FileRouteTypes {
     | '/dev/tokens'
     | '/installed/harnesses'
     | '/installed/kpis'
-    | '/installed/snapshots'
     | '/settings/agent'
     | '/settings/api-keys'
     | '/settings/backups'
@@ -958,13 +924,11 @@ export interface FileRouteTypes {
     | '/cupboard/'
     | '/dev/'
     | '/harness/'
-    | '/snapshots/'
     | '/harness/$slug/dock-preview'
     | '/harness/$slug/insights'
     | '/settings/plugins/tools'
     | '/settings/user/memory'
     | '/settings/user/search'
-    | '/snapshots/$id/fork'
     | '/users/github/$id'
     | '/harness/$slug/'
     | '/installed/plugins/'
@@ -1013,16 +977,13 @@ export interface RootRouteChildren {
   DesignSlugRoute: typeof DesignSlugRoute
   InstalledHarnessesRoute: typeof InstalledHarnessesRoute
   InstalledKpisRoute: typeof InstalledKpisRoute
-  InstalledSnapshotsRoute: typeof InstalledSnapshotsRoute
   UsersLoginRoute: typeof UsersLoginRoute
   AdminIndexRoute: typeof AdminIndexRoute
   AdvIndexRoute: typeof AdvIndexRoute
   CupboardIndexRoute: typeof CupboardIndexRoute
   HarnessIndexRoute: typeof HarnessIndexRoute
-  SnapshotsIndexRoute: typeof SnapshotsIndexRoute
   HarnessSlugDockPreviewRoute: typeof HarnessSlugDockPreviewRoute
   HarnessSlugInsightsRoute: typeof HarnessSlugInsightsRoute
-  SnapshotsIdForkRoute: typeof SnapshotsIdForkRoute
   UsersGithubIdRoute: typeof UsersGithubIdRoute
   HarnessSlugIndexRoute: typeof HarnessSlugIndexRoute
   InstalledPluginsIndexRoute: typeof InstalledPluginsIndexRoute
@@ -1129,13 +1090,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/snapshots/': {
-      id: '/snapshots/'
-      path: '/snapshots'
-      fullPath: '/snapshots/'
-      preLoaderRoute: typeof SnapshotsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/harness/': {
@@ -1291,13 +1245,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/settings/agent'
       preLoaderRoute: typeof SettingsAgentRouteImport
       parentRoute: typeof SettingsRoute
-    }
-    '/installed/snapshots': {
-      id: '/installed/snapshots'
-      path: '/installed/snapshots'
-      fullPath: '/installed/snapshots'
-      preLoaderRoute: typeof InstalledSnapshotsRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/installed/kpis': {
       id: '/installed/kpis'
@@ -1523,13 +1470,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UsersGithubIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/snapshots/$id/fork': {
-      id: '/snapshots/$id/fork'
-      path: '/snapshots/$id/fork'
-      fullPath: '/snapshots/$id/fork'
-      preLoaderRoute: typeof SnapshotsIdForkRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/settings/user/search': {
       id: '/settings/user/search'
       path: '/user/search'
@@ -1697,16 +1637,13 @@ const rootRouteChildren: RootRouteChildren = {
   DesignSlugRoute: DesignSlugRoute,
   InstalledHarnessesRoute: InstalledHarnessesRoute,
   InstalledKpisRoute: InstalledKpisRoute,
-  InstalledSnapshotsRoute: InstalledSnapshotsRoute,
   UsersLoginRoute: UsersLoginRoute,
   AdminIndexRoute: AdminIndexRoute,
   AdvIndexRoute: AdvIndexRoute,
   CupboardIndexRoute: CupboardIndexRoute,
   HarnessIndexRoute: HarnessIndexRoute,
-  SnapshotsIndexRoute: SnapshotsIndexRoute,
   HarnessSlugDockPreviewRoute: HarnessSlugDockPreviewRoute,
   HarnessSlugInsightsRoute: HarnessSlugInsightsRoute,
-  SnapshotsIdForkRoute: SnapshotsIdForkRoute,
   UsersGithubIdRoute: UsersGithubIdRoute,
   HarnessSlugIndexRoute: HarnessSlugIndexRoute,
   InstalledPluginsIndexRoute: InstalledPluginsIndexRoute,

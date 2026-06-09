@@ -2,42 +2,42 @@
  * Handler-level tests for the three Pot self-declared-wake tools
  * (autoloop-pot-operator-rebuild-2026-06-05 P0, D-002): pot:declare-wake,
  * pot:wake, pot:status. The wake CORE fns (clamp/debounce/subscription
- * projection) are unit-covered in ../../pot/wake.test.ts and round-tripped
+ * projection) are unit-covered in ../../hive/wake.test.ts and round-tripped
  * against real PG in ../../pot/pot-wake-pg.integration.test.ts; THIS file pins
  * the tool-handler ORCHESTRATION the dispatcher runs — slug resolution + the
  * no_home_harness guard, the time/event/none `mode` computation, the
  * fire-vs-floor-skip branch, and the read-only status assembly.
  *
  * The PG-touching pot fns + the blueprint launch are mocked at their module
- * seams; the pure floor/slug helpers (potWakeFloorSec / resolvePotHomeSlug /
+ * seams; the pure floor/slug helpers (hiveWakeFloorSec / resolveHiveHomeSlug /
  * withinWakeFloor) run REAL.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
-const declarePotTimeWake = vi.fn(async (_sql: unknown, opts: { at: Date; clamped?: boolean }) => ({
+const declareHiveTimeWake = vi.fn(async (_sql: unknown, opts: { at: Date; clamped?: boolean }) => ({
   at: opts.at,
   clamped: false,
 }));
-const clearPotTimeWake = vi.fn(async () => {});
-const setPotEventSubscriptions = vi.fn(async (_ws: string, subs: unknown[]) => subs.length);
-const readPotWakeState = vi.fn<() => Promise<Record<string, unknown>>>();
-const recordPotWake = vi.fn(async () => {});
-const getPotTimeWake =
+const clearHiveTimeWake = vi.fn(async () => {});
+const setHiveEventSubscriptions = vi.fn(async (_ws: string, subs: unknown[]) => subs.length);
+const readHiveWakeState = vi.fn<() => Promise<Record<string, unknown>>>();
+const recordHiveWake = vi.fn(async () => {});
+const getHiveTimeWake =
   vi.fn<() => Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null>>();
 const fireLaunchBlueprint = vi.fn(async () => ({ role: 'operator', kind: 'role' as const }));
 const listReactionRules = vi.fn<() => Array<{ id: string }>>(() => []);
 
-vi.mock('../../pot/wake', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../../pot/wake')>();
+vi.mock('../../hive/wake', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../hive/wake')>();
   return {
-    ...real, // keep POT_BLUEPRINT_ID + the PURE helpers real
-    declarePotTimeWake: (...a: unknown[]) => declarePotTimeWake(...(a as [unknown, { at: Date }])),
-    clearPotTimeWake: (...a: unknown[]) => clearPotTimeWake(...(a as [])),
-    setPotEventSubscriptions: (...a: unknown[]) => setPotEventSubscriptions(...(a as [string, unknown[]])),
-    readPotWakeState: (...a: unknown[]) => readPotWakeState(...(a as [])),
-    recordPotWake: (...a: unknown[]) => recordPotWake(...(a as [])),
-    getPotTimeWake: (...a: unknown[]) => getPotTimeWake(...(a as [])),
+    ...real, // keep HIVE_BLUEPRINT_ID + the PURE helpers real
+    declareHiveTimeWake: (...a: unknown[]) => declareHiveTimeWake(...(a as [unknown, { at: Date }])),
+    clearHiveTimeWake: (...a: unknown[]) => clearHiveTimeWake(...(a as [])),
+    setHiveEventSubscriptions: (...a: unknown[]) => setHiveEventSubscriptions(...(a as [string, unknown[]])),
+    readHiveWakeState: (...a: unknown[]) => readHiveWakeState(...(a as [])),
+    recordHiveWake: (...a: unknown[]) => recordHiveWake(...(a as [])),
+    getHiveTimeWake: (...a: unknown[]) => getHiveTimeWake(...(a as [])),
   };
 });
 vi.mock('../../blueprint/launch-blueprint', () => ({
@@ -65,7 +65,7 @@ type Tool = {
 const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content[0].text);
 const ctx = (over: Record<string, unknown> = {}): never => over as never;
-const ENV = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_POT_HOME_SLUG'] as const;
+const ENV = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_HIVE_HOME_SLUG'] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -75,10 +75,10 @@ beforeEach(() => {
     delete process.env[k]; // floor → 60s default; no env home-slug fallback
   }
   // sensible defaults; tests override per-case
-  declarePotTimeWake.mockImplementation(async (_sql, opts) => ({ at: opts.at, clamped: false }));
-  setPotEventSubscriptions.mockImplementation(async (_ws, subs) => subs.length);
-  readPotWakeState.mockResolvedValue({ subscriptions: [] });
-  getPotTimeWake.mockResolvedValue(null);
+  declareHiveTimeWake.mockImplementation(async (_sql, opts) => ({ at: opts.at, clamped: false }));
+  setHiveEventSubscriptions.mockImplementation(async (_ws, subs) => subs.length);
+  readHiveWakeState.mockResolvedValue({ subscriptions: [] });
+  getHiveTimeWake.mockResolvedValue(null);
   listReactionRules.mockReturnValue([]);
 });
 afterEach(() => {
@@ -88,16 +88,16 @@ afterEach(() => {
   }
 });
 
-describe('pot:declare-wake', () => {
+describe('hive:declare-wake', () => {
   const tool = declareWakeTool as unknown as Tool;
 
   it('no resolvable home harness → ok:false no_home_harness, nothing touched', async () => {
     const res = parse(await tool.handler({ events: [{ on: 'coord:escalate' }] }, ctx()));
     expect(res.ok).toBe(false);
     expect(res.error).toBe('no_home_harness');
-    expect(declarePotTimeWake).not.toHaveBeenCalled();
-    expect(clearPotTimeWake).not.toHaveBeenCalled();
-    expect(setPotEventSubscriptions).not.toHaveBeenCalled();
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
+    expect(clearHiveTimeWake).not.toHaveBeenCalled();
+    expect(setHiveEventSubscriptions).not.toHaveBeenCalled();
   });
 
   it("time wake (`at`): declares the one-shot, clears events, mode:'time'", async () => {
@@ -109,18 +109,18 @@ describe('pot:declare-wake', () => {
     expect(res.time).toEqual({ at, clamped: false });
     expect(res.eventRules).toBe(0);
     expect(res.floorSec).toBe(60);
-    expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
-    expect(clearPotTimeWake).not.toHaveBeenCalled();
+    expect(declareHiveTimeWake).toHaveBeenCalledTimes(1);
+    expect(clearHiveTimeWake).not.toHaveBeenCalled();
     // events omitted ⇒ cleared (REPLACE semantics) via an empty-set declare
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
+    expect(setHiveEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
   });
 
   it('time wake (`inSeconds`): requests ≈ now + N seconds', async () => {
     const before = Date.now();
     const res = parse(await tool.handler({ inSeconds: 600, harness: 'papercup' }, ctx()));
     expect(res.mode).toBe('time');
-    expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
-    const opts = declarePotTimeWake.mock.calls[0][1] as { at: Date };
+    expect(declareHiveTimeWake).toHaveBeenCalledTimes(1);
+    const opts = declareHiveTimeWake.mock.calls[0][1] as { at: Date };
     const delta = opts.at.getTime() - before;
     expect(delta).toBeGreaterThanOrEqual(600_000 - 50);
     expect(delta).toBeLessThanOrEqual(600_000 + 2_000);
@@ -136,9 +136,9 @@ describe('pot:declare-wake', () => {
     expect(res.mode).toBe('event');
     expect(res.eventRules).toBe(1);
     expect(res.time).toBeNull();
-    expect(clearPotTimeWake).toHaveBeenCalledTimes(1);
-    expect(declarePotTimeWake).not.toHaveBeenCalled();
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', [
+    expect(clearHiveTimeWake).toHaveBeenCalledTimes(1);
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
+    expect(setHiveEventSubscriptions).toHaveBeenCalledWith('ws-test', [
       { on: 'coord:escalate', when: undefined, note: 'watch escalations' },
     ]);
   });
@@ -152,7 +152,7 @@ describe('pot:declare-wake', () => {
     );
     expect(res.mode).toBe('time+event');
     expect(res.eventRules).toBe(1);
-    expect(declarePotTimeWake).toHaveBeenCalledTimes(1);
+    expect(declareHiveTimeWake).toHaveBeenCalledTimes(1);
   });
 
   it("mode:'none' → clears both, mode:'none'", async () => {
@@ -160,8 +160,8 @@ describe('pot:declare-wake', () => {
     expect(res.mode).toBe('none');
     expect(res.time).toBeNull();
     expect(res.eventRules).toBe(0);
-    expect(clearPotTimeWake).toHaveBeenCalledTimes(1);
-    expect(setPotEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
+    expect(clearHiveTimeWake).toHaveBeenCalledTimes(1);
+    expect(setHiveEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
   });
 
   it('uses ctx.harnessSlug when no explicit harness is passed', async () => {
@@ -187,7 +187,7 @@ describe('pot:declare-wake', () => {
   });
 });
 
-describe('pot:wake', () => {
+describe('hive:wake', () => {
   const tool = wakeTool as unknown as Tool;
 
   it('no resolvable home harness → ok:false, no launch', async () => {
@@ -198,7 +198,7 @@ describe('pot:wake', () => {
   });
 
   it('outside the floor → fires the pot launch + records the wake', async () => {
-    readPotWakeState.mockResolvedValue({ subscriptions: [] }); // no prior wake
+    readHiveWakeState.mockResolvedValue({ subscriptions: [] }); // no prior wake
     const res = parse(await tool.handler({ reason: 'prod fire', source: 'user', harness: 'papercup' }, ctx()));
     expect(res).toMatchObject({ ok: true, fired: true, role: 'operator', harness: 'papercup' });
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
@@ -210,35 +210,35 @@ describe('pot:wake', () => {
     expect(input.installSlug).toBe('papercup');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.kickoff).toContain('prod fire');
-    expect(recordPotWake).toHaveBeenCalledTimes(1);
+    expect(recordHiveWake).toHaveBeenCalledTimes(1);
   });
 
   it('within the floor (no force) → skipped:wake-floor, no launch', async () => {
-    readPotWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
+    readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
     const res = parse(await tool.handler({ reason: 'too soon', harness: 'papercup' }, ctx()));
     expect(res).toMatchObject({ ok: true, fired: false, skipped: 'wake-floor', floorSec: 60 });
     expect(typeof res.nextAllowedAt).toBe('string');
     expect(fireLaunchBlueprint).not.toHaveBeenCalled();
-    expect(recordPotWake).not.toHaveBeenCalled();
+    expect(recordHiveWake).not.toHaveBeenCalled();
   });
 
   it('within the floor + force:true → bypasses the debounce and fires', async () => {
-    readPotWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
+    readHiveWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: Date.now() - 10_000 });
     const res = parse(await tool.handler({ reason: 'urgent', force: true, harness: 'papercup' }, ctx()));
     expect(res.fired).toBe(true);
     expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('pot:status', () => {
+describe('hive:status', () => {
   const tool = statusTool as unknown as Tool;
 
   it('assembles the time wake, subscriptions, live rule ids, and floor', async () => {
     const nextFire = new Date('2026-07-01T00:00:00.000Z');
-    getPotTimeWake.mockResolvedValue({ active: true, nextFireAt: nextFire, lastFiredAt: null });
+    getHiveTimeWake.mockResolvedValue({ active: true, nextFireAt: nextFire, lastFiredAt: null });
     const declaredAt = Date.parse('2026-06-08T00:00:00.000Z');
     const lastWakeAt = Date.parse('2026-06-08T00:30:00.000Z');
-    readPotWakeState.mockResolvedValue({
+    readHiveWakeState.mockResolvedValue({
       subscriptions: [{ on: 'coord:escalate', note: 'x' }],
       lastWakeAt,
       declaredAt,
@@ -261,11 +261,11 @@ describe('pot:status', () => {
   });
 
   it('no home slug → time:null but still returns subscriptions/floor (read-only, no throw)', async () => {
-    readPotWakeState.mockResolvedValue({ subscriptions: [] });
+    readHiveWakeState.mockResolvedValue({ subscriptions: [] });
     const res = parse(await tool.handler({}, ctx()));
     expect(res.ok).toBe(true);
     expect(res.time).toBeNull();
-    expect(getPotTimeWake).not.toHaveBeenCalled();
+    expect(getHiveTimeWake).not.toHaveBeenCalled();
     expect(res.subscriptions).toEqual([]);
     expect(res.floorSec).toBe(60);
   });

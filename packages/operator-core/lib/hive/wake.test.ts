@@ -1,5 +1,5 @@
 /**
- * Unit tests for the Pot's self-declared wake (autoloop-pot-operator-rebuild
+ * Unit tests for the Hive's self-declared wake (autoloop-hive-operator-rebuild
  * P0, D-002): the floor clamp, the fire-side debounce, home-slug resolution,
  * and the subscription → live-reaction-rule projection (against the real
  * in-memory registry — no PG).
@@ -7,9 +7,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clampWakeAt,
-  potWakeFloorSec,
-  resolvePotHomeSlug,
-  syncPotWakeRules,
+  hiveWakeFloorSec,
+  resolveHiveHomeSlug,
+  syncHiveWakeRules,
   withinWakeFloor,
 } from './wake';
 import {
@@ -18,7 +18,7 @@ import {
   matchReactions,
 } from '../events/registry';
 
-const ENV_KEYS = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_POT_HOME_SLUG'] as const;
+const ENV_KEYS = ['PAPERCUSP_HIVE_WAKE_FLOOR_SEC', 'PAPERCUSP_HIVE_HOME_SLUG'] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -35,15 +35,15 @@ afterEach(() => {
   _resetReactionsForTests();
 });
 
-describe('potWakeFloorSec', () => {
+describe('hiveWakeFloorSec', () => {
   it('defaults to 60 and honors the env override with a hard 5s minimum', () => {
-    expect(potWakeFloorSec()).toBe(60);
-    process.env.PAPERCUSP_POT_WAKE_FLOOR_SEC = '120';
-    expect(potWakeFloorSec()).toBe(120);
-    process.env.PAPERCUSP_POT_WAKE_FLOOR_SEC = '1'; // below the hard min
-    expect(potWakeFloorSec()).toBe(60);
-    process.env.PAPERCUSP_POT_WAKE_FLOOR_SEC = 'nonsense';
-    expect(potWakeFloorSec()).toBe(60);
+    expect(hiveWakeFloorSec()).toBe(60);
+    process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC = '120';
+    expect(hiveWakeFloorSec()).toBe(120);
+    process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC = '1'; // below the hard min
+    expect(hiveWakeFloorSec()).toBe(60);
+    process.env.PAPERCUSP_HIVE_WAKE_FLOOR_SEC = 'nonsense';
+    expect(hiveWakeFloorSec()).toBe(60);
   });
 });
 
@@ -74,49 +74,49 @@ describe('withinWakeFloor (the fire-side debounce)', () => {
   });
 });
 
-describe('resolvePotHomeSlug', () => {
+describe('resolveHiveHomeSlug', () => {
   it('prefers explicit arg, then ctx harness, then the env default', () => {
-    process.env.PAPERCUSP_POT_HOME_SLUG = 'env-slug';
-    expect(resolvePotHomeSlug('arg-slug', 'ctx-slug')).toBe('arg-slug');
-    expect(resolvePotHomeSlug(undefined, 'ctx-slug')).toBe('ctx-slug');
-    expect(resolvePotHomeSlug(undefined, undefined)).toBe('env-slug');
-    delete process.env.PAPERCUSP_POT_HOME_SLUG;
-    expect(resolvePotHomeSlug('', '')).toBe(null);
+    process.env.PAPERCUSP_HIVE_HOME_SLUG = 'env-slug';
+    expect(resolveHiveHomeSlug('arg-slug', 'ctx-slug')).toBe('arg-slug');
+    expect(resolveHiveHomeSlug(undefined, 'ctx-slug')).toBe('ctx-slug');
+    expect(resolveHiveHomeSlug(undefined, undefined)).toBe('env-slug');
+    delete process.env.PAPERCUSP_HIVE_HOME_SLUG;
+    expect(resolveHiveHomeSlug('', '')).toBe(null);
   });
 });
 
-describe('syncPotWakeRules (subscriptions → live reaction rules)', () => {
-  const WS = 'ws-pot-test';
+describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {
+  const WS = 'ws-hive-test';
 
-  it('registers one pot:wake rule per subscription, scoped to the workspace', () => {
-    const n = syncPotWakeRules(WS, [
+  it('registers one hive:wake rule per subscription, scoped to the workspace', () => {
+    const n = syncHiveWakeRules(WS, [
       { on: 'coord:escalate', note: 'watch escalations' },
       { on: ['work_items:complete', 'work_items:set_state'] },
     ]);
     expect(n).toBe(2);
-    const mine = listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`));
+    const mine = listReactionRules().filter((r) => r.id.startsWith(`hive-wake:${WS}#`));
     expect(mine).toHaveLength(2);
-    expect(mine.every((r) => r.fire === 'pot:wake')).toBe(true);
-    expect(mine.every((r) => r.source === 'pot-wake')).toBe(true);
+    expect(mine.every((r) => r.fire === 'hive:wake')).toBe(true);
+    expect(mine.every((r) => r.source === 'hive-wake')).toBe(true);
   });
 
   it('REPLACE semantics: re-sync removes stale rules; empty clears all', () => {
-    syncPotWakeRules(WS, [{ on: 'coord:escalate' }, { on: 'coord:handoff' }]);
-    syncPotWakeRules(WS, [{ on: 'coord:escalate' }]);
-    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(1);
-    syncPotWakeRules(WS, []);
-    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(0);
+    syncHiveWakeRules(WS, [{ on: 'coord:escalate' }, { on: 'coord:handoff' }]);
+    syncHiveWakeRules(WS, [{ on: 'coord:escalate' }]);
+    expect(listReactionRules().filter((r) => r.id.startsWith(`hive-wake:${WS}#`))).toHaveLength(1);
+    syncHiveWakeRules(WS, []);
+    expect(listReactionRules().filter((r) => r.id.startsWith(`hive-wake:${WS}#`))).toHaveLength(0);
   });
 
   it('does not touch another workspace\'s rules', () => {
-    syncPotWakeRules('ws-a', [{ on: 'coord:escalate' }]);
-    syncPotWakeRules('ws-b', [{ on: 'coord:escalate' }]);
-    syncPotWakeRules('ws-a', []);
-    expect(listReactionRules().filter((r) => r.id.startsWith('pot-wake:ws-b#'))).toHaveLength(1);
+    syncHiveWakeRules('ws-a', [{ on: 'coord:escalate' }]);
+    syncHiveWakeRules('ws-b', [{ on: 'coord:escalate' }]);
+    syncHiveWakeRules('ws-a', []);
+    expect(listReactionRules().filter((r) => r.id.startsWith('hive-wake:ws-b#'))).toHaveLength(1);
   });
 
   it('a registered subscription MATCHES a tool event (with the declared when)', () => {
-    syncPotWakeRules(WS, [
+    syncHiveWakeRules(WS, [
       { on: 'coord:escalate', when: { 'result.ok': true } },
     ]);
     const matched = matchReactions({
@@ -125,7 +125,7 @@ describe('syncPotWakeRules (subscriptions → live reaction rules)', () => {
       result: { ok: true },
       ctx: {} as never,
     });
-    expect(matched.some((m) => m.rule.id === `pot-wake:${WS}#0`)).toBe(true);
+    expect(matched.some((m) => m.rule.id === `hive-wake:${WS}#0`)).toBe(true);
     // A failed trigger does not match the declared when.
     const unmatched = matchReactions({
       tool: 'coord:escalate',
@@ -133,6 +133,6 @@ describe('syncPotWakeRules (subscriptions → live reaction rules)', () => {
       result: { ok: false },
       ctx: {} as never,
     });
-    expect(unmatched.some((m) => m.rule.id === `pot-wake:${WS}#0`)).toBe(false);
+    expect(unmatched.some((m) => m.rule.id === `hive-wake:${WS}#0`)).toBe(false);
   });
 });

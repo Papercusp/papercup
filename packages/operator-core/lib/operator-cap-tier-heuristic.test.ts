@@ -83,7 +83,6 @@ describe('heuristicTier — low patterns', () => {
     'agents:read',
     'projects:read',
     'goals:read',
-    'snapshots:read',
   ])('%s → low', (cap) => expect(heuristicTier(cap)?.tier).toBe('low'));
 
   it.each([

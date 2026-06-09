@@ -72,19 +72,18 @@ describe('setFlagOverridesForTest', () => {
 
   it('overrides resolve to the supplied values, defaults fill the rest', async () => {
     setFlagOverridesForTest({
-      [FLAGS.SNAPSHOTS]: true,
+      [FLAGS.HARNESS_PHASES]: true,
       [FLAGS.ORACLE]: true,
     });
     const payload = await getAllFlags('test-user');
     expect(payload.source).toBe('override');
-    expect(payload.flags[FLAGS.SNAPSHOTS]).toBe(true);
+    expect(payload.flags[FLAGS.HARNESS_PHASES]).toBe(true);
     expect(payload.flags[FLAGS.ORACLE]).toBe(true);
     expect(payload.flags[FLAGS.DESIGN]).toBe(false);
   });
 
   it('null override clears back to defaults', async () => {
-    // Use ORACLE (default-false) so clearing the override is observable — the
-    // SNAPSHOTS default is now true (revive-cupboard-distribution P1).
+    // Use ORACLE (default-false) so clearing the override is observable.
     setFlagOverridesForTest({ [FLAGS.ORACLE]: true });
     expect((await getAllFlags('x')).flags[FLAGS.ORACLE]).toBe(true);
 

@@ -120,7 +120,6 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const flagEnabled: Record<FlagKey, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.ORACLE]: oracleEnabled,
-    [FLAGS.SNAPSHOTS]: true,
     [FLAGS.RUST_PORT_UI]: true,
     [FLAGS.HARNESS_PHASES]: true,
   };

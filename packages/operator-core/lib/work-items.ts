@@ -424,9 +424,9 @@ export interface CreateWorkItemInput {
  *  failure must never break the write. */
 function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
   if (!input.urgent) return;
-  void import('./pot/urgent-wake')
+  void import('./hive/urgent-wake')
     .then((m) =>
-      m.requestUrgentPotWake({
+      m.requestUrgentHiveWake({
         reason: `urgent work_item ${wi.id} (${wi.kind}) enqueued: ${wi.title}`,
         harness: wi.harness,
       }),
