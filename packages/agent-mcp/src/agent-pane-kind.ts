@@ -50,7 +50,7 @@ export type AgentLaunchHint = 'brain' | 'planner' | undefined;
 /**
  * Classify an agent into its dock pane-kind + drive mode from its role and an
  * optional launch hint. Precedence (most specific first):
- *   1. brain launch          → queen / auto
+ *   1. brain launch OR the `brain` principal role → queen / auto  (BRAIN_PRINCIPAL_ROLE)
  *   2. planner launch/role   → planner / responsive
  *   3. operator role         → sentinel / responsive   (the owner-facing persona)
  *   4. oracle role           → sentinel / responsive   (a responsive Q&A chat)
@@ -62,7 +62,10 @@ export function classifyAgentPane(input: {
   launch?: AgentLaunchHint;
 }): AgentPaneClass {
   const role = (input.role ?? '').trim().toLowerCase();
-  if (input.launch === 'brain') return { kind: 'queen', driveMode: 'auto' };
+  // The Queen is the brain: a `psu --brain` launch (hint) OR the `brain` principal
+  // role an active brain session carries (BRAIN_PRINCIPAL_ROLE) — so an active
+  // roster entry (role-only, no launch hint) still classifies as queen.
+  if (input.launch === 'brain' || role === 'brain') return { kind: 'queen', driveMode: 'auto' };
   if (input.launch === 'planner' || role === 'planner') {
     return { kind: 'planner', driveMode: 'responsive' };
   }

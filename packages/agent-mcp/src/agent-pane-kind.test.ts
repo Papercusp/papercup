@@ -8,6 +8,12 @@ describe('classifyAgentPane', () => {
     expect(classifyAgentPane({ role: 'operator', launch: 'brain' }).kind).toBe('queen');
   });
 
+  it('the `brain` principal role → queen/auto (active brain entry, no launch hint)', () => {
+    // An active roster entry carries the adv_sessions role; the brain session's
+    // role is BRAIN_PRINCIPAL_ROLE='brain', so it classifies as queen by role alone.
+    expect(classifyAgentPane({ role: 'brain' })).toEqual({ kind: 'queen', driveMode: 'auto' });
+  });
+
   it('operator role → sentinel/responsive (the owner-facing persona)', () => {
     expect(classifyAgentPane({ role: 'operator' })).toEqual({
       kind: 'sentinel',

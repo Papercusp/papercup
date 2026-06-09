@@ -248,3 +248,43 @@ describe('pendingLaunchesToRosterEntries (pui-reactive-session-panes D-006)', ()
     expect(e.launchArgv).toEqual([]);
   });
 });
+
+describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
+  it('active entries: brain→queen, operator→sentinel, worker→bee, bare→bee', () => {
+    const [brain] = mergeRosterEntries(
+      [presence({ ownerId: 'b' })],
+      new Map([['b', adv({ role: 'brain' })]]),
+      NOW,
+    );
+    expect(brain.agentPaneKind).toBe('queen');
+    expect(brain.driveMode).toBe('auto');
+
+    const [op] = mergeRosterEntries(
+      [presence({ ownerId: 'o' })],
+      new Map([['o', adv({ role: 'operator' })]]),
+      NOW,
+    );
+    expect(op.agentPaneKind).toBe('sentinel');
+    expect(op.driveMode).toBe('responsive');
+
+    const [w] = mergeRosterEntries([presence({ ownerId: 'w' })], new Map([['w', adv({ role: 'worker' })]]), NOW);
+    expect(w.agentPaneKind).toBe('bee');
+
+    // Plain SU shell (no adv row, role null) → bee default.
+    const [bare] = mergeRosterEntries([presence({ ownerId: 'x' })], new Map(), NOW);
+    expect(bare.agentPaneKind).toBe('bee');
+  });
+
+  it('pending entry: a --brain launch argv → queen even with a null role', () => {
+    const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
+    const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.agentPaneKind).toBe('queen');
+    expect(e.driveMode).toBe('auto');
+  });
+
+  it('pending entry: worker role → bee', () => {
+    const row = adv({ id: 10, display: 'workbench', role: 'worker', launchArgv: ['psu', '--agent=claude'] });
+    const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
+    expect(e.agentPaneKind).toBe('bee');
+  });
+});

@@ -124,8 +124,13 @@ describe('P-060.1 — reflection: boundary + friction markers, never a per-turn 
 
   it('a clean turn captures NOTHING: the watchdog tick with zero signals makes zero captures', async () => {
     const capture = vi.fn();
-    const res = await runWatchdogTick('ws', {}, { collect: async () => [], capture });
-    expect(res).toEqual({ signals: 0, captured: [], declinedDuplicates: 0, deferred: 0 });
+    const res = await runWatchdogTick('ws', {}, {
+      collect: async () => [],
+      capture,
+      recordTick: async () => {},
+      withTickLock: async (_ws, fn) => ({ ran: true, value: await fn() }),
+    });
+    expect(res).toMatchObject({ status: 'ran', signals: 0, captured: [], declinedDuplicates: 0, deferred: 0, selfEscalations: [] });
     expect(capture).not.toHaveBeenCalled();
   });
 

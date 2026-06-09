@@ -102,7 +102,22 @@ export function onCoordInbox(handler: Handler): () => void {
   void ensureStarted();
   return () => {
     handlers.delete(handler);
+    void maybeCloseListener();
   };
+}
+
+/** Close the listener if there are no handlers left (cleanup to avoid listener leak). */
+async function maybeCloseListener(): Promise<void> {
+  if (handlers.size === 0 && listenerSql && started) {
+    try {
+      await listenerSql.end({ timeout: 5 }).catch(() => {});
+    } catch {
+      // Ignore errors during close
+    }
+    listenerSql = null;
+    started = false;
+    startPromise = null;
+  }
 }
 
 /** Seed the cursor at the current max id so existing history isn't replayed as

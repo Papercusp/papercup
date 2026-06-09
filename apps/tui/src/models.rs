@@ -122,6 +122,17 @@ pub struct RosterEntry {
     /// `psu …`); empty for a normal entry.
     #[serde(default)]
     pub launch_argv: Vec<String>,
+    // ── agent pane-kind (hive-agent-tabs-psu-tui P-001) ── stamped by the backend
+    //    (adv-roster.ts via classifyAgentPane); parsed via agent_pane_kind.rs.
+    //    Consumed in Phase 4 (P-010 color / P-011 grouping) — allow until wired.
+    /// "queen" | "bee" | "sentinel" | "planner" (None on older/unknown payloads).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub agent_pane_kind: Option<String>,
+    /// "auto" | "responsive" — the default drive mode for the kind (P-001/D-005).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub drive_mode: Option<String>,
 }
 
 impl RosterEntry {

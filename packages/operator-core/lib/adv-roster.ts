@@ -27,6 +27,9 @@ import {
   type AgentClaim,
   type OrphanedClaimSummary,
 } from './fleet/assignments';
+// hive-agent-tabs-psu-tui P-001: the shared pane-kind taxonomy (one source of
+// truth) — stamp each roster entry so pui renders/colors per type.
+import { classifyAgentPane, type AgentPaneKind, type DriveMode } from '@papercusp/agent-mcp';
 
 export type { AgentClaim, OrphanedClaimSummary };
 
@@ -103,6 +106,13 @@ export interface RosterEntry {
   display: string | null;
   /** The argv the pui pane runs for a pending workbench launch; [] otherwise. */
   launchArgv: string[];
+  // ── agent pane-kind (hive-agent-tabs-psu-tui P-001) ──
+  /** The dock pane kind classified from role/launch (queen|bee|sentinel|planner).
+   *  One source of truth so pui renders + colors per type without re-deriving. */
+  agentPaneKind: AgentPaneKind;
+  /** The DEFAULT drive mode for the kind (auto|responsive). The per-agent wake
+   *  mode (D-005) can still flip an `auto` agent to manual at runtime. */
+  driveMode: DriveMode;
 }
 
 /**
@@ -121,6 +131,17 @@ export function scopePresenceToWorkspace(
 }
 
 /**
+ * Derive the AgentLaunchHint for classifyAgentPane from a pending launch's psu
+ * argv: `--brain` marks the Queen. (Planner detection lands with P-006; role-based
+ * classification covers the rest, so undefined is the common case.)
+ */
+function launchHintFromArgv(argv: string[] | null | undefined): 'brain' | 'planner' | undefined {
+  if (!argv?.length) return undefined;
+  if (argv.includes('--brain')) return 'brain';
+  return undefined;
+}
+
+/**
  * Pure merge: presence rows (primary) LEFT-joined to adv_sessions by owner id.
  * Order is preserved (listPresence already returns newest-heartbeat-first).
  */
@@ -132,6 +153,7 @@ export function mergeRosterEntries(
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
+    const pane = classifyAgentPane({ role: adv?.role ?? null });
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
@@ -165,6 +187,8 @@ export function mergeRosterEntries(
       // `pending` tier, never `active` (D-006).
       display: null,
       launchArgv: [],
+      agentPaneKind: pane.kind,
+      driveMode: pane.driveMode,
     };
   });
 }
@@ -181,37 +205,42 @@ export function pendingLaunchesToRosterEntries(
   rows: AdvSessionRow[],
   localHost: string,
 ): RosterEntry[] {
-  return rows.map((r) => ({
-    ownerId: `pending:adv:${r.id}`,
-    label: r.label ?? `${r.agent ?? 'session'}${r.planSlug ? ` · ${r.planSlug}` : ''}`,
-    source: r.agent ?? '',
-    intent: 'pending workbench launch',
-    currentFiles: [],
-    host: localHost,
-    pid: null,
-    startedAt: r.startedAt,
-    heartbeatAt: r.startedAt,
-    liveness: 'pending' as Liveness,
-    stale: false,
-    workspaceId: r.workspaceId,
-    userId: null,
-    revoked: false,
-    pidAlive: null,
-    claims: [],
-    hasLaunchRecord: true,
-    advSessionId: r.id,
-    currentPlanSlug: r.planSlug,
-    role: r.role,
-    feature: r.feature,
-    agent: r.agent,
-    mode: r.mode,
-    windowId: null,
-    ompThreadId: null,
-    cwd: r.cwd,
-    launchStartedAt: r.startedAt,
-    display: r.display,
-    launchArgv: r.launchArgv ?? [],
-  }));
+  return rows.map((r) => {
+    const pane = classifyAgentPane({ role: r.role, launch: launchHintFromArgv(r.launchArgv) });
+    return {
+      ownerId: `pending:adv:${r.id}`,
+      label: r.label ?? `${r.agent ?? 'session'}${r.planSlug ? ` · ${r.planSlug}` : ''}`,
+      source: r.agent ?? '',
+      intent: 'pending workbench launch',
+      currentFiles: [],
+      host: localHost,
+      pid: null,
+      startedAt: r.startedAt,
+      heartbeatAt: r.startedAt,
+      liveness: 'pending' as Liveness,
+      stale: false,
+      workspaceId: r.workspaceId,
+      userId: null,
+      revoked: false,
+      pidAlive: null,
+      claims: [],
+      hasLaunchRecord: true,
+      advSessionId: r.id,
+      currentPlanSlug: r.planSlug,
+      role: r.role,
+      feature: r.feature,
+      agent: r.agent,
+      mode: r.mode,
+      windowId: null,
+      ompThreadId: null,
+      cwd: r.cwd,
+      launchStartedAt: r.startedAt,
+      display: r.display,
+      launchArgv: r.launchArgv ?? [],
+      agentPaneKind: pane.kind,
+      driveMode: pane.driveMode,
+    };
+  });
 }
 
 /**
