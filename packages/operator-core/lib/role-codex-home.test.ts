@@ -74,6 +74,9 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain(`url = "${url}"`);
     // role-scoped, sig-auth — no bearer token (unlike the codex-su home).
     expect(toml).not.toContain('bearer_token_env_var');
+    // psu-isolation P-004 / D-001: no cwd AGENTS.md read + native memory off.
+    expect(toml).toContain('project_doc_max_bytes = 0');
+    expect(toml).toContain('memory_tool = false');
   });
 
   it('symlinks auth.json to the real ~/.codex/auth.json (shared OAuth, not a copy)', async () => {
@@ -175,6 +178,10 @@ describe('writeSuCodexHome', () => {
     // per-session client baked into the url (codex can't env-expand config.toml).
     expect(toml).toContain('client=su-abc-123');
     expect(toml).toContain('superuser=1');
+    // psu-isolation P-004 / D-001: no cwd AGENTS.md read + native memory off.
+    expect(toml).toContain('project_doc_max_bytes = 0');
+    expect(toml).toContain('[features]');
+    expect(toml).toContain('memory_tool = false');
   });
 
   it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {

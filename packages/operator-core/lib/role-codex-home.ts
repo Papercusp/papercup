@@ -54,6 +54,35 @@ export interface RoleCodexHome {
  *  documented matcher aliases. (developers.openai.com/codex/hooks, PR #18391) */
 const CODEX_LOCK_MATCHER = 'apply_patch|Edit|Write';
 
+/**
+ * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
+ * D-001) — isolate a psu codex session from the launching user's project doc +
+ * codex's native memory, so it is steered ONLY by the home's AGENTS.md (the psu
+ * playbook + the P-001 project-guide splice) and uses the hybrid `memory:*` MCP.
+ *
+ *  - `project_doc_max_bytes = 0` — codex otherwise reads `<cwd>/AGENTS.md` (on the
+ *    papercup tree that's a symlink to `CLAUDE.md` = the project guide) and merges
+ *    it into instructions. Now redundant: the guide reaches the session via the
+ *    home's AGENTS.md. Capping at 0 drops the cwd read — a single delivery path,
+ *    consistent with the claude/omp isolation.
+ *  - `[features] memory_tool = false` — disable codex's native memory tool (a
+ *    codex-0.137 `[features]` flag; `[features] <flag> = false` is the documented
+ *    disable) so the agent doesn't read/write the native `memories_*.sqlite` store
+ *    and instead uses `memory:*`. (Cross-session that store is ALSO neutralized by
+ *    `freshCodexHome` wiping the home each launch; this stops within-session use.)
+ *
+ * Must precede any `[table]` (TOML top-level keys before tables); the `[mcp_servers]`
+ * table each writer appends comes after.
+ */
+const CODEX_ISOLATION_PREAMBLE = [
+  '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
+  'project_doc_max_bytes = 0',
+  '',
+  '[features]',
+  'memory_tool = false',
+  '',
+].join('\n');
+
 /** Escape a value for a TOML double-quoted basic string. */
 function tomlEscape(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -218,6 +247,7 @@ export function writeRoleCodexHome(opts: {
   // url is baked verbatim.
   const configPath = join(codexHome, 'config.toml');
   const toml = [
+    CODEX_ISOLATION_PREAMBLE,
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
@@ -291,6 +321,7 @@ export function writeSuCodexHome(opts: {
   const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
   const configPath = join(codexHome, 'config.toml');
   const toml = [
+    CODEX_ISOLATION_PREAMBLE,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,

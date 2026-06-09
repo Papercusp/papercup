@@ -105,6 +105,32 @@ function echoChildCode(ttlMs: number): string {
   );
 }
 
+/** A child that models the Claude Code TUI's PASTE detector (the naive echoChild
+ *  does NOT): a CR is a SUBMIT only when it arrives as its OWN read, >W ms after
+ *  the previous bytes. A CR riding in the SAME chunk as bulk text is a paste — a
+ *  literal newline, NO submit. So a one-shot `text\r` burst (the PRE-FIX host
+ *  behavior) never submits; the host's split (text … then a lone CR after a
+ *  settle) does. Emits "SUBMIT:<buffer>" on a real submit; self-exits after ttlMs. */
+function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
+  // RAW mode is essential: the real TUI puts the pty in raw mode and does its own
+  // line editing/paste detection. Without it the pty's canonical line discipline
+  // buffers input until a newline and delivers a whole line in one read — which
+  // hides the very split (text … then a lone CR) this test exists to prove. Raw
+  // mode also disables ICRNL (so a CR stays '\r') and ECHO (so stdout carries
+  // only our SUBMIT line, not the input echo).
+  return (
+    "let b='';let last=0;const W=" + pasteWindowMs + ";" +
+    "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
+    "process.stdin.setEncoding('utf8');process.stdin.resume();" +
+    "process.stdin.on('data',s=>{" +
+    "const now=Date.now();const gap=now-last;last=now;" +
+    "if((s==='\\r'||s==='\\n')&&gap>W){process.stdout.write('SUBMIT:'+b+'\\n');b='';}" +
+    "else{b+=s.replace(/[\\r\\n]/g,'\\u23ce');}" +
+    "});" +
+    `setTimeout(()=>process.exit(0),${ttlMs});`
+  );
+}
+
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
   it(
     'discovers the live host by ownerId, injects a turn, and the child reads it as a SUBMITTED line',
@@ -358,6 +384,58 @@ describe('psu-pty-host dead-host discovery rejection (self-validating)', () => {
       expect(findLiveHost(ownerId)).toBeNull();
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+});
+
+describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (paste-detector regression)', () => {
+  it(
+    'a paste-aware child (models the Claude Code TUI) receives a SUBMITTED turn — the pre-fix one-shot text+CR burst would NOT have submitted',
+    async () => {
+      const ownerId = uniqueOwner('PASTE');
+      const sock = socketPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', pasteAwareChildCode(4000, 40)],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // Host sends the submit CR 120ms after the text — well past the child's
+          // 40ms paste window, so the lone CR registers as a real Enter. A one-shot
+          // `text+CR` burst (the pre-fix behavior) would land INSIDE the window and
+          // be swallowed as a literal newline → no submit.
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '120',
+        },
+        ownerId,
+        advSessionId: 4244,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await sleep(400);
+      const host = findLiveHost(ownerId);
+      expect(host).not.toBeNull();
+
+      const ok = await injectIntoHost(host!.sock, { mode: 'turn', data: 'paste-then-enter' });
+      expect(ok).toBe(true);
+
+      // Wait past the 120ms CR delay for the separate Enter to land + submit.
+      await sleep(700);
+      expect(captured()).toContain('SUBMIT:paste-then-enter');
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
     },
     20_000,
   );

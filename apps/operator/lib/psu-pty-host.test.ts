@@ -12,6 +12,7 @@ import {
   encodeControl,
   decodeControl,
   controlBytes,
+  controlWrites,
   makeIdleGate,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
@@ -64,6 +65,29 @@ describe('control wire protocol (v1)', () => {
     const d = decodeControl('{"v":2,"mode":"weird"}');
     expect(d.mode).toBe('turn');
     expect(d.gated).toBe(true);
+  });
+});
+
+describe('controlWrites — a turn submits via a SEPARATE delayed CR (paste-detector fix)', () => {
+  it('a turn is TWO steps: the text now, then the submit CR after a delay', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'wake-turn' }));
+    expect(controlWrites(d, 150)).toEqual([
+      { data: 'wake-turn', delayMs: 0 },
+      { data: '\r', delayMs: 150 },
+    ]);
+    // The CR is its OWN step — never concatenated onto the text (which the TUI's
+    // paste detector would swallow as a literal newline → unsubmitted turn).
+    const steps = controlWrites(d, 150);
+    expect(steps[0].data).not.toContain('\r');
+    expect(steps[1]).toEqual({ data: '\r', delayMs: 150 });
+  });
+  it('a raw (force-interrupt) message is ONE immediate verbatim write — no CR appended', () => {
+    const ctrlC = decodeControl(encodeControl({ mode: 'raw', data: '\x03' }));
+    expect(controlWrites(ctrlC)).toEqual([{ data: '\x03', delayMs: 0 }]);
+  });
+  it('the total bytes still match controlBytes (text + CR), just delivered in two writes', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
+    expect(controlWrites(d).map((s) => s.data).join('')).toBe(controlBytes(d));
   });
 });
 

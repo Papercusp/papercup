@@ -137,6 +137,8 @@ export async function runGreenCheckpoint(
       `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.`,
     )
     .catch(() => {});
+  // P-002: the gate recovered — resolve any open `release-not-green` escalation.
+  await deps.clearEscalation?.().catch(() => {});
   // await-event-primitive-2026-06-05 P-015: `release:green` is awaitable —
   // an agent blocked on "the next green ready" sleeps on it (events:await)
   // instead of polling the checkpoint. Fire-and-forget.
@@ -232,6 +234,35 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
         { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
         { to: ['*'], summary, body, category: 'service-health' },
       );
+    },
+    // P-002: durable human-facing escalation surface for a held gate. Tagged
+    // `source: 'green-checkpoint'` so the open/clear pair is idempotent across
+    // the hourly tick. Fail-safe — the gate verdict never depends on this.
+    async escalate(summary, body) {
+      const { openEscalation, listEscalations } = await import(
+        '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
+      );
+      const open = await listEscalations({ status: 'open' });
+      if (open.some((e) => (e as Record<string, unknown>).source === 'green-checkpoint')) return;
+      await openEscalation(
+        { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
+        { severity: 'blocker', summary, body, meta: { source: 'green-checkpoint' } },
+      );
+    },
+    async clearEscalation() {
+      const { listEscalations, resolveEscalation } = await import(
+        '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
+      );
+      const open = await listEscalations({ status: 'open' });
+      for (const e of open) {
+        if ((e as Record<string, unknown>).source === 'green-checkpoint') {
+          await resolveEscalation({
+            msg_id: e.msg_id,
+            choice: 'gate green',
+            resolver: 'green-checkpoint',
+          }).catch(() => {});
+        }
+      }
     },
     log,
   };

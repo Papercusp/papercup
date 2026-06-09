@@ -66,6 +66,14 @@ const DEFAULT_IDLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_IDLE_MS) || 750;
  *  anyway — a wake must not be deferred forever by a user who keeps typing. */
 const DEFAULT_IDLE_WAIT_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS) || 8_000;
 
+/** After writing an injected TURN's text, the host sends the submit Enter (CR)
+ *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
+ *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
+ *  newline in the input box and the turn sits UNSUBMITTED until a human presses
+ *  Enter ("the wake text appeared but the turn didn't start"). An isolated CR,
+ *  arriving after the paste settles, registers as a real submit. */
+const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS) || 150;
+
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
@@ -209,9 +217,25 @@ export function decodeControl(payload) {
   return { mode: 'turn', data: text, gated: true };
 }
 
-/** The bytes a decoded control message writes into the pty. Pure — for tests. */
+/** The full logical bytes a decoded control message represents (raw: verbatim;
+ *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
+ *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded) {
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
+}
+
+/** The ordered write STEPS the host performs against the pty for a decoded
+ *  message. raw → ONE immediate verbatim write (force-interrupt byte). turn →
+ *  TWO writes: the line text, then the submit Enter (CR) as a SEPARATE keystroke
+ *  `crDelayMs` later — because a single `text + CR` burst is swallowed by the
+ *  Claude Code TUI's paste detector (the CR becomes a literal newline and the
+ *  turn never submits). Pure — exported for tests. */
+export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
+  if (decoded.mode === 'raw') return [{ data: decoded.data, delayMs: 0 }];
+  return [
+    { data: decoded.data, delayMs: 0 },
+    { data: '\r', delayMs: crDelayMs },
+  ];
 }
 
 /**
@@ -333,7 +357,14 @@ export function hostThroughPty(o) {
       const msg = decodeControl(payload);
       try {
         if (bridgeTty && msg.gated) await idleGate.waitIdle();
-        child.write(controlBytes(msg));
+        // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
+        // a separate keystroke after a settle (controlWrites). A one-shot text+CR
+        // burst is swallowed by the TUI's paste detector — the turn never submits
+        // and the human has to press Enter.
+        for (const step of controlWrites(msg)) {
+          if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+          child.write(step.data);
+        }
       } catch {
         /* child may have exited mid-inject */
       }

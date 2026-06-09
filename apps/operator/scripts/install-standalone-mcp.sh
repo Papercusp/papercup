@@ -68,22 +68,36 @@ PLAYBOOK_PATH="${PROMPTS_DIR}/papercusp-su-${PROFILE}.tools.md"
 OVERLAY_OMP="${PROMPTS_DIR}/papercusp-su.omp.md"
 OVERLAY_CLAUDE="${PROMPTS_DIR}/papercusp-su.claude.md"
 OVERLAY_CODEX="${PROMPTS_DIR}/papercusp-su.codex.md"
+# The repo project guide (psu-isolation P-001 / D-002): SCRIPT_DIR is
+# apps/operator/scripts, so the repo root is three up. CLAUDE.md is the single
+# editable source (AGENTS.md is a symlink to it); render_playbook splices it at
+# the PROJECT-GUIDE marker for the engineer profile's static fallback.
+PROJECT_GUIDE_PATH="${SCRIPT_DIR}/../../../CLAUDE.md"
 
-# Splice a client overlay into the base playbook at the marker. Falls
-# back to appending if the marker is absent, or to base-only if the
-# overlay file is missing. One source of truth for the shared base.
+# Splice a client overlay (+ the project guide) into the base playbook at the
+# markers. Falls back to appending if the overlay marker is absent, or to
+# base-only if the overlay file is missing. One source of truth for the base.
 #
-# GENERATED-section markers (WIRE-SCHEMAS / COORD-LEGEND / WORKSPACE-MAP)
-# are rendered by the TS path (renderSuPlaybook) only — this shell path has
-# no renderer, so it STRIPS any remaining PAPERCUSP-SU:* markers rather than
-# shipping them literally. (The installer-written ~/.papercusp playbooks are
-# the vestigial fallback; psu launches render fresh via the TS path.)
+# args: <base_path> <overlay_path> <dest_path> <project_guide_path>
+#
+# PROJECT-GUIDE marker (psu-isolation P-001 / D-002): splice the repo's CLAUDE.md
+# (the single editable project guide; AGENTS.md is a symlink to it) at the marker,
+# with the SAME provenance wrapper renderProjectGuideSection() writes in the TS
+# path, so this static fallback matches the live per-launch render.
+#
+# OTHER GENERATED-section markers (WIRE-SCHEMAS / COORD-LEGEND / WORKSPACE-MAP)
+# are rendered by the TS path (renderSuPlaybook) only — this shell path has no
+# renderer, so it STRIPS any remaining PAPERCUSP-SU:* markers rather than shipping
+# them literally. (The installer-written ~/.papercusp playbooks are the vestigial
+# fallback; psu launches render fresh via the TS path, which DOES render those.)
 render_playbook() {
-  python3 - "$1" "$2" "$3" <<'PYEOF'
+  python3 - "$1" "$2" "$3" "${4:-}" <<'PYEOF'
 import re
 import sys
 base_path, overlay_path, dest_path = sys.argv[1], sys.argv[2], sys.argv[3]
+guide_path = sys.argv[4] if len(sys.argv) > 4 else ""
 marker = "<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->"
+guide_marker = "<!-- PAPERCUSP-SU:PROJECT-GUIDE -->"
 with open(base_path) as f:
     base = f.read()
 try:
@@ -92,6 +106,25 @@ try:
 except FileNotFoundError:
     overlay = ""
 out = base.replace(marker, overlay) if marker in base else base.rstrip("\n") + "\n\n" + overlay + "\n"
+# Project guide (P-001 / D-002): splice the repo CLAUDE.md at its marker.
+if guide_marker in out:
+    section = ""
+    try:
+        with open(guide_path) as f:
+            body = f.read().rstrip("\n").strip()
+        if body:
+            section = (
+                "## Project guide — repo conventions\n\n"
+                "> The following is the working repo's project guide (`CLAUDE.md` at the\n"
+                "> repo root — the single editable source; `AGENTS.md` is a symlink to it).\n"
+                "> It is spliced in here so a psu session gets these conventions WITHOUT the\n"
+                "> client auto-loading the file (which would also drag in the launching\n"
+                "> user's personal/global config). To change it, edit the repo's `CLAUDE.md`.\n\n"
+                + body + "\n"
+            )
+    except (FileNotFoundError, OSError):
+        section = ""
+    out = out.replace(guide_marker, section)
 out = re.sub(r"<!-- PAPERCUSP-SU:[A-Z-]+ -->\n?", "", out)
 with open(dest_path, "w") as f:
     f.write(out)
@@ -556,13 +589,19 @@ set_omp_config "memory.backend" "off"
 # client-neutral guidance; the client-specific task/workflow tooling
 # (OMP vs Claude Code vs Codex) is spliced in from a small overlay so
 # that, e.g., OMP's "don't use the Claude task tools" guidance never
-# lands in the Claude or Codex playbook. These files are loaded only by
-# the -su wrappers; plain `omp`/`claude`/`codex` never see them.
+# lands in the Claude or Codex playbook; the repo project guide is spliced
+# at the PROJECT-GUIDE marker (P-001).
+#
+# These static files are a VESTIGIAL FALLBACK: the `*-su` wrappers are retired
+# (psu → bootstrap-su → buildLaunchSpec → renderSuPlaybook renders fresh per
+# launch via the TS path). They're kept as an opt-in reference / a render the
+# user can read; plain `omp`/`claude`/`codex` never auto-load them.
 #
 # Destinations:
-#   omp    → ~/.papercusp/${PROFILE}-collaborator.md         (omp-su, step 4d)
-#   claude → ~/.papercusp/${PROFILE}-collaborator.claude.md  (claude-su, step 4e)
-#   codex  → ~/.papercusp/codex-su-home/AGENTS.md            (codex-su, step 4f)
+#   omp    → ~/.papercusp/${PROFILE}-collaborator.md
+#   claude → ~/.papercusp/${PROFILE}-collaborator.claude.md
+#   (codex: no static file — its AGENTS.md is minted per-session server-side by
+#    writeSuCodexHome, role-codex-home.ts)
 PLAYBOOK_DEST="${HOME}/.papercusp/${PROFILE}-collaborator.md"
 PLAYBOOK_DEST_CLAUDE="${HOME}/.papercusp/${PROFILE}-collaborator.claude.md"
 if [ ! -f "$PLAYBOOK_PATH" ]; then
@@ -571,10 +610,10 @@ else
   for ov in "$OVERLAY_OMP" "$OVERLAY_CLAUDE" "$OVERLAY_CODEX"; do
     [ -f "$ov" ] || echo "! Missing client overlay $(basename "$ov") — that playbook falls back to base-only"
   done
-  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_OMP" "$PLAYBOOK_DEST"
+  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_OMP" "$PLAYBOOK_DEST" "$PROJECT_GUIDE_PATH"
   chmod 644 "$PLAYBOOK_DEST"
   echo "✓ Wrote ${PROFILE} OMP playbook to $PLAYBOOK_DEST"
-  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_CLAUDE" "$PLAYBOOK_DEST_CLAUDE"
+  render_playbook "$PLAYBOOK_PATH" "$OVERLAY_CLAUDE" "$PLAYBOOK_DEST_CLAUDE" "$PROJECT_GUIDE_PATH"
   chmod 644 "$PLAYBOOK_DEST_CLAUDE"
   echo "✓ Wrote ${PROFILE} Claude Code playbook to $PLAYBOOK_DEST_CLAUDE"
 fi

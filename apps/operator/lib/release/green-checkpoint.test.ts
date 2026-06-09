@@ -41,6 +41,12 @@ function stubDeps(green: boolean): { deps: CheckpointDeps; calls: string[] } {
     broadcast: async () => {
       calls.push('broadcast');
     },
+    escalate: async () => {
+      calls.push('escalate');
+    },
+    clearEscalation: async () => {
+      calls.push('clearEscalation');
+    },
     log: () => {},
   };
   return { deps, calls };
@@ -66,7 +72,8 @@ describe('runGreenCheckpoint', () => {
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
     expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
     expect(await revParse(repo, 'ready')).toBe(c2);
-    expect(calls).toEqual(['setup:' + c2.slice(0, 7), 'runGreen', 'advance', 'broadcast']);
+    // P-002: a green advance clears any open release-not-green escalation.
+    expect(calls).toEqual(['setup:' + c2.slice(0, 7), 'runGreen', 'advance', 'broadcast', 'clearEscalation']);
   });
 
   it('holds ready when the candidate is NOT green', async () => {
@@ -78,6 +85,8 @@ describe('runGreenCheckpoint', () => {
     expect(r).toMatchObject({ advanced: false, green: false, reason: 'not-green' });
     expect(await revParse(repo, 'ready')).toBe(c1); // unchanged
     expect(calls).not.toContain('advance');
+    // P-002: a held gate opens a durable human-facing escalation.
+    expect(calls).toContain('escalate');
   });
 
   it('is a no-op when ready already at integration HEAD', async () => {
