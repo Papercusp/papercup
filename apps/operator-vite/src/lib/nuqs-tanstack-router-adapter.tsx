@@ -175,10 +175,19 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
     ),
     updateUrl: useCallback(
       (nuqsSearch: URLSearchParams, options: AdapterOptions) => {
+        // Resolve the path FRESH at flush time, never a closure-captured one.
+        // Root cause of the desktop "constant refreshing on launch" (measured
+        // 2026-06-09): at startup the route transitions `/` → `/adv` rapidly,
+        // and a nuqs flush (notably the `ws` workspace param) that navigated to a
+        // STALE captured `pathname` (`'/'`) dropped the path back to `/`, which
+        // re-fired the index `/` → `/adv` redirect — a ~5s route oscillation the
+        // user sees as the page constantly refreshing (t0/timeOrigin never
+        // changes — it was NEVER a page reload). `router.latestLocation` is always
+        // the live path, so a flush can no longer yank us off the current route.
+        const currentPath = router.latestLocation.pathname;
         startTransition(() => {
           navigate({
-            from: '/',
-            to: pathname,
+            to: currentPath,
             search: (prev) =>
               applyNuqsToSearch(prev as Record<string, unknown>, watchKeys, nuqsSearch),
             replace: options.history === 'replace',
@@ -189,7 +198,7 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
         });
       },
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [navigate, pathname, watchKeysJoined],
+      [navigate, router, watchKeysJoined],
     ),
     rateLimitFactor: 1,
   };

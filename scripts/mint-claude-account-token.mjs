@@ -67,8 +67,17 @@ function authorize(id) {
 
 async function exchange(id, rawCode, outPath) {
   const { verifier, state } = JSON.parse(readFileSync(stateFile(id), 'utf8'));
-  // The callback page shows `code#state` (claude-code format) — split if present.
-  const [code, returnedState] = String(rawCode).split('#');
+  // Accept any of: a bare code, the `code#state` form, or the FULL localhost redirect URL the
+  // browser lands on (`http://localhost:PORT/callback?code=…&state=…`).
+  const raw = String(rawCode).trim();
+  let code;
+  let returnedState;
+  if (raw.includes('code=')) {
+    const q = new URL(raw.startsWith('http') ? raw : `http://x/?${raw.replace(/^\?/, '')}`).searchParams;
+    code = q.get('code') ?? undefined;
+    returnedState = q.get('state') ?? undefined;
+  }
+  if (!code) [code, returnedState] = raw.split('#');
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
