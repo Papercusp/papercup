@@ -67,6 +67,11 @@ export interface ImprovementCandidate {
    *  at capture; written by triage-core, resolve-core, and the decay sweep. Items
    *  captured before the lifecycle landed have none (treated as 'open'). */
   ideaLifecycle?: import('./lifecycle').IdeaLifecyclePayload;
+  /** Stable watchdog signal identity (payload.watchdogKey, '<source>:<key>' —
+   *  watchdog-audit P-004). DIFFERENT keys = DIFFERENT signals even when the
+   *  template titles token-collide (nested-path red-tests, per-tool errors) —
+   *  dedup/hygiene must never merge across distinct keys. */
+  watchdogKey?: string;
 }
 
 export type Tier = 'auto' | 'human';

@@ -76,26 +76,43 @@ export function planHygieneSweep(all: ImprovementCandidate[], opts: PlanHygieneO
   const acted = new Set<string>();
 
   // 1. dup-close — clusters among OPEN items only (resolved members already left).
+  // A destructive close needs MORE than Jaccard cluster membership (watchdog-audit
+  // P-004: template titles — "Test failing repeatedly: <path>", "Tool <name>
+  // erroring repeatedly" — token-collide across DISTINCT signals; the live dry-run
+  // 2026-06-09 caught exactly 4 such false pairs). Mergeable sub-groups are:
+  //   - same `watchdogKey` (the key asserts one signal identity), or
+  //   - keyless items with EXACTLY equal normalized signatures (near-dup Jaccard
+  //     alone is not enough to destroy a keyless item).
+  // Keyed never merges with keyless, and different keys never merge.
   for (const cluster of findLikelyDuplicates(open)) {
     if (actions.length >= maxActions) break;
-    const members = cluster.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => !!c);
-    if (members.length < 2) continue;
-    const keep = [...members].sort((a, b) => {
-      const sev = SEVERITY_RANK[b.severity ?? 'minor'] - SEVERITY_RANK[a.severity ?? 'minor'];
-      if (sev !== 0) return sev;
-      return Date.parse(b.createdAt ?? '0') - Date.parse(a.createdAt ?? '0');
-    })[0];
-    for (const m of members) {
-      if (actions.length >= maxActions) break;
-      if (m.id === keep.id || acted.has(m.id)) continue;
-      if (m.assignee) continue; // claimed = in-flight, never hygiene-close
-      acted.add(m.id);
-      actions.push({
-        id: m.id,
-        kind: 'dup-close',
-        keptId: keep.id,
-        reason: `duplicate of ${keep.id} (hygiene sweep) — the kept item carries this friction`,
-      });
+    const clusterMembers = cluster.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => !!c);
+    const groups = new Map<string, ImprovementCandidate[]>();
+    for (const m of clusterMembers) {
+      const groupKey = m.watchdogKey ? `key:${m.watchdogKey}` : `sig:${dedupSignature(m.title)}`;
+      const arr = groups.get(groupKey) ?? [];
+      arr.push(m);
+      groups.set(groupKey, arr);
+    }
+    for (const members of groups.values()) {
+      if (members.length < 2) continue;
+      const keep = [...members].sort((a, b) => {
+        const sev = SEVERITY_RANK[b.severity ?? 'minor'] - SEVERITY_RANK[a.severity ?? 'minor'];
+        if (sev !== 0) return sev;
+        return Date.parse(b.createdAt ?? '0') - Date.parse(a.createdAt ?? '0');
+      })[0];
+      for (const m of members) {
+        if (actions.length >= maxActions) break;
+        if (m.id === keep.id || acted.has(m.id)) continue;
+        if (m.assignee) continue; // claimed = in-flight, never hygiene-close
+        acted.add(m.id);
+        actions.push({
+          id: m.id,
+          kind: 'dup-close',
+          keptId: keep.id,
+          reason: `duplicate of ${keep.id} (hygiene sweep) — the kept item carries this friction`,
+        });
+      }
     }
   }
 

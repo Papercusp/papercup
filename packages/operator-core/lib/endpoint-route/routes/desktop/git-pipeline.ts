@@ -1,5 +1,5 @@
 /**
- * GET /api/dev/git-pipeline  (+ OPTIONS preflight)
+ * GET /api/desktop/git-pipeline  (+ OPTIONS preflight)
  *
  * The full `gitPipelineSnapshot()` as plain JSON — the SAME data the
  * /admin/git GitClient reads via the sync-resolver query `dev.gitPipeline`,
@@ -10,10 +10,14 @@
  * pipeline status + SPA-vs-API skew line
  * (desktop-build-switcher-wrapper-2026-06-09 P-010 / D-003).
  *
- * `auth: 'public'` — loopback-bound dev surface, read-only, non-secret
- * (shas, routine timestamps, gate state), and the native bar has no auth
- * context to send; mirrors desktop/version.ts. Same CORS posture so a
- * webview origin can read it directly too.
+ * Lives under /desktop/ (NOT /dev/) because the auth posture is per-family
+ * (auth-posture.test.ts): /dev/* must be trust-gated, while this route's
+ * consumer is the desktop shell's native bar, which has no auth context to
+ * send — `auth: 'public'` like desktop/version.ts (loopback-bound,
+ * read-only, non-secret: shas, routine timestamps, gate state). Pinned in
+ * the test's MUST_BE_PUBLIC list so it can't silently tighten and break
+ * the bar. Same CORS posture as version.ts so a webview origin can read it
+ * directly too.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { gitPipelineSnapshot } from '../../../git-pipeline-stats';
@@ -27,7 +31,7 @@ const CORS_HEADERS: Record<string, string> = {
 export default [
   defineTool({
     method: 'GET',
-    path: '/dev/git-pipeline',
+    path: '/desktop/git-pipeline',
     auth: 'public',
     async handler() {
       const snapshot = await gitPipelineSnapshot();
@@ -38,7 +42,7 @@ export default [
   }),
   defineTool({
     method: 'OPTIONS',
-    path: '/dev/git-pipeline',
+    path: '/desktop/git-pipeline',
     auth: 'public',
     handler() {
       return new Response(null, { status: 204, headers: CORS_HEADERS });

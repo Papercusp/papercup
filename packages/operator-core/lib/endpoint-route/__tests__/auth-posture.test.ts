@@ -93,6 +93,11 @@ const MUST_BE_PUBLIC: ReadonlyArray<[string, string]> = [
   ['OPTIONS', '/desktop/version'],
   ['GET',     '/desktop/preflight'],
   ['OPTIONS', '/desktop/preflight'],
+  // The desktop dev-wrapper bar's status poll (desktop-build-switcher-
+  // wrapper-2026-06-09 P-010) — a native Rust HTTP client with no auth
+  // context; tightening it blanks the bar's pipeline readout.
+  ['GET',     '/desktop/git-pipeline'],
+  ['OPTIONS', '/desktop/git-pipeline'],
 ];
 
 describe('D3 auth posture', () => {

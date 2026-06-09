@@ -40,6 +40,7 @@ import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
 import { runDecaySweep } from '../improvements/decay';
+import { runHygieneSweep } from '../improvements/hygiene';
 import { buildDigest, type ScoredItem } from '../improvements/digest';
 import { triageIdea } from '../improvements/triage';
 import { applyTriageDecision, selectUntriaged, type ApplyTriageInput, type ApplyTriageResult } from '../improvements/triage-core';
@@ -165,6 +166,21 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
         .map(([d, n]) => `${d}=${n}`)
         .join(', '),
   );
+
+  // Hygiene rides the triage cadence (P-014): dup-cluster closes + stale-minor
+  // age-outs, small recurring cap (the one-time backlog cut runs separately).
+  // Best-effort — hygiene failure must never fail the triage pass.
+  try {
+    const hygieneCap = intFromEnv('PAPERCUSP_IMPROVEMENT_HYGIENE_MAX_PER_RUN', 10, { min: 0 });
+    const hygiene = await runHygieneSweep({ maxActions: hygieneCap });
+    if (hygiene.planned.length > 0) {
+      console.log(
+        `[improvement-triage] hygiene: ${hygiene.dupClosed} dup-closed, ${hygiene.agedOut} aged out (scanned ${hygiene.scanned})`,
+      );
+    }
+  } catch (e) {
+    console.warn('[improvement-triage] hygiene sweep failed:', e instanceof Error ? e.message : e);
+  }
 });
 
 // ── Phase 3: the auto-implement loop (flag-gated OFF) ────────────────────────

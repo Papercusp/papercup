@@ -38,6 +38,8 @@ interface ImprovementPayload {
   sourceRole?: unknown;
   /** Idea-lifecycle journey (self-learning P-030/P-031) — written by capture/triage-core/resolve-core/decay. */
   ideaLifecycle?: unknown;
+  /** Stable watchdog signal identity ('<source>:<key>' — watchdog-audit P-004). */
+  watchdogKey?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -70,6 +72,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(decidedReason ? { decidedReason } : {}),
     ...(sourceRole ? { sourceRole } : {}),
     ...(isIdeaLifecycle(p.ideaLifecycle) ? { ideaLifecycle: p.ideaLifecycle } : {}),
+    ...(typeof p.watchdogKey === 'string' && p.watchdogKey ? { watchdogKey: p.watchdogKey } : {}),
   };
 }
 
