@@ -2239,8 +2239,25 @@ impl App {
                 .agent
                 .clone()
                 .filter(|a| !a.is_empty())
-                .map(|a| format!("{} · {}", a, short_owner(&r.owner_id)))
+                .map(|a| {
+                    // P-012: flag-on, the right side is the bee's current work
+                    // (declared intent / feature) so the title bar summarises what
+                    // it's doing; flag-off keeps the owner id (current behavior).
+                    let right = if self.hive_agent_tabs {
+                        r.work_summary().unwrap_or_else(|| short_owner(&r.owner_id))
+                    } else {
+                        short_owner(&r.owner_id)
+                    };
+                    format!("{a} · {right}")
+                })
                 .unwrap_or_else(|| r.label.clone());
+            // P-010: flag-on, prefix the per-type glyph into the bee pane title
+            // (zellij has no per-pane color — D-008 — so the glyph carries the type).
+            let title = crate::agent_pane_kind::glyph_prefixed_title(
+                &title,
+                crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
+                self.hive_agent_tabs,
+            );
             out.push(
                 // P-004: flag-on, a claude bee resumes as a real Claude TUI
                 // (claude --resume <session_id>); else the read-only watch-pane.

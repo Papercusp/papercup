@@ -9,9 +9,10 @@ import { knownQueryNamesV2 } from './index';
  * is the failure mode that would silently 404 the tab.
  */
 describe('learning.* resolver registration', () => {
-  it('registers learning.improvements + learning.gym in the v2 named-query resolver', () => {
+  it('registers learning.improvements + learning.gym + learning.apiary in the v2 named-query resolver', () => {
     const names = knownQueryNamesV2();
     expect(names).toContain('learning.improvements');
     expect(names).toContain('learning.gym');
+    expect(names).toContain('learning.apiary');
   });
 });

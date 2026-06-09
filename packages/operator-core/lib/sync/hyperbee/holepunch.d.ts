@@ -43,8 +43,29 @@ declare module 'protomux' {
      * the only safe point to send a message that must not be dropped on a
      * fresh connection (a `message.send()` synchronously after `open()` can be
      * lost before the peer's channel exists).
+     *
+     * `id` keys the channel WITHIN the protocol — pairing matches on
+     * `(protocol, id)`, so distinct ids (e.g. distinct directory topics) get
+     * distinct paired channels on one muxer. Returns NULL when a channel with
+     * the same `(protocol, id)` is already open on this muxer (`unique`).
      */
-    createChannel(opts: { protocol: string; onopen?: () => void; onclose?: () => void }): ProtomuxChannel;
+    createChannel(opts: {
+      protocol: string;
+      id?: Buffer | null;
+      onopen?: () => void;
+      onclose?: () => void;
+    }): ProtomuxChannel | null;
+    /**
+     * Register a LAZY-ACCEPT notifier: when the remote opens `(protocol, id)`
+     * and no matching local channel exists, protomux REJECTS the open unless a
+     * pair-notifier is registered for the exact id (or for the protocol with no
+     * id — the any-id fallback) — corestore uses this to accept replication
+     * channels lazily. The notify callback must createChannel SYNCHRONOUSLY
+     * (before returning/awaiting) to consume the pending open, else the open is
+     * rejected when the notify resolves.
+     */
+    pair(opts: { protocol: string; id?: Buffer | null }, notify: (id: Buffer | null) => void | Promise<void>): void;
+    unpair(opts: { protocol: string; id?: Buffer | null }): void;
   }
 }
 

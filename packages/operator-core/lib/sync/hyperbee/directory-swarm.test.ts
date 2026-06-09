@@ -3,61 +3,108 @@
  *
  * Mocks Protomux to a controllable fake muxer so the join → pair → send-ours →
  * receive → broadcast → close lifecycle unit-tests without a real swarm/socket.
+ * The REAL-transport semantics (DHT discovery via the refresh loop, protomux
+ * channel pairing + lazy accept over an actual socket) are pinned by
+ * __tests__/hive-directory-live-two-peer.test.ts on a live testnet.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// ── Protomux fake: createChannel captures onopen/onclose; addMessage captures
-//    onmessage + exposes a send spy; channel.open() fires onopen (simulates pairing).
+// ── Protomux fake: one muxer per socket (userData convention). createChannel
+//    captures (protocol, id, onopen/onclose) and models the `unique` null-return
+//    for a duplicate (protocol, id); pair() registers the lazy-accept notifier.
 interface FakeChannel {
   protocol: string;
+  id: Buffer | null;
   onopen?: () => void;
   onclose?: () => void;
   sent: unknown[];
   inbound?: (frame: unknown) => void;
   opened: boolean;
-  /** OUR side opens (the source calls this). Does NOT fire onopen. */
+  closed: boolean;
   open(): void;
   /** The REMOTE peer pairs → Protomux fires onopen. */
-  pair(): void;
+  pairRemote(): void;
   fireClose(): void;
 }
-const muxers: FakeChannel[] = [];
-function makeMux() {
-  return {
-    createChannel(spec: { protocol: string; onopen?: () => void; onclose?: () => void }): FakeChannel {
+interface FakeMux {
+  channels: FakeChannel[];
+  notify: ((id: Buffer | null) => void | Promise<void>) | null;
+  createChannel(spec: {
+    protocol: string;
+    id?: Buffer | null;
+    onopen?: () => void;
+    onclose?: () => void;
+  }): FakeChannel | null;
+  pair(opts: { protocol: string }, notify: (id: Buffer | null) => void | Promise<void>): void;
+  /** Simulate an inbound remote open for (protocol, id) — fires the notifier. */
+  remoteOpens(id: Buffer): void;
+}
+const allChannels: FakeChannel[] = [];
+function makeMux(): FakeMux {
+  const mux: FakeMux = {
+    channels: [],
+    notify: null,
+    createChannel(spec) {
+      // protomux `unique`: a second live channel for the same (protocol, id) → null.
+      const key = `${spec.protocol}::${spec.id ? spec.id.toString('hex') : ''}`;
+      const dup = mux.channels.find(
+        (ch) => !ch.closed && `${ch.protocol}::${ch.id ? ch.id.toString('hex') : ''}` === key,
+      );
+      if (dup) return null;
       const ch: FakeChannel = {
         protocol: spec.protocol,
+        id: spec.id ?? null,
         onopen: spec.onopen,
         onclose: spec.onclose,
         sent: [],
         opened: false,
+        closed: false,
         open() {
           this.opened = true;
         },
-        pair() {
+        pairRemote() {
           this.onopen?.();
         },
         fireClose() {
+          this.closed = true;
           this.onclose?.();
         },
       };
-      // addMessage attaches the inbound handler + a send spy bound to THIS channel.
       (ch as unknown as { addMessage: (m: { onmessage?: (f: unknown) => void }) => { send: (v: unknown) => void } }).addMessage =
         (m) => {
           ch.inbound = m.onmessage;
           return { send: (v: unknown) => ch.sent.push(v) };
         };
-      muxers.push(ch);
+      mux.channels.push(ch);
+      allChannels.push(ch);
       return ch;
     },
+    pair(_opts, notify) {
+      mux.notify = notify;
+    },
+    remoteOpens(id: Buffer) {
+      mux.notify?.(id);
+    },
   };
+  return mux;
 }
-vi.mock('protomux', () => ({ default: { from: () => makeMux() } }));
+vi.mock('protomux', () => ({
+  default: {
+    from: (socket: { userData?: unknown }) => {
+      if (socket.userData) return socket.userData;
+      // Protomux.from does NOT set userData; the source does (the hypercore convention).
+      return makeMux();
+    },
+  },
+}));
 
-const { joinDirectorySwarm, HIVE_DIRECTORY_PROTOCOL } = await import('./directory-swarm');
+const { createDirectoryGossip, HIVE_DIRECTORY_PROTOCOL } = await import('./directory-swarm');
 import type { SignedHiveAnnounce } from './hive-announce';
 
 const TOPIC = Buffer.alloc(32, 7);
+const TOPIC2 = Buffer.alloc(32, 9);
+const HEX = TOPIC.toString('hex');
+const HEX2 = TOPIC2.toString('hex');
 const frame = (id: string): SignedHiveAnnounce =>
   ({ hive_id: id, title: id, description: '', owner_github_login: 'a', owner_github_user_id: 1, owner_device_pubkey: 'pk', attestation_gist_id: 'g', member_topics: [], visibility: 'public', created_at: 0, ts: 0, sig: 's' }) as SignedHiveAnnounce;
 
@@ -66,11 +113,16 @@ function fakeSwarm() {
   let handler: ((socket: unknown) => void) | null = null;
   const joined: Buffer[] = [];
   const left: Buffer[] = [];
+  const refreshed: Buffer[] = [];
   return {
     swarm: {
       join(t: Buffer) {
         joined.push(t);
-        return {};
+        return {
+          refresh: () => {
+            refreshed.push(t);
+          },
+        };
       },
       leave(t: Buffer) {
         left.push(t);
@@ -82,90 +134,176 @@ function fakeSwarm() {
         handler = null;
       },
     },
-    connect() {
-      handler?.({});
+    /** Simulate an inbound connection; returns its socket (muxer via userData). */
+    connect(): { userData?: FakeMux } {
+      const socket: { userData?: FakeMux } = {};
+      handler?.(socket);
+      return socket;
     },
     get handler() {
       return handler;
     },
     joined,
     left,
+    refreshed,
   };
 }
 
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 beforeEach(() => {
-  muxers.length = 0;
+  allChannels.length = 0;
 });
 
-describe('joinDirectorySwarm', () => {
-  it('joins the topic (server+client) and registers a connection handler', async () => {
+describe('createDirectoryGossip', () => {
+  it('joinTopic joins the swarm topic (server+client) and registers ONE connection handler', () => {
     const f = fakeSwarm();
-    const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    expect(f.handler).toBeTypeOf('function');
+    g.joinTopic(TOPIC);
     expect(f.joined).toHaveLength(1);
     expect(f.joined[0].equals(TOPIC)).toBe(true);
-    expect(f.handler).toBeTypeOf('function');
-    expect(h.topicHex).toBe(TOPIC.toString('hex'));
+    expect(g.topicsJoined).toEqual([HEX]);
+    g.joinTopic(TOPIC); // idempotent
+    expect(f.joined).toHaveLength(1);
   });
 
-  it('rejects a non-32-byte topic', async () => {
+  it('rejects a non-32-byte topic', () => {
     const f = fakeSwarm();
-    await expect(joinDirectorySwarm({ swarm: f.swarm, topic: Buffer.alloc(10), onAnnounce: () => {}, getOwnAnnounces: () => [] })).rejects.toThrow(/32-byte/);
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    expect(() => g.joinTopic(Buffer.alloc(10))).toThrow(/32-byte/);
   });
 
-  it('opens a directory-protocol channel per connection and sends our announces on pair', async () => {
+  it('opens a channel per (connection, topic) keyed by the topic id, and sends topic-scoped announces on pair', async () => {
     const f = fakeSwarm();
-    await joinDirectorySwarm({
+    const g = createDirectoryGossip({
       swarm: f.swarm,
-      topic: TOPIC,
       onAnnounce: () => {},
-      getOwnAnnounces: () => [frame('mine-1'), frame('mine-2')],
+      getOwnAnnounces: (hex) => (hex === HEX ? [frame('mine-1'), frame('mine-2')] : [frame('other')]),
+      refreshMs: 0,
     });
-    f.connect();
-    expect(muxers).toHaveLength(1);
-    expect(muxers[0].protocol).toBe(HIVE_DIRECTORY_PROTOCOL);
-    muxers[0].pair(); // simulate the peer pairing → onopen
-    await new Promise((r) => setTimeout(r, 0)); // getOwnAnnounces is async
-    expect(muxers[0].sent.map((s) => (s as SignedHiveAnnounce).hive_id)).toEqual(['mine-1', 'mine-2']);
+    g.joinTopic(TOPIC);
+    g.joinTopic(TOPIC2);
+    const socket = f.connect();
+    const mux = socket.userData!;
+    // One channel per topic on the SAME muxer, each keyed by its topic id.
+    expect(mux.channels).toHaveLength(2);
+    expect(mux.channels[0].protocol).toBe(HIVE_DIRECTORY_PROTOCOL);
+    expect(mux.channels.map((ch) => ch.id?.toString('hex'))).toEqual([HEX, HEX2]);
+    // Pair only the first topic's channel → ONLY its scoped announces flow.
+    mux.channels[0].pairRemote();
+    await tick();
+    expect(mux.channels[0].sent.map((s) => (s as SignedHiveAnnounce).hive_id)).toEqual(['mine-1', 'mine-2']);
+    expect(mux.channels[1].sent).toHaveLength(0);
   });
 
-  it('pipes inbound frames to onAnnounce', async () => {
+  it('pipes inbound frames to onAnnounce', () => {
     const f = fakeSwarm();
     const seen: string[] = [];
-    await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: (fr) => { seen.push(fr.hive_id); }, getOwnAnnounces: () => [] });
-    f.connect();
-    muxers[0].inbound?.(frame('remote-1'));
+    const g = createDirectoryGossip({
+      swarm: f.swarm,
+      onAnnounce: (fr) => {
+        seen.push(fr.hive_id);
+      },
+      getOwnAnnounces: () => [],
+      refreshMs: 0,
+    });
+    g.joinTopic(TOPIC);
+    const socket = f.connect();
+    socket.userData!.channels[0].inbound?.(frame('remote-1'));
     expect(seen).toEqual(['remote-1']);
   });
 
-  it('broadcast sends to every OPEN channel, not unpaired ones', async () => {
+  it('broadcast is per-topic and only reaches PAIRED channels', async () => {
     const f = fakeSwarm();
-    const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
-    f.connect();
-    f.connect();
-    muxers[0].pair(); // only the first pairs
-    await new Promise((r) => setTimeout(r, 0));
-    expect(h.openChannelCount).toBe(1);
-    h.broadcast(frame('bcast'));
-    expect(muxers[0].sent.some((s) => (s as SignedHiveAnnounce).hive_id === 'bcast')).toBe(true);
-    expect(muxers[1].sent).toHaveLength(0); // unpaired → no send
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    g.joinTopic(TOPIC);
+    g.joinTopic(TOPIC2);
+    const s1 = f.connect();
+    const s2 = f.connect();
+    s1.userData!.channels[0].pairRemote(); // socket 1, TOPIC paired
+    s1.userData!.channels[1].pairRemote(); // socket 1, TOPIC2 paired
+    s2.userData!.channels[0].pairRemote(); // socket 2, TOPIC paired (TOPIC2 unpaired)
+    await tick();
+    expect(g.openChannelCount(HEX)).toBe(2);
+    expect(g.openChannelCount(HEX2)).toBe(1);
+    g.broadcast(HEX, frame('bcast'));
+    expect(s1.userData!.channels[0].sent.some((x) => (x as SignedHiveAnnounce).hive_id === 'bcast')).toBe(true);
+    expect(s2.userData!.channels[0].sent.some((x) => (x as SignedHiveAnnounce).hive_id === 'bcast')).toBe(true);
+    // TOPIC2 channels never see a TOPIC broadcast.
+    expect(s1.userData!.channels[1].sent).toHaveLength(0);
+    expect(g.openChannelCount()).toBe(3);
+  });
+
+  it('a topic joined AFTER a connection exists opens its channel on that connection (late join)', () => {
+    const f = fakeSwarm();
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    g.joinTopic(TOPIC);
+    const socket = f.connect();
+    expect(socket.userData!.channels).toHaveLength(1);
+    g.joinTopic(TOPIC2); // late join — must reach the existing socket
+    expect(socket.userData!.channels).toHaveLength(2);
+    expect(socket.userData!.channels[1].id?.toString('hex')).toBe(HEX2);
+  });
+
+  it('the pair-notifier lazily accepts a remote open ONLY for a joined topic', () => {
+    const f = fakeSwarm();
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    g.joinTopic(TOPIC);
+    const socket = f.connect();
+    const mux = socket.userData!;
+    expect(mux.channels).toHaveLength(1);
+    // Remote opens a channel for a topic we have NOT joined → rejected (no channel).
+    mux.remoteOpens(TOPIC2);
+    expect(mux.channels).toHaveLength(1);
+    // We join it → remote re-pairing path: the notifier now accepts.
+    g.joinTopic(TOPIC2);
+    expect(mux.channels).toHaveLength(2);
+    mux.remoteOpens(TOPIC2); // duplicate open while live → unique-null, no extra channel
+    expect(mux.channels).toHaveLength(2);
   });
 
   it('a closed channel drops out of the broadcast set', async () => {
     const f = fakeSwarm();
-    const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
-    f.connect();
-    muxers[0].pair();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(h.openChannelCount).toBe(1);
-    muxers[0].fireClose();
-    expect(h.openChannelCount).toBe(0);
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    g.joinTopic(TOPIC);
+    const socket = f.connect();
+    socket.userData!.channels[0].pairRemote();
+    await tick();
+    expect(g.openChannelCount(HEX)).toBe(1);
+    socket.userData!.channels[0].fireClose();
+    expect(g.openChannelCount(HEX)).toBe(0);
   });
 
-  it('close leaves the topic and detaches the handler', async () => {
+  it('the refresh loop drives every joined topic’s discovery.refresh()', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fakeSwarm();
+      const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 50 });
+      g.joinTopic(TOPIC);
+      g.joinTopic(TOPIC2);
+      expect(f.refreshed).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(120);
+      // Two ticks × two topics.
+      expect(f.refreshed.filter((t) => t.equals(TOPIC)).length).toBeGreaterThanOrEqual(2);
+      expect(f.refreshed.filter((t) => t.equals(TOPIC2)).length).toBeGreaterThanOrEqual(2);
+      await g.close();
+      const n = f.refreshed.length;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(f.refreshed.length).toBe(n); // close stops the loop
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('close leaves every topic and detaches the handler', async () => {
     const f = fakeSwarm();
-    const h = await joinDirectorySwarm({ swarm: f.swarm, topic: TOPIC, onAnnounce: () => {}, getOwnAnnounces: () => [] });
-    await h.close();
-    expect(f.left[0].equals(TOPIC)).toBe(true);
+    const g = createDirectoryGossip({ swarm: f.swarm, onAnnounce: () => {}, getOwnAnnounces: () => [], refreshMs: 0 });
+    g.joinTopic(TOPIC);
+    g.joinTopic(TOPIC2);
+    await g.close();
+    expect(f.left.map((t) => t.toString('hex')).sort()).toEqual([HEX, HEX2].sort());
     expect(f.handler).toBeNull();
+    expect(() => g.joinTopic(TOPIC)).toThrow(/closed/);
   });
 });

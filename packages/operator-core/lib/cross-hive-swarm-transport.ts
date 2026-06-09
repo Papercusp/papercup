@@ -128,6 +128,7 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
           channels.delete(oc);
         },
       });
+      if (!channel) return; // already open on this muxer (duplicate) — nothing to do
       message = channel.addMessage<CrossHiveFrame>({
         encoding: c.json,
         onmessage: (frame: CrossHiveFrame) => {

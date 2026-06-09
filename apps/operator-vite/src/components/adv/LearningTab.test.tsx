@@ -1,21 +1,22 @@
 // @vitest-environment jsdom
 //
 // LearningTab render coverage — the /adv "Learning" tab (operator-learning-tab-2026-06-09).
-// Mounts the tab against realistic `learning.improvements` + `learning.gym` snapshots
-// (useSyncQuery + nuqs mocked, the pinned sibling pattern — see
-// AdvConversationsTab.test.tsx). useSyncQuery dispatches on queryName so each sub-view
-// gets its own shape. Asserts the Improvements scoreboard + lanes (default view), the
-// Gym sub-view (proposals + champion/empty states), and guards against render-time
-// crashes the typecheck can't catch.
+// Mounts the tab against realistic `learning.improvements` / `learning.gym` /
+// `learning.apiary` snapshots (useSyncQuery + nuqs mocked, the pinned sibling pattern —
+// see AdvConversationsTab.test.tsx). useSyncQuery dispatches on queryName so each
+// sub-view gets its own shape. Asserts the Improvements scoreboard + lanes (default
+// view), the Gym sub-view, the Benchmark trend, and the Knowledge cross-link — plus
+// the how-this-works strip — guarding against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true };
+const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null };
 vi.mock('nuqs', () => ({
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsBoolean: { withDefault: () => ({}) },
+  parseAsString: { withDefault: () => ({}) },
 }));
 
 const improvementsDigest = {
@@ -54,10 +55,19 @@ const gymSnapshot = {
   ],
 };
 
+const apiarySnapshot = {
+  instances: [
+    { instanceId: 'gen0-bbb2222-ws', codeSha: 'bbb2222', createdAt: new Date(2_000_000).toISOString(), totalRuns: 20, successfulRuns: 16, successRate: 0.8, meanComposite: 0.74, meanTimeToGreenSecs: 95, meanTokens: 12000, escalationRate: 0.1, firstAttemptRate: 0.6 },
+    { instanceId: 'gen0-aaa1111-ws', codeSha: 'aaa1111', createdAt: new Date(1_000_000).toISOString(), totalRuns: 20, successfulRuns: 14, successRate: 0.7, meanComposite: 0.70, meanTimeToGreenSecs: 110, meanTokens: 13500, escalationRate: 0.15, firstAttemptRate: 0.5 },
+  ],
+};
+
 let improvementsResult: Record<string, unknown> = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 let gymResult: Record<string, unknown> = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+let apiaryResult: Record<string, unknown> = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: (opts: { queryName: string }) => (opts.queryName === 'learning.gym' ? gymResult : improvementsResult),
+  useSyncQuery: (opts: { queryName: string }) =>
+    opts.queryName === 'learning.gym' ? gymResult : opts.queryName === 'learning.apiary' ? apiaryResult : improvementsResult,
 }));
 
 import LearningTab from './LearningTab';
@@ -66,8 +76,10 @@ beforeEach(() => {
   nuqsState.lview = 'improvements';
   nuqsState.lane = 'all';
   nuqsState.how = true;
+  nuqsState.tab = null;
   improvementsResult = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   gymResult = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+  apiaryResult = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 });
 afterEach(() => cleanup());
 
@@ -87,12 +99,14 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByText('EI-75')).toBeTruthy();
   });
 
-  it('shows the lane filter tabs and both sub-view tabs', () => {
+  it('shows the lane filter tabs and the sub-view tabs', () => {
     render(<LearningTab />);
     expect(screen.getByRole('tab', { name: 'Auto-fixable' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Needs review' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Benchmark/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Knowledge/ })).toBeTruthy();
   });
 
   it('renders the how-this-works strip for the improvements pipeline, hidden when toggled off', () => {
@@ -141,5 +155,38 @@ describe('LearningTab — Gym view', () => {
     gymResult = { data: [{ proposals: [], autoloops: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
     expect(screen.getByText('No gym experiments yet')).toBeTruthy();
+  });
+});
+
+describe('LearningTab — Benchmark view', () => {
+  beforeEach(() => {
+    nuqsState.lview = 'benchmark';
+  });
+
+  it('renders the benchmark scoreboard and the generation trend', () => {
+    render(<LearningTab />);
+    expect(screen.getByText('Benchmark generations')).toBeTruthy();
+    expect(screen.getByText('80%')).toBeTruthy(); // latest success rate (scoreboard)
+    expect(screen.getByText('bbb2222')).toBeTruthy(); // latest generation sha (trend row)
+    expect(screen.getByText('0.700')).toBeTruthy(); // older generation composite (trend row only)
+    expect(screen.getAllByText('0.740').length).toBeGreaterThanOrEqual(1); // latest composite (scoreboard + trend)
+  });
+
+  it('renders the benchmark empty state when there are no generations', () => {
+    apiaryResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
+    render(<LearningTab />);
+    expect(screen.getByText('No benchmark runs yet')).toBeTruthy();
+  });
+});
+
+describe('LearningTab — Knowledge view', () => {
+  beforeEach(() => {
+    nuqsState.lview = 'knowledge';
+  });
+
+  it('renders the agent-insights cross-link to the Insights tab', () => {
+    render(<LearningTab />);
+    expect(screen.getByText(/Agent insights/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();
   });
 });

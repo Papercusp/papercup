@@ -74,6 +74,17 @@ impl AgentPaneKind {
     }
 }
 
+/// Prefix a pane title/name with the kind's glyph when hive-agent-tabs is ON (P-010).
+/// Flag-off, or an unknown/missing kind → the base unchanged. Pure — unit-tested.
+/// (zellij has no per-pane color, D-008, so the glyph in the pane NAME is how a type
+/// reads at a glance; pui draws the color where it owns the chrome.)
+pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>, hive_agent_tabs: bool) -> String {
+    match (hive_agent_tabs, kind) {
+        (true, Some(k)) => format!("{} {base}", k.glyph()),
+        _ => base.to_string(),
+    }
+}
+
 /// Drive mode mirror: `auto` = the system auto-injects the next turn; `responsive`
 /// = waits for the owner. Mirrors `DRIVE_MODES` (backend).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +138,17 @@ mod tests {
         assert_eq!(AgentPaneKind::from_wire(""), None);
         assert_eq!(AgentPaneKind::from_opt(&Some("queen".to_string())), Some(AgentPaneKind::Queen));
         assert_eq!(AgentPaneKind::from_opt(&None), None);
+    }
+
+    #[test]
+    fn glyph_prefixed_title_only_when_flag_on() {
+        // flag-on + known kind → glyph prefixed (P-010)
+        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee), true), "🐝 worker · ab12");
+        assert_eq!(glyph_prefixed_title("Q", Some(AgentPaneKind::Queen), true), "♛ Q");
+        // flag-off → unchanged (current dock)
+        assert_eq!(glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee), false), "worker · ab12");
+        // unknown/missing kind → unchanged even flag-on
+        assert_eq!(glyph_prefixed_title("x", None, true), "x");
     }
 
     #[test]

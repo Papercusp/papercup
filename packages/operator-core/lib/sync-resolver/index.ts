@@ -1216,6 +1216,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.apiary — the Learning tab's Benchmark view (operator-learning-tab P-007) ──
+  //
+  // The apiary / IQ-battery scoreboard: one summary row per benchmark generation
+  // (instance), newest-first, over the canonical beekeeper_instances/runs/scores tables.
+  // The yardstick for "are the agents actually getting better" (D-004). Reuses the
+  // readApiaryInstanceSummaries reader. Returns a 1-element array { instances }. NOT
+  // table-backed for PG-trigger invalidation — refreshes on mount + manual invalidate.
+  'learning.apiary': {
+    resolve: async () => {
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { routeWithWorkspace } = await import('../route-workspace');
+      const { readApiaryInstanceSummaries } = await import('../iq-battery/benchmark-read');
+      const ws = activeWorkspaceId();
+      return await routeWithWorkspace(async (tx) => {
+        const instances = await readApiaryInstanceSummaries(tx, { workspaceId: ws, limit: 20 });
+        return [{ instances }];
+      });
+    },
+  },
+
   // ── dev.* — live-ops glances for the dev admin rail ──────────────────
   //
   // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so

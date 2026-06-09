@@ -218,8 +218,17 @@ pub fn chat_dock_kdl(
     // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
     // the-hive pack: operator → sentinel, brain → queen (owner naming, 2026-06-07;
     // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
-    let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
-    let brain_name = kdl_pane_name(&lex.lex("brain"), "brain");
+    // P-010: flag-on, prefix the per-type glyph into the zellij pane NAME (zellij
+    // has no per-pane color — D-008 — so the glyph is how a type reads at a glance).
+    // Flag-off → the bare lexicon name (current dock unchanged). colony (the driver)
+    // is infrastructure, not an agent type → left unglyphed.
+    use crate::agent_pane_kind::AgentPaneKind;
+    let glyph_name = |term: &str, fallback: &str, kind: AgentPaneKind| {
+        let n = kdl_pane_name(&lex.lex(term), fallback);
+        if hive_agent_tabs { format!("{} {n}", kind.glyph()) } else { n }
+    };
+    let operator_name = glyph_name("operator", "operator", AgentPaneKind::Sentinel);
+    let brain_name = glyph_name("brain", "brain", AgentPaneKind::Queen);
     // P-003 (hive-agent-tabs): under HIVE_AGENT_TABS the Sentinel pane is a REAL
     // psu/Claude TUI (operator role), replacing the `pui chat-pane` widget so it
     // renders like the Queen. It MUST be a FULLY-SCOPED, no-picker launch (owner
@@ -568,6 +577,18 @@ mod tests {
         assert!(!off.contains("--role=operator"));
         assert!(!off.contains("args \"dock-driver\""));
         assert_eq!(off.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
+    fn chat_dock_hive_agent_tabs_glyphs_the_static_pane_names() {
+        // P-010: flag-on, the sentinel/queen pane NAMES carry their per-type glyph
+        // (zellij has no per-pane color, D-008). Flag-off → bare names (unchanged).
+        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
+        assert!(on.contains("name=\"🛡 operator\""), "sentinel glyph missing: {on}");
+        assert!(on.contains("name=\"♛ brain\""), "queen glyph missing");
+        let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
+        assert!(off.contains("name=\"operator\""));
+        assert!(!off.contains("🛡") && !off.contains("♛"));
     }
 
     #[test]

@@ -50,7 +50,16 @@ export interface SwarmHandle {
  * Lets us test without depending on the real module.
  */
 export interface HyperswarmLike {
-  join(topic: Buffer, opts?: { server?: boolean; client?: boolean }): { flushed?: () => Promise<void> };
+  join(
+    topic: Buffer,
+    opts?: { server?: boolean; client?: boolean },
+  ): {
+    flushed?: () => Promise<void>;
+    /** Re-run the topic's DHT announce + lookup round. The ONLY driver that
+     *  reliably connects a standalone (non-corestore) transport — see
+     *  directory-swarm.ts's module header. */
+    refresh?: (opts?: object) => unknown;
+  };
   leave(topic: Buffer): Promise<void> | void;
   on(event: 'connection', listener: (socket: unknown, info?: unknown) => void): unknown;
   off?(event: 'connection', listener: (socket: unknown, info?: unknown) => void): unknown;
@@ -129,6 +138,7 @@ function openAnnounceChannel(
       protocol: ANNOUNCE_PROTOCOL,
       onopen: sendOurAnnounce,
     });
+    if (!channel) return; // already open on this muxer (duplicate) — nothing to do
     message = channel.addMessage<SignedAnnounce>({
       encoding: c.json,
       onmessage: (frame: SignedAnnounce) => {

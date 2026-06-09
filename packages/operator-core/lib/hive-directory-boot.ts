@@ -43,8 +43,8 @@ export interface WireHiveDirectoryOpts {
   ownedHives?: HiveDirectoryMeta[];
   /** Re-announce cadence (ms). Default DEFAULT_REANNOUNCE_MS. */
   reannounceMs?: number;
-  /** Background swarm re-flush cadence (ms) — see createDirectoryGossip. */
-  reflushMs?: number;
+  /** Per-topic discovery-refresh cadence (ms) — see createDirectoryGossip. */
+  refreshMs?: number;
   /** The directory service (default: the process singleton). Injected for tests. */
   dir?: HiveDirectory;
 }
@@ -75,7 +75,7 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
     swarm: opts.swarm,
     onAnnounce: (frame) => dir.ingestAnnounce(frame),
     getOwnAnnounces: (topicHex) => dir.buildOwnedAnnounces({ topicHex }),
-    reflushMs: opts.reflushMs,
+    refreshMs: opts.refreshMs,
   });
 
   // 1. The global directory topic (public hives).

@@ -22,12 +22,12 @@
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
 import { useMemo } from 'react';
-import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 
-const LVIEWS = ['improvements', 'gym'] as const;
+const LVIEWS = ['improvements', 'gym', 'benchmark', 'knowledge'] as const;
 type LView = (typeof LVIEWS)[number];
 
 /** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
@@ -60,12 +60,40 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
       desc: 'Winners are accepted as champions and become the role’s live prompt; losers are rejected.',
     },
   ],
+  benchmark: [
+    {
+      title: 'Run',
+      desc: 'A fixed battery of coding tasks is run against the agent fleet — the same tasks every time, so generations are comparable.',
+    },
+    {
+      title: 'Score',
+      desc: 'A frozen judge grades each run, and we record the composite score, time-to-green, tokens, and how often a human was needed.',
+    },
+    {
+      title: 'Track',
+      desc: 'Each run becomes one point on the trend. Rising scores (and falling time/tokens/escalations) are the proof the improvements and the gym are actually working.',
+    },
+  ],
+  knowledge: [
+    {
+      title: 'Hit something non-obvious',
+      desc: 'When an agent works through a confusing failure or a subtle invariant, it writes a short runbook so the next agent doesn’t lose the same hour.',
+    },
+    {
+      title: 'Review',
+      desc: 'Those insights are PR-reviewed docs — durable, searchable knowledge, not chat that scrolls away.',
+    },
+    {
+      title: 'Reuse',
+      desc: 'The fleet reads them before grepping code. Open the Insights tab to browse the full library.',
+    },
+  ],
 };
 
 export default function LearningTab() {
   const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
   const [showHow, setShowHow] = useQueryState('how', parseAsBoolean.withDefault(true));
-  const view: LView = lview === 'gym' ? 'gym' : 'improvements';
+  const view: LView = (LVIEWS as readonly string[]).includes(lview) ? (lview as LView) : 'improvements';
   return (
     <div className="pc-learning">
       <header className="pc-learning__header">
@@ -103,6 +131,26 @@ export default function LearningTab() {
             <Dumbbell size={13} aria-hidden />
             <span>Gym<em>prompt tuning</em></span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lview === 'benchmark'}
+            className={`pc-learning__subtab${lview === 'benchmark' ? ' is-active' : ''}`}
+            onClick={() => void setLview('benchmark')}
+          >
+            <Gauge size={13} aria-hidden />
+            <span>Benchmark<em>getting better?</em></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lview === 'knowledge'}
+            className={`pc-learning__subtab${lview === 'knowledge' ? ' is-active' : ''}`}
+            onClick={() => void setLview('knowledge')}
+          >
+            <BookOpen size={13} aria-hidden />
+            <span>Knowledge<em>agent insights</em></span>
+          </button>
         </div>
         <button
           type="button"
@@ -129,10 +177,18 @@ export default function LearningTab() {
         </ol>
       ) : null}
 
-      {view === 'gym' ? <GymView /> : <ImprovementsView />}
+      {view === 'gym' ? (
+        <GymView />
+      ) : view === 'benchmark' ? (
+        <ApiaryView />
+      ) : view === 'knowledge' ? (
+        <KnowledgeView />
+      ) : (
+        <ImprovementsView />
+      )}
 
       <p className="pc-learning__footnote">
-        Coming next: a benchmark scoreboard that tracks whether all of this actually makes the agents better over time.
+        Improvements fix problems, the gym tunes the agents, and the benchmark checks whether it’s all working — captured knowledge is in Insights.
       </p>
 
       <LearningStyles />
@@ -413,6 +469,132 @@ function GymProposalRow({ p }: { p: GymProposal }) {
   );
 }
 
+// ─── Benchmark view (apiary / IQ-battery) ────────────────────────────────────
+
+interface ApiaryInstance {
+  instanceId: string;
+  codeSha: string;
+  createdAt: string;
+  totalRuns: number;
+  successfulRuns: number;
+  successRate: number;
+  meanComposite: number | null;
+  meanTimeToGreenSecs: number | null;
+  meanTokens: number | null;
+  escalationRate: number | null;
+  firstAttemptRate: number | null;
+}
+
+const pctLabel = (v: number | null): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
+const compositeLabel = (v: number | null): string => (v == null ? '—' : v.toFixed(3));
+function secsLabel(v: number | null): string {
+  if (v == null) return '—';
+  return v < 90 ? `${Math.round(v)}s` : `${(v / 60).toFixed(1)}m`;
+}
+function tokensLabel(v: number | null): string {
+  if (v == null) return '—';
+  return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`;
+}
+const shortSha = (s: string): string => (s ? s.slice(0, 7) : '—');
+function dateLabel(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function ApiaryView() {
+  const sync = useSyncQuery<{ instances: ApiaryInstance[] }>({ queryName: 'learning.apiary', args: {}, staleTime: 30_000 });
+  const instances = sync.data?.[0]?.instances ?? [];
+  const latest = instances[0];
+
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__scoreboard" aria-label="Benchmark summary">
+        <Stat label="composite" value={latest ? compositeLabel(latest.meanComposite) : '—'} tone="good" hint="Latest generation’s mean judge score (0–1). Higher is better — this is the headline benchmark." />
+        <Stat label="success" value={latest ? pctLabel(latest.successRate) : '—'} hint="Share of battery tasks the fleet solved without escalating." />
+        <Stat label="time to green" value={latest ? secsLabel(latest.meanTimeToGreenSecs) : '—'} hint="Mean wall-clock to a solved task. Lower is better." />
+        <Stat label="tokens / task" value={latest ? tokensLabel(latest.meanTokens) : '—'} hint="Mean tokens per solved task. Lower is cheaper." />
+        <Stat label="escalations" value={latest ? pctLabel(latest.escalationRate) : '—'} tone="human" hint="Share of tasks that needed a human. Lower is better." />
+      </div>
+
+      <div className="pc-learning__sectionhead">
+        <h2>Benchmark generations</h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the benchmark"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {sync.loading && !sync.data ? (
+        <p className="pc-learning__empty">Loading the benchmark…</p>
+      ) : sync.error ? (
+        <p className="pc-learning__empty">Benchmark unavailable: {sync.error.message}</p>
+      ) : instances.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Gauge size={20} aria-hidden />
+          <strong>No benchmark runs yet</strong>
+          <span>The IQ-battery runs a fixed task corpus against the fleet and judges every run, so each generation is comparable. Once a baseline run lands, the trend appears here — newest first, with the composite change vs the prior generation.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {instances.map((inst, i) => {
+            const prev = instances[i + 1];
+            const dComposite =
+              inst.meanComposite != null && prev?.meanComposite != null ? inst.meanComposite - prev.meanComposite : null;
+            const delta = deltaLabel(dComposite);
+            return (
+              <li key={inst.instanceId} className="pc-learning__row pc-learning__row--bench" title={inst.instanceId}>
+                <span className="pc-learning__sev" style={{ background: '#34d399' }} aria-hidden />
+                <span className="pc-learning__id" title={inst.codeSha}>{shortSha(inst.codeSha)}</span>
+                <span className="pc-learning__benchcell">
+                  <span className="pc-learning__benchnum" title="Mean judge composite for this generation">{compositeLabel(inst.meanComposite)}</span>
+                  {i < instances.length - 1 && (
+                    <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`} title="Composite change vs the previous generation">
+                      Δ {delta.text}
+                    </span>
+                  )}
+                  <span className="pc-learning__benchmeta">{inst.successfulRuns}/{inst.totalRuns} solved</span>
+                </span>
+                <span className="pc-learning__meta">
+                  <span className="pc-learning__age" title="Mean time to green">{secsLabel(inst.meanTimeToGreenSecs)}</span>
+                  <span className="pc-learning__age" title="Mean tokens per task">{tokensLabel(inst.meanTokens)}</span>
+                  <span className="pc-learning__age" title="Escalation rate (lower is better)">{pctLabel(inst.escalationRate)} esc</span>
+                  <span className="pc-learning__age">{dateLabel(inst.createdAt)}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ─── Knowledge view (agent insights cross-link) ──────────────────────────────
+
+function KnowledgeView() {
+  const [, setTab] = useQueryState('tab', parseAsString);
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__empty pc-learning__empty--card pc-learning__knowledge">
+        <BookOpen size={22} aria-hidden />
+        <strong>Agent insights — the fleet’s runbooks</strong>
+        <span>
+          When the fleet hits something non-obvious — a confusing failure, a subtle invariant, a library quirk — it writes a short,
+          PR-reviewed runbook so the next agent doesn’t lose the same hour. That library is the system’s durable, hard-won knowledge.
+        </span>
+        <button type="button" className="pc-learning__cta" onClick={() => void setTab('insights')}>
+          <ArrowUpRight size={13} aria-hidden /> Open the Insights library
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // ─── Shared ──────────────────────────────────────────────────────────────────
 
 function Stat({ label, value, tone, hint }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good'; hint?: string }) {
@@ -546,6 +728,19 @@ function LearningStyles() {
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }
       .pc-learning__empty strong { color: var(--fg-dim, #b9d4e8); font-size: 13px; }
       .pc-learning__empty span { max-width: 58ch; }
+
+      /* Benchmark (apiary) trend rows + knowledge cross-link. */
+      .pc-learning__benchcell { display: inline-flex; align-items: baseline; gap: 9px; min-width: 0; overflow: hidden; }
+      .pc-learning__benchnum { font-size: 14px; font-weight: 760; color: var(--fg, #e7f7ff); font-variant-numeric: tabular-nums; }
+      .pc-learning__benchmeta { font-size: 11px; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
+      .pc-learning__knowledge { align-items: flex-start; text-align: left; }
+      .pc-learning__knowledge strong { font-size: 14px; }
+      .pc-learning__cta {
+        display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+        padding: 7px 13px; font-size: 12px; font-weight: 650; border-radius: 8px; cursor: pointer;
+        border: 1px solid rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.14); color: #86efac;
+      }
+      .pc-learning__cta:hover { background: rgba(52, 211, 153, 0.24); color: #e7f7ff; }
 
       .pc-learning__footnote { margin: 2px 0 0; font-size: 11px; font-style: italic; color: var(--fg-mute, #7f9bb4); }
     `}</style>

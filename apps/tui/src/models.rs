@@ -185,6 +185,16 @@ impl RosterEntry {
         }
         vec!["pui".to_string(), "watch-pane".to_string(), self.owner_id.clone()]
     }
+
+    /// A short summary of what this agent is currently doing — its declared coord
+    /// intent, else the feature id it's on. For the bee pane title bar (P-012).
+    /// None when nothing's declared (the title falls back to the owner id).
+    pub fn work_summary(&self) -> Option<String> {
+        let pick = |s: &Option<String>| {
+            s.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.to_string())
+        };
+        pick(&self.intent).or_else(|| pick(&self.feature))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2191,6 +2201,24 @@ mod tests {
             bee.dock_pane_argv(false),
             vec!["pui".to_string(), "watch-pane".to_string(), "s-1".to_string()]
         );
+    }
+
+    #[test]
+    fn roster_entry_work_summary_prefers_intent_then_feature() {
+        use super::RosterEntry;
+        let mut e = RosterEntry {
+            owner_id: "s".into(),
+            intent: Some("fixing the dock driver".into()),
+            feature: Some("F-012".into()),
+            ..Default::default()
+        };
+        assert_eq!(e.work_summary().as_deref(), Some("fixing the dock driver"));
+        e.intent = None; // falls back to the feature id
+        assert_eq!(e.work_summary().as_deref(), Some("F-012"));
+        e.intent = Some("   ".into()); // whitespace-only intent is ignored
+        assert_eq!(e.work_summary().as_deref(), Some("F-012"));
+        e.feature = None;
+        assert_eq!(e.work_summary(), None); // nothing declared
     }
 
     #[test]

@@ -95,8 +95,8 @@ export interface CreateDirectoryGossipOpts {
    *  topic so a global-topic pair only ever receives PUBLIC hives and an
    *  invite-topic pair only that invite's hive(s). */
   getOwnAnnounces: (topicHex: string) => SignedHiveAnnounce[] | Promise<SignedHiveAnnounce[]>;
-  /** Background re-flush cadence (ms). Default DEFAULT_REFLUSH_MS; 0 disables. */
-  reflushMs?: number;
+  /** Per-topic discovery-refresh cadence (ms). Default DEFAULT_REFRESH_MS; 0 disables. */
+  refreshMs?: number;
 }
 
 /**
@@ -111,15 +111,44 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
   let connectionCount = 0;
   let closed = false;
 
+  /** Muxers that already carry our pair-notifier (one registration per muxer). */
+  const pairedMuxers = new WeakSet<object>();
+
+  /**
+   * One shared muxer per socket + the LAZY-ACCEPT pair-notifier. Without the
+   * notifier, protomux REJECTS a remote's channel-open for a topic we haven't
+   * opened a channel for yet on that socket — and the remote never re-opens, so
+   * a topic joined later (joinInviteTopic) could never pair on an existing
+   * connection. The notifier accepts the open IFF we joined that topic (which
+   * is also the scoping: an un-joined topic's open stays rejected).
+   */
+  const ensureMux = (socket: unknown): Protomux => {
+    const mux = Protomux.from(socket);
+    // The ecosystem convention (hypercore createProtocolStream does the same):
+    // pin the muxer on the stream so every other protocol on this connection
+    // (corestore replication, cross-hive) reuses it instead of double-muxing.
+    const s = socket as { userData?: unknown };
+    if (!s.userData) s.userData = mux;
+    if (!pairedMuxers.has(mux)) {
+      pairedMuxers.add(mux);
+      try {
+        mux.pair({ protocol: HIVE_DIRECTORY_PROTOCOL }, (id: Buffer | null) => {
+          if (!id) return; // directory channels are always topic-keyed
+          const st = topics.get(id.toString('hex'));
+          // MUST createChannel synchronously to consume the pending open.
+          if (st) openTopicChannel(socket, st);
+        });
+      } catch {
+        /* best-effort — connect-time channels still pair without it */
+      }
+    }
+    return mux;
+  };
+
   /** Open ONE topic's channel on ONE socket's shared muxer (best-effort). */
   const openTopicChannel = (socket: unknown, st: TopicState): void => {
     try {
-      const mux = Protomux.from(socket);
-      // The ecosystem convention (hypercore createProtocolStream does the same):
-      // pin the muxer on the stream so every other protocol on this connection
-      // (corestore replication, cross-hive) reuses it instead of double-muxing.
-      const s = socket as { userData?: unknown };
-      if (!s.userData) s.userData = mux;
+      const mux = ensureMux(socket);
 
       let message: DirMessage | null = null;
       const topicHex = st.topic.toString('hex');
@@ -177,24 +206,22 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
   };
   opts.swarm.on('connection', handler);
 
-  /** Drive a full DHT announce+lookup+connect round (best-effort, awaited). */
-  const swarmFlush = async (): Promise<void> => {
-    const f = (opts.swarm as { flush?: () => Promise<unknown> }).flush;
-    if (typeof f === 'function') {
-      try {
-        await f.call(opts.swarm);
-      } catch {
-        /* best-effort */
+  // Keep every topic's announce + lookup converging in the background (cleared
+  // on close). discovery.refresh() re-runs the full DHT round for that topic —
+  // the only driver that reliably connects (see the module header).
+  const refreshMs = opts.refreshMs ?? DEFAULT_REFRESH_MS;
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  if (refreshMs > 0) {
+    refreshTimer = setInterval(() => {
+      for (const st of topics.values()) {
+        try {
+          void Promise.resolve(st.discovery?.refresh?.()).catch(() => {});
+        } catch {
+          /* best-effort per topic */
+        }
       }
-    }
-  };
-
-  // Keep announce + lookup converging in the background (cleared on close).
-  const reflushMs = opts.reflushMs ?? DEFAULT_REFLUSH_MS;
-  let reflushTimer: ReturnType<typeof setInterval> | null = null;
-  if (reflushMs > 0) {
-    reflushTimer = setInterval(() => void swarmFlush(), reflushMs);
-    reflushTimer.unref?.();
+    }, refreshMs);
+    refreshTimer.unref?.();
   }
 
   return {
@@ -218,14 +245,13 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
       }
       const hex = topic.toString('hex');
       if (topics.has(hex)) return;
-      const st: TopicState = { topic, channels: new Set() };
+      // NO discovery.flushed() here — it never connects a standalone transport
+      // (see the module header); the background refresh loop is the driver.
+      const discovery = opts.swarm.join(topic, { server: true, client: true }) as DiscoveryLike;
+      const st: TopicState = { topic, discovery, channels: new Set() };
       topics.set(hex, st);
-      // NO discovery.flushed() — on a standalone (non-corestore) transport it
-      // poisons discovery (connection never forms). swarm.flush() is the driver.
-      opts.swarm.join(topic, { server: true, client: true });
       // A topic joined after connections exist still gets its channel everywhere.
       for (const socket of sockets) openTopicChannel(socket, st);
-      void swarmFlush();
     },
 
     async leaveTopic(topic: Buffer): Promise<void> {
@@ -256,9 +282,9 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
     async close() {
       if (closed) return;
       closed = true;
-      if (reflushTimer) {
-        clearInterval(reflushTimer);
-        reflushTimer = null;
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
       }
       if (opts.swarm.off) opts.swarm.off('connection', handler);
       const leaving = [...topics.values()];
