@@ -1,9 +1,13 @@
 /**
- * Bounded A/B evaluation harness (P-014).
+ * Bounded A/B evaluation harness (P-014) — the gym as the eval-battery `HarnessSubject`.
  *
- * The milestone-gate executor: for each (variant × task × repeat) it runs the real
- * pipeline → collects + distills the trace → scores it with the frozen Opus judge →
- * stores the run + score in the gym PG, then derives the three P-014 deliverables:
+ * Reconciliation D-001: there is ONE eval-battery engine (`@papercusp/eval-battery`'s
+ * `runBattery`) with a swappable `Subject` port. The gym is the **HarnessSubject** — a
+ * cell's `variant` = a prompt overlay, `run` = the real pipeline *inside a fixed harness*
+ * (a COMPONENT eval). `runAbEvaluation` builds that subject + the (variant × task ×
+ * repeat) cells, hands them to the engine (which owns the run → collect/distill → judge →
+ * record loop + the never-abort + rate-pause discipline), then derives the three P-014
+ * deliverables from the engine's per-cell results:
  *   1. per-(variant,task) judge-composite VARIANCE → ε/δ/min-repeats (variance.ts, D-013);
  *   2. COST: $/run + per-variant totals (cost.ts, P-027);
  *   3. the A-vs-B COMPARISON (read-api/store compareVariants, P-013).
@@ -17,12 +21,12 @@
  */
 import { aggregateRepeats, deriveThresholds, type DeriveOpts, type DerivedThresholds } from './variance';
 import { meanRunCostUsd, type RunCost } from './cost';
-import { judgeGymRun, type GymScore, type JudgeLlmCall } from './judge';
+import { runBattery, type BatteryCell, type Subject } from '@papercusp/eval-battery';
+import type { GymScore, JudgeLlmCall } from './judge';
 import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
-import { rateLimitInfo } from '@papercusp/testing-shell/llm';
-import { runWithRatePause, type RatePauseDeps } from './rate-pause';
+import type { RatePauseDeps } from './rate-pause';
 
 export interface AbVariant {
   variantId: string;
@@ -153,25 +157,29 @@ export interface AbResult {
 
 export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<AbResult> {
   const rh = rubricHash(config.rubric);
-  const outcomes: AbRunOutcome[] = [];
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   for (const v of config.variants) await deps.store.upsertVariant(v);
   for (const t of config.tasks) await deps.store.upsertTask(t);
 
-  // One row per (variant × task × repeat). Sequential by design: bounded spend + the
-  // shared LLM session has a rate limit, so we don't fan out concurrently here. Each run is
-  // wrapped so a single failed turn (a rate-limited judge, a pipeline error) is RECORDED and
-  // the A/B continues — never aborting every remaining run (RB-006). A rate-limited judge is
-  // first PAUSED+RESUMED (judgeWithPause); only a far-off reset falls through to a recorded
-  // 'rate_limited' outcome.
+  // The gym IS the eval-battery's HarnessSubject (reconciliation D-001): run the real
+  // pipeline inside a fixed harness, distill its trace, and supply the judge's intent /
+  // project-context for the cell's task. The engine owns the per-cell run→distill→judge→
+  // record loop + the never-abort + rate-pause discipline (RB-006).
+  const subject: Subject<AbRunInput, AbRunHandle> = {
+    run: (cell) => deps.runPipeline(cell),
+    collectAndDistill: ({ handle, cell, maxChars }) => deps.collectAndDistill({ handle, task: cell.task, maxChars }),
+    judgeInput: (cell) => ({ intent: cell.task.intent, projectContext: cell.task.projectContext }),
+  };
+
+  // One cell per (variant × task × repeat), variant-major (sequential by design: bounded
+  // spend + a shared LLM rate limit, so we don't fan out concurrently here).
+  const cells: BatteryCell<AbRunInput>[] = [];
   for (const variant of config.variants) {
     for (const task of config.tasks) {
       for (let repeat = 0; repeat < config.repeats; repeat++) {
-        const runId = deps.newRunId(variant.variantId, task.taskId, repeat);
-        let handle: AbRunHandle | undefined;
-        try {
-          handle = await deps.runPipeline({
+        cells.push({
+          runId: deps.newRunId(variant.variantId, task.taskId, repeat),
+          cell: {
             variant,
             task,
             repeat,
@@ -179,73 +187,74 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
             harnessCommit: config.harnessCommit,
             workspaceId: config.workspaceId,
             scratchRoot: config.scratchRoot,
-          });
-          await deps.store.startRun({
-            runId,
-            variantId: variant.variantId,
-            taskId: task.taskId,
-            cycle: 0,
-            repeat,
-            harnessSlug: handle.harnessSlug,
-            workflowId: handle.workflowID,
-          });
-          const { distilledTrace, traceRef, rawSignals } = await deps.collectAndDistill({
-            handle,
-            task,
-            maxChars: config.maxDistillChars,
-          });
-          await deps.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
-          const score = await runWithRatePause(
-            () =>
-              judgeGymRun(
-                { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric: config.rubric },
-                { llmCall: deps.llmCall },
-              ),
-            { now: deps.now, sleep, ...(deps.ratePauseHooks ?? {}) },
-          );
-          await deps.store.recordScore(runId, score);
-          outcomes.push({
-            variantId: variant.variantId,
-            taskId: task.taskId,
-            repeat,
-            runId,
-            harnessSlug: handle.harnessSlug,
-            outcome: handle.outcome,
-            d1: score.d1,
-            d2: score.d2,
-            d3: score.d3,
-            composite: score.composite,
-            pipelineUsd: handle.pipelineUsd,
-            judgeUsd: score.costUsd,
-            status: 'scored',
-          });
-        } catch (err) {
-          // Never abort the A/B on one run. A rate-limited turn (past the bounded pause) →
-          // 'rate_limited'; anything else → 'errored'. Recorded + EXCLUDED from variance.
-          // The structured outcome below IS the record (status + error); RB-009 surfaces
-          // rate-limit events to telemetry/coord. No raw console logging in this hot path.
-          const status: 'rate_limited' | 'errored' = rateLimitInfo(err) ? 'rate_limited' : 'errored';
-          const message = err instanceof Error ? err.message : String(err);
-          outcomes.push({
-            variantId: variant.variantId,
-            taskId: task.taskId,
-            repeat,
-            runId,
-            harnessSlug: handle?.harnessSlug ?? '',
-            outcome: handle?.outcome ?? status,
-            d1: 0,
-            d2: 0,
-            d3: 0,
-            composite: 0,
-            pipelineUsd: handle?.pipelineUsd ?? 0,
-            judgeUsd: 0,
-            status,
-            error: message,
-          });
-        }
+          },
+        });
       }
     }
   }
+
+  const results = await runBattery<AbRunInput, AbRunHandle>(
+    { cells, rubric: config.rubric, maxDistillChars: config.maxDistillChars },
+    {
+      subject,
+      llmCall: deps.llmCall,
+      now: deps.now,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      ...(deps.ratePauseHooks ? { ratePauseHooks: deps.ratePauseHooks } : {}),
+      hooks: {
+        onStart: ({ runId, cell, handle }) =>
+          deps.store.startRun({
+            runId,
+            variantId: cell.variant.variantId,
+            taskId: cell.task.taskId,
+            cycle: 0,
+            repeat: cell.repeat,
+            harnessSlug: handle.harnessSlug,
+            workflowId: handle.workflowID,
+          }),
+        onFinish: ({ runId, handle, distilled }) =>
+          deps.store.finishRun(runId, {
+            terminalState: handle.outcome,
+            deterministicSignals: distilled.rawSignals,
+            traceRef: distilled.traceRef,
+          }),
+        onScore: ({ runId, score }) => deps.store.recordScore(runId, score),
+      },
+    },
+  );
+
+  // Map the engine's per-cell results → the gym's AbRunOutcome shape. A non-'scored'
+  // cell (rate_limited / errored) carries no real composite (zeros) + its error.
+  const outcomes: AbRunOutcome[] = results.map((r) => {
+    const base = { variantId: r.cell.variant.variantId, taskId: r.cell.task.taskId, repeat: r.cell.repeat, runId: r.runId };
+    if (r.status === 'scored' && r.score) {
+      return {
+        ...base,
+        harnessSlug: r.handle!.harnessSlug,
+        outcome: r.handle!.outcome,
+        d1: r.score.d1,
+        d2: r.score.d2,
+        d3: r.score.d3,
+        composite: r.score.composite,
+        pipelineUsd: r.handle!.pipelineUsd,
+        judgeUsd: r.score.costUsd,
+        status: 'scored' as const,
+      };
+    }
+    return {
+      ...base,
+      harnessSlug: r.handle?.harnessSlug ?? '',
+      outcome: r.handle?.outcome ?? r.status,
+      d1: 0,
+      d2: 0,
+      d3: 0,
+      composite: 0,
+      pipelineUsd: r.handle?.pipelineUsd ?? 0,
+      judgeUsd: 0,
+      status: r.status,
+      error: r.error,
+    };
+  });
 
   // 1. Per-(variant,task) variance → ε/δ/min-repeats. Non-scored runs (rate_limited/errored)
   //    carry no real composite, so they are EXCLUDED from the variance sample (RB-006).

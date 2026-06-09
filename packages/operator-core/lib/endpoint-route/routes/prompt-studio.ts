@@ -15,8 +15,13 @@
  * launch does (`renderSuPlaybook` → spliceToolingOverlay + the generated sections + the
  * project-guide splice), so an editor sees the real assembled prompt before saving.
  *
- * The id→filename WHITELIST is the security boundary: there are no user-controlled path
- * segments, so no traversal. Writes land in the operator app root's `prompts/` dir — on
+ * SECURITY — two boundaries: (1) the id→filename WHITELIST prevents path traversal (no
+ * user-controlled path segments); (2) AUTHORIZATION is the `requireLoopbackOr403` guard on
+ * EVERY handler — these routes read/rewrite the SOURCES of every agent's system prompt, so
+ * they are loopback-only (`auth: 'public'` is the codebase norm; the loopback bind + the
+ * guard are the perimeter, exactly like the sibling /adv + /harness mutate routes). The
+ * whitelist alone is NOT the authz boundary — do not drop the guard. Writes land in the
+ * operator app root's `prompts/` dir — on
  * a STAGING-tree host that means git-sync → green-checkpoint → deploy carries them (the
  * P-011 gate: edits ride the staging→deploy pipeline; the live :3070 render reads the
  * released copy). Editing from the release checkout would be clobbered on the next deploy
@@ -27,6 +32,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../loopback-guard';
 
 /** Whitelisted editable sources that live in the operator `prompts/` dir. */
 const PROMPT_SOURCES: Record<string, { file: string; label: string; kind: 'playbook' | 'overlay' }> = {
@@ -74,7 +80,9 @@ const listSources = defineTool({
   method: 'GET',
   path: '/prompt-studio/sources',
   auth: 'public',
-  async handler() {
+  async handler(req) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const sources = [
@@ -90,6 +98,8 @@ const readSource = defineTool({
   path: '/prompt-studio/source',
   auth: 'public',
   async handler(req) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const id = new URL(req.url).searchParams.get('id') ?? '';
@@ -109,6 +119,10 @@ const writeSource = defineTool({
   path: '/prompt-studio/source',
   auth: 'public',
   async handler(req) {
+    // AUTHZ: rewriting prompt SOURCES = controlling every agent's system prompt.
+    // auth:'public' is the codebase norm; the loopback bind + this guard are the perimeter.
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const dir = resolvePromptsDir();
     if (!dir) return Response.json({ error: 'prompts dir not found' }, { status: 404 });
     const body = (await req.json()) as { id?: string; content?: string };
@@ -132,6 +146,8 @@ const previewPrompt = defineTool({
   path: '/prompt-studio/preview',
   auth: 'public',
   async handler(req) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const url = new URL(req.url);
     const agent = url.searchParams.get('agent') ?? 'claude';
     const profile = url.searchParams.get('profile') ?? 'engineer';
