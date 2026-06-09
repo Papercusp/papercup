@@ -1,0 +1,145 @@
+/**
+ * The one eval-battery engine (`runBattery`) — the shared per-cell discipline factored
+ * out of the gym + apiary loops (reconciliation D-001). All effects injected: a fake
+ * Subject + fake judge llmCall + fake clock, zero network/PG.
+ */
+import { describe, it, expect } from 'vitest';
+import { runBattery, type BatteryCell } from './battery';
+import type { Subject } from './subject';
+import type { JudgeLlmCall } from './judge';
+import type { BatteryRubric } from './scoring';
+import { LlmCallError } from '@papercusp/testing-shell/llm';
+
+interface Cell {
+  variant: string;
+  caseId: string;
+}
+interface Handle {
+  label: string;
+}
+
+const RUBRIC: BatteryRubric = {
+  version: 'v1',
+  model: 'claude-opus-4-8',
+  temperature: 0,
+  thinkingBudgetTokens: 1000,
+  weights: { d1: 0.5, d2: 0.25, d3: 0.25 },
+  dimensions: { d1: 'a', d2: 'b', d3: 'c' },
+};
+
+const cells = (...specs: Array<[string, string]>): BatteryCell<Cell>[] =>
+  specs.map(([variant, caseId], i) => ({ runId: `run-${i}`, cell: { variant, caseId } }));
+
+const okJudge: JudgeLlmCall = async () => ({
+  text: '',
+  json: { d1: 8, d2: 6, d3: 4, rationale: 'ok' },
+  costUsd: 0.1,
+  inputTokens: 10,
+  outputTokens: 5,
+});
+
+function fakeSubject(over: Partial<Subject<Cell, Handle>> = {}): Subject<Cell, Handle> {
+  return {
+    run: async (cell) => ({ label: `${cell.variant}/${cell.caseId}` }),
+    collectAndDistill: async ({ cell }) => ({
+      distilledTrace: `trace ${cell.caseId}`,
+      traceRef: `ref:${cell.caseId}`,
+      rawSignals: { ok: true },
+    }),
+    judgeInput: (cell) => ({ intent: `intent ${cell.caseId}`, projectContext: '' }),
+    ...over,
+  };
+}
+
+function clock() {
+  let t = 0;
+  return { now: () => (t += 1), sleep: async () => {} };
+}
+
+describe('runBattery — happy path', () => {
+  it('scores every cell and threads handle + score, sequentially', async () => {
+    const seen: string[] = [];
+    const subject = fakeSubject({
+      run: async (cell) => {
+        seen.push(`run:${cell.caseId}`);
+        return { label: cell.caseId };
+      },
+    });
+    const results = await runBattery({ cells: cells(['a', 'c1'], ['a', 'c2']), rubric: RUBRIC, maxDistillChars: 100 }, { subject, llmCall: okJudge, ...clock() });
+
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.status === 'scored')).toBe(true);
+    expect(results[0].score?.d1).toBe(8);
+    expect(results[0].handle?.label).toBe('c1');
+    expect(seen).toEqual(['run:c1', 'run:c2']); // sequential, in order
+  });
+
+  it('calls lifecycle hooks (onStart → onFinish → collectMetrics → onScore) in order', async () => {
+    const order: string[] = [];
+    const subject = fakeSubject();
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      {
+        subject,
+        llmCall: okJudge,
+        ...clock(),
+        hooks: {
+          onStart: () => void order.push('start'),
+          onFinish: ({ elapsedMs }) => void order.push(`finish:${elapsedMs >= 0}`),
+          collectMetrics: async () => {
+            order.push('metrics');
+            return { tokens: 42 };
+          },
+          onScore: ({ metrics }) => void order.push(`score:${(metrics as { tokens: number }).tokens}`),
+        },
+      },
+    );
+    expect(order).toEqual(['start', 'finish:true', 'metrics', 'score:42']);
+    expect(results[0].metrics).toEqual({ tokens: 42 });
+  });
+});
+
+describe('runBattery — never abort', () => {
+  it('records a run error as `errored` and continues to the next cell', async () => {
+    const subject = fakeSubject({
+      run: async (cell) => {
+        if (cell.caseId === 'c1') throw new Error('boom on c1');
+        return { label: cell.caseId };
+      },
+    });
+    const results = await runBattery({ cells: cells(['a', 'c1'], ['a', 'c2']), rubric: RUBRIC, maxDistillChars: 100 }, { subject, llmCall: okJudge, ...clock() });
+    expect(results[0].status).toBe('errored');
+    expect(results[0].error).toContain('boom on c1');
+    expect(results[1].status).toBe('scored'); // continued
+  });
+
+  it('classifies a persistent judge rate-limit as `rate_limited` (default classifier)', async () => {
+    const subject = fakeSubject();
+    const rlJudge: JudgeLlmCall = async () => {
+      throw new LlmCallError({ class: 'rate_limited', message: 'limited', retryAfterMs: 1 });
+    };
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      { subject, llmCall: rlJudge, now: () => 1, sleep: async () => {} },
+    );
+    expect(results[0].status).toBe('rate_limited');
+  });
+
+  it('honors an injected classifyRateLimited (string-matcher) for a plain Error', async () => {
+    const subject = fakeSubject({
+      run: async () => {
+        throw new Error('429 rate_limit exceeded');
+      },
+    });
+    const results = await runBattery(
+      { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
+      {
+        subject,
+        llmCall: okJudge,
+        ...clock(),
+        classifyRateLimited: (e) => e instanceof Error && e.message.includes('rate_limit'),
+      },
+    );
+    expect(results[0].status).toBe('rate_limited');
+  });
+});

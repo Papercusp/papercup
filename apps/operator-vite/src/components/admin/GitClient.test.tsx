@@ -41,6 +41,11 @@ const snapshot = {
     deployed: { shortSha: 'cccccccc', committedAtMs: Date.now(), subject: 'z' },
     deployedAtMs: Date.now() - 86400000, deployedBehindMain: 139, readyBehindMain: 139, deployedBehindReady: 0, readyAtMainHead: false, errors: [],
   },
+  gate: {
+    consecutiveReds: 2, lastGreenAtMs: Date.now() - 10800000, firstRedAtMs: Date.now() - 7200000, stalled: false,
+    lastFixerStatus: 'ok', lastFixerAtMs: Date.now() - 3600000, lastFixerCandidate: '66a88341abcd',
+    flakyWorkspaces: ['@papercusp/orchestrator'],
+  },
 };
 
 let mockResult: Record<string, unknown> = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
@@ -67,6 +72,11 @@ describe('GitClient', () => {
     // Open-conflict banner names the scope + the resolver model.
     expect(screen.getByText(/Open merge conflict/i)).toBeTruthy();
     expect(screen.getAllByText(/opus:xhigh/).length).toBeGreaterThan(0);
+
+    // P-011: the green-checkpoint gate card surfaces the held/flaky state.
+    expect(screen.getByText('green-checkpoint gate')).toBeTruthy();
+    expect(screen.getByText('2 checkpoint(s)')).toBeTruthy();
+    expect(screen.getByText('@papercusp/orchestrator')).toBeTruthy();
 
     // Timeline rendered the recent events.
     expect(screen.getByText('Recent events')).toBeTruthy();

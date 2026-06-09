@@ -63,7 +63,8 @@
     "libs/generic/p2p-voice",
     "libs/generic/audio-dsp",
     "libs/generic/deployment-driver",
-    "libs/generic/lexicon"
+    "libs/generic/lexicon",
+    "libs/generic/eval-battery"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",

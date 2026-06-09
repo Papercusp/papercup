@@ -83,6 +83,9 @@ export interface GitPipelineSnapshot {
     lastFixerStatus: string | null;
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
+    /** P-009: workspaces that have flaked ≥3× in the gate (failed-then-passed-on-
+     *  retry) — chronically flaky, quarantine candidates. */
+    flakyWorkspaces: string[];
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
@@ -176,6 +179,7 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
   const gcMeta = (byName('green-checkpoint')?.metadata ?? {}) as Record<string, unknown>;
   const gateHealth = (gcMeta.gate_health ?? {}) as Record<string, unknown>;
   const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
+  const flakeHistory = (gcMeta.flake_history ?? {}) as Record<string, { flakes?: number }>;
 
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
@@ -248,6 +252,9 @@ export async function gitPipelineSnapshot(slug: string = DEFAULT_SLUG): Promise<
       lastFixerStatus: typeof lastFixer?.status === 'string' ? lastFixer.status : null,
       lastFixerAtMs: num(lastFixer?.at),
       lastFixerCandidate: typeof lastFixer?.candidate === 'string' ? lastFixer.candidate : null,
+      flakyWorkspaces: Object.entries(flakeHistory)
+        .filter(([, v]) => (v?.flakes ?? 0) >= 3)
+        .map(([ws]) => ws),
     },
     openConflict,
     windows: { day, week },

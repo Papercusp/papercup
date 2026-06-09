@@ -91,6 +91,17 @@ interface GitPipelineSnapshot {
   windows: { day: WindowSummary; week: WindowSummary };
   recent: PipelineEvent[];
   deploy: DeployState;
+  // release-pipeline-resilience-2026-06-09 P-004/P-009: green-checkpoint gate health.
+  gate: {
+    consecutiveReds: number;
+    lastGreenAtMs: number | null;
+    firstRedAtMs: number | null;
+    stalled: boolean;
+    lastFixerStatus: string | null;
+    lastFixerAtMs: number | null;
+    lastFixerCandidate: string | null;
+    flakyWorkspaces: string[];
+  };
 }
 
 // ── helpers ──
@@ -332,6 +343,52 @@ export default function GitClient() {
                   </span>
                   <span className="pc-git__k">scopes</span>
                   <span className="pc-git__v">{st.resolver.lastScopes.join(', ') || '—'}</span>
+                </div>
+              </div>
+
+              {/* release-pipeline-resilience-2026-06-09 P-011: the green-checkpoint
+                  gate — WHY staging→main promotion is (or isn't) blocked, the red
+                  streak, the auto-dispatched release-fixer, and chronically-flaky
+                  tests (P-004/P-006/P-009). */}
+              <div className="pc-git__card">
+                <div className="pc-git__card-h">
+                  green-checkpoint gate{' '}
+                  {st.gate.stalled ? (
+                    <Pill tone="bad">STALLED</Pill>
+                  ) : st.gate.consecutiveReds > 0 ? (
+                    <Pill tone="warn">held</Pill>
+                  ) : (
+                    <Pill tone="good">green</Pill>
+                  )}
+                </div>
+                <div className="pc-git__kv">
+                  <span className="pc-git__k">red streak</span>
+                  <span className="pc-git__v">
+                    {st.gate.consecutiveReds > 0 ? (
+                      <Pill tone={st.gate.stalled ? 'bad' : 'warn'}>{st.gate.consecutiveReds} checkpoint(s)</Pill>
+                    ) : (
+                      '0'
+                    )}
+                  </span>
+                  <span className="pc-git__k">last green</span>
+                  <span className="pc-git__v">{fmtRel(st.gate.lastGreenAtMs)}</span>
+                  <span className="pc-git__k">release-fixer</span>
+                  <span className="pc-git__v">
+                    {st.gate.lastFixerStatus ? (
+                      <Pill tone={statusTone(st.gate.lastFixerStatus)}>{st.gate.lastFixerStatus}</Pill>
+                    ) : (
+                      'never'
+                    )}{' '}
+                    <span className="pc-git__muted">{fmtRel(st.gate.lastFixerAtMs)}</span>
+                  </span>
+                  <span className="pc-git__k">flaky tests</span>
+                  <span className="pc-git__v">
+                    {st.gate.flakyWorkspaces.length > 0 ? (
+                      <Pill tone="warn">{st.gate.flakyWorkspaces.join(', ')}</Pill>
+                    ) : (
+                      'none'
+                    )}
+                  </span>
                 </div>
               </div>
 

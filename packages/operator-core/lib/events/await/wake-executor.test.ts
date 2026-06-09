@@ -265,17 +265,30 @@ describe('executeWake — the liveness ladder', () => {
     expect(planArg.wakeText).toContain('lock:grant:t-1');
   });
 
-  it('alive + managed pty pid-match → inject the wake turn', async () => {
-    const write = vi.fn(() => true);
-    const out = await executeWake(
-      work({ wakeHandle: advHandle() }),
-      deps({ findPty: vi.fn(() => ({ id: 'pty-7' })) as never, write: write as never }),
-    );
-    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
-    const [id, buf] = write.mock.calls[0] as unknown as [string, Buffer];
-    expect(id).toBe('pty-7');
-    expect(buf.toString()).toMatch(/\r$/);
-    expect(buf.toString()).toContain('lock:grant:t-1');
+  it('alive + managed pty pid-match → inject the turn TEXT now, the submit CR as a SEPARATE keystroke', async () => {
+    vi.useFakeTimers();
+    try {
+      const write = vi.fn(() => true);
+      const out = await executeWake(
+        work({ wakeHandle: advHandle() }),
+        deps({ findPty: vi.fn(() => ({ id: 'pty-7' })) as never, write: write as never }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      // First write = the turn TEXT, with NO trailing CR. A one-shot text+CR burst
+      // is swallowed by the claude TUI's paste detector (CR → literal newline), so
+      // the CR must arrive as its own keystroke.
+      const [id, buf] = write.mock.calls[0] as unknown as [string, Buffer];
+      expect(id).toBe('pty-7');
+      expect(buf.toString()).toContain('lock:grant:t-1');
+      expect(buf.toString()).not.toMatch(/\r$/);
+      expect(write).toHaveBeenCalledTimes(1);
+      // The submit CR lands as a SEPARATE write after the settle delay.
+      await vi.advanceTimersByTimeAsync(200);
+      expect(write).toHaveBeenCalledTimes(2);
+      expect((write.mock.calls[1] as unknown as [string, Buffer])[1].toString()).toBe('\r');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('alive in a terminal we do not own → park (never inject keystrokes elsewhere)', async () => {

@@ -89,6 +89,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // print (non-zero exit, no parseable JSON), record an 'error' row instead.
   let status = 'error';
   let candidate: string | undefined;
+  let summary: string | undefined;
   const detail: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1)) as {
@@ -96,10 +97,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       green?: boolean | null;
       candidate?: string;
       from?: string | null;
+      summary?: string;
     };
     if (parsed?.reason) {
       status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed
       candidate = parsed.candidate;
+      summary = parsed.summary;
       detail.green = parsed.green ?? null;
       if (parsed.candidate) detail.candidate = parsed.candidate.slice(0, 12);
       if (parsed.from) detail.from = parsed.from.slice(0, 12);
@@ -133,6 +136,13 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // verdict so it resets on green; fail-safe.
   await trackGateStall(ctx, status, candidate).catch((e) =>
     console.warn(`[green-checkpoint] stall tracking failed: ${e instanceof Error ? e.message : e}`),
+  );
+
+  // P-009: per-workspace flake history — tally workspaces the gate marked as a
+  // PROVEN flake (failed then passed on retry) and notify when one is chronically
+  // flaky so it gets quarantined accountably. Fail-safe.
+  await trackFlakeHistory(ctx, summary).catch((e) =>
+    console.warn(`[green-checkpoint] flake history failed: ${e instanceof Error ? e.message : e}`),
   );
 });
 
@@ -194,6 +204,75 @@ async function trackGateStall(ctx: SystemActionCtx, status: string, candidate?: 
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug, JSON.stringify({ gate_health: next })],
   );
+}
+
+/** P-009 thresholds: a workspace that has flaked this often is "chronically
+ *  flaky"; re-notify at most once a day per workspace. */
+const CHRONIC_FLAKE_COUNT = 3;
+const FLAKE_NOTIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * P-009: per-workspace flake history. The affected-tests runner prints
+ * `>>> <ws> passed on retry — counted as a FLAKE` when a workspace FAILED then
+ * PASSED on the gate's single retry — an EXPLICIT, PROVEN flake. A real
+ * regression fails twice and never gets this marker, so tallying these respects
+ * this plan's D-002 (classify before acting) + D-004 (a regression still holds
+ * main). We accumulate the counts per workspace in the green-checkpoint routine
+ * metadata (`flake_history`), surface them on the Git tab via
+ * gitPipelineSnapshot().gate.flakyWorkspaces, and notify ONCE (per cooldown) when
+ * a workspace becomes chronically flaky so it gets quarantined accountably — the
+ * lock-respecting `quarantine.txt` edit + de-quarantine follow-up are the
+ * release-fixer's / a human's job (D-003), never a tracked-file write from this
+ * routine. Fail-safe — the routine tick never depends on it.
+ */
+async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string): Promise<void> {
+  if (!summary) return;
+  const flaked = new Set<string>();
+  for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
+    flaked.add(m[1]);
+  }
+  if (flaked.size === 0) return;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT metadata->'flake_history' AS fh FROM harness_shared.routines
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug],
+  )) as Array<{ fh: Record<string, { flakes?: number; lastFlakeAt?: number; notifiedAt?: number }> | null }>;
+  const fh = rows[0]?.fh ?? {};
+  const now = Date.now();
+  const newlyChronic: string[] = [];
+  for (const ws of flaked) {
+    const prev = fh[ws] ?? {};
+    const flakes = (prev.flakes ?? 0) + 1;
+    let notifiedAt = prev.notifiedAt;
+    if (flakes >= CHRONIC_FLAKE_COUNT && (notifiedAt == null || now - notifiedAt > FLAKE_NOTIFY_COOLDOWN_MS)) {
+      newlyChronic.push(ws);
+      notifiedAt = now;
+    }
+    fh[ws] = { flakes, lastFlakeAt: now, notifiedAt };
+  }
+  await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [ctx.installSlug, JSON.stringify({ flake_history: fh })],
+  );
+  if (newlyChronic.length > 0) {
+    try {
+      const { notifyAttention } = await import('../../attention-notify');
+      await notifyAttention({
+        kind: 'intervention',
+        title: 'Chronically-flaky test(s) in the release gate',
+        body: `${newlyChronic.join(', ')} has flaked ≥${CHRONIC_FLAKE_COUNT}× in the green-checkpoint suite (failed then passed on retry). Quarantine it accountably (quarantine.txt + a de-quarantine follow-up) so it stops risking gate stalls.`,
+        importance: 'high',
+        workspaceId: ctx.workspaceId,
+        data: { workspaces: newlyChronic.join(',') },
+      });
+    } catch (e) {
+      console.warn(`[green-checkpoint] flake notify failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
 }
 
 /**

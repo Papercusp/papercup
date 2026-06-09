@@ -197,6 +197,14 @@ export function resumeCommandFor(handle: {
 /** How long an omp resume gets before we inject the prompt into its pty. */
 const PTY_PROMPT_DELAY_MS = 2_500;
 
+/** Delay before the submit Enter (CR) is sent as its OWN keystroke after a turn's
+ *  text. A one-shot `text + CR` burst is swallowed by the Claude Code TUI's paste
+ *  detector — the CR becomes a literal newline in the input box and the turn never
+ *  submits. This is the SAME fix as the psu-pty-host.mjs `controlWrites` split; the
+ *  two live in different processes/pty-owners so they can't share code, but they
+ *  read the SAME env var to stay in lockstep. */
+const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_MS) || 150;
+
 export interface ExecuteWakeDeps {
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
@@ -294,8 +302,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions)
       const pty = findPty(pid);
       if (pty) {
-        const okWrite = write(pty.id, Buffer.from(`${text}\r`, 'utf8'));
-        if (okWrite) return { kind: 'delivered', channel: 'pty-inject' };
+        // Submit as TWO writes: the text, then the Enter (CR) as a SEPARATE
+        // keystroke after a settle. A one-shot text+CR burst is swallowed by the
+        // claude TUI's paste detector (CR → literal newline, turn never submits).
+        // Mirror of psu-pty-host.mjs controlWrites (different process + pty owner,
+        // so the code can't be shared — kept in lockstep via the shared env var).
+        const okWrite = write(pty.id, Buffer.from(text, 'utf8'));
+        if (okWrite) {
+          setTimeout(() => {
+            try {
+              write(pty.id, Buffer.from('\r', 'utf8'));
+            } catch {
+              /* pty may have closed between the text write and the CR */
+            }
+          }, TURN_SUBMIT_CR_DELAY_MS).unref?.();
+          return { kind: 'delivered', channel: 'pty-inject' };
+        }
       }
       // Channel 3: alive in a terminal we don't own — park (+ inbox nudge by pump).
       return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty` };

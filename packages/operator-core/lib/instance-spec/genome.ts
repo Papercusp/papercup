@@ -17,12 +17,13 @@
  * knobs). Never-auto / safety surfaces are structurally EXCLUDED — they are not
  * fields here, so a genome can never vary them.
  *
- * v1 membership (apiary P-011's recommended knob set — highest system-level
- * leverage, zero blast radius, untestable in the gym): the Queen placement prompt,
- * wake / min-sleep floors, and the memory-seeding policy. The type carries all five
- * axes so the surface can grow to its full membership once the hive-creative/apiary
- * reconciliation ratifies it (that plan's P-001, `needs-human`) without a breaking
- * change — until then the extra axes are simply unused by capture.
+ * v1 membership: the OWNER RATIFIED the **full five-axis surface, ALL active**
+ * (2026-06-09 — `self-improvement-stack-reconciliation-2026-06-09` P-001/D-007,
+ * superseding apiary P-011's narrower 3-knob proposal): the Queen prompt overlay
+ * PLUS all four config axes (placement × wake × memory × coordination) are variable
+ * knobs of a genome. The capture/vary/merge primitives are already generic over
+ * every axis (`GENOME_CONFIG_AXES`), so "all active" needs no shape change — and the
+ * one stable type means a consumer never re-drifts when a knob set grows.
  */
 import { createHash } from 'node:crypto';
 
@@ -146,16 +147,17 @@ export function hashGenome(g: Genome): string {
 }
 
 /**
- * The v1 genome surface membership, for docs/introspection. The full surface is
- * the five axes; v1 capture/vary actively use the recommended knob subset
- * (apiary P-011). Growing this is a config change, not a breaking type change.
+ * The v1 genome surface membership, for docs/introspection. Owner-ratified
+ * (2026-06-09, reconciliation P-001/D-007): the FULL five-axis surface is active —
+ * the Queen prompt overlay axis plus all four config axes. Growing a per-axis knob
+ * set is a config change, never a breaking type change.
  */
 export const GENOME_SURFACE_V1 = Object.freeze({
   version: GENOME_SCHEMA_VERSION,
   promptAxis: 'queen-prompt',
   configAxes: GENOME_CONFIG_AXES,
-  /** The recommended v1 active knobs (apiary P-011). */
-  v1Knobs: ['queen-placement-prompt', 'wake/min-sleep-floors', 'memory-seeding-policy'],
+  /** All five axes are active/variable (owner-ratified all-active, not a subset). */
+  activeAxes: ['queen-prompt', 'placement', 'wake', 'memory', 'coordination'],
   /** Structurally excluded — never a genome field, so a genome can't vary them. */
   excluded: ['safety/never-auto surfaces', 'credentials', 'secrets'],
 } as const);
