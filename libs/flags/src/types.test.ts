@@ -39,8 +39,20 @@ describe('flag registry invariants', () => {
     }
   });
 
-  it('V1 ship-state defaults: every flag is OFF (snapshots retired — retire-snapshots-instance-spec)', () => {
-    for (const key of ALL_FLAG_KEYS) {
+  it('cut-for-V1 flags stay OFF by default (alpha policy: flags for shipped features default ON — CLAUDE.md "Feature flags")', () => {
+    // The old invariant ("every flag defaults false") encoded the pre-alpha
+    // dark-launch policy and was retired 2026-06-09 by owner directive: a flag
+    // created alongside a finished feature now defaults true. Only the
+    // cut-for-V1 surfaces are pinned off here.
+    const cutForV1: FlagKey[] = [
+      FLAGS.CLOUDFLARE_PUBLISH,
+      FLAGS.ORACLE,
+      FLAGS.RUST_PORT_UI,
+      FLAGS.HARNESS_PHASES,
+      FLAGS.DESIGN,
+      FLAGS.TESTING,
+    ];
+    for (const key of cutForV1) {
       expect(FLAG_DEFAULTS[key]).toBe(false);
     }
   });
