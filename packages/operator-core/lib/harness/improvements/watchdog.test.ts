@@ -5,6 +5,7 @@ import {
   runWatchdogTick,
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
+  classifyToolError,
   isServiceHealthStale,
   serviceDownCollectorResult,
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
@@ -75,25 +76,80 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
 
   it('a synthetic improvements:capture error row is not turned into a signal; an unrelated tool still is', () => {
     const rows = [
-      { tool_name: 'improvements:capture', n: 9, sample: 'pg hiccup' },
-      { tool_name: 'system:improvement-watchdog', n: 12, sample: 'boom' },
-      { tool_name: 'docs:get', n: 7, sample: 'timeout' },
+      { tool_name: 'improvements:capture', class: 'structural' as const, n: 9, total: 9, sample: 'pg hiccup' },
+      { tool_name: 'system:improvement-watchdog', class: 'structural' as const, n: 12, total: 12, sample: 'boom' },
+      { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
     ];
-    const signals = toolErrorSignalsFromRows(rows, 60);
-    expect(signals.map((s) => s.key)).toEqual(['docs:get']);
+    const signals = toolErrorSignalsFromRows(rows);
+    expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
     expect(signals[0].source).toBe('repeated-tool-error');
   });
 
-  it('severity escalates to major at high counts', () => {
-    const signals = toolErrorSignalsFromRows(
-      [
-        { tool_name: 'a:x', n: 25, sample: null },
-        { tool_name: 'b:y', n: 6, sample: null },
-      ],
-      60,
+  it('STRUCTURAL fires at a LOW bar (≥2) — the memory:search/remember miss is now caught (P-008)', () => {
+    // The exact shape the old ≥5/60min ABSOLUTE threshold missed: a deterministic
+    // workspace_required error at low volume.
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'memory:remember', class: 'structural' as const, n: 2, total: 19, sample: 'workspace-scoped call' },
+      { tool_name: 'memory:search', class: 'structural' as const, n: 18, total: 263, sample: 'workspace-scoped call' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(
+      expect.arrayContaining(['memory:remember:structural', 'memory:search:structural']),
     );
-    expect(signals.find((s) => s.key === 'a:x')?.severity).toBe('major');
-    expect(signals.find((s) => s.key === 'b:y')?.severity).toBe('minor');
+    expect(signals.every((s) => s.severity === 'major' && s.kind === 'bug')).toBe(true);
+  });
+
+  it('STRUCTURAL also fires on a high error-RATE below the count bar (decouples from volume → kills self-masking)', () => {
+    const signals = toolErrorSignalsFromRows(
+      [{ tool_name: 'x:y', class: 'structural' as const, n: 3, total: 4, sample: null }],
+      { structuralMinCount: 5 }, // raise the COUNT bar so only the RATE test (3/4 = 75%) can fire it
+    );
+    expect(signals.map((s) => s.key)).toEqual(['x:y:structural']);
+  });
+
+  it('a single structural error does NOT fire (one-off noise is gated)', () => {
+    expect(
+      toolErrorSignalsFromRows([{ tool_name: 'x:y', class: 'structural' as const, n: 1, total: 100, sample: null }]),
+    ).toEqual([]);
+  });
+
+  it('TRANSIENT is volume-gated; ≥50 escalates to major', () => {
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'plans:list', class: 'transient' as const, n: 14, total: 1000, sample: 'exceeded timeout' }, // <15 → no
+      { tool_name: 'slow:tool', class: 'transient' as const, n: 60, total: 100, sample: 'exceeded timeout' }, // ≥50 → major
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['slow:tool:transient']);
+    expect(signals[0].severity).toBe('major');
+    expect(signals[0].kind).toBe('bug');
+  });
+
+  it('CALLER/DX errors route to kind=change at low severity, only on a sustained pattern (≥10)', () => {
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'coord:thread', class: 'caller' as const, n: 13, total: 22, sample: 'invalid_args: root_msg_id' }, // ≥10
+      { tool_name: 'rare:tool', class: 'caller' as const, n: 3, total: 5, sample: 'invalid_args: slug' }, // <10
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['coord:thread:caller']);
+    expect(signals[0].kind).toBe('change');
+    expect(signals[0].severity).toBe('minor');
+  });
+});
+
+describe('classifyToolError — by error_code, with a legacy error_message fallback (P-008 / D-009)', () => {
+  it('classifies by the first-class error_code when present (the P-007 path)', () => {
+    expect(classifyToolError('unauthorized', 'error', 'x')).toBe('structural');
+    expect(classifyToolError('handler_error', 'error', 'x')).toBe('structural');
+    expect(classifyToolError('harness_required', 'error', 'x')).toBe('structural');
+    expect(classifyToolError('timeout', 'timeout', 'x')).toBe('transient');
+    expect(classifyToolError('invalid_args', 'error', 'x')).toBe('caller');
+    expect(classifyToolError('role_not_allowed', 'role-not-allowed', 'x')).toBe('caller');
+  });
+
+  it('falls back to status + message for legacy rows (error_code NULL, pre-P-007 deploy)', () => {
+    expect(classifyToolError(null, 'error', 'built-in tool requires a workspace-scoped call')).toBe('structural');
+    expect(classifyToolError(null, 'timeout', 'exceeded timeout of 60s')).toBe('transient');
+    expect(classifyToolError(null, 'error', 'exceeded timeout of 60s')).toBe('transient');
+    expect(classifyToolError(null, 'role-not-allowed', '')).toBe('caller');
+    expect(classifyToolError(null, 'error', 'invalid_args: slug expected string')).toBe('caller');
+    expect(classifyToolError(null, 'error', 'something unrecognized')).toBe('structural');
   });
 });
 

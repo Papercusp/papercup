@@ -30,7 +30,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
-import { captureImprovement, type CaptureImprovementResult } from './capture-core';
+import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
 import type { ImprovementSeverity } from './policy';
 
 export type WatchdogSource = 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down';
@@ -44,6 +44,12 @@ export interface WatchdogSignal {
   /** Detail: counts, samples, timestamps live here, not in the title. */
   body: string;
   severity: ImprovementSeverity;
+  /**
+   * Improvement kind to file this as (P-008 / D-009). Default 'bug'. A caller/DX
+   * signal (a tool repeatedly rejecting caller input) files as 'change' — a
+   * schema/gate refinement, not a papercusp bug.
+   */
+  kind?: ImprovementKind;
   /** Repo-relative paths involved, when the signal knows them (feeds the path gate). */
   paths?: string[];
 }
@@ -125,10 +131,18 @@ export interface CollectOptions {
   redTestWindowHours?: number;
   /** Minimum fail count in the window (and the latest run must be a fail). Default 3. */
   redTestMinFails?: number;
-  /** Lookback for the repeated-tool-error sweep. Default 1h. */
-  toolErrorWindowMinutes?: number;
-  /** Minimum error/timeout count per tool in the window. Default 5. */
-  toolErrorMinCount?: number;
+  /** Lookback for the repeated-tool-error CLASS sweep (P-008 / D-009). Default 24h. */
+  toolErrorWindowHours?: number;
+  /** Structural tool-error fires at this many occurrences in the window. Default 2 (deterministic bugs recur identically — few = real). */
+  structuralMinCount?: number;
+  /** Structural tool-error: OR fire when error-rate ≥ this over ≥ structuralMinCallsForRate calls. Default 0.5. */
+  structuralMinRate?: number;
+  /** Min calls before the structural error-RATE test applies. Default 3. */
+  structuralMinCallsForRate?: number;
+  /** Transient tool-error (timeout/load) volume bar. Default 15 (raised — timeouts are noisy). */
+  transientMinCount?: number;
+  /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
+  callerMinCount?: number;
   /** Max age of the service-health snapshot to trust for service-down (P-004). Default 2× the 60s probe interval. */
   serviceHealthMaxStaleMs?: number;
 }
@@ -193,9 +207,52 @@ export async function collectSmokeFailSignals(sql: Sql, workspaceId: string): Pr
   }));
 }
 
-interface ToolErrorRow {
+/**
+ * Tool-failure CLASS (watchdog-robustness P-008 / D-009). The collector detects
+ * by CLASS, not raw count: a deterministic config bug recurs identically, so it
+ * deserves a LOW bar; a transient timeout needs VOLUME to be worth filing.
+ *   - structural — a real bug/misconfig (the tool itself, a missing table, a
+ *     workspace-scoping gap). Fires on FEW occurrences OR a high error-rate.
+ *   - transient  — timeout / load / network. Volume-gated, lower severity.
+ *   - caller     — the CALLER sent bad input or lacks a role (invalid_args /
+ *     role-denied). A sustained pattern = a DX/schema problem → kind=change.
+ */
+export type ToolErrorClass = 'structural' | 'transient' | 'caller';
+
+/**
+ * Pure: classify one tool failure. Prefers the first-class dispatcher `error_code`
+ * (P-007); for LEGACY rows written before that landed (error_code NULL) it falls
+ * back to status + an error_message pattern. Keep in sync with the SQL CASE in
+ * `collectToolErrorSignals` — this fn is the documented source of truth.
+ */
+export function classifyToolError(
+  errorCode: string | null | undefined,
+  status: string,
+  errorMessage: string | null | undefined,
+): ToolErrorClass {
+  if (errorCode) {
+    if (errorCode === 'timeout') return 'transient';
+    if (
+      errorCode === 'invalid_args' || errorCode === 'invalid_input' ||
+      errorCode === 'role_not_allowed' || errorCode === 'missing_capability' ||
+      errorCode === 'quota_exceeded'
+    ) return 'caller';
+    return 'structural'; // unauthorized / handler_error / harness_required / any other deterministic code
+  }
+  const m = errorMessage ?? '';
+  if (status === 'timeout' || /exceeded timeout|timed?\s*out/i.test(m)) return 'transient';
+  if (status === 'role-not-allowed' || /^invalid_args:/i.test(m)) return 'caller';
+  return 'structural'; // unclassified error → structural; the per-class FIRE bar gates noise
+}
+
+interface ClassifiedToolErrorRow {
   tool_name: string;
+  /** SQL alias `class`; one of ToolErrorClass. */
+  class: ToolErrorClass;
+  /** Failures of this class for this tool in the window. */
   n: number;
+  /** Total calls (any status) for this tool in the window — the rate denominator. */
+  total: number;
   sample: string | null;
 }
 
@@ -210,39 +267,113 @@ export function isImprovementLoopTool(toolName: string): boolean {
   return /^improvements:/.test(toolName) || /^system:improvement-/.test(toolName);
 }
 
-/** Pure: tool-error rows → signals, excluding the loop's own tools (D-006). */
-export function toolErrorSignalsFromRows(rows: ToolErrorRow[], windowMinutes: number): WatchdogSignal[] {
-  return rows
-    .filter((r) => !isImprovementLoopTool(r.tool_name))
-    .map((r) => ({
-      source: 'repeated-tool-error' as const,
-      key: r.tool_name,
-      title: `Tool ${r.tool_name} erroring repeatedly`,
-      body:
-        `Watchdog signal (repeated-tool-error): ${r.tool_name} returned error/timeout ${r.n}× in the last ` +
-        `${windowMinutes} minute(s).\n\nSample error: ${(r.sample ?? '').slice(0, 800) || '(no message)'}`,
-      severity: r.n >= 20 ? ('major' as const) : ('minor' as const),
-    }));
+/**
+ * Pure (P-006/D-006 + P-008/D-009): per-(tool,class) aggregate rows → signals,
+ * excluding the loop's own tools. Each class has its own FIRE bar + severity + kind:
+ *   - structural: n ≥ structuralMinCount (2) OR (total ≥ structuralMinCallsForRate
+ *     AND n/total ≥ structuralMinRate) → major, kind=bug. THIS is what catches the
+ *     low-frequency structural failures the old absolute ≥5/60min threshold missed.
+ *   - transient:  n ≥ transientMinCount (15) → minor (major at ≥50), kind=bug.
+ *   - caller:     n ≥ callerMinCount (10) → minor, kind=change.
+ */
+export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: CollectOptions = {}): WatchdogSignal[] {
+  const structuralMin = opts.structuralMinCount ?? 2;
+  const structuralRate = opts.structuralMinRate ?? 0.5;
+  const structuralRateCalls = opts.structuralMinCallsForRate ?? 3;
+  const transientMin = opts.transientMinCount ?? 15;
+  const callerMin = opts.callerMinCount ?? 10;
+
+  const out: WatchdogSignal[] = [];
+  for (const r of rows) {
+    if (isImprovementLoopTool(r.tool_name)) continue;
+    const rate = r.total > 0 ? r.n / r.total : 0;
+    const pct = Math.round(rate * 100);
+    const sample = (r.sample ?? '').slice(0, 800) || '(no message)';
+
+    if (r.class === 'structural') {
+      if (!(r.n >= structuralMin || (r.total >= structuralRateCalls && rate >= structuralRate))) continue;
+      out.push({
+        source: 'repeated-tool-error',
+        key: `${r.tool_name}:structural`,
+        title: `Tool ${r.tool_name} returns a structural error`,
+        body:
+          `Watchdog signal (structural tool-error): ${r.tool_name} returned a deterministic error ${r.n}× ` +
+          `(${pct}% of ${r.total} calls) in the window — the shape that recurs identically (a bug/misconfig), ` +
+          `not transient load.\n\nSample error: ${sample}`,
+        severity: 'major',
+        kind: 'bug',
+      });
+    } else if (r.class === 'transient') {
+      if (r.n < transientMin) continue;
+      out.push({
+        source: 'repeated-tool-error',
+        key: `${r.tool_name}:transient`,
+        title: `Tool ${r.tool_name} timing out repeatedly`,
+        body:
+          `Watchdog signal (transient tool-error): ${r.tool_name} timed out / errored transiently ${r.n}× ` +
+          `(${pct}% of ${r.total} calls) recently.\n\nSample: ${sample}`,
+        severity: r.n >= 50 ? 'major' : 'minor',
+        kind: 'bug',
+      });
+    } else {
+      if (r.n < callerMin) continue;
+      out.push({
+        source: 'repeated-tool-error',
+        key: `${r.tool_name}:caller`,
+        title: `Tool ${r.tool_name} repeatedly rejecting caller input`,
+        body:
+          `Watchdog signal (caller/DX tool-error): ${r.tool_name} rejected caller input ${r.n}× ` +
+          `(${pct}% of ${r.total} calls) — a sustained pattern suggests a confusing schema or a ` +
+          `mis-scoped gate, not a tool bug.\n\nSample: ${sample}`,
+        severity: 'minor',
+        kind: 'change',
+      });
+    }
+  }
+  return out;
 }
 
-/** repeated-tool-error: one tool erroring/timing out ≥ threshold in the window. */
+/**
+ * repeated-tool-error (P-008 / D-009): per-(tool,class) failure aggregates over a
+ * 24h window, classified IN SQL (the CASE mirrors `classifyToolError`). The
+ * per-class FIRE bar lives in `toolErrorSignalsFromRows` (pure + unit-tested). The
+ * loop's own tools are excluded in SQL (efficient) and re-excluded in the pure fn
+ * (defense-in-depth + the test seam).
+ */
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
-  const windowMinutes = opts.toolErrorWindowMinutes ?? 60;
-  const minCount = opts.toolErrorMinCount ?? 5;
-  // Exclude the loop's own tools in SQL (correct + efficient) — `toolErrorSignalsFromRows`
-  // re-applies the same predicate as a defense-in-depth guard (and the unit-test seam).
-  const rows = await sql<ToolErrorRow[]>`
-    SELECT tool_name, count(*)::int AS n, max(error_message) AS sample
-      FROM harness_shared.tool_invocations
-     WHERE status IN ('error', 'timeout')
-       AND invoked_at > now() - make_interval(mins => ${windowMinutes})
-       AND tool_name NOT LIKE 'improvements:%'
-       AND tool_name NOT LIKE 'system:improvement-%'
-     GROUP BY tool_name
-    HAVING count(*) >= ${minCount}
+  const windowHours = opts.toolErrorWindowHours ?? 24;
+  const rows = await sql<ClassifiedToolErrorRow[]>`
+    WITH fail AS (
+      SELECT tool_name,
+        CASE
+          WHEN error_code = 'timeout' OR status = 'timeout' THEN 'transient'
+          WHEN error_code IN ('invalid_args','invalid_input','role_not_allowed','missing_capability','quota_exceeded')
+               OR status = 'role-not-allowed' OR error_message LIKE 'invalid_args:%' THEN 'caller'
+          ELSE 'structural'
+        END AS class,
+        error_message
+        FROM harness_shared.tool_invocations
+       WHERE status IN ('error', 'timeout')
+         AND invoked_at > now() - make_interval(hours => ${windowHours})
+         AND tool_name NOT LIKE 'improvements:%'
+         AND tool_name NOT LIKE 'system:improvement-%'
+    ),
+    tot AS (
+      SELECT tool_name, count(*)::int AS total
+        FROM harness_shared.tool_invocations
+       WHERE invoked_at > now() - make_interval(hours => ${windowHours})
+         AND tool_name NOT LIKE 'improvements:%'
+         AND tool_name NOT LIKE 'system:improvement-%'
+       GROUP BY tool_name
+    )
+    SELECT fail.tool_name, fail.class, count(*)::int AS n,
+           COALESCE(tot.total, count(*))::int AS total,
+           max(fail.error_message) AS sample
+      FROM fail LEFT JOIN tot ON tot.tool_name = fail.tool_name
+     GROUP BY fail.tool_name, fail.class, tot.total
      ORDER BY count(*) DESC
-     LIMIT 10`;
-  return toolErrorSignalsFromRows(rows, windowMinutes);
+     LIMIT 30`;
+  return toolErrorSignalsFromRows(rows, opts);
 }
 
 /** service-down: a watched dev endpoint currently DOWN per the service-health monitor. */
@@ -573,7 +704,7 @@ async function runWatchdogTickBody(
     try {
       res = await capture({
         title: s.title,
-        kind: 'bug',
+        kind: s.kind ?? 'bug',
         body: s.body,
         severity: s.severity,
         paths: s.paths,

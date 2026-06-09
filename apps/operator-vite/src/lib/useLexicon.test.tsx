@@ -58,9 +58,10 @@ describe('useLexicon', () => {
     expect(screen.getByTestId('pot').textContent).toBe('Hive');
     expect(screen.getByTestId('pots').textContent).toBe('Hives');
     expect(screen.getByTestId('cupboard').textContent).toBe('Comb');
-    // Canon revision 2026-06-07 (lexicon packs.ts): the operator chat is the
-    // Sentinel Bee; "Queen" now names the brain.
-    expect(screen.getByTestId('operator-lower').textContent).toBe('sentinel bee');
+    // Canon (lexicon packs.ts, owner directive 2026-06-09 / hive-agent-tabs P-003):
+    // the operator chat is the Sentinel (renamed from the earlier "Sentinel Bee");
+    // "Queen" now names the brain.
+    expect(screen.getByTestId('operator-lower').textContent).toBe('sentinel');
   });
 
   it('re-renders on a live flag flip (reactive, not render-time only)', () => {
