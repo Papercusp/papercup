@@ -7,7 +7,7 @@
 **To run or test the app, launch the desktop shell — the ONLY supported way:**
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp-desktop && npm run dev
+cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop && npm run dev
 ```
 
 Then drive the **Tauri window** it opens (for agent-driven UI checks see
@@ -76,7 +76,7 @@ The shipping target is the **Tauri desktop app**, and it is also the only suppor
 **To run / test the app, launch the Tauri dev shell:**
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp-desktop
+cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop
 npm run dev
 ```
 
@@ -283,7 +283,7 @@ WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03` +
 `apps/operator/bin/dev` and `apps/operator/bin/prod` are **retired** as standalone entry points. The Tauri dev shell is the only supported way to bring up the operator — it spawns the same Vite SPA (`:3055`) + Hono host (`:3070`) under the hood with embedded PG attached (Next.js is retired).
 
 ```bash
-cd /home/marsh-office/papercupai-workspace/papercusp-desktop
+cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop
 npm run dev
 ```
 

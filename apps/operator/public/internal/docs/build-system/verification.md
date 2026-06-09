@@ -9,7 +9,7 @@ Re-run the auditor on every artifact:
 
 ```sh
 papercusp-desktop/bin/audit-bundle.sh \
-  papercupai-workspace/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
+  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
   /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
   /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
   /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
@@ -24,7 +24,7 @@ Or click **Audit prod bundles for PostHog leaks** in `/admin`. Should print `OK:
 ### 1. Install + launch
 
 ```sh
-sudo dpkg -i papercupai-workspace/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
+sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
 papercusp
 ```
 
@@ -265,13 +265,13 @@ Copy this and run top to bottom:
 ```sh
 # 1. Auditor pass
 papercusp-desktop/bin/audit-bundle.sh \
-  papercupai-workspace/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
+  papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb \
   /home/marsh-office/Papercusp_0.0.1_x86_64.dmg \
   /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi \
   /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
 
 # 2. Linux install + launch + smoke
-sudo dpkg -i papercupai-workspace/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
+sudo dpkg -i papercupai-workspace/papercup/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
 setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
 sleep 15
 PORT=$(jq -r .port ~/.papercusp/operator.json)

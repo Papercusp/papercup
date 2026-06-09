@@ -35,7 +35,7 @@ Mechanism:
 Runs locally on the dev host (`cwd` = `papercusp-desktop`). Produces both `.deb` and `.rpm` in one pass, then audits each.
 
 ```
-cd /home/marsh-office/papercupai-workspace/papercusp-desktop
+cd /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop
 npm run build              # = tauri build (the sidecar must already be built — see note)
 bin/audit-bundle.sh src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb
 bin/audit-bundle.sh src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm
@@ -102,7 +102,7 @@ bin/prod
 Installs the most-recently-built local `.deb` and launches `papercusp` (the installed binary on `/usr/bin/papercusp`). Requires `NOPASSWD` sudo for `dpkg`.
 
 ```
-sudo -n dpkg -i /home/marsh-office/papercupai-workspace/papercusp-desktop/.../Papercusp_0.0.1_amd64.deb
+sudo -n dpkg -i /home/marsh-office/papercupai-workspace/papercup/papercusp-desktop/.../Papercusp_0.0.1_amd64.deb
 setsid /usr/bin/papercusp >/dev/null 2>&1 < /dev/null &
 ```
 

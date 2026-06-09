@@ -80,7 +80,9 @@ describe('operator-vite desktop no-HMR mode', () => {
       expect(desktopPkg.scripts?.dev).toBe('bin/desktop-dev-nohmr');
       expect(desktopPkg.scripts?.['dev:nohmr']).toBe('bin/desktop-dev-nohmr');
       expect(desktopPkg.scripts?.['dev:preview']).toBe('bin/desktop-preview-prod');
+      // dev:hmr is the HMR opt-in (tauri dev against the :3055 Vite server); it
+      // carries a --config override now, so assert the tauri-dev path, not an exact string.
+      expect(desktopPkg.scripts?.['dev:hmr']).toContain('tauri dev');
     }
-    expect(desktopPkg.scripts?.['dev:hmr']).toBe('tauri dev');
   });
 });

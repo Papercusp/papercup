@@ -64,55 +64,76 @@ Legend: ✅ covered (new) · 🟢 covered (pre-existing) · 🔴 was a gap, now 
 
 ### Wake system — pump / coalescing / retry (C6)
 
-| Cell                                                 | Before         | Now         | Where                                |
-| ---------------------------------------------------- | -------------- | ----------- | ------------------------------------ |
-| `armInboxWake` re-arm idempotency (one standing row) | 🟢 store-level | ✅ arm-level | `inbox-wake-arm.integration.test.ts` |
-| per-subscriber coalescing (no duplicate turn)        | mocked         | ✅ real PG   | *(P-006)*                            |
-| retry/backoff → dead at max attempts                 | 🟢 store-level | ✅           | *(P-006)*                            |
-| **cross-agent**: A's wake never delivered to B       | ❌              | 🔴          | *(P-006)*                            |
+File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.integration.test.ts`, `engine.test.ts` for the pre-existing store/pump mechanics).
+
+| Cell                                                                     | Before         | Now                   |
+| ------------------------------------------------------------------------ | -------------- | --------------------- |
+| `armInboxWake` re-arm idempotency (one standing row)                     | 🟢 store-level | ✅ arm-level (real PG) |
+| per-subscriber coalescing (no duplicate turn)                            | mocked         | 🟢 store + 🟢 engine  |
+| retry/backoff → dead at max attempts                                     | 🟢 store-level | 🟢                    |
+| **cross-agent**: A's emit never delivered to B (real `emitAwaitedEvent`) | ❌              | 🔴                    |
+| end-to-end pump delivers via live socket, not peer                       | ❌              | 🔴                    |
 
 ### Coord substrate (C1)
 
-| Cell                                           | Before    | Now       | Where     |
-| ---------------------------------------------- | --------- | --------- | --------- |
-| `coord:send` A→B reaches B and **no one else** | 🟢 in-mem | ✅ real PG | *(P-007)* |
-| inbox is owner-scoped; A can't read B's        | 🟢 in-mem | ✅         | *(P-007)* |
-| A cannot ack/suppress B's broadcast            | 🟢        | ✅         | *(P-007)* |
-| presence staleness / revoked transitions       | partial   | ✅         | *(P-007)* |
-| subscribe→inject only reaches subscribers      | 🟢        | ✅         | *(P-007)* |
+File: `agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts` (10 tests, real `PgCoordLog`/`PgPresenceStore`).
+
+| Cell                                                      | Before    | Now        |
+| --------------------------------------------------------- | --------- | ---------- |
+| `coord:send` A→B reaches B and **no one else**            | 🟢 in-mem | 🔴 real PG |
+| inbox is owner-scoped; A can't read B's                   | 🟢 in-mem | ✅          |
+| A cannot ack/suppress B's broadcast                       | 🟢        | ✅          |
+| workspace\_id isolation (A can't reach B cross-workspace) | ❌         | 🔴         |
+| presence staleness / revoked transitions                  | partial   | ✅          |
+| subscribe→inject only reaches subscribers                 | 🟢        | ✅          |
 
 ### Locks (C1)
 
-| Cell                                                   | Before  | Now | Where     |
-| ------------------------------------------------------ | ------- | --- | --------- |
-| A cannot release/heartbeat B's lock (lock\_id keying)  | 🟢 aba  | ✅   | *(P-008)* |
-| file-lock hook block-on-held                           | partial | ✅   | *(P-008)* |
-| file-lock hook **fail-open** when operator unreachable | ❌       | 🔴  | *(P-008)* |
-| named-resource drain protocol                          | 🟢      | ✅   | *(P-008)* |
-| lock-authority election (lowest live pubkey)           | 🟢      | ✅   | *(P-008)* |
+File: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`).
+
+| Cell                                                   | Before  | Now                                     |
+| ------------------------------------------------------ | ------- | --------------------------------------- |
+| A cannot release/heartbeat B's lock (lock\_id keying)  | 🟢 aba  | ✅ adversarial (replay B's lock\_id)     |
+| file-lock block-on-held                                | partial | ✅                                       |
+| ABA stale-handle no-op                                 | 🟢      | ✅                                       |
+| named-resource drain (exclusive vs shared)             | 🟢      | ✅                                       |
+| lock-authority election (lowest live pubkey, failover) | 🟢      | ✅ pure `decideAuthority`                |
+| file-lock hook **fail-open** when operator unreachable | ❌       | ⚪ accepted gap (hook-script, see below) |
 
 ### Federation (C2/C3)
 
-| Cell                                                  | Before  | Now | Where     |
-| ----------------------------------------------------- | ------- | --- | --------- |
-| peer-log → projection → PG round-trip                 | 🟢      | ✅   | *(P-009)* |
-| admission / revocation enforced                       | partial | ✅   | *(P-009)* |
-| Track A content + Track B claim-authority, 2-instance | 🟢      | ✅   | *(P-009)* |
+File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 tests, real two-peer DHT).
+
+| Cell                                                        | Before  | Now |
+| ----------------------------------------------------------- | ------- | --- |
+| peer-log → projection → PG round-trip (no loss)             | 🟢      | ✅   |
+| **wrong tableTag silently dropped** (pins op-key invariant) | ❌       | 🔴  |
+| admission gate (rejecting peer never federates)             | partial | ✅   |
+| revocation drops a peer mid-session                         | partial | 🔴  |
+| no duplication (one op merged twice → one row)              | 🟢      | ✅   |
 
 ### work\_items claim/lease (C3)
 
-| Cell                                                | Before    | Now     | Where     |
-| --------------------------------------------------- | --------- | ------- | --------- |
-| N swarms claim one backlog → **no double-claim**    | 🟢 2-inst | ✅ N-way | *(P-010)* |
-| lease ttl expiry → reclaimable                      | 🟢        | ✅       | *(P-010)* |
-| heartbeat extends lease                             | 🟢        | ✅       | *(P-010)* |
-| fail-open reconcile under partition (deterministic) | 🟢 pure   | ✅       | *(P-010)* |
+File: `work-item-claims-concurrency.integration.test.ts` (7 tests, real PG).
 
-### Multi-session concurrency E2E (C3)
+| Cell                                                | Before    | Now              |
+| --------------------------------------------------- | --------- | ---------------- |
+| N swarms claim one item → **no double-claim**       | 🟢 2-inst | 🔴 8-way         |
+| N>M over a backlog (SKIP LOCKED) → each item once   | 🟢        | ✅                |
+| lease ttl expiry → reclaimable (claim\_id rotates)  | 🟢        | ✅                |
+| heartbeat extends lease; foreign heartbeat no-op    | 🟢        | ✅                |
+| fail-open reconcile under partition (deterministic) | 🟢 pure   | ✅ partition-heal |
 
-| Cell                                                                  | Before | Now | Where     |
-| --------------------------------------------------------------------- | ------ | --- | --------- |
-| N sessions: concurrent wakes+sends+claims+locks → 0 loss/dup/misroute | ❌      | 🔴  | *(P-011)* |
+### Multi-session concurrency E2E (C3) — the capstone
+
+File: `multi-session-concurrency.integration.test.ts` (4 channels, N isolated testbed sessions).
+
+| Cell                                                                 | Before | Now |
+| -------------------------------------------------------------------- | ------ | --- |
+| N concurrent wakes → each lands on its OWN socket, none on a peer    | ❌      | 🔴  |
+| N concurrent directed sends → each reaches exactly its addressee     | ❌      | 🔴  |
+| N×M concurrent claims → one winner per item                          | ❌      | 🔴  |
+| N concurrent lock races → one grant/path; distinct paths all granted | ❌      | 🔴  |
 
 ## Accepted gaps (logged — not silent)
 

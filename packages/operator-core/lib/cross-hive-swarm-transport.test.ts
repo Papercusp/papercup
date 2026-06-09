@@ -184,9 +184,9 @@ describe('makeSwarmCrossHiveTransport — send (addressed routing, no broadcast 
 
     await t.send(PEER_B, wire('to-b'));
 
-    // target topic joined as client-only (not server)
+    // target topic joined (server+client rendezvous — reliable mutual discovery)
     const targetJoin = f.joined.find((j) => j.topic.equals(fakeTopic(PEER_B)));
-    expect(targetJoin?.opts).toMatchObject({ server: false, client: true });
+    expect(targetJoin?.opts).toMatchObject({ server: true, client: true });
     // env delivered to B's channel only — C never sees the A→B envelope
     expect(muxers[0].sent).toContainEqual({ t: 'env', env: wire('to-b') });
     expect(muxers[1].sent.some((s) => (s as { t: string }).t === 'env')).toBe(false);

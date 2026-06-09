@@ -150,20 +150,27 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
     openChannel(socket);
   };
 
-  const ensureJoined = (topic: Buffer, server: boolean): void => {
+  // Join a Hive topic as BOTH server + client. Cross-Hive rendezvous is the
+  // recipient's topic: the recipient is always server there, and a sender joins
+  // it too — both announce + look up so mutual discovery is reliable (a
+  // client-only sender connects unreliably over the DHT). Announcing on a peer's
+  // topic is not an impersonation: every connection still Noise-handshakes our
+  // own key and our HELLO carries our real pubkey; addressing is still validated
+  // by the receiver, so a stray connection mis-delivers nothing.
+  const ensureJoined = (topic: Buffer): void => {
     const hex = topic.toString('hex');
     if (joined.has(hex)) return;
-    const discovery = opts.swarm.join(topic, { server, client: true });
+    const discovery = opts.swarm.join(topic, { server: true, client: true });
     joined.set(hex, discovery);
     if (discovery && typeof (discovery as { flushed?: () => Promise<void> }).flushed === 'function') {
       void (discovery as { flushed: () => Promise<void> }).flushed().catch(() => {});
     }
   };
 
-  // Reachable immediately: register the handler + join our own topic as SERVER.
+  // Reachable immediately: register the handler + join our own topic.
   opts.swarm.on('connection', handler);
   const selfTopic = deriveTopic(opts.selfHivePubkey);
-  ensureJoined(selfTopic, /* server */ true);
+  ensureJoined(selfTopic);
 
   return {
     selfTopicHex: selfTopic.toString('hex'),
@@ -182,8 +189,8 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
     },
 
     async send(toHivePubkey: string, env: CrossHiveWireEnvelope): Promise<void> {
-      // Dial the target Hive's topic as CLIENT (we never announce on a peer's topic).
-      ensureJoined(deriveTopic(toHivePubkey), /* server */ false);
+      // Rendezvous on the target Hive's topic (it is server there; we join too).
+      ensureJoined(deriveTopic(toHivePubkey));
       const targets = (): OpenChannel[] => [...channels].filter((ch) => ch.remotePubkey === toHivePubkey);
       let t = targets();
       const start = Date.now();

@@ -36,6 +36,9 @@ function detectAppVersion(): string {
     return process.env.PAPERCUSP_DESKTOP_VERSION;
   }
   const candidates = [
+    // papercusp-desktop is an in-repo submodule now (desktop-submodule-of-papercup-2026-06-09)
+    join(process.cwd(), 'papercusp-desktop/package.json'),
+    join(process.cwd(), '../../papercusp-desktop/package.json'),
     join(process.cwd(), 'apps/papercusp-desktop/package.json'),
     join(process.cwd(), '../papercusp-desktop/package.json'),
     join(process.cwd(), '../../apps/papercusp-desktop/package.json'),
