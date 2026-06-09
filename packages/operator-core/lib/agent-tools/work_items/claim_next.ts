@@ -14,6 +14,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimNextWorkItem, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
+import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 
@@ -45,12 +46,16 @@ export default defineTool({
     // ⇒ affinity-blind, claim is byte-identical to before.
     const leaseOn = workItemClaimLeaseEnabled();
     const swarmId = leaseOn ? localSwarmId(activeWorkspaceId(), args.harness) : undefined;
+    // P-014: under the redundancy flag, skip high-stakes items here — they fan out to N
+    // Swarms via work_items:claim_replica, not an exactly-once claim. Flag OFF ⇒ omitted.
+    const excludeRedundant = workItemRedundancyEnabled();
     const wi = await claimNextWorkItem({
       harness: args.harness,
       assignee,
       kind: args.kind,
       states: args.states,
       swarmId,
+      excludeRedundant,
     });
     // P-004 / D-002 (D-007 hybrid), flag-gated default-OFF: once the owner ratifies
     // (PAPERCUSP_WORKITEM_CLAIM_LEASE=1), the local SKIP-LOCKED claim is arbitrated by

@@ -37,6 +37,30 @@ import type { ReleaseConfig } from './release-config';
 import type { MigrateResult } from './migrate';
 import type { HealthResult } from './health-probe';
 
+/**
+ * Repo-relative path of the papercusp-desktop submodule gitlink in the
+ * superproject (desktop-submodule-of-papercup-2026-06-09 D-002). A git-sync
+ * pointer bump to the submodule appears in the superproject's
+ * `git diff --name-only` as exactly this single path.
+ */
+export const DESKTOP_SUBMODULE_PATH = 'apps/desktop';
+
+/**
+ * True when EVERY changed path is the desktop submodule gitlink (or under it):
+ * the delta between the running release checkout and green `main` is a
+ * desktop-only pointer bump the `:3070` operator never builds or uses
+ * (desktop-submodule-of-papercup-2026-06-09 D-003). The auto-serve trigger uses
+ * this to SKIP a deploy that would otherwise drain + restart the live operator
+ * for a shell-only change. An empty list is NOT desktop-only — that's the noop
+ * case, gated separately.
+ */
+export function isDesktopOnlyDelta(changedPaths: string[]): boolean {
+  if (changedPaths.length === 0) return false;
+  return changedPaths.every(
+    (p) => p === DESKTOP_SUBMODULE_PATH || p.startsWith(`${DESKTOP_SUBMODULE_PATH}/`),
+  );
+}
+
 export interface SnapshotInfo {
   snapshotId: number;
   kopiaSnapshotId: string;
@@ -56,6 +80,10 @@ export interface DeployPlan {
   lockfileChanged: boolean;
   warnings: string[];
   noop: boolean;
+  /** Every changed path between the running release checkout and target is the
+   *  apps/desktop submodule gitlink — a shell-only pointer bump the operator
+   *  deploy can skip (D-003). false when nothing, or anything non-desktop, changed. */
+  desktopOnly: boolean;
   /** Phase 5: auto vs review tier (auto = docs/tests only, no migrations → unattended-safe). */
   risk: RiskAssessment;
 }
@@ -174,6 +202,9 @@ export async function gatherPlan(
   // Phase 5 risk-tier: classify from ALL changed files + the staged migrations'
   // content (so destructive DDL is flagged) — auto vs review.
   const allChanged = await changedFiles(cfg.integrationRoot, currentReleaseSha, targetSha);
+  // D-003: a desktop-only pointer bump (every changed path under apps/desktop)
+  // must not auto-redeploy the operator (which never builds/uses the shell).
+  const desktopOnly = isDesktopOnlyDelta(allChanged);
   const migrationContents: Record<string, string> = {};
   for (const m of migrations) {
     try {
@@ -204,6 +235,7 @@ export async function gatherPlan(
     lockfileChanged,
     warnings,
     noop: currentReleaseSha === targetSha,
+    desktopOnly,
     risk,
   };
 }

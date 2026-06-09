@@ -8,7 +8,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gatherPlan, executeDeploy, type DeployDeps, type DeployPlan, type SnapshotInfo } from './deploy';
+import {
+  gatherPlan,
+  executeDeploy,
+  isDesktopOnlyDelta,
+  DESKTOP_SUBMODULE_PATH,
+  type DeployDeps,
+  type DeployPlan,
+  type SnapshotInfo,
+} from './deploy';
 import { git, revParse } from './git-ops';
 import { releaseConfig } from './release-config';
 
@@ -71,6 +79,7 @@ const plan: DeployPlan = {
   lockfileChanged: false,
   warnings: [],
   noop: false,
+  desktopOnly: false,
   risk: { tier: 'review', autoDeployable: false, reasons: ['1 staged migration(s)'], blocked: [] },
 };
 const cfg = releaseConfig();

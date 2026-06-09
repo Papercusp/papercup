@@ -642,6 +642,15 @@ export interface ClaimNextFilter {
    * is byte-identical to before — oldest-first, affinity ignored.
    */
   swarmId?: string;
+  /**
+   * Skip HIGH-STAKES (redundancy > 1) items so they are NOT exclusively claimed
+   * (decentralized-dispatch-scaling P-014). A redundant item is dispatched via
+   * `work_items:claim_replica` to N Swarms instead — claim_next grabbing it exactly-once
+   * would defeat the redundancy. The caller passes this ONLY when the redundancy flag is on
+   * (`PAPERCUSP_WORKITEM_REDUNDANCY=1`); omitted (the default) the claim never reads the
+   * `redundancy` column, byte-identical to before.
+   */
+  excludeRedundant?: boolean;
 }
 
 /**
@@ -673,6 +682,10 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           AND (taken_by IS NULL OR taken_by = '')
           AND status = ANY(${states}::text[])
           AND ${filter.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
+          -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items are dispatched
+          -- via claim_replica to N Swarms, so claim_next must NOT grab them exactly-once. Flag
+          -- OFF ⇒ clause omitted, claim never reads the redundancy column, byte-identical to before.
+          AND ${filter.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
         -- P-010: when activated (swarmId present ⇒ the per-Hive claim lease is on), claim_next
         -- RESPECTS the Queen's priority — affinity match first, then lower feature_order (the
         -- per-harness wave/plan order the Queen steers, D-003/D-009), then oldest-first

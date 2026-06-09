@@ -1,0 +1,315 @@
+// @vitest-environment node
+/**
+ * wake-executor-matrix.test.ts — the C4 liveness/lifecycle matrix + the EI-152
+ * REAL-SEAM regression (coordination-test-suite-2026-06-08 P-003, P-006).
+ *
+ * ## What was missing (D-001)
+ * `wake-executor.test.ts` has 27 green tests, yet EI-152 shipped: a handle-less
+ * always-armed wake PARKED even though a live psu control socket was available,
+ * because those tests MOCK `findPsuHost`/`injectPsuHost` — the real socket-inject
+ * seam was never exercised. This suite closes that:
+ *
+ *  - the SOCKET dimension is REAL: `executeWake`'s `psu-socket-inject` rung runs
+ *    against a genuine unix socket stood up by the keystone testbed, through the
+ *    operator's REAL `findLiveHost` + `injectIntoHost` (the default deps — NOT
+ *    mocked). EI-152 is asserted on this real path: no-handle + live socket →
+ *    `delivered:psu-socket-inject`, never `park`.
+ *  - the LIVENESS dimension (alive / exited / stale-presence / pid-reuse /
+ *    no-recorded-pid / ended-row) is driven through injected deterministic deps
+ *    (`getSession`/`presence`/`alive`/`findPty`/`spawnDetached`) — spawning a real
+ *    claude/codex needs credentials and is the live-smoke tier, not CI.
+ *
+ * Every cell of (liveness) × (handle? / live-socket?) → an asserted outcome, so a
+ * future regression in ANY rung — not just the one EI-152 hit — goes red. The
+ * adversarial pid-reuse cells assert "no misroute": a recorded pid that is alive
+ * but is not OUR managed pty must PARK, never inject into the wrong process.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { executeWake, type ExecuteWakeDeps } from './wake-executor';
+import {
+  MultiSessionTestbed,
+  makeDelivery,
+  advSessionHandle,
+  deadPid,
+  type TestSession,
+} from '../../../test/_multi-session-testbed';
+import type { WakeOutcome } from './types';
+
+/** A presence record shape getPresence returns (only the fields executeWake reads). */
+function presenceRec(over: { stale?: boolean; revoked?: boolean } = {}) {
+  return {
+    ownerId: 'x',
+    ownerLabel: '',
+    workspaceId: 'default',
+    source: '',
+    intent: '',
+    currentPlanSlug: null,
+    currentFiles: [],
+    host: '',
+    pid: null,
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    stale: over.stale ?? false,
+    revoked: over.revoked ?? false,
+    userId: null,
+  } as unknown as Awaited<ReturnType<NonNullable<ExecuteWakeDeps['presence']>>>;
+}
+
+describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)', () => {
+  let tb: MultiSessionTestbed;
+
+  beforeEach(() => {
+    tb = MultiSessionTestbed.create();
+  });
+  afterEach(async () => {
+    await tb.destroy();
+  });
+
+  /** Base deps: every rung that would touch the OS is injected deterministic;
+   *  the psu-socket rung stays REAL (real findLiveHost against the isolated dir). */
+  function baseDeps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+    return {
+      findPsuHost: tb.findPsuHostDep(), // REAL discovery, isolated dir
+      // injectPsuHost left as default → the REAL injectIntoHost transport
+      getSession: async () => null,
+      findPty: () => null,
+      write: () => true,
+      presence: async () => null,
+      alive: () => false,
+      spawnDetached: () => 4242, // pretend a headless resume spawned
+      ...over,
+    };
+  }
+
+  // ── handle-less (always-armed inbox-wake) row — the EI-152 territory ──────
+
+  it('EI-152: no handle + LIVE psu socket → delivered via the socket, NOT park', async () => {
+    const s = tb.session('A');
+    const host = await tb.spawnSocketHost(s.ownerId);
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+
+    const out = await executeWake(d, baseDeps());
+
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
+    // The REAL socket actually received the REAL v1 turn envelope.
+    expect(host.received).toHaveLength(1);
+    expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn' });
+    expect(host.received[0].data).toContain('[await-event]');
+  });
+
+  it('no handle + no socket + presence LIVE → park (inbox-only)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec() }));
+    expect(out.kind).toBe('park');
+  });
+
+  it('no handle + no socket + presence STALE → drop (dead waiter)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ stale: true }) }));
+    expect(out.kind).toBe('drop');
+  });
+
+  it('no handle + no socket + presence REVOKED → drop', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+    const out = await executeWake(d, baseDeps({ presence: async () => presenceRec({ revoked: true }) }));
+    expect(out.kind).toBe('drop');
+  });
+
+  it('no handle + socket present but inject FAILS → falls through to park (presence live)', async () => {
+    const s = tb.session('A');
+    await tb.spawnSocketHost(s.ownerId);
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });
+    // Override injectPsuHost to simulate a write failure on an otherwise-live host.
+    const out = await executeWake(
+      d,
+      baseDeps({ injectPsuHost: async () => false, presence: async () => presenceRec() }),
+    );
+    expect(out.kind).toBe('park');
+  });
+
+  // ── adv-session row: the live-socket rung wins before the pid logic (1b) ───
+
+  it('adv-session alive + pidKnown, but LIVE socket → psu-socket-inject (socket beats pty)', async () => {
+    const s = tb.session('A');
+    const host = await tb.spawnSocketHost(s.ownerId);
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { pid: process.pid }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: process.pid, endedAt: null }) as never,
+        alive: () => true,
+        // findPty would also hit, but the socket rung is checked first.
+        findPty: () => ({ id: 'pty-1' }) as never,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn' });
+  });
+
+  it('adv-session alive + pidKnown + managed pty (no socket) → pty-inject', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { pid: process.pid }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: process.pid, endedAt: null }) as never,
+        alive: () => true,
+        findPty: () => ({ id: 'pty-1' }) as never,
+        write: () => true,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'pty-inject' });
+  });
+
+  it('pid-reuse / no-misroute: pid ALIVE but not our managed pty (no socket) → park, never inject', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { pid: process.pid }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: process.pid, endedAt: null }) as never,
+        alive: () => true, // pid is alive (reused by some other process)
+        findPty: () => null, // …but it is NOT one of our managed ptys
+      }),
+    );
+    expect(out.kind).toBe('park'); // must NOT have pty-injected into the wrong pid
+  });
+
+  it('adv-session alive, NO recorded pid, no socket → park (avoid concurrent resume)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { pid: null }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: null }) as never,
+        presence: async () => presenceRec(), // fresh → alive evidence, but no pid
+      }),
+    );
+    expect(out.kind).toBe('park');
+  });
+
+  it('ENDED row even though the recorded pid was reused-alive → treated as exited (resume), not inject', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', pid: process.pid }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        // endedAt set → isAlive=false regardless of pid liveness
+        getSession: async () => ({ pid: process.pid, endedAt: new Date().toISOString(), agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => true,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+  });
+
+  it('adv-session EXITED (pid dead) + resumable claude → resume-headless (detached)', async () => {
+    const s = tb.session('A');
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+  });
+
+  it('adv-session exited + claude WITHOUT native session id + presence live → park (no --continue)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: null, pid: null }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: new Date().toISOString(), agent: 'claude', sessionId: null, coordOwnerId: null, cwd: s.cwd }) as never,
+        presence: async () => presenceRec(),
+      }),
+    );
+    expect(out.kind).toBe('park');
+  });
+
+  it('adv-session exited + not resumable + presence GONE → drop', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: null, pid: null }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: new Date().toISOString(), agent: 'claude', sessionId: null, coordOwnerId: null, cwd: s.cwd }) as never,
+        presence: async () => null,
+      }),
+    );
+    expect(out.kind).toBe('drop');
+  });
+
+  it('resume spawn FAILS → error outcome (the pump retries with backoff)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: null }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: null, endedAt: new Date().toISOString(), agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        spawnDetached: () => null, // spawn failure
+      }),
+    );
+    expect(out.kind).toBe('error');
+  });
+
+  // ── plan-run handle row ───────────────────────────────────────────────────
+
+  it('plan-run handle → plan-run-resume (delivered)', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: { kind: 'plan-run', runId: 77 },
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({ resumePlanRun: async () => ({ ok: true }) }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'plan-run-resume' });
+  });
+
+  it('plan-run handle resume fails → error', async () => {
+    const s = tb.session('A');
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: { kind: 'plan-run', runId: 77 },
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({ resumePlanRun: async () => ({ ok: false, error: 'run gone' }) }),
+    );
+    expect(out.kind).toBe('error');
+  });
+});

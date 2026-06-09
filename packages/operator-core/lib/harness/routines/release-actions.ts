@@ -130,6 +130,10 @@ export interface AutoServePlan {
   isFastForward?: boolean;
   commits?: string[];
   noop?: boolean;
+  /** Every changed path in this plan is the apps/desktop submodule gitlink — a
+   *  shell-only pointer bump the operator deploy must skip (desktop-submodule-of-
+   *  papercup-2026-06-09 D-003). Set by gatherPlan; absent on old plan JSON. */
+  desktopOnly?: boolean;
 }
 
 /**
@@ -152,6 +156,12 @@ export interface AutoServePlan {
  * Forward-only + non-empty + fast-forward is the structural fix. A
  * backward / lateral / non-FF move is a deliberate rollback (`rollback.ts`) or a
  * reviewed forced deploy (`deploy-cli --force`), never auto-serve.
+ *
+ * Also skips a DESKTOP-ONLY pointer bump (desktop-submodule-of-papercup-2026-06-09
+ * D-003): once papercusp-desktop is a submodule, every desktop edit bumps the
+ * superproject `apps/desktop` gitlink → FFs onto green `main`. Without this guard
+ * a shell-only change would drain + restart the live `:3070` operator (which never
+ * builds or uses the desktop). A forced/manual `deploy-cli --execute` still can.
  */
 export function shouldAutoServe(plan: AutoServePlan): boolean {
   // First deploy — the release checkout isn't set up yet → establish it.
@@ -159,6 +169,9 @@ export function shouldAutoServe(plan: AutoServePlan): boolean {
   // Malformed/absent field → conservative: don't deploy.
   if (typeof plan.currentReleaseSha !== 'string') return false;
   if (plan.noop === true) return false;
+  // D-003: a desktop-only pointer bump doesn't touch the operator — don't
+  // auto-redeploy :3070 for a shell-only change.
+  if (plan.desktopOnly === true) return false;
   // Forward-only: a genuine fast-forward bringing ≥1 NEW commit. A 0-commit or
   // non-FF plan means the checkout is AT or AHEAD of `main` → never redeploy.
   return plan.isFastForward === true && Array.isArray(plan.commits) && plan.commits.length > 0;

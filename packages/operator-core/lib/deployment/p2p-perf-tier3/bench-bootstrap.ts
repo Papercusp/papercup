@@ -159,3 +159,10 @@ export function benchRuntimeDir(installRoot = '/opt/papercusp'): string {
 export function remotePeerChildPath(installRoot = '/opt/papercusp'): string {
   return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/sync/hyperbee/perf/peer-child.ts`;
 }
+
+/** Path to claim-agent.ts inside the unpacked runtime (the ≥3-Swarm claim E2E launch
+ *  target — decentralized-dispatch-scaling P-013). Shipped automatically: runtime-pack
+ *  tars the whole source tree, so a new file under deployment/ lands here with no allowlist. */
+export function remoteClaimAgentPath(installRoot = '/opt/papercusp'): string {
+  return `${benchRuntimeDir(installRoot)}/packages/operator-core/lib/deployment/p2p-perf-tier3/claim-agent.ts`;
+}

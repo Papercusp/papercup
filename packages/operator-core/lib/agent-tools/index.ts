@@ -337,6 +337,14 @@ import './work_items/co_locate';
 // Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
 // decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
 import './work_items/register-claim-authority-ops';
+// BOINC-style redundancy for HIGH-STAKES items (decentralized-dispatch-scaling P-014):
+// run one item independently on N Swarms then judge + adopt the best (reuse gym:judge).
+// Opt-in, off by default (PAPERCUSP_WORKITEM_REDUNDANCY + the per-item redundancy column).
+import './work_items/set_redundancy';
+import './work_items/claim_replica';
+import './work_items/record_replica_result';
+import './work_items/judge_redundancy';
+import './work_items/redundancy_status';
 
 // Fleet — structured concurrency / supervision over the spawn tree
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive
