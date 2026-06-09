@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**362 MCP tools** across **69 groups**.
+**363 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -52,7 +52,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
 | `hive` | 9 | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `status` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:write` |
 | `hooks` | 1 | `known` | `roles:read` |
-| `improvements` | 4 | `capture` `digest` `resolve` `triage` | `coord:read` `coord:write` |
+| `improvements` | 5 | `capture` `digest` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |
 | `instance` | 3 | `boot` `capture` `clone` | `harness:read` `harness:write` |
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
