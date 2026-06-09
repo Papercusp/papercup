@@ -33,6 +33,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // improvements:triage is the Queen's type-routing tool (self-learning P-020).
   'mcp__agentmcp__improvements:digest',
   'mcp__agentmcp__improvements:triage',
+  // The watchdog's own health/diagnostic read (watchdog-audit-2026-06-09
+  // P-010) — "is the auto-capture loop running, what did it see/decline?".
+  'mcp__agentmcp__improvements:watchdog-status',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner

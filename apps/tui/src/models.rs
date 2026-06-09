@@ -169,6 +169,22 @@ impl RosterEntry {
             .unwrap_or(false);
         has_wid || (same_host && self.pid.is_some())
     }
+
+    /// The dock pane command for this entry as a fleet bee (hive-agent-tabs P-004
+    /// / D-007). Flag-on, a claude bee with a recorded native session id resumes
+    /// as a real Claude TUI (`claude --resume <id>`) — the "looks like the Queen"
+    /// surface; otherwise (no session id / omp bee / flag-off) it stays the
+    /// read-only `pui watch-pane <owner>` live view. NB: the resume FORM + the live
+    /// attach are validated in the owner's live dock — a still-running `-p` session
+    /// can't be attached, so it's a between/after-turns takeover (D-007).
+    pub fn dock_pane_argv(&self, hive_agent_tabs: bool) -> Vec<String> {
+        if hive_agent_tabs {
+            if let Some(sid) = self.session_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                return vec!["claude".to_string(), "--resume".to_string(), sid.to_string()];
+            }
+        }
+        vec!["pui".to_string(), "watch-pane".to_string(), self.owner_id.clone()]
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

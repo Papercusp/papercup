@@ -202,3 +202,107 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
     expect(d.created[0].payload?.sourceRole).toBe('bee');
   });
 });
+
+describe('captureImprovement — watchdogKey-aware dedup (watchdog-audit P-004 / D-001)', () => {
+  it('stamps payload.watchdogKey on the created item', async () => {
+    const d = deps();
+    const res = await captureImprovement(
+      { title: 'Test failing repeatedly: lib/a.test.ts', kind: 'bug', watchdogKey: 'red-test:lib/a.test.ts' },
+      d,
+    );
+    expect(res.created).toBe(true);
+    expect(d.created[0].payload).toMatchObject({ watchdogKey: 'red-test:lib/a.test.ts' });
+  });
+
+  it('a title-similar candidate with a DIFFERENT watchdogKey never declines (the subset-title edge)', async () => {
+    // The nested-path shape: "lib/deep/a.test.ts" token-subsets "lib/a.test.ts"-style
+    // titles enough to clear the Jaccard bar, but the keys differ — distinct signals.
+    const other = existing({
+      id: 'EI-9',
+      title: 'Test failing repeatedly: packages/x/lib/sub/a.test.ts',
+      state: 'open',
+      payload: { watchdogKey: 'red-test:packages/x/lib/sub/a.test.ts' },
+    });
+    const d = deps({ found: [other] });
+    const res = await captureImprovement(
+      {
+        title: 'Test failing repeatedly: packages/x/lib/sub/a.test.ts and more packages/x/lib',
+        kind: 'bug',
+        dedupScope: 'open',
+        watchdogKey: 'red-test:packages/x/lib/sub-other/a.test.ts',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('a candidate WITHOUT a key stays in the net (legacy items still dedup)', async () => {
+    const legacy = existing({ id: 'EI-9', title: 'Test failing repeatedly: lib/a.test.ts', state: 'open', payload: null });
+    const d = deps({ found: [legacy] });
+    const res = await captureImprovement(
+      { title: 'Test failing repeatedly: lib/a.test.ts', kind: 'bug', dedupScope: 'open', watchdogKey: 'red-test:lib/a.test.ts' },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('likely-duplicate');
+  });
+});
+
+describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-005 / D-002)', () => {
+  const resolvedAt = '2026-06-09T00:00:00.000Z';
+  const resolvedDup = existing({
+    id: 'EI-7',
+    title: 'presence list dumps stale rows',
+    state: 'resolved',
+    updatedAt: resolvedAt,
+  });
+
+  it("dedupScope:'open' + evidence OLDER than the resolution → declined as stale-evidence", async () => {
+    const d = deps({ found: [resolvedDup] });
+    const res = await captureImprovement(
+      {
+        title: 'presence list dumps stale rows',
+        kind: 'bug',
+        dedupScope: 'open',
+        evidenceAt: '2026-06-08T00:00:00.000Z', // pre-fix lookback evidence
+      },
+      d,
+    );
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('stale-evidence');
+    expect(d.created).toHaveLength(0);
+  });
+
+  it("dedupScope:'open' + evidence NEWER than the resolution → re-files (real regression)", async () => {
+    const d = deps({ found: [resolvedDup] });
+    const res = await captureImprovement(
+      {
+        title: 'presence list dumps stale rows',
+        kind: 'bug',
+        dedupScope: 'open',
+        evidenceAt: '2026-06-09T12:00:00.000Z',
+      },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('no evidenceAt (live-state signal) keeps the old regression semantics — re-file', async () => {
+    const d = deps({ found: [resolvedDup] });
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open' },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+
+  it('an unparseable resolution timestamp fails open (re-file beats suppressing a regression)', async () => {
+    const weird = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'resolved', updatedAt: 'not-a-date' });
+    const d = deps({ found: [weird] });
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open', evidenceAt: '2026-06-08T00:00:00.000Z' },
+      d,
+    );
+    expect(res.created).toBe(true);
+  });
+});

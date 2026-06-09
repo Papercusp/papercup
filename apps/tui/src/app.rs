@@ -1020,6 +1020,11 @@ pub struct App {
     /// True only in the dock's chat-pane: drive the reactive agent stack (a
     /// watch pane per active bee + an interactive pane per new local launch).
     pub dock_agent_panes: bool,
+    /// HIVE_AGENT_TABS (hive-agent-tabs P-004): set at startup by the dock driver.
+    /// When on, each claude bee renders as a `claude --resume <session_id>` Claude
+    /// TUI instead of the read-only `pui watch-pane` (RosterEntry::dock_pane_argv).
+    /// Default off → current behavior.
+    pub hive_agent_tabs: bool,
     /// Owner ids the dock has already opened a watch pane for (dedup; pruned
     /// when the agent leaves the roster so a returning bee re-panes).
     pub watched_panes: std::collections::HashSet<String>,
@@ -1253,6 +1258,7 @@ impl App {
             watch_input: String::new(),
             watch_sending: false,
             dock_agent_panes: false,
+            hive_agent_tabs: false,
             watched_panes: std::collections::HashSet::new(),
             lexicon: crate::lexicon::Lexicon::default(),
             chat_messages: Vec::new(),
@@ -2236,7 +2242,9 @@ impl App {
                 .map(|a| format!("{} · {}", a, short_owner(&r.owner_id)))
                 .unwrap_or_else(|| r.label.clone());
             out.push(
-                crate::mux::PaneSpec::new(["pui", "watch-pane", r.owner_id.as_str()])
+                // P-004: flag-on, a claude bee resumes as a real Claude TUI
+                // (claude --resume <session_id>); else the read-only watch-pane.
+                crate::mux::PaneSpec::new(r.dock_pane_argv(self.hive_agent_tabs))
                     .titled(title)
                     .stacked_autoclose(),
             );

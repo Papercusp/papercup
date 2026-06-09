@@ -385,6 +385,11 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
  * red-test: a test file that failed ≥ N times in the window AND whose LATEST run
  * in the window is still a fail — i.e. repeatedly red and currently red, not a
  * one-off dev iteration. Carries the file path (→ the protected-path gate).
+ *
+ * Workspace scoping (audit P-013): `test_runs` has NO workspace column, so this
+ * collector is inherently BOX-GLOBAL — every workspace's tick sees the same
+ * red tests. Acceptable on a one-box install; on a multi-workspace host the
+ * cross-host tick lock + key dedup keep it to one filed item regardless.
  */
 export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
   const windowHours = opts.redTestWindowHours ?? 6;
@@ -805,7 +810,7 @@ export function classifySpawnError(message: string | null | undefined): SpawnErr
   if (/timed?\s*out|timeout/i.test(m)) return 'timeout';
   if (/econnrefused|econnreset|enotfound|socket|network|fetch failed/i.test(m)) return 'network';
   if (/auth|credential|api.?key|401|403|unauthorized|forbidden/i.test(m)) return 'auth';
-  if (/enoent|no such file|not found|missing/i.test(m)) return 'missing-file';
+  if (/enoent|no such file|file not found/i.test(m)) return 'missing-file';
   if (/invalid|config|schema|parse|json/i.test(m)) return 'config';
   return 'other';
 }
