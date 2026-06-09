@@ -10,6 +10,7 @@ import { useFlag } from '@/lib/flag-hooks';
 const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/oracle':     FLAGS.ORACLE,
+  '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
 };
 
 interface SettingsLink {
@@ -72,6 +73,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/meridian', label: 'Meridian', keywords: ['meridian', 'telemetry', 'profiles', 'iframe'], advanced: true },
       { href: '/settings/plugin-runtime', label: 'Plugin runtime', keywords: ['plugin', 'runtime', 'hooks', 'load errors', 'cache'], advanced: true },
       { href: '/settings/backups', label: 'Backups', keywords: ['backup', 'backups', 'kopia', 'snapshot', 'restore', 'retention', 'dedup'], advanced: true },
+      { href: '/settings/prompt-studio', label: 'Prompt Studio', keywords: ['prompt', 'studio', 'playbook', 'system prompt', 'psu', 'agent prompt', 'overlay', 'project guide', 'preview', 'collaborator'], advanced: true },
     ],
   },
 ];
@@ -117,10 +119,12 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const oracleEnabled = useFlag(FLAGS.ORACLE);
+  const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
 
   const flagEnabled: Record<FlagKey, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.ORACLE]: oracleEnabled,
+    [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
     [FLAGS.RUST_PORT_UI]: true,
     [FLAGS.HARNESS_PHASES]: true,
   };

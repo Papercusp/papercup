@@ -33,6 +33,7 @@ import { Route as SettingsVoiceRouteImport } from './routes/settings/voice'
 import { Route as SettingsShortcutsRouteImport } from './routes/settings/shortcuts'
 import { Route as SettingsSetupWizardRouteImport } from './routes/settings/setup-wizard'
 import { Route as SettingsPublishingRouteImport } from './routes/settings/publishing'
+import { Route as SettingsPromptStudioRouteImport } from './routes/settings/prompt-studio'
 import { Route as SettingsProfileRouteImport } from './routes/settings/profile'
 import { Route as SettingsPluginRuntimeRouteImport } from './routes/settings/plugin-runtime'
 import { Route as SettingsPersonalizationRouteImport } from './routes/settings/personalization'
@@ -205,6 +206,11 @@ const SettingsSetupWizardRoute = SettingsSetupWizardRouteImport.update({
 const SettingsPublishingRoute = SettingsPublishingRouteImport.update({
   id: '/publishing',
   path: '/publishing',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsPromptStudioRoute = SettingsPromptStudioRouteImport.update({
+  id: '/prompt-studio',
+  path: '/prompt-studio',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsProfileRoute = SettingsProfileRouteImport.update({
@@ -530,6 +536,7 @@ export interface FileRoutesByFullPath {
   '/settings/personalization': typeof SettingsPersonalizationRoute
   '/settings/plugin-runtime': typeof SettingsPluginRuntimeRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/prompt-studio': typeof SettingsPromptStudioRoute
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
@@ -608,6 +615,7 @@ export interface FileRoutesByTo {
   '/settings/personalization': typeof SettingsPersonalizationRoute
   '/settings/plugin-runtime': typeof SettingsPluginRuntimeRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/prompt-studio': typeof SettingsPromptStudioRoute
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
@@ -688,6 +696,7 @@ export interface FileRoutesById {
   '/settings/personalization': typeof SettingsPersonalizationRoute
   '/settings/plugin-runtime': typeof SettingsPluginRuntimeRoute
   '/settings/profile': typeof SettingsProfileRoute
+  '/settings/prompt-studio': typeof SettingsPromptStudioRoute
   '/settings/publishing': typeof SettingsPublishingRoute
   '/settings/setup-wizard': typeof SettingsSetupWizardRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
@@ -769,6 +778,7 @@ export interface FileRouteTypes {
     | '/settings/personalization'
     | '/settings/plugin-runtime'
     | '/settings/profile'
+    | '/settings/prompt-studio'
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
@@ -847,6 +857,7 @@ export interface FileRouteTypes {
     | '/settings/personalization'
     | '/settings/plugin-runtime'
     | '/settings/profile'
+    | '/settings/prompt-studio'
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
@@ -926,6 +937,7 @@ export interface FileRouteTypes {
     | '/settings/personalization'
     | '/settings/plugin-runtime'
     | '/settings/profile'
+    | '/settings/prompt-studio'
     | '/settings/publishing'
     | '/settings/setup-wizard'
     | '/settings/shortcuts'
@@ -1172,6 +1184,13 @@ declare module '@tanstack/react-router' {
       path: '/publishing'
       fullPath: '/settings/publishing'
       preLoaderRoute: typeof SettingsPublishingRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/prompt-studio': {
+      id: '/settings/prompt-studio'
+      path: '/prompt-studio'
+      fullPath: '/settings/prompt-studio'
+      preLoaderRoute: typeof SettingsPromptStudioRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/profile': {
@@ -1580,6 +1599,7 @@ interface SettingsRouteChildren {
   SettingsPersonalizationRoute: typeof SettingsPersonalizationRoute
   SettingsPluginRuntimeRoute: typeof SettingsPluginRuntimeRoute
   SettingsProfileRoute: typeof SettingsProfileRoute
+  SettingsPromptStudioRoute: typeof SettingsPromptStudioRoute
   SettingsPublishingRoute: typeof SettingsPublishingRoute
   SettingsSetupWizardRoute: typeof SettingsSetupWizardRoute
   SettingsShortcutsRoute: typeof SettingsShortcutsRoute
@@ -1605,6 +1625,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsPersonalizationRoute: SettingsPersonalizationRoute,
   SettingsPluginRuntimeRoute: SettingsPluginRuntimeRoute,
   SettingsProfileRoute: SettingsProfileRoute,
+  SettingsPromptStudioRoute: SettingsPromptStudioRoute,
   SettingsPublishingRoute: SettingsPublishingRoute,
   SettingsSetupWizardRoute: SettingsSetupWizardRoute,
   SettingsShortcutsRoute: SettingsShortcutsRoute,

@@ -166,7 +166,7 @@ export async function spawnInvokeOnce(
    *  fire-and-forgets the spawn and polls the result FILE for completion (the
    *  scoper). Routing such a caller here (rather than a private raw spawn) is
    *  what keeps the scoper governed by the one chokepoint (P-008 / D-013). */
-  opts?: { signal?: AbortSignal; timeoutMs?: number; resultPath?: string },
+  opts?: { signal?: AbortSignal; timeoutMs?: number; resultPath?: string; forceSessionId?: string },
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
   // child via env-transport (workspace PG is canonical; config.json is the
@@ -213,6 +213,10 @@ export async function spawnInvokeOnce(
       extras,
       extraEnv: resolvedExtraEnv,
       resultPath: opts?.resultPath,
+      // P-016/D-007: when set (claude bees), bakes `--session-id <uuid>` into the
+      // agent command so the headless run is resumable by exact id for the
+      // hive-tabs bee attach (`claude --resume`). No-op for omp/codex.
+      forceSessionId: opts?.forceSessionId,
     });
 
     // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →

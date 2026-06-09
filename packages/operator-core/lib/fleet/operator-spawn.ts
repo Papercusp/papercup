@@ -29,6 +29,7 @@ import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
+import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import {
   heartbeatSpawns,
@@ -384,6 +385,24 @@ export async function spawnAgentInHarness(
     status: 'running',
   });
 
+  // P-016/D-007: claude bees get a forced native session id, recorded here so the
+  // unified hive-tabs bee pane can attach `claude --resume <session_id>` (P-004).
+  // resolveSpawnBackendModel predicts the backend buildInvokeOnce will run (reads
+  // AGENT_CMD/AGENT_MODELS for the role); omp resumes by thread id + codex by
+  // rollout, so they mint none. The UPDATE is best-effort — a not-yet-migrated DB
+  // (session_id from mig 203) must never break a spawn.
+  const { backend } = resolveSpawnBackendModel(role);
+  const forceSessionId = backend === 'claude-code' ? randomUUID() : undefined;
+  if (forceSessionId) {
+    try {
+      await sql`UPDATE harness_shared.spawned_agents SET session_id = ${forceSessionId} WHERE spawn_id = ${spawnId}`;
+    } catch (e) {
+      console.warn(
+        `[operator-spawn] record session_id failed (mig 203 pending?): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   const extras = [...(input.extras ?? [])];
   if (input.featureId) extras.push(`FEATURE_ID=${input.featureId}`);
   if (input.chunkId) extras.push(`CHUNK_ID=${input.chunkId}`);
@@ -420,7 +439,7 @@ export async function spawnAgentInHarness(
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
   let finalStatus: string | null = null;
-  void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal })
+  void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal, forceSessionId })
     .then((r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
       return finishSpawn(sql, {

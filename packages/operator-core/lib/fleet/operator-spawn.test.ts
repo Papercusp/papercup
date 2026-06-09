@@ -129,6 +129,42 @@ describe('spawnAgentInHarness — happy path', () => {
   });
 });
 
+describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-007)', () => {
+  const findUpdate = () => {
+    const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
+    return sqlMock.mock.calls.find(
+      (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('UPDATE harness_shared.spawned_agents'),
+    );
+  };
+
+  it('mints + records a session_id and threads forceSessionId for a claude backend', async () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    try {
+      const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+      expect(res.ok).toBe(true);
+
+      // forceSessionId (a uuid) is threaded to the launcher so buildInvokeOnce bakes --session-id.
+      const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+      expect(opts?.forceSessionId).toMatch(/[0-9a-f-]{36}/);
+
+      // ...and recorded on the nursery row via the best-effort UPDATE — same id.
+      const updateCall = findUpdate();
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toBe(opts?.forceSessionId);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('mints NO session id for the default omp backend (omp resumes by thread id)', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'validator' });
+    expect(res.ok).toBe(true);
+    const opts = vi.mocked(spawnInvokeOnce).mock.calls[0][4] as { forceSessionId?: string } | undefined;
+    expect(opts?.forceSessionId).toBeUndefined();
+    expect(findUpdate()).toBeUndefined();
+  });
+});
+
 describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', () => {
   it('passes an AbortSignal to spawnInvokeOnce and abortLocalSpawn fires it', async () => {
     // Hold the child open so the spawn stays "live" (registered in the abort map)
