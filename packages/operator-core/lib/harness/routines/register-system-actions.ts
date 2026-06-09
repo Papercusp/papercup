@@ -24,6 +24,10 @@
  *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
  *     not-live, not-resumable sessions past a retention window. Seeded INACTIVE
  *     (seed-session-dir-gc-routine.ts).
+ *   - `system:wake-brain` — the autonomous-Queen cadence (hive-agent-tabs-psu-tui
+ *     P-005 / D-006). Wakes the EXISTING pinned brain session on cadence so it
+ *     takes autonomous turns. Flag-gated by HIVE_AGENT_TABS (OFF → no-op); the
+ *     cadence routine seed + live verify are the remaining P-005 wip.
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -32,3 +36,4 @@ import './improvement-actions';
 import './p2p-perf-actions';
 import '../../scout/register-scout-action';
 import './session-dir-gc-action';
+import './wake-brain-action';

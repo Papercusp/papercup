@@ -98,6 +98,8 @@ async function recordInvocationImpl(input: {
   outputRef?: string | null;
   outputSize?: number | null;
   errorMessage?: string | null;
+  /** Dispatcher error CLASS (P-007): persisted to harness_shared.tool_invocations.error_code. NULL on success. */
+  errorCode?: string | null;
   args?: unknown;
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
@@ -123,9 +125,9 @@ async function recordInvocationImpl(input: {
             feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
             window_key, duration_ms, status, output_ref, output_size,
             error_message, args_json, transport, event_count, metadata_json,
-            principal_kind, principal_auth_method, principal_trust)
+            principal_kind, principal_auth_method, principal_trust, error_code)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-                 $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23)`,
+                 $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24)`,
         [
           input.ctx.workspaceId,
           input.ctx.harnessSlug ?? '',
@@ -171,6 +173,7 @@ async function recordInvocationImpl(input: {
           p?.kind ?? null,
           p?.authMethod ?? null,
           p?.trust ?? null,
+          input.errorCode ?? null,
         ],
       );
     });

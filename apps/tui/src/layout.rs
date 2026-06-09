@@ -212,8 +212,8 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
         format!("\n            args {quoted}")
     };
     // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
-    // the-hive pack: operator → sentinel-bee, brain → queen (owner naming,
-    // 2026-06-07 — the brain IS the Queen; the chat is the hive's sentinel).
+    // the-hive pack: operator → sentinel, brain → queen (owner naming, 2026-06-07;
+    // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     let brain_name = kdl_pane_name(&lex.lex("brain"), "brain");
     format!(

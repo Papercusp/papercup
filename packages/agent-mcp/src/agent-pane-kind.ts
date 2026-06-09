@@ -18,7 +18,7 @@
  *   - sentinel  — the always-on, owner-facing operator persona: the `operator`
  *                 role (operator-converse). Responsive. NB the COLLISION (D-001):
  *                 the *display* "Sentinel" == the operator persona (matching the
- *                 lexicon `operator → Sentinel Bee`), which is DISTINCT from the
+ *                 lexicon `operator → Sentinel`), which is DISTINCT from the
  *                 `sentinel` *role* (a fleet watcher → `bee` kind above). The
  *                 owner-facing tab named "Sentinel" is the operator persona.
  *   - planner   — an agent launched from Create → New plan (P-006). Responsive.

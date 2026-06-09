@@ -26,7 +26,8 @@ describe('resolveTerm', () => {
 
   it('lowercases multi-word labels word-by-word', () => {
     expect(resolveTerm('the-hive', 'substrate', { lower: true })).toBe('hive mind');
-    expect(resolveTerm('the-hive', 'operator', { lower: true })).toBe('sentinel bee');
+    // (operator is now single-word "Sentinel" — substrate covers the multi-word case;
+    //  renamed from "Sentinel Bee", hive-agent-tabs P-003.)
   });
 
   it('accepts an explicit BrandPack object', () => {
