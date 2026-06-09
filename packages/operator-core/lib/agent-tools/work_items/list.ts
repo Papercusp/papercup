@@ -42,8 +42,8 @@ export default defineTool({
   profile: 'engineer',
   description: 'List work-items across kinds (feature/research-task/chunk/bug/change). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly.',
   guidance: {
-    when: 'You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent\'s chunks.',
-    chaining: 'work_items:list → work_items:get { id } for detail; work_items:claim to take one.',
+    when: 'You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent\'s chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Queen can read the whole backlog\'s order in one call before steering it with work_items:set_priority.',
+    chaining: 'work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,

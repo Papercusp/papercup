@@ -41,28 +41,34 @@ import { CSS } from '@dnd-kit/utilities';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { setItemStatus, type PlanItem, type ItemStatus } from './plans-api';
 
+// One column per plan-item status — the SAME six tokens `ItemStatus` /
+// plans:set-status use, so the board is 1:1 with the statuses in the plan
+// markdown. Any item whose status somehow isn't one of these still gets its own
+// trailing column (see `columns` below), so an item is never silently hidden.
 const KANBAN_COLS: Array<{ status: ItemStatus; label: string; accent: string }> = [
   { status: 'todo', label: 'To Do', accent: 'var(--fg-mute)' },
   { status: 'wip', label: 'In Progress', accent: 'var(--accent)' },
+  { status: 'blocked', label: 'Blocked', accent: 'var(--error, #f87171)' },
   { status: 'needs-human', label: 'Needs Human', accent: 'var(--warning)' },
   { status: 'done', label: 'Done', accent: 'var(--success)' },
+  { status: 'dropped', label: 'Dropped', accent: 'color-mix(in oklab, var(--fg-mute), transparent 30%)' },
 ];
 const COL_STATUSES = KANBAN_COLS.map((c) => c.status);
 const isColStatus = (s: string): s is ItemStatus => (COL_STATUSES as string[]).includes(s);
 
-/** Normalized shape the board renders — works for both the jsonb rows (which
- *  carry the stored `status` token) and the plans:get `PlanItem` snapshot
- *  (which carries `storedStatus`). */
+/** Normalized shape the board renders. plans:get items carry `storedStatus`
+ *  (the exact token in the plan markdown — what a drag flips); raw jsonb rows
+ *  carry `status`. Bucket by the STORED token so the column mirrors the plan. */
 interface BoardItem {
   id: string;
   text: string;
-  status: ItemStatus;
+  status: string;
 }
 
 function normalize(raw: unknown): BoardItem | null {
   const it = raw as { id?: string; text?: string; status?: string; storedStatus?: string };
   if (!it || typeof it.id !== 'string') return null;
-  const status = (it.status ?? it.storedStatus ?? 'todo') as ItemStatus;
+  const status = it.storedStatus ?? it.status ?? 'todo';
   return { id: it.id, text: typeof it.text === 'string' ? it.text : '', status };
 }
 
@@ -88,7 +94,7 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
 
   // Optimistic status overrides — applied instantly on drop, cleared once the
   // live data agrees (the set-status invalidate round-trips back here).
-  const [optimistic, setOptimistic] = useState<Record<string, ItemStatus>>({});
+  const [optimistic, setOptimistic] = useState<Record<string, string>>({});
   const statusSig = server.map((i) => `${i.id}:${i.status}`).join('|');
   useEffect(() => {
     setOptimistic((prev) => {
@@ -112,21 +118,29 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
     [server, optimistic],
   );
 
+  // The six known columns, then a trailing column for any unexpected status
+  // present in the data — so EVERY plan item lands in exactly one column and
+  // none is ever silently hidden.
+  const columns = useMemo(() => {
+    const extra = [...new Set(view.map((i) => i.status))].filter((s) => !isColStatus(s));
+    return [...KANBAN_COLS, ...extra.map((s) => ({ status: s, label: s, accent: 'var(--fg-mute)' }))];
+  }, [view]);
+
   const byStatus = useMemo(() => {
-    const m = new Map<ItemStatus, BoardItem[]>();
-    for (const s of COL_STATUSES) m.set(s, []);
+    const m = new Map<string, BoardItem[]>();
+    for (const c of columns) m.set(c.status, []);
     for (const it of view) m.get(it.status)?.push(it);
     return m;
-  }, [view]);
+  }, [view, columns]);
 
   const setStatusSync = useSyncMutate('plans.setStatus', setItemStatus);
 
-  const move = async (id: string, to: ItemStatus) => {
+  const move = async (id: string, to: string) => {
     const cur = view.find((i) => i.id === id);
     if (!cur || cur.status === to) return;
     setOptimistic((o) => ({ ...o, [id]: to }));
     try {
-      await setStatusSync({ slug, itemId: id, status: to });
+      await setStatusSync({ slug, itemId: id, status: to as ItemStatus });
       onChanged?.();
     } catch {
       setOptimistic((o) => {
@@ -145,9 +159,9 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeItem = activeId ? view.find((i) => i.id === activeId) ?? null : null;
 
-  const columnOf = (id: string): ItemStatus | null => {
-    if (isColStatus(id)) return id; // dropped onto an empty column
-    return view.find((i) => i.id === id)?.status ?? null;
+  const columnOf = (id: string): string | null => {
+    if (columns.some((c) => c.status === id)) return id; // dropped onto a column
+    return view.find((i) => i.id === id)?.status ?? null; // dropped onto a card
   };
 
   function onDragStart(e: DragStartEvent) {
@@ -169,7 +183,7 @@ export default function PlanKanbanView({ slug, items, onChanged }: PlanKanbanVie
       onDragEnd={onDragEnd}
     >
       <div style={{ display: 'flex', gap: 10, overflow: 'auto', padding: '8px 0', minHeight: 200 }}>
-        {KANBAN_COLS.map((col) => (
+        {columns.map((col) => (
           <Column
             key={col.status}
             label={col.label}
@@ -194,9 +208,9 @@ function Column({
 }: {
   label: string;
   accent: string;
-  status: ItemStatus;
+  status: string;
   items: BoardItem[];
-  pending: Record<string, ItemStatus>;
+  pending: Record<string, string>;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   return (
