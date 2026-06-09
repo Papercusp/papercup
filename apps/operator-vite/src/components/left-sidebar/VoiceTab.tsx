@@ -25,14 +25,14 @@ export default function VoiceTab({ active }: { active: boolean }) {
     <div className="pclsb-voice" data-testid="left-sidebar-voice">
       <div className="pclsb-panel__bar pclsb-voice__bar">
         <span className="pclsb-panel__bar-label">
-          voice{harnessSlug ? ` · ${harnessSlug}` : ''}
+          peers{harnessSlug ? ` · ${harnessSlug}` : ''}
         </span>
         <span className="pclsb-panel__bar-spacer" />
         <button
           type="button"
           className="pclsb-chipbtn"
           onClick={() => navigateClient('/settings/voice')}
-          aria-label="Voice settings: engines, role voices, spend"
+          aria-label="Peer audio settings: engines, role voices, spend"
         >
           <Settings2 size={12} aria-hidden="true" /> settings
         </button>
@@ -45,10 +45,10 @@ export default function VoiceTab({ active }: { active: boolean }) {
           {videoOn
             ? harnessSlug
               ? ''
-              : 'Select a shared harness to join its voice channel.'
+              : 'Select a shared harness to join its peer channel.'
             : voiceOn
               ? ''
-              : 'Voice/video channels are flag-gated (papercusp-voice-channels / papercusp-video-channels) — flip them in /admin/features.'}
+              : 'Peer audio/video channels are flag-gated (papercusp-voice-channels / papercusp-video-channels) — flip them in /admin/features.'}
         </div>
       )}
     </div>

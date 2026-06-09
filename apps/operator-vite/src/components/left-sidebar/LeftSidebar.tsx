@@ -32,7 +32,7 @@ const HivesTab = lazy(() => import('./HivesTab'));
 
 const TABS = [
   { id: 'swarm', label: 'Swarm', icon: Users, render: (a: boolean) => <SwarmTab active={a} /> },
-  { id: 'voice', label: 'Voice', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
+  { id: 'voice', label: 'Peers', icon: AudioLines, render: (a: boolean) => <VoiceTab active={a} /> },
   { id: 'hives', label: 'Hives', icon: Network, render: (a: boolean) => <HivesTab active={a} /> },
 ] as const;
 

@@ -389,11 +389,12 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       {tab === 'editor' ? (
         <>
       {!editing ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 0 4px' }}>
+        <div className="pc-plan-editor-tools">
           <button
             type="button"
+            className="pc-plan-editor-tools__btn"
             onClick={() => setItemView(itemView === 'kanban' ? 'list' : 'kanban')}
-            style={{ fontSize: '0.78em', padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: itemView === 'kanban' ? 'var(--surface-2)' : 'none', cursor: 'pointer', color: 'var(--fg-mute)' }}
+            aria-pressed={itemView === 'kanban'}
           >
             {itemView === 'kanban' ? '☰ List' : '⊞ Kanban'}
           </button>
