@@ -77,6 +77,8 @@ import './hive/get';
 import './hive/create';
 import './hive/dissolve';
 import './hive/update';
+// cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:
+import './hive/cross_grant';
 import './chat/ask_choice';
 import './search/fulltext';
 import './search/semantic';
