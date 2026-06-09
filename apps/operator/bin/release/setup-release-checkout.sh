@@ -143,6 +143,10 @@ if need_node_modules; then
     mkdir -p "$(dirname "$dest")"
     cp -al "$nm" "$dest"
   done < <(find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print)
+  # Record WHICH dep state was just copied: package-lock.json is gitignored, so
+  # the checkout above never updates the release tree's copy — without this the
+  # `auto` cmp stays permanently dirty and every deploy re-copies node_modules.
+  [ -f "$INTEGRATION_ROOT/package-lock.json" ] && cp "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/package-lock.json"
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"

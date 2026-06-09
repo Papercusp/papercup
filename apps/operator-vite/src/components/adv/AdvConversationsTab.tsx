@@ -88,9 +88,34 @@ function fmtRel(v: string | number | null | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+/** Shimmering placeholder rows shown while a rail / stream loads. */
+function LoadingRows({ rows = 4, label = 'Loading' }: { rows?: number; label?: string }) {
+  return (
+    <div className="pc-advconv__skeleton" role="status" aria-label={label}>
+      {Array.from({ length: rows }, (_, i) => (
+        <span key={i} className="pc-advconv__skeleton-row" aria-hidden />
+      ))}
+    </div>
+  );
+}
+
 // ─── View switch ─────────────────────────────────────────────────────
 const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'operator', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
+
+const VIEW_DEFS: ReadonlyArray<{
+  id: ConvView;
+  label: string;
+  desc: string;
+  Icon: typeof MessageCircle;
+}> = [
+  { id: 'threads', label: 'Threads', desc: 'Questions & discussions between you and the fleet — reply, accept answers, promote to issues.', Icon: MessageCircle },
+  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord discussions attached to issues and conversations.', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chats', desc: 'Multi-turn pipeline transcripts per role and work-item, with tokens and cost.', Icon: Bot },
+  { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
+  { id: 'operator', label: 'Operator', desc: 'Your chat sessions with the operator.', Icon: UserRound },
+  { id: 'feed', label: 'Activity log', desc: 'Raw coordination events for debugging, newest first.', Icon: Radio },
+];
 
 export default function AdvConversationsTab() {
   const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
@@ -99,93 +124,29 @@ export default function AdvConversationsTab() {
     void setHeaderKinds(['message', 'escalation']);
     void setView('feed');
   };
+  const activeDef = VIEW_DEFS.find((v) => v.id === view) ?? VIEW_DEFS[0];
   return (
     <div className="pc-coord pc-advconv">
       <header className="pc-advconv__header">
         <div className="pc-advconv__header-copy">
           <h1>Conversations</h1>
-          <p>Questions, discussions, and agent messages that may need your attention.</p>
+          <p>{activeDef.desc}</p>
         </div>
         <NeedsYouSummary onOpen={openNeedsYou} />
         <div className="pc-advconv__viewtabs" role="tablist" aria-label="Conversations view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'threads'}
-            className={`pc-advconv__viewtab${view === 'threads' ? ' is-active' : ''}`}
-            onClick={() => void setView('threads')}
-          >
-            <MessageCircle size={13} aria-hidden />
-            <span>
-              Threads
-              <em>questions &amp; discussions</em>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'deliberations'}
-            className={`pc-advconv__viewtab${view === 'deliberations' ? ' is-active' : ''}`}
-            onClick={() => void setView('deliberations')}
-          >
-            <MessagesSquare size={13} aria-hidden />
-            <span>
-              Deliberations
-              <em>threaded discussions</em>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'agentchats'}
-            className={`pc-advconv__viewtab${view === 'agentchats' ? ' is-active' : ''}`}
-            onClick={() => void setView('agentchats')}
-          >
-            <Bot size={13} aria-hidden />
-            <span>
-              Agent chats
-              <em>pipeline transcripts</em>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'messages'}
-            className={`pc-advconv__viewtab${view === 'messages' ? ' is-active' : ''}`}
-            onClick={() => void setView('messages')}
-          >
-            <Mail size={13} aria-hidden />
-            <span>
-              Messages
-              <em>agent ↔ agent</em>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'operator'}
-            className={`pc-advconv__viewtab${view === 'operator' ? ' is-active' : ''}`}
-            onClick={() => void setView('operator')}
-          >
-            <UserRound size={13} aria-hidden />
-            <span>
-              Operator
-              <em>your chats</em>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'feed'}
-            className={`pc-advconv__viewtab${view === 'feed' ? ' is-active' : ''}`}
-            onClick={() => void setView('feed')}
-          >
-            <Radio size={13} aria-hidden />
-            <span>
-              Activity log
-              <em>raw events</em>
-            </span>
-          </button>
+          {VIEW_DEFS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={view === id}
+              className={`pc-advconv__viewtab${view === id ? ' is-active' : ''}`}
+              onClick={() => void setView(id)}
+            >
+              <Icon size={13} aria-hidden />
+              <span>{label}</span>
+            </button>
+          ))}
         </div>
       </header>
       {view === 'feed' ? (
@@ -258,17 +219,17 @@ const FEED_KIND_GROUPS = [
  *  to:['*']); kept distinct so the firehose's all-hands traffic stands out. */
 const KIND_COLOR: Record<string, string> = {
   message: 'var(--accent-strong, #7dd3fc)',
-  ack: '#94a3b8',
-  notify: '#fbbf24',
-  broadcast: '#f472b6',
-  handoff: '#a78bfa',
-  handoff_accepted: '#c4b5fd',
-  escalation: '#f87171',
-  escalation_resolved: '#86efac',
-  plan_event: '#5eead4',
+  ack: 'var(--fg-mute, #7f9bb4)',
+  notify: 'var(--warn, #fbbf24)',
+  broadcast: '#f472b6', // categorical — no semantic token
+  handoff: '#a78bfa', // categorical — no semantic token
+  handoff_accepted: '#c4b5fd', // categorical — no semantic token
+  escalation: 'var(--bad, #f87171)',
+  escalation_resolved: 'var(--good, #86efac)',
+  plan_event: '#5eead4', // categorical — no semantic token
   subscribe: 'var(--accent, #38bdf8)',
-  unsubscribe: '#64748b',
-  contract: '#fcd34d',
+  unsubscribe: 'var(--fg-mute, #64748b)',
+  contract: '#fcd34d', // categorical — no semantic token
 };
 
 interface FeedRow {
@@ -609,7 +570,7 @@ function FeedView() {
       {/* The stream */}
       <div className="pc-advfeed__stream">
         {head.loading && allRows.length === 0 ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading the coordination feed…</p>
+          <LoadingRows rows={6} label="Loading the coordination feed" />
         ) : head.error ? (
           <p className="pc-coord__empty pc-advconv__empty">Activity log unavailable: {head.error.message}</p>
         ) : roots.length === 0 ? (
@@ -712,7 +673,7 @@ function FeedItem({
             {row.plan_slug}
           </button>
         )}
-        {children.length > 0 && <span className="pc-advfeed__replyn">{children.length} reply{children.length > 1 ? 'ies' : ''}</span>}
+        {children.length > 0 && <span className="pc-advfeed__replyn">{children.length} {children.length === 1 ? 'reply' : 'replies'}</span>}
         <span className="pc-advfeed__rel">{relTime(row.ts)}</span>
       </div>
       {open && hasDetail && (
@@ -886,16 +847,16 @@ function ThreadsView() {
           <span>Question &amp; discussion threads</span>
           <strong>{loading ? '…' : visible.length}</strong>
         </div>
-        <div className="pc-coord__filters" role="tablist" aria-label="State filter">
+        <div className="pc-coord__filters" role="group" aria-label="State filter">
           {CONV_STATES.map((s) => (
-            <button key={s} type="button" className={`pc-coord__chip${state === s ? ' is-active' : ''}`} onClick={() => void setState(s)}>
+            <button key={s} type="button" aria-pressed={state === s} className={`pc-coord__chip${state === s ? ' is-active' : ''}`} onClick={() => void setState(s)}>
               {s}
             </button>
           ))}
         </div>
-        <div className="pc-coord__filters" role="tablist" aria-label="Kind filter">
+        <div className="pc-coord__filters" role="group" aria-label="Kind filter">
           {CONV_KINDS.map((k) => (
-            <button key={k} type="button" className={`pc-coord__chip${kind === k ? ' is-active' : ''}`} onClick={() => void setKind(k)}>
+            <button key={k} type="button" aria-pressed={kind === k} className={`pc-coord__chip${kind === k ? ' is-active' : ''}`} onClick={() => void setKind(k)}>
               {k}
             </button>
           ))}
@@ -910,19 +871,19 @@ function ThreadsView() {
           </button>
         </div>
         {allTopics.length > 0 && (
-          <div className="pc-coord__filters" role="tablist" aria-label="Topic filter">
-            <button type="button" className={`pc-coord__chip${!topic ? ' is-active' : ''}`} onClick={() => void setTopic('')}>
+          <div className="pc-coord__filters" role="group" aria-label="Topic filter">
+            <button type="button" aria-pressed={!topic} className={`pc-coord__chip${!topic ? ' is-active' : ''}`} onClick={() => void setTopic('')}>
               all topics
             </button>
             {allTopics.map((t) => (
-              <button key={t} type="button" className={`pc-coord__chip${topic === t ? ' is-active' : ''}`} onClick={() => void setTopic(topic === t ? '' : t)}>
+              <button key={t} type="button" aria-pressed={topic === t} className={`pc-coord__chip${topic === t ? ' is-active' : ''}`} onClick={() => void setTopic(topic === t ? '' : t)}>
                 #{t}
               </button>
             ))}
           </div>
         )}
         {loading ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+          <LoadingRows />
         ) : visible.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No threads match</strong>
@@ -934,13 +895,13 @@ function ThreadsView() {
               <span className="pc-advconv__threadtop">
                 <span className={`pc-coord__kind pc-coord__kind--${c.kind}`}>{c.kind}</span>
                 <span className={`pc-advconv__statepill pc-advconv__statepill--${c.state}`}>{c.state}</span>
+                <span className="pc-advconv__rowdate">{dateStamp(c.created_ts)}</span>
               </span>
               <span className="pc-coord__row-title">{c.title ?? c.id}</span>
               <span className="pc-coord__row-meta">
                 {c.harness_slug ? c.harness_slug : 'workspace'}
                 {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
               </span>
-              <span className="pc-advconv__rowdate">{dateStamp(c.created_ts)}</span>
               {(c.topics ?? []).length > 0 && (
                 <span className="pc-advconv__rowtags">
                   {(c.topics ?? []).map((t) => (
@@ -1118,7 +1079,7 @@ function DeliberationsView() {
           </button>
         </div>
         {loading ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+          <LoadingRows />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No deliberations</strong>
@@ -1130,13 +1091,13 @@ function DeliberationsView() {
               <span className="pc-advconv__threadtop">
                 <span className="pc-coord__kind">{t.parent_kind ?? 'thread'}</span>
                 {t.parent_ref ? <span className="pc-advconv__statepill">{t.parent_ref}</span> : null}
+                <span className="pc-advconv__rowdate">{fmtTs(t.last_post_at ?? t.created_at)}</span>
               </span>
               <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
               <span className="pc-coord__row-meta">
                 {t.harness_slug ?? 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
                 {t.created_by ? ` · ${t.created_by}` : ''}
               </span>
-              <span className="pc-advconv__rowdate">{fmtTs(t.last_post_at ?? t.created_at)}</span>
             </button>
           ))
         )}
@@ -1259,10 +1220,10 @@ function AgentChatsView() {
           <strong>{loading ? '…' : list.length}</strong>
         </div>
         {harnesses.length > 0 && (
-          <div className="pc-coord__filters" role="tablist" aria-label="Harness filter">
-            <button type="button" className={`pc-coord__chip${!harness ? ' is-active' : ''}`} onClick={() => void setHarness('')}>all</button>
+          <div className="pc-coord__filters" role="group" aria-label="Harness filter">
+            <button type="button" aria-pressed={!harness} className={`pc-coord__chip${!harness ? ' is-active' : ''}`} onClick={() => void setHarness('')}>all</button>
             {harnesses.map((h) => (
-              <button key={h} type="button" className={`pc-coord__chip${harness === h ? ' is-active' : ''}`} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</button>
+              <button key={h} type="button" aria-pressed={harness === h} className={`pc-coord__chip${harness === h ? ' is-active' : ''}`} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</button>
             ))}
             <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
               <RefreshCw size={11} aria-hidden />
@@ -1278,7 +1239,7 @@ function AgentChatsView() {
           </div>
         )}
         {loading ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+          <LoadingRows />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--rail">
             <strong>No agent chats</strong>
@@ -1290,12 +1251,12 @@ function AgentChatsView() {
               <span className="pc-advconv__threadtop">
                 <span className="pc-coord__kind">{c.role ?? 'agent'}</span>
                 {c.archived_at ? <span className="pc-advconv__statepill pc-advconv__statepill--closed">archived</span> : null}
+                <span className="pc-advconv__rowdate">{fmtTs(c.created_at)}</span>
               </span>
               <span className="pc-coord__row-title">{c.title ?? c.id}</span>
               <span className="pc-coord__row-meta">
                 {c.harness_slug ?? 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
               </span>
-              <span className="pc-advconv__rowdate">{fmtTs(c.created_at)}</span>
             </button>
           ))
         )}
@@ -1396,7 +1357,7 @@ function MessagesView() {
       </div>
       <div className="pc-advfeed__stream">
         {loading && list.length === 0 ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading messages…</p>
+          <LoadingRows rows={6} label="Loading messages" />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No messages</strong>
@@ -1496,7 +1457,7 @@ function OperatorView() {
       </div>
       <div className="pc-advfeed__stream">
         {loading && list.length === 0 ? (
-          <p className="pc-coord__empty pc-advconv__empty">Loading…</p>
+          <LoadingRows />
         ) : list.length === 0 ? (
           <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
             <strong>No operator chats</strong>

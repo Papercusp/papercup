@@ -136,13 +136,21 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
         '--ref', targetSha,
         '--integration', cfg.integrationRoot,
         '--release', cfg.releaseRoot,
-        '--node-modules', lockfileChanged ? 'force' : 'skip',
+        // NEVER 'skip' here: the git-based `lockfileChanged` is structurally
+        // blind — package-lock.json is GITIGNORED, so changedFiles() can never
+        // see it and the flag is permanently false. Passing 'skip' on that
+        // signal meant a dep added on staging never reached the release tree's
+        // node_modules and the SPA build broke on its first import (2026-06-09:
+        // @dnd-kit/core — every auto-deploy failed + rolled back for hours).
+        // 'auto' defers to the setup script's ON-DISK comparison (lockfile cmp
+        // + @papercusp/@papercup scope listing), which is the real truth.
+        '--node-modules', lockfileChanged ? 'force' : 'auto',
         // operator-vite/dist is UNTRACKED — without this the swap serves a STALE
         // SPA (server code moves, UI doesn't; bitten 2026-06-06: /admin/git was
         // missing from the deployed SPA). Deploys build it; checkpoints skip it.
         '--build-spa',
       ]);
-      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: ${lockfileChanged ? 'resynced' : 'unchanged'}; SPA rebuilt)`);
+      log(`release checkout swapped to ${targetSha.slice(0, 8)} (node_modules: ${lockfileChanged ? 'force-resynced' : 'auto'}; SPA rebuilt)`);
     },
 
     async migrate() {

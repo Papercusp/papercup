@@ -32,6 +32,10 @@ interface WorkItemRow {
   severity: string | null;
   priority: number | null;
   rank: number | null;
+  // P-010 v2 (route-side joins): plan-item linkage + spine position (latest role/stage).
+  planSlug: string | null;
+  spineRole: string | null;
+  spineStatus: string | null;
   updatedAt: string;
 }
 
@@ -94,6 +98,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     { key: 'title', header: 'Title', width: 4, toCopyText: (r) => r.title, render: ({ row }) => <>{row.title}</> },
     { key: 'state', header: 'State', width: 1.2, toCopyText: (r) => r.state, render: ({ row }) => <>{row.state}</> },
     {
+      key: 'stage',
+      header: 'Stage',
+      width: 1.7,
+      toCopyText: (r) => (r.spineRole ? `${r.spineRole}${r.spineStatus ? ` (${r.spineStatus})` : ''}` : ''),
+      render: ({ row }) =>
+        row.spineRole ? (
+          <span title="latest spine role · status (spawned_agents)">
+            {row.spineRole}
+            {row.spineStatus ? <span style={{ color: 'var(--fg-mute)' }}> ({row.spineStatus})</span> : null}
+          </span>
+        ) : (
+          <>—</>
+        ),
+    },
+    {
       key: 'assignee',
       header: 'Assignee',
       width: 1.8,
@@ -119,6 +138,13 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       width: 0.8,
       toCopyText: (r) => (r.rank == null ? '' : String(r.rank)),
       render: ({ row }) => <>{row.rank ?? '—'}</>,
+    },
+    {
+      key: 'plan',
+      header: 'Plan',
+      width: 1.8,
+      toCopyText: (r) => r.planSlug ?? '',
+      render: ({ row }) => (row.planSlug ? <code style={{ fontSize: 11 }}>{row.planSlug}</code> : <>—</>),
     },
   ];
 

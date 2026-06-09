@@ -4,17 +4,91 @@
  * the unified `work_items` surface, unify-work-items D-001).
  *
  * Returns the merged feature-family {feature,research-task,chunk} + issue-family
- * {bug,change,task} items for the harness, carrying the dimensions the old per-kind
+ * {bug,change,task} items for the harness with the dimensions the old per-kind
  * FeaturesPanel/IssuesPanel lacked: `kind`/`family`, `assignee` + `assignedBy` (the
- * claim), `severity`, `priority`, `rank`. Thin wrapper over `listWorkItems` (the
- * canonical, already-tested facade) — workspace-agnostic when a harness is given.
+ * claim), `severity`, `priority`, `rank` (from the tested `listWorkItems` facade) PLUS,
+ * for feature-family items, the v2 dimensions joined ROUTE-SIDE (P-010 v2 / D-009):
+ *   - **plan-item linkage** — `source_plan_slug` + `source_plan_item_ids` columns on
+ *     harness_features_consolidated;
+ *   - **spine position** (which role/stage) — the latest `harness_shared.spawned_agents`
+ *     row per feature (`child_role` + `status`).
  *
- * NOT YET surfaced (follow-up, needs joins the WorkItem facade doesn't carry):
- *   - blueprint/spine position (which role/stage) — a harness_shared.spawned_agents join;
- *   - plan-item linkage — a coord_links / plan-items join.
+ * These are joined HERE (supplementary queries merged by id), NOT by widening
+ * `FEATURE_COLS` / the canonical `WorkItem` facade — deliberately, because widening
+ * FEATURE_COLS breaks ~25 integration tests (D-009). The pure merge is unit-tested.
  */
-import { listWorkItems, isWorkItemKind } from '../../../work-items';
+import { listWorkItems, isWorkItemKind, type WorkItem } from '../../../work-items';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
+
+export interface WorkItemDimensions {
+  /** Source plan this feature was imported from (hfc.source_plan_slug); null for issues / unplanned. */
+  planSlug: string | null;
+  /** Source plan item ids (hfc.source_plan_item_ids); [] when none. */
+  planItemIds: string[];
+  /** Latest spine role the work item's pipeline dispatched (spawned_agents.child_role). */
+  spineRole: string | null;
+  /** That spawn's status (running|done|failed|cancelled|reaped). */
+  spineStatus: string | null;
+}
+export type EnrichedWorkItem = WorkItem & WorkItemDimensions;
+
+/**
+ * Pure merge: overlay the plan-link + spine-position maps onto the items by id.
+ * Issue-family items (no feature row / no spawn) get null/[] dims. Unit-testable.
+ */
+export function mergeWorkItemDimensions(
+  items: WorkItem[],
+  planMap: Map<string, { planSlug: string | null; planItemIds: string[] }>,
+  spineMap: Map<string, { role: string; status: string }>,
+): EnrichedWorkItem[] {
+  return items.map((i) => {
+    const plan = planMap.get(i.id);
+    const spine = spineMap.get(i.id);
+    return {
+      ...i,
+      planSlug: plan?.planSlug ?? null,
+      planItemIds: plan?.planItemIds ?? [],
+      spineRole: spine?.role ?? null,
+      spineStatus: spine?.status ?? null,
+    };
+  });
+}
+
+/**
+ * Fetch the v2 dimensions for a harness's feature-family work items — the plan-link
+ * (hfc columns) + spine-position (latest spawn per feature). Route-only: does NOT touch
+ * the FEATURE_COLS facade. Empty `featureIds` ⇒ empty maps (no query).
+ */
+async function fetchDimensionMaps(
+  harness: string,
+  featureIds: string[],
+): Promise<{
+  planMap: Map<string, { planSlug: string | null; planItemIds: string[] }>;
+  spineMap: Map<string, { role: string; status: string }>;
+}> {
+  const planMap = new Map<string, { planSlug: string | null; planItemIds: string[] }>();
+  const spineMap = new Map<string, { role: string; status: string }>();
+  if (featureIds.length === 0) return { planMap, spineMap };
+  const { sql } = getOrgPg();
+  const planRows = await sql<
+    { feature_id: string; source_plan_slug: string | null; source_plan_item_ids: string[] | null }[]
+  >`
+    SELECT feature_id, source_plan_slug, source_plan_item_ids
+      FROM harness_shared.harness_features_consolidated
+     WHERE harness_slug = ${harness} AND feature_id IN ${sql(featureIds)}`;
+  for (const r of planRows) {
+    planMap.set(r.feature_id, { planSlug: r.source_plan_slug ?? null, planItemIds: r.source_plan_item_ids ?? [] });
+  }
+  // DISTINCT ON (feature_id) + ORDER BY started_at DESC = the LATEST spawn per feature.
+  const spineRows = await sql<{ feature_id: string; child_role: string; status: string }[]>`
+    SELECT DISTINCT ON (feature_id) feature_id, child_role, status
+      FROM harness_shared.spawned_agents
+     WHERE harness_slug = ${harness} AND feature_id IN ${sql(featureIds)}
+     ORDER BY feature_id, started_at DESC`;
+  for (const r of spineRows) spineMap.set(r.feature_id, { role: r.child_role, status: r.status });
+  return { planMap, spineMap };
+}
 
 const getWorkItems = defineTool({
   method: 'GET',
@@ -29,7 +103,10 @@ const getWorkItems = defineTool({
     const limit = Math.min(Number(url.searchParams.get('limit') ?? '200') || 200, 500);
     try {
       const workItems = await listWorkItems({ harness: slug, kind, state, limit });
-      return Response.json({ harness: slug, count: workItems.length, workItems });
+      const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
+      const { planMap, spineMap } = await fetchDimensionMaps(slug, featureIds);
+      const enriched = mergeWorkItemDimensions(workItems, planMap, spineMap);
+      return Response.json({ harness: slug, count: enriched.length, workItems: enriched });
     } catch (e) {
       return Response.json({ error: `work-items list failed: ${(e as Error).message}` }, { status: 500 });
     }
@@ -37,3 +114,6 @@ const getWorkItems = defineTool({
 });
 
 export default [getWorkItems];
+
+// Exported for unit tests (the pure merge; the SQL is live-exercised).
+export const __test = { mergeWorkItemDimensions };
