@@ -6,8 +6,9 @@
  * them, and splits them into the **auto lane** (kind=bug, no protected surface —
  * D-004) vs the **human queue** (the rest). This is "triage only" — nothing is
  * implemented here; it surfaces the backlog for a human (or the later
- * auto-implement loop) to act on. A scheduled `system:improvement-digest` routine
- * runs this on a cadence + broadcasts the headline (seeded INACTIVE).
+ * auto-implement loop) to act on. The same read+score path backs the Learning tab's
+ * `learning.improvements` sync resolver (operator-learning-tab-2026-06-09) — the
+ * backlog is surfaced by PULL there, not pushed to the human inbox.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';

@@ -30,10 +30,14 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../service-health';
+import { checkMigrationDrift } from '../../migration-drift';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
 import type { ImprovementSeverity } from './policy';
 
-export type WatchdogSource = 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down';
+export type WatchdogSource =
+  | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
+  // P-010 blind-source collectors (watchdog-robustness):
+  | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -500,6 +504,166 @@ export function serviceDownCollectorResult(opts: {
   return { signals: collectServiceDownSignals(opts.results ?? lastServiceHealth()) };
 }
 
+// ── P-010 blind-source collectors (watchdog-robustness) ──────────────────────
+// The watchdog watched only 4 surfaces; whole classes of failure (schema drift, a
+// silently-failing background routine, stuck plans, failed spawns, abandoned work)
+// were invisible. Each collector below is a CONSERVATIVE is-broken query; they all
+// land behind the P-009 per-source budget + search-first dedup so a steady backlog
+// can't flood the capture feed. Pure row→signal mappers are exported for unit tests.
+
+/**
+ * migration-drift: on-disk migrations the live DB has NOT applied — runtime code that
+ * expects those columns/tables fails until the operator restarts (boot-apply). Rare +
+ * catastrophic → critical, any drift fires. Wires the existing `checkMigrationDrift`
+ * (injectable for tests).
+ */
+export async function collectMigrationDriftSignals(
+  check: () => Promise<{ missing: string[] }> = checkMigrationDrift,
+): Promise<WatchdogSignal[]> {
+  let drift: { missing: string[] };
+  try { drift = await check(); } catch { return []; }
+  if (!drift.missing?.length) return [];
+  return [{
+    source: 'migration-drift',
+    key: 'migration-drift',
+    title: 'Schema drift: migrations on disk are not applied to the live DB',
+    body:
+      `Watchdog signal (migration-drift): ${drift.missing.length} migration file(s) exist on disk but are NOT ` +
+      `applied to the live database — runtime code expecting those columns/tables will fail until the operator ` +
+      `restarts (boot-apply).\n\nUnapplied: ${drift.missing.slice(0, 20).join(', ')}`,
+    severity: 'critical',
+    kind: 'bug',
+    paths: ['libs/papercusp/libs/db/sql'],
+  }];
+}
+
+interface RoutineFailureRow { name: string; last_error: string | null }
+/** Pure: routines carrying a recorded error → signals. */
+export function routineFailureSignalsFromRows(rows: RoutineFailureRow[]): WatchdogSignal[] {
+  return rows
+    .filter((r) => (r.last_error ?? '').trim().length > 0)
+    .map((r) => ({
+      source: 'routine-failure' as const,
+      key: `routine:${r.name}`,
+      title: `Background routine "${r.name}" is failing`,
+      body:
+        `Watchdog signal (routine-failure): the background routine "${r.name}" recorded an error and may be ` +
+        `silently wedged (e.g. git-sync no longer pushing).\n\nLast error: ${(r.last_error ?? '').slice(0, 600)}`,
+      severity: 'major' as const,
+      kind: 'bug' as const,
+    }));
+}
+/** routine-failure: an ACTIVE background routine with a recorded `metadata.last_error`. */
+export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSignal[]> {
+  const rows = await sql<RoutineFailureRow[]>`
+    SELECT name, metadata->>'last_error' AS last_error
+      FROM harness_shared.routines
+     WHERE active = true AND COALESCE(metadata->>'last_error', '') <> ''
+     LIMIT 20`;
+  return routineFailureSignalsFromRows(rows);
+}
+
+interface StuckPlanRow { harness_slug: string; plan_slug: string; status: string; stale_hours: number }
+/** Pure: stuck-plan rows → signals. */
+export function stuckPlanSignalsFromRows(rows: StuckPlanRow[]): WatchdogSignal[] {
+  return rows.map((r) => ({
+    source: 'stuck-plan' as const,
+    key: `stuck-plan:${r.harness_slug}:${r.plan_slug}`,
+    title: `Plan ${r.plan_slug} appears stuck`,
+    body:
+      `Watchdog signal (stuck-plan): plan "${r.plan_slug}" (harness ${r.harness_slug}) has been '${r.status}' with ` +
+      `no status update for ~${Math.round(r.stale_hours)}h — its run may be hung.`,
+    severity: 'major' as const,
+    kind: 'bug' as const,
+  }));
+}
+/** stuck-plan: a plan 'started'/'paused' with no update for > staleHours (default 24h). */
+export async function collectStuckPlanSignals(sql: Sql, workspaceId: string, staleHours = 24): Promise<WatchdogSignal[]> {
+  const rows = await sql<StuckPlanRow[]>`
+    SELECT harness_slug, plan_slug, status,
+           EXTRACT(EPOCH FROM (now() - updated_at)) / 3600.0 AS stale_hours
+      FROM harness_shared.harness_plan_status
+     WHERE workspace_id = ${workspaceId}
+       AND status IN ('started', 'paused')
+       AND updated_at < now() - make_interval(hours => ${staleHours})
+     ORDER BY updated_at ASC
+     LIMIT 10`;
+  return stuckPlanSignalsFromRows(rows);
+}
+
+/** failed-spawn: AGGREGATE — agent spawns that failed in the window. A few = a pattern,
+ *  not a one-off; fires as ONE signal at a threshold. */
+export async function collectFailedSpawnSignals(sql: Sql, opts: { windowHours?: number; minCount?: number } = {}): Promise<WatchdogSignal[]> {
+  const windowHours = opts.windowHours ?? 6;
+  const minCount = opts.minCount ?? 5;
+  const rows = await sql<{ n: number; sample: string | null }[]>`
+    SELECT count(*)::int AS n, max(error_message) AS sample
+      FROM harness_shared.spawned_agents
+     WHERE status = 'failed' AND started_at > now() - make_interval(hours => ${windowHours})`;
+  const r = rows[0];
+  if (!r || r.n < minCount) return [];
+  return [{
+    source: 'failed-spawn',
+    key: 'failed-spawns',
+    title: 'Agent spawns are failing repeatedly',
+    body:
+      `Watchdog signal (failed-spawn): ${r.n} agent spawn(s) failed in the last ${windowHours}h — likely a spawn-config / ` +
+      `MCP / runtime problem, not a one-off.\n\nSample error: ${(r.sample ?? '').slice(0, 600) || '(none captured)'}`,
+    severity: r.n >= 20 ? 'major' : 'minor',
+    kind: 'bug',
+  }];
+}
+
+/** expired-lease: AGGREGATE — plan-item claims whose lease expired (abandoned work).
+ *  Conservative threshold (a handful is normal churn; a pile suggests a lifecycle bug). */
+export async function collectExpiredLeaseSignals(sql: Sql, minCount = 15): Promise<WatchdogSignal[]> {
+  const rows = await sql<{ n: number; oldest_hours: number | null }[]>`
+    SELECT count(*)::int AS n,
+           EXTRACT(EPOCH FROM (now() - min(expires_ts))) / 3600.0 AS oldest_hours
+      FROM harness_shared.plan_item_claims
+     WHERE expires_ts < now()`;
+  const r = rows[0];
+  if (!r || r.n < minCount) return [];
+  return [{
+    source: 'expired-lease',
+    key: 'expired-leases',
+    title: 'Many plan-item claims have expired (abandoned work piling up)',
+    body:
+      `Watchdog signal (expired-lease): ${r.n} plan-item claim(s) have an EXPIRED lease (the holder died/vanished ` +
+      `without releasing it). The oldest is ~${Math.round(r.oldest_hours ?? 0)}h stale — a sign lease cleanup or ` +
+      `agent liveness needs attention.`,
+    severity: 'minor',
+    kind: 'bug',
+  }];
+}
+
+interface EscalationRow { harness_slug: string; phase: string | null }
+/** Pure: unresolved-escalation rows → signals. */
+export function escalationSignalsFromRows(rows: EscalationRow[]): WatchdogSignal[] {
+  return rows.map((r) => ({
+    source: 'unresolved-escalation' as const,
+    key: `escalation:${r.harness_slug}:${r.phase ?? ''}`,
+    title: `Unresolved escalation in harness ${r.harness_slug}`,
+    body:
+      `Watchdog signal (unresolved-escalation): harness ${r.harness_slug}` +
+      (r.phase ? ` (phase ${r.phase})` : '') +
+      ` has a recorded escalation with no supervisor resolution yet.`,
+    severity: 'major' as const,
+    kind: 'bug' as const,
+  }));
+}
+/** unresolved-escalation: a harness escalation with no supervisor_notes (unaddressed). */
+export async function collectEscalationSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
+  const rows = await sql<EscalationRow[]>`
+    SELECT harness_slug, phase
+      FROM harness_shared.harness_escalations
+     WHERE workspace_id = ${workspaceId}
+       AND COALESCE(escalation, '') <> ''
+       AND COALESCE(supervisor_notes, '') = ''
+     LIMIT 10`;
+  return escalationSignalsFromRows(rows);
+}
+
 /** (P-011) Collector definition: a pluggable source of watchdog signals for a target. */
 export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
@@ -542,6 +706,13 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
       name: 'papercusp-service-down',
       collect: () => Promise.resolve(serviceDownCollectorResult({ maxStaleMs: opts.serviceHealthMaxStaleMs })),
     },
+    // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
+    { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },
+    { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
+    { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },
+    { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql) },
+    { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql) },
+    { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
   ];
 }
 
@@ -915,4 +1086,88 @@ export async function runWatchdogTick(
     console.warn(`[improvement-watchdog] skipped-tick record failed: ${e instanceof Error ? e.message : e}`);
   }
   return skipped;
+}
+
+// ── P-011 one-time historical backfill ───────────────────────────────────────
+
+export interface WatchdogBackfillOptions {
+  /** Lookback window for the structural tool-error backfill. Default 720h (30d). */
+  windowHours?: number;
+  /** Max captures for the one-off sweep (anti-flood). Default 25. */
+  maxCaptures?: number;
+}
+
+export interface WatchdogBackfillResult {
+  signals: number;
+  captured: string[];
+  declinedDuplicates: number;
+  /** Keys the cap dropped — LOGGED + returned, never silently truncated (D-008). */
+  dropped: string[];
+}
+
+/**
+ * One-time HISTORICAL backfill (watchdog-robustness P-011 / D-008): sweep a LONG
+ * window (30d) for STRUCTURAL tool-error breakage the rolling 24h tick window can't
+ * see — a tool broken weeks ago (before the watchdog existed, or outside its window)
+ * is otherwise permanently invisible. Capped + deduped (dedupScope:'open'); whatever
+ * the cap drops is LOGGED + returned, never silently truncated. Run ONCE (a tsx
+ * one-off / a first-deploy hook), not on the 15-min cadence. Deps are injectable for
+ * tests.
+ */
+export async function runWatchdogBackfill(
+  workspaceId: string,
+  opts: WatchdogBackfillOptions = {},
+  deps?: { collect?: () => Promise<WatchdogSignal[]>; capture?: typeof captureImprovement },
+): Promise<WatchdogBackfillResult> {
+  const windowHours = opts.windowHours ?? 720;
+  const maxCaptures = Math.max(0, opts.maxCaptures ?? 25);
+  const capture = deps?.capture ?? captureImprovement;
+  const collect =
+    deps?.collect ?? (() => collectToolErrorSignals(getOrgPg().sql, { toolErrorWindowHours: windowHours }));
+
+  const signals = await collect();
+
+  // Dedupe by source:key, rank by severity, take up to the cap.
+  const seen = new Set<string>();
+  const unique = signals.filter((s) => {
+    const k = `${s.source}:${s.key}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  unique.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+  const toCapture = unique.slice(0, maxCaptures);
+  const dropped = unique.slice(maxCaptures).map((s) => `${s.source}:${s.key}`);
+  if (dropped.length > 0) {
+    console.warn(
+      `[improvement-watchdog:backfill] cap=${maxCaptures} dropped ${dropped.length} signal(s) ` +
+        `(reported, NOT silently truncated): ${dropped.join(', ')}`,
+    );
+  }
+
+  const captured: string[] = [];
+  let declinedDuplicates = 0;
+  for (const s of toCapture) {
+    let res: CaptureImprovementResult;
+    try {
+      res = await capture({
+        title: s.title,
+        kind: s.kind ?? 'bug',
+        body: s.body,
+        severity: s.severity,
+        paths: s.paths,
+        foundDuring: 'improvement-watchdog-backfill',
+        createdBy: 'system:improvement-watchdog',
+        sourceRole: 'system',
+        source: 'su',
+        dedupScope: 'open',
+      });
+    } catch (e) {
+      console.warn(`[improvement-watchdog:backfill] capture failed for ${s.source}:${s.key}: ${e instanceof Error ? e.message : e}`);
+      continue;
+    }
+    if (res.created && res.issue) captured.push(res.issue.id);
+    else if (res.reason === 'likely-duplicate') declinedDuplicates += 1;
+  }
+  return { signals: signals.length, captured, declinedDuplicates, dropped };
 }

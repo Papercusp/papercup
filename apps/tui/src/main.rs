@@ -159,17 +159,27 @@ fn run_workbench() -> Result<()> {
 async fn run_chat_dock() -> Result<()> {
     let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
     let brain_argv = layout::default_brain_argv(env.as_deref());
-    // Resolve the active Hive lexicon so the dock's pane DISPLAY names match the
-    // rebrand (operator→queen, swarm→swarm, bee→bee under the-hive); classic
-    // labels when the operator is unreachable (pui-hive-lexicon-2026-06-06).
-    let lex = match OperatorClient::from_discovery().await {
-        Ok(c) => match c.lexicon_active_pack().await {
-            Ok(pack) => lexicon::Lexicon::from_payload(&pack),
-            Err(_) => lexicon::Lexicon::default(),
-        },
-        Err(_) => lexicon::Lexicon::default(),
+    // Resolve the active Hive lexicon (pane DISPLAY names) + the HIVE_AGENT_TABS
+    // flag (hive-agent-tabs P-003: when on, the Sentinel/Queen panes are real psu
+    // sessions). Both from the operator; unreachable → classic lexicon + flag off
+    // (the current dock, unchanged).
+    let (lex, hive_agent_tabs) = match OperatorClient::from_discovery().await {
+        Ok(c) => {
+            let lex = match c.lexicon_active_pack().await {
+                Ok(pack) => lexicon::Lexicon::from_payload(&pack),
+                Err(_) => lexicon::Lexicon::default(),
+            };
+            let on = c
+                .flags()
+                .await
+                .ok()
+                .map(|f| f.flags.get("papercusp-hive-agent-tabs").copied().unwrap_or(false))
+                .unwrap_or(false);
+            (lex, on)
+        }
+        Err(_) => (lexicon::Lexicon::default(), false),
     };
-    let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
+    let path = layout::materialize_chat_dock(&brain_argv, &lex, hive_agent_tabs)?;
     let argv = layout::launch_argv(&path.to_string_lossy());
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;

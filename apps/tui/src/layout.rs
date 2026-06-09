@@ -196,7 +196,11 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 /// (`chat-pane`, `main-pane`) are internal identifiers and never change.
 /// `brain_argv` is the brain pane's command; its first element is the command,
 /// the rest are quoted args. Pure (no I/O) so it is unit-tested.
-pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
+pub fn chat_dock_kdl(
+    brain_argv: &[String],
+    lex: &crate::lexicon::Lexicon,
+    hive_agent_tabs: bool,
+) -> String {
     let (brain_cmd, brain_args) = brain_argv
         .split_first()
         .map(|(c, rest)| (c.as_str(), rest))
@@ -216,6 +220,16 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
     // operator renamed "Sentinel Bee"→"Sentinel" 2026-06-09 — hive-agent-tabs P-003).
     let operator_name = kdl_pane_name(&lex.lex("operator"), "operator");
     let brain_name = kdl_pane_name(&lex.lex("brain"), "brain");
+    // P-003 (hive-agent-tabs): under HIVE_AGENT_TABS the Sentinel pane is a REAL
+    // psu/Claude TUI (operator role) — `psu --role operator` — replacing the
+    // `pui chat-pane` widget so it renders like the Queen. Flag-off keeps the
+    // chat-pane (which also drives the reactive stack + the pui tab surfaces;
+    // relocating those flag-on is the rest of the D-009 dock restructure).
+    let operator_cmd_block = if hive_agent_tabs {
+        "command \"psu\"\n            args \"--role\" \"operator\""
+    } else {
+        "command \"pui\"\n            args \"chat-pane\""
+    };
     format!(
         r#"// Papercusp chat dock — ONE full-width agent stack (zellij reserved for the
 // truly console-driven surface — owner ask, pui-dock-agent-stack-2026-06-07;
@@ -234,8 +248,7 @@ layout {{
     }}
     pane name="chat" stacked=true {{
         pane name="{operator_name}" focus=true expanded=true {{
-            command "pui"
-            args "chat-pane"
+            {operator_cmd_block}
         }}
         pane name="{brain_name}" {{
             command "{brain_cmd}"{args_line}
@@ -286,20 +299,22 @@ fn materialize_at(base: &Path) -> std::io::Result<PathBuf> {
 pub fn materialize_chat_dock(
     brain_argv: &[String],
     lex: &crate::lexicon::Lexicon,
+    hive_agent_tabs: bool,
 ) -> std::io::Result<PathBuf> {
     let base = base_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    materialize_chat_dock_at(&base, brain_argv, lex)
+    materialize_chat_dock_at(&base, brain_argv, lex, hive_agent_tabs)
 }
 
 fn materialize_chat_dock_at(
     base: &Path,
     brain_argv: &[String],
     lex: &crate::lexicon::Lexicon,
+    hive_agent_tabs: bool,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(base)?;
     let path = base.join("pui-chat-dock.kdl");
-    std::fs::write(&path, chat_dock_kdl(brain_argv, lex))?;
+    std::fs::write(&path, chat_dock_kdl(brain_argv, lex, hive_agent_tabs))?;
     Ok(path)
 }
 
@@ -442,7 +457,7 @@ mod tests {
         // stack — operator (expanded) ⇄ brain; active agents append at runtime.
         // No main pane, no tab-subset pui, no side-by-side split.
         let lex = Lexicon::default();
-        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
+        let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex, false);
         assert!(kdl.contains("name=\"chat\""));
         assert!(kdl.contains("name=\"operator\"")); // lex("operator") = Operator
         assert!(kdl.contains("name=\"brain\""));
@@ -485,7 +500,7 @@ mod tests {
     fn chat_dock_stack_children_carry_no_sizes() {
         // The stack gives the expanded pane everything but title bars; only the
         // bar panes carry fixed sizes (tab-bar 1 / status-bar 2).
-        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default(), false);
         assert!(!kdl.contains("size=\""), "no percent sizes in the stack dock");
         assert!(kdl.contains("pane size=1 borderless=true"));
         assert!(kdl.contains("pane size=2 borderless=true"));
@@ -496,7 +511,7 @@ mod tests {
         // With the-hive active: operator→sentinel, brain→queen (lowercased,
         // kdl-safe). The fixed "chat" stays verbatim. (renamed from "sentinel-bee",
         // owner directive 2026-06-09 / hive-agent-tabs P-003.)
-        let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
+        let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex(), false);
         assert!(kdl.contains("name=\"sentinel\""));
         assert!(kdl.contains("name=\"queen\""));
         assert!(kdl.contains("name=\"chat\""));
@@ -508,9 +523,27 @@ mod tests {
     }
 
     #[test]
+    fn chat_dock_hive_agent_tabs_makes_sentinel_a_psu_session() {
+        // hive-agent-tabs P-003: flag ON → the operator/Sentinel pane is a real
+        // psu/Claude TUI (`psu --role operator`), NOT the `pui chat-pane` widget,
+        // so it renders like the Queen. Two psu commands now (Sentinel + brain).
+        let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
+        assert!(on.contains("args \"--role\" \"operator\""));
+        assert!(!on.contains("args \"chat-pane\""));
+        assert_eq!(on.matches("command \"psu\"").count(), 2);
+        assert_eq!(on.matches("command \"pui\"").count(), 0);
+
+        // Flag OFF → unchanged: the pui chat-pane widget drives the dock.
+        let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
+        assert!(off.contains("args \"chat-pane\""));
+        assert!(!off.contains("args \"--role\" \"operator\""));
+        assert_eq!(off.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
     fn chat_dock_fresh_brain_omits_args_line() {
         // A bare `psu` brain (fresh, no resume) renders no `args` line.
-        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default());
+        let kdl = chat_dock_kdl(&["psu".to_string()], &Lexicon::default(), false);
         assert!(kdl.contains("command \"psu\""));
         assert!(!kdl.contains("args \"--resume\""));
     }
@@ -524,6 +557,7 @@ mod tests {
                 "abc-123".to_string(),
             ],
             &Lexicon::default(),
+            false,
         );
         assert!(kdl.contains("args \"--resume\" \"abc-123\""));
     }
@@ -552,6 +586,7 @@ mod tests {
             d.path(),
             &["psu".to_string(), "--resume".to_string()],
             &Lexicon::default(),
+            false,
         )
         .unwrap();
         assert!(p.ends_with("pui-chat-dock.kdl"));

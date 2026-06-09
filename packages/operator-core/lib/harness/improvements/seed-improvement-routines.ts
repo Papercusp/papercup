@@ -2,8 +2,6 @@
  * Seed the self-improvement-loop routines — plans
  * papercusp-self-improvement-loop-2026-06-04 + close-the-self-improvement-loop-2026-06-05.
  *
- *   - `improvement-digest`    (every 30 min): triage the papercusp-improvement
- *      backlog + surface the headline to the human inbox (Phase 2). Read-only.
  *   - `improvement-watchdog`  (every 15 min): the HARD feed-in (close-loop D-003) —
  *      auto-capture red tests / failing smokes / repeated tool errors / down
  *      services as kind=bug improvements. Capture only (search-first dedup +
@@ -13,15 +11,19 @@
  *      (default OFF) AND a configured PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS (D-006);
  *      until both are set it no-ops.
  *
+ * The old `improvement-digest` routine was REMOVED (operator-learning-tab-2026-06-09
+ * D-001) — its only job was pushing the triage headline to the human inbox, a
+ * dead-end notification. The backlog is now PULLED in the Learning tab instead.
+ *
  * SEEDED INACTIVE by default (mirrors seed-release-routines.ts). Flip routines
- * on with `--active` (digest + watchdog — the safe, capture/triage-only cadence);
+ * on with `--active` (the watchdog — the safe, capture-only cadence);
  * the implement routine needs the EXPLICIT `--arm-implement` flag on top (it is
  * the autonomous-code-modification path — owner-gated, close-loop D-004; even
  * then it no-ops until the flag + runner env are also set). Idempotent (upsert).
  *
  *   tsx seed-improvement-routines.ts                          # seed all INACTIVE
- *   tsx seed-improvement-routines.ts --active                 # digest + watchdog live; implement stays inactive
- *   tsx seed-improvement-routines.ts --active --arm-implement # all three live (owner-confirmed arming)
+ *   tsx seed-improvement-routines.ts --active                 # watchdog live; implement stays inactive
+ *   tsx seed-improvement-routines.ts --active --arm-implement # both live (owner-confirmed arming)
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -29,7 +31,6 @@ import { activeWorkspaceId } from '../../workspace-registry';
 
 const SLUG = process.env.IMPROVEMENT_ROUTINE_SLUG ?? 'papercup';
 const ROUTINES = [
-  { name: 'improvement-digest', target: 'system:improvement-digest', cron: '0 */30 * * * *', arm: 'safe' }, // every 30 min
   { name: 'improvement-watchdog', target: 'system:improvement-watchdog', cron: '0 */15 * * * *', arm: 'safe' }, // every 15 min
   { name: 'improvement-implement', target: 'system:improvement-implement', cron: '0 */30 * * * *', arm: 'owner' }, // every 30 min
 ] as const;
@@ -64,8 +65,8 @@ async function main(): Promise<void> {
     `[seed-improvement-routines] seeded ${ROUTINES.map((r) => r.name).join(' + ')} for "${SLUG}" (ws=${ws}, active=${active}, armImplement=${armImplement}). ` +
       (active
         ? armImplement
-          ? 'All three LIVE — implement still no-ops until the papercusp-improvement-auto-implement flag + PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS are set.'
-          : 'Digest + watchdog LIVE; implement stays INACTIVE (owner-gated — re-run with --arm-implement after owner confirm).'
+          ? 'Both LIVE — implement still no-ops until the papercusp-improvement-auto-implement flag + PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS are set.'
+          : 'Watchdog LIVE; implement stays INACTIVE (owner-gated — re-run with --arm-implement after owner confirm).'
         : 'Inactive — enable with --active or the routines admin.'),
   );
 }

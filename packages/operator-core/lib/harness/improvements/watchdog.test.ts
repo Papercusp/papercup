@@ -6,11 +6,16 @@ import {
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
   classifyToolError,
+  collectMigrationDriftSignals,
+  routineFailureSignalsFromRows,
+  stuckPlanSignalsFromRows,
+  escalationSignalsFromRows,
   isServiceHealthStale,
   serviceDownCollectorResult,
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
   planSelfEscalations,
   withWatchdogTickLock,
+  runWatchdogBackfill,
   type WatchdogSignal,
   type WatchdogCollector,
   type WatchdogTickRecord,
@@ -196,6 +201,139 @@ describe('classifyToolError — by error_code, with a legacy error_message fallb
     expect(classifyToolError(null, 'role-not-allowed', '')).toBe('caller');
     expect(classifyToolError(null, 'error', 'invalid_args: slug expected string')).toBe('caller');
     expect(classifyToolError(null, 'error', 'something unrecognized')).toBe('structural');
+  });
+});
+
+describe('P-010 blind-source collectors (watchdog-robustness)', () => {
+  it('migration-drift: fires critical when migrations are unapplied, silent when in sync', async () => {
+    expect(await collectMigrationDriftSignals(async () => ({ missing: [] }))).toEqual([]);
+    const drift = await collectMigrationDriftSignals(async () => ({ missing: ['205-foo.sql', '206-bar.sql'] }));
+    expect(drift).toHaveLength(1);
+    expect(drift[0].source).toBe('migration-drift');
+    expect(drift[0].severity).toBe('critical');
+    expect(drift[0].body).toContain('205-foo.sql');
+  });
+
+  it('migration-drift: a thrown check degrades to no signal (never aborts the tick)', async () => {
+    expect(await collectMigrationDriftSignals(async () => { throw new Error('pg down'); })).toEqual([]);
+  });
+
+  it('routine-failure: only routines with a non-empty last_error become signals (e.g. a wedged git-sync)', () => {
+    const signals = routineFailureSignalsFromRows([
+      { name: 'git-sync', last_error: 'push rejected: oversized blob' },
+      { name: 'healthy', last_error: null },
+      { name: 'blank', last_error: '   ' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['routine:git-sync']);
+    expect(signals[0].severity).toBe('major');
+    expect(signals[0].body).toContain('oversized blob');
+  });
+
+  it('stuck-plan: one signal per stuck plan, keyed by harness+plan', () => {
+    const signals = stuckPlanSignalsFromRows([
+      { harness_slug: 'papercup', plan_slug: 'some-plan', status: 'started', stale_hours: 51 },
+    ]);
+    expect(signals[0].key).toBe('stuck-plan:papercup:some-plan');
+    expect(signals[0].body).toContain('51h');
+    expect(signals[0].kind).toBe('bug');
+  });
+
+  it('unresolved-escalation: one signal per unaddressed escalation', () => {
+    const signals = escalationSignalsFromRows([{ harness_slug: 'sheets', phase: 'production' }]);
+    expect(signals[0].key).toBe('escalation:sheets:production');
+    expect(signals[0].source).toBe('unresolved-escalation');
+  });
+});
+
+describe('runWatchdogBackfill — one-time historical sweep (P-011)', () => {
+  function recorder() {
+    const calls: string[] = [];
+    const capture = (async (input: { title: string }) => {
+      calls.push(input.title);
+      return { ok: true, created: true, issue: { id: `iss-${calls.length}` } as never, possibleDuplicates: [] };
+    }) as unknown as typeof import('./capture-core').captureImprovement;
+    return { calls, capture };
+  }
+
+  it('captures up to the cap and REPORTS (does not silently drop) the rest', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { calls, capture } = recorder();
+      const signals = [
+        sig({ key: 't1', source: 'repeated-tool-error', severity: 'major' }),
+        sig({ key: 't2', source: 'repeated-tool-error', severity: 'major' }),
+        sig({ key: 't3', source: 'repeated-tool-error', severity: 'minor' }),
+      ];
+      const res = await runWatchdogBackfill('ws', { maxCaptures: 2 }, { collect: async () => signals, capture });
+      expect(res.captured).toHaveLength(2);
+      expect(res.dropped).toEqual(['repeated-tool-error:t3']); // the minor one
+      expect(calls).toHaveLength(2);
+      // The drop is REPORTED to the log, not silently truncated (D-008).
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('repeated-tool-error:t3'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('dedupes by source:key before capturing', async () => {
+    const { capture } = recorder();
+    const res = await runWatchdogBackfill('ws', {}, {
+      collect: async () => [
+        sig({ key: 'x', source: 'repeated-tool-error' }),
+        sig({ key: 'x', source: 'repeated-tool-error' }),
+      ],
+      capture,
+    });
+    expect(res.signals).toBe(2);
+    expect(res.captured).toHaveLength(1);
+  });
+});
+
+describe('watchdog COVERAGE self-test — the original miss is caught end-to-end (P-012)', () => {
+  // A REGRESSION GUARD. The watchdog exists because it missed a low-frequency
+  // STRUCTURAL tool error (memory:search workspace_required), starved by a backlog of
+  // MAJOR red-tests. If a future change reintroduces EITHER half of that blind spot —
+  // the structural classification (detection) or the per-source budget (anti-starvation)
+  // — one of these tests fails, so the next blind spot is caught at CI time, not by an
+  // owner noticing months later.
+  function captureRec() {
+    const captured: string[] = [];
+    const capture = (async (input: { title: string }) => {
+      captured.push(input.title);
+      return { ok: true, created: true, issue: { id: `iss-${captured.length}` } as never, possibleDuplicates: [] };
+    }) as unknown as typeof import('./capture-core').captureImprovement;
+    return { captured, capture };
+  }
+
+  it('DETECTION: the memory:search workspace_required shape classifies as structural and fires at the LOW bar', () => {
+    expect(classifyToolError('unauthorized', 'error', 'x')).toBe('structural');
+    expect(classifyToolError(null, 'error', 'requires a workspace-scoped call')).toBe('structural');
+    const signals = toolErrorSignalsFromRows([
+      { tool_name: 'memory:search', class: 'structural' as const, n: 2, total: 21, sample: 'workspace-scoped call' },
+    ]);
+    expect(signals.map((s) => s.key)).toEqual(['memory:search:structural']);
+    expect(signals[0].severity).toBe('major');
+  });
+
+  it('ANTI-STARVATION: a structural tool-error signal lands end-to-end despite a 5× red-test backlog', async () => {
+    const { captured, capture } = captureRec();
+    const memSignal = sig({
+      key: 'memory:search:structural', source: 'repeated-tool-error', severity: 'major',
+      title: 'Tool memory:search returns a structural error',
+    });
+    const redTests = Array.from({ length: 5 }, (_, i) =>
+      sig({ key: `t${i}`, source: 'red-test', severity: 'major', title: `Test failing repeatedly: t${i}` }),
+    );
+    const res = await runWatchdogTick('ws', {}, {
+      // red-tests FIRST in the list — under the old global cap-3 they would fill every
+      // slot and starve the memory signal. The per-source budget (P-009) prevents that.
+      collect: async () => [...redTests, memSignal],
+      capture,
+      recordTick: async () => {},
+      readRecentTicks: async () => [],
+    });
+    expect(captured).toContain('Tool memory:search returns a structural error');
+    expect(res.captured.length).toBeGreaterThanOrEqual(1);
   });
 });
 

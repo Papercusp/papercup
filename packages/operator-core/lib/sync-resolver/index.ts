@@ -1168,6 +1168,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.improvements — the Learning tab's self-improvement feed ──
+  //
+  // (operator-learning-tab-2026-06-09 P-002 / D-003). Reuses the SAME read+score
+  // path the `improvements:digest` tool uses (readImprovementItems + buildDigest),
+  // so the tab and the tool can never drift. Returns the structured ImprovementDigest
+  // as a 1-element array (client reads data[0]). NOT table-backed — engineer_issues
+  // has no emit_change_notify trigger — so it refreshes on mount + the panel's manual
+  // `invalidate()` + a server-side notifySyncInvalidate fired from captureImprovement.
+  'learning.improvements': {
+    argsSchema: z
+      .object({
+        state: z.enum(['open', 'resolved', 'closed']).optional(),
+        limit: z.number().int().positive().max(500).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
+      const { readImprovementItems } = await import('../harness/improvements/read-items');
+      const { buildDigest } = await import('../harness/improvements/digest');
+      const items = await readImprovementItems({ state: a.state, limit: a.limit });
+      return [buildDigest(items, { nowMs: Date.now() })];
+    },
+  },
+
   // ── dev.* — live-ops glances for the dev admin rail ──────────────────
   //
   // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so

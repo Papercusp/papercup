@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-// Side-effect import registers the three actions (and exercises every import path).
+// Side-effect import registers the watchdog + implement actions (and exercises every import path).
 import { implementKickoff, intFromEnv } from './improvement-actions';
 import { listSystemActions } from './system-actions';
 
 describe('improvement-actions registration', () => {
-  it('registers system:improvement-digest, system:improvement-watchdog and system:improvement-implement', () => {
+  it('registers system:improvement-watchdog and system:improvement-implement', () => {
     const actions = listSystemActions();
-    expect(actions).toContain('improvement-digest');
     expect(actions).toContain('improvement-watchdog');
     expect(actions).toContain('improvement-implement');
+  });
+
+  it('does NOT register the removed system:improvement-digest (operator-learning-tab-2026-06-09 D-001)', () => {
+    expect(listSystemActions()).not.toContain('improvement-digest');
   });
 });
 

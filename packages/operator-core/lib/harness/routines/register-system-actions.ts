@@ -11,9 +11,12 @@
  *   - `system:blueprint-run` — harness-blueprint-orchestration P-021 / D-018.
  *   - `system:green-checkpoint` + `system:release-trigger` —
  *     release-gate-ready-branch-2026-06-04 (Phase 1 + D-010). Seeded INACTIVE.
- *   - `system:improvement-digest` + `system:improvement-implement` —
- *     papercusp-self-improvement-loop-2026-06-04 (Phase 2 + 3). Seeded INACTIVE;
- *     implement is additionally flag-gated (papercusp-improvement-auto-implement, OFF).
+ *   - `system:improvement-watchdog` + `system:improvement-implement` —
+ *     papercusp-self-improvement-loop-2026-06-04 (the HARD feed-in + Phase 3).
+ *     Seeded INACTIVE; implement is additionally flag-gated
+ *     (papercusp-improvement-auto-implement, OFF). (The `system:improvement-digest`
+ *     routine was removed — operator-learning-tab-2026-06-09 D-001 — the backlog is
+ *     now PULLED in the Learning tab, not pushed to the human inbox.)
  *   - `system:p2p-perf-tier1` (nightly) + `system:p2p-perf-tier2` (weekly) —
  *     p2p-performance-suite-2026-06-07 P-014. Advisory bench runs; findings
  *     auto-file to the improvements backlog. Tier 3 stays on-demand (D-004).
