@@ -521,7 +521,7 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       <PlanActivityFeed
         slug={slug}
         open={activityOpen === 'open'}
-        onToggle={() => setActivityOpen(activityOpen === 'open' ? 'closed' : 'open')}
+        onClose={() => setActivityOpen('closed')}
       />
     </DetailShell>
   );
@@ -842,11 +842,11 @@ function NowHero({
 function PlanActivityFeed({
   slug,
   open,
-  onToggle,
+  onClose,
 }: {
   slug: string;
   open: boolean;
-  onToggle: () => void;
+  onClose: () => void;
 }) {
   const { data: revisions, loading } = usePlanRevisions(open ? slug : null);
 
@@ -867,23 +867,17 @@ function PlanActivityFeed({
       }}
       aria-label="Activity feed"
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-label={open ? 'Close activity feed' : 'Open activity feed'}
-        style={{
-          position: 'absolute', left: -28, top: '50%', transform: 'translateY(-50%)',
-          width: 28, height: 56, borderRadius: '6px 0 0 6px',
-          background: 'var(--surface-2)', border: '1px solid var(--border)',
-          borderRight: 'none', cursor: 'pointer', fontSize: '0.7em',
-          color: 'var(--fg-mute)', writingMode: 'vertical-rl',
-        }}
-        title={open ? 'Close' : 'Activity'}
-      >
-        {open ? '›' : 'Activity'}
-      </button>
-      <div style={{ padding: '14px 14px 8px', borderBottom: '1px solid var(--border)' }}>
+      <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h4 style={{ margin: 0, fontSize: '0.8em', fontWeight: 600 }}>Activity</h4>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close activity feed"
+          title="Close"
+          style={{ padding: '2px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', color: 'var(--fg-mute)', fontSize: '0.9em', lineHeight: 1 }}
+        >
+          ✕
+        </button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '10px 14px' }}>
         {loading ? <p style={{ color: 'var(--fg-mute)', fontSize: '0.8em' }}>Loading…</p> : null}
