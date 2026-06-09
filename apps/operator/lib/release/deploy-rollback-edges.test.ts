@@ -76,6 +76,7 @@ function basePlan(): DeployPlan {
     lockfileChanged: false,
     warnings: [],
     noop: false,
+    desktopOnly: false,
   };
 }
 const cfg = releaseConfig();

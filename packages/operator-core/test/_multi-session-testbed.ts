@@ -290,14 +290,18 @@ export function advSessionHandle(
   s: TestSession,
   over: Partial<Extract<WakeHandle, { kind: 'adv-session' }>> = {},
 ): WakeHandle {
+  // Spread `over` LAST so an explicit `sessionId: null` (the "no native id" case)
+  // wins — a `?? default` would treat the nullish null as "use the default" and
+  // silently re-add an id, masking the not-resumable cells.
   return {
     kind: 'adv-session',
     advSessionId: s.advSessionId,
-    agent: over.agent ?? 'claude',
-    sessionId: over.sessionId ?? `native-${s.ownerId}`,
-    ompThreadId: over.ompThreadId ?? null,
-    cwd: over.cwd ?? s.cwd,
-    pid: over.pid ?? null,
+    agent: 'claude',
+    sessionId: `native-${s.ownerId}`,
+    ompThreadId: null,
+    cwd: s.cwd,
+    pid: null,
+    ...over,
   };
 }
 

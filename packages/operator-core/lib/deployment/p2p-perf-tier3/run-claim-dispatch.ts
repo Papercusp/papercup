@@ -153,9 +153,9 @@ export async function runClaimDispatch(opts: RunClaimDispatchOpts): Promise<Clai
   // 6. Collect results from the surviving Swarms (the killed one never reports).
   const surviving = handles.filter((_, i) => !(killedAuthority && i === killedAuthority.swarmIndex));
   const collected = await Promise.all(surviving.map((h) => h.waitFor('result', resultTimeoutMs)));
-  const results = collected.filter((e): e is ClaimAgentResult & { evt: 'result' } =>
-    !!e && e.evt === 'result',
-  ) as unknown as ClaimAgentResult[];
+  const results: ClaimAgentResult[] = collected
+    .filter((e): e is NonNullable<typeof e> => !!e && e.evt === 'result')
+    .map((e) => e as unknown as ClaimAgentResult);
   log(`${results.length}/${surviving.length} surviving Swarms reported results`);
 
   await opts.launcher.cleanup();

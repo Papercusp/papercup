@@ -40,6 +40,7 @@ function makePlan(over: Partial<DeployPlan> = {}): DeployPlan {
     lockfileChanged: false,
     warnings: [],
     noop: false,
+    desktopOnly: false,
     ...over,
   };
 }

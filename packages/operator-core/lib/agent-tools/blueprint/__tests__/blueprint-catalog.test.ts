@@ -31,6 +31,13 @@ type Entry = {
   spineModel?: string;
   spineVerbs?: string[];
   spineSteps?: string[];
+  dispatch?: {
+    concurrency?: number;
+    priority?: string;
+    readiness?: string[];
+    costCapUsd?: number;
+    safetyCeiling?: number;
+  };
   requiresRepo?: boolean;
   description?: string;
   error?: string;
@@ -54,11 +61,18 @@ describe('blueprint:catalog — built-in tier', () => {
     expect(coding.spineVerbs).toContain('DONE');
     expect(coding.requiresRepo).toBe(true);
     expect(coding.roles!.length).toBeGreaterThan(0);
+    // The catalog surfaces the blueprint's `dispatch:` policy (P-005) so the Pot
+    // can weigh per-shape autoloop behavior when choosing — coding declares
+    // concurrency:4, priority:plan-order (catalog.ts reads it loosely).
+    expect(coding.dispatch).toMatchObject({ concurrency: 4, priority: 'plan-order' });
 
     // The Pot itself is discoverable — a one-shot launch blueprint, not a pipeline.
     const pot = byId(r, 'pot')!;
     expect(pot.launchable).toBe(true);
     expect(pot.decider).toBe('operator');
+    // A launch/hive blueprint declares NO dispatch policy — the catalog reflects
+    // that absence rather than inventing a default.
+    expect(pot.dispatch).toBeUndefined();
 
     // Program-mode spine summarizes by steps, not edges.
     const vote = byId(r, 'vote')!;

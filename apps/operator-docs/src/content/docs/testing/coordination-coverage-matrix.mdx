@@ -1,0 +1,136 @@
+---
+title: Coordination system — adversarial test coverage matrix
+sidebar:
+  order: 12
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Why this exists">
+**EI-152** and **EI-153** — two real coordination bugs — shipped *past 27 green
+wake-executor tests*. Both escaped for the same reason: the existing suite was
+**single-agent unit tests with the real seams mocked**. They asserted the happy
+path but never **cross-agent isolation**, the **real socket / resume / config
+seams**, or **multi-session concurrency**. This matrix is the coverage map for the
+adversarial suite that closes those classes (plan `coordination-test-suite-2026-06-08`).
+It lists every failure-mode cell, whether it was covered before, and where it is
+covered now — **no silent gaps** (a silent gap is exactly what shipped EI-152).
+</Aside>
+
+## The four test classes that were missing
+
+| Class | What it asserts | Would have caught |
+|---|---|---|
+| **C1 — Cross-agent isolation (adversarial)** | For *every* channel (wake, `coord:send`, inbox, presence, locks, work-item claims): A's traffic **cannot** reach or affect B. | EI-153 |
+| **C2 — Real-seam integration** | The **real** socket inject, the **real** resume (isolated config dir), the **real** PG — not mocked deps. | EI-152 + EI-153 |
+| **C3 — Multi-session concurrency** | N live isolated sessions; concurrent wakes / sends / claims / locks → no **lost / duplicated / misrouted** delivery. | both |
+| **C4 — Liveness/lifecycle matrix** | Every (alive / exited / stale / pid-reuse / no-pid / ended) × (handle? / live-socket?) → the **correct** outcome. | EI-152 |
+| **C5 — Identity invariants** | `PAPERCUSP_SID` / coord ownerId / config-dir correct across launch **and** resume; zero identity/conversation bleed. | EI-153 |
+| **C6 — Idempotency / coalescing / retry** | Re-arm idempotency; coalescing windows; retry/backoff; no duplicate deliveries; `once=false` standing semantics. | — |
+
+## The keystone
+
+`packages/operator-core/test/_multi-session-testbed.ts` — `MultiSessionTestbed`
+mints N genuinely-isolated sessions (own coord identity + own `CLAUDE_CONFIG_DIR`
+/ `CODEX_HOME` + on-demand own live control socket in an **isolated discovery
+dir**) and drives every channel against them. Every C1/C3 cell reuses it. The
+isolated `psuPtyDir` both protects the live fleet's `~/.papercusp/psu-pty` and is
+how a test proves `findLiveHost(A)` never returns B's socket.
+
+## Failure-mode matrix
+
+Legend: ✅ covered (new) · 🟢 covered (pre-existing) · 🔴 was a gap, now closed ·
+⚪ accepted gap (logged below).
+
+### Wake system — the liveness ladder (C4) + EI-152 (C2)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| no-handle + **live psu socket** → socket-inject *(EI-152)* | mocked-only | 🔴 real socket | `wake-executor-matrix.test.ts` |
+| no-handle + socket + inject fails → park | ❌ | ✅ | `wake-executor-matrix.test.ts` |
+| no-handle + no socket + presence live → park | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| no-handle + no socket + presence stale/revoked → drop | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| adv-session alive + live socket → socket beats pty | ❌ | 🔴 real socket | `wake-executor-matrix.test.ts` |
+| adv-session alive + managed pty → pty-inject | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| **pid-reuse**: pid alive, not our pty → park (no misroute) | ❌ | 🔴 | `wake-executor-matrix.test.ts` |
+| alive + no recorded pid → park (avoid concurrent resume) | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| **ended row** + pid reused-alive → resume (not inject) | ❌ | 🔴 | `wake-executor-matrix.test.ts` |
+| exited + resumable claude → resume-headless | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| exited + claude w/o native id → park (never `--continue`) | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| exited + not resumable + presence gone → drop | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| resume spawn fails → error (pump retries) | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| plan-run handle → plan-run-resume / error | mocked | ✅ | `wake-executor-matrix.test.ts` |
+| **real psu-pty-host** idle-gate + `mode:'turn'` CR-submit + discovery | partial (raw only) | 🔴 | `apps/operator/lib/psu-pty-host-turn.integration.test.ts` |
+
+**EI-152 red-on-pre-fix verified**: reverting the no-handle `findPsuHost` block in
+`wake-executor.ts` flips `no-handle + live socket → delivered` to `park` (red).
+
+### Wake system — pump / coalescing / retry (C6)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| `armInboxWake` re-arm idempotency (one standing row) | 🟢 store-level | ✅ arm-level | `inbox-wake-arm.integration.test.ts` |
+| per-subscriber coalescing (no duplicate turn) | mocked | ✅ real PG | _(P-006)_ |
+| retry/backoff → dead at max attempts | 🟢 store-level | ✅ | _(P-006)_ |
+| **cross-agent**: A's wake never delivered to B | ❌ | 🔴 | _(P-006)_ |
+
+### Coord substrate (C1)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| `coord:send` A→B reaches B and **no one else** | 🟢 in-mem | ✅ real PG | _(P-007)_ |
+| inbox is owner-scoped; A can't read B's | 🟢 in-mem | ✅ | _(P-007)_ |
+| A cannot ack/suppress B's broadcast | 🟢 | ✅ | _(P-007)_ |
+| presence staleness / revoked transitions | partial | ✅ | _(P-007)_ |
+| subscribe→inject only reaches subscribers | 🟢 | ✅ | _(P-007)_ |
+
+### Locks (C1)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| A cannot release/heartbeat B's lock (lock_id keying) | 🟢 aba | ✅ | _(P-008)_ |
+| file-lock hook block-on-held | partial | ✅ | _(P-008)_ |
+| file-lock hook **fail-open** when operator unreachable | ❌ | 🔴 | _(P-008)_ |
+| named-resource drain protocol | 🟢 | ✅ | _(P-008)_ |
+| lock-authority election (lowest live pubkey) | 🟢 | ✅ | _(P-008)_ |
+
+### Federation (C2/C3)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| peer-log → projection → PG round-trip | 🟢 | ✅ | _(P-009)_ |
+| admission / revocation enforced | partial | ✅ | _(P-009)_ |
+| Track A content + Track B claim-authority, 2-instance | 🟢 | ✅ | _(P-009)_ |
+
+### work_items claim/lease (C3)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| N swarms claim one backlog → **no double-claim** | 🟢 2-inst | ✅ N-way | _(P-010)_ |
+| lease ttl expiry → reclaimable | 🟢 | ✅ | _(P-010)_ |
+| heartbeat extends lease | 🟢 | ✅ | _(P-010)_ |
+| fail-open reconcile under partition (deterministic) | 🟢 pure | ✅ | _(P-010)_ |
+
+### Multi-session concurrency E2E (C3)
+
+| Cell | Before | Now | Where |
+|---|---|---|---|
+| N sessions: concurrent wakes+sends+claims+locks → 0 loss/dup/misroute | ❌ | 🔴 | _(P-011)_ |
+
+## Accepted gaps (logged — not silent)
+
+<Aside type="note" title="Accepted gaps">
+- **Interactive-SU launch-side claude config isolation.** Per-session
+  `CLAUDE_CONFIG_DIR` isolation is implemented for **orchestrator-spawned bees**
+  (`spawn-mcp.ts`/`invoke.ts` → `~/.papercusp/session-claude/<spawnId>`) and
+  restored on **wake-executor resume**, but **not** for interactive `psu`/SU
+  claude sessions (`bootstrap-su` sets none). Repointing it is credential-
+  sensitive (the human's `~/.claude` login), so it is a deliberate design
+  follow-up, not a test detail. Tracked via `improvements:capture`. The EI-153
+  regression therefore asserts isolation at the seams where it **is** the
+  implemented fix (per-spawn config-dir, per-owner resume config-dir + exact
+  session id, per-owner discovery socket).
+- **Full real `claude`/`codex` resume spawn.** The resume rungs are asserted via
+  injected `spawnDetached` (capturing bin/args/env); a real CLI resume needs
+  credentials and is the **live-smoke** tier (gated runner), not CI.
+</Aside>

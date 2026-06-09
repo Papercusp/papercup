@@ -216,4 +216,15 @@ describe('shouldAutoServe — forward-only auto-serve policy', () => {
   it('SKIPS a malformed plan missing currentReleaseSha (conservative)', () => {
     expect(shouldAutoServe({ targetSha: 't', isFastForward: true, commits: ['c1'], noop: false })).toBe(false);
   });
+
+  it('SKIPS a desktop-only pointer bump (apps/desktop gitlink only — D-003)', () => {
+    // A green FF bringing ≥1 new commit that would otherwise deploy, but the only
+    // changed path is the desktop submodule → must NOT bounce the :3070 operator.
+    expect(shouldAutoServe({ ...base, desktopOnly: true })).toBe(false);
+  });
+
+  it('still deploys when desktopOnly is false or absent (real operator change)', () => {
+    expect(shouldAutoServe({ ...base, desktopOnly: false })).toBe(true);
+    expect(shouldAutoServe({ ...base })).toBe(true); // absent → not skipped
+  });
 });
