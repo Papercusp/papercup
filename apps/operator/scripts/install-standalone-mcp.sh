@@ -529,11 +529,17 @@ else
   echo "· $CLAUDE_CONFIG_PATH not found — skipping Claude Code MCP merge (launch \`claude\` once then re-run to opt in)"
 fi
 
-# 3b. Enable OMP-native Hindsight memory. This is the first-class OMP
-# memory backend: it exposes recall/retain/reflect tools and auto-retains
-# session history every N turns. The server may be local Docker or Cloud;
-# env lets a machine override the default without editing this script.
-HINDSIGHT_URL="${PAPERCUSP_HINDSIGHT_API_URL:-${HINDSIGHT_API_URL:-http://localhost:8888}}"
+# 3b. Disable OMP-native memory (psu-isolation P-003 / D-001). A psu session
+# uses the hybrid `memory:*` MCP tools (the papercusp-su server), NOT OMP's
+# built-in store. Earlier versions of this script ENABLED the Hindsight backend
+# (`memory.backend hindsight` + autoRecall/autoRetain) — that actively steered
+# OMP to its native memory, contradicting "use memory:*", and (because omp's
+# config is GLOBAL) leaked native auto-recall/retain into every psu omp session.
+# Set the backend to "off" (a valid MemoryBackendId: off|local|hindsight — see
+# @oh-my-pi/pi-coding-agent/src/memory-backend/types.ts; it is the SOLE runtime
+# selector, so the legacy `memories.enabled` toggle no longer matters) so OMP
+# injects no native-memory developer instructions and never auto-recalls/retains.
+# Plain `omp` is affected too — intended: the hybrid memory is the one path.
 set_omp_config() {
   local key="$1"
   local value="$2"
@@ -543,11 +549,7 @@ set_omp_config() {
     echo "! Could not set OMP config $key (is omp installed and healthy?)"
   fi
 }
-set_omp_config "memory.backend" "hindsight"
-set_omp_config "hindsight.apiUrl" "$HINDSIGHT_URL"
-set_omp_config "hindsight.scoping" "per-project-tagged"
-set_omp_config "hindsight.autoRecall" "true"
-set_omp_config "hindsight.autoRetain" "true"
+set_omp_config "memory.backend" "off"
 
 # 4. Render the per-client playbooks as standalone OPT-IN files.
 # The shared base playbook (papercusp-su-<profile>.tools.md) carries all

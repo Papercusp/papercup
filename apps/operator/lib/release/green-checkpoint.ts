@@ -43,6 +43,13 @@ export interface CheckpointDeps {
   /** Publish `ready` to origin. */
   push(ref: string): Promise<void>;
   broadcast(summary: string, body?: string): Promise<void>;
+  /** release-pipeline-resilience-2026-06-09 P-002: open a durable, human-facing
+   *  `release-not-green` escalation on red. Transition-only (no-op if one is
+   *  already open) so the hourly tick doesn't re-open it while the gate stays
+   *  red. Optional so existing test stubs need not provide it. */
+  escalate?(summary: string, body: string): Promise<void>;
+  /** Resolve any open `release-not-green` escalation — the gate recovered. */
+  clearEscalation?(): Promise<void>;
   log(s: string): void;
 }
 
@@ -96,6 +103,26 @@ export async function runGreenCheckpoint(
         summary,
       )
       .catch(() => {});
+    // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the
+    // RED path, symmetric with the `release:green` emit below. A `release-fixer`
+    // launch-blueprint (P-006) reacts to this to auto-diagnose the failing test;
+    // it also unblocks any agent that `events:await`s the gate verdict. The
+    // `summary` is the de-noised failing-test tail already captured above.
+    void import('@papercusp/operator-core/lib/events/await/engine')
+      .then(({ emitAwaitedEvent }) =>
+        emitAwaitedEvent({
+          key: 'green-checkpoint:red',
+          summary: `green-checkpoint: ${candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`,
+          payload: { sha: candidate, from: lastReady ?? null, summary },
+          source: 'green-checkpoint',
+        }),
+      )
+      .catch(() => {});
+    // P-002: durable human-facing escalation (transition-only, cleared on green).
+    await deps.escalate?.(
+      `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
+      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}`,
+    ).catch(() => {});
     return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary };
   }
 
