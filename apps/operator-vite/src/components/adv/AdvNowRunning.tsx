@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Square, Play, AlertTriangle } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@papercusp/sync';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
 import { fetchPlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 
@@ -29,7 +30,38 @@ interface Props {
   slug: string | null;
 }
 
+/** One row of the `hive.controlState` sync query (per registered hive). */
+interface HiveControlRow {
+  slug: string;
+  started: boolean;
+}
+
 const PHASE = 'staging';
+
+/**
+ * Fire a hive control tool (start-hive-wake-orchestration P-005/P-006)
+ * through the loopback palette bridge — the full gated/audited dispatch.
+ * Lifted from the retired global-header HiveStartPauseButton.
+ */
+async function runHiveControl(tool: 'hive:start' | 'hive:pause', slug: string): Promise<void> {
+  const res = await fetch('/api/agent-mcp/run-tool', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: tool, args: { harness: slug }, confirmed: true }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    message?: string;
+    result?: { content?: Array<{ text?: string }> };
+  };
+  if (!res.ok || !body.ok) {
+    throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
+  }
+  const text = body.result?.content?.[0]?.text;
+  const payload = text ? (JSON.parse(text) as { ok?: boolean; message?: string }) : { ok: true };
+  if (payload.ok === false) throw new Error(payload.message ?? `${tool} refused`);
+}
 
 /**
  * Count plans that are started but not yet worked to completion. A started
@@ -50,8 +82,15 @@ export function waitingLabel(n: number): string {
 
 /**
  * Full-width harness status bar rendered above the tab strip in AdvShell.
- * Shows harness active/stopped state, start/stop controls, and one pill
- * per in-flight agent run. Ported from ActiveAgentsBar in HarnessDashboard.
+ * Shows harness active/stopped state, the Start/Stop hive control, and one
+ * pill per in-flight agent run. Ported from ActiveAgentsBar in HarnessDashboard.
+ *
+ * The Start/Stop button here IS the hive control (it replaced the global
+ * header's HiveStartPauseButton, start-hive-wake-orchestration P-006):
+ * Start launches this harness's run loop AND boots the brain (`hive:start` —
+ * persisted started bit, Queen wake subscriptions, wake-mode auto); Stop
+ * stops the harness processes AND pauses the brain (`hive:pause`). The hive
+ * half is best-effort — skipped when no hive is registered.
  *
  * Polls /api/harness/:slug/agents + /status every 4 s.
  */
@@ -74,6 +113,13 @@ export default function AdvNowRunning({ slug }: Props) {
   const [, setAdvTab] = useQueryState('tab', parseAsString);
   const [, setPlansView] = useQueryState('view', parseAsString);
   const [, setPlanBuckets] = useQueryState('pBuckets', parseAsArrayOf(parseAsString));
+
+  // The registered hive (N=1 build — local-hive scope). The hive control
+  // tools key on the HIVE's home slug, not the selected harness, so we read
+  // it from the same sync query the old header button used. Invalidated live
+  // by hive:start / hive:pause.
+  const { data: hiveData } = useSyncQuery({ queryName: 'hive.controlState', args: {} });
+  const hive = (hiveData as HiveControlRow[] | undefined)?.[0];
 
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,7 +191,7 @@ export default function AdvNowRunning({ slug }: Props) {
     return () => { cancelled = true; window.clearInterval(id); };
   }, [slug, alive, awaitingAgent, runs.length]);
 
-  const launchHarness = useCallback(async () => {
+  const startHive = useCallback(async () => {
     if (!slug || starting) return;
     setStarting(true);
     try {
@@ -160,21 +206,33 @@ export default function AdvNowRunning({ slug }: Props) {
         throw new Error(msg);
       }
       const d = await res.json();
-      toast.success('Harness launched', { description: d.logPath });
+      toast.success('Hive started', { description: d.logPath });
       // Optimistic: flip to active + "waiting for agent…" immediately; the
       // faster poll (driven by the awaitingAgent dep) takes over from here.
       setAlive(true);
       setAwaitingAgent(true);
     } catch (e) {
-      toast.error('Launch failed', { description: String(e) });
-    } finally {
+      toast.error('Start failed', { description: String(e) });
       setStarting(false);
+      return;
     }
-  }, [slug, starting]);
+    // The brain half: persisted started bit + Queen wake subscriptions +
+    // wake-mode auto + immediate Queen wake. Best-effort — the harness run
+    // loop is already up; a hive-control failure shouldn't read as a failed
+    // start, so it gets its own (non-blocking) error toast.
+    if (hive) {
+      try {
+        await runHiveControl('hive:start', hive.slug);
+      } catch (e) {
+        toast.error(`Hive wake-orchestration failed (${hive.slug})`, { description: String(e) });
+      }
+    }
+    setStarting(false);
+  }, [slug, starting, hive]);
 
-  const stopHarness = useCallback(async () => {
+  const stopHive = useCallback(async () => {
     if (!slug) return;
-    if (!window.confirm(`Stop harness ${slug}? In-flight work will be interrupted.`)) return;
+    if (!window.confirm(`Stop the hive (${slug})? In-flight work will be interrupted.`)) return;
     try {
       const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/stop?phase=${PHASE}`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -185,8 +243,18 @@ export default function AdvNowRunning({ slug }: Props) {
       setRuns([]);
     } catch (e) {
       toast.error('Stop failed', { description: String(e) });
+      return;
     }
-  }, [slug]);
+    // Pause the brain too — wake-mode manual stages every autonomous wake, so
+    // the colony actually goes quiet instead of the watchdog re-waking it.
+    if (hive) {
+      try {
+        await runHiveControl('hive:pause', hive.slug);
+      } catch (e) {
+        toast.error(`Hive pause failed (${hive.slug})`, { description: String(e) });
+      }
+    }
+  }, [slug, hive]);
 
   const showWaitingPlans = useCallback(() => {
     void setAdvTab('plans');
@@ -270,28 +338,28 @@ export default function AdvNowRunning({ slug }: Props) {
         </button>
       )}
 
-      {/* Start (when stopped) / Stop (when active) */}
+      {/* Start (when stopped) / Stop (when active) — THE hive control */}
       {!effectivelyAlive && (
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--start"
-          onClick={launchHarness}
+          onClick={startHive}
           disabled={starting || isLoading}
-          title="Start harness (staging phase)"
+          title="Start hive — launch this harness (staging phase) and wake the Queen"
         >
           <Play size={11} aria-hidden />
-          {starting ? 'Starting…' : 'Start harness'}
+          {starting ? 'Starting…' : 'Start hive'}
         </button>
       )}
       {effectivelyAlive && (
         <button
           type="button"
           className="pc-advshell__action pc-advshell__action--stop"
-          onClick={stopHarness}
-          title="Stop harness (SIGTERM)"
+          onClick={stopHive}
+          title="Stop hive — stop harness processes (SIGTERM) and pause autonomous wakes"
         >
           <Square size={11} aria-hidden />
-          Stop harness
+          Stop hive
         </button>
       )}
 
