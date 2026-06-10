@@ -176,12 +176,12 @@ export async function reconcileDoneStatus(
   log: (msg: string) => void = () => {},
 ): Promise<boolean> {
   const existing = (await dbc
-    .prepare('SELECT status FROM harness_features WHERE harness_slug = ? AND feature_id = ?')
+    .prepare('SELECT status FROM harness_shared.harness_features_consolidated WHERE harness_slug = ? AND feature_id = ?')
     .get(harnessSlug, featureId)) as { status?: string } | undefined;
   if (existing?.status !== 'validating') return false;
   await dbc
     .prepare(
-      "UPDATE harness_features SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND status = 'validating'",
+      "UPDATE harness_shared.harness_features_consolidated SET status = 'passed', updated_ts = ? WHERE harness_slug = ? AND feature_id = ? AND status = 'validating'",
     )
     .run(Date.now(), harnessSlug, featureId);
   log(

@@ -61,6 +61,14 @@ export function setBlueprintRunFire(fn: DeciderFireFn | null): void {
 }
 
 const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff }) => {
+  // Validate role name — reject invalid characters before sending the request (EI-212).
+  // The invoke route validates with /^[A-Za-z0-9_-]+$/, so ensure it matches.
+  if (!/^[A-Za-z0-9_-]+$/.test(role)) {
+    const detail = `invalid role name '${role}' — allowed: [A-Za-z0-9_-]`;
+    console.warn(`[blueprint-run] decider fire skipped (${installSlug}/${role}): ${detail}`);
+    void recordFire(installSlug, role, `error: ${detail}`, 'error').catch(() => {});
+    return;
+  }
   const ws = encodeURIComponent(workspaceId);
   const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}`;
   // Fire-and-forget: the invoke route runs the agent to completion (up to its timeout); a
