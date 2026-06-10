@@ -1,0 +1,175 @@
+/**
+ * Credential resolution + automated refresh for the hive inference gateway
+ * (hive-inference-gateway-2026-06-09 P-003).
+ *
+ * The gateway is the SOLE egress to api.anthropic.com for a machine's bees, so it holds the
+ * bound account's OAuth and injects it. A bound account is named by an account-pool
+ * `credentialRef` (the same shape the frame-installer / `accounts:register` use):
+ *
+ *   - `token:<path>`  — a long-lived `claude setup-token` (`sk-ant-oat…`). No expiry, no
+ *                       refresh; used as the bearer verbatim. The proven owner-add channel.
+ *   - `file:<path>` / absolute / `~` — a `.credentials.json` bundle (a `claudeAiOauth` block:
+ *                       accessToken + refreshToken + expiresAt). Access tokens are short-lived
+ *                       (~hours), so the gateway REFRESHES them transparently via the claude
+ *                       OAuth provider (`grant_type=refresh_token`, same client_id that minted
+ *                       them) and rewrites the bundle in place — the piece the pool lacked.
+ *
+ * Refresh reuses `oauth/token.ts getOAuthToken` (near-expiry refresh + concurrent-refresh
+ * dedup), backed by a bundle-shaped `TokenStorage`. A small in-memory token cache keeps the
+ * hot proxy path off disk between refreshes.
+ */
+import { promises as fs } from 'node:fs';
+import { getOAuthToken, type TokenStorage } from '../oauth/token';
+import { getProvider, registerProvider, makeClaudeProvider } from '../oauth/providers';
+
+/** The OAuth beta flag a subscription (non-API-key) request must carry. */
+export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
+/** Refresh this far before the access token's expiry (mirrors getOAuthToken's window). */
+const REFRESH_SKEW_MS = 5 * 60 * 1000;
+
+/** The on-disk `~/.claude/.credentials.json` bundle shape. */
+export interface ClaudeCredentialBundle {
+  claudeAiOauth: {
+    accessToken: string;
+    refreshToken?: string;
+    /** Epoch ms. */
+    expiresAt?: number;
+    scopes?: string[];
+    subscriptionType?: string;
+    rateLimitTier?: string;
+  };
+}
+
+let claudeProviderRegistered = false;
+/** Idempotently register the default (refresh-capable) claude provider in the OAuth registry. */
+export function ensureClaudeProvider(): void {
+  if (claudeProviderRegistered) return;
+  if (!getProvider('claude')) registerProvider(makeClaudeProvider());
+  claudeProviderRegistered = true;
+}
+
+function expandHome(p: string): string {
+  return p.startsWith('~') ? p.replace(/^~/, process.env.HOME ?? '~') : p;
+}
+
+/** Parse a credentialRef into its channel + filesystem path (mirrors `resolveCredential`). */
+export function parseCredentialRef(ref: string): { kind: 'token' | 'file'; path: string } {
+  if (ref.startsWith('token:')) return { kind: 'token', path: expandHome(ref.slice(6)) };
+  if (ref.startsWith('file:')) return { kind: 'file', path: expandHome(ref.slice(5)) };
+  if (ref.startsWith('/') || ref.startsWith('~')) return { kind: 'file', path: expandHome(ref) };
+  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/path)`);
+}
+
+/**
+ * A `TokenStorage` backed by a `.credentials.json` bundle file. Maps the helper's
+ * `(field, field_refresh, field_expires_at)` config keys onto `claudeAiOauth.*` and persists
+ * a refresh by rewriting the bundle atomically (0600), preserving the other bundle fields.
+ */
+export function bundleTokenStorage(path: string): TokenStorage {
+  const FIELD = 'access';
+  return {
+    async read() {
+      const bundle = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
+      const o = bundle.claudeAiOauth ?? ({} as ClaudeCredentialBundle['claudeAiOauth']);
+      return {
+        [FIELD]: o.accessToken,
+        [`${FIELD}_refresh`]: o.refreshToken,
+        [`${FIELD}_expires_at`]: o.expiresAt ?? null,
+      };
+    },
+    async update(_plugin, _harness, patch) {
+      const bundle = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
+      const o = bundle.claudeAiOauth ?? ({} as ClaudeCredentialBundle['claudeAiOauth']);
+      if (typeof patch[FIELD] === 'string') o.accessToken = patch[FIELD] as string;
+      if (typeof patch[`${FIELD}_refresh`] === 'string') o.refreshToken = patch[`${FIELD}_refresh`] as string;
+      if (`${FIELD}_expires_at` in patch) {
+        const v = patch[`${FIELD}_expires_at`];
+        o.expiresAt = typeof v === 'number' ? v : undefined;
+      }
+      bundle.claudeAiOauth = o;
+      const tmp = `${path}.tmp-${process.pid}`;
+      await fs.writeFile(tmp, JSON.stringify(bundle, null, 2), { mode: 0o600 });
+      await fs.rename(tmp, path);
+    },
+  };
+}
+
+export interface CredentialResolver {
+  /** A fresh bearer token (refreshing a near-expiry bundle transparently). */
+  current(): Promise<string>;
+  /** Force the next `current()` to re-read/refresh (call after an upstream 401). */
+  invalidate(): void;
+  /** The credential channel — `token` never refreshes, `file` does. */
+  readonly kind: 'token' | 'file';
+}
+
+/**
+ * Build a resolver for one account's credentialRef. `token:` returns the staged setup-token
+ * verbatim (cached; no expiry). `file:` returns the bundle's access token, refreshing via the
+ * claude provider when within REFRESH_SKEW_MS of expiry; an in-memory {token, expiresAt} cache
+ * keeps the per-request path off disk between refreshes. `harnessKey` scopes the
+ * concurrent-refresh dedup so distinct accounts never share a refresh.
+ */
+export function makeCredentialResolver(credentialRef: string, harnessKey?: string): CredentialResolver {
+  ensureClaudeProvider();
+  const { kind, path } = parseCredentialRef(credentialRef);
+  const dedupKey = harnessKey ?? path;
+
+  let cachedToken: string | undefined;
+  let cachedExpiresAt = 0; // epoch ms; 0 = unknown/no-expiry
+
+  return {
+    kind,
+    invalidate() {
+      cachedToken = undefined;
+      cachedExpiresAt = 0;
+    },
+    async current() {
+      if (kind === 'token') {
+        if (cachedToken) return cachedToken;
+        cachedToken = (await fs.readFile(path, 'utf8')).trim();
+        if (!cachedToken) throw new Error(`inference-gateway: empty setup-token at ${path}`);
+        return cachedToken;
+      }
+      // file: bundle — serve the cache until near expiry, else refresh-on-read via getOAuthToken.
+      const now = Date.now();
+      if (cachedToken && (cachedExpiresAt === 0 || cachedExpiresAt - now > REFRESH_SKEW_MS)) {
+        return cachedToken;
+      }
+      const token = await getOAuthToken(
+        {
+          plugin: 'inference-gateway',
+          harness: dedupKey,
+          storage: bundleTokenStorage(path),
+          resolveProvider: () => ({ provider: 'claude' }),
+        },
+        'access',
+      );
+      if (!token) throw new Error(`inference-gateway: no access token in bundle ${path}`);
+      // Re-read the (possibly refreshed) expiry to set the cache window.
+      try {
+        const bundle = JSON.parse(await fs.readFile(path, 'utf8')) as ClaudeCredentialBundle;
+        cachedExpiresAt = bundle.claudeAiOauth?.expiresAt ?? 0;
+      } catch {
+        cachedExpiresAt = 0;
+      }
+      cachedToken = token;
+      return token;
+    },
+  };
+}
+
+/**
+ * Build the `anthropic-beta` header to send upstream on an OAuth (subscription) request: the
+ * client's existing beta flags PLUS the required `oauth-2025-04-20`, de-duplicated.
+ */
+export function withOAuthBeta(incoming: string | null | undefined): string {
+  const flags = new Set(
+    (incoming ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  flags.add(CLAUDE_OAUTH_BETA);
+  return [...flags].join(',');
+}

@@ -107,9 +107,12 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         return new Mem0Backend();
       },
       cleanup: async () => {
+        // Close the mem0 client's own PG pool BEFORE the drop — a live
+        // pooled connection can hold locks on bench tables and 55P03 the
+        // DROP (which once killed a full run's report).
+        invalidateMemoryClient();
         if (!keep) await dropBenchSchema(pg);
         await pg.end();
-        invalidateMemoryClient();
       },
       reach: {
         'readable from codex/omp/operator/memory-tab': 'yes — any process with PG access (PG-backed)',
@@ -161,12 +164,13 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         return make();
       },
       cleanup: async () => {
+        // Pool-close before drop — same 55P03 protection as the mem0 ctx.
+        invalidateMemoryClient();
         if (!keep) {
           await dropBenchSchema(pg);
           fs.rmSync(dir, { recursive: true, force: true });
         }
         await pg.end();
-        invalidateMemoryClient();
       },
       reach: {
         'readable from codex/omp/operator/memory-tab':
@@ -309,7 +313,15 @@ async function benchOne(
     };
   } finally {
     log(`[${name}] cleanup…`);
-    await ctx.cleanup();
+    // A cleanup failure must never destroy the run's measurements — the
+    // report only writes after ALL backends complete.
+    try {
+      await ctx.cleanup();
+    } catch (e) {
+      const msg = (e as Error).message.slice(0, 120);
+      notes.push(`[${name}] cleanup failed (non-fatal): ${msg}`);
+      log(`[${name}] cleanup FAILED (non-fatal): ${msg}`);
+    }
   }
 }
 

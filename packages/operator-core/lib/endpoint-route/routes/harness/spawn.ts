@@ -295,6 +295,23 @@ const invoke = defineTool({
         console.warn(`[invoke] failed to mark adv session ${advSessionRowId} as ended:`, e);
       }
     }
+
+    // Turn-end liveness backstop (start-hive-wake P-009 / D-002): the Queen's
+    // turn just ended — if the hive is started and she left NO wake armed, arm
+    // the fallback sleep (never an immediate re-invoke, D-004). Fire-and-forget
+    // off the response path; the module is fail-soft by contract.
+    if (url.searchParams.get('bpkind') === 'hive') {
+      void import('../../../hive/watchdog')
+        .then(({ hiveTurnEndCheck }) =>
+          hiveTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
+        )
+        .then((res) => {
+          if (res.outcome === 'armed' || res.outcome === 'staged') {
+            console.warn(`[invoke ${project.slug}] hive watchdog ${res.outcome} a fallback wake: ${res.reason}`);
+          }
+        })
+        .catch(() => {});
+    }
     const agentOutput = r.output; // spawnInvokeOnce already strips the [timestamp] log lines
     const decisionLine = (agentOutput.split('\n')[0] ?? '').trim();
     const timedOut = r.timedOut ?? false;

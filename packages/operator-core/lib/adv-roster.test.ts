@@ -307,6 +307,19 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     expect(bare.wakeMode).toBe('auto');
   });
 
+  it('attaches the staged-wake count (P-008 badge) — absent owner → 0', () => {
+    const [staged, none] = mergeRosterEntries(
+      [presence({ ownerId: 's-1' }), presence({ ownerId: 's-2' })],
+      new Map(), NOW, new Map(), new Map(), new Map(), 'auto',
+      new Map([['s-1', 3]]),
+    );
+    expect(staged.pendingWakes).toBe(3);
+    expect(none.pendingWakes).toBe(0);
+    // pending (not-yet-spawned) entries never have staged wakes
+    const row = adv({ id: 11, display: 'workbench', role: 'worker', launchArgv: ['psu'] });
+    expect(pendingLaunchesToRosterEntries([row], 'box-1')[0].pendingWakes).toBe(0);
+  });
+
   it('pending entry: a --brain launch argv → queen even with a null role', () => {
     const row = adv({ id: 9, display: 'workbench', role: null, launchArgv: ['psu', '--brain'] });
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');

@@ -16,6 +16,7 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 export interface OAuthProviderConfig {
   clientId: string;
@@ -140,6 +141,136 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
       const scopeHeader = res.headers.get('x-oauth-scopes') ?? '';
       const scopes = scopeHeader.split(',').map((s) => s.trim()).filter(Boolean);
       return { scopes };
+    },
+  };
+}
+
+/* ─── Claude (Anthropic subscription) provider ─── */
+
+/**
+ * The well-known PUBLIC Claude Code OAuth client (PKCE; no client secret). This is the
+ * same client id the `claude` CLI uses, and a refresh token minted under it can ONLY be
+ * refreshed under it (Anthropic binds the refresh grant to the minting client_id). Used
+ * by the hive inference gateway to mint + refresh per-account `.credentials.json` bundles
+ * (hive-inference-gateway-2026-06-09 P-003/P-004). Endpoints are overridable via env so we
+ * can switch the older `console.anthropic.com` host to the newer `platform.claude.com` one
+ * without a code change.
+ */
+export const CLAUDE_CODE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+export const CLAUDE_OAUTH_DEFAULTS = {
+  clientId: CLAUDE_CODE_CLIENT_ID,
+  /** claude.ai issues the auth code for a Max/Pro subscription login… */
+  authorizeUrl: 'https://claude.ai/oauth/authorize',
+  /** …and console exchanges + refreshes it (form-encoded; JSON bodies can time out). */
+  tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
+  redirectUri: 'https://console.anthropic.com/oauth/code/callback',
+  scopes: ['org:create_api_key', 'user:profile', 'user:inference'] as const,
+} as const;
+
+export interface ClaudeProviderConfig {
+  clientId?: string;
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  redirectUri?: string;
+  /** The PKCE code_verifier for THIS authorize→exchange round-trip (login flow, P-004). */
+  codeVerifier?: string;
+}
+
+/** base64url (no padding) of a buffer — the PKCE encoding. */
+function b64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Derive the S256 PKCE code_challenge from a verifier. */
+export function pkceChallenge(verifier: string): string {
+  return b64url(createHash('sha256').update(verifier).digest());
+}
+
+function claudeTokenResponse(j: {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}): TokenResponse {
+  if (j.error || !j.access_token) {
+    throw new Error(`claude oauth: ${j.error_description ?? j.error ?? 'no access_token in response'}`);
+  }
+  return {
+    accessToken: j.access_token,
+    refreshToken: j.refresh_token,
+    expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : undefined,
+    scopes: j.scope ? j.scope.split(/\s+/).filter(Boolean) : undefined,
+  };
+}
+
+/**
+ * Claude/Anthropic subscription OAuth provider. `refresh()` is the P-003 deliverable —
+ * a plain `grant_type=refresh_token` form post that `getOAuthToken` drives on near-expiry;
+ * `buildAuthorizeUrl`/`exchangeCode` are the PKCE login round-trip (P-004), which needs the
+ * `codeVerifier` set on the config for that one flow.
+ */
+export function makeClaudeProvider(config: ClaudeProviderConfig = {}): OAuthProvider {
+  const clientId = config.clientId ?? process.env.CLAUDE_OAUTH_CLIENT_ID ?? CLAUDE_OAUTH_DEFAULTS.clientId;
+  const authorizeUrl = config.authorizeUrl ?? process.env.CLAUDE_OAUTH_AUTHORIZE_URL ?? CLAUDE_OAUTH_DEFAULTS.authorizeUrl;
+  const tokenUrl = config.tokenUrl ?? process.env.CLAUDE_OAUTH_TOKEN_URL ?? CLAUDE_OAUTH_DEFAULTS.tokenUrl;
+  const redirectUri = config.redirectUri ?? process.env.CLAUDE_OAUTH_REDIRECT_URI ?? CLAUDE_OAUTH_DEFAULTS.redirectUri;
+  const cfg: OAuthProviderConfig = { clientId, clientSecret: '', authorizeUrl, tokenUrl, redirectUri };
+
+  return {
+    id: 'claude',
+    config: cfg,
+    buildAuthorizeUrl(scopes, state) {
+      const u = new URL(authorizeUrl);
+      u.searchParams.set('code', 'true');
+      u.searchParams.set('client_id', clientId);
+      u.searchParams.set('response_type', 'code');
+      u.searchParams.set('redirect_uri', redirectUri);
+      u.searchParams.set('scope', (scopes.length ? scopes : [...CLAUDE_OAUTH_DEFAULTS.scopes]).join(' '));
+      if (config.codeVerifier) {
+        u.searchParams.set('code_challenge', pkceChallenge(config.codeVerifier));
+        u.searchParams.set('code_challenge_method', 'S256');
+      }
+      u.searchParams.set('state', state);
+      return u.toString();
+    },
+    async exchangeCode(code) {
+      // claude.ai presents the code as `code#state`; the token endpoint wants them split.
+      const [rawCode, stateFromCode] = code.split('#');
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: rawCode,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+      });
+      if (stateFromCode) body.set('state', stateFromCode);
+      if (config.codeVerifier) body.set('code_verifier', config.codeVerifier);
+      const res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+      const j = (await res.json().catch(() => ({}))) as Parameters<typeof claudeTokenResponse>[0];
+      if (!res.ok && !j.error) throw new Error(`claude oauth code exchange ${res.status}`);
+      return claudeTokenResponse(j);
+    },
+    async refresh(refreshToken) {
+      const res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+          client_id: clientId,
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as Parameters<typeof claudeTokenResponse>[0];
+      if (!res.ok && !j.error) throw new Error(`claude oauth token refresh ${res.status}`);
+      const out = claudeTokenResponse(j);
+      // Anthropic ROTATES the refresh token on use; fall back to the old one only if the
+      // response omits a new one (so we never persist an empty refresh token).
+      return { ...out, refreshToken: out.refreshToken ?? refreshToken };
     },
   };
 }

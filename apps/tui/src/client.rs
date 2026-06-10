@@ -1572,6 +1572,47 @@ fn run_tool_body(name: &str, args: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "name": name, "args": args, "confirmed": false })
 }
 
+/// Unwrap a run-tool envelope (`{ ok, result: { content: [{ text }] } }`) to the
+/// tool's own inner JSON payload (every tooldef tool returns one JSON text
+/// block). Pure — unit-tested; the P-009 wake-queue review parses through this.
+pub fn run_tool_inner_json(v: &serde_json::Value) -> Result<serde_json::Value> {
+    if v.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        let msg = v
+            .get("message")
+            .or_else(|| v.get("error"))
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "run-tool failed".into());
+        anyhow::bail!("{msg}");
+    }
+    let result = v.get("result").ok_or_else(|| anyhow::anyhow!("run-tool: no result"))?;
+    if result.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+        let text = result
+            .pointer("/content/0/text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("tool error");
+        anyhow::bail!("{text}");
+    }
+    let text = result
+        .pointer("/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("run-tool: no content text"))?;
+    serde_json::from_str(text).with_context(|| "run-tool: inner payload is not JSON")
+}
+
+/// Parse a `coord:wake-queue {action:'list'}` run-tool response into the staged
+/// wakes (hive-agent-tabs P-009). Pure — unit-tested.
+pub fn parse_wake_queue_list(v: &serde_json::Value) -> Result<Vec<crate::models::PendingWake>> {
+    let inner = run_tool_inner_json(v)?;
+    if inner.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        anyhow::bail!(
+            "wake-queue: {}",
+            inner.get("reason").and_then(serde_json::Value::as_str).unwrap_or("not ok")
+        );
+    }
+    let pending = inner.get("pending").cloned().unwrap_or(serde_json::json!([]));
+    serde_json::from_value(pending).with_context(|| "wake-queue: bad pending rows")
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1609,6 +1650,42 @@ mod tests {
         assert_eq!(b["args"]["agent"], "s-1");
         assert_eq!(b["args"]["mode"], "manual");
         assert_eq!(b["confirmed"], false);
+    }
+
+    #[test]
+    fn parse_wake_queue_list_unwraps_the_run_tool_envelope() {
+        // The full envelope: route { ok, result } → MCP { content:[{text}] } →
+        // the tool's own { ok, pending } JSON.
+        let inner = serde_json::json!({
+            "ok": true,
+            "pending": [
+                { "id": 7, "ownerId": "bee-1", "summary": "routine tick", "source": "routinesTick", "createdAt": "2026-06-09" },
+                { "id": 9, "ownerId": "bee-1", "summary": null, "createdAt": "2026-06-09" },
+            ],
+        });
+        let envelope = serde_json::json!({
+            "ok": true,
+            "result": { "content": [ { "type": "text", "text": inner.to_string() } ] },
+        });
+        let got = super::parse_wake_queue_list(&envelope).expect("parses");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].id, 7);
+        assert_eq!(got[0].summary.as_deref(), Some("routine tick"));
+        assert_eq!(got[1].summary, None);
+    }
+
+    #[test]
+    fn parse_wake_queue_list_surfaces_tool_errors() {
+        // Route-level failure.
+        let denied = serde_json::json!({ "ok": false, "error": "forbidden" });
+        assert!(super::parse_wake_queue_list(&denied).is_err());
+        // MCP isError text block.
+        let tool_err = serde_json::json!({
+            "ok": true,
+            "result": { "isError": true, "content": [ { "type": "text", "text": "handler_error: boom" } ] },
+        });
+        let err = super::parse_wake_queue_list(&tool_err).unwrap_err().to_string();
+        assert!(err.contains("boom"), "{err}");
     }
 
     // End-to-end IPC round-trips for the client live in ipc.rs (fake Unix-socket

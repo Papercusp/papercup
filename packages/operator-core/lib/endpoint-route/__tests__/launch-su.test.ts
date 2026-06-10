@@ -26,7 +26,7 @@ vi.mock('node:os', async () => {
 // it (vi.hoisted so the factory can reference the spy) so the defer_spawn path
 // doesn't need a real PG.
 const { recordAdvSessionMock } = vi.hoisted(() => ({
-  recordAdvSessionMock: vi.fn(async () => 99),
+  recordAdvSessionMock: vi.fn(async (_opts: unknown) => 99),
 }));
 vi.mock('../../adv-sessions', () => ({
   recordAdvSession: recordAdvSessionMock,
@@ -41,6 +41,16 @@ const { effectiveBackendMock } = vi.hoisted(() => ({
 vi.mock('../../agent-config', () => ({
   readAgentConfig: vi.fn(async () => ({})),
   effectiveBackend: effectiveBackendMock,
+}));
+
+// P-012 safety floor (unify-agent-spawn-chokepoint): mocked so unit tests don't
+// lazy-import fleet/operator-spawn (which drags the DBOS workflow graph + PG).
+// Default = headroom available; the floor tests flip it to a refusal.
+const { floorMock } = vi.hoisted(() => ({
+  floorMock: vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true })),
+}));
+vi.mock('../../interactive-safety-floor', () => ({
+  checkInteractiveSafetyFloor: floorMock,
 }));
 
 const CTX: RouteContext = {
@@ -154,6 +164,34 @@ describe('launch-su', () => {
   it('rejects an unsafe plan slug (no spawn)', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: '$(whoami)' });
     expect(res.status).toBe(400);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  // P-012 (unify-agent-spawn-chokepoint): the psu web launch passes the SAME
+  // interactive safety floor as the native console launch — admission waived,
+  // ceiling enforced.
+  it('passes the safety floor before spawning (floor consulted, launch proceeds)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(200);
+    expect(floorMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('REFUSES with 429 when the floor reports no headroom (no spawn, no defer)', async () => {
+    floorMock.mockResolvedValueOnce({ ok: false, reason: 'interactive launch refused by the safety floor: 16 ≥ 16' });
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.status).toBe('error');
+    expect(body.error).toContain('safety floor');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('floor also gates the deferred (workbench) path — no row recorded over-ceiling', async () => {
+    floorMock.mockResolvedValueOnce({ ok: false, reason: 'interactive launch refused by the safety floor' });
+    const res = await callPost({ agent: 'claude', defer_spawn: true });
+    expect(res.status).toBe(429);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });

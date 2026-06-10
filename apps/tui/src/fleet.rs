@@ -480,6 +480,16 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
+/// The MANUAL wake-mode badge text (P-008): the staged-wake count rides on the
+/// badge when anything is pending review (" ⏸MANUAL·3"), bare otherwise.
+fn wake_badge_text(pending: i64) -> String {
+    if pending > 0 {
+        format!(" ⏸MANUAL·{pending}")
+    } else {
+        " ⏸MANUAL".to_string()
+    }
+}
+
 /// The agent list — roster joined to each agent's latest activity summary + todo
 /// progress. The navigable spine of the Fleet tab (j/k).
 fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
@@ -520,12 +530,12 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 _ => Span::raw(agent_cell),
             };
             // P-008: flag-on, a wake-mode badge — `manual` is the notable (paused)
-            // state; `auto` is the default → no badge, uncluttered. Toggling it from
-            // the pane is the keybinding piece (deferred to owner verify); the mode is
-            // settable now via coord:wake-mode.
+            // state; `auto` is the default → no badge, uncluttered. The staged-wake
+            // COUNT rides on the badge so the owner sees review-pending work at a
+            // glance ('W' opens the P-009 review overlay).
             let wake_badge = if app.hive_agent_tabs && r.wake_mode.as_deref() == Some("manual") {
                 Span::styled(
-                    " ⏸MANUAL",
+                    wake_badge_text(r.pending_wakes),
                     ratatui::style::Style::default().fg(ratatui::style::Color::Yellow),
                 )
             } else {
@@ -707,6 +717,13 @@ mod tests {
     use super::*;
     use crate::models::{ActivityRow, RosterEntry, TodoItem, WorkItem};
     use serde_json::json;
+
+    #[test]
+    fn wake_badge_text_carries_the_pending_count() {
+        // P-008: bare badge when nothing staged; the count rides on it otherwise.
+        assert_eq!(wake_badge_text(0), " ⏸MANUAL");
+        assert_eq!(wake_badge_text(3), " ⏸MANUAL·3");
+    }
 
     fn row(owner: &str, kind: &str, summary: &str) -> ActivityRow {
         ActivityRow {

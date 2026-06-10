@@ -20,7 +20,9 @@ import type { RouteContext } from '../define-route';
 const spawnMock = vi.fn(() => ({ unref: () => {}, pid: 4242 }));
 // The kickoff prompt-file factory — mocked so generation is deterministic and
 // its failure path is forceable.
-const buildKickoffPromptFileMock = vi.fn(async (_ctx: any) => '/dev/shm/papercusp-kickoff-xyz/new-plan.md');
+const buildKickoffPromptFileMock = vi.fn(
+  async (_ctx: any): Promise<string | null> => '/dev/shm/papercusp-kickoff-xyz/new-plan.md',
+);
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');

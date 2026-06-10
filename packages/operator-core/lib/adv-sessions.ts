@@ -144,6 +144,41 @@ function mapAdvSessionRow(r: {
   };
 }
 
+/**
+ * Workspace recorded for a coord owner (PAPERCUSP_SID) at launch — the
+ * SID→workspace fallback for superuser MCP calls whose URL/headers carry no
+ * workspace (stale user-level MCP configs; resumed sessions whose env dropped
+ * PAPERCUSP_WORKSPACE). Most-recent row wins (a SID is minted per launch and
+ * reused by resumes). Read-through TTL cache only — PG stays authoritative;
+ * this can run on every superuser tool call when no explicit workspace rides
+ * the request, and 30s of staleness is harmless (a SID's workspace is fixed
+ * at launch).
+ */
+const coordOwnerWsCache = new Map<string, { ws: string | null; at: number }>();
+const COORD_OWNER_WS_TTL_MS = 30_000;
+
+export async function workspaceForCoordOwner(coordOwnerId: string): Promise<string | null> {
+  const hit = coordOwnerWsCache.get(coordOwnerId);
+  if (hit && Date.now() - hit.at < COORD_OWNER_WS_TTL_MS) return hit.ws;
+  let ws: string | null = null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    ws = rows[0]?.workspace_id ?? null;
+  } catch (e) {
+    console.warn('[adv-sessions] workspaceForCoordOwner failed:', (e as Error).message);
+    return null; // don't cache a transient DB failure as "no workspace"
+  }
+  if (coordOwnerWsCache.size > 512) coordOwnerWsCache.clear(); // bounded; it's only a cache
+  coordOwnerWsCache.set(coordOwnerId, { ws, at: Date.now() });
+  return ws;
+}
+
 export async function recordAdvSession(opts: RecordOpts): Promise<number | null> {
   try {
     const { sql } = getOrgPg();

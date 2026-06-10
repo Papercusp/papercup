@@ -70,10 +70,13 @@ export async function encryptDestConfig(workspaceId: string, cfg: DestinationCon
 export async function decryptDestConfig(workspaceId: string, b64: string): Promise<DestinationConfig> {
   const key = await deriveDestKey(workspaceId);
   const buf = Buffer.from(b64, 'base64');
+  // 12B iv + 16B tag minimum — a truncated blob would otherwise hand
+  // setAuthTag a short tag (DEP0182; becomes a hard error in future Node).
+  if (buf.length < 28) throw new Error('decryptDestConfig: ciphertext too short');
   const iv = buf.subarray(0, 12);
   const tag = buf.subarray(12, 28);
   const ct = buf.subarray(28);
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
   const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
   return JSON.parse(pt.toString('utf8')) as DestinationConfig;

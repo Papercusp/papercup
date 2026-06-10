@@ -100,6 +100,11 @@ async function localAvailable(): Promise<boolean> {
 }
 
 async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'disabled'> {
+  // Env override first (memory-backend-improve-and-hybrid P-004b): lets the
+  // bench force one leg (e.g. PAPERCUSP_MEMORY_EMBEDDER=local to measure the
+  // BGE-ONNX leg) without flipping the live operator preference in PG.
+  const env = process.env.PAPERCUSP_MEMORY_EMBEDDER;
+  if (env === 'auto' || env === 'openai' || env === 'local' || env === 'disabled') return env;
   try {
     const prefs = await loadVoicePrefs();
     return prefs.memoryEmbedderMode;

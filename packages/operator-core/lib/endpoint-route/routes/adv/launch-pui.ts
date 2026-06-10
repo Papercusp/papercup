@@ -10,6 +10,12 @@
  * `terminal-spawn` helper (D-001). Same-origin (the header that calls this is
  * served by the operator) — no CORS preamble needed.
  *
+ * NO interactive safety floor here, deliberately (unify-agent-spawn-chokepoint
+ * P-012): the floor guards AGENT concurrency (`maxSimultaneousAgents`), and the
+ * pui workbench is a TUI dashboard — it consumes no agent slot and makes no
+ * provider calls. launch-su.ts (which spawns a real agent session) passes
+ * `checkInteractiveSafetyFloor`; this route is intentionally outside it.
+ *
  * Plan: desktop-pui-launch-button-2026-06-05 (Brief 26).
  */
 import { existsSync } from 'node:fs';

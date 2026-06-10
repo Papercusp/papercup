@@ -242,7 +242,7 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
     const ciphertext = blob.subarray(FILE_HEADER_LEN);
 
     const key = await deriveMachineKey(salt);
-    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_LEN });
     decipher.setAuthTag(authTag);
     try {
       const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);

@@ -10,16 +10,21 @@ import {
 } from '../../_components/HiveVisualIdentity';
 import styles from './logo-lab.module.css';
 
+// Labels follow the D-007-revised canon (the-hive-lexicon, packs.ts): the live
+// agent collective is the Colony; Swarm = a deployment of a Hive to an instance
+// (absorbing the old "Frame" machine/region term); "Sentinel Bee" → "Sentinel"
+// (owner directive 2026-06-09). Icon KINDS keep their original ids — only the
+// display labels/blurbs track the canon.
 const NOUNS = [
   ['hive', 'Hive', 'Deployable project group'],
-  ['swarm', 'Swarm', 'Live working agents'],
-  ['queen', 'Queen', 'Orchestrator / brain'],
-  ['sentinel', 'Sentinel Bee', 'Always-on operator'],
+  ['swarm', 'Swarm', 'A deployment of a Hive to an instance'],
+  ['queen', 'Queen', 'The brain — places + supervises bees'],
+  ['sentinel', 'Sentinel', 'The operator chat — always watching'],
   ['bee', 'Bee', 'AI agent'],
   ['keeper', 'Keeper', 'Human member'],
   ['cell', 'Cell', 'One unit of work'],
   ['comb', 'Comb', 'Shared library'],
-  ['frame', 'Frame', 'Machine or region'],
+  ['frame', 'Frame', 'Legacy machine/region motif (term folded into Swarm)'],
 ] as const;
 
 const SWATCHES = [

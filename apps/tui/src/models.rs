@@ -144,6 +144,11 @@ pub struct RosterEntry {
     #[serde(default)]
     #[allow(dead_code)]
     pub wake_mode: Option<String>,
+    /// Staged (manual-mode) wakes awaiting owner release — the P-008 badge's
+    /// pending COUNT and the P-009 review-overlay trigger. 0 when nothing staged
+    /// (or a pre-count payload).
+    #[serde(default)]
+    pub pending_wakes: i64,
 }
 
 impl RosterEntry {
@@ -200,6 +205,23 @@ impl RosterEntry {
         };
         pick(&self.intent).or_else(|| pick(&self.feature))
     }
+}
+
+/// One staged wake awaiting owner review (hive-agent-tabs P-009 / D-005) —
+/// mirrors `pending-wakes.ts`'s `PendingWake`, carried inside the
+/// `coord:wake-queue {action:'list'}` run-tool payload.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWake {
+    pub id: i64,
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

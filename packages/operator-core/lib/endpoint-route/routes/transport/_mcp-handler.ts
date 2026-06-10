@@ -56,6 +56,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
+import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
 import { verifyAccessToken } from '../../../power-user-token';
 import {
@@ -193,12 +194,35 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     const headerClient = (headers.get('x-papercusp-client') ?? '').trim();
     const mcpSessionId = (headers.get('mcp-session-id') ?? '').trim();
     const suIdentity = headerClient || mcpSessionId || clientParam;
+    // Workspace, in precedence order (psu-workspace-scoping fix — without
+    // this, every claude/omp SU session ran as '*' and workspace-scoped
+    // tools failed "no workspace transaction" regardless of the psu picker):
+    //   1. `x-papercusp-workspace` header — OMP's per-launch carrier (it
+    //      can't env-interpolate its mcp.json url; headers resolve at
+    //      connect time via `!printf`).
+    //   2. `?workspace=` URL param — claude's `${PAPERCUSP_WORKSPACE:-}`
+    //      env-expanded user-level template, codex's baked per-session
+    //      config, and the per-launch .mcp.json writers.
+    //   3. The adv_sessions row recorded for this SID at launch — covers
+    //      stale user-level configs and resumed sessions whose env lost
+    //      PAPERCUSP_WORKSPACE. SID sources only (mcp-session-id is a
+    //      transport id, never an adv row key).
+    //   4. '*' — unscoped, exactly the pre-fix behavior.
+    const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
+    let workspaceId = headerWs || wsParam;
+    const sidForLookup = headerClient || clientParam;
+    if (!workspaceId && sidForLookup) {
+      workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
+    }
+    // Profile: header (OMP) > URL param (claude env-expanded / install-baked).
+    const headerProfile = (headers.get('x-papercusp-profile') ?? '').trim();
+    const profileParam = headerProfile || url.searchParams.get('profile');
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
       kind: 'ok',
       ctx: {
-        workspaceId: wsParam || '*',
+        workspaceId: workspaceId || '*',
         harnessSlug: harnessParam || '*',
         role: 'operator' as AgentRole,
         featureId: null,
@@ -213,8 +237,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         planRunSessionId,
         isSuperuser: true,
         // gateBypass is computed in buildMcpToolContext from isSuperuser/isPowerUser.
-        // SU callers testing the power profile pass ?profile=power.
-        profile: url.searchParams.get('profile') === 'power' ? 'power' : 'engineer',
+        // SU callers testing the power profile pass ?profile=power (or the
+        // x-papercusp-profile header — psu's per-launch --profile carrier).
+        profile: profileParam === 'power' ? 'power' : 'engineer',
       },
     };
   }

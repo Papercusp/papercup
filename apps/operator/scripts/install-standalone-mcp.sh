@@ -510,6 +510,14 @@ cfg['mcpServers']['papercusp-su'] = {
         # ${PAPERCUSP_SID} URL interpolation + Codex's per-launch
         # `-c ...&client=<sid>` bake — see three-client-lock-enforcement plan.
         'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+        # Per-session workspace + profile scope, same header trick: psu exports
+        # PAPERCUSP_WORKSPACE/-_PROFILE per launch; empty stdout => header
+        # dropped => the operator falls back to its SID→adv-row lookup, then
+        # '*' (unscoped) / the URL profile. Without this, every omp SU session
+        # ran unscoped and workspace-scoped tools failed "no workspace
+        # transaction" no matter what the psu picker selected.
+        'x-papercusp-workspace': '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+        'x-papercusp-profile': '!printf %s "${PAPERCUSP_PROFILE:-}"',
     },
 }
 with open(path, 'w') as f:
@@ -539,16 +547,22 @@ except json.JSONDecodeError:
     cfg = {}
 
 cfg.setdefault('mcpServers', {})
-profile_param = '&profile=power' if profile == 'power' else ''
-# Per-session identity: Claude Code expands ${VAR}/${VAR:-default} in the
-# mcp url at launch. The claude-su wrapper exports a per-launch
-# PAPERCUSP_SID, so each shell gets a DISTINCT ?client= (→ distinct coord
-# /lock owner — fixes the same-machine collapse). Plain `claude` (no env)
-# falls back to the static machine id → unchanged. NOTE: this ${...} form
-# is written only here (Claude); OMP/Codex don't do url env-interpolation.
+# Per-session identity + scope: Claude Code expands ${VAR}/${VAR:-default}
+# in the mcp url at launch. psu exports PAPERCUSP_SID / PAPERCUSP_WORKSPACE
+# / PAPERCUSP_PROFILE per launch, so each shell gets a DISTINCT ?client=
+# (distinct coord/lock owner) AND a workspace-scoped MCP ctx — the psu
+# picker's workspace finally reaching tool dispatch (the recurring
+# "no workspace transaction" failure). Plain `claude` (no env) falls back
+# to the static machine id / the SID→adv-row server fallback then '*' /
+# the install-time profile. NOTE: this ${...} form is written only here
+# (Claude); OMP/Codex don't do url env-interpolation.
+profile_default = 'power' if profile == 'power' else ''
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
-    'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=${PAPERCUSP_SID:-' + agent_id + '}',
+    'url': (operator_url + '/api/mcp?superuser=1'
+            + '&client=${PAPERCUSP_SID:-' + agent_id + '}'
+            + '&workspace=${PAPERCUSP_WORKSPACE:-}'
+            + '&profile=${PAPERCUSP_PROFILE:-' + profile_default + '}'),
     'headers': {
         'Authorization': 'Bearer ' + token,
     },

@@ -13,6 +13,10 @@
  * non-portable half, by design). FsCoordLog takes an explicit coordDir,
  * so there is no repo-root / env dependency either.
  *
+ * NOTE: this detached FS event-log path is NOT the product path. The
+ * operator wires the PG backends exclusively (coord-channels-pg-port-2026-05-30);
+ * FsCoordLog survives only as this package's generic portability proof.
+ *
  * Run:  npx tsx libs/generic/pubsub-substrate/examples/detached-mode.ts
  * Exits 0 on success (prints a PASS summary), non-zero on any failure.
  */

@@ -3,9 +3,16 @@
  *
  * Per agent-plan-tracking-2026-05-20.md §4.1.
  * Returns frontmatter, ## Now, items (with both storedStatus AND
- * effectiveStatus), decisions, and raw prose. Resolves both
- * docs/plans/ and docs/plans/archive/ — archived doesn't make a plan
+ * effectiveStatus), decisions, and (mode=full) the prose body. Resolves
+ * both docs/plans/ and docs/plans/archive/ — archived doesn't make a plan
  * unreachable.
+ *
+ * Payload diet (token-usage-reduction-audit-2026-06-09 P-008): plans:get was
+ * the #3 tool-result payload fleet-wide (mean 13.9KB/call). `full` no longer
+ * returns `raw` next to `prose` (the same document twice — frontmatter is
+ * already structured in the base; exact raw bytes live behind plans:export),
+ * and `sections` strips per-item `rawLine` (duplicates text/status/phase;
+ * same precedent as plans:items). `full` keeps rawLine for surgical edits.
  */
 
 import { z } from 'zod';
@@ -43,7 +50,7 @@ const argsSchema = z.object({
     .enum(['meta', 'sections', 'full'])
     .optional()
     .describe(
-      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions, still WITHOUT the full prose/raw markdown. 'full' = everything incl. the whole markdown body (a big blueprint can be 90KB+ — only when you actually need the prose).",
+      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose` and per-item rawLine (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
     ),
   heading: z
     .string()
@@ -161,7 +168,8 @@ export default defineTool({
         };
       } else if ((args.mode ?? 'sections') === 'full') {
         // Legacy plans are prose-only — full includes the body; meta/sections omit it.
-        payload = { ...legacyBase, prose: parsed.prose, raw: parsed.raw };
+        // (No `raw` — for a legacy plan it's byte-identical to prose; plans:export has it.)
+        payload = { ...legacyBase, prose: parsed.prose };
       }
       return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
     }
@@ -272,10 +280,14 @@ export default defineTool({
     }
 
     // `sections` (default): structured items/decisions + links — still WITHOUT
-    // the prose/raw blobs (the 90KB overflow). `full` adds them back.
+    // the prose blob (the 90KB overflow) and WITHOUT per-item rawLine (it
+    // duplicates text/status/phase — P-008 payload diet). `full` adds both back.
     const structured = {
       ...base,
-      items: resolvedItems,
+      items:
+        mode === 'full'
+          ? resolvedItems
+          : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
       decisions: parsed.decisions,
       missingRefs: resolved.missingRefs,
       cycleMembers: resolved.cycleMembers,
@@ -283,8 +295,7 @@ export default defineTool({
       planItemTests,
       blockingIssues,
     };
-    const payload =
-      mode === 'full' ? { ...structured, prose: parsed.prose, raw: parsed.raw } : structured;
+    const payload = mode === 'full' ? { ...structured, prose: parsed.prose } : structured;
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
 });

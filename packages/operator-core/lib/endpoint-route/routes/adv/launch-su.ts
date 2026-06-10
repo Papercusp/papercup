@@ -94,6 +94,16 @@ const launchSu = defineTool({
     }
     const kickoffKind = kickoffV.value?.kind ?? null;
 
+    // Safety floor (unify-agent-spawn-chokepoint P-012): a human-initiated psu
+    // launch WAIVES brain admission (the human is the judgment + the durability)
+    // but STILL passes the deterministic concurrency ceiling — the same shared
+    // floor the native console launch passes (lib/interactive-safety-floor.ts).
+    // Over-ceiling → 429 with an actionable reason; fail-open on a read error.
+    // Applies to the deferred (workbench) path too: the floor gates the human's
+    // launch decision here, not the later pane materialization.
+    const floor = await checkInteractiveSafetyFloor();
+    if (!floor.ok) return json({ status: 'error', error: floor.reason }, 429);
+
     if (process.platform !== 'linux') {
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);
     }

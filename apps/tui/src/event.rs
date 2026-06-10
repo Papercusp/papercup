@@ -139,6 +139,13 @@ pub enum Event {
     /// The watch pane's chat send finished (Ok → the thread is open and the
     /// bee was pinged; Err carries the message).
     BeeMessageSent(Result<(), String>),
+    /// A manual-mode agent's staged wakes (hive-agent-tabs P-009) — the result of
+    /// `FetchWakeQueue` (and the auto-refresh after a release/skip). Carries the
+    /// agent so a stale response never paints another agent's review overlay.
+    WakeQueue {
+        agent: String,
+        result: Result<Vec<crate::models::PendingWake>, String>,
+    },
     /// The federated p2p roster for the Hives tab (pui-hives-tab-2026-06-07) —
     /// every remote peer announced into `shared_presence`, via `coord:presence`.
     Hives(Vec<crate::models::PresenceRow>),

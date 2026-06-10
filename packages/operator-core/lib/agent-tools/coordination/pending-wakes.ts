@@ -71,6 +71,25 @@ export async function countPendingWakes(ownerId: string): Promise<number> {
   return Number((rows[0] as { n?: number } | undefined)?.n ?? 0);
 }
 
+/**
+ * Staged-wake counts for ALL agents in one read, keyed by ownerId — for the
+ * roster badge (P-008), where countPendingWakes per agent would be N
+ * round-trips. Agents with nothing staged are absent (count 0).
+ */
+export async function countAllPendingWakes(): Promise<Map<string, number>> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT owner_id, count(*)::int AS n
+    FROM harness_shared.pending_wakes
+    GROUP BY owner_id
+  `;
+  const out = new Map<string, number>();
+  for (const r of rows as Array<{ owner_id: string; n: number }>) {
+    if (r.owner_id) out.set(r.owner_id, Number(r.n));
+  }
+  return out;
+}
+
 /** Drop one staged wake (after the owner releases / skips it). */
 export async function releasePendingWake(id: number): Promise<void> {
   const { sql } = getOrgPg();

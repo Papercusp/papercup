@@ -83,7 +83,22 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
   }
 }
 
-/** Drop an isolated schema entirely (the run's cleanup). */
+/**
+ * Drop an isolated schema entirely (the run's cleanup). Retries on a lock
+ * timeout (55P03): the mem0 client's pooled connections can still be
+ * releasing when the drop fires, and a blocked DROP once killed a whole
+ * run's report — give stragglers a moment instead of failing the run.
+ */
 export async function dropBenchSchema(client: Client, schema: string = BENCH_SCHEMA): Promise<void> {
-  await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await client.query(`SET lock_timeout = '10s'`);
+      await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      return;
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code !== '55P03' || attempt >= 3) throw e;
+      await new Promise((r) => setTimeout(r, 2_000 * attempt));
+    }
+  }
 }

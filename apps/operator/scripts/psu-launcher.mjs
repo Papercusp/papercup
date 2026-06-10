@@ -397,6 +397,30 @@ export function planValue(picked) {
 }
 
 /**
+ * Env for a resumed session. Pure — exported for tests. Identity + scope
+ * SURVIVE the resume (psu-workspace-scoping fix):
+ *   - A tracked row's `coordOwnerId` is re-exported as PAPERCUSP_SID —
+ *     wake-executor semantics. The old behavior (fresh random SID per
+ *     resume) orphaned the original SID's locks/awaits/presence and
+ *     detached the live session from its adv row mid-stream.
+ *   - The row's `workspaceId` is re-exported as PAPERCUSP_WORKSPACE — the
+ *     carrier claude's user-level MCP url (`${PAPERCUSP_WORKSPACE:-}`) and
+ *     omp's x-papercusp-workspace header expand at connect. Without it a
+ *     resumed session lost workspace scoping and every workspace-scoped
+ *     tool failed "no workspace transaction".
+ * Untracked sessions (no adv row) have neither → fresh SID, no workspace;
+ * the operator's SID→adv-row fallback can't help those either.
+ */
+export function resumeEnvFor(session, { mintSid = () => `su-${randomUUID()}` } = {}) {
+  return {
+    PAPERCUSP_AGENT: session.agent,
+    PAPERCUSP_SID: session.coordOwnerId || mintSid(),
+    ...(session.workspaceId ? { PAPERCUSP_WORKSPACE: session.workspaceId } : {}),
+    ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
+  };
+}
+
+/**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
  *

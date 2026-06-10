@@ -469,6 +469,11 @@ const post = defineTool({
       ...envelope.env,
       PAPERCUSP_AGENT: agent,
       PAPERCUSP_SID: sid,
+      // Per-launch dispatch profile. claude's user-level MCP url expands
+      // ${PAPERCUSP_PROFILE:-}; omp carries it via the x-papercusp-profile
+      // header — without this export, --profile=power changed only the
+      // playbook text while the MCP dispatcher kept gating as engineer.
+      PAPERCUSP_PROFILE: profile,
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
       ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),

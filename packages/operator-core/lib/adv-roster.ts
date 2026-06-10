@@ -37,6 +37,7 @@ import {
   resolveWakeModeFrom,
   type WakeMode,
 } from './agent-tools/coordination/wake-mode';
+import { countAllPendingWakes } from './agent-tools/coordination/pending-wakes';
 
 export type { AgentClaim, OrphanedClaimSummary };
 
@@ -127,6 +128,9 @@ export interface RosterEntry {
   /** The agent's effective wake mode (override ?? default ?? auto) — the P-008
    *  badge. null for pending (not-yet-spawned) entries. */
   wakeMode: WakeMode | null;
+  /** Staged (manual-mode) wakes awaiting owner release — the P-008 badge's
+   *  pending COUNT. 0 unless the P-007 gate staged something. */
+  pendingWakes: number;
 }
 
 /**
@@ -192,6 +196,7 @@ export function mergeRosterEntries(
   sessionsByOwner: Map<string, string> = new Map(),
   wakeModesByOwner: Map<string, WakeMode> = new Map(),
   defaultWakeMode: WakeMode = 'auto',
+  pendingWakesByOwner: Map<string, number> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -233,6 +238,7 @@ export function mergeRosterEntries(
       driveMode: pane.driveMode,
       sessionId: sessionsByOwner.get(p.ownerId) ?? null,
       wakeMode: resolveWakeModeFrom(wakeModesByOwner.get(p.ownerId) ?? null, defaultWakeMode),
+      pendingWakes: pendingWakesByOwner.get(p.ownerId) ?? 0,
     };
   });
 }
@@ -285,6 +291,7 @@ export function pendingLaunchesToRosterEntries(
       driveMode: pane.driveMode,
       sessionId: null,
       wakeMode: null,
+      pendingWakes: 0,
     };
   });
 }
@@ -352,15 +359,23 @@ export async function mergeRosterWithAssignments(
   opts: { workspaceId?: string | null } = {},
 ): Promise<RosterWithAssignments> {
   const workspaceId = opts.workspaceId ?? null;
-  const [presenceAll, advByOwner, assignmentRows, sessionsByOwner, wakeModesByOwner, defaultWakeMode] =
-    await Promise.all([
-      listPresence(),
-      advSessionsByCoordOwner(),
-      listFleetAssignments({ workspaceId }).catch(() => []),
-      spawnedAgentSessionsByOwner(),
-      getAllWakeModeOverrides().catch(() => new Map<string, WakeMode>()),
-      getDefaultWakeMode().catch(() => 'auto' as WakeMode),
-    ]);
+  const [
+    presenceAll,
+    advByOwner,
+    assignmentRows,
+    sessionsByOwner,
+    wakeModesByOwner,
+    defaultWakeMode,
+    pendingWakesByOwner,
+  ] = await Promise.all([
+    listPresence(),
+    advSessionsByCoordOwner(),
+    listFleetAssignments({ workspaceId }).catch(() => []),
+    spawnedAgentSessionsByOwner(),
+    getAllWakeModeOverrides().catch(() => new Map<string, WakeMode>()),
+    getDefaultWakeMode().catch(() => 'auto' as WakeMode),
+    countAllPendingWakes().catch(() => new Map<string, number>()),
+  ]);
   const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
   const entries = mergeRosterEntries(
     presence,
@@ -370,6 +385,7 @@ export async function mergeRosterWithAssignments(
     sessionsByOwner,
     wakeModesByOwner,
     defaultWakeMode,
+    pendingWakesByOwner,
   );
   return {
     active: enrichPidLiveness(entries, os.hostname()),
