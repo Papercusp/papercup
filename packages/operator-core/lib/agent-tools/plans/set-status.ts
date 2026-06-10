@@ -18,6 +18,10 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
+import { resolvePlanScope } from './source';
+import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
+import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 
 const SU_ROLES = [
   'scoper',
@@ -131,12 +135,13 @@ export function flipStatusInBody(
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:.",
+    "Flip one item's stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); flipping to done/dropped releases your claim.",
   guidance: {
-    when: "An item's status changes — picking up (todo→wip), completing (wip→done), gating on a human (→needs-human), or recording external blockage (→blocked).",
+    when: "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked).",
     notWhen:
       'You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.',
-    chaining: 'plans:items { actionable: true } → plans:set-status { itemId, status: "wip" } when picking up.',
+    chaining:
+      'plans:items { actionable: true } → plans:set-status { itemId, status: "wip" } when picking up (the wip flip claims it — no separate plan_items:claim needed). On claim_conflict: coord:send the holder or pick another item.',
   },
   capability: 'plans:write',
   requirePrincipal: false,
@@ -146,6 +151,58 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+
+    // Claim discipline (claim-discipline-enforcement-2026-06-10): the flip IS
+    // the claim. An agent flipping an item to `wip` auto-claims it here, and a
+    // LIVE peer claim rejects the flip — the collision the lease exists to
+    // stop. Terminal flips (done/dropped) release the caller's claim: a
+    // finished item is held by no one (and done NEVER auto-claims — owner
+    // decision). Humans are exempt: a caller with no attributable agent
+    // identity OR a `principal` one (the kanban drag / in-process UI path)
+    // skips the discipline entirely — it binds agents, not the owner.
+    let agentId: AgentIdentity | null = null;
+    try {
+      agentId = resolveAgentIdentity(ctx);
+    } catch {
+      agentId = null;
+    }
+    if (agentId?.source === 'principal') agentId = null;
+    let claim: { claimId: string; autoClaimed: boolean } | null = null;
+    if (agentId && args.status === 'wip') {
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const ownerName = await resolveAdoptedName(scope.workspaceId, agentId.ownerId).catch(() => null);
+      const outcome = await claimForWork({
+        workspaceId: scope.workspaceId,
+        harnessSlug: scope.harnessSlug,
+        planSlug: args.slug,
+        itemId: args.itemId,
+        owner: agentId.ownerId,
+        ownerLabel: agentId.ownerLabel,
+        ownerName,
+        ownerUser: bestEffortOwnerUser(ctx),
+        intent: `plans:set-status ${args.itemId} → wip`,
+      });
+      if (!outcome.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'claim_conflict',
+                slug: args.slug,
+                itemId: args.itemId,
+                reason: outcome.reason,
+                holder: outcome.holder ?? null,
+                hint: 'the item is being worked by a live peer — coordinate with the holder (coord:send) or pick another item; fleet:assignments { plan } shows who holds what',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      claim = { claimId: outcome.claimId, autoClaimed: !outcome.alreadyHeld };
+    }
+
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       args.slug,
@@ -266,6 +323,24 @@ export default defineTool({
       );
     }
 
+    // Terminal flip → release the caller's claim (claim-discipline: done means
+    // nobody holds it). Awaited but fail-safe — a release hiccup never fails
+    // the flip, and a lapsed/absent claim is simply reported unreleased.
+    let claimReleased = false;
+    if (agentId && (args.status === 'done' || args.status === 'dropped')) {
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      claimReleased = await releaseOwnClaim(
+        scope.workspaceId,
+        scope.harnessSlug,
+        args.slug,
+        args.itemId,
+        agentId.ownerId,
+      ).catch((e) => {
+        console.warn('[plans:set-status] claim release failed:', (e as Error)?.message ?? e);
+        return false;
+      });
+    }
+
     return {
       content: [
         {
@@ -274,6 +349,8 @@ export default defineTool({
             ...result.value,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(claim ? { claim } : {}),
+            ...(claimReleased ? { claimReleased } : {}),
           }),
         },
       ],
