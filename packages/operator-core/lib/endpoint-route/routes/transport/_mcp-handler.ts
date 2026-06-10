@@ -464,9 +464,11 @@ async function buildMcpToolContext(
   // from `_meta.structured` / `?structured=1`. OFF by default.
   requestedStructured?: boolean,
 ): Promise<UnifiedToolContext> {
-  // Superuser context: workspaceId/harnessSlug may be '*'. Skip path
-  // resolution; per-tool fallbacks ("workspace= arg required") will fire.
-  const paths = (spawn.isSuperuser && (spawn.workspaceId === '*' || spawn.harnessSlug === '*'))
+  // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
+  // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
+  // a harness, hive-agent-tabs P-003). Skip path resolution; per-tool fallbacks
+  // ("workspace=/harness= arg required") will fire.
+  const paths = (spawn.workspaceId === '*' || spawn.harnessSlug === '*')
     ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
     : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
   // Plugin handlers call ctx.emit / ctx.progress. When the MCP client

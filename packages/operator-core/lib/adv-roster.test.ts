@@ -332,4 +332,19 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     const [e] = pendingLaunchesToRosterEntries([row], 'box-1');
     expect(e.agentPaneKind).toBe('bee');
   });
+
+  it('pending entry: a New-plan launch types as planner from EITHER signal (P-006)', () => {
+    // argv hint alone (role-less row).
+    const byArgv = adv({
+      id: 12, display: 'workbench', role: null,
+      launchArgv: ['psu', '--no-picker', '--agent=claude', '--role=planner'],
+    });
+    const [a] = pendingLaunchesToRosterEntries([byArgv], 'box-1');
+    expect(a.agentPaneKind).toBe('planner');
+    expect(a.driveMode).toBe('responsive'); // auto-injection OFF
+    // recorded role alone (launch-su records role='planner').
+    const byRole = adv({ id: 13, display: 'workbench', role: 'planner', launchArgv: ['psu'] });
+    const [b] = pendingLaunchesToRosterEntries([byRole], 'box-1');
+    expect(b.agentPaneKind).toBe('planner');
+  });
 });

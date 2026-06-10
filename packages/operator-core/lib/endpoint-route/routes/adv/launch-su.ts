@@ -143,6 +143,10 @@ const launchSu = defineTool({
     if (model) psuArgs.push(`--model=${model}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
+    // hive-agent-tabs P-006: a New-plan launch IS the Planner — launch the
+    // planner role/persona (`=` form; psu drops the space form) so the dock
+    // panes it as a typed 📋 Planner pane (responsive — auto-injection OFF).
+    if (kickoffKind === 'new-plan') psuArgs.push('--role=planner');
 
     // Deferred (D-006): record a pending "workbench launch" instead of spawning a
     // terminal. The pui reactively opens a work-area pane that RUNS `launch_argv`
@@ -152,6 +156,9 @@ const launchSu = defineTool({
       const advSessionId = await recordAdvSession({
         planSlug: plan,
         agent,
+        // P-006: record the planner role so BOTH classifiers (pending-launch
+        // argv hint + the live presence join on adv.role) type the pane.
+        role: kickoffKind === 'new-plan' ? 'planner' : null,
         mode: 'console',
         cwd: null, // psu cds itself from --harness/--plan (parity with the terminal path)
         label,

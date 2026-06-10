@@ -1,0 +1,31 @@
+[Unit]
+# The hive inference gateway (hive-inference-gateway-2026-06-09 P-013): a localhost transparent
+# /v1/* proxy that PACES the fleet's bees through one bound Claude account + injects its OAuth.
+# Bees point ANTHROPIC_BASE_URL at it, so it FAILS CLOSED — if this unit is down their requests
+# get connection-refused (they wait/retry) rather than silently bursting direct to Anthropic.
+# A long-lived localhost service, NOT a DBOS workflow (it must outlive any operator turn).
+Description=Papercusp hive inference gateway — paced OAuth egress for the bee fleet
+After=network-online.target
+After=suspend.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/marsh-office/papercupai-workspace/papercup
+# node/npx on PATH (linuxbrew + local). Adjust to the host's node if relocated.
+Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/home/marsh-office/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PAPERCUSP_INTEGRATION_ROOT=/home/marsh-office/papercupai-workspace/papercup"
+Environment="PAPERCUSP_GATEWAY_PORT=8788"
+# Optional: pin a pool account; else the sole pool account or the box's ~/.claude login is used.
+# Environment="PAPERCUSP_ACCOUNT_ID=acct-main"
+# Optional: PAPERCUSP_GATEWAY_CONCURRENCY=24
+ExecStart=/usr/bin/env npx tsx packages/operator-core/lib/inference-gateway/bin.ts
+# Fail CLOSED: always restart so the egress path is never silently absent.
+Restart=always
+RestartSec=2
+Nice=5
+# Graceful drain on stop/redeploy.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

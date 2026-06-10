@@ -132,6 +132,31 @@ export function setPipelineDebuggerHook(fn: PipelineDebuggerHook): void {
 }
 
 /**
+ * Pre-validator test-digest hook (token-usage-reduction-audit-2026-06-09
+ * P-010). Fired immediately BEFORE a `validator` dispatch: runs the harness's
+ * configured test command (`knobs.testCommand`) DETERMINISTICALLY, digests the
+ * result (exit code + summary + bounded failure excerpts) into a per-feature
+ * text artifact, and returns extras to append to the validator spawn
+ * (`TEST_DIGEST=<relpath> (…)`). The validator then reads the digest instead of
+ * burning agentic turns running + re-reading the whole suite — its prompt
+ * instructs it to spot-replay only specific failures. Best-effort by design:
+ * no testCommand knob / hook unwired / run failure → empty extras and the
+ * validator behaves exactly as before. The guard-check AND the test run happen
+ * INSIDE one checkpointed step (the D-014 replay-safety shape the debugger
+ * gate established).
+ */
+export type PipelineTestDigestHook = (input: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId?: string;
+}) => Promise<{ extras: string[] }>;
+
+let _testDigestHook: PipelineTestDigestHook | null = null;
+export function setPipelineTestDigestHook(fn: PipelineTestDigestHook): void {
+  _testDigestHook = fn;
+}
+
+/**
  * On-completion refill seam (#1 — continuous dispatch). Fired when a feature's
  * pipeline finishes successfully so the freed concurrency slot can be filled
  * with the next queued feature IMMEDIATELY, instead of waiting up to 30s for the
@@ -270,6 +295,23 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
       );
     }
 
+    // P-010 (token-usage-reduction): before a VALIDATOR run, deterministically
+    // run the harness's test command and hand the validator a pre-digested
+    // result artifact (TEST_DIGEST=… extra) so it spot-checks instead of
+    // re-running + re-reading the whole suite. Guard + run are one checkpointed
+    // step (D-014 replay-safety, mirroring the debugger gate above). Best-effort:
+    // unwired hook / no testCommand → no extra appended.
+    let dispatchExtras = action.extras;
+    if (action.role === 'validator' && _testDigestHook) {
+      const th = _testDigestHook;
+      const feature = action.feature;
+      const digest = await DBOS.runStep(
+        () => th({ harnessSlug: input.harnessSlug, featureId: feature, workspaceId: input.workspaceId }),
+        { name: `test-digest-${turn}` },
+      );
+      if (digest.extras.length > 0) dispatchExtras = [...dispatchExtras, ...digest.extras];
+    }
+
     // dispatch: run the role as an idempotent agent run (checkpointed).
     await DBOS.runStep(
       () =>
@@ -278,7 +320,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
           action.role,
           action.feature,
           key(input.harnessSlug, action.feature, action.role, turn),
-          action.extras,
+          dispatchExtras,
           input.workspaceId,
         ),
       { name: `invoke-${action.role}-${turn}` },

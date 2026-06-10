@@ -95,6 +95,15 @@ describe('launch-su kickoff passthrough', () => {
     expect(lastOneliner()).not.toContain('--launch-context');
   });
 
+  it('kickoff:new-plan launches the PLANNER role (hive-agent-tabs P-006); plain launches carry no role', async () => {
+    await callPost({ agent: 'claude', harness_slug: 'papercup', kickoff: { kind: 'new-plan' } });
+    // `=` form — psu drops the space-separated `--role planner`.
+    expect(lastOneliner()).toContain('--role=planner');
+    spawnMock.mockClear();
+    await callPost({ agent: 'claude', harness_slug: 'papercup' });
+    expect(lastOneliner()).not.toContain('--role=');
+  });
+
   it('an unknown kickoff kind is rejected (400, no spawn, no generation)', async () => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', kickoff: { kind: 'wizard' } });
     expect(res.status).toBe(400);

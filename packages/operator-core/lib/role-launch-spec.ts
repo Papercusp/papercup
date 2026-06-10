@@ -44,8 +44,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { resolvePromptFile } from '@papercusp/orchestrator';
+import { harnessRoot } from '@papercusp/harness/paths';
+import { promptsDir } from './prompt-assembly';
 import {
   sessionClaudeConfigDir,
   sessionMcpDir,
@@ -63,8 +67,14 @@ export interface BuildRoleLaunchSpecInput {
   role: string;
   /** Active workspace id. */
   workspaceId: string;
-  /** Harness the role runs against (role sessions are harness-scoped). */
-  harnessSlug: string;
+  /**
+   * Harness the role runs against. null/omitted = a WORKSPACE-LEVEL role
+   * session (operator/planner — owner-confirmed, hive-agent-tabs P-003):
+   * cwd = the workspace root, the MCP URL carries no harness param (ctx
+   * lands as the `'*'` unscoped sentinel; harness-scoped tools answer
+   * `harness_required` until a per-call harness is named — the SU model).
+   */
+  harnessSlug?: string | null;
   /** Operator base URL the signed MCP URL points at (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
   /** Optional feature scope (required for feature-consuming roles — caller gates via roleConsumes). */
@@ -83,7 +93,8 @@ export interface RoleLaunchSpec {
   role: string;
   runId: string;
   spawnId: string;
-  harnessSlug: string;
+  /** null = a workspace-level (harness-less) role session. */
+  harnessSlug: string | null;
   featureId: string | null;
   /** Working directory the launcher should exec the agent in. */
   cwd: string;
@@ -138,6 +149,7 @@ export async function buildRoleLaunchSpec(
 ): Promise<RoleLaunchSpec> {
   const spawnId = randomUUID();
   const featureId = input.featureId?.trim() || null;
+  const harnessSlug = input.harnessSlug?.trim() || null;
 
   // Launch-mechanics identity (P-002): the per-session coord/lock owner +
   // forced native session id. Minted HERE (the one primitive) — not by each
@@ -147,55 +159,81 @@ export async function buildRoleLaunchSpec(
   const sid = `role-${randomUUID()}`;
   const nativeSessionId = randomUUID();
 
-  // 0. Resolve the project dir IN-PROCESS, workspace-aware. The operator is
-  //    the workspace authority (PG/registry-backed `resolveProjectDir`), so
-  //    we resolve here and hand it to `assembleRolePrompt` — otherwise the
-  //    assembler falls back to its workspace-BLIND `lookupProjectDir`, which
-  //    (a) can't see an active non-`default` workspace's harnesses and
-  //    (b) makes the :3070 host synchronously curl :3055 (itself) mid-request,
-  //    which fails for harnesses absent from the legacy registry. Null here
-  //    means the harness isn't registered in this workspace — surface it.
-  const projectDir = await resolveProjectDir(input.harnessSlug, input.workspaceId);
-  if (!projectDir) {
-    throw new Error(
-      `buildRoleLaunchSpec: harness "${input.harnessSlug}" is not registered in workspace "${input.workspaceId}"`,
-    );
+  let cwd: string;
+  let promptText: string;
+  let promptFile: string;
+  let runId: string;
+
+  if (harnessSlug) {
+    // 0. Resolve the project dir IN-PROCESS, workspace-aware. The operator is
+    //    the workspace authority (PG/registry-backed `resolveProjectDir`), so
+    //    we resolve here and hand it to `assembleRolePrompt` — otherwise the
+    //    assembler falls back to its workspace-BLIND `lookupProjectDir`, which
+    //    (a) can't see an active non-`default` workspace's harnesses and
+    //    (b) makes the :3070 host synchronously curl :3055 (itself) mid-request,
+    //    which fails for harnesses absent from the legacy registry. Null here
+    //    means the harness isn't registered in this workspace — surface it.
+    const projectDir = await resolveProjectDir(harnessSlug, input.workspaceId);
+    if (!projectDir) {
+      throw new Error(
+        `buildRoleLaunchSpec: harness "${harnessSlug}" is not registered in workspace "${input.workspaceId}"`,
+      );
+    }
+
+    // 0b. Workspace-owned prompt override (D-7): resolve the per-(workspace,
+    //     harness,role) override from PG and hand it to the assembler, which
+    //     prefers it over the config.json fallback. Best-effort — a store miss
+    //     leaves it undefined and the assembler uses the committed default.
+    let promptOverrideText: string | undefined;
+    try {
+      promptOverrideText =
+        (await getPromptOverride(input.workspaceId, harnessSlug, input.role)) ?? undefined;
+    } catch { /* store unavailable → assembler falls back to config.json */ }
+
+    // 1. Prompt (chat mode — a human drives this session). Same shared
+    //    assembler the orchestrator's prompt path + operator brains use, but
+    //    with the in-process projectDir so it skips the blind lookup.
+    const assembled = assembleRolePrompt({
+      slug: harnessSlug,
+      role: input.role,
+      projectDir,
+      mode: 'chat',
+      featureId: featureId ?? undefined,
+      extras: input.extras,
+      planContext: input.planContext,
+      brief: input.brief,
+      promptOverrideText,
+    });
+    runId = assembled.meta.runId;
+    promptText = assembled.text;
+    promptFile = assembled.meta.promptFile;
+
+    // 2. cwd — the harness's project dir (resolved above).
+    cwd = assembled.meta.projectDir || projectDir || process.cwd();
+  } else {
+    // WORKSPACE-LEVEL role session (owner-confirmed, hive-agent-tabs P-003):
+    // operator/planner launch WITHOUT a harness. cwd = the workspace root
+    // (mirrors buildSuLaunchSpec); the prompt is the workspace-level persona.
+    runId = `${Math.floor(Date.now() / 1000)}-${input.role}`;
+    cwd = papercuspPathForWorkspace(input.workspaceId);
+    const ws = assembleWorkspaceRolePrompt({
+      role: input.role,
+      workspaceId: input.workspaceId,
+      extras: input.extras,
+      planContext: input.planContext,
+      brief: input.brief,
+    });
+    promptText = ws.text;
+    promptFile = ws.promptFile;
   }
-
-  // 0b. Workspace-owned prompt override (D-7): resolve the per-(workspace,
-  //     harness,role) override from PG and hand it to the assembler, which
-  //     prefers it over the config.json fallback. Best-effort — a store miss
-  //     leaves it undefined and the assembler uses the committed default.
-  let promptOverrideText: string | undefined;
-  try {
-    promptOverrideText =
-      (await getPromptOverride(input.workspaceId, input.harnessSlug, input.role)) ?? undefined;
-  } catch { /* store unavailable → assembler falls back to config.json */ }
-
-  // 1. Prompt (chat mode — a human drives this session). Same shared
-  //    assembler the orchestrator's prompt path + operator brains use, but
-  //    with the in-process projectDir so it skips the blind lookup.
-  const assembled = assembleRolePrompt({
-    slug: input.harnessSlug,
-    role: input.role,
-    projectDir,
-    mode: 'chat',
-    featureId: featureId ?? undefined,
-    extras: input.extras,
-    planContext: input.planContext,
-    brief: input.brief,
-    promptOverrideText,
-  });
-  const runId = assembled.meta.runId;
-
-  // 2. cwd — the harness's project dir (resolved above).
-  const cwd = assembled.meta.projectDir || projectDir || process.cwd();
 
   // 3. Signed role-scoped MCP URL — same param set + signing key the
   //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's
   //    verifySpawnParams accepts it and dispatch enforces role's allowlist.
+  //    A workspace-level session signs WITHOUT the harness param — ctx lands
+  //    as the '*' unscoped sentinel (parseRequestContext defaults it).
   const params = new URLSearchParams();
-  params.set('harness', input.harnessSlug);
+  if (harnessSlug) params.set('harness', harnessSlug);
   params.set('workspace', input.workspaceId);
   params.set('role', input.role);
   params.set('run', runId);
@@ -220,11 +258,11 @@ export async function buildRoleLaunchSpec(
     role: input.role,
     runId,
     spawnId,
-    harnessSlug: input.harnessSlug,
+    harnessSlug,
     featureId,
     cwd,
-    promptText: assembled.text,
-    promptFile: assembled.meta.promptFile,
+    promptText,
+    promptFile,
     mcpUrl,
     mcpJsonContents,
     sid,
@@ -232,6 +270,77 @@ export async function buildRoleLaunchSpec(
     claudeConfigDir: sessionClaudeConfigDir(sid),
     sessionMcpDir: sessionMcpDir(sid),
   };
+}
+
+/**
+ * Assemble the prompt for a WORKSPACE-LEVEL (harness-less) role session
+ * (hive-agent-tabs P-003 — owner-confirmed: operator/planner launch without a
+ * harness). Source preference:
+ *
+ *   1. The CHAT-SURFACE persona (`apps/operator/prompts/<role>.persona.md`,
+ *      + `<role>.tools.md` when present) — the operator/oracle personas the
+ *      desktop chat already uses. The per-tool catalog section is skipped on
+ *      purpose: an interactive psu/Claude session lists the MCP catalog
+ *      natively, and dispatch enforces the role allowlist server-side.
+ *   2. The SPAWN persona (`<harness-install>/prompts/<role>.md`, default tier
+ *      only — no project config exists to resolve a phase/dept variant) — the
+ *      planner and pipeline roles.
+ *
+ * Neither resolves → throw (the caller 400s: this role needs a harness).
+ */
+function assembleWorkspaceRolePrompt(opts: {
+  role: string;
+  workspaceId: string;
+  extras?: readonly string[];
+  planContext?: string;
+  brief?: string;
+}): { text: string; promptFile: string } {
+  let persona: string | null = null;
+  let promptFile = '';
+
+  const chatPersonaPath = path.join(promptsDir(), `${opts.role}.persona.md`);
+  if (fsSync.existsSync(chatPersonaPath)) {
+    persona = fsSync.readFileSync(chatPersonaPath, 'utf8');
+    promptFile = chatPersonaPath;
+    const toolsMdPath = path.join(promptsDir(), `${opts.role}.tools.md`);
+    if (fsSync.existsSync(toolsMdPath)) {
+      persona += `\n\n---\n\n${fsSync.readFileSync(toolsMdPath, 'utf8')}`;
+    }
+  } else {
+    const spawnPersona = resolvePromptFile(
+      { harnessDir: harnessRoot(), phase: '', dept: '' },
+      opts.role,
+    );
+    if (spawnPersona) {
+      persona = fsSync.readFileSync(spawnPersona, 'utf8');
+      promptFile = spawnPersona;
+    }
+  }
+  if (persona == null) {
+    throw new Error(
+      `buildRoleLaunchSpec: role "${opts.role}" has no workspace-level persona ` +
+        `(no ${opts.role}.persona.md chat persona and no prompts/${opts.role}.md) — pass a harness`,
+    );
+  }
+
+  const lines = [
+    'MODE=chat (an interactive psu session — a human drives this terminal)',
+    `ROLE=${opts.role}`,
+    `WORKSPACE=${opts.workspaceId} — workspace-level session, NO harness scope: ` +
+      'harness-scoped tools answer harness_required until you name one per call ' +
+      "(pass `harness: '<slug>'`, or `harness: 'all'` for the operator-level surface).",
+    ...(opts.extras ?? []),
+  ];
+  let text = `${persona.replace(/\n+$/, '')}\n\n---\n## Runtime context\n${lines
+    .map((l) => `- ${l}`)
+    .join('\n')}\n`;
+  if (opts.planContext?.trim()) {
+    text += `\n---\n## Plan context\n\n${opts.planContext.trim()}\n`;
+  }
+  if (opts.brief?.trim()) {
+    text += `\n---\n## Brief\n\n${opts.brief.trim()}\n`;
+  }
+  return { text, promptFile };
 }
 
 /**

@@ -218,11 +218,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
       let up: Response;
       try {
-        up = await doFetch(`${upstreamBase}${url}`, {
-          method: req.method,
-          headers,
-          body: bodyBuf.length ? bodyBuf : undefined,
-        });
+        const init: RequestInit = { method: req.method ?? 'POST', headers };
+        if (bodyBuf.length) init.body = new Uint8Array(bodyBuf);
+        up = await doFetch(`${upstreamBase}${url}`, init);
       } catch (e) {
         upstreamErrors++;
         log('error', `upstream fetch failed: ${(e as Error).message}`);

@@ -73,7 +73,8 @@ export interface BootstrapRoleResult {
   role: string;
   agent: SuAgent;
   workspaceId: string;
-  harnessSlug: string;
+  /** null = a workspace-level (harness-less) role session (P-003). */
+  harnessSlug: string | null;
   feature: string | null;
   /** Plan whose context was injected (plan-consuming roles), else null. */
   planSlug: string | null;
@@ -145,17 +146,20 @@ const post = defineTool({
     if (body.workspace?.trim() && !workspaceById(workspace)) {
       return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
     }
-    const harnessSlug = body.harness_slug?.trim() || '';
-    if (!harnessSlug) {
-      return jsonRes({ status: 'error', error: 'role sessions are harness-scoped — harness_slug is required' }, 400);
-    }
+    // null = a WORKSPACE-LEVEL role session (owner-confirmed, hive-agent-tabs
+    // P-003: operator/planner launch without a harness — the SU model). A
+    // feature-consuming role still needs the harness its feature lives in.
+    const harnessSlug = body.harness_slug?.trim() || null;
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
 
     // Feature + plan gating from the single source (roleConsumes / consumes).
-    const consumes = roleConsumes(role, harnessSlug);
+    const consumes = roleConsumes(role, harnessSlug ?? '');
     if (consumes.feature === 'required' && !feature) {
       return jsonRes({ status: 'error', code: 'feature_required', error: `role '${role}' requires a feature (consumes.feature=required)` }, 400);
+    }
+    if (consumes.feature === 'required' && !harnessSlug) {
+      return jsonRes({ status: 'error', code: 'harness_required', error: `role '${role}' consumes a feature — launch it against the feature's harness (--harness)` }, 400);
     }
 
     // Plan context for plan-consuming roles (scoper/reviewer: consumes.plan
@@ -307,10 +311,10 @@ const post = defineTool({
     // must never block a launch.
     try {
       if (agent === 'codex' && codexHome) {
-        await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+        if (harnessSlug) await materializeCodexPrompts(codexHome, workspace, harnessSlug);
       } else {
         await materializeWorkspacePrompts(workspace);
-        await materializeHarnessPrompts(workspace, harnessSlug);
+        if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
       }
     } catch (e: any) {
       // stderr (not console.*) so the vitest fail-on-console guard stays green.

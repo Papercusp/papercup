@@ -43,10 +43,14 @@ import {
   setPipelineSettledHook,
   setPipelineDebuggerHook,
   setPipelineFeaturePassedHook,
+  setPipelineTestDigestHook,
   type PipelineInvokeRunner,
   type PipelineFinalizer,
   type PipelineDebuggerHook,
+  type PipelineTestDigestHook,
 } from './orchestrator-workflow';
+import { digestTestOutput } from './pre-validator-test-digest';
+import { saveTextArtifact } from '../text-artifacts';
 import { handleFeaturePassed, type FeaturePassedDeps } from '../harness/fork-pr-on-feature-pass';
 import { planFinalization, needsHumanGateUrl, reconcileDoneStatus, type FinalizeRecipe } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
@@ -535,6 +539,65 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
 };
 
 /**
+ * Pre-validator test-digest hook (token-usage-reduction-audit-2026-06-09
+ * P-010). Runs the harness's `knobs.testCommand` once, deterministically,
+ * digests the result (pre-validator-test-digest.ts), saves it as the
+ * PG-canonical text artifact `.papercusp/test-digest/<feature>.md` (disk-
+ * mirrored where the validator reads it), and returns a `TEST_DIGEST=…`
+ * runtime-context extra for the validator spawn. Best-effort everywhere: no
+ * testCommand → no extra; a hook error never blocks the validator.
+ */
+const TEST_DIGEST_TIMEOUT_MS = 10 * 60 * 1000;
+const realTestDigestHook: PipelineTestDigestHook = async ({ harnessSlug, featureId, workspaceId }) => {
+  try {
+    const project = await resolveProject(harnessSlug, workspaceId);
+    if (!project) return { extras: [] };
+    const projectDir = project.path;
+    const ws = workspaceId ?? activeWorkspaceId();
+    const cfg = await readEffectiveHarnessConfig(harnessSlug, ws, projectDir);
+    const testCommand =
+      configGet<string | undefined>(cfg, 'testCommand', undefined) ??
+      harnessBlueprintKnobs(projectDir)?.testCommand;
+    if (!testCommand || !testCommand.trim()) return { extras: [] };
+
+    console.log(`[dbos-test-digest] ${harnessSlug}/${featureId} running: ${testCommand}`);
+    const started = Date.now();
+    const run = spawnSync('bash', ['-lc', testCommand], {
+      cwd: projectDir,
+      timeout: TEST_DIGEST_TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8',
+      env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
+    });
+    const durationMs = Date.now() - started;
+    const exitCode = run.status ?? (run.signal ? 124 : 1);
+    const raw = `${run.stdout ?? ''}\n${run.stderr ?? ''}`;
+    const { summary, body } = digestTestOutput(raw, exitCode, testCommand);
+
+    const relPath = `test-digest/${featureId}.md`;
+    await saveTextArtifact(
+      harnessSlug,
+      relPath,
+      `${body}\n\n- Duration: ${Math.round(durationMs / 1000)}s\n- Generated: ${new Date().toISOString()} (pre-validator, run once per validation round)\n`,
+    );
+    console.log(
+      `[dbos-test-digest] ${harnessSlug}/${featureId} exit=${exitCode} in ${Math.round(durationMs / 1000)}s — ${summary}`,
+    );
+    return {
+      extras: [
+        `TEST_DIGEST=.papercusp/${relPath} (exit=${exitCode}; ${summary}) — pre-digested full-suite result; read it INSTEAD of re-running the whole suite`,
+      ],
+    };
+  } catch (err) {
+    console.warn(
+      `[dbos-test-digest] ${harnessSlug}/${featureId} non-fatal:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { extras: [] };
+  }
+};
+
+/**
  * Substrate base for the needs-human DONE-gate (mirrors legacy handleDone).
  */
 function substrateBase(): string {
@@ -842,6 +905,9 @@ export function wireOrchestratorInvokeRunner(): void {
   // P-012: fire the read-only debugger before a worker when the feature has
   // failed ≥ debugger.threshold times and has no debug note yet.
   setPipelineDebuggerHook(realDebuggerHook);
+  // token-usage-reduction P-010: run the harness's test command once before a
+  // validator spawn and hand it the digest, replacing run-and-reread loops.
+  setPipelineTestDigestHook(realTestDigestHook);
   // #1: a finished feature immediately refills its harness's freed slot with the
   // next queued feature, instead of waiting up to 30s for the periodic tick.
   setPipelineSettledHook((slug, workspaceId) =>

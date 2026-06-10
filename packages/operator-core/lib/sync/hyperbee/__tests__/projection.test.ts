@@ -247,4 +247,77 @@ describe('provenance attribution binds to the unforgeable source log, not the se
   });
 });
 
+describe('skipOwnOps — the EI-117 echo breaker (own-log replays on CDC tables)', () => {
+  function spyWithFlag(skipOwnOps: boolean | undefined, tableTag = 'plans-by-slug') {
+    const writes: Array<{ id: string }> = [];
+    const deletes: string[] = [];
+    const proj: TableProjection<{ id: string }> = {
+      tableTag,
+      ...(skipOwnOps === undefined ? {} : { skipOwnOps }),
+      composeKey: (r) => r.id,
+      decodeValue: (raw) => (raw && typeof raw === 'object' ? (raw as { id: string }) : null),
+      writeToPg: async (row) => { writes.push(row); },
+      deleteFromPg: async (key) => { deletes.push(key); },
+    };
+    const set = new Map<string, TableProjection<unknown>>([[tableTag, proj as TableProjection<unknown>]]);
+    const lookup: ProjectionLookup = (t) => set.get(t) ?? null;
+    return { lookup, writes, deletes };
+  }
+
+  const putOp = (extra: Partial<OpEnvelope>): OpEnvelope => ({
+    type: 'put', table: 'plans-by-slug', hbKey: 'k', value: { id: 'k' }, ...extra,
+  });
+
+  it('a log-source-VERIFIED own put on a skipOwnOps projection is skipped (no write, returns false)', async () => {
+    const { lookup, writes } = spyWithFlag(true);
+    const applied = await applyOpVia(
+      lookup,
+      putOp({ sourceLogKeyHex: 'OWN-LOG-KEY' }),
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    expect(applied).toBe(false);
+    expect(writes).toEqual([]);
+  });
+
+  it('an own DEL on a skipOwnOps projection is equally skipped (a replay of a delete PG already did)', async () => {
+    const { lookup, deletes } = spyWithFlag(true);
+    const applied = await applyOpVia(
+      lookup,
+      { type: 'del', table: 'plans-by-slug', hbKey: 'k', sourceLogKeyHex: 'OWN-LOG-KEY' },
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    expect(applied).toBe(false);
+    expect(deletes).toEqual([]);
+  });
+
+  it('a REMOTE op on a skipOwnOps projection still applies (only own replays are skipped)', async () => {
+    const { lookup, writes } = spyWithFlag(true);
+    const applied = await applyOpVia(
+      lookup,
+      putOp({ sourceLogKeyHex: 'REMOTE-LOG-KEY' }),
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    expect(applied).toBe(true);
+    expect(writes).toEqual([{ id: 'k' }]);
+  });
+
+  it('an own op on a LOG-FIRST projection (no skipOwnOps) still applies — its PG state arrives via the merge', async () => {
+    const { lookup, writes } = spyWithFlag(undefined, 'queue');
+    const applied = await applyOpVia(
+      lookup,
+      { type: 'put', table: 'queue', hbKey: 'k', value: { id: 'k' }, sourceLogKeyHex: 'OWN-LOG-KEY' },
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    expect(applied).toBe(true);
+    expect(writes).toEqual([{ id: 'k' }]);
+  });
+
+  it('without an ownLogKeyHex (legacy/global path) nothing is skipped — the skip is gated on log-source verification', async () => {
+    const { lookup, writes } = spyWithFlag(true);
+    const applied = await applyOpVia(lookup, putOp({ sourceLogKeyHex: 'OWN-LOG-KEY' }));
+    expect(applied).toBe(true);
+    expect(writes).toEqual([{ id: 'k' }]);
+  });
+});
+
 void vi; // (vi imported for parity with sibling tests; spies are inline above)

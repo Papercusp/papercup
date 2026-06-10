@@ -17,7 +17,7 @@
  * `FEATURE_COLS` / the canonical `WorkItem` facade — deliberately, because widening
  * FEATURE_COLS breaks ~25 integration tests (D-009). The pure merge is unit-tested.
  */
-import { listWorkItems, isWorkItemKind, type WorkItem } from '../../../work-items';
+import { listWorkItems, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../../work-items';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -97,7 +97,7 @@ async function fetchDimensionMaps(
  */
 export async function listEnrichedWorkItems(opts: {
   harness: string;
-  kind?: Parameters<typeof listWorkItems>[0]['kind'];
+  kind?: WorkItemKind;
   state?: string;
   limit?: number;
 }): Promise<EnrichedWorkItem[]> {

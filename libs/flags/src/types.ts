@@ -64,6 +64,16 @@ export const FLAGS = {
   // read-only watch-pane bees) is unchanged. Flip ON once the new renderer is
   // Tauri-verified. Reversible — the legacy surfaces stay until Phase 5 retires them.
   HIVE_AGENT_TABS: "papercusp-hive-agent-tabs",
+  // hive-inference-gateway-2026-06-09 (P-012): when ON, every bee spawn gets
+  // ANTHROPIC_BASE_URL pointed at the localhost pacing gateway (127.0.0.1:8788), so
+  // the whole fleet egresses through ONE bound account paced against the unified
+  // 5h/7d utilization budget (D-009) instead of each `claude -p` bursting blind.
+  // DEFAULT OFF — genuinely unsafe to enable by default: it reroutes how EVERY bee
+  // authenticates and HARD-DEPENDS on the gateway service (papercup-inference-gateway)
+  // running. Flip ON only AFTER the service is deployed + the 20-bee load test (P-015)
+  // passes during a budget-available window. Off = unchanged (bees use their symlinked
+  // ~/.claude credential directly).
+  INFERENCE_GATEWAY: "papercusp-inference-gateway",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -103,6 +113,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // Phases 2-5 of hive-agent-tabs-psu-tui-2026-06-09 are still building; the
   // shipped flag-gated paths (taxonomy/roster stamping/session-id) go live now.
   [FLAGS.HIVE_AGENT_TABS]: true,
+  // OFF by default — DELIBERATE (not the alpha flags-default-on policy). Enabling this
+  // reroutes every bee's inference egress through the gateway service; flipping it before
+  // the service is deployed would break the whole fleet's auth. Owner flips it ON after
+  // deploy + the P-015 load test passes. Surfaced loudly in the plan's Now + completion report.
+  [FLAGS.INFERENCE_GATEWAY]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

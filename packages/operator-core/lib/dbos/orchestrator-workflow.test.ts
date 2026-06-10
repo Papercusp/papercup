@@ -44,6 +44,7 @@ import {
   setPipelineFinalizer,
   setPipelineDebuggerHook,
   setPipelineSettledHook,
+  setPipelineTestDigestHook,
   type PipelineInput,
   type PipelineInvokeRunner,
 } from './orchestrator-workflow';
@@ -64,6 +65,7 @@ let infiniteDispatch = false;
 let finalizer: ReturnType<typeof vi.fn>;
 let settledHook: ReturnType<typeof vi.fn>;
 let debuggerHook: ReturnType<typeof vi.fn>;
+let testDigestHook: ReturnType<typeof vi.fn>;
 
 const ORCH = 'director';
 
@@ -94,6 +96,11 @@ beforeEach(() => {
   // pollutes the runner-call sequence; the dedicated test overrides it.
   debuggerHook = vi.fn(async () => ({ fired: false }));
   setPipelineDebuggerHook(debuggerHook);
+
+  // Default test-digest hook (P-010) is wired but contributes no extras; the
+  // dedicated test overrides it.
+  testDigestHook = vi.fn(async () => ({ extras: [] as string[] }));
+  setPipelineTestDigestHook(testDigestHook);
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -222,5 +229,32 @@ describe('featurePipelineWorkflow — bounded + gated', () => {
     // The gate runs before the worker agent runs.
     const roles = runnerCalls.map((c) => c.role);
     expect(roles).toEqual(['director', 'worker', 'director']);
+  });
+
+  it('fires the test-digest hook before a validator dispatch and appends its extras (P-010)', async () => {
+    directorOutputs = ['NEXT_VALIDATOR F-1', 'DONE'];
+    testDigestHook = vi.fn(async () => ({ extras: ['TEST_DIGEST=.papercusp/test-digest/F-1.md (exit=0; 20 passed)'] }));
+    setPipelineTestDigestHook(testDigestHook);
+
+    await featurePipelineWorkflow(input());
+
+    expect(testDigestHook).toHaveBeenCalledTimes(1);
+    expect(testDigestHook).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: 'sheets', featureId: 'F-1', workspaceId: 'ws-1' }),
+    );
+    const validatorCall = runnerCalls.find((c) => c.role === 'validator');
+    expect(validatorCall?.extras).toEqual(
+      expect.arrayContaining([
+        'FEATURE_ID=F-1',
+        'TEST_DIGEST=.papercusp/test-digest/F-1.md (exit=0; 20 passed)',
+      ]),
+    );
+    // Not fired for non-validator dispatches.
+    directorOutputs = ['NEXT_WORKER F-1', 'DONE'];
+    directorIdx = 0;
+    runnerCalls = [];
+    testDigestHook.mockClear();
+    await featurePipelineWorkflow(input());
+    expect(testDigestHook).not.toHaveBeenCalled();
   });
 });
