@@ -505,6 +505,10 @@ const shareFinalize = defineTool({
   method: 'POST',
   path: '/harness/:slug/share/finalize',
   auth: 'public',
+  // Sharing publishes the binding gist + boots the substrate + announces on the
+  // DHT — can exceed the default 30s route timeout (the work then finished
+  // server-side while the caller saw a spurious 408).
+  timeoutSec: 300,
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = await req.json().catch(() => null);

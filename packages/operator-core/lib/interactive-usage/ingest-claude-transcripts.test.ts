@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { modelClassForModel, parseTranscriptChunk, readFileDelta } from './ingest-claude-transcripts';
 
-const turn = (model: string, usage: Record<string, number>, type = 'assistant'): string =>
-  JSON.stringify({ type, message: { model, usage } });
+const turn = (model: string, usage: Record<string, number>, type = 'assistant', id?: string): string =>
+  JSON.stringify({ type, message: { ...(id ? { id } : {}), model, usage } });
 
 describe('parseTranscriptChunk', () => {
   it('accumulates assistant usage per model and ignores other event types', () => {
@@ -49,6 +49,25 @@ describe('parseTranscriptChunk', () => {
     const { perModel, consumedBytes } = parseTranscriptChunk(chunk);
     expect(consumedBytes).toBe(Buffer.byteLength(chunk, 'utf8'));
     expect([...perModel.keys()]).toEqual(['claude-sonnet-4-6']);
+  });
+
+  it('dedupes multi-line messages sharing one message.id (one API call = one turn)', () => {
+    const u = { input_tokens: 7, output_tokens: 100, cache_read_input_tokens: 5000, cache_creation_input_tokens: 200 };
+    const chunk =
+      [
+        turn('claude-opus-4-8', u, 'assistant', 'msg_01'), // text block
+        turn('claude-opus-4-8', u, 'assistant', 'msg_01'), // tool_use block — same call, repeated usage
+        turn('claude-opus-4-8', { ...u, output_tokens: 120 }, 'assistant', 'msg_01'), // streamed growth — max wins
+        turn('claude-opus-4-8', u, 'assistant', 'msg_02'),
+      ].join('\n') + '\n';
+    const { perModel } = parseTranscriptChunk(chunk);
+    expect(perModel.get('claude-opus-4-8')).toEqual({
+      turns: 2,
+      inputTokens: 14,
+      outputTokens: 220, // 120 (max of msg_01) + 100 (msg_02)
+      cacheReadTokens: 10000,
+      cacheCreationTokens: 400,
+    });
   });
 
   it('counts bytes, not characters, for multibyte content', () => {

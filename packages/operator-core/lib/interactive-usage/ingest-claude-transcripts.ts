@@ -61,17 +61,34 @@ export function modelClassForModel(model: string): string {
   return 'default';
 }
 
+interface UsageLine {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
 /**
  * Parse a transcript chunk (raw bytes read from the watermark onward, utf8-decoded).
  * Only COMPLETE lines (newline-terminated, or the final line of a chunk that ends at
  * EOF mid-write is left for the next tick) are consumed; `consumedBytes` is what the
  * watermark advances by. Unparseable lines are consumed but contribute nothing.
+ *
+ * Dedupe: a single API call (one `message.id`) is written as MULTIPLE assistant lines
+ * (one per content block), each repeating the message's `usage` — counting every line
+ * inflates ~1.3×. One message = one turn: usage is max-merged per `message.id` within
+ * the chunk (max also absorbs a streaming usage that grows across the lines). An
+ * id-less line counts individually. A message split across two chunk reads (watermark
+ * landing mid-message) double-counts once — rare enough to accept.
  */
 export function parseTranscriptChunk(chunk: string): ParsedChunk {
   const perModel = new Map<string, TranscriptDelta>();
   const lastNewline = chunk.lastIndexOf('\n');
   if (lastNewline === -1) return { perModel, consumedBytes: 0 };
   const consumed = chunk.slice(0, lastNewline + 1);
+  // msgId → { model, max-merged usage } for this chunk; id-less lines flushed directly.
+  const byMsg = new Map<string, { model: string; u: Required<UsageLine> }>();
+  let anonSeq = 0;
   for (const line of consumed.split('\n')) {
     if (!line.trim()) continue;
     let j: unknown;
@@ -80,29 +97,27 @@ export function parseTranscriptChunk(chunk: string): ParsedChunk {
     } catch {
       continue; // torn/garbage line — consumed, contributes nothing
     }
-    const evt = j as {
-      type?: string;
-      message?: {
-        model?: string;
-        usage?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
-      };
-    };
+    const evt = j as { type?: string; message?: { id?: string; model?: string; usage?: UsageLine } };
     if (evt?.type !== 'assistant') continue;
     const model = evt.message?.model;
     const u = evt.message?.usage;
     // `<synthetic>` rows are harness-injected error placeholders, not API calls.
     if (!model || model.startsWith('<') || !u) continue;
+    const key = evt.message?.id ?? `anon-${anonSeq++}`;
+    const acc = byMsg.get(key) ?? { model, u: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+    acc.u.input_tokens = Math.max(acc.u.input_tokens, u.input_tokens ?? 0);
+    acc.u.output_tokens = Math.max(acc.u.output_tokens, u.output_tokens ?? 0);
+    acc.u.cache_read_input_tokens = Math.max(acc.u.cache_read_input_tokens, u.cache_read_input_tokens ?? 0);
+    acc.u.cache_creation_input_tokens = Math.max(acc.u.cache_creation_input_tokens, u.cache_creation_input_tokens ?? 0);
+    byMsg.set(key, acc);
+  }
+  for (const { model, u } of byMsg.values()) {
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;
-    acc.inputTokens += u.input_tokens ?? 0;
-    acc.outputTokens += u.output_tokens ?? 0;
-    acc.cacheReadTokens += u.cache_read_input_tokens ?? 0;
-    acc.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+    acc.inputTokens += u.input_tokens;
+    acc.outputTokens += u.output_tokens;
+    acc.cacheReadTokens += u.cache_read_input_tokens;
+    acc.cacheCreationTokens += u.cache_creation_input_tokens;
     perModel.set(model, acc);
   }
   return { perModel, consumedBytes: Buffer.byteLength(consumed, 'utf8') };

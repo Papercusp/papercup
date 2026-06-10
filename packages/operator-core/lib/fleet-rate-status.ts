@@ -94,5 +94,5 @@ export async function buildFleetRateStatus(windowMs = 60 * 60 * 1000): Promise<F
 }
 
 function emptyUsage(): UsageSummary {
-  return { windowMs: 0, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, spendUsd: 0, buckets: [] };
+  return { windowMs: 0, calls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, spendUsd: 0, buckets: [] };
 }

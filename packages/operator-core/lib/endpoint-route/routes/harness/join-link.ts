@@ -138,6 +138,10 @@ const joinLink = defineTool({
   method: 'POST',
   path: '/harness/join-link',
   auth: 'public',
+  // A real join runs gist publish + git clone + substrate boot + DHT announce —
+  // routinely >30s (the default route timeout 408'd every real join; the
+  // orchestrator kept going server-side and the client saw a spurious failure).
+  timeoutSec: 300,
   async handler(req) {
     const body = (await req.json()) as Record<string, unknown>;
 
