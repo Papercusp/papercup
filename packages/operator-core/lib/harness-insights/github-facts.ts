@@ -34,6 +34,7 @@ import type {
 import type { ActivityFeedEvent } from './card-types';
 import { getOctokit } from '../identity/octokit-client';
 import { resolveProject } from '../harness-core';
+import { TtlMap } from '../ttl-map';
 
 const execFileP = promisify(execFile);
 
@@ -236,12 +237,14 @@ async function defaultOwnerName(
   }
 }
 
-interface CacheEntry {
-  value: Partial<ProjectCardProps> | null;
-  expiresAt: number;
-}
-const cache = new Map<string, CacheEntry>();
 const TTL_MS = 60 * 60 * 1000; // 1h — mirrors the Cupboard indexer cadence.
+// One entry per owner/name repo; TtlMap drops expired keys instead of
+// retaining them forever (audit P-004 / EI-127/EI-79 class).
+const REPO_CACHE_MAX = 1024;
+const cache = new TtlMap<Partial<ProjectCardProps> | null>({
+  ttlMs: TTL_MS,
+  maxEntries: REPO_CACHE_MAX,
+});
 
 export interface LoadProjectCardOpts {
   workspaceId: string;
@@ -272,15 +275,15 @@ export async function loadProjectCardFromGithub(
     if (!on) return undefined;
 
     const key = `${on.owner}/${on.name}`.toLowerCase();
-    const hit = cache.get(key);
-    if (hit && hit.expiresAt > now) return hit.value ?? undefined;
+    const hit = cache.getEntry(key, now);
+    if (hit) return hit.value ?? undefined;
 
     const octokit =
       opts.octokit !== undefined ? opts.octokit : await getOctokit();
     if (!octokit) return undefined; // no token — don't cache; degrade to fallback
 
     const facts = await fetchGithubRepoFacts(on.owner, on.name, octokit);
-    cache.set(key, { value: facts, expiresAt: now + TTL_MS });
+    cache.set(key, facts, now);
     return facts ?? undefined;
   } catch {
     return undefined;
@@ -325,10 +328,10 @@ export async function fetchGithubContributorCommits(
   }
 }
 
-const commitsCache = new Map<
-  string,
-  { value: Record<string, number> | null; expiresAt: number }
->();
+const commitsCache = new TtlMap<Record<string, number> | null>({
+  ttlMs: TTL_MS,
+  maxEntries: REPO_CACHE_MAX,
+});
 
 /**
  * Resolve the harness's GitHub repo and return per-login commit counts
@@ -350,15 +353,15 @@ export async function loadGithubContributorCommits(
     if (!on) return undefined;
 
     const key = `${on.owner}/${on.name}`.toLowerCase();
-    const hit = commitsCache.get(key);
-    if (hit && hit.expiresAt > now) return hit.value ?? undefined;
+    const hit = commitsCache.getEntry(key, now);
+    if (hit) return hit.value ?? undefined;
 
     const octokit =
       opts.octokit !== undefined ? opts.octokit : await getOctokit();
     if (!octokit) return undefined;
 
     const commits = await fetchGithubContributorCommits(on.owner, on.name, octokit);
-    commitsCache.set(key, { value: commits, expiresAt: now + TTL_MS });
+    commitsCache.set(key, commits, now);
     return commits ?? undefined;
   } catch {
     return undefined;
@@ -387,10 +390,10 @@ export function decodeGithubReadme(
   }
 }
 
-const readmeCache = new Map<
-  string,
-  { value: string | null; expiresAt: number }
->();
+const readmeCache = new TtlMap<string | null>({
+  ttlMs: TTL_MS,
+  maxEntries: REPO_CACHE_MAX,
+});
 
 /**
  * Resolve the harness's GitHub repo and return its README markdown (tier-A —
@@ -412,8 +415,8 @@ export async function loadRepoReadme(
     if (!on) return undefined;
 
     const key = `${on.owner}/${on.name}`.toLowerCase();
-    const hit = readmeCache.get(key);
-    if (hit && hit.expiresAt > now) return hit.value ?? undefined;
+    const hit = readmeCache.getEntry(key, now);
+    if (hit) return hit.value ?? undefined;
 
     const octokit =
       opts.octokit !== undefined ? opts.octokit : await getOctokit();
@@ -431,7 +434,7 @@ export async function loadRepoReadme(
     } catch {
       md = null; // 404 (no README) / API error → degrade to README-less
     }
-    readmeCache.set(key, { value: md, expiresAt: now + TTL_MS });
+    readmeCache.set(key, md, now);
     return md ?? undefined;
   } catch {
     return undefined;
@@ -557,10 +560,10 @@ export async function fetchGithubMergedPrs(
   }
 }
 
-const mergedPrCache = new Map<
-  string,
-  { value: GithubPullEntry[] | null; expiresAt: number }
->();
+const mergedPrCache = new TtlMap<GithubPullEntry[] | null>({
+  ttlMs: TTL_MS,
+  maxEntries: REPO_CACHE_MAX,
+});
 
 export interface LoadMergedPrEventsOpts extends LoadProjectCardOpts {
   /** Clamp the produced events. Default 20 (the card's cap). */
@@ -594,15 +597,15 @@ export async function loadGithubMergedPrEvents(
 
     const key = `${on.owner}/${on.name}`.toLowerCase();
     let pulls: GithubPullEntry[] | null;
-    const hit = mergedPrCache.get(key);
-    if (hit && hit.expiresAt > now) {
+    const hit = mergedPrCache.getEntry(key, now);
+    if (hit) {
       pulls = hit.value;
     } else {
       const octokit =
         opts.octokit !== undefined ? opts.octokit : await getOctokit();
       if (!octokit) return undefined; // no token — degrade to PG-only feed
       pulls = await fetchGithubMergedPrs(on.owner, on.name, octokit);
-      mergedPrCache.set(key, { value: pulls, expiresAt: now + TTL_MS });
+      mergedPrCache.set(key, pulls, now);
     }
 
     if (!pulls) return undefined;

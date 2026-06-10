@@ -3,8 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { usePathname } from '@/lib/router-compat/navigation';
-import gsap from 'gsap';
-import { useGSAP } from '@gsap/react';
+import { animate, stagger } from 'motion';
 import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { reconcileActiveTheme } from '@/lib/theme';
@@ -73,16 +72,8 @@ const CHROMELESS_PATH_PREFIXES: readonly string[] = [
   '/el-min',
 ];
 
-gsap.registerPlugin(useGSAP);
-// Several useGSAP blocks (HarnessDashboard HUD, OperatorPanel reactor,
-// OracleDock dots) target selectors that exist only when their parent
-// state is in a particular branch — e.g. `.h-running-lane.live` only
-// renders when `status?.alive`. When the dependency list re-runs the
-// hook in the off-state, those `q('.foo')` calls return [] and GSAP
-// logs "GSAP target not found." We use that as a no-op signal, not a
-// bug, so silence the warning. Real selector typos would be caught by
-// the visible animation simply not playing.
-gsap.config({ nullTargetWarn: false });
+// GSAP intro-easing equivalent (power3.out ≈ quart-out).
+const INTRO_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 export default function ChromeShell() {
   const headerRef = useRef<HTMLElement | null>(null);
@@ -107,38 +98,44 @@ export default function ChromeShell() {
       : { ...mainNavJumpGateProps, className: 'pc-header-nav-link' };
   };
 
-  useGSAP(
-    () => {
-      if (!headerRef.current || !fancyEffectsEnabled) return;
-      const q = gsap.utils.selector(headerRef.current);
-      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || !fancyEffectsEnabled) return;
 
-      intro
-        .fromTo(
-          q('.pc-header-left > *, .pc-header-center > *, .pc-header-right > *'),
-          { autoAlpha: 0, y: -14 },
-          { autoAlpha: 1, y: 0, duration: 0.42, stagger: 0.035 },
-          0,
-        )
-        .fromTo(
-          q('.pc-header-hud-line'),
-          { autoAlpha: 0.18, scaleX: 0 },
-          { autoAlpha: 1, scaleX: 1, duration: 0.64, stagger: 0.08 },
-          0.06,
-        );
+    // Entrance intro via motion's WAAPI-backed animate (gsap removed per the
+    // perf-docs animation table). Note the hud lines animate OPACITY only:
+    // their `transform` is owned by the infinite CSS sweep keyframes
+    // (pc-header-hud-line-primary/-secondary in globals.css), which beat
+    // inline styles — the old gsap scaleX leg never visibly rendered.
+    const items = header.querySelectorAll<HTMLElement>(
+      '.pc-header-left > *, .pc-header-center > *, .pc-header-right > *',
+    );
+    const hudLines = header.querySelectorAll<HTMLElement>('.pc-header-hud-line');
+    const controls = [
+      items.length
+        ? animate(
+            items,
+            { opacity: [0, 1], y: [-14, 0] },
+            { duration: 0.42, ease: INTRO_EASE, delay: stagger(0.035) },
+          )
+        : null,
+      hudLines.length
+        ? animate(
+            hudLines,
+            { opacity: [0.18, 1] },
+            { duration: 0.64, ease: INTRO_EASE, delay: stagger(0.08, { startDelay: 0.06 }) },
+          )
+        : null,
+    ];
 
-      // Idle/ambient header HUD line sweeps are now driven by CSS @keyframes
-      // (pc-header-hud-line-primary-sweep / pc-header-hud-line-secondary-sweep
-      // in ChromeShell.css). Removing the GSAP rAF loops takes ~282
-      // DOM-attribute mutations per 5s off the main thread on every page
-      // ChromeShell renders.
+    // Idle/ambient header HUD line sweeps are driven by CSS @keyframes.
+    // Keeping the intro one-shot (no rAF loops) takes ~282 DOM-attribute
+    // mutations per 5s off the main thread on every page ChromeShell renders.
 
-      return () => {
-        intro.kill();
-      };
-    },
-    { scope: headerRef, dependencies: [pathname, fancyEffectsEnabled] },
-  );
+    return () => {
+      for (const c of controls) c?.stop();
+    };
+  }, [pathname, fancyEffectsEnabled]);
 
   // Reconcile browser-presentation prefs from PG once on mount. The host
   // pre-paints theme + visual-effects from PG (bin/host-spa.ts); this adopts

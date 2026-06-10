@@ -6,15 +6,17 @@ import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { readElevenLabsKey } from '../../../voice-credentials';
+import { TtlMap } from '../../../ttl-map';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface SpendCacheEntry {
   secsUsed: number;
   source: 'elevenlabs' | 'pg-fallback';
-  fetchedAt: number;
 }
 const SPEND_CACHE_TTL_MS = 60_000;
-const spendCache = new Map<string, SpendCacheEntry>();
+// Keyed by EL agent id — cardinality is tiny, but stale ids must not pin
+// entries forever (audit P-004 / EI-127 class).
+const spendCache = new TtlMap<SpendCacheEntry>({ ttlMs: SPEND_CACHE_TTL_MS, maxEntries: 64 });
 
 interface ElConversation {
   call_duration_seconds?: number;
@@ -117,11 +119,11 @@ export default defineTool({
     }
 
     const now = Date.now();
-    const cached = spendCache.get(agentId);
+    const cached = spendCache.get(agentId, now);
     let secsUsed: number;
     let source: 'elevenlabs' | 'pg-fallback';
 
-    if (cached && now - cached.fetchedAt < SPEND_CACHE_TTL_MS) {
+    if (cached) {
       secsUsed = cached.secsUsed;
       source = cached.source;
     } else {
@@ -141,7 +143,7 @@ export default defineTool({
           source = 'pg-fallback';
         }
       }
-      spendCache.set(agentId, { secsUsed, source, fetchedAt: now });
+      spendCache.set(agentId, { secsUsed, source }, now);
     }
 
     const minutesUsed = Math.round(secsUsed / 60);

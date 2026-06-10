@@ -352,3 +352,64 @@ describe('O(delta) + ts-guarded apply (the EI-79 residual contract)', () => {
     expect(seen).toEqual(ops.map((o) => o.hbKey)); // resumed exactly at 5 — no hole, no re-read
   });
 });
+
+describe('event-loop yield every ~1k ops (EI-81 / audit P-021)', () => {
+  /** Run `fn` with a competing setImmediate chain; count how many macrotasks
+   *  got to run WHILE fn was in flight. memLog.get resolves via MICROTASK, so
+   *  without an explicit yield inside the merge loop this count is 0 no matter
+   *  how many ops the pass processes — the exact starvation that burned ~1.5
+   *  cores at the 1Hz merge poll (EI-81). */
+  async function macrotasksDuring(fn: () => Promise<unknown>): Promise<number> {
+    let ticks = 0;
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      ticks++;
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+    await fn();
+    running = false;
+    return ticks;
+  }
+
+  it('mergeAdmittedLogsIncremental lets macrotasks run during a large pass', async () => {
+    const author = 'd4'.repeat(32);
+    const log = memLog(author, corpusOps(31, 3500, author, 1_700_000_000_000));
+    const cursor = createMergeCursor();
+    const ticks = await macrotasksDuring(() =>
+      mergeAdmittedLogsIncremental([log], cursor, {
+        applyImpl: captureApply().apply,
+        getTimeoutMs: 0,
+      }),
+    );
+    expect(ticks).toBeGreaterThanOrEqual(3); // 3500 ops → ≥3 yields; 0 without the fix
+  });
+
+  it('the yield counter carries ACROSS logs (N small logs cannot dodge it)', async () => {
+    const logs = Array.from({ length: 7 }, (_, n) =>
+      memLog(String(n).repeat(64), corpusOps(40 + n, 500, String(n).repeat(64), 1_700_000_000_000 + n)),
+    );
+    const cursor = createMergeCursor();
+    const ticks = await macrotasksDuring(() =>
+      mergeAdmittedLogsIncremental(logs, cursor, {
+        applyImpl: captureApply().apply,
+        getTimeoutMs: 0,
+      }),
+    );
+    expect(ticks).toBeGreaterThanOrEqual(3); // 7×500 = 3500 iterations total
+  });
+
+  it('mergeAdmittedLogs (the full re-fold on cursor reset) yields too', async () => {
+    const author = 'e5'.repeat(32);
+    const log = memLog(author, corpusOps(32, 3500, author, 1_700_000_000_000));
+    const ticks = await macrotasksDuring(() =>
+      mergeAdmittedLogs([log], {
+        applyImpl: captureApply().apply,
+        maxOpsPerAuthor: 0,
+        getTimeoutMs: 0,
+      }),
+    );
+    expect(ticks).toBeGreaterThanOrEqual(3);
+  });
+});

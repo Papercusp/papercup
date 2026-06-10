@@ -14,6 +14,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
 import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
 
@@ -22,10 +23,9 @@ import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
  * capabilities changed. Runs inside the write tx — PG queues the NOTIFY
  * and delivers it on commit (dropped on rollback).
  */
-type Tx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
-function notifyPrincipalChanged(tx: Tx, workspaceId: string, slug: string): Promise<unknown> {
+async function notifyPrincipalChanged(tx: Sql, workspaceId: string, slug: string): Promise<void> {
   const payload = JSON.stringify({ workspace_id: workspaceId, slug });
-  return tx`SELECT pg_notify(${PRINCIPAL_INVALIDATE_CHANNEL}, ${payload})`;
+  await tx`SELECT pg_notify(${PRINCIPAL_INVALIDATE_CHANNEL}, ${payload})`;
 }
 
 export interface ProvisionSystemPrincipalArgs {
@@ -100,6 +100,7 @@ export async function provisionSystemPrincipal(
       ON CONFLICT (token) DO UPDATE
         SET kind = 'system', harness_slug = ${`system:${name}`}, workspace_id = ${workspaceId}
     `;
+    await notifyPrincipalChanged(tx, workspaceId, `system:${name}`);
 
     return {
       workspaceId,
@@ -147,6 +148,7 @@ export async function startPiSession(
       INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
       VALUES (${bearer}, 'pi', ${`pi:${sessionId}`}, ${workspaceId})
     `;
+    await notifyPrincipalChanged(tx, workspaceId, `pi:${sessionId}`);
     return { bearer, sessionId };
   });
 }
@@ -162,5 +164,6 @@ export async function endPiSession(workspaceId: string, sessionId: string): Prom
       DELETE FROM harness_shared.token_index
        WHERE kind = 'pi' AND harness_slug = ${`pi:${sessionId}`} AND workspace_id = ${workspaceId}
     `;
+    await notifyPrincipalChanged(tx, workspaceId, `pi:${sessionId}`);
   });
 }

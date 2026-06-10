@@ -14,21 +14,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let tokenIndexRows: Array<Record<string, unknown>> = [];
 let principalRows: Array<Record<string, unknown>> = [];
 let withWorkspaceCalls = 0;
+// Captured by the mock's sql.listen — lets tests fire NOTIFY payloads.
+let listenChannel: string | null = null;
+let listenCallback: ((payload: string) => void) | null = null;
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    // tagged-template: sql`...` → sql(strings, ...values)
-    sql: (..._args: unknown[]) => Promise.resolve(tokenIndexRows),
-  }),
-  withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => {
-    withWorkspaceCalls++;
-    const tx = (..._a: unknown[]) => Promise.resolve(principalRows);
-    return cb(tx);
-  },
-}));
+vi.mock('@papercusp/db-org', () => {
+  // tagged-template: sql`...` → sql(strings, ...values)
+  const sql = Object.assign((..._args: unknown[]) => Promise.resolve(tokenIndexRows), {
+    listen: (channel: string, cb: (payload: string) => void) => {
+      listenChannel = channel;
+      listenCallback = cb;
+      return Promise.resolve({ unlisten: () => Promise.resolve() });
+    },
+  });
+  return {
+    getOrgPg: () => ({ sql }),
+    withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => {
+      withWorkspaceCalls++;
+      const tx = (..._a: unknown[]) => Promise.resolve(principalRows);
+      return cb(tx);
+    },
+  };
+});
 
 import { createHash } from 'node:crypto';
-import { resolveBearer, invalidate, _resetAuthCacheForTests } from './auth';
+import {
+  resolveBearer,
+  invalidate,
+  _resetAuthCacheForTests,
+  _authCacheTuning,
+  PRINCIPAL_INVALIDATE_CHANNEL,
+} from './auth';
 
 const hashOf = (bearer: string) => createHash('sha256').update(bearer).digest('hex');
 
@@ -37,6 +53,8 @@ beforeEach(() => {
   tokenIndexRows = [];
   principalRows = [];
   withWorkspaceCalls = 0;
+  listenChannel = null;
+  listenCallback = null;
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -136,5 +154,127 @@ describe('resolveBearer', () => {
     const third = await resolveBearer(bearer);
     expect(third).toBeNull();
     expect(withWorkspaceCalls).toBe(2);
+  });
+
+  it('caches the null result for an ended pi session (no capability re-load per call)', async () => {
+    const bearer = 'pi-bearer-token-abcdef12';
+    tokenIndexRows = [
+      { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
+    ];
+    principalRows = [
+      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: new Date() },
+    ];
+    expect(await resolveBearer(bearer)).toBeNull();
+    expect(withWorkspaceCalls).toBe(1);
+    expect(await resolveBearer(bearer)).toBeNull();
+    expect(withWorkspaceCalls).toBe(1); // negative entry served from cache
+  });
+
+  describe('TTL expiry', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('re-loads a positive entry after the TTL elapses', async () => {
+      const bearer = 'system-bearer-token-abcdef';
+      tokenIndexRows = [
+        { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+      ];
+      principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(1);
+
+      vi.advanceTimersByTime(_authCacheTuning.ttlMs - 1);
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(1); // still cached
+
+      vi.advanceTimersByTime(2);
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(2); // expired → re-loaded
+    });
+
+    it('expires a negative entry after the (shorter) negative TTL', async () => {
+      const bearer = 'pi-bearer-token-abcdef12';
+      tokenIndexRows = [
+        { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
+      ];
+      principalRows = [
+        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: new Date() },
+      ];
+      expect(await resolveBearer(bearer)).toBeNull();
+      expect(withWorkspaceCalls).toBe(1);
+
+      vi.advanceTimersByTime(_authCacheTuning.negativeTtlMs + 1);
+      // Session has since been (re)started — the expired negative entry must
+      // not mask it.
+      principalRows = [
+        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: null },
+      ];
+      const p = await resolveBearer(bearer);
+      expect(p).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(2);
+    });
+  });
+
+  it('bounds the cache: the least-recently-used entry is evicted at the cap', async () => {
+    const mkBearer = (i: number) => `bearer-${i}`;
+    const resolveNth = async (i: number) => {
+      tokenIndexRows = [
+        { token: mkBearer(i), kind: 'system', harness_slug: `system:p${i}`, workspace_id: 'ws1' },
+      ];
+      principalRows = [{ bearer_hash: hashOf(mkBearer(i)), capabilities: ['*'] }];
+      return resolveBearer(mkBearer(i));
+    };
+
+    for (let i = 0; i < _authCacheTuning.max; i++) {
+      expect(await resolveNth(i)).not.toBeNull();
+    }
+    expect(withWorkspaceCalls).toBe(_authCacheTuning.max);
+
+    // Touch entry 0 so it is most-recently-used, then insert one more.
+    expect(await resolveNth(0)).not.toBeNull();
+    expect(withWorkspaceCalls).toBe(_authCacheTuning.max); // cache hit
+    expect(await resolveNth(_authCacheTuning.max)).not.toBeNull(); // evicts LRU (entry 1)
+
+    // Entry 0 survived (recently used) …
+    expect(await resolveNth(0)).not.toBeNull();
+    expect(withWorkspaceCalls).toBe(_authCacheTuning.max + 1);
+    // … entry 1 was evicted → re-load.
+    expect(await resolveNth(1)).not.toBeNull();
+    expect(withWorkspaceCalls).toBe(_authCacheTuning.max + 2);
+  });
+
+  describe('PG LISTEN invalidation', () => {
+    it('subscribes to the invalidate channel and evicts the named principal on NOTIFY', async () => {
+      const bearer = 'system-bearer-token-abcdef';
+      tokenIndexRows = [
+        { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+      ];
+      principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(listenChannel).toBe(PRINCIPAL_INVALIDATE_CHANNEL);
+      expect(listenCallback).not.toBeNull();
+
+      // Revoke: capability source now empty + NOTIFY fires (as provisioning.ts
+      // emits on commit).
+      principalRows = [];
+      listenCallback!(JSON.stringify({ workspace_id: 'ws1', slug: 'system:operator' }));
+      expect(await resolveBearer(bearer)).toBeNull();
+      expect(withWorkspaceCalls).toBe(2); // cache was evicted → re-loaded
+    });
+
+    it('clears the whole cache on an unparseable NOTIFY payload (safe fallback)', async () => {
+      const bearer = 'system-bearer-token-abcdef';
+      tokenIndexRows = [
+        { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+      ];
+      principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      listenCallback!('not-json');
+      expect(await resolveBearer(bearer)).not.toBeNull();
+      expect(withWorkspaceCalls).toBe(2); // whole cache cleared → re-loaded
+    });
   });
 });

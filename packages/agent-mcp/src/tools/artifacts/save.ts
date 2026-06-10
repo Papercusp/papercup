@@ -9,7 +9,6 @@
  */
 
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 const WRITE_ROLES = [
@@ -56,11 +55,18 @@ export default defineTool({
     // Present + SLUG_RE-valid by the preconditions above.
     const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
-    const { sql } = getOrgPg();
     const now = Date.now();
-    await sql`
-      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
-      VALUES (${slug}, ${key}, ${args.content}, ${now})
+    // ctx.tx, NOT getOrgPg() (audit P-012): the host picks the handle —
+    // workspace-scoped (harness_app + app.workspace_id GUC, RLS-enforced)
+    // for normal dispatch, admin only for superuser/cross-workspace
+    // dispatch. The admin handle here bypassed harness_text_artifacts'
+    // workspace-isolation policy. workspace_id is stamped from the GUC so
+    // the policy's WITH CHECK holds; under the admin handle the GUC is
+    // unset → legacy ''.
+    await ctx.tx`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+      VALUES (${slug}, ${key}, ${args.content}, ${now},
+              COALESCE(current_setting('app.workspace_id', true), ''))
       ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
         content    = EXCLUDED.content,
         updated_at = EXCLUDED.updated_at

@@ -20,6 +20,7 @@ import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
+import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
 
 // Resilience guard: when an MCP/SSE client disconnects mid-stream, the
 // `mcp-handler` dependency's response adapter enqueues onto an already-closed
@@ -109,18 +110,11 @@ if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
         '[memory-watchdog] RSS high-water mark tripped — draining + recycling host (systemd will restart)',
         { rssMb, rssLimitMb: limitMb },
       );
-      // Stop accepting new connections; give in-flight work a bounded window,
-      // then exit so a fresh process boots. Hard-exit backstop if drain hangs.
-      const hardExit = setTimeout(() => process.exit(0), 8000);
-      hardExit.unref?.();
-      try {
-        (server as { close?: (cb?: () => void) => void }).close?.(() => {
-          clearTimeout(hardExit);
-          process.exit(0);
-        });
-      } catch {
-        process.exit(0);
-      }
+      // Drain in-flight HTTP + tear down the P2P substrate (Hypercores,
+      // Hyperswarm sockets, PG LISTEN close-hooks) before exit — a bare
+      // process.exit() abandons those handles (audit P-002, EI-127). The
+      // helper hard-exits after 8s if either side hangs.
+      gracefulHostRecycle({ server: server as { close?: (cb?: () => void) => void } });
     },
   });
 }

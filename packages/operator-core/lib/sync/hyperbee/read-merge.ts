@@ -50,6 +50,17 @@ export const DEFAULT_GET_TIMEOUT_MS = 5000;
  *  `MergeOpts.maxOpsPerAuthor`. */
 export const DEFAULT_MAX_OPS_PER_AUTHOR = 50_000;
 
+/** Yield a macrotask to the event loop every this-many merge-loop iterations.
+ *  Local-corestore `get`s resolve via MICROTASK, so without an explicit yield
+ *  the incremental merge's inner loop runs its whole pass budget (up to 50k
+ *  awaits per log) as one event-loop turn — at the 1Hz merge poll that
+ *  monopolized the loop and burned ~1.5 cores continuously (EI-81). */
+export const MERGE_YIELD_EVERY_OPS = 1000;
+
+/** `await` point that defers to the macrotask queue (setImmediate), letting
+ *  timers/IO/HTTP run between merge chunks. */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 export interface MergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). For tests. */
   applyImpl?: (op: OpEnvelope) => Promise<boolean>;
@@ -165,6 +176,7 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
   // cap's purpose — bounding per-pass ingest from any single author so a noisy
   // peer can't make the merge unbounded. A `<= 0` cap disables the bound.
   const winners = new Map<string, OpEnvelope>();
+  let opsSinceYield = 0;
   for (const log of logs) {
     const cap = maxOpsPerAuthor;
     const capped = cap > 0 && log.length > cap;
@@ -177,6 +189,12 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
     }
     const upper = capped ? cap : log.length;
     for (let i = 0; i < upper; i++) {
+      // EI-81: local-corestore gets resolve via microtask — yield a macrotask
+      // every ~1k iterations so a full re-fold can't monopolize the event loop.
+      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS) {
+        opsSinceYield = 0;
+        await yieldToEventLoop();
+      }
       const op = await readOpBounded(log, i, getTimeoutMs);
       if (!op) continue;
       const env = toEnvelope(op, log.keyHex);
@@ -335,6 +353,7 @@ export async function mergeAdmittedLogsIncremental(
   let applied = 0;
   let decoded = 0;
   let caughtUp = true;
+  let opsSinceYield = 0;
 
   // EI-79 step 3: detect a TRUNCATED log (length < its cursor) BEFORE folding.
   // A shrunk log means ops we already counted as winners may be gone, so a
@@ -368,6 +387,12 @@ export async function mergeAdmittedLogsIncremental(
 
     let pos = from;
     for (; pos < upper; pos++) {
+      // EI-81: yield a macrotask every ~1k iterations — counted per pass
+      // (the counter carries across logs) so N small logs can't dodge it.
+      if (++opsSinceYield >= MERGE_YIELD_EVERY_OPS) {
+        opsSinceYield = 0;
+        await yieldToEventLoop();
+      }
       // Distinguish "op resolved (possibly version-dropped)" from
       // "unavailable" — only the former may advance the cursor.
       let op: PeerLogOp | null;

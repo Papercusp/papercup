@@ -74,8 +74,7 @@ const HUMAN_LABELS: Record<string, string> = {
   'view:summary': 'Summary',
   'view:insights': 'Insights',
   'view:config': 'Config',
-  'adv:features': 'Features',
-  'adv:issues': 'Issues',
+  'adv:work-items': 'Work items',
   'adv:detail': 'Detail',
   'adv:git': 'Git',
   'adv:agents': 'Agents',
@@ -90,9 +89,8 @@ const HUMAN_LABELS: Record<string, string> = {
 // `<undefined/>` and crash the catalog.
 const ICON_MAP: Record<string, LucideIcon> = {
   'data:features': ListChecks,
-  'adv:features': ListChecks,
+  'adv:work-items': ListChecks,
   'data:issues': CircleAlert,
-  'adv:issues': CircleAlert,
   'adv:detail': PanelRight,
   'data:git': GitBranch,
   'adv:git': GitBranch,

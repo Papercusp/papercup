@@ -84,3 +84,10 @@ export {
   type PeerAddressResolver,
   type HttpPeerRpcTransportOpts,
 } from './http-peer-rpc-transport';
+
+export {
+  wireAuthorityRpcTransport,
+  configurePeerAddressResolver,
+  resolvePeerAddress,
+  PEER_ADDRESSES_ENV,
+} from './transport-wiring';

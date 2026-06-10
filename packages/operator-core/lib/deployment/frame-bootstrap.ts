@@ -309,16 +309,31 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       'YES=yes /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y || true',
       'apt-get install -y -q postgresql-16 postgresql-16-pgvector',
       'systemctl start postgresql || pg_ctlcluster 16 main start || true',
-      // Roles + db the operator's DSN (and its hardcoded fallback) expect.
-      `sudo -u postgres psql -qc "CREATE ROLE harness_admin LOGIN PASSWORD 'harness_admin_pwd' SUPERUSER" || true`,
+      // Per-frame SUPERUSER credential (audit P-031): provisioned frames no
+      // longer bake the repo-public 'harness_admin_pwd' literal — that stays
+      // only as the documented DEV fallback in libs/db connection.ts. Override
+      // with PAPERCUSP_FRAME_PG_PASSWORD (exported into the bootstrap env by
+      // the caller) or take a fresh random per-frame secret.
+      'HARNESS_ADMIN_PWD="${PAPERCUSP_FRAME_PG_PASSWORD:-$(openssl rand -hex 24)}"',
+      // CREATE without a password, then ALTER to THIS run's password: a
+      // re-bootstrap of an existing frame re-keys the role so the exported
+      // DSN below always matches (the old `CREATE ... || true` left a stale
+      // password on re-runs).
+      'sudo -u postgres psql -qc "CREATE ROLE harness_admin LOGIN SUPERUSER" || true',
+      'sudo -u postgres psql -qc "ALTER ROLE harness_admin WITH LOGIN SUPERUSER PASSWORD \'$HARNESS_ADMIN_PWD\'"',
       `sudo -u postgres psql -qc "CREATE ROLE harness_app LOGIN PASSWORD 'harness_app_pwd'" || true`,
       `sudo -u postgres psql -qc "CREATE ROLE harness_zero LOGIN PASSWORD 'harness_zero_pwd'" || true`,
       'sudo -u postgres createdb -O harness_admin papercusp || true',
       // Export for every later step (single bootstrap shell): the operator + the
       // invoke-once pg-bootstrap read this DSN. No ~/.papercusp/embedded-pg.json is
       // written, so the operator's discovery cleanly falls through to DATABASE_URL.
-      'export DATABASE_URL=postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
+      'export DATABASE_URL="postgresql://harness_admin:$HARNESS_ADMIN_PWD@localhost:5432/papercusp"',
       'export PAPERCUSP_DATABASE_URL="$DATABASE_URL"',
+      // Persist the DSN (0600) for manual relaunches after the bootstrap
+      // shell exits — the connection.ts dev-fallback literal will NOT match
+      // a provisioned frame anymore.
+      'install -m 0600 /dev/null "$HOME/.papercusp/frame-pg.env" 2>/dev/null || { mkdir -p "$HOME/.papercusp" && install -m 0600 /dev/null "$HOME/.papercusp/frame-pg.env"; }',
+      'printf "DATABASE_URL=%s\\n" "$DATABASE_URL" > "$HOME/.papercusp/frame-pg.env"',
       `cd ${shq(`${root}/runtime`)}`,
       'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
       // Extensions + all migrations + spawn-signing-key premint (fails the script on error).

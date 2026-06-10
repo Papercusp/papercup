@@ -10,7 +10,6 @@
  */
 
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 
@@ -45,8 +44,9 @@ export default defineTool({
     // Present + SLUG_RE-valid by the preconditions above.
     const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
-    const { sql } = getOrgPg();
-    const result = await sql`
+    // ctx.tx, NOT getOrgPg() — RLS confines the delete to the caller's
+    // workspace (audit P-012, see save.ts).
+    const result = await ctx.tx`
       DELETE FROM harness_shared.harness_text_artifacts
        WHERE harness_slug = ${slug} AND rel_path = ${key}
     `;

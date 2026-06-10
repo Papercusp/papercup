@@ -105,6 +105,20 @@ Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (
 | **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) |
 | file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing) | ❌ | 🔴 |
 
+### Lock authority — remote leg over HTTP (C2)
+
+Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6, real PG su-lock store + real loopback HTTP, plan `coord-system-e2e-testing-2026-06-10` P-006) + `lib/authority/__tests__/transport-wiring.test.ts` (9) + the pre-existing `peer-rpc-transport.integration.test.ts` / `two-instance-authority.integration.test.ts` (+ hive variant).
+
+| Cell | Before | Now |
+|---|---|---|
+| generic remote dispatch over real HTTP (`routeToAuthority` → transport → `handleAuthorityRpc`) | 🟢 | ✅ |
+| transport REGISTERED at boot + addressing precedence (configured resolver > env map > null → fail-open) | ❌ production transport never registered (D-002 blocker) | 🔴 `transport-wiring.ts` + tests |
+| REAL file-lock chain: `routeFileLockOp` → boot-wired `HttpPeerRpcTransport` → boot-registered `lock.*` handlers → real PG store | ❌ fake store + hand-registered kinds only | 🔴 |
+| cross-wire mutual exclusion (B busy on A's held path) + cross-wire release frees the contender | partial (fake store) | 🔴 |
+| `not_authority` refusal during a failover gap → fail-open with loud warning | ❌ | 🔴 |
+| authority unreachable → fail-open, local advisory grant | 🟢 generic leg | ✅ file-lock leg |
+| unmanaged domain → pure local, zero wire traffic | 🟢 | ✅ |
+
 ### Federation (C2/C3)
 
 File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 tests, real two-peer DHT).
@@ -181,6 +195,16 @@ Both legs verified green on this box (claude 2.1.169, codex).
 ## Accepted gaps (logged — not silent)
 
 <Aside type="note" title="Accepted gaps">
-- _None outstanding for this suite._ The two gaps logged at first publication
-  (interactive-claude config isolation, real resume spawn) are both closed above.
+- **Production peer ADDRESSING for the authority remote leg.** The HTTP
+  transport is boot-registered and the whole file-lock chain is proven over a
+  real wire, but `shared_presence` carries identity, not a network address — so
+  on a real multi-box deployment no peer address resolves until a topology layer
+  calls `configurePeerAddressResolver` or sets
+  `PAPERCUSP_AUTHORITY_PEER_ADDRESSES`. Until then every remote-authority op
+  fails OPEN with a loud warning (D-004 — git-merge is the data backstop).
+  Tracked in `coord-system-e2e-testing-2026-06-10` (P-006 note; the two-box
+  variant is P-010, owner-gated). Not silent: the fail-open path itself is
+  covered by the cells above.
+- The two gaps logged at first publication (interactive-claude config
+  isolation, real resume spawn) are both closed above.
 </Aside>

@@ -11,7 +11,7 @@ The built-in harness blueprints — each a declarative harness shape (work-item 
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (15 concrete + 2 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (16 concrete + 2 abstract).
 
 ## Built-in blueprints
 
@@ -27,6 +27,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (15 con
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
+| `release-fix` | single-agent | release-fix (`RFX`) | release-fixer | inherited | 1 | Fix a green-checkpoint gate failure: a release-fixer agent reads the checkpoint log, reproduces the failing test to classify regression-vs-flake, then fixes the code or removes a proven flake (hermetic / tier-out / accountable quarantine), leaves the tree clean, and does not push. |
 | `research` | base | research-task (`R`) | research-director | concurrency 1 | 4 | A minimal research harness: a research-director drives a single researcher per research-task, with searcher/verifier as reactive helpers. Repo-less. |
 | `review` | base | review-task (`RV`) | review-director | inherited | 4 | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report. |
 | `scan` | single-agent | scan-run (`SCAN`) | scanner | inherited | 1 | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog. |
@@ -154,6 +155,16 @@ A migration/codemod harness: a migration-director drives a discoverer (find all 
 - **Planner:** inline
 - **Dispatch:** concurrency 4
 - **Roles (4):** `migration-director`, `discoverer`, `transformer`, `migration-verifier`
+
+### `release-fix`
+
+Fix a green-checkpoint gate failure: a release-fixer agent reads the checkpoint log, reproduces the failing test to classify regression-vs-flake, then fixes the code or removes a proven flake (hermetic / tier-out / accountable quarantine), leaves the tree clean, and does not push.
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `release-fix` (id prefix `RFX`)
+- **Spine decider:** `release-fixer` (maxTurns 30)
+- **Roles (1):** `release-fixer`
 
 ### `research`
 

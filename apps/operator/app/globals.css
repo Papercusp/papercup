@@ -12721,9 +12721,10 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
  * running while the chrome is invisible (visibility:hidden;opacity:0),
  * generating per-frame compositor work for layers no one is looking at.
  *
- * stage attr from useTransitionState (next-transition-router) is empty/'idle'
- * when no navigation is happening; presence of any stage other than 'none'
- * signals an active transition. Resume animations only then. */
+ * RouteTransitionProvider renders stage 'idle' at rest ('leaving'/'entering'
+ * while a jump-gate navigation is in flight). 'none'/missing/'' kept for
+ * safety against an unmounted-attr state. */
+.pc-route-transition[data-route-transition-stage='idle'] *,
 .pc-route-transition[data-route-transition-stage='none'] *,
 .pc-route-transition:not([data-route-transition-stage]) *,
 .pc-route-transition[data-route-transition-stage=''] * {

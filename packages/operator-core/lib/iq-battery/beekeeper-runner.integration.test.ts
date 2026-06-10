@@ -3,21 +3,30 @@
  * (P-003 evidence: end-to-end → manifest-referenced scorecard)
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { getTestPg, withTestSchema } from '@papercusp/test-config';
+import { getTestPg } from '@papercusp/test-config';
 import { runBeekeeperBattery, type BeekeeperConfig, type BeekeeperDeps, type BeekeeperStore } from './beekeeper-runner';
 import type { InstanceBootSpec } from './instance-manifest';
-import { FixInjectedBugCases } from './corpus';
+import { FixInjectedBugCases, type CorpusCase } from './corpus';
 import type { GymJudgeRubric } from '../gym/judge-scoring';
+
+/** The seed arrays carry no id/rotationIndex/createdAt (assigned at seed time) — materialize a full CorpusCase for the battery. */
+function materializeCase(seed: (typeof FixInjectedBugCases)[number]): CorpusCase {
+  return { ...seed, id: 'case-fixbug-integration-0', rotationIndex: 0, createdAt: new Date() };
+}
 
 describe('BeekeeperRunner Integration', () => {
   let sql: postgres.Sql;
 
   beforeAll(async () => {
-    sql = await getTestPg();
+    sql = postgres(await getTestPg(), { max: 1, onnotice: () => {} });
     // Note: The beekeeper schema tables are created by the full migration suite.
     // For unit-level integration tests, we skip actual DB operations and stub the store.
+  });
+
+  afterAll(async () => {
+    await sql?.end({ timeout: 5 });
   });
 
   it('runs ONE corpus case against the live dev instance (if running)', async () => {
@@ -60,7 +69,7 @@ describe('BeekeeperRunner Integration', () => {
     };
 
     // Use the first corpus case as our test
-    const [testCase] = FixInjectedBugCases;
+    const testCase = materializeCase(FixInjectedBugCases[0]!);
     const corpus = [testCase];
 
     const config: BeekeeperConfig = {
@@ -154,7 +163,7 @@ async function runStubbedIntegration(_sql: postgres.Sql): Promise<void> {
     instanceUrl: 'http://localhost:3055',
   };
 
-  const [testCase] = FixInjectedBugCases;
+  const testCase = materializeCase(FixInjectedBugCases[0]!);
   const corpus = [testCase];
 
   const config: BeekeeperConfig = {

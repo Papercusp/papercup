@@ -84,6 +84,22 @@ describe('seedCorpus', () => {
     expect(secondCount[0].count).toBe(firstCount[0].count);
   });
 
+  it('re-seed refreshes prompt/ground_truth on existing rows (EI-162 propagation)', async () => {
+    await seedCorpus(sql);
+    const [row] = await sql<Array<{ id: string; prompt: string }>>`
+      SELECT id, prompt FROM iq_battery_cases LIMIT 1
+    `;
+
+    await sql`UPDATE iq_battery_cases SET prompt = 'stale drifted prompt', ground_truth = '{}'::jsonb WHERE id = ${row.id}`;
+    await seedCorpus(sql);
+
+    const [after] = await sql<Array<{ prompt: string; ground_truth: Record<string, unknown> }>>`
+      SELECT prompt, ground_truth FROM iq_battery_cases WHERE id = ${row.id}
+    `;
+    expect(after.prompt).toBe(row.prompt);
+    expect(Object.keys(after.ground_truth).length).toBeGreaterThan(0);
+  });
+
   it('stores ground_truth and rubric as jsonb', async () => {
     await seedCorpus(sql);
 

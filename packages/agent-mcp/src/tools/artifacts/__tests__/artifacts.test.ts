@@ -1,20 +1,19 @@
 /**
- * artifacts:* tool tests — mock @papercusp/db-org.getOrgPg's sql template
- * tag and verify each tool's input validation + output shape + role
- * gate via dispatchProjectedTool.
+ * artifacts:* tool tests — stub ctx.tx's sql template tag and verify each
+ * tool's input validation + output shape + role gate via
+ * dispatchProjectedTool. The handlers read ctx.tx (the host-scoped,
+ * RLS-subject handle — audit P-012), NOT getOrgPg, so the stub lives on
+ * the ctx; the RLS isolation itself is covered by
+ * artifacts-rls.integration.test.ts.
  */
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock getOrgPg so the tool handlers don't require a live PG connection.
-// The sql template tag is invoked as `sql\`...\``; we intercept it and
+// Stub the ctx.tx template tag so the tool handlers don't require a live
+// PG connection. It is invoked as `ctx.tx\`...\``; we intercept it and
 // return whatever rows the test fixture configured.
 const sqlImpl = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const sqlTag = (...args: unknown[]) => sqlImpl(...args);
-
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: sqlTag }),
-}));
 
 import { lookupByMcpName, type UnifiedToolContext } from '@papercusp/tooldef';
 import { dispatchProjectedTool } from '@papercusp/tooldef';
@@ -29,6 +28,7 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
   role: 'architect',
   runId: 'run_T',
   spawnId: 'spw_T',
+  tx: sqlTag as unknown as UnifiedToolContext['tx'],
   ...over,
 });
 

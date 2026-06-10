@@ -24,16 +24,16 @@
  * single box and for unmanaged repos. Wire the real registry mapping at boot via
  * {@link configureFileLockDomainResolver} and cross-machine routing engages.
  *
- * # Not wired into the live acquire hot path (yet)
+ * # Wired into the live acquire hot path (fed-reanchor-2026-06-06 P-060, cutover 2)
  *
- * The lock hook fires `locks:acquire` on EVERY edit. On the single shared-PG dev
- * box the authority is always self, so wrapping the hot path would add a
- * `shared_presence` query per edit for zero functional change — a regression risk
- * on the fleet's most safety-critical path. So {@link routeFileLockOp} is the
- * ready, tested integration wrapper, but the acquire handler is NOT yet changed
- * to call it. The cutover (have `locks:acquire` route file-claim ops through this
- * wrapper) lights up when machines run separate embedded-pg and remote peers
- * appear in `shared_presence`; see the README.
+ * `locks:acquire` / `locks:release` route their file-claim ops through
+ * {@link routeFileLockOp} (see ../agent-tools/locks/acquire.ts). The per-edit
+ * hot path stays near-zero-cost via the remote-peers cache fast-path below: on a
+ * box with no live remote peers the routed call collapses to `op.local()`
+ * without a `shared_presence` query. The boot wiring (resolvers + authority-side
+ * op handlers + the HTTP wire transport) lives in
+ * ../agent-tools/locks/file-lock-authority-wiring.ts; the remaining cross-machine
+ * residual is a peer ADDRESSING source (see ./transport-wiring.ts).
  */
 
 import {

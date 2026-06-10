@@ -39,6 +39,7 @@ import {
   configureFileLockDomainResolver,
   configureFileLockHiveResolver,
 } from '../../authority/file-lock-routing';
+import { wireAuthorityRpcTransport } from '../../authority/transport-wiring';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { inWorkspaceTxn } from './in-workspace-txn';
@@ -137,6 +138,11 @@ export function wireFileLockAuthority(): void {
   configureFileLockDomainResolver((domain) => _domainToSlug.get(realpathOrSelf(domain)) ?? null);
   configureFileLockHiveResolver((slug) => _slugToHive.get(slug) ?? null);
   registerFileLockAuthorityOps(adaptSuLockStore());
+  // The wire-leg (P-006, coord-system-e2e): the HTTP transport ships registered, so
+  // remote-authority ops cross the wire as soon as a peer address resolves (seam:
+  // configurePeerAddressResolver / PAPERCUSP_AUTHORITY_PEER_ADDRESSES). No address →
+  // fail-open, exactly the pre-wiring behavior.
+  wireAuthorityRpcTransport();
 
   void refreshResolverSnapshot().catch(() => {
     /* best-effort: empty maps → resolve local; the timer retries */

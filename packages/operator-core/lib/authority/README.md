@@ -66,21 +66,20 @@ Until a transport exists, `remote` can be omitted entirely: on a single box
 `isSelf` is always true (direct local lease); cross-machine it fails open to a
 local lease + warning. Zero changes to your store when the transport lands.
 
-## The RPC wire-leg is a seam (`peer-rpc-transport.ts`)
+## The RPC wire-leg (`peer-rpc-transport.ts` seam + `http-peer-rpc-transport.ts`)
 
-There is **no peer-to-peer request/response transport in the tree yet** — the
-Hyperswarm substrate replicates append-only data, it is not RPC. So the remote
-leg goes through a pluggable `PeerRpcTransport`. The default
-(`NULL_PEER_RPC_TRANSPORT`) reports every peer unreachable → fail-open. When a
-real transport lands (HTTP to the authority's `:3070` over the mesh, or an RPC
-channel over the existing Hyperswarm connection), register it once:
-
-```ts
-setPeerRpcTransport(myTransport); // remote routing activates, callers unchanged
-```
+The remote leg goes through a pluggable `PeerRpcTransport`. At boot,
+`transport-wiring.ts` registers the real `HttpPeerRpcTransport` (POST to the
+authority's `/api/authority/rpc`); a deployment rig can still override it via
+`setPeerRpcTransport` after boot. With no transport registered at all (tests),
+the default `NULL_PEER_RPC_TRANSPORT` reports every peer unreachable →
+fail-open.
 
 A transport MUST throw `PeerUnreachableError` (not a generic error) when it can't
-reach the peer, so routing fails open rather than surfacing a hard error.
+reach the peer, so routing fails open rather than surfacing a hard error. The
+HTTP transport maps no-address / network failure / non-2xx / `not_authority` to
+`PeerUnreachableError` (fail-open) and `unknown_kind` / `handler_error` to a real
+error (a genuine op failure on a reachable authority is never masked).
 
 ## The failure detector is a generic lib (`@papercusp/failure-detector`)
 
@@ -128,25 +127,34 @@ there is one `papercusp_su` and the PG advisory lock already serializes, so the
 authority resolves to `isSelf` and routing is a direct local call. Correct in
 both worlds.
 
-## Cross-machine cutover (what lights this up)
+## Cross-machine cutover — state at HEAD (2026-06-10)
 
-1. **Inject a `PeerRpcTransport`** (HTTP-over-mesh or Hyperswarm RPC) at boot via
-   `setPeerRpcTransport`. The authority side exposes an endpoint that runs the
-   serialized lock/claim op against its local `papercusp_su` and returns the
-   result. (Handover, D-005: on becoming authority, a peer rebuilds its lock set
-   from holders' re-asserted TTL heartbeats within one heartbeat interval; the
-   brief gap is fail-open. The optional append-only lock-event stream on the
-   peer-log — for instant reconstruction — is the deferred enhancement.)
-2. **Wire `locks:acquire`/`release`/`queue`** (the file-claim handlers in
-   `packages/operator-core/lib/agent-tools/locks/`) to route through
-   `routeFileLockOp` instead of calling the store directly. NOT done this session:
-   on the single box it would add a `shared_presence` query to the per-edit lock
-   hook for zero functional change — a regression risk on the fleet's most
-   safety-critical path. Add a cheap "any remote peers for this harness?" cache so
-   the common (no-peers) case stays near-zero-cost before flipping it on.
-3. **Register the domain→harness mapping** via
-   `configureFileLockDomainResolver` from the harness registry (each managed
-   harness's checkout realpath → its slug).
+All three cutover steps are **wired at boot** (side-effect import of
+`agent-tools/locks/file-lock-authority-wiring.ts` from the agent-tools barrel):
+
+1. ✅ **Transport** — `transport-wiring.ts` registers the `HttpPeerRpcTransport`
+   (the one proven on Hetzner by `swarm-claim-dispatch.integration.test.ts`) via
+   `setPeerRpcTransport` at boot, POSTing to the authority's
+   `/api/authority/rpc` (which wraps `handleAuthorityRpc` + re-verifies it is
+   the authority). (Handover, D-005: on becoming authority, a peer rebuilds its
+   lock set from holders' re-asserted TTL heartbeats within one heartbeat
+   interval; the brief gap is fail-open. The append-only lock-event stream on
+   the peer-log — for instant reconstruction — is the deferred enhancement.)
+2. ✅ **Hot-path routing** — `locks:acquire`/`release` route file-claim ops
+   through `routeFileLockOp` (fed-reanchor-2026-06-06 P-060, cutover 2). The
+   remote-peers cache keeps the no-peers common case near-zero-cost, and any
+   routing-layer fault degrades to the raw local acquire.
+3. ✅ **Domain→harness mapping** — `configureFileLockDomainResolver` /
+   `configureFileLockHiveResolver` wired from the harness-registry snapshot.
+
+**The one remaining residual is ADDRESSING** (coord-system-e2e-testing-2026-06-10
+P-006 note): `shared_presence` carries identity, not a network address, so
+`transport-wiring.ts` resolves a peer's operator base URL via
+`configurePeerAddressResolver(fn)` (for a mesh/topology layer) or the
+`PAPERCUSP_AUTHORITY_PEER_ADDRESSES` env map
+(`{"<device_pubkey>":"http://host:3070"}`). With neither configured every
+remote-authority op fails open (D-004) with a loud warning — the pre-cutover
+behavior, unchanged.
 
 ## Tests
 
@@ -156,3 +164,16 @@ both worlds.
 - `__tests__/lock-authority.integration.test.ts` — 5 tests against a real
   Postgres `shared_presence` table: the canonical query, argmin selection,
   remote-authority, staleness failover, empty-presence.
+- `__tests__/transport-wiring.test.ts` — addressing precedence (configured
+  resolver > env map > null), malformed-env degradation, boot idempotency,
+  fail-open through the boot-wired transport.
+- `__tests__/peer-rpc-transport.integration.test.ts` +
+  `__tests__/two-instance-authority.integration.test.ts` (+ the hive variant) —
+  the generic remote leg over real loopback HTTP: dispatch, serialization at one
+  authority store, fail-open when unreachable.
+- `__tests__/file-lock-authority-e2e.integration.test.ts` — the REAL file-lock
+  leg end to end (P-006, coord-system-e2e-testing-2026-06-10): `routeFileLockOp`
+  → boot-wired `HttpPeerRpcTransport` → loopback `/api/authority/rpc` mirror →
+  the boot-registered `lock.*` handlers → the real PG su-lock store. Remote
+  grant, cross-wire mutual exclusion + release, `not_authority` → fail-open,
+  unreachable → fail-open, unmanaged-domain → pure local.

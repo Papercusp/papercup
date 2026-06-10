@@ -37,7 +37,9 @@ export interface MemoryWatchdogOpts {
   /**
    * What to do when the high-water mark trips. Default: log loudly then
    * `process.exit(0)` after a short flush delay (systemd Restart=always
-   * recycles). Inject a drain-then-exit to finish in-flight HTTP first.
+   * recycles). A real host should inject `gracefulHostRecycle` (host-recycle.ts)
+   * so in-flight HTTP drains AND the P2P substrate handles close before exit
+   * (audit P-002, EI-127) — hono-host.ts does.
    */
   onTrip?: (detail: { rssMb: number; rssLimitMb: number }) => void;
 }

@@ -110,13 +110,22 @@ export function appendDecisionToBody(
     `Date: ${date}\n` +
     `${decisionBody.trim()}${refsLine}\n`;
 
-  // Find the `## Decisions` (tolerant) section. Insert at its end.
+  // Find the `## Decisions` section — allowing a numbered prefix
+  // ("## 5. Decisions") and trailing whitespace ONLY. A heading with a
+  // suffix like "## Decisions (settled)" is a DIFFERENT section and
+  // must never absorb new decisions (EI-141 / audit P-041).
   // Locate against the fence-masked body so a `## Decisions` heading
   // inside a worked-example fence is skipped; splice the real body by
   // index (maskFences preserves length, so indices are interchangeable).
   const masked = maskFences(body);
-  const headingRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\b[^\n]*$/m;
+  const headingRe = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\s*$/m;
   const headingMatch = headingRe.exec(masked);
+  // Collapse any run of trailing newlines to exactly one before gluing
+  // the block on (whose leading \n supplies the single separating blank
+  // line) — a splice point that already sat on a blank line otherwise
+  // stacks doubles (EI-141 / audit P-041).
+  const oneTrailingNL = (s: string) =>
+    s.endsWith('\n') ? s.replace(/\n+$/, '\n') : s + '\n';
   if (headingMatch) {
     // Find the start of the next `## ` heading after this one, or end of file.
     const after = headingMatch.index + headingMatch[0].length;
@@ -125,20 +134,13 @@ export function appendDecisionToBody(
     const nextHeadingMatch = nextHeadingRe.exec(restAfter);
     if (nextHeadingMatch) {
       const insertAt = after + nextHeadingMatch.index;
-      // Ensure trailing newline before the next heading.
-      let prefix = body.slice(0, insertAt);
-      if (!prefix.endsWith('\n')) prefix += '\n';
-      return prefix + block + '\n' + body.slice(insertAt);
+      return oneTrailingNL(body.slice(0, insertAt)) + block + '\n' + body.slice(insertAt);
     }
     // No subsequent heading — append at file end.
-    let withTrailingNL = body;
-    if (!withTrailingNL.endsWith('\n')) withTrailingNL += '\n';
-    return withTrailingNL + block;
+    return oneTrailingNL(body) + block;
   }
   // No Decisions section — append one at file end.
-  let withTrailingNL = body;
-  if (!withTrailingNL.endsWith('\n')) withTrailingNL += '\n';
-  return withTrailingNL + `\n## Decisions\n${block}`;
+  return oneTrailingNL(body) + `\n## Decisions\n${block}`;
 }
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type

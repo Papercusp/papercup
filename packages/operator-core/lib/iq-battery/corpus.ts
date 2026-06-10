@@ -37,15 +37,41 @@ export interface CorpusCase {
 
 // v1 IQ Battery Corpus seed data — 20 cases (5 per variant)
 
+/**
+ * `fix-injected-bug` cases are SELF-CONTAINED (EI-162 / audit P-014): the buggy
+ * code ships INSIDE the prompt as a fenced snippet, and `groundTruth.bugLocation`
+ * references that snippet (`snippet:<symbol>`), NEVER a repo path. There is no
+ * bug-injection step — earlier seeds pointed groundTruth at fictional repo
+ * symbols (e.g. `work-items.ts:rankItems`, which never existed), which made the
+ * cases unwinnable-as-stated and sent bees hunting the real tree for bugs that
+ * were not there. A case must be solvable from its own prompt alone.
+ */
 export const FixInjectedBugCases = [
   {
     variant: 'fix-injected-bug' as const,
     title: 'Off-by-one in work-item rank calculation',
-    prompt: `A work-item ranking function is giving incorrect order. The rank values should be sequential, but some items are skipped. Identify the bug and fix it.`,
+    prompt: `A work-item ranking function is giving incorrect order. Ranked items should get dense, sequential ranks (0, 1, 2, …) while unranked (null-rank) items are left alone — but some rank values are skipped and the sequence starts at 1. Identify the bug in the code below and fix it.
+
+\`\`\`ts
+interface WorkItem { id: string; rank: number | null }
+
+export function rankItems(items: WorkItem[]): WorkItem[] {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.rank === null) {
+      continue; // unranked items keep null
+    }
+    item.rank = i + 1;
+  }
+  return items;
+}
+\`\`\``,
     groundTruth: {
-      bugLocation: 'packages/operator-core/lib/work-items.ts:rankItems',
-      bugDescription: 'Loop counter increments by 1 but skips items when rank is null',
-      expectedFix: 'Initialize rank with index, not index+1; handle null ranks separately',
+      bugLocation: 'snippet:rankItems',
+      bugDescription:
+        'Rank is assigned from the overall loop index (i + 1), so every skipped null-rank item leaves a gap in the sequence, and ranks start at 1 instead of 0',
+      expectedFix:
+        'Track a separate counter incremented only when a rank is actually assigned (starting at 0), instead of reusing the loop index; null-rank items keep null',
     },
     rubric: {
       dimensions: [
@@ -73,11 +99,24 @@ export const FixInjectedBugCases = [
   {
     variant: 'fix-injected-bug' as const,
     title: 'Race condition in fleet assignment',
-    prompt: `Two agents can simultaneously claim the same work item, resulting in duplicate assignments. Find and fix the race condition.`,
+    prompt: `Two agents can simultaneously claim the same work item, resulting in duplicate assignments. Find and fix the race condition in the claim function below.
+
+\`\`\`ts
+async function claimItem(sql: Sql, itemId: string, agentId: string): Promise<boolean> {
+  const rows = await sql\`SELECT assignee FROM work_items WHERE id = \${itemId}\`;
+  if (rows[0]?.assignee) {
+    return false; // already claimed
+  }
+  await sql\`UPDATE work_items SET assignee = \${agentId} WHERE id = \${itemId}\`;
+  return true;
+}
+\`\`\``,
     groundTruth: {
-      bugLocation: 'packages/operator-core/lib/fleet/assignments.ts:claimItem',
-      bugDescription: 'Check-then-act without row-level locking allows concurrent claims',
-      expectedFix: 'Use SELECT ... FOR UPDATE to lock the row during the check-claim sequence',
+      bugLocation: 'snippet:claimItem',
+      bugDescription:
+        'Check-then-act across two statements without locking: two concurrent callers can both read assignee as empty, then both run the UPDATE — the second silently overwrites the first claim',
+      expectedFix:
+        'Make the claim atomic: a single conditional UPDATE (… SET assignee = $agent WHERE id = $id AND assignee IS NULL RETURNING …, claimed iff a row came back), or SELECT … FOR UPDATE inside one transaction',
     },
     rubric: {
       dimensions: [
@@ -105,11 +144,37 @@ export const FixInjectedBugCases = [
   {
     variant: 'fix-injected-bug' as const,
     title: 'Memory leak in event listener subscription',
-    prompt: `The coord inbox listener is growing memory usage over time. Multiple listeners are not being cleaned up when the agent exits. Find and fix the leak.`,
+    prompt: `An inbox watcher is growing memory usage over time: listeners accumulate and are never cleaned up when agents unsubscribe. Find and fix the leak in the code below.
+
+\`\`\`ts
+import { EventEmitter } from 'node:events';
+
+interface Msg { to: string; body: string }
+
+class InboxWatcher {
+  private emitter = new EventEmitter();
+
+  publish(m: Msg): void {
+    this.emitter.emit('message', m);
+  }
+
+  subscribe(agentId: string, onMessage: (m: Msg) => void): () => void {
+    const handler = (m: Msg) => {
+      if (m.to === agentId) onMessage(m);
+    };
+    this.emitter.on('message', handler);
+    return () => {
+      // cleanup
+    };
+  }
+}
+\`\`\``,
     groundTruth: {
-      bugLocation: 'packages/operator-core/lib/coordination/inbox.ts:subscribe',
-      bugDescription: 'Event listeners are added but never removed on unsubscribe',
-      expectedFix: 'Store listener references and remove them in the cleanup function',
+      bugLocation: 'snippet:InboxWatcher.subscribe',
+      bugDescription:
+        'The unsubscribe function returned by subscribe() is an empty body — the message handler registered with emitter.on() is never removed, so every subscribe leaks a listener forever',
+      expectedFix:
+        "The returned cleanup must remove the exact handler it registered: this.emitter.off('message', handler) (or removeListener)",
     },
     rubric: {
       dimensions: [
@@ -137,11 +202,21 @@ export const FixInjectedBugCases = [
   {
     variant: 'fix-injected-bug' as const,
     title: 'Incorrect timestamp comparison in deadline check',
-    prompt: `Harness tasks are being marked as overdue when they should still be pending. The deadline checking logic is wrong. Fix it.`,
+    prompt: `Harness tasks are being marked as overdue when they should still be pending. The deadline checking logic below is wrong. Fix it.
+
+\`\`\`ts
+interface Task { id: string; deadline: string } // deadline is an ISO-8601 string
+
+function isOverdue(task: Task, now: Date): boolean {
+  return task.deadline < now;
+}
+\`\`\``,
     groundTruth: {
-      bugLocation: 'packages/operator-core/lib/dbos/orchestrator-loop.ts:isOverdue',
-      bugDescription: 'Comparing deadline (ISO string) with current time (Date object)',
-      expectedFix: 'Convert both to same type before comparison; parse deadline as Date',
+      bugLocation: 'snippet:isOverdue',
+      bugDescription:
+        'An ISO-8601 deadline STRING is compared directly against a Date OBJECT with <, so JavaScript coerces both to primitives and compares lexically/NaN-ily — the result does not reflect chronological order',
+      expectedFix:
+        'Compare like with like: new Date(task.deadline).getTime() < now.getTime() (parse the ISO string to a Date / epoch millis before comparing)',
     },
     rubric: {
       dimensions: [
@@ -169,11 +244,21 @@ export const FixInjectedBugCases = [
   {
     variant: 'fix-injected-bug' as const,
     title: 'SQL injection vulnerability in feature search',
-    prompt: `The feature search endpoint is vulnerable to SQL injection. A user can craft a search query to access unauthorized features. Find and fix the vulnerability.`,
+    prompt: `The feature search function below is vulnerable to SQL injection — a user can craft a search query to read rows they should never see. Find and fix the vulnerability.
+
+\`\`\`ts
+async function executeSearch(sql: Sql, userQuery: string) {
+  return sql.unsafe(
+    "SELECT id, title FROM features WHERE title ILIKE '%" + userQuery + "%' LIMIT 50",
+  );
+}
+\`\`\``,
     groundTruth: {
-      bugLocation: 'packages/operator-core/lib/agent-tools/features/search.ts:executeSearch',
-      bugDescription: 'User input is directly interpolated into SQL string without parameterization',
-      expectedFix: 'Use parameterized queries with placeholders; never concatenate user input into SQL',
+      bugLocation: 'snippet:executeSearch',
+      bugDescription:
+        "User input is concatenated directly into the SQL string handed to sql.unsafe() — a query like `%' OR '1'='1` (or a UNION SELECT) escapes the ILIKE literal and rewrites the statement",
+      expectedFix:
+        'Use a parameterized query (tagged-template bind or placeholders), e.g. sql`SELECT id, title FROM features WHERE title ILIKE ${"%" + userQuery + "%"} LIMIT 50` — never concatenate user input into SQL text',
     },
     rubric: {
       dimensions: [
@@ -904,8 +989,11 @@ export async function seedCorpus(sql: postgres.Sql): Promise<void> {
           ${now}
         )
       ON CONFLICT (id) DO UPDATE SET
-        updated_at = ${now},
-        rotation_index = EXCLUDED.rotation_index
+        prompt = EXCLUDED.prompt,
+        ground_truth = EXCLUDED.ground_truth,
+        rubric = EXCLUDED.rubric,
+        rotation_index = EXCLUDED.rotation_index,
+        updated_at = ${now}
     `;
   }
 }

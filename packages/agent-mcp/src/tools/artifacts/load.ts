@@ -12,7 +12,6 @@
  */
 
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 
@@ -55,8 +54,9 @@ export default defineTool({
     // Present + SLUG_RE-valid by the preconditions above.
     const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
-    const { sql } = getOrgPg();
-    const rows = await sql<{ content: string; updated_at: string }[]>`
+    // ctx.tx, NOT getOrgPg() — the workspace-scoped handle keeps reads
+    // inside the caller's workspace via RLS (audit P-012, see save.ts).
+    const rows = await ctx.tx<{ content: string; updated_at: string }[]>`
       SELECT content, updated_at
         FROM harness_shared.harness_text_artifacts
        WHERE harness_slug = ${slug} AND rel_path = ${key}

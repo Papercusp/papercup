@@ -11,7 +11,7 @@ A coarse, grouped map of the MCP tool surface — one row per tool group with it
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**363 MCP tools** across **69 groups**.
+**368 MCP tools** across **69 groups**.
 
 ## Groups
 
@@ -32,7 +32,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `brainstorm` | 1 | `chat` | `harness:write` |
 | `chat` | 1 | `ask_choice` | `chat:write` |
 | `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
-| `coord` | 24 | `ack` `ask` `ask-owner` `await-inbox` `declare-intent` `deliberate` `emit` `escalate` `escalations` `feed` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` |
+| `coord` | 26 | `ack` `ask` `ask-owner` `await-inbox` `declare-intent` `deliberate` `emit` `escalate` `escalations` `feed` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `wake-mode` `wake-queue` `watermark` `watermark-set` `whoami` | `audit:read` `coord:read` `coord:write` |
 | `cross_harness` | 10 | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
 | `curation` | 3 | `change-feed` `feed` `state-of-hive` | `curation:read` |
 | `db` | 3 | `check_drift` `migrate` `next-migration` | `locks:read` `locks:write` |
@@ -43,13 +43,13 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `events` | 5 | `await` `cancel` `emit` `graph` `status` | `coord:read` `coord:write` `events:read` |
 | `features` | 5 | `get` `history` `list_related` `search` `tag_vocabulary` | `features:read` |
 | `flags` | 3 | `get` `list` `set` | `audit:write` `intel:read` |
-| `fleet` | 10 | `admit` `assignments` `bee_mail` `cancel` `drain` `governor` `selected_bee` `spawn` `supervise` `tree` | `coord:read` `coord:write` `work_items:read` `work_items:write` |
+| `fleet` | 11 | `admit` `assignments` `bee_mail` `cancel` `drain` `governor` `sandbox_deps` `selected_bee` `spawn` `supervise` `tree` | `coord:read` `coord:write` `intel:read` `work_items:read` `work_items:write` |
 | `generators` | 1 | `publish` | `coord:write` |
 | `goals` | 2 | `get` `list` | `goals:read` |
 | `gym` | 2 | `judge` `signals` | `harness:read` |
 | `harness` | 14 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `migrate-config-json` `pending_reviews` `phase_path` `plan_reviews` `status` | `harness:read` `harness:write` |
 | `harness_docs` | 7 | `anchor` `ingest` `list` `record` `regenerate` `set_overlay` `verify` | `docs:read` `docs:write` |
-| `hive` | 9 | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `status` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:write` |
+| `hive` | 11 | `create` `cross_grant` `declare-wake` `dissolve` `get` `list` `pause` `start` `status` `update` `wake` | `harness:read` `harness:write` `routines:write` `work_items:write` |
 | `hooks` | 1 | `known` | `roles:read` |
 | `improvements` | 5 | `capture` `digest` `resolve` `triage` `watchdog-status` | `coord:read` `coord:write` |
 | `inbox` | 1 | `triage` | `coord:write` |

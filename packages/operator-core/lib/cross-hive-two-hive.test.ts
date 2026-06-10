@@ -79,6 +79,8 @@ const env = (id: string, from: string, to: string, over: Partial<CrossHiveWireEn
 // automated run (gate or CI) — bulletproof, independent of any env marker the gate
 // may or may not propagate. Live-wire coverage belongs in a dedicated opt-in tier
 // (run it with `RUN_LIVE_HYPERSWARM=1 npm run test --workspace @papercusp/operator-core`).
+// Skip provenance: EI-157 + EI-166 (load-induced 180s DHT timeouts red-gating
+// green-checkpoint). Re-verified 2026-06-10: 3× green, <1s each, at load ~9.
 describe.skipIf(!process.env.RUN_LIVE_HYPERSWARM)('cross-Hive transport over two REAL Hyperswarms (P-006 live wire, P-005 in-process proxy)', () => {
   it(
     'Hive A dials Hive B by pubkey and delivers an envelope; B replies and A receives (bidirectional)',

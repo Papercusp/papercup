@@ -15,8 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
-import gsap from 'gsap';
-import { useGSAP } from '@gsap/react';
+import { animate, stagger } from 'motion';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { Tooltip } from '../harness/Tooltip';
@@ -58,7 +57,8 @@ import {
 import { usePathname, useRouter, useSearchParams } from '@/lib/router-compat/navigation';
 import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
 
-gsap.registerPlugin(useGSAP);
+// gsap intro-easing equivalent (power3.out ≈ quart-out).
+const INTRO_EASE: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 interface ToolCallEntry {
   kind: 'tool';
@@ -964,76 +964,75 @@ export function OracleDock() {
   const ActiveTargetIcon = active ? targetIcon(active.target) : OracleLogoMark;
   const headerSubtitle = active ? targetSubtitle(active.target) : 'general help across Papercusp';
 
-  useGSAP(() => {
+  // Entrance + ambient animations via motion's animate (gsap removed per the
+  // perf-docs animation table). Notes vs the old gsap version:
+  // - the reticle's intro no longer tweens rotate — the infinite spin loop
+  //   owned that value anyway (later gsap tween won per-property);
+  // - autoAlpha → opacity (visibility toggling was cosmetic for sub-second
+  //   entrances).
+  useEffect(() => {
     if (!fancyEffectsEnabled) return;
+
+    const controls: Array<ReturnType<typeof animate>> = [];
 
     if (!open) {
       if (!fabRef.current) return;
-      const tween = gsap.fromTo(
-        fabRef.current,
-        { autoAlpha: 0, y: 18, scale: 0.88 },
-        { autoAlpha: 1, y: 0, scale: 1, duration: 0.48, ease: 'power3.out' },
+      controls.push(
+        animate(
+          fabRef.current,
+          { opacity: [0, 1], y: [18, 0], scale: [0.88, 1] },
+          { duration: 0.48, ease: INTRO_EASE },
+        ),
       );
-      return () => tween.kill();
+      return () => controls.forEach((c) => c.stop());
     }
 
-    if (!dockRef.current) return;
-    const q = gsap.utils.selector(dockRef.current);
-    const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+    const dock = dockRef.current;
+    if (!dock) return;
+    const sel = (s: string) => Array.from(dock.querySelectorAll<HTMLElement>(s));
+    const run = (
+      els: HTMLElement[],
+      keyframes: Parameters<typeof animate>[1],
+      options: Record<string, unknown>,
+    ) => {
+      if (els.length) controls.push(animate(els, keyframes as never, options as never));
+    };
 
-    intro
-      .fromTo(
-        q('.oracle-hud-reticle, .oracle-hud-frame'),
-        { autoAlpha: 0, scale: 0.72, rotate: -24 },
-        { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.72 },
-        0,
-      )
-      .fromTo(
-        q('.oracle-dock-header'),
-        { autoAlpha: 0, y: -18 },
-        { autoAlpha: 1, y: 0, duration: 0.42 },
-        0.06,
-      )
-      .fromTo(
-        q('.oracle-tab, .oracle-tab-add'),
-        { autoAlpha: 0, y: 12 },
-        { autoAlpha: 1, y: 0, duration: 0.32, stagger: 0.04 },
-        0.12,
-      )
-      .fromTo(
-        q('.oracle-msg, .oracle-empty-state, .oracle-support-loading, .oracle-form'),
-        { autoAlpha: 0, y: 18 },
-        { autoAlpha: 1, y: 0, duration: 0.4, stagger: 0.05 },
-        0.18,
-      );
+    // Intro (timeline offsets become per-group delays).
+    run(sel('.oracle-hud-frame'), { opacity: [0, 1], scale: [0.72, 1], rotate: [-24, 0] }, { duration: 0.72, ease: INTRO_EASE });
+    run(sel('.oracle-hud-reticle'), { opacity: [0, 1], scale: [0.72, 1] }, { duration: 0.72, ease: INTRO_EASE });
+    run(sel('.oracle-dock-header'), { opacity: [0, 1], y: [-18, 0] }, { duration: 0.42, ease: INTRO_EASE, delay: 0.06 });
+    run(sel('.oracle-tab, .oracle-tab-add'), { opacity: [0, 1], y: [12, 0] }, { duration: 0.32, ease: INTRO_EASE, delay: stagger(0.04, { startDelay: 0.12 }) });
+    run(
+      sel('.oracle-msg, .oracle-empty-state, .oracle-support-loading, .oracle-form'),
+      { opacity: [0, 1], y: [18, 0] },
+      { duration: 0.4, ease: INTRO_EASE, delay: stagger(0.05, { startDelay: 0.18 }) },
+    );
 
-    const loops = [
-      gsap.to(q('.oracle-hud-reticle'), { rotate: 360, duration: 18, ease: 'none', repeat: -1 }),
-      gsap.fromTo(
-        q('.oracle-hud-scanline'),
-        { xPercent: -18, autoAlpha: 0.12 },
-        { xPercent: 24, autoAlpha: 0.48, duration: 2.6, ease: 'sine.inOut', repeat: -1, yoyo: true },
-      ),
-      gsap.to(q('.oracle-tab.is-active'), {
-        boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 0 24px rgba(34, 211, 238, 0.18)',
-        duration: 1.2,
-        ease: 'sine.inOut',
-        repeat: -1,
-        yoyo: true,
-      }),
-    ];
+    // Ambient loops while open.
+    run(sel('.oracle-hud-reticle'), { rotate: 360 }, { duration: 18, ease: 'linear', repeat: Infinity });
+    run(
+      sel('.oracle-hud-scanline'),
+      { x: ['-18%', '24%'], opacity: [0.12, 0.48] },
+      { duration: 2.6, ease: 'easeInOut', repeat: Infinity, repeatType: 'mirror' },
+    );
+    run(
+      sel('.oracle-tab.is-active'),
+      { boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-strong), transparent 84%), 0 0 24px rgba(34, 211, 238, 0.18)' },
+      { duration: 1.2, ease: 'easeInOut', repeat: Infinity, repeatType: 'mirror' },
+    );
 
     if (showThinking) {
-      loops.push(
-        gsap.to(q('.oracle-thinking-dots span'), { y: -4, duration: 0.42, ease: 'sine.inOut', repeat: -1, yoyo: true, stagger: 0.1 }),
+      run(
+        sel('.oracle-thinking-dots span'),
+        { y: -4 },
+        { duration: 0.42, ease: 'easeInOut', repeat: Infinity, repeatType: 'mirror', delay: stagger(0.1) },
       );
     }
 
-    return () => {
-      intro.kill();
-      loops.forEach((loop) => loop.kill());
-    };
-  }, { dependencies: [open, activeId, active?.messages.length ?? 0, showThinking, supportActive, fancyEffectsEnabled] });
+    return () => controls.forEach((c) => c.stop());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- replay the intro on the same triggers the gsap version used
+  }, [open, activeId, active?.messages.length ?? 0, showThinking, supportActive, fancyEffectsEnabled]);
 
   if (!active) {
     // Pre-bootstrap; render only the FAB so we never flash an empty dock.

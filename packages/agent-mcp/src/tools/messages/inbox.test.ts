@@ -102,13 +102,13 @@ describe('messages:inbox — slug → schema-identifier transform', () => {
     expect(state.idents).toContain('harness_my_cool_harness');
   });
 
-  it('a dotted slug keeps dots but lowercases', async () => {
+  it('a dotted slug replaces dots with underscores', async () => {
     const { tx, state } = makeTx({ rows: [] });
     await tool.handler(
       { slug: 'Repo.V2', detail: 'summary', status: 'pending', limit: 50 } as never,
       CTX(tx) as never,
     );
-    expect(state.idents).toContain('harness_repo.v2');
+    expect(state.idents).toContain('harness_repo_v2');
   });
 });
 

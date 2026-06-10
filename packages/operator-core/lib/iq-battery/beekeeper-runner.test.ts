@@ -289,5 +289,46 @@ describe('BeekeeperRunner', () => {
       expect(store.startRun).toHaveBeenCalledTimes(3);
       expect(result.totalCases).toBe(3);
     });
+
+    it('reports meanComposite 0 (not NaN) when zero runs scored', async () => {
+      const store = createMockStore();
+      const instanceSpec = createMockInstanceSpec();
+
+      const config: BeekeeperConfig = {
+        instanceSpec,
+        corpus: [createMockCase('case-001'), createMockCase('case-002')],
+        repeats: 1,
+        rubric: createMockRubric(),
+        maxDistillChars: 5000,
+      };
+
+      const deps: BeekeeperDeps = {
+        store,
+        runInstance: vi.fn().mockRejectedValue(new Error('Instance connection failed')),
+        collectAndDistill: vi.fn().mockResolvedValue({
+          distilledTrace: 'Output',
+          traceRef: 'trace-001',
+          rawSignals: {},
+        }),
+        collectMetrics: vi.fn().mockResolvedValue(createMockMetrics()),
+        llmCall: vi.fn().mockResolvedValue({
+          text: JSON.stringify({ d1: 8.5, d2: 9.0, d3: 8.8, rationale: 'Good work' }),
+          json: { d1: 8.5, d2: 9.0, d3: 8.8, rationale: 'Good work' },
+          costUsd: 0.02,
+          inputTokens: 1500,
+          outputTokens: 500,
+        }),
+        newRunId: vi.fn().mockImplementation((caseId, repeat) => `run-${caseId}-${repeat}`),
+        now: () => Date.now(),
+      };
+
+      const result = await runBeekeeperBattery(config, deps);
+
+      expect(result.outcomes).toHaveLength(2);
+      expect(result.outcomes.every((o) => o.status === 'errored')).toBe(true);
+      expect(result.passedCases).toBe(0);
+      expect(Number.isNaN(result.meanComposite)).toBe(false);
+      expect(result.meanComposite).toBe(0);
+    });
   });
 });

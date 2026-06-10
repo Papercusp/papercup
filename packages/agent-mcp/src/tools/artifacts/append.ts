@@ -8,7 +8,6 @@
  */
 
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 
@@ -56,11 +55,13 @@ export default defineTool({
     // Present + SLUG_RE-valid by the preconditions above.
     const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
-    const { sql } = getOrgPg();
     const now = Date.now();
-    const rows = await sql<{ content: string }[]>`
-      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
-      VALUES (${slug}, ${key}, ${args.suffix}, ${now})
+    // ctx.tx, NOT getOrgPg() — RLS-scoped write; workspace_id stamped from
+    // the GUC for the policy's WITH CHECK (audit P-012, see save.ts).
+    const rows = await ctx.tx<{ content: string }[]>`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+      VALUES (${slug}, ${key}, ${args.suffix}, ${now},
+              COALESCE(current_setting('app.workspace_id', true), ''))
       ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
         content    = harness_text_artifacts.content || EXCLUDED.content,
         updated_at = EXCLUDED.updated_at
