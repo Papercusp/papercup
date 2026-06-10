@@ -69,3 +69,30 @@ describe('recordRouteInvocation — sampling gate', () => {
     }
   });
 });
+
+describe('recordRouteInvocation — degraded environments (gate hold 2026-06-10)', () => {
+  it('partial db-org mock (no sql.begin) → silent no-op, no write, no warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getOrgPg).mockReturnValueOnce({} as never);
+    recordRouteInvocation(execWith());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sqlBegin).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // Keep LAST: trips the module-level once-flag for the rest of the process.
+  it('repeated write failures warn exactly once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sqlBegin.mockImplementation(async () => {
+      throw new Error('relation "route_invocations" does not exist');
+    });
+    recordRouteInvocation(execWith());
+    recordRouteInvocation(execWith());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('[route-telemetry] write failed');
+    sqlBegin.mockImplementation(async () => {});
+    warn.mockRestore();
+  });
+});

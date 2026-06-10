@@ -16,6 +16,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { RouteExecution } from './route-stack';
 
+/** "logged once and swallowed" — the once. Repeated write failures (PG down,
+ *  unmigrated dev DB) must not flood the console: under vitest-fail-on-console
+ *  a single stray warn fails the test file (gate hold 2026-06-10 16:17Z). */
+let warnedWriteFailure = false;
+
 /**
  * Record one route invocation. Fire-and-forget — kicks off the PG write
  * and returns immediately. Sampling + all failure handling are internal.
@@ -24,6 +29,11 @@ export function recordRouteInvocation(exec: RouteExecution): void {
   const sampleRate = exec.def.sampleRate ?? 1;
   if (sampleRate <= 0) return;
   if (sampleRate < 1 && Math.random() >= sampleRate) return;
+
+  // Unit tests routinely run the route stack against a PARTIAL db-org mock
+  // ({ db } with no sql) — a real pool always has sql.begin. No pool, no
+  // telemetry; throwing here would warn on every invocation in such suites.
+  if (typeof getOrgPg().sql?.begin !== 'function') return;
 
   // Snapshot everything off `exec` synchronously — `exec` is mutable and
   // the caller's `finally` may clear timers etc. right after this returns.
@@ -65,10 +75,12 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     } catch (err) {
       // Best-effort: a telemetry write failure (PG down, table missing
       // on a not-yet-migrated dev DB) is logged once and swallowed.
+      if (warnedWriteFailure) return;
+      warnedWriteFailure = true;
       console.warn(
         `[route-telemetry] write failed for ${row.method} ${row.path}: ${
           err instanceof Error ? err.message : String(err)
-        }`,
+        } (further telemetry write failures suppressed)`,
       );
     }
   })();
