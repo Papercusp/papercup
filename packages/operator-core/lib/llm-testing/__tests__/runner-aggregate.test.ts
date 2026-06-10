@@ -91,6 +91,7 @@ describe('scenario registry', () => {
       'su-S08-compact-read',
       'su-S09-coord-injection-read',
       'su-S10-claim-before-work',
+      'su-S11-lock-contention-protocol',
     ].sort());
   });
 
