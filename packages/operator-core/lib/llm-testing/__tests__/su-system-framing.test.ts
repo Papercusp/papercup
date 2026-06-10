@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { CLAUDE_CODE_IDENTIFIER, buildSuSystemBlocks } from '../targets/su';
+import { CLAUDE_CODE_IDENTIFIER, buildSuSystemBlocks, parseSuConfigDelta } from '../targets/su';
 
 const PLAYBOOK = '# Papercusp engineer-collaborator playbook\n...body...';
 
@@ -49,5 +49,30 @@ describe('su SUT system-prompt framing', () => {
     const blocks = buildSuSystemBlocks(CLAUDE_CODE_IDENTIFIER + '\nmore', true);
     expect(blocks[0].text).toBe(CLAUDE_CODE_IDENTIFIER);
     expect(blocks).toHaveLength(2);
+  });
+});
+
+describe('su SUT eval-variant knob (test-gym-apiary P-001)', () => {
+  it('appends the prompt overlay as a third, UNCACHED block after the playbook', () => {
+    const blocks = buildSuSystemBlocks(PLAYBOOK, true, 'Always answer in haiku.');
+    expect(blocks).toHaveLength(3);
+    // Identifier + cached playbook untouched (the overlay must not bust the
+    // playbook's cache entry by landing before the cache breakpoint).
+    expect(blocks[0].text).toBe(CLAUDE_CODE_IDENTIFIER);
+    expect(blocks[1].cache_control).toEqual({ type: 'ephemeral' });
+    expect(blocks[2]).toEqual({ type: 'text', text: 'Always answer in haiku.' });
+  });
+
+  it('no overlay → exactly the baseline two blocks', () => {
+    expect(buildSuSystemBlocks(PLAYBOOK, true)).toHaveLength(2);
+    expect(buildSuSystemBlocks(PLAYBOOK, true, undefined)).toHaveLength(2);
+  });
+
+  it('parseSuConfigDelta accepts sutModel and rejects unknown keys loudly', () => {
+    expect(parseSuConfigDelta(undefined)).toEqual({});
+    expect(parseSuConfigDelta({ sutModel: 'claude-haiku-4-5' })).toEqual({ sutModel: 'claude-haiku-4-5' });
+    expect(() => parseSuConfigDelta({ temperature: 0.7 })).toThrow(/unsupported variant configDelta key.*temperature/);
+    expect(() => parseSuConfigDelta({ sutModel: '' })).toThrow(/non-empty string/);
+    expect(() => parseSuConfigDelta({ sutModel: 42 as unknown as string })).toThrow(/non-empty string/);
   });
 });

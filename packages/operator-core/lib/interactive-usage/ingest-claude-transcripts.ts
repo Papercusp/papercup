@@ -22,7 +22,6 @@
  * consumption — the budget the fleet competes with — not real dollars.
  */
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
@@ -58,6 +57,7 @@ export function modelClassForModel(model: string): string {
   if (/opus/.test(m)) return 'opus';
   if (/sonnet/.test(m)) return 'sonnet';
   if (/haiku/.test(m)) return 'haiku';
+  if (/gpt|codex|^o\d/.test(m)) return 'gpt';
   return 'default';
 }
 
@@ -139,12 +139,17 @@ export async function readFileDelta(filePath: string, offset: number, capBytes: 
 }
 
 export interface IngestOptions {
-  /** Transcript root. Default `~/.claude/projects`. */
+  /** Claude transcript root override. Default `~/.claude/projects`. (When
+   *  `adapters` is supplied this is ignored — pass roots on the adapters.) */
   root?: string;
-  /** Per-tick file cap (safety bound; the rest catch up next tick). Default 5000. */
+  /** Per-tick file cap (safety bound; the rest catch up next tick). Default 5000.
+   *  Applies per adapter root. */
   maxFilesPerTick?: number;
   /** Per-file read cap per tick (memory bound). Default 32 MiB. */
   maxBytesPerFile?: number;
+  /** Adapter set to ingest (P-015). Default: claude + codex + OMP
+   *  (`defaultAdapters()` from ingest-adapters.ts). */
+  adapters?: Array<{ name: string; root: string; parse: (chunk: string) => ParsedChunk }>;
 }
 
 export interface IngestResult {
@@ -161,19 +166,30 @@ const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
 
 /**
- * One ingest tick: walk the transcript root, read each file's delta past its
- * watermark, and persist one `source='interactive'` usage sample per
- * (file-delta × model). Safe to re-run (the system-actions contract).
+ * One ingest tick: walk every adapter's transcript root (P-015: claude +
+ * codex + OMP by default), read each file's delta past its watermark, and
+ * persist one `source='interactive'` usage sample per (file-delta × model).
+ * Safe to re-run (the system-actions contract). All adapters share the one
+ * watermark table — file paths are absolute, so roots can't collide.
  */
 export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<IngestResult> {
-  const root = opts.root ?? path.join(os.homedir(), '.claude', 'projects');
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
   const { sql } = getOrgPg();
   const ws = activeWorkspaceId();
 
+  // Lazy import avoids a require cycle (ingest-adapters imports this module's
+  // parseTranscriptChunk for the claude adapter).
+  const { defaultAdapters, providerForModel } = await import('./ingest-adapters');
+  let adapters = opts.adapters ?? defaultAdapters();
+  if (opts.root) {
+    // Back-compat: a `root` override re-points the claude adapter (the
+    // routine's `trigger_config.root` knob predates the adapter set).
+    adapters = adapters.map((a) => (a.name === 'claude' ? { ...a, root: opts.root! } : a));
+  }
+
   const result: IngestResult = {
-    root,
+    root: adapters.map((a) => a.root).join(', '),
     scannedFiles: 0,
     ingestedFiles: 0,
     samples: 0,
@@ -182,72 +198,75 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     errors: [],
   };
 
-  let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
-  try {
-    entries = (await fs.readdir(root, { withFileTypes: true, recursive: true })) as never;
-  } catch {
-    return result; // no transcript root on this machine — nothing to ingest
-  }
-  const files = entries
-    .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
-    .map((e) => path.join((e.parentPath ?? e.path ?? root) as string, e.name))
-    .slice(0, maxFiles);
-
   const wmRows = await sql<Array<{ file_path: string; byte_offset: string }>>`
     SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files
      WHERE workspace_id = ${ws}
   `;
   const watermarks = new Map(wmRows.map((r) => [r.file_path, Number(r.byte_offset)]));
 
-  for (const file of files) {
-    result.scannedFiles += 1;
+  for (const adapter of adapters) {
+    let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
     try {
-      const { size } = await fs.stat(file);
-      let offset = watermarks.get(file) ?? 0;
-      if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
-      if (size === offset) {
-        result.skippedUnchanged += 1;
-        continue;
-      }
-      const chunk = await readFileDelta(file, offset, capBytes);
-      const { perModel, consumedBytes } = parseTranscriptChunk(chunk);
-      if (consumedBytes === 0) continue; // no complete line yet — retry next tick
-      const sessionId = path.basename(file, '.jsonl');
+      entries = (await fs.readdir(adapter.root, { withFileTypes: true, recursive: true })) as never;
+    } catch {
+      continue; // no transcript root for this backend on this machine
+    }
+    const files = entries
+      .filter((e) => e.isFile() && e.name.endsWith('.jsonl'))
+      .map((e) => path.join((e.parentPath ?? e.path ?? adapter.root) as string, e.name))
+      .slice(0, maxFiles);
 
-      await sql.begin(async (tx) => {
-        for (const [model, d] of perModel) {
-          if (d.turns === 0) continue;
-          const modelClass = modelClassForModel(model);
-          const est = costFromTokens(model, d);
-          await tx`
-            INSERT INTO harness_shared.agent_usage_samples
-              (workspace_id, ts, bucket_key, provider, model_class, source,
-               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-               model, cost_source, run_id, role)
-            VALUES (
-              ${ws}, ${Date.now()}, ${`anthropic:${modelClass}`}, ${'anthropic'}, ${modelClass}, ${'interactive'},
-              ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
-              ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
-              ${sessionId}, ${'interactive'}
-            )
-          `;
-          result.samples += 1;
-          result.totals.turns += d.turns;
-          result.totals.inputTokens += d.inputTokens;
-          result.totals.outputTokens += d.outputTokens;
-          result.totals.cacheReadTokens += d.cacheReadTokens;
-          result.totals.cacheCreationTokens += d.cacheCreationTokens;
+    for (const file of files) {
+      result.scannedFiles += 1;
+      try {
+        const { size } = await fs.stat(file);
+        let offset = watermarks.get(file) ?? 0;
+        if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
+        if (size === offset) {
+          result.skippedUnchanged += 1;
+          continue;
         }
-        await tx`
-          INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, updated_at)
-          VALUES (${ws}, ${file}, ${offset + consumedBytes}, now())
-          ON CONFLICT (workspace_id, file_path)
-          DO UPDATE SET byte_offset = EXCLUDED.byte_offset, updated_at = now()
-        `;
-      });
-      result.ingestedFiles += 1;
-    } catch (e) {
-      result.errors.push({ file, error: e instanceof Error ? e.message : String(e) });
+        const chunk = await readFileDelta(file, offset, capBytes);
+        const { perModel, consumedBytes } = adapter.parse(chunk);
+        if (consumedBytes === 0) continue; // no complete line yet — retry next tick
+        const sessionId = path.basename(file, '.jsonl');
+
+        await sql.begin(async (tx) => {
+          for (const [model, d] of perModel) {
+            if (d.turns === 0) continue;
+            const modelClass = modelClassForModel(model);
+            const provider = providerForModel(model);
+            const est = costFromTokens(model, d);
+            await tx`
+              INSERT INTO harness_shared.agent_usage_samples
+                (workspace_id, ts, bucket_key, provider, model_class, source,
+                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                 model, cost_source, run_id, role)
+              VALUES (
+                ${ws}, ${Date.now()}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
+                ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
+                ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
+                ${sessionId}, ${'interactive'}
+              )
+            `;
+            result.samples += 1;
+            result.totals.turns += d.turns;
+            result.totals.inputTokens += d.inputTokens;
+            result.totals.outputTokens += d.outputTokens;
+            result.totals.cacheReadTokens += d.cacheReadTokens;
+            result.totals.cacheCreationTokens += d.cacheCreationTokens;
+          }
+          await tx`
+            INSERT INTO harness_shared.interactive_usage_files (workspace_id, file_path, byte_offset, updated_at)
+            VALUES (${ws}, ${file}, ${offset + consumedBytes}, now())
+            ON CONFLICT (workspace_id, file_path)
+            DO UPDATE SET byte_offset = EXCLUDED.byte_offset, updated_at = now()
+          `;
+        });
+        result.ingestedFiles += 1;
+      } catch (e) {
+        result.errors.push({ file, error: e instanceof Error ? e.message : String(e) });
+      }
     }
   }
   return result;

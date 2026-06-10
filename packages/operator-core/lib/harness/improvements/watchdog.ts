@@ -46,7 +46,9 @@ export type WatchdogSource =
   // (learning-system-audit P-051 — insight-staleness.ts):
   | 'insight-staleness'
   // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
-  | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike';
+  | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike'
+  // links 5–6 flow assertion (hive-loop-e2e-testing-2026-06-10 P-011 — ship-link.ts):
+  | 'ship-link-stuck';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -1246,6 +1248,13 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     {
       name: 'papercusp-insight-staleness',
       collect: () => import('./insight-staleness').then((m) => m.collectInsightStalenessSignals()),
+    },
+    // Links 5–6 flow assertion (hive-loop-e2e P-011): unshipped staging work
+    // older than the lag bar = the ship link is silently stuck (git-only; skips
+    // with a note off the release host).
+    {
+      name: 'papercusp-ship-link',
+      collect: () => import('./ship-link').then((m) => m.collectShipLinkSignals()),
     },
   ];
 }

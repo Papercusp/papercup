@@ -406,20 +406,30 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     });
     logFd = openSync(opLogPath, 'w');
     log(`booting gym-operator on :${PORT} (mode=${FAKE ? 'fake' : 'real'}, autoloop=${SLUG}, log → ${opLogPath}) …`);
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...spec.env,
+      PAPERCUSP_FLEET_SANDBOX: '0',
+      PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0',
+      NODE_ENV: 'production',
+      // Pin the orchestrator ON (default-on, but the launcher env must not leak an opt-out).
+      PAPERCUSP_DBOS_ORCHESTRATOR: '1',
+      // Test-compressed cadences + the safety turn ceiling under test.
+      PAPERCUSP_DBOS_ROUTINES_CRONTAB: '*/10 * * * * *',
+      PAPERCUSP_DBOS_PIPELINE_MAX_TURNS: String(MAX_TURNS),
+    };
+    // Hermeticity (real mode auth): a Claude-Code launcher session carries its
+    // OWN per-session CLAUDE_CONFIG_DIR + nested-session markers. If those leak
+    // into the gym operator, every spawned `claude -p` agent auths against the
+    // LAUNCHER session's rotating OAuth and 401s mid-run (observed live). The
+    // production fleet's spawns run with the user-global ~/.claude — match it.
+    delete childEnv.CLAUDE_CONFIG_DIR;
+    delete childEnv.CLAUDE_CODE_SESSION_ID;
+    delete childEnv.CLAUDE_CODE_ENTRYPOINT;
+    delete childEnv.CLAUDECODE;
     operator = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
-      env: {
-        ...process.env,
-        ...spec.env,
-        PAPERCUSP_FLEET_SANDBOX: '0',
-        PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0',
-        NODE_ENV: 'production',
-        // Pin the orchestrator ON (default-on, but the launcher env must not leak an opt-out).
-        PAPERCUSP_DBOS_ORCHESTRATOR: '1',
-        // Test-compressed cadences + the safety turn ceiling under test.
-        PAPERCUSP_DBOS_ROUTINES_CRONTAB: '*/10 * * * * *',
-        PAPERCUSP_DBOS_PIPELINE_MAX_TURNS: String(MAX_TURNS),
-      },
+      env: childEnv,
       stdio: ['ignore', logFd, logFd],
       detached: true,
     });

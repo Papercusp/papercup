@@ -16,10 +16,11 @@
  * Plan §9.1, §12.
  */
 
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { runScenario } from '@papercusp/testing-shell/llm';
+import { runScenario, type ScenarioVariant } from '@papercusp/testing-shell/llm';
 
 import { isLlmAvailable } from '@papercusp/operator-core/lib/llm-testing/llm-client';
 import { operatorRunnerDeps } from '@papercusp/operator-core/lib/llm-testing/deps';
@@ -47,6 +48,8 @@ interface Args {
   all: boolean;
   seed?: number;
   parallel?: number;
+  /** Eval variant (test-gym-apiary P-001): inline JSON or @path/to/variant.json. */
+  variant?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -85,6 +88,7 @@ function parseArgs(argv: string[]): Args {
       case '--all': args.all = true; break;
       case '--seed': args.seed = Number(argv[++i]); break;
       case '--parallel': args.parallel = Math.max(1, Number(argv[++i])); break;
+      case '--variant': args.variant = argv[++i]; break;
       case '-h':
       case '--help': args.help = true; break;
       default:
@@ -95,6 +99,41 @@ function parseArgs(argv: string[]): Args {
     }
   }
   return args;
+}
+
+/**
+ * Parse `--variant` (test-gym-apiary P-001): inline JSON or `@path` to a JSON
+ * file. Validates the minimal shape here so a malformed variant fails before
+ * any LLM spend; per-target configDelta keys are validated by the target.
+ */
+function parseVariantArg(raw: string | undefined): ScenarioVariant | undefined {
+  if (!raw) return undefined;
+  const text = raw.startsWith('@') ? readFileSync(raw.slice(1), 'utf8') : raw;
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch (err) {
+    console.error(`--variant: invalid JSON (${(err as Error).message})`);
+    process.exit(2);
+  }
+  const obj = v as Partial<ScenarioVariant>;
+  if (!obj || typeof obj !== 'object' || typeof obj.id !== 'string' || !obj.id.trim()) {
+    console.error('--variant: must be a JSON object with a non-empty string `id`');
+    process.exit(2);
+  }
+  if (obj.promptOverlay !== undefined && typeof obj.promptOverlay !== 'string') {
+    console.error('--variant: `promptOverlay` must be a string when present');
+    process.exit(2);
+  }
+  if (obj.configDelta !== undefined && (typeof obj.configDelta !== 'object' || obj.configDelta === null || Array.isArray(obj.configDelta))) {
+    console.error('--variant: `configDelta` must be an object when present');
+    process.exit(2);
+  }
+  if (obj.promptOverlay === undefined && obj.configDelta === undefined) {
+    console.error('--variant: needs at least one of `promptOverlay` / `configDelta` (a variant with neither IS the baseline — just omit --variant)');
+    process.exit(2);
+  }
+  return obj as ScenarioVariant;
 }
 
 function usage(): void {
@@ -113,6 +152,14 @@ Usage:
   llm-test --parallel <n>             Batch scenarios into Promise.all
                                       groups of size N. Bounded by SUT
                                       single-flight per conversationId.
+  llm-test --variant <json|@file>     Eval variant knob (test-gym-apiary
+                                      P-001): run the scenario(s) WITH a
+                                      runtime-injected variant — JSON
+                                      {id, promptOverlay?, configDelta?}
+                                      inline or @path to a .json file.
+                                      The target must support variants
+                                      (the runner fails loudly otherwise).
+                                      Omit for the baseline run.
 
   llm-test lint                       Static scenario-registry validator —
                                       assert kinds, persona refs, rubric
@@ -303,6 +350,13 @@ async function main(): Promise<void> {
   // `scenarioFilePath`).
   const deps = operatorRunnerDeps({ persist: !args.noPersist });
 
+  // Eval variant knob (test-gym-apiary-framework-2026-06-09 P-001): inline
+  // JSON or @file. Parsed once; the runner gates target support per run.
+  const variant = parseVariantArg(args.variant);
+  if (variant) {
+    console.log(`[llm-test] --variant '${variant.id}' (${[variant.promptOverlay && 'promptOverlay', variant.configDelta && 'configDelta'].filter(Boolean).join(' + ') || 'empty'})`);
+  }
+
   const runOne = async (scenario: typeof scenarios[number]): Promise<boolean> => {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
@@ -312,6 +366,7 @@ async function main(): Promise<void> {
         forceRepeat: args.noMatrix ? 1 : undefined,
         scenarioFilePath,
         ...(args.seed !== undefined && { seed: args.seed }),
+        ...(variant !== undefined && { variant }),
       }, deps);
     } catch (err) {
       const msg = (err as Error).message ?? '';

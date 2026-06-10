@@ -83,7 +83,8 @@ describe('modelClassForModel', () => {
     expect(modelClassForModel('claude-opus-4-8')).toBe('opus');
     expect(modelClassForModel('claude-sonnet-4-6')).toBe('sonnet');
     expect(modelClassForModel('claude-haiku-4-5-20251001')).toBe('haiku');
-    expect(modelClassForModel('gpt-5.2')).toBe('default');
+    expect(modelClassForModel('gpt-5.2')).toBe('gpt'); // P-015: codex models get their own bucket class
+    expect(modelClassForModel('mystery-model')).toBe('default');
   });
 });
 

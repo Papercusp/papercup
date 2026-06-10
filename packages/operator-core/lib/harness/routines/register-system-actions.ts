@@ -46,6 +46,11 @@
  *     transcripts into `agent_usage_samples` (source='interactive'); broadcast a
  *     week-over-week token/spend report. Both SQL/FS-only (no LLM calls); seeded
  *     INACTIVE (seed-token-telemetry-routines.ts).
+ *   - `system:hive-canary` — hive-loop-e2e-testing-2026-06-10 P-009. The daily
+ *     live canary: queue one trivial feature into the dedicated canary harness;
+ *     a canary still un-terminal past its deadline files a forensics-laden
+ *     improvement. Self-gates on the canary harness being registered; seeded
+ *     ACTIVE (seed-hive-canary-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -59,3 +64,4 @@ import './wake-brain-action';
 import './gym-actions';
 import '../../interactive-usage/interactive-usage-action';
 import './token-report-action';
+import './hive-canary-action';

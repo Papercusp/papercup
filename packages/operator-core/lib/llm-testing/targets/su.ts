@@ -281,6 +281,8 @@ export interface SuTargetOpts {
 export class SuTarget implements ChatTarget {
   readonly id = 'su';
   readonly behaviors = BEHAVIORS;
+  /** Eval variant knob (test-gym-apiary P-001): prompt overlay + configDelta.sutModel. */
+  readonly supportsVariants = true;
   private readonly catalog: BuiltCatalog;
 
   constructor(opts: SuTargetOpts = {}) {
