@@ -16,6 +16,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from './papercusp-root';
+import { operatorApiBase } from './operator-api-base';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -33,7 +34,7 @@ const __spawnableCache: SpawnableCacheEntry = (() => {
 })();
 
 async function computeSpawnableTemplates(): Promise<{ spawnable: any[] }> {
-  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+  const operatorBase = operatorApiBase();
   let catalog: any[] = [];
   try {
     const r = await fetch(`${operatorBase}/api/marketplace/catalog`);

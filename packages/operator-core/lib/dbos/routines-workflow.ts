@@ -33,10 +33,11 @@ import { checkFireGate, recordFire } from '../autoloop';
 import { getSystemAction, SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
+import { operatorApiBase } from '../operator-api-base';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
-const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+const operatorBase = operatorApiBase;
 
 const routinesQueue = new WorkflowQueue('routines', { concurrency: 4 });
 

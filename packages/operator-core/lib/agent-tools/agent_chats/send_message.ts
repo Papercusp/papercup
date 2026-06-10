@@ -15,6 +15,7 @@
  */
 
 import { z } from 'zod';
+import { operatorApiBase } from '../../operator-api-base';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ALL_ROLES = [
@@ -48,7 +49,7 @@ export default defineTool({
     content: z.string().min(1),
   }),
   async handler(args) {
-    const base = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
+    const base = operatorApiBase();
     // Fire-and-forget POST — the messages endpoint starts an SSE
     // stream that drives the assistant reply. We don't consume it
     // here; the operator dock / mobile / chat UI handle that.

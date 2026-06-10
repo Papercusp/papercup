@@ -22,6 +22,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { readRecentActivity } from '../../../cross-harness-data';
+import { operatorApiBase } from '../../../operator-api-base';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -161,7 +162,7 @@ const messages = defineTool({
       );
     }
     const token = rows[0].token;
-    const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+    const operatorBase = operatorApiBase();
     const r = await fetch(`${operatorBase}/api/admin/execute-action`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },

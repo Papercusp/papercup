@@ -35,6 +35,7 @@ import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runti
 import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../../loopback-guard';
+import { operatorApiBase } from '../../../operator-api-base';
 
 const launch = defineTool({
   method: 'POST',
@@ -130,7 +131,7 @@ async function dispatchActionsBlockFromOutput(
     if (!token) return null;
   } catch { return null; }
 
-  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+  const operatorBase = operatorApiBase();
   const results: any[] = [];
   for (const action of actions) {
     const actionId = randomUUID();

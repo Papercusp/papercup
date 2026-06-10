@@ -28,6 +28,7 @@
  */
 
 import { z } from 'zod';
+import { operatorApiBase } from '../../operator-api-base';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -107,7 +108,7 @@ function readSuperuserToken(): string {
 
 function buildMcpConfig(workspaceId: string): { mcpServers: Record<string, unknown> } {
   const superuserToken = readSuperuserToken();
-  const opBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
+  const opBase = operatorApiBase();
   const servers: Record<string, unknown> = {
     delegate: {
       command: 'node',

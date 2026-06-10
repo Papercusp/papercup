@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '../../../papercusp-root';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { operatorApiBase } from '../../../operator-api-base';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -42,7 +43,7 @@ export default defineTool({
           args: [
             '-y',
             'mcp-remote@latest',
-            `http://127.0.0.1:3055/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
+            `${operatorApiBase()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
             '--header',
             `Authorization:Bearer ${superuserToken}`,
           ],
@@ -53,7 +54,7 @@ export default defineTool({
           args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
           env: {
             AGENT_MCP_BEARER: result.bearer,
-            OPERATOR_BASE_URL: 'http://localhost:3055',
+            OPERATOR_BASE_URL: operatorApiBase(),
             PAPERCUSP_HOME: root,
           } as Record<string, string>,
         };

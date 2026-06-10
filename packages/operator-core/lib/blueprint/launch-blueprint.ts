@@ -28,19 +28,11 @@
 import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { loopbackFetch } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
+import { operatorApiBase } from '../operator-api-base';
 
-// The invoke route is a Hono API route on the operator's API port (PAPERCUSP_HONO_PORT,
-// default 3070) — NOT the Vite SPA server (:3055). The old `:3055` default only worked in
-// dev because Vite proxies /api → :3070; on the RELEASE operator (which runs the routines
-// + has no :3055) the merge-resolver/release-fixer dispatch fetched :3055 and failed with
-// "fetch failed", so the conflict path never auto-resolved (found by the P-011 drill,
-// git-sync-system-audit-2026-06-09 — the merge-resolver's first-ever production conflict).
-// Derive from the Hono port so the dispatch hits the local API host on dev, release, AND
-// staging (:3170). (The same stale `:3055` default still lurks in ~9 other operator-core
-// call sites — surfaced as a follow-up; the cleanest systemic fix is to set
-// PAPERCUSP_OPERATOR_BASE=http://localhost:3070 on the release operator.)
-const operatorBase = (): string =>
-  process.env.PAPERCUSP_OPERATOR_BASE ?? `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`;
+// The invoke route is a Hono API route on the operator's API port — derive the base from
+// the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
+const operatorBase = operatorApiBase;
 
 /**
  * The built-in SINGLE-ROLE launch blueprints (vs the program-mode vote/deliberate,

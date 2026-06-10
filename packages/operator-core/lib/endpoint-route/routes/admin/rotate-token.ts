@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { deriveCallerFromBearer } from '../../../execute-action';
 import { defineTool } from '@papercusp/agent-mcp';
+import { operatorApiBase } from '../../../operator-api-base';
 
 const ti = generated.tokenIndexInHarnessShared;
 
@@ -34,7 +35,7 @@ export default defineTool({
     // Find the harness's path in the registry so we can write the new token.
     let harnessPath: string | null = null;
     try {
-      const r = await fetch(`${process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055'}/api/harness/projects`);
+      const r = await fetch(`${operatorApiBase()}/api/harness/projects`);
       if (r.ok) {
         const d: any = await r.json();
         const row = (d?.projects ?? []).find((p: any) => p.slug === slug);

@@ -39,8 +39,9 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
 import { fireLaunchBlueprint } from './launch-blueprint';
+import { operatorApiBase } from '../operator-api-base';
 
-const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+const operatorBase = operatorApiBase;
 
 /**
  * The decider-fire seam — injectable so tests capture the dispatch without a real HTTP

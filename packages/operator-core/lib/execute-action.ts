@@ -23,6 +23,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { scaffoldHarnessSchema } from './scaffold-harness-schema';
+import { operatorApiBase } from './operator-api-base';
 
 const execFileP = promisify(execFile);
 
@@ -723,7 +724,7 @@ interface SpawnableTemplate {
 
 async function fetchSpawnableTemplates(): Promise<SpawnableTemplate[]> {
   // Read directly from the operator's marketplace catalog endpoint.
-  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+  const operatorBase = operatorApiBase();
   try {
     const r = await fetch(`${operatorBase}/api/marketplace/spawnable`);
     if (r.ok) {
