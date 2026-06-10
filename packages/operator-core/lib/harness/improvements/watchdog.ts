@@ -44,7 +44,9 @@ export type WatchdogSource =
   | 'fire-circuit-open'
   // an ACTIVE agent-insight runbook citing repo files that no longer exist
   // (learning-system-audit P-051 — insight-staleness.ts):
-  | 'insight-staleness';
+  | 'insight-staleness'
+  // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
+  | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -322,6 +324,14 @@ export interface CollectOptions {
   failedSpawnWindowHours?: number;
   /** failed-spawn fire threshold (total failures in the window). Default 5. */
   failedSpawnMinCount?: number;
+  /** stalled-feature: a dispatchable feature untouched this long fires. Default 12h. */
+  stalledFeatureHours?: number;
+  /** orphaned-spawn: a running row this much past the reclaim threshold fires. Default 15min (3× RECLAIM_STALE_MS). */
+  orphanedSpawnStaleMinutes?: number;
+  /** escalation-spike lookback window. Default 6h. */
+  escalationSpikeWindowHours?: number;
+  /** escalation-spike fire threshold (escalations in the window). Default 3. */
+  escalationSpikeMinCount?: number;
 }
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
@@ -996,6 +1006,176 @@ export async function collectCircuitOpenSignals(
   return circuitOpenSignalsFromRows(rows);
 }
 
+// ── hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010) ────
+// The loop's liveness/hygiene oracles as standing monitors. Each is a
+// CONSERVATIVE is-broken read over the loop's own state; violations file
+// through the same captureImprovement core (tagged + cross-tick deduped) —
+// the plan's "issues:create (tagged, deduped)" sink, on the improvements
+// surface the papercusp-internal loop already routes to.
+
+interface StalledFeatureRow { harness_slug: string; feature_id: string; updated_ts: number | string }
+/** Pure: stalled dispatchable features → ONE aggregate signal per harness. */
+export function stalledFeatureSignalsFromRows(
+  rows: StalledFeatureRow[],
+  opts: { staleHours?: number; nowMs?: number } = {},
+): WatchdogSignal[] {
+  const staleHours = opts.staleHours ?? 12;
+  const nowMs = opts.nowMs ?? Date.now();
+  const byHarness = new Map<string, { ids: string[]; oldestMs: number }>();
+  for (const r of rows) {
+    const g = byHarness.get(r.harness_slug) ?? { ids: [], oldestMs: nowMs };
+    g.ids.push(r.feature_id);
+    const ms = Number(r.updated_ts);
+    if (Number.isFinite(ms) && ms < g.oldestMs) g.oldestMs = ms;
+    byHarness.set(r.harness_slug, g);
+  }
+  return [...byHarness.entries()].map(([slug, g]) => ({
+    source: 'stalled-feature' as const,
+    key: `stalled:${slug}`,
+    title: `Dispatchable work in harness ${slug} is not being picked up`,
+    body:
+      `Watchdog signal (stalled-feature): ${g.ids.length} dispatchable feature(s) in ${slug} have had no ` +
+      `pipeline turn for > ${staleHours}h (oldest ~${Math.round((nowMs - g.oldestMs) / 3_600_000)}h): ` +
+      `${g.ids.slice(0, 5).join(', ')}${g.ids.length > 5 ? ', …' : ''}. No live pipeline owns them, so the ` +
+      `autonomous loop (routine tick → blueprint-run → dispatch) is not reaching this harness — check ` +
+      `autoloop:status, the harness's bp-schedule routine, and the orchestrator scope env.`,
+    severity: 'major' as const,
+    kind: 'bug' as const,
+  }));
+}
+/**
+ * stalled-feature: a feature the dispatcher SHOULD be running — NEEDS_WORK
+ * status, kind=feature, plan-gate satisfied — untouched for N hours with no
+ * live (PENDING/ENQUEUED) pipeline owning it. The loop's liveness oracle
+ * ("a queued feature reaches a terminal state") as a standing monitor.
+ * The dbos-schema guard mirrors durableOwnedFeatureIdsPg: schema absent → no
+ * live-pipeline carve-out (every stalled row reports).
+ */
+export async function collectStalledFeatureSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: CollectOptions = {},
+): Promise<WatchdogSignal[]> {
+  const staleHours = opts.stalledFeatureHours ?? 12;
+  const reg = await sql<{ t: string | null }[]>`SELECT to_regclass('dbos.workflow_status') AS t`;
+  const hasDbos = Boolean(reg[0]?.t);
+  const rows = await sql<StalledFeatureRow[]>`
+    SELECT w.harness_slug, w.feature_id, w.updated_ts
+      FROM harness_shared.work_items w
+     WHERE w.workspace_id = ${workspaceId}
+       AND w.item_kind = 'feature'
+       AND w.status IN ('todo', 'failing', 'pending', 'failed')
+       AND w.updated_ts < (extract(epoch from now()) * 1000 - ${staleHours} * 3600000)
+       AND (
+         (w.metadata->>'source_plan') IS NULL
+         OR (w.metadata->>'source_plan') IN (
+           SELECT plan_slug FROM harness_shared.harness_plans
+            WHERE workspace_id = ${workspaceId} AND harness_slug = w.harness_slug
+              AND op_status = 'started'
+         )
+       )
+       ${hasDbos
+         ? sql`AND NOT EXISTS (
+             SELECT 1 FROM dbos.workflow_status d
+              WHERE d.workflow_uuid LIKE 'pipeline:' || w.harness_slug || ':' || w.feature_id || ':e%'
+                AND d.status IN ('PENDING', 'ENQUEUED'))`
+         : sql``}
+     ORDER BY w.updated_ts ASC
+     LIMIT 100`;
+  return stalledFeatureSignalsFromRows(rows, { staleHours });
+}
+
+interface OrphanedSpawnRow { spawn_id: string; harness_slug: string | null; heartbeat_at: string | Date | null; started_at: string | Date }
+/** Pure: lingering past-reclaim 'running' rows → ONE aggregate signal. */
+export function orphanedSpawnSignalsFromRows(
+  rows: OrphanedSpawnRow[],
+  opts: { staleMinutes?: number } = {},
+): WatchdogSignal[] {
+  if (rows.length === 0) return [];
+  const staleMinutes = opts.staleMinutes ?? 15;
+  const sample = rows.slice(0, 5).map((r) => r.spawn_id).join(', ');
+  return [{
+    source: 'orphaned-spawn',
+    key: 'orphaned-running-rows',
+    title: 'Orphaned running nursery rows are evading the heartbeat reclaim',
+    body:
+      `Watchdog signal (orphaned-spawn): ${rows.length} spawned_agents row(s) are status='running'/'restarting' ` +
+      `with a heartbeat > ${staleMinutes} min stale — well past the reclaim threshold, so the stale-heartbeat ` +
+      `sweep (spawn-reclaim) is apparently not running or not freeing them. They poison the concurrency ceiling ` +
+      `until reclaimed. Sample: ${sample}${rows.length > 5 ? ', …' : ''}.`,
+    severity: 'major',
+    kind: 'bug',
+  }];
+}
+/**
+ * orphaned-spawn: 'running' nursery rows whose heartbeat is stale far beyond
+ * RECLAIM_STALE_MS (default 3×). The reclaim runs in-line on every spawn
+ * attempt and on getSpawnHeadroom — rows lingering past the threshold mean the
+ * hygiene path itself is broken (the loop's hygiene oracle as a monitor).
+ * Distinct from failed-spawn (failure VOLUME) — this is reclaim NON-EXECUTION.
+ */
+export async function collectOrphanedSpawnSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: CollectOptions = {},
+): Promise<WatchdogSignal[]> {
+  const staleMinutes = opts.orphanedSpawnStaleMinutes ?? 15;
+  const rows = await sql<OrphanedSpawnRow[]>`
+    SELECT spawn_id, harness_slug, heartbeat_at, started_at
+      FROM harness_shared.spawned_agents
+     WHERE workspace_id = ${workspaceId}
+       AND status IN ('running', 'restarting')
+       AND COALESCE(heartbeat_at, started_at) < now() - make_interval(mins => ${staleMinutes})
+     ORDER BY COALESCE(heartbeat_at, started_at) ASC
+     LIMIT 50`;
+  return orphanedSpawnSignalsFromRows(rows, { staleMinutes });
+}
+
+interface EscalationSpikeRow { harness_slug: string; mtime_ms: number | string }
+/** Pure: recent-escalation rows → ONE spike signal when ≥ minCount in the window. */
+export function escalationSpikeSignalsFromRows(
+  rows: EscalationSpikeRow[],
+  opts: { windowHours?: number; minCount?: number } = {},
+): WatchdogSignal[] {
+  const windowHours = opts.windowHours ?? 6;
+  const minCount = opts.minCount ?? 3;
+  if (rows.length < minCount) return [];
+  const byHarness = new Map<string, number>();
+  for (const r of rows) byHarness.set(r.harness_slug, (byHarness.get(r.harness_slug) ?? 0) + 1);
+  const breakdown = [...byHarness.entries()].map(([s, n]) => `${s}×${n}`).join(', ');
+  return [{
+    source: 'escalation-spike',
+    key: 'escalation-rate',
+    title: 'Escalation rate spike across the hive',
+    body:
+      `Watchdog signal (escalation-spike): ${rows.length} escalation(s) recorded in the last ${windowHours}h ` +
+      `(threshold ${minCount}) — ${breakdown}. A burst of ESCALATE terminals means pipelines are systematically ` +
+      `failing to complete (validator rejections, broken roles, or a poisoned harness), not one-off hard features.`,
+    severity: 'major',
+    kind: 'bug',
+  }];
+}
+/**
+ * escalation-spike: the RATE complement to unresolved-escalation (presence).
+ * Escalations written within the window (mtime_ms — the table's only
+ * timestamp) at ≥ threshold volume = the loop is systematically escalating.
+ */
+export async function collectEscalationSpikeSignals(
+  sql: Sql,
+  workspaceId: string,
+  opts: CollectOptions = {},
+): Promise<WatchdogSignal[]> {
+  const windowHours = opts.escalationSpikeWindowHours ?? 6;
+  const rows = await sql<EscalationSpikeRow[]>`
+    SELECT harness_slug, mtime_ms
+      FROM harness_shared.harness_escalations
+     WHERE workspace_id = ${workspaceId}
+       AND COALESCE(escalation, '') <> ''
+       AND mtime_ms > (extract(epoch from now()) * 1000 - ${windowHours} * 3600000)
+     LIMIT 200`;
+  return escalationSpikeSignalsFromRows(rows, { windowHours, minCount: opts.escalationSpikeMinCount });
+}
+
 /** (P-011) Collector definition: a pluggable source of watchdog signals for a target. */
 export interface WatchdogCollector {
   /** Collector name (e.g., 'papercusp-red-test', 'my-project-integration-test'). */
@@ -1055,6 +1235,12 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
+    // Hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
+    // liveness (stalled dispatchable work), hygiene (reclaim non-execution),
+    // safety (systematic ESCALATE volume).
+    { name: 'papercusp-stalled-feature', collect: () => collectStalledFeatureSignals(getOrgPg().sql, workspaceId, opts) },
+    { name: 'papercusp-orphaned-spawn', collect: () => collectOrphanedSpawnSignals(getOrgPg().sql, workspaceId, opts) },
+    { name: 'papercusp-escalation-spike', collect: () => collectEscalationSpikeSignals(getOrgPg().sql, workspaceId, opts) },
     // P-051 (learning-system-audit): active insights citing missing repo files →
     // kind=change review captures (fs-only, no PG; lazy import keeps boot cheap).
     {

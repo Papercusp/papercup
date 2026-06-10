@@ -227,16 +227,51 @@ export const CLAUDE_CODE_IDENTIFIER = "You are Claude Code, Anthropic's official
 
 /**
  * Build the SUT system prompt: the Claude Code identifier FIRST (auth framing,
- * above), then the engineer playbook (cache_control'd when prompt caching is on).
+ * above), then the engineer playbook (cache_control'd when prompt caching is on),
+ * then — when an eval variant carries one — the variant's prompt OVERLAY as its
+ * own UNCACHED block (test-gym-apiary P-001: the overlay varies per candidate,
+ * so it must sit after the cache breakpoint or every candidate would bust the
+ * playbook's cache entry).
  * Exported so the framing invariant has a unit test independent of live creds.
  */
-export function buildSuSystemBlocks(playbookText: string, cache: boolean): SystemBlock[] {
+export function buildSuSystemBlocks(
+  playbookText: string,
+  cache: boolean,
+  promptOverlay?: string,
+): SystemBlock[] {
   return [
     { type: 'text', text: CLAUDE_CODE_IDENTIFIER },
     cache
       ? { type: 'text', text: playbookText, cache_control: { type: 'ephemeral' } }
       : { type: 'text', text: playbookText },
+    ...(promptOverlay ? [{ type: 'text' as const, text: promptOverlay }] : []),
   ];
+}
+
+/**
+ * Config-delta keys the su target understands (test-gym-apiary P-001).
+ * Anything else throws at open() — a silently-dropped knob would mislabel a
+ * baseline run as the candidate.
+ */
+const SU_CONFIG_DELTA_KEYS = new Set(['sutModel']);
+
+export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): { sutModel?: string } {
+  if (!delta) return {};
+  const unknown = Object.keys(delta).filter((k) => !SU_CONFIG_DELTA_KEYS.has(k));
+  if (unknown.length > 0) {
+    throw new Error(
+      `su target: unsupported variant configDelta key(s) [${unknown.join(', ')}] — ` +
+        `supported: ${[...SU_CONFIG_DELTA_KEYS].join(', ')}`,
+    );
+  }
+  const out: { sutModel?: string } = {};
+  if (delta.sutModel !== undefined) {
+    if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
+      throw new Error('su target: variant configDelta.sutModel must be a non-empty string');
+    }
+    out.sutModel = delta.sutModel.trim();
+  }
+  return out;
 }
 
 export interface SuTargetOpts {
@@ -253,10 +288,16 @@ export class SuTarget implements ChatTarget {
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
+    // Eval variant (test-gym-apiary P-001): overlay rides as an extra system
+    // block; configDelta is validated HERE so an unknown knob fails the run at
+    // open() (loud), not mid-conversation.
+    const delta = parseSuConfigDelta(opts.variant?.configDelta);
     return new SuSession({
       runId: opts.runId,
       catalog: this.catalog,
       override: opts.dispatchOverride,
+      ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
+      ...(delta.sutModel ? { modelOverride: delta.sutModel } : {}),
     });
   }
 }
@@ -265,6 +306,10 @@ interface SessionState {
   runId: string;
   catalog: BuiltCatalog;
   override?: ToolDispatchOverride;
+  /** Variant prompt overlay (P-001) — appended as an uncached system block. */
+  promptOverlay?: string;
+  /** Variant configDelta.sutModel (P-001) — overrides the env/default model. */
+  modelOverride?: string;
 }
 
 class SuSession implements ChatSession {
@@ -316,13 +361,13 @@ class SuSession implements ChatSession {
       maxRetries: 2,
     });
 
-    const model = sutModel();
+    const model = this.state.modelOverride ?? sutModel();
     const price = priceFor(model);
     const cache = promptCacheEnabled();
     // First system block MUST be the Claude Code identifier (auth framing for the
     // Max OAuth rate-limit bucket — see CLAUDE_CODE_IDENTIFIER / buildSuSystemBlocks).
     // Built via the exported helper so the framing invariant is regression-tested.
-    const system = buildSuSystemBlocks(loadPlaybook(), cache);
+    const system = buildSuSystemBlocks(loadPlaybook(), cache, this.state.promptOverlay);
     const tools = this.state.catalog.tools;
 
     // The conversation transcript for THIS turn (stateless: caller threads the

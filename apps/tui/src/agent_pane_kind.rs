@@ -92,12 +92,9 @@ impl AgentPaneKind {
     /// None for unglyphed names (the colony driver, bars, user panes).
     pub fn from_glyph_prefix(title: &str) -> Option<Self> {
         let t = title.trim_start();
-        for k in [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner] {
-            if t.starts_with(k.glyph()) {
-                return Some(k);
-            }
-        }
-        None
+        [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner]
+            .into_iter()
+            .find(|&k| t.starts_with(k.glyph()))
     }
 }
 

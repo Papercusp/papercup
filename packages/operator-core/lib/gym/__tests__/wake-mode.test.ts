@@ -160,4 +160,19 @@ describe('evaluateWakeOracles', () => {
     const v = evaluateWakeOracles(ev);
     expect(v.failures.some((f) => f.includes("stuck 'running'"))).toBe(true);
   });
+
+  it('quality (P-007): a judged composite below the threshold fails', () => {
+    const ev = greenEvidence();
+    ev.judge = { composite: 3.5, threshold: 5, d1: 3, d2: 4, d3: 4, rationale: 'weak', costUsd: 0 };
+    const v = evaluateWakeOracles(ev);
+    expect(v.failures.some((f) => f.startsWith('quality: judged composite 3.50 < threshold 5'))).toBe(true);
+  });
+
+  it('quality (P-007): a judged composite at/above the threshold passes; absent judge is not asserted', () => {
+    const ev = greenEvidence();
+    ev.judge = { composite: 5, threshold: 5, d1: 5, d2: 5, d3: 5, rationale: 'ok', costUsd: 0 };
+    expect(evaluateWakeOracles(ev).pass).toBe(true);
+    delete ev.judge;
+    expect(evaluateWakeOracles(ev).pass).toBe(true);
+  });
 });

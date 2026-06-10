@@ -95,6 +95,11 @@ export interface RosterEntry {
   //    work-item claims, durable assignments. The roster reads the one canonical
   //    view instead of re-deriving claims per surface. ──
   claims: AgentClaim[];
+  /** The declared-but-unclaimed smell (claim-discipline-enforcement-2026-06-10):
+   *  a declared plan none of the agent's claims back — same semantics as the
+   *  fleet_assignment view's flag. The colony roster renders it as a ⚠ so an
+   *  "active" agent with no claimed lane is visibly different from a claimed one. */
+  declaredUnclaimed: boolean;
   // ── adv_sessions enrichment (null when no joinable launch row) ──
   hasLaunchRecord: boolean;
   advSessionId: number | null;
@@ -204,6 +209,8 @@ export function mergeRosterEntries(
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
     const pane = classifyAgentPane({ role: adv?.role ?? null });
+    const claims = claimsByOwner.get(p.ownerId) ?? [];
+    const currentPlanSlug = p.currentPlanSlug ?? adv?.planSlug ?? null;
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
@@ -220,10 +227,13 @@ export function mergeRosterEntries(
       userId: p.userId,
       revoked: p.revoked,
       pidAlive: null, // enriched by mergeRoster for same-host non-stale entries
-      claims: claimsByOwner.get(p.ownerId) ?? [],
+      claims,
+      declaredUnclaimed: Boolean(
+        currentPlanSlug && !claims.some((c) => c.planSlug === currentPlanSlug),
+      ),
       hasLaunchRecord: adv != null,
       advSessionId: adv?.id ?? null,
-      currentPlanSlug: p.currentPlanSlug ?? adv?.planSlug ?? null,
+      currentPlanSlug,
       role: adv?.role ?? null,
       feature: adv?.feature ?? null,
       agent: adv?.agent ?? null,
@@ -277,6 +287,8 @@ export function pendingLaunchesToRosterEntries(
       revoked: false,
       pidAlive: null,
       claims: [],
+      // A pending launch hasn't run a turn yet — nothing to have claimed.
+      declaredUnclaimed: false,
       hasLaunchRecord: true,
       advSessionId: r.id,
       currentPlanSlug: r.planSlug,

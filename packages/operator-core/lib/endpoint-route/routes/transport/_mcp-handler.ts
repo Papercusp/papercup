@@ -217,6 +217,14 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // Profile: header (OMP) > URL param (claude env-expanded / install-baked).
     const headerProfile = (headers.get('x-papercusp-profile') ?? '').trim();
     const profileParam = headerProfile || url.searchParams.get('profile');
+    // Role: an OPTIONAL catalog-narrowing param (token-usage-reduction P-011).
+    // An operator-initiated SU-bearer spawn (writeSignedSpawnMcp branch 1)
+    // carries the spawned agent's actual role here so tools/list advertises
+    // that role's catalog instead of the full operator-tier surface (392
+    // tools / ~291KB) — dispatch capability is unchanged (isSuperuser still
+    // bypasses role gates), only the ADVERTISED surface narrows. Absent →
+    // 'operator', the historical psu behavior.
+    const roleParam = (url.searchParams.get('role') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -224,7 +232,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       ctx: {
         workspaceId: workspaceId || '*',
         harnessSlug: harnessParam || '*',
-        role: 'operator' as AgentRole,
+        role: (roleParam || 'operator') as AgentRole,
         featureId: null,
         chunkId: null,
         // Per-request UUID, not the 'standalone' sentinel — see

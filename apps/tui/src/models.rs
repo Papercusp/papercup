@@ -149,6 +149,12 @@ pub struct RosterEntry {
     /// (or a pre-count payload).
     #[serde(default)]
     pub pending_wakes: i64,
+    /// Declared on a plan but holding no claim backing it (claim-discipline-
+    /// enforcement-2026-06-10; stamped by adv-roster.ts, same semantics as the
+    /// fleet_assignment view). Rendered as a ⚠ in the Fleet/colony roster so an
+    /// "active" agent without a claimed lane is visibly different.
+    #[serde(default)]
+    pub declared_unclaimed: bool,
 }
 
 impl RosterEntry {

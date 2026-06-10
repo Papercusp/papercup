@@ -27,6 +27,11 @@
  *     follow-on). Sweeps `session-claude/`, `session-mcp/`, codex homes of
  *     not-live, not-resumable sessions past a retention window. Seeded INACTIVE
  *     (seed-session-dir-gc-routine.ts).
+ *   - `system:claim-discipline-watch` — claim-discipline-enforcement-2026-06-10.
+ *     Nudges (inject, never wake) alive agents declared on a plan with no claim
+ *     backing it; teaches claim-on-wip / declare-intent items. Outbox-throttled
+ *     1/hr per agent. Seeded ACTIVE (seed-claim-discipline-routine.ts) — a nudge
+ *     is non-destructive.
  *   - `system:wake-brain` — the autonomous-Queen cadence (hive-agent-tabs-psu-tui
  *     P-005 / D-006). Wakes the EXISTING pinned brain session on cadence so it
  *     takes autonomous turns. Flag-gated by HIVE_AGENT_TABS (OFF → no-op); the
@@ -49,6 +54,7 @@ import './improvement-actions';
 import './p2p-perf-actions';
 import '../../scout/register-scout-action';
 import './session-dir-gc-action';
+import './claim-discipline-action';
 import './wake-brain-action';
 import './gym-actions';
 import '../../interactive-usage/interactive-usage-action';

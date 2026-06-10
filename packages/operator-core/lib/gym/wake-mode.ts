@@ -47,6 +47,10 @@ import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { materializeBlueprintTriggers } from '../blueprint/materialize-triggers';
 import { maskDsn } from './autoloop-cycle';
+import { assembleRawTrace } from './collector';
+import { distillTrace } from './distill';
+import { judgeGymRun, type JudgeLlmCall, type GymScore } from './judge';
+import { GYM_JUDGE_RUBRIC_V1 } from './judge-scoring';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -101,6 +105,81 @@ export function wakeBlueprintYaml(slug: string, opts: WakeBlueprintOptions): str
   ].join('\n');
 }
 
+// ─── Judge scoring (P-007): collect → distill → frozen judge → threshold ────
+
+export interface WakeJudgeResult {
+  composite: number;
+  threshold: number;
+  d1: number;
+  d2: number;
+  d3: number;
+  rationale: string;
+  costUsd: number;
+}
+
+/** Deterministic zero-LLM judge for fake mode — same shape as autoloop-cycle's. */
+export const fakeWakeJudge: JudgeLlmCall = async (opts) => {
+  const userLen = opts.messages.map((m) => m.content).join('').length;
+  const c = 6 + (userLen % 4); // 6..9 — always above any sane threshold
+  return {
+    text: JSON.stringify({ d1: c, d2: c, d3: c, rationale: 'fake-judge wake-mode assembly check' }),
+    costUsd: 0,
+    inputTokens: 10,
+    outputTokens: 10,
+  };
+};
+
+/**
+ * Judge the produced work of a settled wake run (P-007): read the per-role
+ * transcripts (harness_run_output) + `git diff <seed> HEAD` in the substrate,
+ * distill to a judge-sized trace, score with the FROZEN rubric, and compare
+ * the weighted composite to `threshold`. The same collect→distill→judge spine
+ * the gym loop uses, applied to the autonomous full-chain run.
+ */
+export async function judgeWakeRun(opts: {
+  sql: postgres.Sql;
+  slug: string;
+  substrateDir: string;
+  seedCommit: string;
+  intent: string;
+  projectContext: string;
+  judgeCall: JudgeLlmCall;
+  threshold: number;
+  maxDistillChars?: number;
+}): Promise<WakeJudgeResult> {
+  const rows = await opts.sql<{ run_id: string; role: string | null; out_body: string }[]>`
+    SELECT run_id, role, out_body FROM harness_shared.harness_run_output
+     WHERE harness_slug = ${opts.slug} ORDER BY started_at ASC`;
+  const diff = execFileSync('git', ['-C', opts.substrateDir, 'diff', opts.seedCommit, 'HEAD'], {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const rawTrace = assembleRawTrace({
+    diff,
+    runOutputs: rows.map((r) => ({ runId: r.run_id, role: r.role ?? '', outBody: r.out_body })),
+    terminalState: 'passed',
+  });
+  const distilled = distillTrace(rawTrace, { maxChars: opts.maxDistillChars ?? 60_000 });
+  const score: GymScore = await judgeGymRun(
+    {
+      intent: opts.intent,
+      projectContext: opts.projectContext,
+      distilledTrace: distilled.text,
+      rubric: GYM_JUDGE_RUBRIC_V1,
+    },
+    { llmCall: opts.judgeCall },
+  );
+  return {
+    composite: score.composite,
+    threshold: opts.threshold,
+    d1: score.d1,
+    d2: score.d2,
+    d3: score.d3,
+    rationale: score.rationale,
+    costUsd: score.costUsd,
+  };
+}
+
 // ─── Pure: the four oracle families over collected evidence ─────────────────
 
 export interface WakeEvidence {
@@ -130,6 +209,8 @@ export interface WakeEvidence {
   runningRunOutputRows: number;
   /** Nursery rows stuck `status='running'` after settle. */
   runningNurseryRows: number;
+  /** P-007: the judge verdict on the produced work (absent = judging not run). */
+  judge?: WakeJudgeResult;
 }
 
 /**
@@ -176,6 +257,13 @@ export function evaluateWakeOracles(ev: WakeEvidence): { pass: boolean; failures
   if (ev.runningNurseryRows > 0)
     failures.push(`hygiene: ${ev.runningNurseryRows} nursery row(s) stuck 'running' after settle`);
 
+  // ── Quality (P-007): the judged composite clears the threshold ──
+  if (ev.judge && ev.judge.composite < ev.judge.threshold)
+    failures.push(
+      `quality: judged composite ${ev.judge.composite.toFixed(2)} < threshold ${ev.judge.threshold} ` +
+        `(d1=${ev.judge.d1} d2=${ev.judge.d2} d3=${ev.judge.d3})`,
+    );
+
   return { pass: failures.length === 0, failures };
 }
 
@@ -202,6 +290,15 @@ export interface WakeModeOptions {
   routineCron?: string;
   /** Real-mode agent command. Default HAIKU-class per D-004 cost control. */
   agentCmd?: string;
+  /**
+   * P-007: judge the produced work and assert composite ≥ this threshold.
+   * Default: env GYM_WAKE_JUDGE_THRESHOLD, else 5 when GYM_WAKE_JUDGE=1, else
+   * judging is skipped. Fake mode scores with the deterministic fakeWakeJudge;
+   * real mode uses the frozen rubric's real judge (one LLM call).
+   */
+  judgeThreshold?: number | null;
+  /** Override the judge LLM call (tests). */
+  judgeCall?: JudgeLlmCall;
   /** Keep the scratch dir on exit (debugging). */
   keep?: boolean;
   log?: (msg: string) => void;
@@ -228,6 +325,15 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
   const CRON = opts.routineCron ?? '*/15 * * * * *';
   // D-004: real mode runs a haiku-class model — cheap by default; callers opt up.
   const REAL_AGENT_CMD = opts.agentCmd ?? process.env.GYM_WAKE_AGENT_CMD ?? 'claude -p --model claude-haiku-4-5-20251001';
+  // P-007: the judge threshold (composite is 0–10 under the frozen rubric).
+  const JUDGE_THRESHOLD =
+    opts.judgeThreshold !== undefined
+      ? opts.judgeThreshold
+      : process.env.GYM_WAKE_JUDGE_THRESHOLD
+        ? Number(process.env.GYM_WAKE_JUDGE_THRESHOLD)
+        : process.env.GYM_WAKE_JUDGE === '1'
+          ? 5
+          : null;
   const log = opts.log ?? ((m: string) => process.stdout.write(`[gym-wake] ${m}\n`));
 
   const HEX = randomBytes(4).toString('hex');
@@ -281,6 +387,7 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'commit', '-qm', 'seed'], { cwd: substrateDir });
+    const seedCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: substrateDir, encoding: 'utf8' }).trim();
 
     // 3. Boot the gym-operator with the autoloop ON — the one thing every other
     //    gym runnable turns off. autoloopScope=<slug> arms the 30s orchestrator
@@ -427,6 +534,28 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
         SELECT count(*)::int AS n FROM harness_shared.spawned_agents WHERE status = 'running'`
     )[0]?.n ?? 0;
 
+    // P-007: judge the produced work (when a threshold is set). Fake mode uses
+    // the deterministic fakeWakeJudge; real mode the frozen rubric's real judge
+    // (one LLM call, lazily imported so fake mode never loads the llm graph).
+    let judge: WakeJudgeResult | undefined;
+    if (JUDGE_THRESHOLD != null && Number.isFinite(JUDGE_THRESHOLD)) {
+      const judgeCall: JudgeLlmCall =
+        opts.judgeCall ?? (FAKE ? fakeWakeJudge : (await import('../llm-testing/llm-client')).llmCall);
+      log(`judging produced work (threshold ${JUDGE_THRESHOLD}, judge=${FAKE && !opts.judgeCall ? 'fake' : 'real'}) …`);
+      judge = await judgeWakeRun({
+        sql: gymSql,
+        slug: SLUG,
+        substrateDir,
+        seedCommit,
+        intent:
+          'Toy features for the autonomous-loop E2E: each adds/append a marker file in the repo root and commits it, untouched by humans.',
+        projectContext: 'A tiny Node (ESM) service seeded for the wake-mode E2E; `npm run typecheck` is the build gate.',
+        judgeCall,
+        threshold: JUDGE_THRESHOLD,
+      });
+      log(`judge composite ${judge.composite.toFixed(2)} (threshold ${JUDGE_THRESHOLD})`);
+    }
+
     evidence = {
       featureIds,
       features,
@@ -441,6 +570,7 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
       routineSeeded: routines.length === 1,
       runningRunOutputRows,
       runningNurseryRows,
+      ...(judge ? { judge } : {}),
     };
     const verdict = evaluateWakeOracles(evidence);
     report.evidence = evidence;

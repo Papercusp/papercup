@@ -23,6 +23,9 @@ import {
   smokeFailSignalsFromRows,
   expiredLeaseSignalsFromRows,
   failedSpawnSignalsFromRows,
+  stalledFeatureSignalsFromRows,
+  orphanedSpawnSignalsFromRows,
+  escalationSpikeSignalsFromRows,
   classifySpawnError,
   watchdogOptionsFromPayload,
   type WatchdogKeyDup,
@@ -267,6 +270,65 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].severity).toBe('major');
     expect(signals[0].body).toContain('7 consecutive');
     expect(signals[0].body).toContain('error: timeout');
+  });
+});
+
+describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)', () => {
+  const HOUR = 3_600_000;
+
+  it('stalled-feature: ONE aggregate signal per harness, sample ids + oldest age in the body', () => {
+    const now = Date.now();
+    const signals = stalledFeatureSignalsFromRows(
+      [
+        { harness_slug: 'alpha', feature_id: 'F-1', updated_ts: now - 30 * HOUR },
+        { harness_slug: 'alpha', feature_id: 'F-2', updated_ts: now - 14 * HOUR },
+        { harness_slug: 'beta', feature_id: 'F-9', updated_ts: now - 13 * HOUR },
+      ],
+      { staleHours: 12, nowMs: now },
+    );
+    expect(signals.map((s) => s.key).sort()).toEqual(['stalled:alpha', 'stalled:beta']);
+    const alpha = signals.find((s) => s.key === 'stalled:alpha')!;
+    expect(alpha.source).toBe('stalled-feature');
+    expect(alpha.severity).toBe('major');
+    expect(alpha.body).toContain('2 dispatchable feature(s)');
+    expect(alpha.body).toContain('F-1');
+    expect(alpha.body).toContain('~30h');
+  });
+
+  it('stalled-feature: no rows → no signal', () => {
+    expect(stalledFeatureSignalsFromRows([])).toEqual([]);
+  });
+
+  it('orphaned-spawn: lingering past-reclaim running rows collapse to ONE signal with samples', () => {
+    const signals = orphanedSpawnSignalsFromRows(
+      [
+        { spawn_id: 's-dead-1', harness_slug: 'alpha', heartbeat_at: null, started_at: new Date() },
+        { spawn_id: 's-dead-2', harness_slug: null, heartbeat_at: new Date(), started_at: new Date() },
+      ],
+      { staleMinutes: 15 },
+    );
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('orphaned-spawn');
+    expect(signals[0].key).toBe('orphaned-running-rows');
+    expect(signals[0].body).toContain('2 spawned_agents row(s)');
+    expect(signals[0].body).toContain('s-dead-1');
+    expect(orphanedSpawnSignalsFromRows([])).toEqual([]);
+  });
+
+  it('escalation-spike: silent below threshold, ONE signal with per-harness breakdown at/above it', () => {
+    const rows = [
+      { harness_slug: 'alpha', mtime_ms: Date.now() },
+      { harness_slug: 'alpha', mtime_ms: Date.now() },
+      { harness_slug: 'beta', mtime_ms: Date.now() },
+    ];
+    expect(escalationSpikeSignalsFromRows(rows.slice(0, 2), { minCount: 3 })).toEqual([]);
+    const signals = escalationSpikeSignalsFromRows(rows, { windowHours: 6, minCount: 3 });
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('escalation-spike');
+    expect(signals[0].key).toBe('escalation-rate');
+    expect(signals[0].body).toContain('3 escalation(s)');
+    expect(signals[0].body).toContain('alpha×2');
+    expect(signals[0].body).toContain('beta×1');
   });
 });
 

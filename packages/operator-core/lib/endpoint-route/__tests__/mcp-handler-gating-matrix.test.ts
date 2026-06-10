@@ -332,6 +332,19 @@ describe('tools/list — strict-mode listing matrix', () => {
     expect(names).not.toContain('gatingtest:engineer');
   });
 
+  it('superuser ?role=<r> narrows the listing to that role catalog (token-usage P-011 — SU-bearer fleet spawns)', async () => {
+    const res = await listTools(superuserExtra('&role=scoper'));
+    const names = res.tools.map((t) => t.name);
+    expect(names).toContain('gatingtest:scoped'); // scoper-allowlisted
+    expect(names).not.toContain('gatingtest:engineer'); // operator-only no longer advertised
+    // Full-matrix invariant: nothing listed excludes scoper in its allowlist.
+    const violations = names.filter((n) => {
+      const reg = lookupByMcpName(n);
+      return Boolean(reg?.agentRoles && !reg.agentRoles.includes('scoper'));
+    });
+    expect(violations).toEqual([]);
+  });
+
   it('a bare probe (no spawn params at all) keeps the soft, UNfiltered listing', async () => {
     const res = await listTools(extraFor(MCP));
     const names = res.tools.map((t) => t.name);

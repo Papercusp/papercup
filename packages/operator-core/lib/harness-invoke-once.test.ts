@@ -19,11 +19,14 @@ vi.mock('./embedded-pg-discovery', () => ({
 
 import { appendForcedSessionId, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
 
+// Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
+// (P-012 gave worker/validator/documenter/bee/scanner/judge committed tiers,
+// which would append `--model <tier>` to the generic expectations below).
 const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
   projectDir: '/proj',
   stateDir: '/proj/.papercusp',
   harnessDir: '/harness-pkg',
-  role: 'worker',
+  role: 'merge-resolver',
   extras: ['MODE=proposal', 'FEATURE_ID=F-1'],
   ...over,
 });
@@ -43,7 +46,7 @@ describe('buildInvokeOnce — command + core env', () => {
     expect(env.STATE_DIR).toBe('/proj/.papercusp');
     expect(env.HARNESS_DIR).toBe('/harness-pkg');
     expect(env.LOG_DIR).toBe('/proj/.papercusp/logs');
-    expect(env.ROLE).toBe('worker');
+    expect(env.ROLE).toBe('merge-resolver');
     expect(env.EXTRAS_JSON).toBe(JSON.stringify(['MODE=proposal', 'FEATURE_ID=F-1']));
   });
 
@@ -190,13 +193,13 @@ describe('applyRoleModel — per-role model override', () => {
     expect(applyRoleModel('claude -p --model=haiku', 'worker')).toBe('claude -p --model sonnet');
   });
 
-  it('no / unparseable / empty-entry AGENT_MODELS → base unchanged (fail-safe)', () => {
+  it('no / unparseable / empty-entry AGENT_MODELS → base unchanged (fail-safe, role without a committed default)', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', 'not json');
-    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
-    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: '', scoper: 123 }));
-    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ director: '', scoper: 123 }));
+    expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
     expect(applyRoleModel('claude -p --model haiku', 'scoper')).toBe('claude -p --model haiku');
   });
 
@@ -237,7 +240,20 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 
   it('a role with neither an entry nor a committed default is still left unchanged', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
+  });
+
+  it('P-012 model-tier policy: execution tier → sonnet, volume tier → haiku, without env', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'validator')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'documenter')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p --model opus', 'bee')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p', 'judge')).toBe('claude -p --model haiku');
+    // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus --effort high');
   });
 
   it('resolveSpawnBackendModel keys release-manager to its committed opus bucket without env (RB-012)', () => {
@@ -259,28 +275,34 @@ describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn 
   it("default `omp -p` → omp backend (self-pacing), no model", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'omp', model: '' });
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'omp', model: '' });
   });
 
   it('claude command → claude-code backend + the --model id', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model claude-opus-4-8');
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
   });
 
   it('codex command → codex backend; -m short flag is read', () => {
     vi.stubEnv('AGENT_CMD', 'codex exec -m gpt-5.5');
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
   });
 
   it('per-role AGENT_MODELS override flows into the resolved model (so opus/sonnet get separate buckets)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model claude-sonnet-4-6');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ architect: 'claude-opus-4-8' }));
     expect(resolveSpawnBackendModel('architect')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
   });
 
   it('--model=<x> equals form is parsed', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model=claude-haiku-4-5');
-    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-haiku-4-5' });
+    expect(resolveSpawnBackendModel('director')).toEqual({ backend: 'claude-code', model: 'claude-haiku-4-5' });
+  });
+
+  it('P-012: worker buckets to its committed sonnet tier without env (no silent CLI-default bucket)', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'sonnet' });
+    expect(resolveSpawnBackendModel('bee')).toEqual({ backend: 'claude-code', model: 'haiku' });
   });
 });

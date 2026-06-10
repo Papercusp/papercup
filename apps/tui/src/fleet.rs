@@ -541,12 +541,24 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Span::raw("")
             };
+            // Claim discipline: declared on a plan but holding no claim backing
+            // it — the lane is invisible to the Queen/peers. Yellow ⚠ so an
+            // "active" row without a claimed lane reads differently at a glance.
+            let unclaimed_badge = if app.hive_agent_tabs && r.declared_unclaimed {
+                Span::styled(
+                    " ⚠unclaimed",
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Yellow),
+                )
+            } else {
+                Span::raw("")
+            };
             ListItem::new(Line::from(vec![
                 dot,
                 agent_span,
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),
                 wake_badge,
+                unclaimed_badge,
             ]))
         })
         .collect();

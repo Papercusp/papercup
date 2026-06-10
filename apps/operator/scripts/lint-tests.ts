@@ -91,6 +91,10 @@ async function listFiles(dir: string, predicate: (name: string) => boolean): Pro
 const COVERAGE_IGNORE_DIRS = new Set([
   'node_modules', '.git', '.next', '.turbo', 'dist', 'build', 'out',
   '.svelte-kit', '.cache', 'target', 'coverage', '_retired',
+  // Generated/state artifacts, never canonical test homes. gen:lib-api
+  // (TypeDoc) mirrors source test files into .papercusp/lib-api/**/_media/,
+  // which otherwise surface here as orphans whenever someone regenerates.
+  '.papercusp',
 ]);
 
 const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;

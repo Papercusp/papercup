@@ -1,0 +1,207 @@
+/**
+ * hive-canary-action.ts — the daily hive-loop canary
+ * (hive-loop-e2e-testing-2026-06-10 P-009, Tier 3).
+ *
+ * The live complement to the hermetic tiers: once a day, queue ONE trivial
+ * feature into a dedicated throwaway canary harness and touch nothing — the
+ * autonomous loop (routine tick → blueprint-run → dispatch → pipeline) must
+ * carry it to a terminal state on its own. The NEXT day's tick checks the
+ * previous canaries: one still un-terminal past its deadline means the
+ * production loop is broken in a way the hermetic tiers can't see (config rot,
+ * budget exhaustion, prompt drift — plan D-001), and files a forensics-laden
+ * improvement (DBOS workflow status + nursery rows + fire-state attached)
+ * through the watchdog's capture core (tagged + deduped — plan D-006).
+ *
+ * One `system:hive-canary` action, two phases per fire, both replay-safe:
+ *   1. CHECK — canary features (payload.canary=true) older than
+ *      `deadlineHours` (default 6) that are not terminal and not yet reported
+ *      → gather forensics → captureImprovement (kind=bug, dedupScope 'open')
+ *      → stamp payload.canary_reported so a fixed loop doesn't re-file daily.
+ *   2. QUEUE — insert today's `F-CANARY-<YYYYMMDD>` (ON CONFLICT DO NOTHING —
+ *      idempotent across replays and same-day re-fires).
+ *
+ * SELF-GATING: when the routine's harness is not in the workspace registry the
+ * fire logs + no-ops cleanly (no error, no backoff) — so the routine can stay
+ * ACTIVE and becomes effective the moment a canary harness is registered.
+ * Cost: one trivial feature per day (plan D-004).
+ *
+ * Seed: seed-hive-canary-routine.ts. Registered via register-system-actions.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { captureImprovement } from '../improvements/capture-core';
+
+/** Terminal-enough statuses: the loop carried the canary to a verdict. */
+const CANARY_TERMINAL = new Set(['passed', 'deprecated', 'failed']);
+
+export interface CanaryFeatureRow {
+  feature_id: string;
+  status: string;
+  created_ts: number | string;
+  payload: { canary?: boolean; canary_reported?: boolean } | null;
+}
+
+export interface CanaryPlan {
+  /** Canary ids overdue (past deadline, non-terminal, unreported) — to report. */
+  overdue: string[];
+  /** Today's canary feature id (`F-CANARY-<YYYYMMDD>`). */
+  queueId: string;
+}
+
+/** Today's canary id from a clock (UTC date-keyed — one per day, replay-stable). */
+export function canaryIdFor(nowMs: number): string {
+  const d = new Date(nowMs);
+  const ymd =
+    String(d.getUTCFullYear()) +
+    String(d.getUTCMonth() + 1).padStart(2, '0') +
+    String(d.getUTCDate()).padStart(2, '0');
+  return `F-CANARY-${ymd}`;
+}
+
+/**
+ * Pure tick planning: which existing canaries are overdue (created more than
+ * `deadlineHours` ago, not terminal, not already reported), and today's queue id.
+ */
+export function planCanaryTick(
+  rows: CanaryFeatureRow[],
+  opts: { deadlineHours?: number; nowMs?: number } = {},
+): CanaryPlan {
+  const deadlineHours = opts.deadlineHours ?? 6;
+  const nowMs = opts.nowMs ?? Date.now();
+  const cutoff = nowMs - deadlineHours * 3_600_000;
+  const overdue = rows
+    .filter((r) => r.payload?.canary === true)
+    .filter((r) => !r.payload?.canary_reported)
+    .filter((r) => !CANARY_TERMINAL.has(r.status))
+    .filter((r) => Number(r.created_ts) < cutoff)
+    .map((r) => r.feature_id);
+  return { overdue, queueId: canaryIdFor(nowMs) };
+}
+
+/** Forensics for one missed canary: DBOS pipeline rows + nursery rows + fire-state. */
+async function gatherForensics(slug: string, featureId: string, workspaceId: string): Promise<string> {
+  const { sql } = getOrgPg();
+  const parts: string[] = [];
+  try {
+    const reg = await sql<{ t: string | null }[]>`SELECT to_regclass('dbos.workflow_status') AS t`;
+    if (reg[0]?.t) {
+      const wfs = await sql<{ workflow_uuid: string; status: string; created_at: string | null }[]>`
+        SELECT workflow_uuid, status, to_char(to_timestamp(created_at / 1000.0), 'YYYY-MM-DD HH24:MI') AS created_at
+          FROM dbos.workflow_status
+         WHERE workflow_uuid LIKE ${'pipeline:' + slug + ':' + featureId + ':%'}
+         ORDER BY workflow_uuid`;
+      parts.push(
+        wfs.length
+          ? `DBOS pipelines: ${wfs.map((w) => `${w.workflow_uuid}=${w.status} (${w.created_at ?? '?'})`).join('; ')}`
+          : 'DBOS pipelines: NONE — the dispatcher never started a pipeline for this canary (links 1–3 broken).',
+      );
+    } else {
+      parts.push('DBOS pipelines: dbos schema absent (DBOS not booted on this host).');
+    }
+  } catch (e) {
+    parts.push(`DBOS pipelines: read failed (${e instanceof Error ? e.message : e})`);
+  }
+  try {
+    const spawns = await sql<{ spawn_id: string; child_role: string; status: string; error_message: string | null }[]>`
+      SELECT spawn_id, child_role, status, error_message
+        FROM harness_shared.spawned_agents
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug} AND feature_id = ${featureId}
+       ORDER BY started_at DESC LIMIT 10`;
+    parts.push(
+      spawns.length
+        ? `Nursery: ${spawns.map((s) => `${s.spawn_id} ${s.child_role}=${s.status}${s.error_message ? ` (${s.error_message.slice(0, 120)})` : ''}`).join('; ')}`
+        : 'Nursery: no agent spawns recorded for this canary.',
+    );
+  } catch (e) {
+    parts.push(`Nursery: read failed (${e instanceof Error ? e.message : e})`);
+  }
+  try {
+    const fires = await sql<{ role: string; last_status: string | null; consecutive_errors: number }[]>`
+      SELECT role, last_status, consecutive_errors::int
+        FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${slug}
+       ORDER BY role`;
+    parts.push(
+      fires.length
+        ? `Fire-state: ${fires.map((f) => `${f.role}: ${f.last_status ?? '(none)'} (consecutive_errors=${f.consecutive_errors})`).join('; ')}`
+        : 'Fire-state: no autoloop_state rows — the trigger chain (link 1) never fired for this harness.',
+    );
+  } catch (e) {
+    parts.push(`Fire-state: read failed (${e instanceof Error ? e.message : e})`);
+  }
+  return parts.join('\n');
+}
+
+registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
+  const { installSlug, workspaceId, payloadTemplate } = ctx;
+  const deadlineHours = Number(payloadTemplate?.deadlineHours) || 6;
+
+  // Self-gate: no registered canary harness → clean no-op (the routine stays
+  // ACTIVE; it goes live the moment the harness is registered).
+  try {
+    const reg = await loadHarnessRegistry(workspaceId);
+    if (!reg.projects.some((p) => p.slug === installSlug)) {
+      console.log(`[hive-canary] harness "${installSlug}" not registered in ${workspaceId} — skipping (self-gate)`);
+      return;
+    }
+  } catch (e) {
+    console.warn(`[hive-canary] registry unreadable — skipping: ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+
+  const { sql } = getOrgPg();
+  const rows = await sql<CanaryFeatureRow[]>`
+    SELECT feature_id, status, created_ts, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+       AND item_kind = 'feature' AND payload->>'canary' = 'true'
+     ORDER BY created_ts DESC LIMIT 30`;
+  const plan = planCanaryTick(rows, { deadlineHours });
+
+  // Phase 1 — CHECK: report each overdue canary with forensics (cap 3/tick).
+  for (const fid of plan.overdue.slice(0, 3)) {
+    const forensics = await gatherForensics(installSlug, fid, workspaceId);
+    const res = await captureImprovement({
+      title: `Hive canary ${installSlug}/${fid} missed its deadline`,
+      kind: 'bug',
+      severity: 'major',
+      body:
+        `The daily canary feature ${fid} in harness ${installSlug} did not reach a terminal state within ` +
+        `${deadlineHours}h untouched — the autonomous hive loop is not carrying queued work end-to-end ` +
+        `(hive-loop-e2e-testing-2026-06-10 P-009).\n\nForensics:\n${forensics}`,
+      foundDuring: 'hive-canary routine',
+      dedupScope: 'open',
+      watchdogKey: `hive-canary:${installSlug}:${fid}`,
+    });
+    // Mark reported regardless of created/deduped — one report per canary.
+    await sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = COALESCE(payload, '{}'::jsonb) || '{"canary_reported": true}'::jsonb,
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}`;
+    console.warn(
+      `[hive-canary] ${installSlug}/${fid} MISSED its ${deadlineHours}h deadline — ` +
+        (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
+    );
+  }
+
+  // Phase 2 — QUEUE today's canary (idempotent: date-keyed id + DO NOTHING).
+  const now = Date.now();
+  const title = typeof payloadTemplate?.title === 'string' && payloadTemplate.title.trim()
+    ? payloadTemplate.title.trim()
+    : 'Canary: append today\'s date to CANARY.md';
+  const inserted = await sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, title, summary, status, attempts, item_kind,
+       payload, needs_human_review, workspace_id, ts, created_ts, updated_ts)
+    VALUES
+      (${installSlug}, ${plan.queueId}, ${title},
+       'Trivial daily canary feature — the autonomous loop must carry it to DONE untouched.',
+       'todo', 0, 'feature', '{"canary": true}'::jsonb, FALSE, ${workspaceId}, ${now}, ${now}, ${now})
+    ON CONFLICT (harness_slug, feature_id) DO NOTHING
+    RETURNING feature_id`;
+  if (inserted.length > 0) {
+    console.log(`[hive-canary] queued ${installSlug}/${plan.queueId} (deadline ${deadlineHours}h)`);
+  }
+});
