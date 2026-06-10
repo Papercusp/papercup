@@ -2,7 +2,9 @@
  * Live test for the consolidated emit_change_notify trigger.
  *
  * Verifies that:
- *   1. Migration 078 (rewritten) emits on `sync_invalidate` channel.
+ *   1. The LIVE emit_change_notify() definition (extracted from the
+ *      squashed 000-baseline.sql — migration 078 was folded into it)
+ *      emits on the `sync_invalidate` channel.
  *   2. Payload shape matches sync-sse.ts SyncEvent contract:
  *      { name: '<schema>.<table>.changed', args: { workspace_id, op } }
  *   3. Trigger fires on INSERT / UPDATE / DELETE.
@@ -18,8 +20,26 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const MIGRATION_PATH =
-  '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/078-emit-change-notify.sql';
+const BASELINE_PATH =
+  '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/000-baseline.sql';
+
+/**
+ * Extract the live emit_change_notify() definition from the baseline dump.
+ * Testing the archived 078 copy would green-light a stale function if the
+ * baseline ever diverged; the baseline IS what a fresh install runs.
+ */
+function extractEmitChangeNotify() {
+  const baseline = readFileSync(BASELINE_PATH, 'utf-8');
+  const m = baseline.match(
+    /CREATE OR REPLACE FUNCTION harness_shared\.emit_change_notify\(\)[\s\S]*?\$\$;/,
+  );
+  if (!m) {
+    throw new Error(
+      `emit_change_notify() not found in ${BASELINE_PATH} — did the baseline regenerate with a different shape?`,
+    );
+  }
+  return m[0];
+}
 
 function nowMs() { return Date.now(); }
 
@@ -46,12 +66,12 @@ async function main() {
       database: 'papercusp', max: 1,
     });
 
-    // 1) Apply migration 078 (our rewritten trigger function).
-    const sql078 = readFileSync(MIGRATION_PATH, 'utf-8');
+    // 1) Apply the live trigger-function definition from the baseline.
+    const sql078 = extractEmitChangeNotify();
     // We need the harness_shared schema first, since the function lives there.
     await sysSql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared;`);
     await sysSql.unsafe(sql078);
-    console.log(`[test] applied migration 078`);
+    console.log(`[test] applied live emit_change_notify from baseline`);
 
     // 2) Create a small test table and attach the trigger.
     await sysSql.unsafe(`

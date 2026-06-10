@@ -50,12 +50,16 @@ export interface TrustStore {
   blocklist: string[];
 }
 
-const EMPTY: TrustStore = { entries: [], rotations: [], blocklist: [] };
+// Fresh object per call — a shared `const EMPTY` spread (`{ ...EMPTY }`)
+// copies the ARRAY REFERENCES, so recordTrust's pushes would mutate the
+// module constant and leak stale entries into every later "empty" read.
+function emptyTrustStore(): TrustStore {
+  return { entries: [], rotations: [], blocklist: [] };
+}
 
 export async function readTrustStore(): Promise<TrustStore> {
   const raw = await readOperatorState<Partial<TrustStore>>('operator_trust_store');
-  if (!raw) return { ...EMPTY };
-  return { ...EMPTY, ...raw };
+  return { ...emptyTrustStore(), ...raw };
 }
 
 async function writeTrustStore(store: TrustStore): Promise<void> {

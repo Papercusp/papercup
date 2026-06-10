@@ -1,51 +1,128 @@
 /**
- * End-to-end integration: synthesize a plugin with a setup.sh that
- * exercises every primitive (USER_VAR_*, OUTPUT_*, papercusp_record_resource,
- * papercusp_state_set, papercusp_render_templates), run it through the
- * full runner pipeline against a real bash, verify:
- *   - state.json captures recorded resources
- *   - state.json captures outputs
+ * render-templates.integration.test.ts
+ *
+ * End-to-end proof of the template-render primitive against a real
+ * Postgres testcontainer (state + audit are PG-backed since migration
+ * 026): synthesize a plugin whose setup.sh exercises USER_VAR_*
+ * flattening, OUTPUT_* exports, papercusp_record_resource,
+ * papercusp_state_set and papercusp_render_templates, run it through
+ * runPhase with a real bash, and verify:
  *   - *.tmpl files in projectDir get rendered with substituted values
  *   - .tmpl files are removed after render
  *   - skip-dirs (.git, node_modules) are honoured
+ *   - recorded resources + outputs land in the PG-backed state
+ *   - zero-template and missing-projectDir runs exit cleanly
  *
- * Skips on non-Linux (the runner uses bash; the helpers assume GNU envsubst).
+ * Mirrors runner.integration.test.ts's setup (getOrgPg → drizzle over a
+ * per-test database; sandbox disabled — argv construction has its own
+ * unit suite in sandbox.test.ts). Skips on non-Linux (the runner uses
+ * bash; the helpers assume GNU envsubst).
  */
-
 import { promises as fs } from 'node:fs';
 import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { randomBytes } from 'node:crypto';
+import { getTestPg } from '@papercusp/test-config';
 
 const isLinux = platform() === 'linux';
 
+const WS = 'ws-provision-render-test';
+
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  db: undefined as unknown,
+}));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql, db: h.db }) };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => WS };
+});
+
+const { runPhase } = await import('./runner');
+
+let rootSql: postgres.Sql;
 let TMP_HOME: string;
 let TMP_PLUGIN: string;
 let TMP_PROJECT: string;
+
+beforeAll(async () => {
+  process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
+  const adminUri = await getTestPg();
+  const dbName = `rt_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // Baseline shapes (000-baseline.sql ~:2317 / ~:2337) — verbatim.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.provision_state (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plugin_slug text NOT NULL,
+      payload jsonb NOT NULL,
+      updated_at bigint DEFAULT 0 NOT NULL,
+      CONSTRAINT provision_state_pkey PRIMARY KEY (workspace_id, harness_slug, plugin_slug)
+    );
+    CREATE TABLE harness_shared.provision_audit_log (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plugin_slug text NOT NULL,
+      ts timestamp with time zone DEFAULT now() NOT NULL,
+      kind text NOT NULL,
+      run_id text,
+      data jsonb
+    );
+  `);
+  h.sql = rootSql;
+  h.db = drizzle(rootSql);
+}, 90_000);
+
+afterAll(async () => {
+  delete process.env.PAPERCUSP_DISABLE_SANDBOX;
+  await rootSql?.end({ timeout: 5 });
+});
 
 beforeEach(async () => {
   TMP_HOME = await fs.mkdtemp(join(tmpdir(), 'paperhome-render-'));
   TMP_PLUGIN = await fs.mkdtemp(join(tmpdir(), 'paperplug-render-'));
   TMP_PROJECT = await fs.mkdtemp(join(tmpdir(), 'paperproj-render-'));
-  process.env.PAPERCUSP_HOME = TMP_HOME;
-  process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
-  vi.resetModules();
-  vi.doMock('@papercusp/db-org', () => ({
-    getOrgPg: () => ({
-      sql: () => {
-        throw new Error('no PG in this test');
-      },
-    }),
-  }));
+  process.env.PAPERCUSP_HOME = TMP_HOME; // scratch dir lives under provisionDir
+  await rootSql`DELETE FROM harness_shared.provision_state`;
+  await rootSql`DELETE FROM harness_shared.provision_audit_log`;
 });
 
 afterEach(async () => {
   delete process.env.PAPERCUSP_HOME;
-  delete process.env.PAPERCUSP_DISABLE_SANDBOX;
   await fs.rm(TMP_HOME, { recursive: true, force: true });
   await fs.rm(TMP_PLUGIN, { recursive: true, force: true });
   await fs.rm(TMP_PROJECT, { recursive: true, force: true });
 });
+
+async function writeSetupScript(contents: string): Promise<void> {
+  await fs.mkdir(join(TMP_PLUGIN, 'provision'), { recursive: true });
+  const scriptPath = join(TMP_PLUGIN, 'provision', 'setup.sh');
+  await fs.writeFile(scriptPath, contents, { mode: 0o755 });
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch { return false; }
+}
 
 const SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
@@ -71,17 +148,13 @@ export OUTPUT_computedRegion="$USER_VAR_REGION"
 papercusp_render_templates
 
 # Brief delay so the runner's FIFO tail catches up before the script
-# exits — matches the pattern in runner.test.ts.
+# exits — matches the pattern in runner.integration.test.ts.
 sleep 0.4
 `;
 
-describe.skip('render-templates end-to-end (needs PG fixture)', () => {
+describe('render-templates end-to-end (PG-backed runPhase)', () => {
   it.skipIf(!isLinux)('flattens USER_VAR_*, runs setup.sh, renders .tmpl files', async () => {
-    // Set up the plugin with a setup.sh
-    await fs.mkdir(join(TMP_PLUGIN, 'provision'), { recursive: true });
-    const scriptPath = join(TMP_PLUGIN, 'provision', 'setup.sh');
-    await fs.writeFile(scriptPath, SCRIPT);
-    await fs.chmod(scriptPath, 0o755);
+    await writeSetupScript(SCRIPT);
 
     // Set up project dir with templates + skip-dirs
     await fs.writeFile(
@@ -97,8 +170,6 @@ describe.skip('render-templates end-to-end (needs PG fixture)', () => {
     await fs.writeFile(join(TMP_PROJECT, 'node_modules', 'fake.tmpl'), 'should not be rendered');
     await fs.mkdir(join(TMP_PROJECT, '.git'), { recursive: true });
     await fs.writeFile(join(TMP_PROJECT, '.git', 'config.tmpl'), 'should not be rendered');
-
-    const { runPhase } = await import('./runner');
 
     const result = await runPhase('setup', {
       harness: 'test-harness',
@@ -121,8 +192,6 @@ describe.skip('render-templates end-to-end (needs PG fixture)', () => {
       // Surface the runner's diagnostics to make debugging easier
       throw new Error(`runPhase failed: ${result.error ?? 'unknown'}; exit=${result.exitCode}`);
     }
-
-    expect(result.ok).toBe(true);
     expect(result.exitCode).toBe(0);
 
     // 1. Templates rendered
@@ -141,26 +210,20 @@ describe.skip('render-templates end-to-end (needs PG fixture)', () => {
     expect(await fileExists(join(TMP_PROJECT, 'node_modules', 'fake.tmpl'))).toBe(true);
     expect(await fileExists(join(TMP_PROJECT, '.git', 'config.tmpl'))).toBe(true);
 
-    // 4. state.json captures resources + outputs
-    expect(result.state?.createdResources?.length ?? 0).toBe(2);
-    const resourceKinds = (result.state?.createdResources ?? []).map((r: any) => r.kind);
-    expect(resourceKinds).toContain('synthetic.thing');
-    expect(resourceKinds).toContain('synthetic.other');
+    // 4. PG state captures resources + outputs
+    const kinds = (result.state?.createdResources ?? []).map((r) => r.kind);
+    expect(kinds).toContain('synthetic.thing');
+    expect(kinds).toContain('synthetic.other');
     expect(result.state?.outputs?.computedId).toBe('demo-final');
     expect(result.state?.outputs?.computedRegion).toBe('us-east-1');
   }, 30_000);
 
   it.skipIf(!isLinux)('renders zero templates without error when project dir has none', async () => {
-    await fs.mkdir(join(TMP_PLUGIN, 'provision'), { recursive: true });
-    const scriptPath = join(TMP_PLUGIN, 'provision', 'setup.sh');
-    await fs.writeFile(scriptPath, `#!/usr/bin/env bash
+    await writeSetupScript(`#!/usr/bin/env bash
 set -euo pipefail
 . "$PAPERCUSP_RUNTIME_LIB"
 papercusp_render_templates
 `);
-    await fs.chmod(scriptPath, 0o755);
-
-    const { runPhase } = await import('./runner');
 
     const result = await runPhase('setup', {
       harness: 'no-tmpl',
@@ -177,17 +240,12 @@ papercusp_render_templates
   }, 30_000);
 
   it.skipIf(!isLinux)('warns and exits cleanly when projectDir is undefined', async () => {
-    await fs.mkdir(join(TMP_PLUGIN, 'provision'), { recursive: true });
-    const scriptPath = join(TMP_PLUGIN, 'provision', 'setup.sh');
-    await fs.writeFile(scriptPath, `#!/usr/bin/env bash
+    await writeSetupScript(`#!/usr/bin/env bash
 set -euo pipefail
 . "$PAPERCUSP_RUNTIME_LIB"
 papercusp_render_templates
 echo "still ran"
 `);
-    await fs.chmod(scriptPath, 0o755);
-
-    const { runPhase } = await import('./runner');
 
     const result = await runPhase('setup', {
       harness: 'no-projectdir',
@@ -204,10 +262,3 @@ echo "still ran"
     expect(result.ok).toBe(true);
   }, 30_000);
 });
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch { return false; }
-}

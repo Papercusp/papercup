@@ -37,24 +37,25 @@ export const FLAGS = {
   VOICE_CHANNELS: "papercusp-voice-channels",
   // the-hive-lexicon-2026-06-06: selects the active brand pack for the
   // user-facing LEXICON layer (display strings only — code/DB/MCP/repos are
-  // unchanged, D-001). OFF (default) = the `classic` Papercusp pack = V1 ship
-  // state; ON = the `the-hive` bee pack (Pot→Hive, Fleet→Colony, Queen=brain,
-  // Swarm = a deployment-to-instance unit; D-007). Fully reversible presentation
+  // unchanged, D-001). ON (default, owner-activated 2026-06-09) = the `the-hive`
+  // bee pack (Pot→Hive, Fleet→Colony, Queen=brain, Swarm = a deployment-to-instance
+  // unit; D-007); OFF = the `classic` Papercusp pack. Fully reversible presentation
   // switch; @papercusp/lexicon resolves it.
   THE_HIVE: "papercusp-the-hive",
-  // psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 (P-008): gates the new
-  // SCHEMA-DRIVEN harness settings panel (BlueprintSettingsPanel) that renders
-  // controls from the harness blueprint's declared `params` (P-006), replacing the
-  // hardcoded coding-pipeline form. OFF (default) = the legacy HarnessSettingsPanel.
-  // Flip ON once the panel is visually verified in the Tauri shell + folded over the
-  // legacy panel's residual sections (Discord/telemetry). Reversible presentation switch.
+  // blueprint-aware-harness-ui-2026-06-09 (P-008): gates the new SCHEMA-DRIVEN
+  // harness settings panel (BlueprintSettingsPanel) that renders controls from the
+  // harness blueprint's declared `params` (P-006), replacing the hardcoded
+  // coding-pipeline form. ON (default, owner-activated 2026-06-09); OFF = the
+  // legacy HarnessSettingsPanel. Reversible presentation switch; the Tauri visual
+  // pass + folding in the legacy panel's residual sections (Discord/telemetry)
+  // are tracked on the plan.
   BLUEPRINT_AWARE_SETTINGS: "papercusp-blueprint-aware-settings",
-  // psu-isolation-and-blueprint-aware-harness-ui-2026-06-09 (P-011): gates the Prompt
-  // Studio surface (edit the renderSuPlaybook SOURCES — base playbooks / per-client
-  // overlays / project-guide — with a live assembled-prompt preview). OFF (default)
-  // until it's mounted in the settings nav (coordinated with the in-flight /settings
-  // restructure) + Tauri-verified. The /api/prompt-studio/* routes are gated on this flag
-  // TOO (security review — closed-gate default; the prompt-source backend never ships dark).
+  // blueprint-aware-harness-ui-2026-06-09 (P-011): gates the Prompt Studio surface
+  // (edit the renderSuPlaybook SOURCES — base playbooks / per-client overlays /
+  // project-guide — with a live assembled-prompt preview), mounted at
+  // /settings/prompt-studio. ON (default, owner-activated 2026-06-09). The
+  // /api/prompt-studio/* routes are gated on this flag TOO (plus the loopback
+  // guard + 512KB cap + id-whitelist from the security review).
   PROMPT_STUDIO: "papercusp-prompt-studio",
   // hive-agent-tabs-psu-tui-2026-06-09: gates the unified agent-tabs dock where
   // EVERY agent surface (Queen · Bee · Sentinel · Planner) is a real psu/Claude
@@ -84,15 +85,18 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the supervised live Tauri+mic pass (holepunch-voice-channels D-014) is still
   // outstanding but the owner chose to run it live.
   [FLAGS.VOICE_CHANNELS]: true,
-  // OFF by default — classic Papercusp is the V1 ship state; flip on to adopt
-  // the bee lexicon (the-hive-lexicon-2026-06-06). Presentation only.
-  [FLAGS.THE_HIVE]: false,
-  // OFF by default — the legacy hardcoded HarnessSettingsPanel ships until the
-  // schema-driven BlueprintSettingsPanel (P-008) is Tauri-verified. Flip on to adopt.
-  [FLAGS.BLUEPRINT_AWARE_SETTINGS]: false,
-  // OFF by default — the Prompt Studio (P-011) ships dark until mounted in the settings
-  // nav + Tauri-verified. The /api/prompt-studio/* routes are flag-gated on it too.
-  [FLAGS.PROMPT_STUDIO]: false,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy):
+  // the bee lexicon (the-hive-lexicon-2026-06-06) is the live identity; classic
+  // remains the flag-off fallback. Presentation only, fully reversible.
+  [FLAGS.THE_HIVE]: true,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
+  // the schema-driven BlueprintSettingsPanel (blueprint-aware-harness-ui P-008)
+  // goes live ahead of the Tauri visual pass; the legacy panel remains behind flag-off.
+  [FLAGS.BLUEPRINT_AWARE_SETTINGS]: true,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
+  // Prompt Studio (blueprint-aware-harness-ui P-011) is mounted + hardened
+  // (loopback + 512KB cap + whitelist); the Tauri visual pass is still outstanding.
+  [FLAGS.PROMPT_STUDIO]: true,
   // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy).
   // Phases 2-5 of hive-agent-tabs-psu-tui-2026-06-09 are still building; the
   // shipped flag-gated paths (taxonomy/roster stamping/session-id) go live now.
