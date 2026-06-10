@@ -1645,6 +1645,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // hive.controlState — the global Start/Pause-Hive control's read side
+  // (start-hive-wake-orchestration P-006): per registered hive, the persisted
+  // started bit (P-004), the pending time wake, and the watchdog health signal.
+  // Live: hive:start / hive:pause fire
+  // `notifySyncInvalidate('hive.controlState', {})` after the state flip.
+  'hive.controlState': {
+    resolve: async () => {
+      const { listHives } = await import('../agent-tools/hive/_resolve');
+      const { getHiveStarted } = await import('../hive/started');
+      const { recentWatchdogFires } = await import('../hive/watchdog');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const ws = activeWorkspaceId();
+      const hives = await listHives(ws).catch(() => []);
+      return Promise.all(
+        hives.map(async (hv) => ({
+          slug: hv.slug,
+          started: await getHiveStarted(ws, hv.slug).catch(() => false),
+          nextFireAt: hv.wake?.nextFireAt ?? null,
+          lastWakeAt: hv.wake?.lastWakeAt ?? null,
+          watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
+        })),
+      );
+    },
+  },
+
   // planItems.byPlan — the parsed plan items (id, text, storedStatus,
   // effectiveStatus, blockedBy, …) for one plan, for the Create-tab kanban.
   // Reads through the SAME path as `plans:get` (parses the plan's `content`

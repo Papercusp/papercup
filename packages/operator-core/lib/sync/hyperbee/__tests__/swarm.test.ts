@@ -267,11 +267,12 @@ describe('joinHarnessSwarm — shared-swarm late join (existing sockets)', () =>
     };
     (swarm as { connections?: Iterable<unknown> }).connections = [existing];
     const connectedKeys: Array<string | undefined> = [];
+    const ours = announceFixture();
     const h = await joinHarnessSwarm({
       store,
       topic: topic32(),
       swarm,
-      ourAnnounce: announceFixture(),
+      ourAnnounce: ours,
       onPeerConnected: (k) => connectedKeys.push(k),
     });
     expect(replicateArgs).toEqual([existing]);
@@ -279,7 +280,7 @@ describe('joinHarnessSwarm — shared-swarm late join (existing sockets)', () =>
     expect(connectedKeys).toEqual(['cd'.repeat(32)]);
     const st = fakeChannels.get(existing);
     expect(st?.opened).toBe(true);
-    expect(st?.sent).toEqual([announceFixture()]);
+    expect(st?.sent).toEqual([ours]);
   });
 
   it('tolerates a swarm without connections (minimal fakes)', async () => {

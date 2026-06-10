@@ -53,7 +53,7 @@ export async function listStartedHives(): Promise<Array<{ workspaceId: string; i
     WHERE key LIKE ${PREFIX + '%'} AND value = 'true'
   `;
   const out: Array<{ workspaceId: string; installSlug: string }> = [];
-  for (const r of rows as Array<{ key: string }>) {
+  for (const r of rows as unknown as Array<{ key: string }>) {
     const rest = r.key.slice(PREFIX.length);
     // workspace ids and install slugs are colon-free (slug charset is
     // [a-z0-9-]); the FIRST ':' is the separator.

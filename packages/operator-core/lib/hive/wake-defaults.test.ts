@@ -30,7 +30,7 @@ const ev = (tool: string, data: unknown, ok = true): ToolInvocationEvent => ({
   tool,
   args: {},
   result: ok ? { ok: true, data } : { ok: false },
-  ctx: {},
+  ctx: {} as ToolInvocationEvent['ctx'],
 });
 
 const hiveWakeMatches = (e: ToolInvocationEvent) =>

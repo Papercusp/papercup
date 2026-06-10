@@ -74,6 +74,10 @@ export default defineTool({
     await setHiveStarted(workspaceId, installSlug, false);
     await setDefaultWakeMode('manual');
     await clearHiveTimeWake(sql, installSlug);
+    // Live UI reflection (P-006): the header control reads hive.controlState.
+    void import('../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
+      .catch(() => {});
 
     // Optional harder stop: the graceful drain cue to every live bee (the same
     // message fleet:drain sends per-bee — propose/dispose preserved).

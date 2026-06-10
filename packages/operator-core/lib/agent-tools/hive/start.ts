@@ -77,6 +77,10 @@ export default defineTool({
       harness: installSlug,
       workspaceId,
     });
+    // Live UI reflection (P-006): the header control reads hive.controlState.
+    void import('../../sync-sse')
+      .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
+      .catch(() => {});
 
     return {
       content: [

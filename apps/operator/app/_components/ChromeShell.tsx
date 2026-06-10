@@ -24,6 +24,7 @@ import TutorialButton from './TutorialButton';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
 import { PuiLauncherButton } from './PuiLauncherButton';
+import { HiveStartPauseButton } from './HiveStartPauseButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
@@ -194,6 +195,9 @@ export default function ChromeShell() {
           {/* Terminal-launch CTA: opens the pui workbench (apps/tui) in an OS
               terminal via a server-side spawn. Sits next to OPS. (Brief 26) */}
           <PuiLauncherButton />
+          {/* The GLOBAL Start/Pause-Hive control (start-hive-wake P-006) —
+              boots/freezes the brain; renders only when a hive exists. */}
+          <HiveStartPauseButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {testingFlag ? (
