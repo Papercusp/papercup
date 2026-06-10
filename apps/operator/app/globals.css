@@ -25847,8 +25847,10 @@ body:has(.operator-panel) {
 }
 .pc-vu__fill {
   height: 100%;
+  width: 100%;
   background: linear-gradient(90deg, var(--good) 0%, var(--good) 60%, var(--warn) 75%, var(--bad) 95%);
-  transition: width 40ms linear;
+  transform-origin: left;
+  transition: transform 40ms linear;
 }
 .pc-vu__hint { font-size: 11.5px; color: var(--fg-mute); }
 .pc-rec-list { display: flex; flex-direction: column; gap: 6px; max-width: 540px; }

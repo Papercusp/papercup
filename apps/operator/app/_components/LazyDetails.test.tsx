@@ -58,4 +58,15 @@ describe('LazyDetails', () => {
     // internal child state survives the collapse.
     expect(screen.getByTestId('child')).toBeTruthy();
   });
+
+  it('forwards className and summaryClassName', () => {
+    render(
+      <LazyDetails summary="More" className="outer-cls" summaryClassName="sum-cls">
+        {child}
+      </LazyDetails>,
+    );
+    const details = document.querySelector('details') as HTMLDetailsElement;
+    expect(details.className).toBe('outer-cls');
+    expect(details.querySelector('summary')?.className).toBe('sum-cls');
+  });
 });

@@ -19,3 +19,17 @@ export * from './judge';
 export * from './scoring';
 export * from './rate-pause';
 export { tryParseJson } from './parse-json';
+
+// The compare/select comparison core (test-gym P-002) — re-exported so battery
+// callers rank/select arms with the same semantics the scenario substrate uses
+// (runBattery runs the cells; compareArms is the shared diff/rank/select math).
+export {
+  BASELINE_ID,
+  compareArms,
+  type CompareArm,
+  type CompareArmsOpts,
+  type CompareSelectResult,
+  type MetricDiff,
+  type RankedCandidate,
+  type ScorerDirection,
+} from '@papercusp/testing-shell/llm';

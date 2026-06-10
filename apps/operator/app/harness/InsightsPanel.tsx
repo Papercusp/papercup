@@ -120,7 +120,8 @@ export default function InsightsPanel({
                       {s.label}
                     </div>
                     <div className="h-insights-status-track" style={{ background: COLORS.bg, borderRadius: 2, height: 14, overflow: 'hidden' }}>
-                      <div className="h-insights-status-fill" style={{ height: '100%', width: `${pct}%`, background: s.solid, transition: 'width 300ms' }} />
+                      {/* scaleX, not width — width transitions force layout+paint per frame (perf rule 4) */}
+                      <div className="h-insights-status-fill" style={{ height: '100%', width: '100%', background: s.solid, transform: `scaleX(${pct / 100})`, transformOrigin: 'left', transition: 'transform 300ms' }} />
                     </div>
                     <div className="h-insights-status-count" style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.text, textAlign: 'right' }}>
                       {count}
@@ -150,12 +151,15 @@ export default function InsightsPanel({
                     <div className="h-insights-attempt-meter" style={{
                       width: '100%', height: 60, display: 'flex', alignItems: 'flex-end',
                     }}>
+                      {/* scaleY, not height — size transitions force layout+paint per frame (perf rule 4) */}
                       <div className="h-insights-attempt-bar" style={{
                         width: '100%',
-                        height: `${pct}%`,
+                        height: '100%',
                         background: color,
                         borderRadius: 2,
-                        transition: 'height 300ms',
+                        transform: `scaleY(${pct / 100})`,
+                        transformOrigin: 'bottom',
+                        transition: 'transform 300ms',
                       }} />
                     </div>
                     <div className="h-insights-attempt-count" style={{ fontFamily: FONTS.mono, fontSize: SIZES.base, color: COLORS.text, fontWeight: 600 }}>

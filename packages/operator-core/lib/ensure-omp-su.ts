@@ -22,20 +22,37 @@
 
 import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { execFileSync, execSync } from 'node:child_process';
+import { join, dirname, delimiter } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 function dlog(msg: string): void {
   process.stderr.write(`[ensure-omp-su] ${msg}\n`);
 }
 
-function isOnPath(bin: string): boolean {
-  try {
-    execSync(`command -v ${bin}`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+/** Pure-Node PATH resolution (audit P-080): no shell, so a hostile/odd
+ *  `bin` value can never be interpreted as shell syntax. */
+function resolveOnPath(bin: string): string | null {
+  const dirs = (process.env.PATH ?? '').split(delimiter);
+  const exts =
+    process.platform === 'win32'
+      ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
+      : [''];
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = join(dir, bin + ext);
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        /* keep scanning */
+      }
+    }
   }
+  return null;
+}
+
+function isOnPath(bin: string): boolean {
+  return resolveOnPath(bin) !== null;
 }
 
 function setOmpConfig(key: string, value: string): void {
@@ -63,10 +80,8 @@ function ensureOmpHindsightConfig(): void {
 /** Resolve the directory `omp` lives in (so the wrapper lands on the
  *  same PATH); fallback to ~/.local/bin. */
 function resolveWrapperDir(home = homedir()): string {
-  try {
-    const ompPath = execSync('command -v omp', { encoding: 'utf8' }).trim();
-    if (ompPath) return dirname(ompPath);
-  } catch { /* omp not installed yet */ }
+  const ompPath = resolveOnPath('omp');
+  if (ompPath) return dirname(ompPath);
   return join(home, '.local', 'bin');
 }
 

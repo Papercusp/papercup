@@ -52,6 +52,13 @@ export interface RecordPlanRevisionArgs {
    * target explicitly.
    */
   harnessSlug?: string;
+  /**
+   * Workspace the plan lives in (audit P-008). Default =
+   * DEFAULT_WORKSPACE_ID. `withPlanLock` threads the resolved scope
+   * into `afterWrite`, so revisions land in the plan's own workspace
+   * — mig 218 added the column + RLS isolation.
+   */
+  workspaceId?: string;
   /** The full markdown written to disk at this revision (D-011 — the
    *  snapshot is self-contained, never a hash-only reference). */
   content: string;
@@ -101,19 +108,22 @@ export async function recordPlanRevision(
     const createdAt = Date.now();
 
     const harnessSlug = args.harnessSlug?.trim() || 'papercup';
-    const seq = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+    const workspaceId = args.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+    const seq = await withWorkspace(workspaceId, async (tx) => {
       // INSERT … SELECT against the same table: the aggregate
       // sub-select always yields exactly one row (COALESCE(MAX,0)+1 is
       // 1 when the plan has no prior revisions), so exactly one row is
       // inserted whether or not the plan already has revisions.
-      // seq is per (harness_slug, plan_slug) so two harnesses with the
-      // same plan slug have independent revision spines.
+      // seq is per (workspace_id, harness_slug, plan_slug) so two
+      // harnesses/workspaces with the same plan slug have independent
+      // revision spines.
       const rows = await tx<{ seq: number }[]>`
         INSERT INTO harness_shared.plan_revisions (
-          harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+          workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
           author_kind, author_id, session_id, session_kind, created_at
         )
         SELECT
+          ${workspaceId},
           ${harnessSlug},
           ${args.planSlug},
           COALESCE(MAX(seq), 0) + 1,
@@ -126,7 +136,8 @@ export async function recordPlanRevision(
           ${args.sessionKind ?? null},
           ${createdAt}
         FROM harness_shared.plan_revisions
-        WHERE harness_slug = ${harnessSlug} AND plan_slug = ${args.planSlug}
+        WHERE workspace_id = ${workspaceId}
+          AND harness_slug = ${harnessSlug} AND plan_slug = ${args.planSlug}
         RETURNING seq
       `;
       return Number(rows[0].seq);
@@ -147,8 +158,13 @@ export interface PlanRevisionCapture {
    * Pass straight to `withPlanLock`'s `afterWrite`. Appends one
    * `plan_revisions` row for the write. A no-op when the call ctx
    * carries no attributable identity — best-effort (D-014).
+   * `scope` is the (workspaceId, harnessSlug) the lock resolved —
+   * the revision lands in the plan's own workspace (audit P-008).
    */
-  afterWrite: (writtenBody: string) => Promise<void>;
+  afterWrite: (
+    writtenBody: string,
+    scope?: { workspaceId: string; harnessSlug: string },
+  ) => Promise<void>;
   /**
    * Mutable cell — `afterWrite` writes the recorded revision (or
    * `null` on a best-effort miss) here. Read it *after* `withPlanLock`
@@ -219,7 +235,7 @@ export function planRevisionCapture(
   ctx: PlanRevisionCtx,
   slug: string,
   rationale: string | null | undefined,
-  opts: { harnessSlug?: string } = {},
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): PlanRevisionCapture {
   let identity: AgentIdentity | null = null;
   try {
@@ -234,10 +250,19 @@ export function planRevisionCapture(
   const recorded: { current: RecordedRevision | null } = { current: null };
 
   const afterWrite = id
-    ? async (writtenBody: string): Promise<void> => {
+    ? async (
+        writtenBody: string,
+        scope?: { workspaceId: string; harnessSlug: string },
+      ): Promise<void> => {
+        // Explicit opts win; otherwise the scope withPlanLock resolved
+        // for the write itself — the two must agree because they run
+        // the same resolvePlanScope (audit P-008).
+        const harnessSlug = opts.harnessSlug ?? scope?.harnessSlug;
+        const workspaceId = opts.workspaceId ?? scope?.workspaceId;
         recorded.current = await recordPlanRevision({
           planSlug: slug,
-          ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+          ...(harnessSlug ? { harnessSlug } : {}),
+          ...(workspaceId ? { workspaceId } : {}),
           content: writtenBody,
           rationale: rationale ?? null,
           identity: id,
@@ -333,15 +358,17 @@ interface PlanRevisionDbRow {
  */
 export async function listPlanRevisions(
   planSlug: string,
-  opts: { harnessSlug?: string } = {},
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<PlanRevisionRow[]> {
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
-  const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
       SELECT id, seq, content_hash, content_snapshot, rationale,
              author_kind, author_id, session_id, session_kind, created_at
       FROM harness_shared.plan_revisions
-      WHERE harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
+      WHERE workspace_id = ${workspaceId}
+        AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
       ORDER BY seq ASC
     `;
   });
@@ -390,8 +417,9 @@ export interface PlanRevisionRef {
  */
 export async function getPlanRevisionById(
   revisionId: number,
+  opts: { workspaceId?: string } = {},
 ): Promise<PlanRevisionRef | null> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<
       {
         id: number | string;
@@ -442,8 +470,9 @@ export interface PlanRevisionPair {
 
 export async function getPlanRevisionPairById(
   revisionId: number,
+  opts: { workspaceId?: string } = {},
 ): Promise<PlanRevisionPair | null> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<
       {
         id: number | string;
@@ -455,14 +484,15 @@ export async function getPlanRevisionPairById(
       }[]
     >`
       WITH target AS (
-        SELECT harness_slug, plan_slug, seq
+        SELECT workspace_id, harness_slug, plan_slug, seq
         FROM harness_shared.plan_revisions
         WHERE id = ${revisionId}
       )
       SELECT r.id, r.plan_slug, r.seq, r.content_snapshot, r.created_at,
              (r.seq = (SELECT seq FROM target)) AS is_target
       FROM harness_shared.plan_revisions r, target t
-      WHERE r.harness_slug = t.harness_slug
+      WHERE r.workspace_id = t.workspace_id
+        AND r.harness_slug = t.harness_slug
         AND r.plan_slug = t.plan_slug
         AND r.seq IN (t.seq, t.seq - 1)
       ORDER BY r.seq DESC
@@ -498,8 +528,9 @@ export async function getPlanRevisionPairById(
 export async function setPlanRevisionRationale(
   revisionId: number,
   rationale: string,
+  opts: { workspaceId?: string } = {},
 ): Promise<boolean> {
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  return withWorkspace(opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_revisions
       SET rationale = ${rationale}
@@ -519,14 +550,16 @@ export async function setPlanRevisionRationale(
  */
 export async function countPlanRevisions(
   planSlug: string,
-  opts: { harnessSlug?: string } = {},
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<{ n: number }[]>`
       SELECT COUNT(*)::int AS n
       FROM harness_shared.plan_revisions
-      WHERE harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
+      WHERE workspace_id = ${workspaceId}
+        AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
     `;
     return Number(rows[0]?.n ?? 0);
   });
@@ -565,24 +598,69 @@ export interface BackfillRevisionInput {
 export async function insertBackfillRevisions(
   planSlug: string,
   revisions: BackfillRevisionInput[],
-  opts: { harnessSlug?: string } = {},
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
 ): Promise<number> {
   if (revisions.length === 0) return 0;
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
-  return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  return withWorkspace(workspaceId, async (tx) => {
     let seq = 0;
     for (const r of revisions) {
       seq += 1;
       await tx`
         INSERT INTO harness_shared.plan_revisions (
-          harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+          workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
           author_kind, author_id, session_id, session_kind, created_at
         ) VALUES (
-          ${harnessSlug}, ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
+          ${workspaceId}, ${harnessSlug}, ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
           'human', ${r.authorId}, NULL, 'git_backfill', ${r.createdAt}
         )
       `;
     }
     return seq;
+  });
+}
+
+/**
+ * The backfill's idempotency check + inserts in ONE transaction
+ * (audit P-044). The two-call shape (countPlanRevisions, then
+ * insertBackfillRevisions — separate transactions) left a window
+ * where a live `recordPlanRevision` could land seq 1 between the
+ * count and the explicit seq 1..N inserts; the unique key then
+ * aborted the backfill mid-plan. Here a concurrent insert either
+ * lands before the count (→ skipped) or conflicts and rolls back
+ * this WHOLE transaction — no partial spine either way.
+ */
+export async function insertBackfillRevisionsIfEmpty(
+  planSlug: string,
+  revisions: BackfillRevisionInput[],
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
+): Promise<{ inserted: number; skippedExisting: boolean }> {
+  const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
+  const workspaceId = opts.workspaceId?.trim() || DEFAULT_WORKSPACE_ID;
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
+      FROM harness_shared.plan_revisions
+      WHERE workspace_id = ${workspaceId}
+        AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
+    `;
+    if (Number(rows[0]?.n ?? 0) > 0) {
+      return { inserted: 0, skippedExisting: true };
+    }
+    let seq = 0;
+    for (const r of revisions) {
+      seq += 1;
+      await tx`
+        INSERT INTO harness_shared.plan_revisions (
+          workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+          author_kind, author_id, session_id, session_kind, created_at
+        ) VALUES (
+          ${workspaceId}, ${harnessSlug}, ${planSlug}, ${seq}, ${r.contentHash}, ${r.content}, ${r.rationale},
+          'human', ${r.authorId}, NULL, 'git_backfill', ${r.createdAt}
+        )
+      `;
+    }
+    return { inserted: seq, skippedExisting: false };
   });
 }

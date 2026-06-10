@@ -28,6 +28,68 @@ let client: PostHog | null = null;
 let config: PostHogConfig | null = null;
 const changeHandlers = new Set<ChangeHandler>();
 
+/**
+ * Persistent runtime overrides (audit P-070, EI-76). The host injects a
+ * store (Papercusp wires a PG-backed one in operator-core's flag-bus) so
+ * /api/flags/set can flip flags at runtime WITHOUT PostHog — previously a
+ * dev box needed a process restart per PAPERCUSP_FLAG_* env flip.
+ *
+ * Precedence: env var > in-process test overrides > stored override >
+ * PostHog > FLAG_DEFAULTS. The store is read through a short TTL cache so
+ * per-call flag checks don't each pay a PG round trip; setFlagOverride
+ * invalidates the cache immediately.
+ */
+export type FlagOverrideStore = {
+  /** Current override map; missing keys = no override. */
+  load(): Promise<Partial<Record<FlagKey, boolean>>>;
+  /** Persist one override; `null` clears it. */
+  set(key: FlagKey, enabled: boolean | null): Promise<void>;
+};
+
+let overrideStore: FlagOverrideStore | null = null;
+let overrideCache: { flags: Partial<Record<FlagKey, boolean>>; ts: number } | null = null;
+const OVERRIDE_CACHE_TTL_MS = 5_000;
+
+export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
+  overrideStore = store;
+  overrideCache = null;
+}
+
+export function isOverrideStoreConfigured(): boolean {
+  return overrideStore !== null;
+}
+
+async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
+  if (!overrideStore) return {};
+  const t = Date.now();
+  if (overrideCache && t - overrideCache.ts < OVERRIDE_CACHE_TTL_MS) {
+    return overrideCache.flags;
+  }
+  try {
+    const flags = await overrideStore.load();
+    overrideCache = { flags, ts: t };
+    return flags;
+  } catch {
+    // Store unreachable — serve the last good map (or none); never block
+    // flag evaluation on the override layer.
+    return overrideCache?.flags ?? {};
+  }
+}
+
+export async function setFlagOverride(
+  key: FlagKey,
+  enabled: boolean | null,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!overrideStore) return { ok: false, reason: "override-store-not-configured" };
+  try {
+    await overrideStore.set(key, enabled);
+    overrideCache = null;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : "unknown" };
+  }
+}
+
 export function initFlagBackend(cfg: PostHogConfig | null): void {
   if (client) {
     void client.shutdown();
@@ -75,6 +137,8 @@ export async function getFlag(
   if (envOverride !== undefined) return envOverride;
   const overrides = resolveTestOverrides();
   if (overrides) return overrides[key];
+  const stored = await loadStoredOverrides();
+  if (stored[key] !== undefined) return stored[key] as boolean;
   if (!client) return FLAG_DEFAULTS[key];
   try {
     const v = await client.isFeatureEnabled(key, distinctId);
@@ -108,9 +172,10 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   if (overrides) {
     return { flags: applyEnvOverrides(overrides), evaluatedAt: Date.now(), source: "override" };
   }
+  const stored = await loadStoredOverrides();
   if (!client) {
     return {
-      flags: applyEnvOverrides({ ...FLAG_DEFAULTS }),
+      flags: applyEnvOverrides({ ...FLAG_DEFAULTS, ...stored }),
       evaluatedAt: Date.now(),
       source: "defaults",
     };
@@ -126,7 +191,10 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
       }
     }),
   );
-  const flags: FlagValues = applyEnvOverrides(resolveWithDefaults(evaluated));
+  const flags: FlagValues = applyEnvOverrides({
+    ...resolveWithDefaults(evaluated),
+    ...stored,
+  });
   return { flags, evaluatedAt: Date.now(), source: "posthog" };
 }
 

@@ -313,6 +313,7 @@ async function main(): Promise<void> {
     }
 
     if (progressTimer) clearInterval(progressTimer);
+    offAdmitted();
 
     const artifact = meter.finish();
     const statsAtEnd = dhtStats();

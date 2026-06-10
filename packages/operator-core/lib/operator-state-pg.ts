@@ -67,7 +67,9 @@ type StateTable =
   // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
   | 'hive_directory_cache'
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
-  | 'operator_account_pool';
+  | 'operator_account_pool'
+  // Migration 216 — PG-backed runtime flag overrides (audit P-070, EI-76):
+  | 'operator_flag_overrides';
 
 /**
  * Read the single row for the active workspace, or null if missing.
@@ -155,9 +157,10 @@ export async function updateOperatorState<T>(
   table: StateTable,
   defaultValue: T,
   mutator: (current: T) => T,
+  wsOverride?: string,
 ): Promise<T> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = wsOverride ?? activeWorkspaceId();
   const isEncrypted = ENCRYPTED_TABLES.has(table);
   const key = isEncrypted ? getDbEncryptionKey() : null;
 

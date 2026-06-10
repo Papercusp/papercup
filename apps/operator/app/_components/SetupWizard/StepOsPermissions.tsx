@@ -556,7 +556,8 @@ export function StepOsPermissions() {
           <div className="pc-vu">
             <div className="pc-vu__label">Live level</div>
             <div className="pc-vu__bar">
-              <div className="pc-vu__fill" style={{ width: `${Math.round(level * 100)}%` }} />
+              {/* scaleX, not width — this updates at audio-frame cadence; width would force layout per frame (perf rule 4) */}
+              <div className="pc-vu__fill" style={{ transform: `scaleX(${level})` }} />
             </div>
             <div className="pc-vu__hint">
               {level < 0.02

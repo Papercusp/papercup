@@ -271,12 +271,15 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
               overflow: 'hidden',
             }}
           >
+            {/* scaleX, not width — width transitions force layout+paint per frame (perf rule 4) */}
             <div
               style={{
                 height: '100%',
-                width: `${stats.pct}%`,
+                width: '100%',
                 background: 'var(--good)',
-                transition: 'width 0.3s',
+                transform: `scaleX(${stats.pct / 100})`,
+                transformOrigin: 'left',
+                transition: 'transform 0.3s',
               }}
             />
           </div>

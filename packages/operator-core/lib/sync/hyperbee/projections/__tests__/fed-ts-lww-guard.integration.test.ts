@@ -80,13 +80,20 @@ afterAll(async () => {
   await db?.drop();
 });
 
-/** A `features-by-id` put op at a given wire ts. */
-function featurePut(featureId: string, status: string, ts: number): OpEnvelope {
+/** A `features-by-id` put op at a given wire ts. `extra` merges additional
+ *  wire fields (e.g. the dispatch columns) into the value. */
+function featurePut(
+  featureId: string,
+  status: string,
+  ts: number,
+  extra?: Record<string, unknown>,
+): OpEnvelope {
   return {
     type: 'put',
     table: 'features-by-id',
     hbKey: featureId,
     value: {
+      ...extra,
       harness_slug: HARNESS,
       feature_id: featureId,
       title: `feat ${featureId}`,
@@ -176,5 +183,115 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
     const freshApply = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
     await freshApply(featurePut(id, 'B-older', 2000));
     expect(await statusOf(id)).toBe('A-newer');
+  });
+});
+
+describe('post-cursor-reset double-apply safety (audit P-068)', () => {
+  it('replaying the WHOLE history over the standing fixpoint converges back, in log order AND the worst order (stale del last)', async () => {
+    const id = 'F-reset-replay';
+    // Live history reached its fixpoint: put(1000) → put(2000); a stale del(1500) lost.
+    await apply(featurePut(id, 'v1', 1000));
+    await apply(featurePut(id, 'v2', 2000));
+    await apply(featureDel(id, 1500));
+    expect(await statusOf(id)).toBe('v2');
+
+    // A cursor reset (log removal / truncation / fresh boot) re-folds the whole
+    // history from index 0 against the already-final PG rows. Fresh apply =
+    // empty in-memory winners fold, so the SQL guards alone carry correctness.
+    const replayA = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
+    await replayA(featurePut(id, 'v1', 1000));
+    await replayA(featureDel(id, 1500));
+    await replayA(featurePut(id, 'v2', 2000));
+    expect(await statusOf(id)).toBe('v2');
+
+    // The audit's named case: the stale del re-applies LAST, after the newer
+    // put already holds the row — the ts-guarded DELETE must match nothing.
+    const replayB = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
+    await replayB(featurePut(id, 'v2', 2000));
+    await replayB(featurePut(id, 'v1', 1000));
+    await replayB(featureDel(id, 1500));
+    expect(await statusOf(id)).toBe('v2');
+  });
+
+  it('a del that WON the fixpoint stays won across a replay (the put-first transient re-deletes)', async () => {
+    const id = 'F-reset-del-won';
+    await apply(featurePut(id, 'v1', 1000));
+    await apply(featureDel(id, 3000));
+    expect(await statusOf(id)).toBeNull();
+
+    // Reset replay with the put's log folded FIRST: deletes leave no PG
+    // tombstone, so the older put re-INSERTs — a BOUNDED transient (documented
+    // in read-merge.ts; the del re-applies within the same fold or, if beyond
+    // the per-pass budget, within the backlog's passes). The fixpoint holds.
+    const replay = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, sql });
+    await replay(featurePut(id, 'v1', 1000));
+    expect(await statusOf(id)).toBe('v1'); // the documented transient resurrect
+    await replay(featureDel(id, 3000));
+    expect(await statusOf(id)).toBeNull(); // …re-deleted at the fixpoint
+  });
+});
+
+describe('work-item dispatch columns federate (su-ae509 finding, 2026-06-10)', () => {
+  const dispatchOf = async (id: string) => {
+    const rows = await sql<
+      Array<{
+        item_kind: string;
+        feature_order: number | null;
+        swarm_affinity: string | null;
+        redundancy: number | null;
+        payload: unknown;
+        status: string | null;
+      }>
+    >`
+      SELECT item_kind, feature_order, swarm_affinity, redundancy, payload, status
+      FROM harness_shared.harness_features_consolidated
+      WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+    return rows[0] ?? null;
+  };
+
+  it('item_kind / feature_order / swarm_affinity / redundancy / payload round-trip through the projection', async () => {
+    const id = 'F-dispatch';
+    await apply(
+      featurePut(id, 'queued', 1000, {
+        item_kind: 'research-task',
+        feature_order: 7,
+        swarm_affinity: 'swarm-b',
+        redundancy: 2,
+        payload: { question: 'what is the answer?' },
+      }),
+    );
+    expect(await dispatchOf(id)).toMatchObject({
+      item_kind: 'research-task',
+      feature_order: 7,
+      swarm_affinity: 'swarm-b',
+      redundancy: 2,
+      payload: { question: 'what is the answer?' },
+      status: 'queued',
+    });
+
+    // A Queen reorder federates: the newer op moves feature_order.
+    await apply(
+      featurePut(id, 'queued', 2000, {
+        item_kind: 'research-task',
+        feature_order: 1,
+        swarm_affinity: 'swarm-b',
+        redundancy: 2,
+        payload: { question: 'what is the answer?' },
+      }),
+    );
+    expect((await dispatchOf(id))!.feature_order).toBe(1);
+  });
+
+  it('an op WITHOUT dispatch fields (pre-2026-06-10 history) still applies and cannot flip item_kind back to feature', async () => {
+    const id = 'F-dispatch-old';
+    await apply(featurePut(id, 'queued', 1000, { item_kind: 'research-task', payload: { q: 1 } }));
+    expect((await dispatchOf(id))!.item_kind).toBe('research-task');
+
+    // A NEWER old-shape op (no dispatch fields) updates content; the
+    // discriminator is immutable and must survive the defaulted 'feature'.
+    await apply(featurePut(id, 'running', 2000));
+    const after = await dispatchOf(id);
+    expect(after!.status).toBe('running');
+    expect(after!.item_kind).toBe('research-task');
   });
 });

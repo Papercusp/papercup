@@ -336,6 +336,26 @@ export interface IncrementalMergeResult {
  * requires a fresh fold without it. Cursor entries for logs absent from
  * `logs` are left untouched (the caller resets; this function never guesses).
  *
+ * POST-CURSOR-RESET DOUBLE-APPLY SAFETY (audit P-068 — LOAD-BEARING): a reset
+ * re-folds every log from index 0 against PG rows that already hold the final
+ * state, so every op re-applies. Correctness rests on TWO independent floors:
+ *   1. the in-memory winners fold below (an op that doesn't beat the standing
+ *      winner is never handed to apply) — empty right after a reset, so
+ *   2. EVERY projection writer is PG-level LWW: puts upsert under
+ *      `WHERE stored.fed_ts IS NULL OR EXCLUDED.fed_ts >= stored.fed_ts`
+ *      (NULL allowed on the STORED side only — the EXCLUDED-side NULL
+ *      disjunct was the EI-117 revert hole) and dels are ts-guarded
+ *      (`fed_ts <= del.ts`) so a stale del re-applied over a newer put
+ *      matches nothing. Own-log ops on CDC-captured tables are skipped
+ *      entirely (`TableProjection.skipOwnOps`, EI-117).
+ * KNOWN BOUNDED TRANSIENT: deletes leave no PG tombstone, so a reset replay
+ * that folds an old put before its winning del re-INSERTs the row until the
+ * del re-applies (same pass, or within the backlog's passes when beyond the
+ * per-pass budget). The fixpoint always converges. Regression coverage:
+ * projections/__tests__/fed-ts-lww-guard.integration.test.ts ("post-cursor-
+ * reset double-apply safety") + ei117-replay-revert-guard.integration.test.ts.
+ * A NEW projection MUST copy this guard shape or reset replays will clobber.
+ *
  * A read that times out / rejects STOPS this pass for that log WITHOUT
  * advancing its cursor (retried next pass) — an op can be delayed, never
  * skipped. A read that resolves `null` (the version gate dropping an

@@ -40,7 +40,11 @@ vi.mock('../../backup', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
 const setFlag = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
-vi.mock('@papercusp/flags/server', () => ({ setFlag: (...a: unknown[]) => setFlag(...(a as [])) }));
+const setFlagOverride = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
+vi.mock('@papercusp/flags/server', () => ({
+  setFlag: (...a: unknown[]) => setFlag(...(a as [])),
+  setFlagOverride: (...a: unknown[]) => setFlagOverride(...(a as [])),
+}));
 const publishFlagChange = vi.fn();
 const reinitFlagBackend = vi.fn();
 vi.mock('../../flag-bus', () => ({
@@ -150,10 +154,28 @@ describe('flags public routes — mutate ship gates, auth:public (P-013)', () =>
       const res = await app().request('/flags/set', post({ key, enabled: true }));
       expect(res.status).toBe(200);
       expect(setFlag).toHaveBeenCalledWith(key, true);
+      // PostHog owns the flip now — any stale PG override is cleared (P-070).
+      expect(setFlagOverride).toHaveBeenCalledWith(key, null);
       expect(publishFlagChange).toHaveBeenCalledWith(key);
     });
     it('maps a setFlag backend failure to 502', async () => {
       setFlag.mockResolvedValue({ ok: false, reason: 'posthog_down' });
+      const res = await app().request('/flags/set', post({ key: ALL_FLAG_KEYS[0], enabled: true }));
+      expect(res.status).toBe(502);
+      expect(publishFlagChange).not.toHaveBeenCalled();
+    });
+    it('falls back to the PG override store when PostHog is not configured (P-070)', async () => {
+      const key = ALL_FLAG_KEYS[0];
+      setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+      const res = await app().request('/flags/set', post({ key, enabled: true }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, key, enabled: true, backend: 'pg-override' });
+      expect(setFlagOverride).toHaveBeenCalledWith(key, true);
+      expect(publishFlagChange).toHaveBeenCalledWith(key);
+    });
+    it('502s when neither PostHog nor the override store can take the flip', async () => {
+      setFlag.mockResolvedValue({ ok: false, reason: 'flag-backend-not-configured' });
+      setFlagOverride.mockResolvedValue({ ok: false, reason: 'override-store-not-configured' });
       const res = await app().request('/flags/set', post({ key: ALL_FLAG_KEYS[0], enabled: true }));
       expect(res.status).toBe(502);
       expect(publishFlagChange).not.toHaveBeenCalled();

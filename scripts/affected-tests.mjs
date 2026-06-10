@@ -216,21 +216,65 @@ if (dry) process.exit(0);
 // row. Default OFF so interactive `test:affected` keeps fail-fast feedback.
 const retryFailed = process.env.AFFECTED_RETRY_FAILED === '1';
 
+// HARDEN-GATE (su-85e11 proposal, landed via brief 09 2026-06-10): when a
+// workspace fails under AFFECTED_RETRY_FAILED, prefer re-running just the
+// FAILED FILES in a FRESH process over re-running the whole workspace.
+// Two flake classes the workspace-level retry handles poorly:
+//   - cross-file state poisoning (vitest-fail-on-console catching another
+//     file's late console output; shared bootstrap-graph state) — a fresh
+//     process clears it where an identical full re-run can reproduce it;
+//   - peer mid-edit transform errors on the shared tree — scoping the retry
+//     to the failed files keeps the second run cheap (seconds, not a 10k-test
+//     suite), so the gate's wall-clock stays bounded under load.
+// Parse the vitest summary for failed files; when nothing parses (e.g. a
+// non-vitest failure mode) fall back to the original full-workspace retry.
+function parseFailedFiles(out) {
+  const files = new Set();
+  // ` ❯ lib/x/y.test.ts (22 tests | 1 failed) 85ms` — failed-file summary rows
+  for (const m of out.matchAll(/^\s*❯\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\s+\([^)]*\bfailed\b[^)]*\)/gm)) {
+    files.add(m[1]);
+  }
+  // `FAIL  lib/x/y.test.ts …` — failed-suite rows (transform/setup errors)
+  for (const m of out.matchAll(/^\s*FAIL\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\b/gm)) {
+    files.add(m[1]);
+  }
+  return [...files];
+}
+const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a flake
+
 let failed = 0;
 let quarantinedFailed = 0;
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   console.log(`\n>>> ${t.ws.name} :: npm run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
-  const run = () =>
-    spawnSync('npm', ['run', t.script, '--workspace', t.ws.dir], {
-      cwd: ROOT,
-      stdio: 'inherit',
-    });
+  // Under retryFailed we must capture output to learn WHICH files failed; the
+  // interactive path keeps stdio:'inherit' for live streaming.
+  const run = (extraArgs = []) => {
+    const argv = ['run', t.script, '--workspace', t.ws.dir, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
+    if (!retryFailed) return spawnSync('npm', argv, { cwd: ROOT, stdio: 'inherit' });
+    // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
+    // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
+    const r = spawnSync('npm', argv, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    if (r.error) console.error(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
+    process.stdout.write(r.stdout ?? '');
+    process.stderr.write(r.stderr ?? '');
+    return r;
+  };
   let r = run();
   if (r.status !== 0 && retryFailed && !isQuarantined) {
-    console.warn(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
-    r = run();
-    if (r.status === 0) console.warn(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+    const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+    if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
+      console.warn(
+        `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
+      );
+      r = run(failedFiles);
+      if (r.status === 0)
+        console.warn(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
+    } else {
+      console.warn(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
+      r = run();
+      if (r.status === 0) console.warn(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+    }
   }
   if (r.status !== 0) {
     if (isQuarantined) {

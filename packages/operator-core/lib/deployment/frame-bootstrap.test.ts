@@ -88,6 +88,21 @@ describe('buildFrameBootstrap', () => {
     expect(script).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 
+  it('embedded-pg step sources the harness_admin password per-frame, not the baked dev literal (audit P-031)', () => {
+    const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv });
+    // No repo-public SUPERUSER password on a provisioned frame:
+    expect(script).not.toContain("PASSWORD 'harness_admin_pwd'");
+    expect(script).not.toContain('harness_admin:harness_admin_pwd@');
+    // Env override → random per-frame fallback, ALTER re-keys on re-bootstrap:
+    expect(script).toContain('PAPERCUSP_FRAME_PG_PASSWORD');
+    expect(script).toContain('openssl rand -hex 24');
+    expect(script).toContain('ALTER ROLE harness_admin WITH LOGIN SUPERUSER PASSWORD');
+    // DSN carries the variable, and persists 0600 for relaunches:
+    expect(script).toContain('postgresql://harness_admin:$HARNESS_ADMIN_PWD@localhost:5432/papercusp');
+    expect(script).toContain('frame-pg.env');
+    expect(script).toContain('install -m 0600');
+  });
+
   it('embeddedPg:false and orchestratorOnFrame:false drop those sections', () => {
     const { steps, script } = buildFrameBootstrap({
       harnessSlug: 'h',

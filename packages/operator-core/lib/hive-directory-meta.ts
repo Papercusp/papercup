@@ -13,7 +13,7 @@
  * after saving so a metadata change converges promptly.
  */
 
-import { loadHarnessRegistry, saveHarnessRegistry } from './harness-registry';
+import { loadHarnessRegistry, mutateHarnessRegistry } from './harness-registry';
 import type { HiveDirectoryMeta } from './hive-publish';
 
 /** All owned hive metadata for a workspace, newest-created first. */

@@ -228,6 +228,20 @@ const messagesRoute = defineTool({
       return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
     }
 
+    // Resolve the project dir IN-PROCESS (workspace-aware, live registry)
+    // BEFORE assembly. Without it the assembler falls back to its
+    // workspace-blind `lookupProjectDir`, which curls the operator base
+    // (default :3055 — not an API port) mid-request and then the legacy
+    // ~/.restart-harness-projects.json — so any harness that exists only in
+    // the live registry fails to assemble (same class as role-launch-spec
+    // step 0 / EI-220).
+    const projectDir = await projectDirForSlug(slug);
+    if (!projectDir) {
+      return Response.json({
+        error: `harness "${slug}" is not registered in workspace "${activeWorkspaceId()}"`,
+      }, { status: 404 });
+    }
+
     // Assemble the role prompt + transcript history.
     let assembled: { text: string; runId: string };
     try {
@@ -239,6 +253,7 @@ const messagesRoute = defineTool({
       const r = assembleRolePrompt({
         slug,
         role: chat.role,
+        projectDir,
         featureId: chat.feature_id ?? undefined,
         // 'discuss' (client sends it per message) reframes the worker to
         // advise-first; anything else is the default interactive chat.
@@ -280,7 +295,6 @@ const messagesRoute = defineTool({
     }
 
     activeChats.set(chatId, { startedAt: Date.now() });
-    const projectDir = await projectDirForSlug(slug);
 
     const tool = lookupByMcpName('agent_chats:chat');
     if (!tool) {

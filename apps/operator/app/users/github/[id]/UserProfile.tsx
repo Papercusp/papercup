@@ -34,6 +34,7 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 import { ContributorBadgeRow } from '@/app/_components/ContributorBadge';
+import { LazyDetails } from '@/app/_components/LazyDetails';
 import { BindingStatusBadge, type BindingStatus } from '@/app/_components/BindingStatusBadge';
 import { ClaimStatusBadge, type ClaimStatus } from '@/app/_components/ClaimStatusBadge';
 import type {
@@ -125,22 +126,28 @@ export function UserProfile(props: { data: UserProfileData }): ReactNode {
           </div>
         )}
         {u.harnesses.map((h) => (
-          <details key={h.harness_slug} style={CARD_STYLE}>
-            <summary style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
-              <a href={h.href} style={{ color: 'var(--fg)', textDecoration: 'none', fontWeight: 500 }}>
-                {h.display_title}
-              </a>
-              <ContributorBadgeRow
-                prsMerged={h.prs_merged}
-                featuresShipped={h.features_shipped}
-                activityEvents={h.activity_events}
-              />
-            </summary>
+          <LazyDetails
+            key={h.harness_slug}
+            style={CARD_STYLE}
+            summaryStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+            summary={
+              <>
+                <a href={h.href} style={{ color: 'var(--fg)', textDecoration: 'none', fontWeight: 500 }}>
+                  {h.display_title}
+                </a>
+                <ContributorBadgeRow
+                  prsMerged={h.prs_merged}
+                  featuresShipped={h.features_shipped}
+                  activityEvents={h.activity_events}
+                />
+              </>
+            }
+          >
             <div style={{ marginTop: 12, fontSize: 13, color: 'var(--fg-dim)' }}>
               Recent activity in <code>{h.harness_slug}</code>:{' '}
               {h.activity_events} events, {h.features_shipped} features shipped, {h.prs_merged} PRs merged.
             </div>
-          </details>
+          </LazyDetails>
         ))}
       </section>
 

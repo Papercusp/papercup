@@ -23,6 +23,7 @@
     "@papercusp/chat-protocol": "*",
     "@papercusp/debounce-coalesce": "*",
     "@papercusp/deployment-driver": "*",
+    "@papercusp/eval-battery": "*",
     "@papercusp/event-reaction": "*",
     "@papercusp/locks-core": "*",
     "@papercusp/model-pricing": "*",

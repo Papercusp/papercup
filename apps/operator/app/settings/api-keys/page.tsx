@@ -8,6 +8,7 @@ import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
 import RouteLink from '@/app/_components/RouteLink';
+import { LazyDetails } from '@/app/_components/LazyDetails';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -474,15 +475,19 @@ function SearchProvidersSection() {
       {data && (
         <div style={{ maxWidth: 640, display: 'grid', gap: 8 }}>
           {data.providers.map((p) => (
-            <details key={p.id} style={{
-              border: '1px solid var(--border)', borderRadius: 4, padding: '8px 12px',
-            }}>
-              <summary style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</span>
-                <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
-                  {p.fields.some((f) => f.masked) ? 'Configured' : 'Not configured'}
-                </span>
-              </summary>
+            <LazyDetails
+              key={p.id}
+              style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '8px 12px' }}
+              summaryStyle={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}
+              summary={
+                <>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</span>
+                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+                    {p.fields.some((f) => f.masked) ? 'Configured' : 'Not configured'}
+                  </span>
+                </>
+              }
+            >
               <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
                 {p.fields.map((f) => (
                   <div key={f.envVar} style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2 }}>
@@ -506,7 +511,7 @@ function SearchProvidersSection() {
                   </div>
                 ))}
               </div>
-            </details>
+            </LazyDetails>
           ))}
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             <button

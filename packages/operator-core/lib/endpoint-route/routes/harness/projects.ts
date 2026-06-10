@@ -9,15 +9,13 @@
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 44 — the final batch; harness.ts itself is empty after this).
  */
-import { existsSync, statSync } from 'node:fs';
-import { workspacesRoot } from '../../../workspace-registry';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { getLegacyClient } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   loadHarnessRegistry,
-  saveHarnessRegistry,
+  mutateHarnessRegistry,
 } from '../../../harness-registry';
 import { harnessDir } from '../../../harness-core';
 import { groupByHive, HIVE_KIND, type HiveGroupProject } from '../../../harness/hive-groups';
@@ -122,13 +120,12 @@ const list = defineTool({
     const reg = await loadHarnessRegistry();
     const filterParentSlug = url.searchParams.get('parent_slug');
 
-    let sig = `n=${reg.projects.length}|slugs=${reg.projects.map((p) => p.slug).join(',')}`;
-    try {
-      const wsPath = join(workspacesRoot(), 'registry.json');
-      const legacyPath = join(homedir(), '.restart-harness-projects.json');
-      if (existsSync(wsPath)) sig += `|m=${statSync(wsPath).mtimeMs}`;
-      if (existsSync(legacyPath)) sig += `|lm=${statSync(legacyPath).mtimeMs}`;
-    } catch { /* ignore */ }
+    // The registry is PG-canonical (mig 025) — derive the signature from its
+    // CONTENTS. The previous signature additionally stat'd two dead files
+    // (<workspace-root>/registry.json + ~/.restart-harness-projects.json),
+    // so path/hive edits with an unchanged slug list never busted the cache
+    // (audit P-005).
+    const sig = JSON.stringify(reg.projects);
 
     const now = Date.now();
     const TTL_MS = 5_000;
@@ -138,33 +135,45 @@ const list = defineTool({
       if (!__projectsCache.inflight || __projectsCache.sig !== sig) {
         __projectsCache.sig = sig;
         __projectsCache.inflight = (async () => {
+          // ONE batched probe on the shared org pool (audit P-005, EI-64).
+          // The previous shape opened a PER-SLUG PG pool per project
+          // (getLegacyClient(slug) → getHarnessPg) to query harness_features —
+          // a relation that no longer exists (consolidated; see EI-213) — so
+          // it burned N pools per rebuild to always compute hasState=false.
+          // work_items is the unified work surface (D-015) the old probe's
+          // "has pipeline state" semantics map to.
+          let hasStateSlugs = new Set<string>();
+          try {
+            const { sql } = getOrgPg();
+            const slugs = reg.projects.map((p) => p.slug);
+            const rows = await sql<{ harness_slug: string }[]>`
+              SELECT DISTINCT harness_slug
+                FROM harness_shared.work_items
+               WHERE harness_slug = ANY(${slugs})
+            `;
+            hasStateSlugs = new Set(rows.map((r) => r.harness_slug));
+          } catch { /* degrade: hasState=false for all, as before */ }
           const out = await Promise.all(reg.projects.map(async (p) => {
             const hDir = harnessDir(p);
             const cfgPath = join(p.path, '.papercusp', 'config.json');
             const specPath = join(p.path, 'SPEC.md');
-            const [parentSlug, hasState, hasSpec] = await Promise.all([
-              (async (): Promise<string | null> => {
-                try {
-                  if (!existsSync(cfgPath)) return null;
-                  const txt = await readFile(cfgPath, 'utf8');
-                  const j = JSON.parse(txt);
-                  return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
-                } catch {
-                  return null;
-                }
-              })(),
-              (async (): Promise<boolean> => {
-                try {
-                  const c2 = getLegacyClient(p.slug);
-                  const row = await c2.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? LIMIT 1').get(p.slug);
-                  return !!row;
-                } catch {
-                  return false;
-                }
-              })(),
-              (async (): Promise<boolean> => existsSync(specPath))(),
-            ]);
-            return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug: parentSlug };
+            const parentSlug = await (async (): Promise<string | null> => {
+              try {
+                if (!existsSync(cfgPath)) return null;
+                const txt = await readFile(cfgPath, 'utf8');
+                const j = JSON.parse(txt);
+                return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
+              } catch {
+                return null;
+              }
+            })();
+            return {
+              ...p,
+              hasState: hasStateSlugs.has(p.slug),
+              hasSpec: existsSync(specPath),
+              harnessDir: hDir,
+              parent_slug: parentSlug,
+            };
           }));
           __projectsCache.value = out;
           __projectsCache.expires = Date.now() + TTL_MS;
@@ -287,10 +296,22 @@ const create = defineTool({
 
     // FORMAL membership rides on the registry entry; legacy membership is written
     // to the new harness's config.json below (after the dir exists).
-    reg.projects.push(
-      membership?.kind === 'hive_slug' ? { slug, path, hive_slug: membership.value } : { slug, path },
-    );
-    await saveHarnessRegistry(reg);
+    // Atomic insert (audit P-006 / EI-82): the dup check at the top of the
+    // handler raced any concurrent register between our read and this save —
+    // re-check inside the serialized mutation.
+    let dupRace = false;
+    await mutateHarnessRegistry((cur) => {
+      if (cur.projects.some((p) => p.slug === slug)) {
+        dupRace = true;
+        return cur;
+      }
+      const entry =
+        membership?.kind === 'hive_slug' ? { slug, path, hive_slug: membership.value } : { slug, path };
+      return { ...cur, projects: [...cur.projects, entry] };
+    });
+    if (dupRace) {
+      return Response.json({ error: 'slug already exists' }, { status: 409 });
+    }
 
     // Legacy `parent_slug` membership (the Phase-1 edge): self-describing in the
     // new harness's .papercusp/config.json, same shape registerSubs writes.
@@ -397,13 +418,22 @@ const remove = defineTool({
   auth: 'public',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
-    const reg = await loadHarnessRegistry();
-    const before = reg.projects.length;
-    reg.projects = reg.projects.filter((p) => p.slug !== slug);
-    if (reg.projects.length === before) return Response.json({ error: 'not found' }, { status: 404 });
+    // Atomic remove (audit P-006 / EI-82): the old load→filter→save raced any
+    // concurrent registry write — the second save reverted the first.
+    let removed = false;
     // Intentional-removal path: deleting the last harness legitimately
     // empties the registry, so opt out of the catastrophic-empty guard.
-    await saveHarnessRegistry(reg, undefined, { allowEmpty: true });
+    await mutateHarnessRegistry((cur) => {
+      const projects = cur.projects.filter((p) => p.slug !== slug);
+      if (projects.length === cur.projects.length) return cur;
+      removed = true;
+      return { ...cur, projects };
+    }, undefined, { allowEmpty: true });
+    if (!removed) return Response.json({ error: 'not found' }, { status: 404 });
+    // Bust the registry caches so the removed harness disappears immediately.
+    const g = globalThis as LiteGlobals;
+    delete g[__liteKey];
+    __projectsCache.expires = 0;
     return Response.json({ ok: true });
   },
 });
@@ -527,7 +557,15 @@ const registerSubs = defineTool({
     }
 
     if (registered.length > 0 || reconciled.length > 0) {
-      await saveHarnessRegistry(reg);
+      // Atomic re-apply against the CURRENT registry (audit P-006 / EI-82):
+      // the walk above worked on a snapshot; re-insert only what's still new.
+      await mutateHarnessRegistry((cur) => {
+        const have = new Set(cur.projects.map((p) => p.slug));
+        const additions = registered
+          .filter((r) => !have.has(r.slug))
+          .map((r) => ({ slug: r.slug, path: r.path, harness_kind: 'sub-harness' }));
+        return additions.length > 0 ? { ...cur, projects: [...cur.projects, ...additions] } : cur;
+      });
       // Bust the lite-cache so consumers see the new tree on next poll.
       const g = globalThis as LiteGlobals;
       delete g[__liteKey];

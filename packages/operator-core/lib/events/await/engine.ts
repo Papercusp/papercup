@@ -146,7 +146,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
 // ── the pump ──────────────────────────────────────────────────────────────────
 
-let pumpInFlight = false;
+// Keyed per workspace (audit P-033): a single module-global boolean made workspace
+// A's in-flight pump silently swallow workspace B's emit kick — the kick is
+// fire-and-forget, so the dropped tick was invisible and B's wakes starved until
+// the next sweep. Concurrent pumps for DIFFERENT workspaces are safe (claiming is
+// SKIP LOCKED and workspace-scoped); the guard only exists to stop one workspace
+// from pumping itself reentrantly.
+const pumpsInFlight = new Set<string>();
 
 export interface PumpStats {
   claimed: number;
@@ -194,10 +200,10 @@ function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
  */
 export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWakeDeps = {}): Promise<PumpStats> {
   const stats: PumpStats = { claimed: 0, delivered: 0, parked: 0, dropped: 0, failed: 0, deferred: 0, coalesced: 0 };
-  if (pumpInFlight) return stats;
-  pumpInFlight = true;
+  const ws = workspaceId ?? activeWorkspaceId();
+  if (pumpsInFlight.has(ws)) return stats;
+  pumpsInFlight.add(ws);
   try {
-    const ws = workspaceId ?? activeWorkspaceId();
     const claimed = await claimDueDeliveries({ limit: 25, workspaceId: ws });
     stats.claimed = claimed.length;
     if (claimed.length === 0) return stats;
@@ -339,7 +345,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     }
     return stats;
   } finally {
-    pumpInFlight = false;
+    pumpsInFlight.delete(ws);
   }
 }
 

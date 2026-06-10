@@ -1131,12 +1131,12 @@ export default function VoiceSettingsPage() {
         </LazyDetails>
       </section>
 
-      {/* ── PRECEDENCE MATRIX (debugging aid, lazy via <details>) ──── */}
+      {/* ── PRECEDENCE MATRIX (debugging aid, lazy-mounted) ─────────── */}
       <section className="pc-settings-section">
-        <details>
-          <summary style={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}>
-            Why isn't anything speaking? (precedence matrix)
-          </summary>
+        <LazyDetails
+          summaryStyle={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}
+          summary={<>Why isn&apos;t anything speaking? (precedence matrix)</>}
+        >
           <p style={hint}>If voice isn't working, check this top-to-bottom.</p>
           <pre style={{ fontSize: 11, padding: 12, background: 'var(--bg-1)', borderRadius: 4, overflow: 'auto' }}>{`
               global  per-feature  paused   tutorial   leader-tab  result
@@ -1149,7 +1149,7 @@ paused        on      on           paused   any        leader      only "pause" 
 pre-tutorial  on      on           any      false      leader      silent
 all clear     on      on           running  true       leader      speaks
 `}</pre>
-        </details>
+        </LazyDetails>
       </section>
 
       {/* ── WEB SPEECH LEAK WARNING MODAL ────────────────────────── */}

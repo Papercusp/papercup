@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectFromRepo, detectionToOverride } from './detect-from-repo';
+import { detectFromRepo, detectionToOverride, splitTestCommandArgv } from './detect-from-repo';
 import { resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 
 const created: string[] = [];

@@ -651,8 +651,14 @@ export async function dispatchOneHarness(
       if (r.started) started.push(fid);
     }
     return { harness: slug, started };
-  } catch {
-    // Per-harness isolation: a bad slug / unreachable schema doesn't sink the sweep.
+  } catch (err) {
+    // Per-harness isolation: a bad slug / unreachable schema doesn't sink the sweep —
+    // but say WHY this tick produced nothing (audit P-035: the silent empty result
+    // made real faults — dropped schemas, bad SQL — look like "no work to start").
+    console.warn(
+      `[dbos-dispatch] ${slug} tick failed (non-fatal):`,
+      err instanceof Error ? err.message : err,
+    );
     return { harness: slug, started: [] };
   } finally {
     await pg.end({ timeout: 2 }).catch(() => {});

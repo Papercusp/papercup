@@ -26,6 +26,10 @@ interface LazyDetailsProps {
   style?: CSSProperties;
   /** Style passed to the <summary>. */
   summaryStyle?: CSSProperties;
+  /** Class passed to the outer <details>. */
+  className?: string;
+  /** Class passed to the <summary>. */
+  summaryClassName?: string;
 }
 
 export function LazyDetails({
@@ -34,19 +38,22 @@ export function LazyDetails({
   defaultOpen = false,
   style,
   summaryStyle,
+  className,
+  summaryClassName,
 }: LazyDetailsProps) {
   const [opened, setOpened] = useState(defaultOpen);
   const ref = useRef<HTMLDetailsElement>(null);
   return (
     <details
       ref={ref}
+      className={className}
       style={style}
       open={defaultOpen || undefined}
       onToggle={() => {
         if (ref.current?.open && !opened) setOpened(true);
       }}
     >
-      <summary style={summaryStyle}>{summary}</summary>
+      <summary className={summaryClassName} style={summaryStyle}>{summary}</summary>
       {opened ? children : null}
     </details>
   );

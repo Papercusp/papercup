@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
+import { LazyDetails } from '@/app/_components/LazyDetails';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
@@ -455,8 +456,7 @@ export default function TablesTab() {
                 </p>
               )}
               {detail.foreignKeys.length > 0 && (
-                <details className="pc-tables-details">
-                  <summary>{detail.foreignKeys.length} foreign keys</summary>
+                <LazyDetails className="pc-tables-details" summary={`${detail.foreignKeys.length} foreign keys`}>
                   <ul>
                     {detail.foreignKeys.map((fk, i) => (
                       <li key={i}>
@@ -464,11 +464,10 @@ export default function TablesTab() {
                       </li>
                     ))}
                   </ul>
-                </details>
+                </LazyDetails>
               )}
               {detail.indexes.length > 0 && (
-                <details className="pc-tables-details">
-                  <summary>{detail.indexes.length} indexes</summary>
+                <LazyDetails className="pc-tables-details" summary={`${detail.indexes.length} indexes`}>
                   <ul>
                     {detail.indexes.map((i) => (
                       <li key={i.name}>
@@ -476,7 +475,7 @@ export default function TablesTab() {
                       </li>
                     ))}
                   </ul>
-                </details>
+                </LazyDetails>
               )}
             </section>
 

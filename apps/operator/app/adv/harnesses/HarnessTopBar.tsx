@@ -131,12 +131,12 @@ export default function HarnessTopBar({ slug }: Props) {
         {slug && (
           <AddPanelCatalog
             defaultSlug={slug}
-            allowedTypes={['adv:features', 'adv:issues', 'adv:detail', 'adv:overview', 'adv:agents', 'adv:logs', 'adv:contributors', 'adv:insights']}
+            allowedTypes={['adv:work-items', 'adv:detail', 'adv:overview', 'adv:agents', 'adv:logs', 'adv:contributors', 'adv:insights']}
             className="pc-adv-topbar__add-panel"
           />
         )}
         {slug && (
-          <Tooltip label="Reset this harness's panel layout to the default 3-pane split">
+          <Tooltip label="Reset this harness's panel layout to the default Work items / Detail split">
             <button
               type="button"
               className="pc-adv-topbar__reset-layout"

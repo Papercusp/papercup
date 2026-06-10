@@ -12,8 +12,6 @@ import {
   setPanelParams,
   setPanelTitle,
 } from '../../harness/dock/dock-actions';
-import FeaturesPanel from './FeaturesPanel';
-import IssuesPanel from './IssuesPanel';
 import WorkItemsPanel from './WorkItemsPanel';
 import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
@@ -62,8 +60,6 @@ function openChatInDock(d: OpenChatEventDetail): void {
 let registered = false;
 function ensureRegistered() {
   if (registered) return;
-  panelRegistry.register('adv:features', FeaturesPanel, { title: 'Features' });
-  panelRegistry.register('adv:issues', IssuesPanel, { title: 'Issues' });
   panelRegistry.register('adv:detail', DetailPanel, { title: 'Detail' });
   panelRegistry.register('adv:pinned', DetailPanel, { title: 'Pinned' });
   // Git is no longer a Harness-page panel — it has its own /adv Git dock
@@ -77,11 +73,11 @@ function ensureRegistered() {
   panelRegistry.register('adv:insights', AdvInsightsPanel, { title: 'Insights' });
   // Phase-8 Contributors tab (P-048) — openable from the panel menu (additive).
   panelRegistry.register('adv:contributors', AdvContributorsPanel, { title: 'Contributors' });
-  // P-010 (blueprint-aware-harness-ui-2026-06-09): the unified work_items view — the
-  // features/issues view ported onto the unified work_items surface (one table across
-  // both families, surfacing kind/assignee/claim/severity/priority/rank). Additive +
-  // openable from the panel menu; full replacement of adv:features/adv:issues + the
-  // spine-position/plan-link joins are the follow-up.
+  // P-010 (blueprint-aware-harness-ui-2026-06-09): the unified work_items view — one
+  // table across both families (feature + issue), surfacing kind/assignee/claim/
+  // severity/priority/rank + the plan-link/spine-position joins. This REPLACED the
+  // legacy adv:features/adv:issues panels (retired 2026-06-10; row-click drives the
+  // same `?sel` the Detail pane reads).
   panelRegistry.register('adv:work-items', WorkItemsPanel, { title: 'Work items' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
@@ -93,8 +89,10 @@ function ensureRegistered() {
 /**
  * Mounts the dockview shell for /adv/harnesses with a layout name
  * keyed by harness slug. The seed (`defaultAdvHarnessesLayout` in
- * lib/dock-layouts.ts) is a three-pane 25/25/50 split: Features,
- * Issues, and a persistent Detail pane.
+ * operator-core lib/dock-layouts.ts) is a two-pane split: Work items
+ * over a persistent Detail pane. (`adv-harnesses2` — bumped from
+ * `adv-harnesses` when the Features/Issues panels were retired, so old
+ * persisted rows don't hydrate now-unregistered panel types.)
  *
  * When the user switches slug, `listPanels()` is walked and each
  * panel's `harnessSlug` param is rebound — same trick `HarnessDockShell`
@@ -105,7 +103,7 @@ export default function HarnessesDock({ slug }: { slug: string }) {
     ensureRegistered();
   }, []);
 
-  const layoutName = slug ? `adv-harnesses:${slug}` : 'adv-harnesses';
+  const layoutName = slug ? `adv-harnesses2:${slug}` : 'adv-harnesses2';
 
   useEffect(() => {
     if (!slug) return;

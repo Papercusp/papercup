@@ -16,7 +16,7 @@
 
 import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
 import { getOrgPg } from '@papercusp/db-org';
-import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 
 export interface ProjectEntry {
@@ -154,10 +154,68 @@ export async function saveHarnessRegistry(
 
   await writeOperatorState(
     'harness_registry',
-    { projects: next, ...(reg.hiveControlFrames ? { hiveControlFrames: reg.hiveControlFrames } : {}) },
+    {
+      projects: next,
+      ...(reg.hiveControlFrames ? { hiveControlFrames: reg.hiveControlFrames } : {}),
+      // Was silently dropped on every save before 2026-06-10 (audit P-006
+      // adjacency) — any registry write wiped the Hive directory metadata.
+      ...(reg.hiveDirectoryMeta ? { hiveDirectoryMeta: reg.hiveDirectoryMeta } : {}),
+    },
     workspaceId,
   );
   if (next.length !== prevCount) {
     await auditRegistryWrite(ws, prevCount, next.length);
   }
+}
+
+/**
+ * Atomic read-modify-write on the registry (audit P-006 / EI-82).
+ *
+ * `loadHarnessRegistry()` + mutate + `saveHarnessRegistry()` is a lost-update
+ * race: two concurrent mutators (e.g. a POST create and a DELETE) both read,
+ * then the second save silently reverts the first. This helper runs the
+ * mutator inside the operator-state row's `SELECT … FOR UPDATE` transaction,
+ * so concurrent mutations serialize and each sees the previous committed
+ * value.
+ *
+ * The mutator must return the FULL next registry (return `reg` unchanged to
+ * no-op). The catastrophic-empty guard applies unless `opts.allowEmpty`.
+ */
+export async function mutateHarnessRegistry(
+  mutator: (reg: HarnessRegistry) => HarnessRegistry,
+  workspaceId?: string,
+  opts: SaveRegistryOptions = {},
+): Promise<HarnessRegistry> {
+  const ws = workspaceId ?? activeWorkspaceId();
+  let prevCount = 0;
+  let nextCount = 0;
+  const next = await updateOperatorState<HarnessRegistry>(
+    'harness_registry',
+    { projects: [] },
+    (raw) => {
+      const current: HarnessRegistry = {
+        projects: raw?.projects ?? [],
+        ...(raw?.hiveControlFrames ? { hiveControlFrames: raw.hiveControlFrames } : {}),
+        ...(raw?.hiveDirectoryMeta ? { hiveDirectoryMeta: raw.hiveDirectoryMeta } : {}),
+      };
+      prevCount = current.projects.length;
+      const mutated = mutator(current);
+      const nextProjects = mutated.projects ?? [];
+      nextCount = nextProjects.length;
+      if (nextCount === 0 && prevCount > 0 && !opts.allowEmpty) {
+        // Throwing rolls the FOR UPDATE transaction back.
+        throw new Error(
+          `mutateHarnessRegistry refused: emptying ${prevCount} project(s) in workspace ` +
+            `'${ws}' requires { allowEmpty: true }. Only intentional-removal paths ` +
+            `(project delete / installed prune) should pass it.`,
+        );
+      }
+      return mutated;
+    },
+    workspaceId,
+  );
+  if (nextCount !== prevCount) {
+    await auditRegistryWrite(ws, prevCount, nextCount);
+  }
+  return next;
 }

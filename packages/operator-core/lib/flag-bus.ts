@@ -15,9 +15,12 @@ import { getChannel } from '@papercusp/sse';
 import {
   emitFlagChange,
   initFlagBackend,
+  initFlagOverrideStore,
   isBackendConfigured,
 } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
+
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 import {
   getPosthogConfig,
@@ -81,6 +84,30 @@ export function reinitFlagBackend(): void {
 // take effect without an operator restart.
 setOnConfigChange(() => reinitFlagBackend());
 watchPosthogConfig();
+
+// PG-backed runtime overrides (audit P-070, EI-76): registered
+// unconditionally — independent of the PostHog opt-in — so a dev box with
+// no PostHog can flip flags at runtime via /api/flags/set instead of a
+// PAPERCUSP_FLAG_* env var + process restart. The flags lib layers these
+// between test overrides and PostHog, behind a short read cache.
+initFlagOverrideStore({
+  async load() {
+    return (
+      (await readOperatorState<Partial<Record<FlagKey, boolean>>>(
+        'operator_flag_overrides',
+      )) ?? {}
+    );
+  },
+  async set(key, enabled) {
+    const current =
+      (await readOperatorState<Partial<Record<FlagKey, boolean>>>(
+        'operator_flag_overrides',
+      )) ?? {};
+    if (enabled === null) delete current[key];
+    else current[key] = enabled;
+    await writeOperatorState('operator_flag_overrides', current);
+  },
+});
 
 export function getFlagBus() {
   bootIfNeeded();

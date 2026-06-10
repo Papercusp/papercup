@@ -339,23 +339,23 @@ describe('default seeds', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('defaultAdvHarnessesLayout is the two-row Features|Issues-over-Detail shape', () => {
+  it('defaultAdvHarnessesLayout is the two-row WorkItems-over-Detail shape', () => {
     const seed = defaultAdvHarnessesLayout('papercup');
     expect(() => validateLayoutDoc(seed)).not.toThrow();
     expect(seed.schemaVersion).toBe(CURRENT_LAYOUT_SCHEMA_VERSION);
-    // Root is a column: [ top row, detail ].
+    // Root is a column: [ work items, detail ].
     expect(seed.root.kind).toBe('group');
     if (seed.root.kind !== 'group') throw new Error('root not a group');
     expect(seed.root.direction).toBe('col');
     expect(seed.root.children).toHaveLength(2);
 
-    // Top: a row group containing Features (left) + Issues (right).
-    const [topRow, detail] = seed.root.children;
-    expect(topRow.kind).toBe('group');
-    if (topRow.kind !== 'group') throw new Error('top not a group');
-    expect(topRow.direction).toBe('row');
-    const topTypes = topRow.children.map((c) => (c.kind === 'tabs' ? c.panels[0]?.type : null));
-    expect(topTypes).toEqual(['adv:features', 'adv:issues']);
+    // Top: the unified work-items grid, full width (the retired
+    // Features | Issues pair must NOT reappear — their panel types are
+    // unregistered and would hydrate as MissingPanel).
+    const [workItems, detail] = seed.root.children;
+    expect(workItems.kind).toBe('tabs');
+    if (workItems.kind !== 'tabs') throw new Error('top not tabs');
+    expect(workItems.panels[0]?.type).toBe('adv:work-items');
 
     // Bottom: Detail, full width.
     expect(detail.kind).toBe('tabs');
@@ -378,7 +378,7 @@ describe('default seeds', () => {
       }
     }
     walk(seed.root);
-    expect(slugs).toEqual(['papercup', 'papercup', 'papercup']);
+    expect(slugs).toEqual(['papercup', 'papercup']);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -398,11 +398,15 @@ describe('seedForDockName (shared seed/reset routing)', () => {
     expect(seedForDockName('adv-git2')).toEqual(defaultAdvGitLayout(''));
     expect(seedForDockName('adv-git2:papercup')).toEqual(defaultAdvGitLayout('papercup'));
   });
-  it('routes adv-harnesses to the harnesses seed, propagating the slug', () => {
-    expect(seedForDockName('adv-harnesses')).toEqual(defaultAdvHarnessesLayout(''));
-    expect(seedForDockName('adv-harnesses:papercup')).toEqual(
+  it('routes adv-harnesses2 to the harnesses seed, propagating the slug', () => {
+    expect(seedForDockName('adv-harnesses2')).toEqual(defaultAdvHarnessesLayout(''));
+    expect(seedForDockName('adv-harnesses2:papercup')).toEqual(
       defaultAdvHarnessesLayout('papercup'),
     );
+    // The pre-bump name no longer routes to the harnesses seed — old persisted
+    // rows (which still reference the retired adv:features/adv:issues types)
+    // must not be re-seeded onto the live dock name.
+    expect(seedForDockName('adv-harnesses')).toEqual(defaultDashboardLayout(''));
   });
   it('falls back to the dashboard seed for dashboard:/default/unknown names', () => {
     expect(seedForDockName('dashboard:papercup')).toEqual(defaultDashboardLayout('papercup'));

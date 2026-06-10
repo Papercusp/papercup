@@ -184,6 +184,17 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     taken_by: strOrNull(row.taken_by),
     taken_at: isoOrMsToEpochMs(row.taken_at),
     expires_at: isoOrMsToEpochMs(row.expires_at),
+    // Work-item dispatch columns (D-013 + dispatch-scaling): without these a
+    // Queen reorder / swarm pin / redundancy declaration never federated and
+    // remote swarms never saw steering (su-ae509 2026-06-10). payload stays
+    // jsonb-opaque. Per-assignee ordering (assignee_rank/rank_writer/
+    // rank_updated_at) is deliberately NOT federated — it is local work-list
+    // state, same call as engineer_issues below.
+    item_kind: strOrNull(row.item_kind),
+    feature_order: numOrNull(row.feature_order),
+    swarm_affinity: strOrNull(row.swarm_affinity),
+    redundancy: numOrNull(row.redundancy),
+    payload: row.payload ?? null,
   };
 }
 

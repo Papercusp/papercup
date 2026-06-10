@@ -115,6 +115,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
     await sql.unsafe(migrationDdl('179-iq-battery-corpus.sql'));
     await sql.unsafe(migrationDdl('180-beekeeper-runner.sql'));
+    await sql.unsafe(migrationDdl('217-beekeeper-repeats-and-gen0-uniqueness.sql'));
   }, 120_000);
 
   afterAll(async () => {
@@ -246,7 +247,9 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     // One outcome per (case × repeat) — the orchestrator iterates repeats.
     expect(result.outcomes.length).toBe(2);
     const scored = result.outcomes.filter((o) => o.status === 'scored').length;
-    expect(scored).toBeGreaterThanOrEqual(1);
+    // BOTH repeats must score (EI-164: the old UNIQUE(instance_id, case_id)
+    // errored repeat 2, and `scored >= 1` masked it — mig 217 dropped it).
+    expect(scored).toBe(2);
     // Invariant: exactly the scored runs are persisted (one beekeeper_run each).
     const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
     expect(Number(runs)).toBe(scored);

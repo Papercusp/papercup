@@ -171,7 +171,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
                 </span>
               </div>
               <div className="pc-adv-ov__bar">
-                <div className="pc-adv-ov__bar-fill" style={{ width: `${stats.pct}%` }} />
+                <div className="pc-adv-ov__bar-fill" style={{ transform: `scaleX(${stats.pct / 100})` }} />
               </div>
             </div>
           ) : null}
@@ -256,7 +256,7 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
           height: 4px; border-radius: 2px; overflow: hidden;
           background: color-mix(in oklab, var(--border), transparent 25%);
         }
-        .pc-adv-ov__bar-fill { height: 100%; background: var(--good, #4ade80); transition: width 0.3s; }
+        .pc-adv-ov__bar-fill { height: 100%; width: 100%; background: var(--good, #4ade80); transform-origin: left; transition: transform 0.3s; }
         .pc-adv-ov__counts { display: flex; flex-direction: column; gap: 4px; }
         .pc-adv-ov__count { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
         .pc-adv-ov__count-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; align-self: center; }

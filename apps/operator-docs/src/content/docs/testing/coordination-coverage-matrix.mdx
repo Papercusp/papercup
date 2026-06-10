@@ -119,6 +119,23 @@ Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6,
 | authority unreachable → fail-open, local advisory grant | 🟢 generic leg | ✅ file-lock leg |
 | unmanaged domain → pure local, zero wire traffic | 🟢 | ✅ |
 
+### Lock authority — failover mid-hold + fencing (C2/C3)
+
+Files: `lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts` (7, plan `coord-system-e2e-testing-2026-06-10` P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + `authority-failover-flood.integration.test.ts` (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig `_two-instance-authority-rig.ts`: two simulated machines with per-instance stores + the REAL handlers (`buildFileLockAuthorityHandlers`), hardened verification (`resolveHardenedAuthority`), and the D-005 `LockSetReconstructor` handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).
+
+| Cell | Before | Now |
+|---|---|---|
+| authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire | ❌ pure parts only | 🔴 composed over the wire |
+| epoch bumps on takeover; deposed authority's stale-epoch grant fenced out downstream (`fenceValid`) | 🟢 pure | ✅ E2E |
+| deposed authority refuses mis-routed ops (`not_authority`) → requester fails open loud | ❌ | 🔴 |
+| optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such) | ❌ | 🔴 |
+| cross-wire release at the NEW authority frees the contender post-rebuild | ❌ | 🔴 |
+| anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after | 🟢 pure | ✅ E2E |
+| FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover) | ❌ | 🔴 flood test |
+| re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after | ❌ | 🔴 flood test |
+| fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable) | ❌ | 🔴 flood test |
+| holder→authority heartbeat re-assert op over the production transport | ❌ | ⚪ rig-local `lock.assert` op kind — the production heartbeat-op wiring is a residual (logged below) |
+
 ### Federation (C2/C3)
 
 File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 tests, real two-peer DHT).
@@ -205,6 +222,14 @@ Both legs verified green on this box (claude 2.1.169, codex).
   Tracked in `coord-system-e2e-testing-2026-06-10` (P-006 note; the two-box
   variant is P-010, owner-gated). Not silent: the fail-open path itself is
   covered by the cells above.
+- **Holder→authority heartbeat re-assert as a production op kind.** The D-005
+  handover protocol (holders re-assert held locks to a new authority; the
+  `LockSetReconstructor` rebuilds within one heartbeat interval) is proven E2E
+  with a rig-local `lock.assert` op. Production wiring — a `lock.assert` kind in
+  `file-lock-authority-ops.ts` fired from the locks heartbeat path on authority
+  change — is not built yet. Until it is, a failover's rebuild window behaves as
+  pure fail-open (D-004). Tracked in `coord-system-e2e-testing-2026-06-10`
+  (P-007 note).
 - The two gaps logged at first publication (interactive-claude config
   isolation, real resume spawn) are both closed above.
 </Aside>

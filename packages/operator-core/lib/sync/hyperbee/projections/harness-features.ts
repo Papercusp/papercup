@@ -48,6 +48,21 @@ export interface HarnessFeatureRow {
   taken_by: string | null;
   taken_at: number | null;             // epoch ms → TIMESTAMPTZ via to_timestamp
   expires_at: number | null;
+  /**
+   * Work-item DISPATCH columns (unify-work-items D-013 + dispatch-scaling):
+   * kind discriminator, wave order, swarm pinning, redundancy opt-in, and the
+   * kind-specific payload. Without these a Queen reorder / redundancy
+   * declaration never federates — remote swarms never see steering (found by
+   * su-ae509 2026-06-10, blocks shared-hive-loop P-001). OPTIONAL on the wire:
+   * ops appended before this change lack them, and replaying that history must
+   * keep decoding (the guard accepts undefined; writeToPg maps absent → NULL,
+   * item_kind → its PG default).
+   */
+  item_kind?: string | null;
+  feature_order?: number | null;
+  swarm_affinity?: string | null;
+  redundancy?: number | null;
+  payload?: unknown;                   // JSONB blob — opaque to projection
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -78,7 +93,13 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (!isStringOrNull(r.taken_by)) return false;
   if (!isNumberOrNull(r.taken_at)) return false;
   if (!isNumberOrNull(r.expires_at)) return false;
-  // metadata + tags are JSONB blobs; accept anything (including null/missing).
+  // Dispatch columns are OPTIONAL on the wire (absent in pre-2026-06-10 log
+  // history) — tolerate undefined, validate when present.
+  if (r.item_kind !== undefined && !isStringOrNull(r.item_kind)) return false;
+  if (r.feature_order !== undefined && !isNumberOrNull(r.feature_order)) return false;
+  if (r.swarm_affinity !== undefined && !isStringOrNull(r.swarm_affinity)) return false;
+  if (r.redundancy !== undefined && !isNumberOrNull(r.redundancy)) return false;
+  // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }
 
@@ -121,6 +142,7 @@ async function writeToPg(
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
        ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
+       item_kind, feature_order, swarm_affinity, redundancy, payload,
        author_pubkey, origin, fed_ts)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -132,6 +154,10 @@ async function writeToPg(
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
        ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`},
+       -- Dispatch columns: item_kind is NOT NULL DEFAULT 'feature' in PG, so an
+       -- op that doesn't carry it (pre-2026-06-10 history) inserts the default.
+       ${row.item_kind ?? 'feature'}, ${row.feature_order ?? null}, ${row.swarm_affinity ?? null}, ${row.redundancy ?? null},
+       ${row.payload == null ? null : JSON.stringify(normalizeJsonbInput(row.payload))}::text::jsonb,
        ${authorPubkey}, ${origin}, ${fedTs})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -154,6 +180,15 @@ async function writeToPg(
       taken_by = EXCLUDED.taken_by,
       taken_at = EXCLUDED.taken_at,
       expires_at = EXCLUDED.expires_at,
+      -- item_kind is the immutable discriminator: never let an op that doesn't
+      -- carry it (defaulted to 'feature' above) flip a research-task/chunk back.
+      item_kind = CASE WHEN harness_features_consolidated.item_kind <> 'feature'
+                       THEN harness_features_consolidated.item_kind
+                       ELSE EXCLUDED.item_kind END,
+      feature_order = EXCLUDED.feature_order,
+      swarm_affinity = EXCLUDED.swarm_affinity,
+      redundancy = EXCLUDED.redundancy,
+      payload = EXCLUDED.payload,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts

@@ -62,6 +62,12 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe('Why this rewrite is happening. Provide on begin or commit; commit prefers the explicit value if both are present.'),
+  allowShrink: z
+    .boolean()
+    .optional()
+    .describe(
+      'Commit rejects a body under 20% of the live plan as a probable mass deletion (`suspicious_shrink`) unless this is true. Provide on begin or commit; commit prefers the explicit value. On a suspicious_shrink rejection the draft is KEPT — re-commit with allowShrink: true if the shrink is intentional.',
+    ),
 });
 
 type ChunkOp = z.infer<typeof argsSchema>['op'];
@@ -72,6 +78,7 @@ interface DraftMeta {
   harnessSlug: string | null;
   expectedHash?: string;
   rationale?: string;
+  allowShrink?: boolean;
   createdAt: string;
   updatedAt: string;
   bytes: number;
@@ -80,7 +87,7 @@ interface DraftMeta {
 
 type ChunkValue =
   | { ok: true; op: ChunkOp; slug: string; draftId: string; bytes: number; chunks: number; contentHash?: string; filePath?: string; revision?: { seq: number } | null }
-  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'would_orphan_frontmatter' | 'lint_failed'; slug: string; draftId?: string; currentHash?: string; errors?: unknown[] };
+  | { ok: false; code: 'missing_draft_id' | 'missing_chunk' | 'draft_not_found' | 'draft_mismatch' | 'not_found' | 'stale' | 'suspicious_shrink' | 'would_orphan_frontmatter' | 'lint_failed'; slug: string; draftId?: string; currentHash?: string; currentLength?: number; proposedLength?: number; errors?: unknown[] };
 
 function nowISO(): string {
   return new Date().toISOString();
@@ -129,11 +136,55 @@ async function removeDraft(draftId: string): Promise<void> {
   ]);
 }
 
+/** Drafts older than this are abandoned (crashed caller, never-committed
+ *  stream) and swept by the lazy janitor below (audit P-043). */
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+/** The janitor is a cheap readdir+stat, but there's no reason to run it
+ *  more than ~hourly per process. Process-local throttle, not state. */
+const SWEEP_MIN_INTERVAL_MS = 60 * 60 * 1000;
+let lastSweepAt = 0;
+
+export async function sweepStaleDrafts(now = Date.now()): Promise<number> {
+  let names: string[];
+  try {
+    names = await fs.readdir(DRAFT_DIR);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw e;
+  }
+  let swept = 0;
+  await Promise.all(
+    names.map(async (name) => {
+      const p = path.join(DRAFT_DIR, name);
+      try {
+        const st = await fs.stat(p);
+        if (now - st.mtimeMs > DRAFT_TTL_MS) {
+          await fs.rm(p, { force: true });
+          swept += 1;
+        }
+      } catch {
+        /* raced with a concurrent remove — fine */
+      }
+    }),
+  );
+  return swept;
+}
+
+function maybeSweepStaleDrafts(): void {
+  const now = Date.now();
+  if (now - lastSweepAt < SWEEP_MIN_INTERVAL_MS) return;
+  lastSweepAt = now;
+  void sweepStaleDrafts(now).catch(() => {
+    /* best-effort janitor — never affects the caller's op */
+  });
+}
+
 export function appendChunkToContent(content: string, chunk: string | undefined): string {
   return chunk === undefined ? content : content + chunk;
 }
 
 async function createDraft(args: z.infer<typeof argsSchema>, harnessSlug: string | undefined): Promise<ChunkValue> {
+  maybeSweepStaleDrafts();
   const draftId = makeDraftId();
   const content = appendChunkToContent('', args.chunk);
   const meta: DraftMeta = {
@@ -142,6 +193,7 @@ async function createDraft(args: z.infer<typeof argsSchema>, harnessSlug: string
     harnessSlug: harnessSlug ?? null,
     ...(args.expectedHash ? { expectedHash: args.expectedHash } : {}),
     ...(args.rationale ? { rationale: args.rationale } : {}),
+    ...(args.allowShrink !== undefined ? { allowShrink: args.allowShrink } : {}),
     createdAt: nowISO(),
     updatedAt: nowISO(),
     bytes: Buffer.byteLength(content, 'utf8'),
@@ -193,7 +245,34 @@ function domainFailurePayload(v: SetContentValue, slug: string, draftId: string)
   if (v.code === 'lint_failed') {
     return { ok: false, code: 'lint_failed', slug, draftId, errors: v.errors };
   }
+  if (v.code === 'suspicious_shrink') {
+    return {
+      ok: false,
+      code: 'suspicious_shrink',
+      slug,
+      draftId,
+      currentLength: v.currentLength,
+      proposedLength: v.proposedLength,
+    };
+  }
   return { ok: false, code: v.code, slug, draftId };
+}
+
+/**
+ * Whether a failed commit should DELETE the draft (audit P-043).
+ *
+ * The draft is the caller's streamed work — destroy it only when the
+ * CONTENT itself is terminally rejected (it cannot be re-committed as-is):
+ * lint_failed / would_orphan_frontmatter (body must change → full
+ * re-stream anyway) and not_found (no such plan to target).
+ *
+ * Keep it for every retryable outcome: `busy` (transient), `stale`
+ * (re-commit the SAME draft with the fresh expectedHash), and
+ * `suspicious_shrink` (re-commit with allowShrink: true). Abandoned
+ * drafts are bounded by the TTL janitor either way.
+ */
+export function shouldRemoveDraftOnFailure(code: Extract<ChunkValue, { ok: false }>['code']): boolean {
+  return code === 'lint_failed' || code === 'would_orphan_frontmatter' || code === 'not_found';
 }
 
 export default defineTool({
@@ -264,7 +343,10 @@ export default defineTool({
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
-      (current) => evaluateSetContent(current, draft.content, args.slug, args.expectedHash ?? draft.meta.expectedHash),
+      (current) =>
+        evaluateSetContent(current, draft.content, args.slug, args.expectedHash ?? draft.meta.expectedHash, {
+          allowShrink: args.allowShrink ?? draft.meta.allowShrink,
+        }),
     );
 
     if (result.kind === 'busy') {
@@ -287,6 +369,13 @@ export default defineTool({
 
     const payload = domainFailurePayload(result.value, args.slug, args.draftId);
     if (!payload.ok) {
+      // Terminally-rejected content can never be re-committed — clean its
+      // draft up here instead of leaking it until the TTL janitor
+      // (audit P-043). Retryable failures keep the draft (see
+      // shouldRemoveDraftOnFailure).
+      if (shouldRemoveDraftOnFailure(payload.code)) {
+        await removeDraft(args.draftId);
+      }
       return chunkResponse(payload);
     }
 

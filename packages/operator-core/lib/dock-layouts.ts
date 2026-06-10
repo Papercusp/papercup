@@ -260,19 +260,20 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
  * / draggable / closable via dockview.
  */
 /**
- * /adv Harness tab seed. Two rows:
+ * /adv Harness tab seed (`adv-harnesses2`). Two rows:
  *
- *   ┌──────────────────────┬──────────────────────┐
- *   │ Features        (50%)│ Issues          (50%)│   top row (50% height)
- *   ├──────────────────────┴──────────────────────┤
+ *   ┌─────────────────────────────────────────────┐
+ *   │ Work items                   (full width)   │   top (50% height)
+ *   ├─────────────────────────────────────────────┤
  *   │ Detail                       (full width)   │   bottom (50% height)
  *   └─────────────────────────────────────────────┘
  *
  * Fractional sizes (0.5) — dockview rescales proportionally on mount.
- * This is the user's preferred arrangement (Features | Issues stacked
- * above a full-width Detail reader pane); existing saved layouts on the
- * old flat 25/25/50 are force-reset to this by SQL migration
- * 088-reset-adv-harness-dock-layouts.sql so every harness adopts it.
+ * The unified work_items grid (blueprint-aware-harness-ui P-010) replaced
+ * the retired Features | Issues pair (2026-06-10); the dock name was
+ * bumped adv-harnesses → adv-harnesses2 (the adv-create2 convention) so
+ * persisted rows holding the retired panel types are abandoned rather
+ * than hydrated into MissingPanel fallbacks.
  */
 export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
   return {
@@ -282,38 +283,17 @@ export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
       id: 'root',
       direction: 'col',
       children: [
-        // Top row: Features (left) + Issues (right), split 50/50.
+        // Top: the unified work-items grid, full width.
         {
-          kind: 'group',
-          id: 'adv-top-row',
-          direction: 'row',
+          kind: 'tabs',
+          id: 'work-items-cell',
           size: 0.5,
-          children: [
+          activePanelId: 'p-adv-work-items',
+          panels: [
             {
-              kind: 'tabs',
-              id: 'features-cell',
-              size: 0.5,
-              activePanelId: 'p-adv-features',
-              panels: [
-                {
-                  id: 'p-adv-features',
-                  type: 'adv:features',
-                  params: { harnessSlug },
-                },
-              ],
-            },
-            {
-              kind: 'tabs',
-              id: 'issues-cell',
-              size: 0.5,
-              activePanelId: 'p-adv-issues',
-              panels: [
-                {
-                  id: 'p-adv-issues',
-                  type: 'adv:issues',
-                  params: { harnessSlug },
-                },
-              ],
+              id: 'p-adv-work-items',
+              type: 'adv:work-items',
+              params: { harnessSlug },
             },
           ],
         },
@@ -657,7 +637,7 @@ export type LayoutRow = {
  * (getLayout seeds an opaque placeholder body; resetLayout seeds
  * defaultPiTerminalsLayout), so each handles pi itself before delegating.
  *
- * `dashboard:<slug>` / `adv-git2:<slug>` / `adv-harnesses:<slug>` carry the
+ * `dashboard:<slug>` / `adv-git2:<slug>` / `adv-harnesses2:<slug>` carry the
  * harnessSlug so seeded panels fetch the right harness; adv-create is
  * scope-driven via URL params and carries no slug.
  */
@@ -673,8 +653,11 @@ export function seedForDockName(name: string): LayoutDoc {
   if (name === 'adv-git2' || name.startsWith('adv-git2:')) {
     return defaultAdvGitLayout(slugAfter('adv-git2:'));
   }
-  if (name === 'adv-harnesses' || name.startsWith('adv-harnesses:')) {
-    return defaultAdvHarnessesLayout(slugAfter('adv-harnesses:'));
+  // adv-harnesses2: bumped from adv-harnesses when the Features/Issues panels
+  // were retired for the unified Work-items grid — the old name's persisted
+  // rows would hydrate now-unregistered panels (adv:features, adv:issues).
+  if (name === 'adv-harnesses2' || name.startsWith('adv-harnesses2:')) {
+    return defaultAdvHarnessesLayout(slugAfter('adv-harnesses2:'));
   }
   if (name === 'workbench' || name.startsWith('workbench:')) {
     return defaultWorkbenchLayout(slugAfter('workbench:'));
