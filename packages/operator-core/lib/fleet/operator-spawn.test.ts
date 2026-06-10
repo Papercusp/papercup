@@ -46,13 +46,24 @@ import {
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
 
 let runningCount = 0;
+let dupRows: Array<{ spawn_id: string }> = [];
 let errorSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   runningCount = 0;
+  dupRows = [];
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-  // sql is used only by countRunning — a template-tag fn returning the count.
-  const sql = vi.fn(async () => [{ n: String(runningCount) }]);
+  // One template-tag fn answers every query by shape; `begin` (the atomic
+  // admission tx, P-017/P-039) hands the same tag back as the tx.
+  const tag = vi.fn(async (strings: TemplateStringsArray | string) => {
+    const q = Array.isArray(strings) ? strings.join('') : String(strings);
+    if (q.includes('SELECT spawn_id')) return dupRows; // idempotency dedupe probe
+    if (q.includes('count(*)')) return [{ n: String(runningCount) }];
+    return [];
+  });
+  const sql = Object.assign(tag, {
+    begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(tag),
+  });
   vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
   vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
   vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] } as never);
@@ -320,6 +331,45 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`ceiling ${ceiling}`);
     expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+});
+
+describe('spawnAgentInHarness — idempotency dedupe (P-017 / EI-73)', () => {
+  it('a retry with a matched idempotencyKey returns the ORIGINAL spawn, launching nothing', async () => {
+    dupRows = [{ spawn_id: 's-original-123' }];
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'scoper', idempotencyKey: 'retry-key-1',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.spawnId).toBe('s-original-123');
+    expect(res.deduped).toBe(true);
+    expect(recordSpawn).not.toHaveBeenCalled();
+    expect(spawnInvokeOnce).not.toHaveBeenCalled();
+  });
+
+  it('an unmatched idempotencyKey spawns normally and stamps the key on the row', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1', harness: 'demo', role: 'scoper', idempotencyKey: 'fresh-key',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.deduped).toBeUndefined();
+    expect(recordSpawn).toHaveBeenCalledTimes(1);
+    const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
+    const stamp = sqlMock.mock.calls.find(
+      (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('SET idempotency_key'),
+    );
+    expect(stamp).toBeDefined();
+    expect(stamp![1]).toBe('fresh-key');
+  });
+
+  it('a spawn without a key never touches the dedupe probe', async () => {
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    const sqlMock = vi.mocked(getOrgPg)().sql as unknown as ReturnType<typeof vi.fn>;
+    const probe = sqlMock.mock.calls.find(
+      (c) => Array.isArray(c[0]) && (c[0] as string[]).join('').includes('SELECT spawn_id'),
+    );
+    expect(probe).toBeUndefined();
   });
 });
 

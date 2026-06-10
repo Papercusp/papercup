@@ -34,7 +34,7 @@ export default defineTool({
   capability: 'operator:write',
   guidance: {
     when: `Read or update the operator's free-form note buffer — long-running scratch the user adds via /settings.`,
-    notWhen: `For HINDSIGHT (cross-agent memory), use \`hindsight:recall\`. Notes is operator-only, user-editable.`,
+    notWhen: `For cross-agent memory, use \`memory:search\` / \`memory:remember\`. Notes is operator-only, user-editable.`,
   },
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

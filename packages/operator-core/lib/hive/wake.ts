@@ -119,18 +119,33 @@ export async function clearHiveTimeWake(sql: Sql, installSlug: string): Promise<
   await setRoutineActive(sql, installSlug, HIVE_WAKE_ROUTINE_NAME, false);
 }
 
+/** timestamptz arrives as Date or ISO string depending on the pool's type
+ *  parsers (EI-257: the boot-path pool returns strings — `.getTime()` on one
+ *  threw in every watchdog liveness check and flooded the console). */
+function toDateOrNull(v: Date | string | null): Date | null {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /** Read the hive's time-wake routine state (null = never declared). */
 export async function getHiveTimeWake(
   sql: Sql,
   installSlug: string,
 ): Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null> {
-  const rows = await sql<Array<{ active: boolean; next_fire_at: Date | null; last_fired_at: Date | null }>>`
+  const rows = await sql<
+    Array<{ active: boolean; next_fire_at: Date | string | null; last_fired_at: Date | string | null }>
+  >`
     SELECT active, next_fire_at, last_fired_at
       FROM harness_shared.routines
      WHERE install_slug = ${installSlug} AND name = ${HIVE_WAKE_ROUTINE_NAME}
   `;
   if (rows.length === 0) return null;
-  return { active: rows[0].active, nextFireAt: rows[0].next_fire_at, lastFiredAt: rows[0].last_fired_at };
+  return {
+    active: rows[0].active,
+    nextFireAt: toDateOrNull(rows[0].next_fire_at),
+    lastFiredAt: toDateOrNull(rows[0].last_fired_at),
+  };
 }
 
 // ── event-wake subscriptions ─────────────────────────────────────────────────

@@ -84,6 +84,8 @@ import { SU_S08_COMPACT_READ } from './su/S08-compact-read';
 import { SU_S09_COORD_INJECTION_READ } from './su/S09-coord-injection-read';
 // SU-S10: claim-discipline-enforcement-2026-06-10 P-006 — claim-before-work gate
 import { SU_S10_CLAIM_BEFORE_WORK } from './su/S10-claim-before-work';
+// SU-S11: coord-system-e2e-testing-2026-06-10 P-011 — same-file lock-contention protocol gate
+import { SU_S11_LOCK_CONTENTION_PROTOCOL } from './su/S11-lock-contention-protocol';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -155,6 +157,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S08_COMPACT_READ,
   SU_S09_COORD_INJECTION_READ,
   SU_S10_CLAIM_BEFORE_WORK,
+  SU_S11_LOCK_CONTENTION_PROTOCOL,
 ];
 
 export function getScenario(id: string): Scenario {

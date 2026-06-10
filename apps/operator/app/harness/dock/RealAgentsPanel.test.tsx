@@ -108,6 +108,7 @@ describe('RealAgentsPanel', () => {
         api={api}
       />,
     );
-    await waitFor(() => expect(screen.getByText(/Failed: status 500/i)).toBeTruthy());
+    // useHarnessAgents surfaces the REST bootstrap failure as `agents <status>`.
+    await waitFor(() => expect(screen.getByText(/Failed: agents 500/i)).toBeTruthy());
   });
 });

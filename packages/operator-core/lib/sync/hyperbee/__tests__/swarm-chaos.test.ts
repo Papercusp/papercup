@@ -292,9 +292,14 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
       expect(killsFired).toBeGreaterThan(0); // the chaos was real (seed 42 fires ≥1 kill round)
 
       // CONVERGENCE: both honest peers see every honest op despite the churn.
+      // Nudge reconnects on a SLOW cadence (every ~5s): a per-tick joinPeer
+      // storm creates duplicate-connection dedupe churn (connect → dedupe-kill
+      // → reconnect) so fast that no link survives long enough to replicate —
+      // nudge, then let the links stabilize.
+      let pollTick = 0;
       const converged = await pollUntil(
         async () => {
-          forceReconnectAll(Object.values(swarms), topicHex);
+          if (pollTick++ % 10 === 0) forceReconnectAll(Object.values(swarms), topicHex);
           await A.mergeNow();
           await B.mergeNow();
           const haveA = new Set(applies.A.mock.calls.map((c) => c[0].hbKey));
@@ -341,10 +346,11 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
       forceReconnectAll(Object.values(swarms), topicHex);
 
       // Positive control proves the wire is alive: B (which still admits A)
-      // receives A's post-revocation op…
+      // receives A's post-revocation op… (same slow reconnect-nudge cadence)
+      let controlTick = 0;
       const controlArrived = await pollUntil(
         async () => {
-          forceReconnectAll(Object.values(swarms), topicHex);
+          if (controlTick++ % 10 === 0) forceReconnectAll(Object.values(swarms), topicHex);
           await A.mergeNow();
           await B.mergeNow();
           return applies.B.mock.calls.some((c) => c[0].hbKey === 'F-A-post');

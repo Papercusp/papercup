@@ -37,7 +37,6 @@ const RULES: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^kv:write:(.+)$/i, (m) => `Write to its own key-value store (namespace ${m[1]})`],
   [/^data:read:(.+):(.+)$/i, (m) => `Read ${m[1]} data (${m[2]})`],
   [/^data:write:(.+):(.+)$/i, (m) => `Write ${m[1]} data (${m[2]})`],
-  [/^hindsight:recall$/i, () => 'Recall from your hindsight memory'],
   [/^routines:(read|list)$/i, () => 'Read your routines'],
   [/^routines:write$/i, () => 'Create, edit, or delete routines'],
 ];

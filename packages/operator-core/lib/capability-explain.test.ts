@@ -18,7 +18,6 @@ describe('explainCapability — exact-match rules', () => {
     ['projects:read', 'List your harnesses / projects'],
     ['audit:list', 'Read the plugin audit log'],
     ['search:query', 'Run searches across harness content'],
-    ['hindsight:recall', 'Recall from your hindsight memory'],
   ])('%s → "%s"', (cap, label) => {
     expect(explainCapability(cap).label).toBe(label);
   });

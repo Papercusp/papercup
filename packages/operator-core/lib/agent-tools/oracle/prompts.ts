@@ -63,8 +63,8 @@ export const ORACLE_ALLOWED_TOOLS = [
   'mcp__agentmcp__messages:inbox',
   'mcp__agentmcp__messages:outbox',
   'mcp__agentmcp__audit:list',
-  // Memory + search.
-  'mcp__agentmcp__hindsight:recall',
+  // Memory + search. (hindsight:recall removed with the dead tool —
+  // audit P-047; memory:* is the canonical surface.)
   'mcp__agentmcp__memory:search',
   'mcp__agentmcp__memory:remember',
   'mcp__agentmcp__search:query',

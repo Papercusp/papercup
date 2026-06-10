@@ -7,11 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clampWakeAt,
+  getHiveTimeWake,
   hiveWakeFloorSec,
   resolveHiveHomeSlug,
   syncHiveWakeRules,
   withinWakeFloor,
 } from './wake';
+import type { Sql } from 'postgres';
 import {
   _resetReactionsForTests,
   listReactionRules,
@@ -134,5 +136,47 @@ describe('syncHiveWakeRules (subscriptions → live reaction rules)', () => {
       ctx: {} as never,
     });
     expect(unmatched.some((m) => m.rule.id === `hive-wake:${WS}#0`)).toBe(false);
+  });
+});
+
+describe('getHiveTimeWake (EI-257: string-timestamp pools)', () => {
+  const fakeSql = (rows: unknown[]): Sql =>
+    (async () => rows) as unknown as Sql;
+
+  it('coerces ISO-string timestamps to Dates', async () => {
+    const r = await getHiveTimeWake(
+      fakeSql([
+        {
+          active: true,
+          next_fire_at: '2026-06-10T12:00:00.000Z',
+          last_fired_at: '2026-06-10T11:30:00.000Z',
+        },
+      ]),
+      'papercup-hive',
+    );
+    expect(r?.nextFireAt).toBeInstanceOf(Date);
+    expect(r?.lastFiredAt).toBeInstanceOf(Date);
+    // the watchdog liveness expression that EI-257 crashed on:
+    expect(r!.lastFiredAt!.getTime()).toBe(Date.parse('2026-06-10T11:30:00.000Z'));
+  });
+
+  it('passes real Dates through and maps null/garbage to null', async () => {
+    const at = new Date('2026-06-10T12:00:00Z');
+    const r = await getHiveTimeWake(
+      fakeSql([{ active: false, next_fire_at: at, last_fired_at: null }]),
+      'papercup-hive',
+    );
+    expect(r?.nextFireAt).toEqual(at);
+    expect(r?.lastFiredAt).toBeNull();
+    const g = await getHiveTimeWake(
+      fakeSql([{ active: false, next_fire_at: 'not-a-date', last_fired_at: undefined }]),
+      'papercup-hive',
+    );
+    expect(g?.nextFireAt).toBeNull();
+    expect(g?.lastFiredAt).toBeNull();
+  });
+
+  it('returns null when no routine row exists', async () => {
+    expect(await getHiveTimeWake(fakeSql([]), 'papercup-hive')).toBeNull();
   });
 });

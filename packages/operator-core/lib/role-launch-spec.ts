@@ -46,7 +46,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
-import { assembleRolePrompt, resolvePromptFile } from '@papercusp/orchestrator/role-prompt';
+import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { promptsDir } from './prompt-assembly';
 import {
@@ -306,13 +306,17 @@ function assembleWorkspaceRolePrompt(opts: {
       persona += `\n\n---\n\n${fsSync.readFileSync(toolsMdPath, 'utf8')}`;
     }
   } else {
-    const spawnPersona = resolvePromptFile(
+    // Layered spawn persona (audit P-019): base/<role>.md first when present,
+    // the concrete prompt last — joined like prompt-build does.
+    const spawnPersonaFiles = resolvePromptFiles(
       { harnessDir: harnessRoot(), phase: '', dept: '' },
       opts.role,
     );
-    if (spawnPersona) {
-      persona = fsSync.readFileSync(spawnPersona, 'utf8');
-      promptFile = spawnPersona;
+    if (spawnPersonaFiles.length > 0) {
+      persona = spawnPersonaFiles
+        .map((f) => fsSync.readFileSync(f, 'utf8'))
+        .join('\n\n---\n\n');
+      promptFile = spawnPersonaFiles[spawnPersonaFiles.length - 1];
     }
   }
   if (persona == null) {

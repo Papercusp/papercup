@@ -76,7 +76,6 @@ const CAP_TIER_RULES: Rule<CapEvent, CapabilityTier>[] = [
   { id: 'cap:orchestrator-spawn', on: CAP_TRIGGER, when: { capability: { matches: '^tools:orchestrator:spawn:' } }, fire: 'high', meta: { reason: 'spawns another agent' } },
 
   // ── Single-token convenience caps ──
-  { id: 'cap:hindsight-recall', on: CAP_TRIGGER, when: { capability: { matches: '^hindsight:recall$' } }, fire: 'low', meta: { reason: 'memory recall' } },
   { id: 'cap:search', on: CAP_TRIGGER, when: { capability: { matches: '^search:' } }, fire: 'low', meta: { reason: 'search query' } },
   { id: 'cap:audit', on: CAP_TRIGGER, when: { capability: { matches: '^audit:' } }, fire: 'low', meta: { reason: 'audit-log read' } },
 ];

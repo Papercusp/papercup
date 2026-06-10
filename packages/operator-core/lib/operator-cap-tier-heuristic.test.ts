@@ -96,7 +96,6 @@ describe('heuristicTier — low patterns', () => {
   ])('%s → low', (cap) => expect(heuristicTier(cap)?.tier).toBe('low'));
 
   it.each([
-    'hindsight:recall',
     'search:query',
   ])('%s → low', (cap) => expect(heuristicTier(cap)?.tier).toBe('low'));
 });

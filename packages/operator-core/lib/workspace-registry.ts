@@ -2,8 +2,8 @@
  * Workspace registry helpers — read/write ~/.papercusp-workspaces/registry.json.
  *
  * Adds the `companyId` field per spec/workspace-scoping. Existing
- * registries without companyId continue to work; hindsight:recall
- * returns degraded for those workspaces.
+ * registries without companyId continue to work. (The hindsight:recall
+ * consumer of companyId was removed — audit P-047.)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

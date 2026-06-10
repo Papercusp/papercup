@@ -20,7 +20,7 @@ import { lookupByMcpName, getCatalog } from '@papercusp/tooldef';
 
 // A tool is invokable if it's in EITHER registry: the projection registry
 // (lookupByMcpName, ~217) or the bearer-dispatch built-in catalog (getCatalog,
-// ~28). hindsight:recall, for example, is a built-in present in the catalog.
+// ~28). search:query, for example, is a built-in present in the catalog.
 const catalogNames = new Set(getCatalog().map((t) => t.name));
 const isInvokable = (name: string) => Boolean(lookupByMcpName(name)) || catalogNames.has(name);
 

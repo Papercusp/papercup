@@ -442,9 +442,17 @@ describe('executeWake — the liveness ladder', () => {
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
     expect(write).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(3_000);
-    expect(write).toHaveBeenCalled();
-    expect((write.mock.calls[0] as unknown as [string, Buffer])[0]).toBe('pty-omp');
+    // Audit P-034: the prompt must land as TWO writes — text, then the submit
+    // CR as a separate keystroke after a settle. The old single text+CR buffer
+    // tripped the TUI paste detector (CR → literal newline, turn never submits).
+    vi.advanceTimersByTime(2_600);
+    expect(write).toHaveBeenCalledTimes(1);
+    const [ptyId, textBuf] = write.mock.calls[0] as unknown as [string, Buffer];
+    expect(ptyId).toBe('pty-omp');
+    expect(textBuf.toString()).not.toMatch(/\r$/);
+    vi.advanceTimersByTime(400);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect((write.mock.calls[1] as unknown as [string, Buffer])[1].toString()).toBe('\r');
   });
 
   it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {

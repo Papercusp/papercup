@@ -443,11 +443,23 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       if (resume.promptViaPty) {
         const ptyId = h.id;
         setTimeout(() => {
+          // Two writes — the text, then the Enter (CR) as a SEPARATE keystroke
+          // after a settle — mirroring the pty-inject channel above (audit
+          // P-034): a single text+CR buffer trips the TUI paste detector (the
+          // CR becomes a literal newline) and the turn never submits.
           try {
-            write(ptyId, Buffer.from(`${text}\r`, 'utf8'));
+            write(ptyId, Buffer.from(text, 'utf8'));
           } catch {
             /* the resumed session still surfaces the inbox copy */
+            return;
           }
+          setTimeout(() => {
+            try {
+              write(ptyId, Buffer.from('\r', 'utf8'));
+            } catch {
+              /* pty may have closed between the text write and the CR */
+            }
+          }, TURN_SUBMIT_CR_DELAY_MS).unref?.();
         }, PTY_PROMPT_DELAY_MS).unref?.();
       }
       return { kind: 'delivered', channel: 'resume' };
