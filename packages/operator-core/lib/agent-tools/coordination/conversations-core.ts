@@ -193,7 +193,10 @@ export async function openConversationCore(
 
   // Fan out the OPEN to topic subscribers BEFORE the asker self-subscribes, so
   // the asker isn't notified of their own question; then subscribe them so peer
-  // answers come back.
+  // answers come back. The ordering only shields the asker's OBJECT
+  // subscription — an asker already following one of the question's TOPICS is
+  // resolved as a topic subscriber, so they must also be excluded explicitly
+  // (excludeId), like every other lifecycle fan-out in this module.
   const ev: InjectEvent = {
     from: identity.ownerId,
     subject: `conversation:${id}`,
@@ -202,7 +205,7 @@ export async function openConversationCore(
     notify_kind: input.kind === 'question' ? 'question_opened' : 'discussion_opened',
     isResolution: false,
   };
-  const delivered = await fanout(deps, convRef(id), ev);
+  const delivered = await fanout(deps, convRef(id), ev, identity.ownerId);
   await selfSubscribe(deps, id, identity.ownerId, now);
 
   return { conversation, thread_id: thread.thread_id, topics, delivered, unrouted: topics.length === 0 };

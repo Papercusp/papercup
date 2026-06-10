@@ -155,12 +155,20 @@ pub fn session_name(kind: &str) -> String {
 /// startup tips are suppressed — these are app-managed sessions (the workbench
 /// / the desktop chat dock), and the tips pane floats over the app's panes
 /// blocking everything until dismissed.
+///
+/// ⚠ The layout MUST be passed as `--new-session-with-layout`, NOT `--layout`:
+/// on zellij 0.44 `--layout` + `--session` does not create a session — it is
+/// dispatched as "open this layout as a new tab IN the existing session
+/// `<name>`" (`send_action_to_session`), which exits 1 with "There is no
+/// active session!" / "Session '<name>' not found" since our freshly-named
+/// session never exists yet. That regression broke every dock/workbench
+/// launch when EI-186 added `--session` for reapability (2026-06-09).
 pub fn launch_argv(layout_path: &str, session: &str) -> Vec<String> {
     vec![
         "zellij".to_string(),
         "--session".to_string(),
         session.to_string(),
-        "--layout".to_string(),
+        "--new-session-with-layout".to_string(),
         layout_path.to_string(),
         "options".to_string(),
         "--show-startup-tips".to_string(),
@@ -441,6 +449,9 @@ mod tests {
     #[test]
     fn launch_argv_shape() {
         // `--session` names the session so it is reapable (EI-186);
+        // `--new-session-with-layout` (NEVER `--layout`: combined with
+        // `--session` zellij dispatches that as new-tab-in-EXISTING-session
+        // and exits "There is no active session!") creates the named session;
         // `options --show-startup-tips false` layers a per-session override
         // (no user-config replacement): the tips pane floats over the
         // app-managed session blocking the panes until dismissed.
@@ -450,7 +461,7 @@ mod tests {
                 "zellij",
                 "--session",
                 "pui-wb-42",
-                "--layout",
+                "--new-session-with-layout",
                 "/home/u/.papercusp/pui-workbench.kdl",
                 "options",
                 "--show-startup-tips",

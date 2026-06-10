@@ -13,7 +13,8 @@
  *    notify rendering, summary truncation, and the best-effort fan-out (a
  *    subscriber-resolution failure never breaks the write).
  *  • the asker-exclusion contract on open when the asker ALREADY follows one of
- *    the tagged topics (a genuine gap — see the // BUG below).
+ *    the tagged topics (a regression pin — this was a real bug, fixed
+ *    2026-06-09; see the comment on that test).
  *  • post — the 'conversation_post' reply kind, the lazy thread-create branch,
  *    @-mention plumbing through the mention-mode gate, touch-on-activity.
  *  • resolve — whitespace-only accepted_answer, explicit-answer precedence over
@@ -282,15 +283,14 @@ describe('openConversationCore', () => {
     expect(sinkBox.inbox.follower[0].summary).toBe('❓ question: line1 line2');
   });
 
-  // BUG: openConversationCore fans the OPEN out without an excludeId
-  // (`fanout(deps, convRef(id), ev)` — every other lifecycle fan-out in this
-  // module passes identity.ownerId). The fanout-before-self-subscribe ordering
-  // only shields the asker's OBJECT subscription; an asker who already follows
-  // one of the question's TOPICS is resolved as a topic subscriber and IS
-  // notified of their own question — violating the module's documented contract
-  // ("EXCLUDING the actor from their own change" / "the asker isn't notified of
-  // their own question"). Fix: pass identity.ownerId as fanout's excludeId.
-  it.fails('an asker who already follows a tagged topic is NOT notified of their own question', async () => {
+  // Regression (fixed 2026-06-09): openConversationCore used to fan the OPEN
+  // out without an excludeId. The fanout-before-self-subscribe ordering only
+  // shields the asker's OBJECT subscription; an asker who already followed one
+  // of the question's TOPICS was resolved as a topic subscriber and WAS
+  // notified of their own question — violating the module's documented
+  // contract. The open fan-out now passes identity.ownerId like every other
+  // lifecycle fan-out in this module.
+  it('an asker who already follows a tagged topic is NOT notified of their own question', async () => {
     await subs.subscribe({ subscriber_id: 'asker', target_kind: 'topic', target_ref: 'area', created_ts: T0 });
     const res = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
     expect(sinkBox.inbox.asker).toBeUndefined();
