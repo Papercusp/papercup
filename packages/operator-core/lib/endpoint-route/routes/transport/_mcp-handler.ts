@@ -621,7 +621,14 @@ seen this run), establish your three-layer memory state:
   2. **coord (what's happening)** — call \`coord:inbox\` for messages
      addressed to you and \`coord:plan-events\` for recent plan changes
      (use \`since_ts\` to get only deltas). Then call
-     \`coord:declare-intent\` so peers see what you're working on.
+     \`coord:declare-intent\` so peers see what you're working on — and
+     when the work is plan items, declare them as your lane:
+     \`{ intent, current_plan_slug, items: ['P-001', …] }\` CLAIMS those
+     items for you (and releases ones you've moved off). An unclaimed
+     lane is invisible to the Queen and peers, so work gets
+     double-placed. (Flipping an item \`wip\` via \`plans:set-status\`
+     also auto-claims; \`done\` releases. A \`claim_conflict\` means a
+     live peer holds it — coordinate with the holder, don't take it.)
 
   3. **insights (how things work)** — when you hit a confusing failure,
      \`docs:search\` the \`agent-insights/\` section before grepping

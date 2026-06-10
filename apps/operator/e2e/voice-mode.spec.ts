@@ -181,10 +181,15 @@ test.describe('voice mode toggle on harness shell', () => {
     });
   });
 
-  test('voice mode button mounts in header', async ({ page }) => {
+  test('voice mode button stays dark by default (web operator chat is TESTING-gated)', async ({ page }) => {
+    // native-terminal-desktop D-011 / P-016: the desktop chat is the
+    // terminal-native pui panes, so the WEB operator chat sidebar — the
+    // VoiceButton's host — only mounts behind FLAGS.TESTING (default OFF).
+    // /harness is retired as a landing and redirects to /adv. Guard the
+    // gating: the app shell mounts WITHOUT the web voice toggle.
     await page.goto('/harness');
-    const voiceBtn = page.getByRole('button', { name: /voice mode/i });
-    await expect(voiceBtn).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Swarm sidebar' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /voice mode/i })).toHaveCount(0);
   });
 
   test('voice prefs API is reachable', async ({ page }) => {

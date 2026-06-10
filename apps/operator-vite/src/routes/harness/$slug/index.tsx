@@ -41,11 +41,27 @@ export const Route = createFileRoute('/harness/$slug/')({
   loader: async ({ params, deps }) => {
     // /projects/lite — only slug+path; not the heavy /projects endpoint
     // (~4-5s per the 2026-05-03 perf audit).
-    const res = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
-    if (!res.ok) throw notFound();
-    const data = await res.json();
-    const projects: ProjectEntry[] = data.projects ?? [];
-    const project = projects.find((p) => p.slug === params.slug);
+    //
+    // Retry transient failures before declaring the route missing: a fetch
+    // hiccup, a mid-reload registry, or the endpoint's 1s payload cache
+    // straddling a workspace switch all surface as !ok / slug-missing for a
+    // beat, and mapping that beat straight to notFound() renders a lying 404
+    // for a real harness. Two retries (350ms, 1.1s — past the cache TTL)
+    // before giving up; a genuinely unknown slug just pays ~1.5s extra.
+    let project: ProjectEntry | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          const projects: ProjectEntry[] = data.projects ?? [];
+          project = projects.find((p) => p.slug === params.slug);
+          if (project) break;
+        }
+      } catch { /* transient network failure — retry below */ }
+      if (attempt >= 2) break;
+      await new Promise((r) => setTimeout(r, attempt === 0 ? 350 : 1100));
+    }
     if (!project) throw notFound();
     // Coding harnesses are served by /adv; only the opt-in ?dock=1 shell still
     // renders the legacy per-slug surface here.

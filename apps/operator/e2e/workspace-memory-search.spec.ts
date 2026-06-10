@@ -54,12 +54,15 @@ test.describe('workspace registry + user surfaces', () => {
     expect([200, 401, 403]).toContain(res.status());
   });
 
-  test('POST /api/user/memory returns 405 (route is GET/PATCH/DELETE)', async ({ request }) => {
+  test('POST /api/user/memory requires auth (create route, P-010)', async ({ request }) => {
+    // POST is the settings-page create route (P-010, 2026-06-09) — it
+    // session-gates inside the handler, so an unauthenticated POST is 401,
+    // never an unhandled 5xx.
     const res = await request.post(`${baseURL}/api/user/memory`, {
-      data: { content: 'test', kind: 'preference' },
+      data: { text: 'test', kind: 'preference' },
       headers: { 'Content-Type': 'application/json' },
     });
-    expect(res.status()).toBe(405);
+    expect(res.status()).toBe(401);
   });
 
   test('PATCH /api/user/memory requires auth + body', async ({ request }) => {

@@ -184,12 +184,18 @@ file or orphaned lock; no new work), persist partial state to the work_item,
 write a one-line successor note, END YOUR TURN. A **force** interrupt can land
 with NO checkpoint — so checkpoint cheaply + often regardless.
 
-**Declare a real intent so your locks explain themselves.** On starting a
-distinct piece of work: `coord:declare-intent { intent: '<one line>',
-current_files: [...] }` — that line is what a blocked peer reads (the hook
-lock's own label is a generic `PreToolUse:Edit`). Conversely, new coord
-messages addressed to you are **injected mid-turn automatically** as a
-`[coord+N]` block — don't poll the inbox.
+**Declare a real intent so your locks explain themselves — and CLAIM your
+lane.** On starting a distinct piece of work: `coord:declare-intent { intent:
+'<one line>', current_plan_slug, items: ['P-001', …], current_files: [...] }`
+— the intent line is what a blocked peer reads (the hook lock's own label is a
+generic `PreToolUse:Edit`), and `items` CLAIMS the plan items you're taking
+(releasing ones you've moved off). An unclaimed lane is invisible to the Queen
+and peers — work gets double-placed and your "active" row reads as idle.
+Flipping an item `wip` via `plans:set-status` also auto-claims it; `done`
+releases. A `claim_conflict` means a live peer holds the item — coordinate
+with the holder (`coord:send`), don't take it. Conversely, new coord messages
+addressed to you are **injected mid-turn automatically** as a `[coord+N]`
+block — don't poll the inbox.
 
 **You don't commit or push — git-sync owns it.** A background routine commits
 the whole shared tree and pushes to origin on a schedule (superproject + every
@@ -333,9 +339,12 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   `issues:create`.)
 - **Default to doing discovered work inline**; file an issue when genuinely
   out of scope; promote when it warrants tracked pipeline work.
-- **Working a plan item = convert it to a `work_item` first** (the execution
-  unit with claim/lease/lifecycle) — everything worked is a tracked work_item
-  (`unify-work-items` D-015).
+- **Working a plan item = CLAIM it first** — either declare it in your lane
+  (`coord:declare-intent { items }`) or flip it `wip` (`plans:set-status`
+  auto-claims; `done` auto-releases). For Queen-placed pipeline work, convert
+  to a `work_item` (the execution unit with full lifecycle — `unify-work-items`
+  D-015); for interactive/SU work the plan-item claim alone is enough
+  (`claim-discipline-enforcement-2026-06-10` D-005).
 - **Don't narrate lifecycle in `coord:send` — typed ops auto-emit it.** Record
   completions on the work_item (`work_items:complete`, with summary ·
   what-landed · tests · deferred), not a prose "DONE" send; claims and

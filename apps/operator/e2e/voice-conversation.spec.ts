@@ -10,10 +10,11 @@ import { expectNoA11yViolations } from './_axe';
  * Per voice-mode.spec.ts: headless Chromium can't drive a real mic / STT / TTS
  * (no audio device, empty voice list, Voicemode services absent in CI), so the
  * AUTOMATED voice E2E covers the DETERMINISTIC surface only:
- *   - the voice-mode button mounts on the harness shell, operable + labelled
+ *   - the web voice-mode button stays dark by default (TESTING-gated, D-011)
  *   - the EL Conv AI session-token endpoint is auth-gated
  *   - the dual aria-live regions exist (the screen-reader mirror of TTS)
- *   - the shell is a11y-clean (no serious/critical axe violations) with voice mounted
+ *   - the shell is a11y-clean (no serious/critical axe violations) with the
+ *     voice aria-live regions mounted
  *
  * A real spoken-conversation round-trip (mic → STT → operator turn → <say> →
  * TTS, with barge-in) is the MANUAL agent-e2e procedure driven through the live
@@ -30,11 +31,15 @@ test.describe('voice conversation surface (deterministic; real audio = agent-e2e
     });
   });
 
-  test('voice-mode button mounts on the harness shell, operable + accessibly named', async ({ page }) => {
+  test('voice-mode button stays dark by default (web operator chat is TESTING-gated)', async ({ page }) => {
+    // native-terminal-desktop D-011 / P-016: the web operator chat sidebar —
+    // the VoiceButton's host — only mounts behind FLAGS.TESTING (default OFF);
+    // the desktop voice entry is the terminal-native pui surface. Guard the
+    // gating here; VoiceButton's operable/labelled behavior is covered by its
+    // component tests.
     await page.goto('/harness');
-    const voiceBtn = page.getByRole('button', { name: /voice mode/i });
-    await expect(voiceBtn).toBeVisible();
-    await expect(voiceBtn).toBeEnabled();
+    await expect(page.getByRole('complementary', { name: 'Swarm sidebar' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /voice mode/i })).toHaveCount(0);
   });
 
   test('the EL Conv AI session-token endpoint is device-JWT gated (no anonymous mint)', async ({ page }) => {
@@ -62,9 +67,12 @@ test.describe('voice-state accessibility (P-020)', () => {
     await expect(assertive).toHaveAttribute('role', 'alert');
   });
 
-  test('harness shell with voice mounted has no serious or critical a11y violations', async ({ page }) => {
+  test('app shell with voice aria-live regions has no serious or critical a11y violations', async ({ page }) => {
+    // The voice aria-live mirror mounts globally (asserted above); the web
+    // voice BUTTON is TESTING-gated off by default (D-011), so the scan keys
+    // on the shell + aria regions, not the button.
     await page.goto('/harness');
-    await expect(page.getByRole('button', { name: /voice mode/i })).toBeVisible();
+    await expect(page.locator('#voice-aria-polite')).toHaveAttribute('aria-live', 'polite');
     await expectNoA11yViolations(page);
   });
 });

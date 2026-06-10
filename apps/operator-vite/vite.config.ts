@@ -105,6 +105,15 @@ export default defineConfig({
   server: {
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
+    // CORS policy for /api belongs to the Hono host (:3070) — its middleware
+    // allows `last-event-id` etc. and echoes the origin. Vite's own default
+    // CORS middleware answers OPTIONS preflights BEFORE the proxy with a
+    // conflicting policy (no allow-origin for non-localhost origins), so any
+    // preflighted /api request (e.g. a fetch with a Last-Event-ID header from
+    // a non-localhost origin) fails with TypeError while the same simple GET
+    // proxies fine. Disable it; preflights then reach the API host that owns
+    // the policy.
+    cors: false,
     // The Tauri shell is the product surface, and this checkout is edited by
     // multiple agents at once. Vite HMR/full-reload traffic makes the desktop
     // look like it is constantly refreshing while unrelated files are saved.
