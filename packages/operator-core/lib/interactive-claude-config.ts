@@ -155,10 +155,16 @@ export function writeInteractiveClaudeConfig(opts: {
   // OAuth bundle BEFORE mirroring, so the `.credentials.json` symlink below
   // points at a live token even when a peer session rotated it last.
   // Best-effort — a launch must never fail on credential reconciliation.
-  try {
-    reconcileClaudeCredentials({ home });
-  } catch {
-    /* claude surfaces a stale credential the same as before this existed */
+  // Skipped under vitest (same pattern as testing-run-store.ts): the bootstrap
+  // route tests reach this with the REAL home + session root, and a unit test
+  // must never rewrite the user's live credential files. The reconcile logic
+  // has its own isolated tests in claude-credential-sync.test.ts.
+  if (!process.env.VITEST) {
+    try {
+      reconcileClaudeCredentials({ home });
+    } catch {
+      /* claude surfaces a stale credential the same as before this existed */
+    }
   }
 
   // Mirror every top-level `~/.claude` entry EXCEPT the transcript store.
