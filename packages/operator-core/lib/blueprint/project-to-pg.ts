@@ -35,6 +35,12 @@ export interface ProjectBlueprintInput {
 /**
  * Upsert a resolved blueprint into the PG cache. Idempotent on
  * (workspace_id, harness_slug). Returns the content hash written.
+ *
+ * The jsonb binds as `${JSON.stringify}::text::jsonb` (EI-2 /
+ * agent-insights/postgres-js-jsonb-binding) — `sql.json()` throws
+ * "string argument … Received an instance of Object" under the getOrgPg
+ * runtime pool, which made every lazy projection through that pool (the
+ * `system:blueprint-run` resolver) silently fall back to `coding`.
  */
 export async function projectBlueprintToPg(
   sql: Sql,
@@ -46,7 +52,7 @@ export async function projectBlueprintToPg(
       (workspace_id, harness_slug, blueprint_id, version, resolved, content_hash, source_path, source_commit)
     VALUES (
       ${input.workspaceId}, ${input.harnessSlug}, ${input.blueprint.id}, ${input.blueprint.version},
-      ${sql.json(input.blueprint as unknown as Record<string, unknown>)}, ${contentHash},
+      ${JSON.stringify(input.blueprint)}::text::jsonb, ${contentHash},
       ${input.sourcePath ?? null}, ${input.sourceCommit ?? null}
     )
     ON CONFLICT (workspace_id, harness_slug) DO UPDATE SET

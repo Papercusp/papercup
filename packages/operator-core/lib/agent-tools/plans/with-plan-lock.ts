@@ -194,7 +194,12 @@ export async function withPlanLock<T>(
           items         = EXCLUDED.items,
           decisions     = EXCLUDED.decisions,
           now_state     = EXCLUDED.now_state,
-          now_next      = EXCLUDED.now_next
+          now_next      = EXCLUDED.now_next,
+          -- EI-117: a genuine local write must RESET origin — without this a row
+          -- last touched by a hyperbee projection (origin='remote') keeps that
+          -- origin, the CDC capture trigger skips the local write, and the edit
+          -- never reaches the outbox/log (so a later replay reverts it).
+          origin        = 'local'
       `;
       if (opts.afterWrite) {
         await opts.afterWrite(newBody);

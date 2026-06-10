@@ -7,8 +7,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   GYM_AUTOLOOP_BUDGET_FLOOR_USD,
+  GYM_AUTOLOOP_STALE_RUNNING_MS,
   formatCandidateDirections,
   isEligibleAutoloop,
+  isStaleRunning,
   orderByLeastRecentlyRun,
   remainingBudgetUsd,
   runGymAutoloopTick,
@@ -331,5 +333,67 @@ describe('runGymAutoloopTick — routed-ideas context (P-032)', () => {
     const out = await runGymAutoloopTick(deps);
     expect(out.action).toBe('ran');
     expect(rec.cycleReqs[0].candidateDirections).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale-running reclaim (crash recovery) — a host death between set:running
+// and the settle write must not dead-lock the autoloop forever.
+// ---------------------------------------------------------------------------
+
+describe('isStaleRunning — crash-artifact detection', () => {
+  it('true only for running rows at/past the stale age', () => {
+    const stale = GYM_AUTOLOOP_STALE_RUNNING_MS;
+    expect(isStaleRunning({ status: 'running', updatedAt: 0 }, stale, stale)).toBe(true); // boundary inclusive
+    expect(isStaleRunning({ status: 'running', updatedAt: 1 }, stale, stale)).toBe(false);
+    expect(isStaleRunning({ status: 'idle', updatedAt: 0 }, stale * 2, stale)).toBe(false);
+    expect(isStaleRunning({ status: 'paused', updatedAt: 0 }, stale * 2, stale)).toBe(false);
+  });
+});
+
+describe('runGymAutoloopTick — stale-running reclaim (crash recovery)', () => {
+  const STALE_NOW = GYM_AUTOLOOP_STALE_RUNNING_MS + 1_000_000;
+
+  it('reclaims a stale running row to idle and runs it in the SAME tick', async () => {
+    const { deps, rec } = makeDeps([autoloop({ status: 'running', updatedAt: 0 })], {
+      now: () => STALE_NOW,
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('ran');
+    expect(out.reclaimed).toEqual(['alpha']);
+    // reclaim settle → running (cycle start) → idle (cycle settle)
+    expect(rec.setCalls.map((c) => c.status)).toEqual(['idle', 'running', 'idle']);
+    expect(rec.cycleReqs).toHaveLength(1);
+  });
+
+  it('a FRESH running row is NOT reclaimed — the durable-step replay still skips it', async () => {
+    // makeDeps default now=1,000,000 < the 45-min stale age for updatedAt 0.
+    const { deps, rec } = makeDeps([autoloop({ status: 'running', updatedAt: 0 })]);
+    const out = await runGymAutoloopTick(deps);
+    expect(out).toEqual({ action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: 0, gateBlocked: [] });
+    expect(rec.setCalls).toEqual([]);
+    expect(rec.cycleReqs).toEqual([]);
+  });
+
+  it('a reclaim write failure leaves the row busy and the tick idle (fail-safe)', async () => {
+    const { deps, rec } = makeDeps([autoloop({ status: 'running', updatedAt: 0 })], {
+      now: () => STALE_NOW,
+      setAutoloop: async () => {
+        throw new Error('pg down');
+      },
+    });
+    const out = await runGymAutoloopTick(deps);
+    expect(out.action).toBe('idle');
+    expect(out.reason).toBe('no-eligible-autoloop');
+    expect(out.reclaimed).toBeUndefined();
+    expect(rec.cycleReqs).toEqual([]);
+  });
+
+  it('respects a custom staleRunningMs', async () => {
+    // age 1,000 ms at the default now=1,000,000
+    const { deps } = makeDeps([autoloop({ status: 'running', updatedAt: 999_000 })]);
+    const out = await runGymAutoloopTick(deps, { staleRunningMs: 1_000 });
+    expect(out.action).toBe('ran');
+    expect(out.reclaimed).toEqual(['alpha']);
   });
 });

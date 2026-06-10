@@ -159,10 +159,10 @@ async function writeToPg(
       fed_ts = EXCLUDED.fed_ts
     -- EI-79 step 2: PG-level LWW guard. Drop a strictly-older op so the
     -- incremental merge cursor is correct even when an out-of-order / backfilled
-    -- op arrives after a newer row already landed. A NULL on either side applies
-    -- (first write after the migration / a synthetic op without a wire ts).
+    -- op arrives after a newer row already landed. A NULL STORED fed_ts applies
+    -- (first write after the migration); a ts-less op cannot clobber a stamped
+    -- row (EI-117 — the EXCLUDED-side NULL disjunct was the revert hole).
     WHERE harness_features_consolidated.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= harness_features_consolidated.fed_ts
   `;
 }
@@ -192,6 +192,8 @@ export function buildHarnessFeaturesProjection(
 ): TableProjection<HarnessFeatureRow> {
   return {
     tableTag: 'features-by-id',
+    // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
+    skipOwnOps: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

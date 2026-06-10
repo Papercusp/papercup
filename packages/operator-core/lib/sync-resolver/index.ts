@@ -68,6 +68,99 @@ export { NAME_NOT_FOUND, type NameNotFound } from '@papercusp/sync/server';
 // libs/zero-harness/src/queries.ts becomes dead code (to be deleted
 // at the P-022 cutover).
 
+/**
+ * Shared resolve for the `agentRunsConsolidated.*` queries
+ * (adv-harness-tab-migration P-023): the run feed is the FULL OUTER union of
+ * the two run stores, in the consolidated row shape —
+ *
+ *   - `agent_runs_consolidated` — the LEGACY store (its writer, the
+ *     orchestrator run-loop, was retired 2026-06-06; rows stop 2026-06-02).
+ *     Carries cost/token telemetry the spawn engine doesn't.
+ *   - `spawned_agents` — the LIVE spawn engine's records. Carries the
+ *     OUTCOME (`spawnStatus` running|done|failed|cancelled|reaped,
+ *     `exitCode`, `errorMessage`) and the native resume `sessionId`
+ *     (migration 203).
+ *
+ * Without the union, every post-cutover run is invisible to the Harnesses
+ * tab (Recent activity / Agents panel / HealthBadge all read these names).
+ * Rows present in both stores merge: telemetry from the consolidated row,
+ * outcome/liveness from the spawn (the live authority).
+ *
+ * A run_id can map to more than one spawned_agents row (observed live:
+ * restarted spawns), so the spawn side picks the LATEST row per
+ * (harness_slug, run_id) via DISTINCT ON ordered by started_at DESC.
+ *
+ * Raw `sql` projections are cast ::float8 — drizzle's bigint→number column
+ * mapping doesn't apply to sql`` columns, and the driver would otherwise
+ * return bigints as strings.
+ */
+async function resolveRunsWithOutcome(harnessSlug: string, limit?: number): Promise<unknown[]> {
+  const { getOrgPg, generated } = await import('@papercusp/db-org');
+  const { and, desc, eq, sql } = await import('drizzle-orm');
+  const t = generated.agentRunsConsolidatedInHarnessShared;
+  const s = generated.spawnedAgentsInHarnessShared;
+  const { db } = getOrgPg();
+  const spawn = db
+    .selectDistinctOn([s.harnessSlug, s.runId], {
+      harnessSlug: s.harnessSlug,
+      runId: s.runId,
+      childRole: s.childRole,
+      featureId: s.featureId,
+      startedAt: s.startedAt,
+      heartbeatAt: s.heartbeatAt,
+      durationMs: s.durationMs,
+      spawnStatus: s.status,
+      exitCode: s.exitCode,
+      errorMessage: s.errorMessage,
+      sessionId: s.sessionId,
+    })
+    .from(s)
+    .where(eq(s.harnessSlug, harnessSlug))
+    .orderBy(s.harnessSlug, s.runId, desc(s.startedAt))
+    .as('spawn');
+
+  const startedMs = sql`(extract(epoch from ${spawn.startedAt}) * 1000)::bigint`;
+  const heartbeatMs = sql`(extract(epoch from ${spawn.heartbeatAt}) * 1000)::bigint`;
+  const tsExpr = sql<number>`(coalesce(${t.ts}, ${startedMs}))::float8`;
+
+  const q = db
+    .select({
+      harnessSlug: sql<string>`coalesce(${t.harnessSlug}, ${spawn.harnessSlug})`.as('harnessSlug'),
+      runId: sql<string>`coalesce(${t.runId}, ${spawn.runId})`.as('runId'),
+      role: sql<string>`coalesce(${t.role}, ${spawn.childRole})`.as('role'),
+      featureId: sql<string | null>`coalesce(${t.featureId}, ${spawn.featureId})`.as('featureId'),
+      ts: tsExpr.as('ts'),
+      sizeBytes: sql<number>`(coalesce(${t.sizeBytes}, 0))::float8`.as('sizeBytes'),
+      durationMs: sql<number>`(coalesce(${t.durationMs}, ${spawn.durationMs}, 0))::float8`.as('durationMs'),
+      costUsd: t.costUsd,
+      inputTokens: t.inputTokens,
+      outputTokens: t.outputTokens,
+      cacheReadTokens: t.cacheReadTokens,
+      cacheCreationTokens: t.cacheCreationTokens,
+      // Liveness: the spawn engine is the authority when a spawn row exists
+      // (a finished spawn beats a stale consolidated running=true).
+      running: sql<boolean>`case
+        when ${spawn.runId} is not null then ${spawn.spawnStatus} in ('running', 'restarting')
+        else coalesce(${t.running}, false)
+      end`.as('running'),
+      lastEventTs: sql<number | null>`(coalesce(${heartbeatMs}, ${t.lastEventTs}))::float8`.as('lastEventTs'),
+      createdTs: sql<number>`(coalesce(${t.createdTs}, ${startedMs}))::float8`.as('createdTs'),
+      updatedTs: sql<number>`(coalesce(${t.updatedTs}, ${heartbeatMs}))::float8`.as('updatedTs'),
+      backend: t.backend,
+      model: t.model,
+      costIsEstimate: t.costIsEstimate,
+      spawnStatus: spawn.spawnStatus,
+      exitCode: spawn.exitCode,
+      errorMessage: spawn.errorMessage,
+      sessionId: spawn.sessionId,
+    })
+    .from(t)
+    .fullJoin(spawn, and(eq(spawn.harnessSlug, t.harnessSlug), eq(spawn.runId, t.runId)))
+    .where(sql`coalesce(${t.harnessSlug}, ${spawn.harnessSlug}) = ${harnessSlug}`)
+    .orderBy(desc(tsExpr));
+  return (limit != null ? await q.limit(limit) : await q) as unknown[];
+}
+
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // toastLog.recent — first migration. Mirrors the original ZQL:
   //   zql.toastLog.orderBy('createdAt', 'desc').limit(limit)
@@ -854,6 +947,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // `harness_features_consolidated` etc — the prefix mismatch is
   // historical, drizzle's canonical name wins).
 
+  // workItems.byHarness — the UNIFIED work-items read (feature + issue families,
+  // enriched route-side with plan-link + spine-position) serving WorkItemsPanel's
+  // live path (blueprint-aware-harness-ui-2026-06-09 P-010 polish). Reuses the
+  // route's exported assembly so this sync read and
+  // GET /api/harness/:slug/work-items return identical rows. Invalidated via the
+  // table bridge from harness_features_consolidated + engineer_issues (migration
+  // 215) + spawned_agents (outcome flips re-fire the spine-position column).
+  'workItems.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      kind: z.string().optional(),
+      state: z.string().optional(),
+      limit: z.number().int().positive().max(500).default(300),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, kind, state, limit } = args as {
+        harnessSlug: string;
+        kind?: string;
+        state?: string;
+        limit: number;
+      };
+      const [{ listEnrichedWorkItems }, { isWorkItemKind }] = await Promise.all([
+        import('../endpoint-route/routes/harness/work-items'),
+        import('../work-items'),
+      ]);
+      return (await listEnrichedWorkItems({
+        harness: harnessSlug,
+        kind: kind && isWorkItemKind(kind) ? kind : undefined,
+        state,
+        limit,
+      })) as unknown[];
+    },
+  },
+
   // featuresConsolidated.bySlug — features for a harness, latest first.
   //   zql.featuresConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
   'featuresConsolidated.bySlug': {
@@ -916,38 +1043,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // agentRunsConsolidated.bySlug — agent runs for a harness, latest first.
   //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc')
+  // Each row carries the run's OUTCOME + native resume session id joined from
+  // spawned_agents (adv-harness-tab-migration P-023): spawnStatus / exitCode /
+  // errorMessage / sessionId, null for pre-spawn-engine rows.
   'agentRunsConsolidated.bySlug': {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
-      const t = generated.agentRunsConsolidatedInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(desc(t.ts))) as unknown[];
+      return resolveRunsWithOutcome(harnessSlug);
     },
   },
 
   // agentRunsConsolidated.recent — agent runs for a harness, latest 50.
   //   zql.agentRunsConsolidated.where(harnessSlug).orderBy('ts', 'desc').limit(50)
+  // Same joined outcome projection as .bySlug (P-023).
   'agentRunsConsolidated.recent': {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
-      const t = generated.agentRunsConsolidatedInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(desc(t.ts))
-        .limit(50)) as unknown[];
+      return resolveRunsWithOutcome(harnessSlug, 50);
     },
   },
 

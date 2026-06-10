@@ -220,6 +220,9 @@ pub enum Action {
         id: i64,
         edited: Option<String>,
     },
+    /// P-013: create one zellij tab per (tab_name, kdl) pair via the companion's
+    /// NewTab (`new_tabs_with_layout`) — the per-frame tabs.
+    CreateFrameTabs { tabs: Vec<(String, String)> },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -1033,6 +1036,16 @@ pub struct App {
     /// `Some` while the staged-wake review overlay is open (P-009): the selected
     /// agent's pending wakes + release/edit/skip state. Captures keys while open.
     pub wake_review: Option<WakeReview>,
+    /// The last P-011 regroup target sent to the companion — the spam guard:
+    /// the same mis-ordered topology snapshot never refires the same repair.
+    pub last_regroup: Option<Vec<u32>>,
+    /// Deployed cloud frames (P-013) from `/api/deploy/frames` — the per-frame
+    /// tab roster. Refreshed each poll; empty when nothing is deployed.
+    pub frames: Vec<crate::models::DeployFrameRow>,
+    /// Frame tabs this instance already asked the companion to create (P-013) —
+    /// covers the window between the NewTab command and the next topology
+    /// snapshot (which then carries the tab as ground truth).
+    pub created_frame_tabs: std::collections::HashSet<String>,
     /// Live workbench topology from the companion zellij plugin (P-004 / D-008):
     /// which agent is in which pane + tab. `None` until the companion links;
     /// replaced wholesale on each snapshot (idempotent — no diff bookkeeping).
@@ -1303,6 +1316,9 @@ impl App {
             notif_seq: 0,
             fleet_action_menu: None,
             wake_review: None,
+            last_regroup: None,
+            frames: Vec::new(),
+            created_frame_tabs: std::collections::HashSet::new(),
             topology: None,
             hud_pane_id: None,
             companion_version: None,
@@ -2284,7 +2300,8 @@ impl App {
             .map(|r| r.owner_id.as_str())
             .collect();
         self.watched_panes.retain(|o| live.contains(o.as_str()));
-        let mut out = Vec::new();
+        let mut out: Vec<(u8, crate::mux::PaneSpec)> = Vec::new();
+        let mut opened_owners: Vec<String> = Vec::new();
         for r in &self.roster {
             if !is_bee(r) || self.watched_panes.contains(&r.owner_id) {
                 continue;
@@ -2309,27 +2326,115 @@ impl App {
                     format!("{a} · {right}")
                 })
                 .unwrap_or_else(|| r.label.clone());
+            let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
             // P-010: flag-on, prefix the per-type glyph into the bee pane title
             // (zellij has no per-pane color — D-008 — so the glyph carries the type).
-            let title = crate::agent_pane_kind::glyph_prefixed_title(
-                &title,
-                crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
-                self.hive_agent_tabs,
-            );
-            out.push(
+            let title =
+                crate::agent_pane_kind::glyph_prefixed_title(&title, kind, self.hive_agent_tabs);
+            out.push((
+                // P-011: group same-type panes — the batch appends in group-rank
+                // order so bees land together, planners together. Unknown → last.
+                kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
                 // P-004: flag-on, a claude bee resumes as a real Claude TUI
                 // (claude --resume <session_id>); else the read-only watch-pane.
                 crate::mux::PaneSpec::new(r.dock_pane_argv(self.hive_agent_tabs))
                     .titled(title)
                     .stacked_autoclose(),
-            );
+            ));
+            // Record the owner directly — the flag-on argv is `claude --resume
+            // <session_id>` (no owner at argv[2]), so parsing argv would dedup on
+            // the wrong key and re-pane the bee every refresh.
+            opened_owners.push(r.owner_id.clone());
         }
-        for spec in &out {
-            if let Some(owner) = spec.argv.get(2) {
-                self.watched_panes.insert(owner.clone());
+        self.watched_panes.extend(opened_owners);
+        // Stable by rank: roster order survives within a type group (P-011).
+        out.sort_by_key(|(rank, _)| *rank);
+        out.into_iter().map(|(_, spec)| spec).collect()
+    }
+
+    /// P-013: the zellij tab name for a deployed frame. The ☁ prefix marks it
+    /// as a frame tab (and keeps it distinct from any user-named tab).
+    pub fn frame_tab_name(slug: &str) -> String {
+        format!("☁ {slug}")
+    }
+
+    /// P-013: the per-frame tabs to create THIS refresh — one zellij tab per
+    /// deployed cloud frame not yet present. The LOCAL frame is the dock's own
+    /// tab (it is never duplicated); each remote frame's tab holds that frame's
+    /// agents as watch panes (host-matched roster entries — the PG-backed
+    /// remote view; the streamed desktop stays the webview Frames tab, OQ-5).
+    /// Topology is ground truth for "present"; `created_frame_tabs` covers the
+    /// command→snapshot window. Returns (tab_name, kdl) pairs; gated to the
+    /// flag-on dock driver. Pure over (frames, roster, topology) — unit-tested.
+    pub fn frame_tabs_to_create(&mut self) -> Vec<(String, String)> {
+        if !(self.hive_agent_tabs && self.dock_agent_panes) {
+            return Vec::new();
+        }
+        // No companion topology yet → no tab surface to create into.
+        let Some(topo) = &self.topology else {
+            return Vec::new();
+        };
+        let existing: std::collections::HashSet<&str> =
+            topo.tabs.iter().map(|t| t.name.as_str()).collect();
+        let mut out = Vec::new();
+        for fr in &self.frames {
+            let name = Self::frame_tab_name(&fr.slug);
+            if existing.contains(name.as_str()) || self.created_frame_tabs.contains(&name) {
+                continue;
             }
+            // The frame's agents: live roster entries on that frame's host.
+            let agents: Vec<(String, String)> = self
+                .roster
+                .iter()
+                .filter(|r| {
+                    r.is_live()
+                        && fr.frame.host.as_deref().is_some_and(|h| !h.is_empty() && r.host == h)
+                })
+                .map(|r| {
+                    let title = crate::agent_pane_kind::glyph_prefixed_title(
+                        &r.label,
+                        crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
+                        true,
+                    );
+                    (r.owner_id.clone(), title)
+                })
+                .collect();
+            let kdl = crate::layout::frame_tab_kdl(&name, &agents);
+            self.created_frame_tabs.insert(name.clone());
+            out.push((name, kdl));
         }
         out
+    }
+
+    /// P-011: the dock agent stack regrouped by type. Reads each pane's kind
+    /// back from its glyph-prefixed NAME (the P-010 channel — zellij carries no
+    /// other per-pane metadata) and returns the agent panes' ids in group-rank
+    /// order when the live order interleaves types. `None` = already grouped /
+    /// nothing to regroup / not the flag-on dock driver. The run loop turns
+    /// `Some(ids)` into a companion `stack_panes` (the D-008 repair verb), which
+    /// re-stacks them in the given order.
+    pub fn dock_regroup_ids(&self, topo: &pui_companion_proto::Topology) -> Option<Vec<u32>> {
+        if !(self.hive_agent_tabs && self.dock_agent_panes) {
+            return None;
+        }
+        let typed: Vec<(u32, u8)> = topo
+            .panes
+            .iter()
+            .filter(|p| !p.is_plugin && !p.exited)
+            .filter_map(|p| {
+                crate::agent_pane_kind::AgentPaneKind::from_glyph_prefix(&p.title)
+                    .map(|k| (p.id, k.group_rank()))
+            })
+            .collect();
+        if typed.len() < 2 {
+            return None;
+        }
+        let mut grouped = typed.clone();
+        grouped.sort_by_key(|(_, rank)| *rank); // stable — in-type order survives
+        if grouped == typed {
+            return None;
+        }
+        Some(grouped.into_iter().map(|(id, _)| id).collect())
     }
 
     /// Watch pane exit rule: the watched agent has been absent/stale for 2
@@ -3003,6 +3108,17 @@ impl App {
                 self.fleet_rate = Some(s);
                 Action::Render
             }
+            Event::Frames(frames) => {
+                // P-013: the deployed-frame roster landed — create any missing
+                // per-frame tabs (flag-on dock driver only; pure diff inside).
+                self.frames = frames;
+                let tabs = self.frame_tabs_to_create();
+                if tabs.is_empty() {
+                    Action::Render
+                } else {
+                    Action::CreateFrameTabs { tabs }
+                }
+            }
             // Realtime operator voice (voice-realtime-tui-2026-06-05): session
             // updates land in the SHARED operator chat (D-007) + phase badges.
             Event::VoiceUi(ev) => {
@@ -3461,8 +3577,24 @@ impl App {
                 Action::Render
             }
             Event::Topology(t) => {
+                // P-011: when the flag-on dock's agent stack interleaves types,
+                // ask the companion to re-stack it grouped (sentinel · queen ·
+                // bees · planners). Guarded against command spam: one repair per
+                // distinct target order — a re-snapshot of the same mis-order
+                // doesn't refire, and reaching a grouped state re-arms it.
+                let regroup = self.dock_regroup_ids(&t);
                 self.topology = Some(t);
-                Action::Render
+                match regroup {
+                    Some(ids) if self.last_regroup.as_ref() != Some(&ids) => {
+                        self.last_regroup = Some(ids.clone());
+                        Action::Dock(DockCmd::Stack { pane_ids: ids })
+                    }
+                    Some(_) => Action::Render,
+                    None => {
+                        self.last_regroup = None;
+                        Action::Render
+                    }
+                }
             }
             Event::PaneExited { pane_id, exit_code } => {
                 self.on_pane_exited(pane_id, exit_code);
@@ -4847,6 +4979,213 @@ mod tests {
         assert_eq!(next_wake_mode(Some("manual")), "auto");
         assert_eq!(next_wake_mode(Some("auto")), "manual");
         assert_eq!(next_wake_mode(None), "manual");
+    }
+
+    // ─── Dock grouping by pane type (hive-agent-tabs P-011) ───
+
+    fn fleet_bee(owner: &str, kind: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: owner.into(),
+            label: format!("su · {owner}"),
+            source: "fleet-spawn".into(),
+            liveness: "live".into(),
+            agent: Some("claude".into()),
+            agent_pane_kind: Some(kind.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn watch_panes_append_grouped_by_kind_and_dedup_by_owner() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        // Roster interleaves planner/bee/planner/bee — the batch must group.
+        a.set_roster(vec![
+            fleet_bee("p-1", "planner"),
+            fleet_bee("b-1", "bee"),
+            fleet_bee("p-2", "planner"),
+            fleet_bee("b-2", "bee"),
+        ]);
+        let specs = a.watch_panes_to_open();
+        let titles: Vec<&str> = specs.iter().map(|s| s.title.as_deref().unwrap_or("")).collect();
+        assert_eq!(specs.len(), 4);
+        // Bees (rank 2) before planners (rank 3); roster order within a group.
+        assert!(titles[0].starts_with("🐝") && titles[1].starts_with("🐝"), "{titles:?}");
+        assert!(titles[2].starts_with("📋") && titles[3].starts_with("📋"), "{titles:?}");
+        // The dedup set records OWNER ids (not argv[2], which is a session id for
+        // a flag-on claude --resume bee) — a re-refresh opens nothing.
+        for o in ["p-1", "b-1", "p-2", "b-2"] {
+            assert!(a.watched_panes.contains(o), "owner {o} not recorded");
+        }
+        assert!(a.watch_panes_to_open().is_empty(), "second refresh must dedup");
+    }
+
+    fn topo_pane(id: u32, title: &str) -> pui_companion_proto::PaneNode {
+        pui_companion_proto::PaneNode {
+            id,
+            tab: 0,
+            title: title.into(),
+            focused: false,
+            is_plugin: false,
+            exited: false,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn dock_regroup_ids_orders_interleaved_types_and_is_stable_when_grouped() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        // sentinel(1) · bee(2) · queen(3) · planner(4) · bee(5) + unglyphed colony(6).
+        let topo = pui_companion_proto::Topology {
+            tabs: vec![],
+            panes: vec![
+                topo_pane(1, "🛡 operator"),
+                topo_pane(2, "🐝 claude · F-12"),
+                topo_pane(3, "♛ brain"),
+                topo_pane(4, "📋 planner · my-plan"),
+                topo_pane(5, "🐝 codex · F-9"),
+                topo_pane(6, "colony"),
+            ],
+        };
+        // Grouped target: sentinel · queen · bees (roster order) · planner; the
+        // unglyphed colony pane never participates.
+        assert_eq!(a.dock_regroup_ids(&topo), Some(vec![1, 3, 2, 5, 4]));
+        // Already-grouped → None (no churn).
+        let grouped = pui_companion_proto::Topology {
+            tabs: vec![],
+            panes: vec![
+                topo_pane(1, "🛡 operator"),
+                topo_pane(3, "♛ brain"),
+                topo_pane(2, "🐝 claude · F-12"),
+                topo_pane(5, "🐝 codex · F-9"),
+                topo_pane(4, "📋 planner · my-plan"),
+            ],
+        };
+        assert_eq!(a.dock_regroup_ids(&grouped), None);
+        // Flag-off / non-driver → never regroups.
+        a.hive_agent_tabs = false;
+        assert_eq!(a.dock_regroup_ids(&topo), None);
+    }
+
+    #[test]
+    fn topology_event_fires_one_stack_repair_per_target() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        let mis = pui_companion_proto::Topology {
+            tabs: vec![],
+            panes: vec![
+                topo_pane(2, "🐝 claude · F-12"),
+                topo_pane(1, "🛡 operator"),
+            ],
+        };
+        // First mis-ordered snapshot → the stack repair fires.
+        match a.update(Event::Topology(mis.clone())) {
+            Action::Dock(DockCmd::Stack { pane_ids }) => assert_eq!(pane_ids, vec![1, 2]),
+            other => panic!("expected a stack repair, got {other:?}"),
+        }
+        // The SAME mis-order again → guarded (no spam).
+        assert_eq!(a.update(Event::Topology(mis)), Action::Render);
+        // A grouped snapshot re-arms the guard.
+        let grouped = pui_companion_proto::Topology {
+            tabs: vec![],
+            panes: vec![
+                topo_pane(1, "🛡 operator"),
+                topo_pane(2, "🐝 claude · F-12"),
+            ],
+        };
+        assert_eq!(a.update(Event::Topology(grouped)), Action::Render);
+        assert!(a.last_regroup.is_none());
+    }
+
+    // ─── Per-frame tabs (hive-agent-tabs P-013) ───
+
+    fn frame(slug: &str, host: &str) -> crate::models::DeployFrameRow {
+        crate::models::DeployFrameRow {
+            slug: slug.into(),
+            frame: crate::models::DeployFrameInfo {
+                id: format!("fr-{slug}"),
+                host: Some(host.into()),
+                region: Some("iad".into()),
+                kind: Some("fly".into()),
+            },
+            desktop: true,
+        }
+    }
+
+    #[test]
+    fn frames_event_creates_missing_frame_tabs_with_host_matched_agents() {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.dock_agent_panes = true;
+        // Topology present (companion linked) — only the local dock tab exists.
+        a.topology = Some(pui_companion_proto::Topology {
+            tabs: vec![pui_companion_proto::TabNode {
+                pos: 0,
+                name: "Tab #1".into(),
+                active: true,
+                swap_layout: None,
+                swap_dirty: false,
+            }],
+            panes: vec![],
+        });
+        // One remote agent on the frame's host, one local.
+        let mut remote = fleet_bee("su-remote", "bee");
+        remote.host = "cloud-1".into();
+        let mut local = fleet_bee("su-local", "bee");
+        local.host = "dev-box".into();
+        a.set_roster(vec![remote, local]);
+        match a.update(Event::Frames(vec![frame("papercup-cloud", "cloud-1")])) {
+            Action::CreateFrameTabs { tabs } => {
+                assert_eq!(tabs.len(), 1);
+                let (name, kdl) = &tabs[0];
+                assert_eq!(name, "☁ papercup-cloud");
+                // Host-matched agent panes only (the local bee stays out).
+                assert!(kdl.contains("args \"watch-pane\" \"su-remote\""), "{kdl}");
+                assert!(!kdl.contains("su-local"));
+            }
+            other => panic!("expected CreateFrameTabs, got {other:?}"),
+        }
+        // Same frames again → already created (dedup window) → no re-create.
+        assert_eq!(
+            a.update(Event::Frames(vec![frame("papercup-cloud", "cloud-1")])),
+            Action::Render
+        );
+        // A tab already in topology never re-creates either.
+        a.created_frame_tabs.clear();
+        a.topology.as_mut().unwrap().tabs.push(pui_companion_proto::TabNode {
+            pos: 1,
+            name: "☁ papercup-cloud".into(),
+            active: false,
+            swap_layout: None,
+            swap_dirty: false,
+        });
+        assert_eq!(
+            a.update(Event::Frames(vec![frame("papercup-cloud", "cloud-1")])),
+            Action::Render
+        );
+    }
+
+    #[test]
+    fn frame_tabs_gated_to_the_flag_on_dock_driver_with_topology() {
+        let mut a = App::new();
+        // Flag-off → never.
+        a.dock_agent_panes = true;
+        a.topology = Some(pui_companion_proto::Topology::default());
+        a.frames = vec![frame("papercup-cloud", "cloud-1")];
+        assert!(a.frame_tabs_to_create().is_empty());
+        // Flag-on but no topology (no companion) → nothing offered yet.
+        a.hive_agent_tabs = true;
+        a.topology = None;
+        assert!(a.frame_tabs_to_create().is_empty());
+        // Topology arrives → the tab is offered (placeholder pane, no agents).
+        a.topology = Some(pui_companion_proto::Topology::default());
+        let tabs = a.frame_tabs_to_create();
+        assert_eq!(tabs.len(), 1);
+        assert!(tabs[0].1.contains("tab name=\"☁ papercup-cloud\""));
     }
 
     // ─── Staged-wake review overlay (hive-agent-tabs P-009) ───

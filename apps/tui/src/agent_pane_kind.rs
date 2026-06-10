@@ -72,6 +72,33 @@ impl AgentPaneKind {
             Self::Planner => Color::Green,
         }
     }
+
+    /// The dock-stack GROUP order (P-011): same-type panes stack together, in
+    /// this rank order — Sentinel (owner-facing chat) leads, then the Queen,
+    /// then the worker Bees, then Planners. Matches the static KDL order
+    /// (sentinel · queen · …) so appended panes extend the existing grouping.
+    pub fn group_rank(self) -> u8 {
+        match self {
+            Self::Sentinel => 0,
+            Self::Queen => 1,
+            Self::Bee => 2,
+            Self::Planner => 3,
+        }
+    }
+
+    /// Recover the kind from a glyph-prefixed pane NAME/title (the P-010
+    /// contract: zellij carries no per-pane metadata, so the leading glyph in
+    /// the name is the type channel — and the P-011 regrouper reads it back).
+    /// None for unglyphed names (the colony driver, bars, user panes).
+    pub fn from_glyph_prefix(title: &str) -> Option<Self> {
+        let t = title.trim_start();
+        for k in [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner] {
+            if t.starts_with(k.glyph()) {
+                return Some(k);
+            }
+        }
+        None
+    }
 }
 
 /// Prefix a pane title/name with the kind's glyph when hive-agent-tabs is ON (P-010).
@@ -169,6 +196,29 @@ mod tests {
                 assert_ne!(colors[i], colors[j], "pane-kind colors must be distinct");
             }
         }
+    }
+
+    #[test]
+    fn group_rank_orders_sentinel_queen_bee_planner() {
+        // P-011: the dock-stack group order — and every rank distinct.
+        assert!(AgentPaneKind::Sentinel.group_rank() < AgentPaneKind::Queen.group_rank());
+        assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Bee.group_rank());
+        assert!(AgentPaneKind::Bee.group_rank() < AgentPaneKind::Planner.group_rank());
+    }
+
+    #[test]
+    fn from_glyph_prefix_recovers_the_kind_from_a_pane_name() {
+        // P-011 regrouper input: the P-010 glyph-prefixed zellij pane names.
+        assert_eq!(AgentPaneKind::from_glyph_prefix("🐝 claude · F-12"), Some(AgentPaneKind::Bee));
+        assert_eq!(AgentPaneKind::from_glyph_prefix("♛ brain"), Some(AgentPaneKind::Queen));
+        assert_eq!(AgentPaneKind::from_glyph_prefix("🛡 operator"), Some(AgentPaneKind::Sentinel));
+        assert_eq!(AgentPaneKind::from_glyph_prefix("📋 planner · my-plan"), Some(AgentPaneKind::Planner));
+        // Unglyphed (colony driver / user panes) → None.
+        assert_eq!(AgentPaneKind::from_glyph_prefix("colony"), None);
+        assert_eq!(AgentPaneKind::from_glyph_prefix("claude · ab12"), None);
+        // Round-trip with the P-010 prefixer.
+        let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee), true);
+        assert_eq!(AgentPaneKind::from_glyph_prefix(&t), Some(AgentPaneKind::Bee));
     }
 
     #[test]

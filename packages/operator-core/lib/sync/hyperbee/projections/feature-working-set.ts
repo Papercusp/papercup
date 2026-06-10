@@ -176,7 +176,6 @@ async function writeToPg(
     -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op. (recompute
     -- below stays unconditional: it re-derives the live set from current rows.)
     WHERE feature_working_set.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= feature_working_set.fed_ts
   `;
   // Reconcile the canonical working_users[] array (Phase 8 P-038): a put may

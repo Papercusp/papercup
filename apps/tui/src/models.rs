@@ -207,6 +207,38 @@ impl RosterEntry {
     }
 }
 
+/// One deployed cloud frame (`GET /api/deploy/frames` → `frames[]`) — the
+/// per-frame-tab roster (hive-agent-tabs P-013). Registry-backed: a frame is
+/// listed exactly while its deploy handle persists (deploy → teardown).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DeployFrameRow {
+    pub slug: String,
+    #[serde(default)]
+    pub frame: DeployFrameInfo,
+    /// Whether the frame runs a desktop (streamable via the webview Frames tab).
+    #[serde(default)]
+    pub desktop: bool,
+}
+
+/// The frame handle inside a [`DeployFrameRow`].
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DeployFrameInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeployFramesResponse {
+    #[serde(default)]
+    pub frames: Vec<DeployFrameRow>,
+}
+
 /// One staged wake awaiting owner review (hive-agent-tabs P-009 / D-005) —
 /// mirrors `pending-wakes.ts`'s `PendingWake`, carried inside the
 /// `coord:wake-queue {action:'list'}` run-tool payload.

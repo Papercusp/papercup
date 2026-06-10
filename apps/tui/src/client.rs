@@ -353,6 +353,17 @@ impl OperatorClient {
             .plans)
     }
 
+    /// Deployed cloud frames (`/api/deploy/frames`) — the per-frame-tab roster
+    /// (hive-agent-tabs P-013).
+    pub async fn deploy_frames(&self) -> Result<Vec<crate::models::DeployFrameRow>> {
+        let v = self.get_json("/api/deploy/frames").await?;
+        Ok(
+            serde_json::from_value::<crate::models::DeployFramesResponse>(v)
+                .context("decode deploy frames")?
+                .frames,
+        )
+    }
+
     pub async fn attention_typed(&self) -> Result<Vec<AttentionItem>> {
         let v = self.get_json("/api/admin/plans/attention").await?;
         let groups = serde_json::from_value::<AttentionResponse>(v)

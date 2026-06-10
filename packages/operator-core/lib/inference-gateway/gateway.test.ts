@@ -111,7 +111,8 @@ test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwar
 
 test('transparent proxy — streams an SSE body through untouched, drops content-length', async () => {
   await boot((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'content-length': '999' });
+    // Real SSE is chunked (no content-length); the gateway must re-stream it chunked too.
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
     res.write('event: content_block_delta\ndata: {"delta":{"text":"hi"}}\n\n');
     res.end();
@@ -178,4 +179,25 @@ test('non-/v1 paths 404', async () => {
   await boot((_req, res) => res.end('{}'));
   const res = await ask('/nope');
   assert.equal(res.status, 404);
+});
+
+test('priority queue bounds forwarded concurrency (P-011 wiring)', async () => {
+  let cur = 0;
+  let peak = 0;
+  await boot(
+    (_req, res) => {
+      cur++;
+      peak = Math.max(peak, cur);
+      setTimeout(() => {
+        cur--;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      }, 25);
+    },
+    { concurrency: 2 },
+  );
+  await Promise.all(
+    Array.from({ length: 6 }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
+  );
+  assert.ok(peak <= 2, `upstream peak concurrency ${peak} must be ≤ the queue cap (2)`);
 });

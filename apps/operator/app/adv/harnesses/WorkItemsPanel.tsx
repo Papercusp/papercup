@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
@@ -11,14 +12,13 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
  * table across BOTH families — feature-family {feature,research-task,chunk} +
  * issue-family {bug,change,task} — for the selected member harness, surfacing the
  * dimensions the old per-kind FeaturesPanel/IssuesPanel couldn't: `kind`/`family`, the
- * claim (`assignee` + `assignedBy`), `severity`, backlog `priority`, and per-assignee
- * `rank`.
+ * claim (`assignee` + `assignedBy`), `severity`, backlog `priority`, per-assignee
+ * `rank`, plus the v2 dims (plan-link + spine-position).
  *
- * v1 reads `GET /api/harness/:slug/work-items` via fetch + manual refresh. The proper
- * live-updating path is a `@papercusp/sync` resolver (`workItems.byHarness`) — a
- * deliberate follow-up (surfaced, not silently bypassed): this is an additive,
- * opt-in panel, so a fetch is acceptable for the first cut. Spine-position (role/stage)
- * + plan-item linkage are also follow-ups (they need a spawned_agents / coord_links join).
+ * Reads live via `useSyncQuery({ queryName: 'workItems.byHarness' })` — the resolver
+ * reuses the route's `listEnrichedWorkItems` assembly, and the table bridge re-fires
+ * the query on harness_features_consolidated / engineer_issues (migration 215) /
+ * spawned_agents changes. The Refresh button is a manual `invalidate()` escape hatch.
  */
 
 interface WorkItemRow {
@@ -41,37 +41,19 @@ interface WorkItemRow {
 
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
-  const [items, setItems] = useState<WorkItemRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   // user-meaningful filters → URL (nuqs); `w`-prefixed so they don't collide with
   // the Features (fview/fq) / Issues (iview/iq) panels.
   const [kind, setKind] = useQueryState('wkind', parseAsString.withDefault(''));
   const [search, setSearch] = useQueryState('wq', parseAsString.withDefault(''));
 
-  const load = useMemo(
-    () => async () => {
-      if (!slug) return;
-      setLoading(true);
-      setError(null);
-      try {
-        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/work-items?limit=300`, { cache: 'no-store' });
-        const d = (await r.json()) as { workItems?: WorkItemRow[]; error?: string };
-        if (!r.ok || d.error) throw new Error(d.error ?? `HTTP ${r.status}`);
-        setItems(d.workItems ?? []);
-      } catch (e) {
-        setError((e as Error).message);
-        setItems([]);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [slug],
-  );
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const query = useSyncQuery<WorkItemRow>({
+    queryName: 'workItems.byHarness',
+    args: { harnessSlug: slug, limit: 300 },
+    enabled: Boolean(slug),
+  });
+  const items = query.loading ? null : query.data;
+  const loading = query.fetching;
+  const error = query.error ? query.error.message : null;
 
   useEffect(() => {
     if (items) api.setTitle(`Work items · ${slug} (${items.length})`);
@@ -168,7 +150,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
             </option>
           ))}
         </select>
-        <button type="button" onClick={() => void load()} disabled={loading} style={{ fontSize: 11.5, padding: '4px 10px' }}>
+        <button type="button" onClick={() => query.invalidate()} disabled={loading} style={{ fontSize: 11.5, padding: '4px 10px' }}>
           {loading ? '…' : 'Refresh'}
         </button>
       </div>

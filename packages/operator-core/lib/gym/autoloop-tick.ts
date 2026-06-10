@@ -227,9 +227,43 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
   const log = deps.log ?? (() => {});
 
   const all = await deps.listAutoloops();
-  const eligible = orderByLeastRecentlyRun(all.filter((c) => isEligibleAutoloop(c, floor)));
+
+  // Crash recovery: settle stale 'running' rows (host died mid-cycle — see
+  // isStaleRunning) back to idle so they compete in THIS tick's eligibility.
+  // A reclaim failure is logged and the row stays busy (fail-safe: never run
+  // a cycle against a row we could not settle).
+  const staleMs = opts.staleRunningMs ?? GYM_AUTOLOOP_STALE_RUNNING_MS;
+  const reclaimedSlugs: string[] = [];
+  const pool: GymAutoloopConfig[] = [];
+  for (const cfg of all) {
+    if (!isStaleRunning(cfg, now(), staleMs)) {
+      pool.push(cfg);
+      continue;
+    }
+    try {
+      const ts = now();
+      await deps.setAutoloop({
+        workspaceId: cfg.workspaceId,
+        harnessSlug: cfg.harnessSlug,
+        status: 'idle',
+        now: ts,
+      });
+      reclaimedSlugs.push(cfg.harnessSlug);
+      pool.push({ ...cfg, status: 'idle', updatedAt: ts });
+      log(
+        `reclaimed stale 'running' autoloop ${cfg.harnessSlug} ` +
+          `(untouched ${Math.round((ts - cfg.updatedAt) / 60_000)} min — crashed mid-cycle)`,
+      );
+    } catch (e) {
+      pool.push(cfg);
+      log(`failed to reclaim stale 'running' row for ${cfg.harnessSlug}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  const reclaimExtra = reclaimedSlugs.length ? { reclaimed: reclaimedSlugs } : {};
+
+  const eligible = orderByLeastRecentlyRun(pool.filter((c) => isEligibleAutoloop(c, floor)));
   if (eligible.length === 0) {
-    return { action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: 0, gateBlocked: [] };
+    return { action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: 0, gateBlocked: [], ...reclaimExtra };
   }
 
   // Round-robin walk: the first LRU-ordered autoloop whose fire-gate allows. A
@@ -258,13 +292,13 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     );
   }
   if (!chosen) {
-    return { action: 'idle', reason: 'fire-gate-backoff', eligibleCount: eligible.length, gateBlocked };
+    return { action: 'idle', reason: 'fire-gate-backoff', eligibleCount: eligible.length, gateBlocked, ...reclaimExtra };
   }
 
   const remaining = remainingBudgetUsd(chosen);
   if (remaining === null) {
     // Unreachable per isEligibleAutoloop; belt-and-braces for the cost guard.
-    return { action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: eligible.length, gateBlocked };
+    return { action: 'idle', reason: 'no-eligible-autoloop', eligibleCount: eligible.length, gateBlocked, ...reclaimExtra };
   }
 
   // P-032 (additive): triage-routed gym ideas → proposer candidate directions.
@@ -324,6 +358,7 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
       candidateDirections: directions,
       result,
       settledStatus,
+      ...reclaimExtra,
     };
   } catch (err) {
     // running → idle even on a cycle error: the fire-gate's error backoff is the
@@ -351,6 +386,7 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
       candidateDirections: directions,
       settledStatus: 'idle',
       error: err instanceof Error ? err.message : String(err),
+      ...reclaimExtra,
     };
   }
 }

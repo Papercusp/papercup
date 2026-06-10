@@ -74,7 +74,6 @@ async function writeToPg(
       fed_ts = EXCLUDED.fed_ts
     -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
     WHERE harness_feature_prs.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= harness_feature_prs.fed_ts
   `;
 }

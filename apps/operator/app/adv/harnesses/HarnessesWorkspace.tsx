@@ -7,6 +7,7 @@ import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-
 import { useLexicon } from '@/lib/useLexicon';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
+import HarnessWelcome from './HarnessWelcome';
 import HiveMemberRail from './HiveMemberRail';
 import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
@@ -198,7 +199,13 @@ export default function HarnessesWorkspace() {
             />
             <div className="pc-adv-harnesses__dock">
               {dockSlug ? (
-                <HarnessesDock slug={dockSlug} />
+                <>
+                  <HarnessesDock slug={dockSlug} />
+                  {/* No-work welcome overlay (spec-md-ui-deprecation P-005 /
+                      D-002): shows the owner's onboarding copy over the dock
+                      while the harness has zero features + zero issues. */}
+                  <HarnessWelcome slug={dockSlug} />
+                </>
               ) : (
                 <div className="pc-adv-harnesses__empty">
                   {projectsError ? (

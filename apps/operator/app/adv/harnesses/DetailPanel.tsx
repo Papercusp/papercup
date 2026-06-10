@@ -16,6 +16,7 @@ import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import FeatureEditor from '../../harness/FeatureEditor';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
+import { runOutcome } from './run-outcome';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
   'todo',
@@ -27,13 +28,20 @@ const FEATURE_STATUSES: FeatureStatus[] = [
   'deprecated',
 ];
 
-// Consolidated agent-run row (camelCase Zero export).
+// Consolidated agent-run row (camelCase Zero export). Since P-023
+// (adv-harness-tab-migration) the resolver joins the spawn outcome +
+// native resume session id from spawned_agents — null on legacy rows.
 type RunRow = {
   runId: string;
   role: string;
   ts: number | string;
   featureId?: string | null;
   costUsd?: number | string;
+  running?: boolean | null;
+  spawnStatus?: string | null;
+  exitCode?: number | null;
+  errorMessage?: string | null;
+  sessionId?: string | null;
 };
 
 // Selection-history stack, module-scoped so it survives DetailPanel
@@ -41,6 +49,27 @@ type RunRow = {
 // (no pinned itemId) pushes/pops; pinned panels are read-only viewers.
 const selHistory: string[] = [];
 let suppressHistoryPush = false;
+
+/**
+ * Open a run's recorded agent session in a terminal (P-023): the launch-su
+ * resume path spawns `psu --agent=claude --resume-session=<id>` server-side —
+ * the same flow the Sessions tab uses, so the resumed session is tracked in
+ * adv_sessions like any other launch.
+ */
+async function openRunSession(slug: string, sessionId: string): Promise<void> {
+  try {
+    const res = await fetch('/api/adv/sessions/launch-su', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: 'claude', harness_slug: slug, resume_session_id: sessionId }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { status?: string; error?: string };
+    if (!res.ok || body.status === 'error') throw new Error(body.error || `${res.status}`);
+    toast.success(`Session ${sessionId.slice(0, 12)}… opening in a terminal.`);
+  } catch (e) {
+    toast.error('Open session failed', { description: String(e) });
+  }
+}
 
 function fmtAgo(ts: number | string): string {
   const ms = typeof ts === 'number' ? ts : Date.parse(String(ts));
@@ -443,15 +472,49 @@ function FeatureDetail({
             <p className="pc-adv-detail__muted">No agent runs for this feature yet.</p>
           ) : (
             <div className="pc-adv-detail__runs">
-              {featureRuns.map((r) => (
-                <div key={r.runId} className="pc-adv-detail__run">
-                  <span className="pc-adv-detail__run-role">{r.role}</span>
-                  <span className="pc-adv-detail__run-time">{fmtAgo(r.ts)}</span>
-                  {r.costUsd != null && Number(r.costUsd) > 0 && (
-                    <span className="pc-adv-detail__run-cost">${Number(r.costUsd).toFixed(2)}</span>
-                  )}
-                </div>
-              ))}
+              {featureRuns.map((r) => {
+                // P-023: outcome chip + error line from the joined spawn row;
+                // "Open session" resumes the run's recorded Claude session in
+                // a terminal (the launch-su resume path).
+                const outcome = runOutcome(r);
+                return (
+                  <div key={r.runId} className="pc-adv-detail__run-block">
+                    <div className="pc-adv-detail__run">
+                      <span className="pc-adv-detail__run-role">{r.role}</span>
+                      <span className="pc-adv-detail__run-time">{fmtAgo(r.ts)}</span>
+                      <span className="pc-adv-detail__run-right">
+                        {r.costUsd != null && Number(r.costUsd) > 0 && (
+                          <span className="pc-adv-detail__run-cost">${Number(r.costUsd).toFixed(2)}</span>
+                        )}
+                        {outcome && (
+                          <span
+                            className={`pc-adv-detail__run-outcome is-${outcome.kind}`}
+                            title={outcome.detail}
+                          >
+                            {outcome.label}
+                          </span>
+                        )}
+                        {r.sessionId && (
+                          <Tooltip label="Open this run's agent session in a terminal (claude --resume)">
+                            <button
+                              type="button"
+                              className="pc-adv-detail__run-open"
+                              onClick={() => void openRunSession(slug, r.sessionId!)}
+                            >
+                              Open session
+                            </button>
+                          </Tooltip>
+                        )}
+                      </span>
+                    </div>
+                    {outcome?.kind === 'failed' && outcome.detail && (
+                      <div className="pc-adv-detail__run-error" title={outcome.detail}>
+                        {outcome.detail}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -897,10 +960,66 @@ function DetailStyles() {
       .pc-adv-detail__run-time {
         color: var(--fg-mute, #7f9bb4);
       }
-      .pc-adv-detail__run-cost {
+      .pc-adv-detail__run-right {
         margin-left: auto;
+        display: inline-flex;
+        gap: 8px;
+        align-items: baseline;
+      }
+      .pc-adv-detail__run-cost {
         color: var(--fg-mute, #7f9bb4);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      /* P-023 outcome chip — colour buckets from runOutcome(). */
+      .pc-adv-detail__run-outcome {
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        padding: 1px 7px;
+        border-radius: 999px;
+        white-space: nowrap;
+      }
+      .pc-adv-detail__run-outcome.is-done {
+        background: color-mix(in oklab, #4ade80, transparent 84%);
+        color: #86efac;
+      }
+      .pc-adv-detail__run-outcome.is-failed {
+        background: color-mix(in oklab, #f87171, transparent 82%);
+        color: #fca5a5;
+      }
+      .pc-adv-detail__run-outcome.is-cancelled {
+        background: color-mix(in oklab, #facc15, transparent 84%);
+        color: #fde68a;
+      }
+      .pc-adv-detail__run-outcome.is-running {
+        background: color-mix(in oklab, #38bdf8, transparent 84%);
+        color: #7dd3fc;
+      }
+      .pc-adv-detail__run-outcome.is-muted {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-adv-detail__run-open {
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: transparent;
+        border: 1px solid color-mix(in oklab, var(--accent-strong, #7dd3fc), transparent 60%);
+        color: var(--accent-strong, #7dd3fc);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .pc-adv-detail__run-open:hover {
+        background: color-mix(in oklab, var(--accent-strong, #7dd3fc), transparent 86%);
+      }
+      .pc-adv-detail__run-error {
+        margin: 1px 0 2px 90px;
+        font-size: 11px;
+        color: #fca5a5;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .pc-adv-detail__notes {
         display: flex;

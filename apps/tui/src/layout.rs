@@ -314,6 +314,53 @@ layout {{
     )
 }
 
+/// A deployed frame's zellij TAB layout (hive-agent-tabs P-013): one tab named
+/// for the frame, holding that frame's agents as a stack of read-only
+/// `pui watch-pane <owner>` panes. Remote agents have no local PTY, so the
+/// PG-backed watch-pane IS the terminal-side remote view; the STREAMED desktop
+/// view stays the webview Frames tab (`hive-frame-desktops-live-view`, OQ-5
+/// settlement). No agents yet → a single shell pane as the placeholder.
+/// Pure (no I/O) — unit-tested. The companion's `new_tabs_with_layout` consumes
+/// the whole `layout { tab … }` string.
+pub fn frame_tab_kdl(tab_name: &str, agents: &[(String, String)]) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let panes = if agents.is_empty() {
+        "\n        pane".to_string()
+    } else {
+        agents
+            .iter()
+            .map(|(owner, title)| {
+                format!(
+                    "\n        pane name=\"{}\" {{\n            command \"pui\"\n            args \"watch-pane\" \"{}\"\n        }}",
+                    esc(title),
+                    esc(owner)
+                )
+            })
+            .collect::<String>()
+    };
+    // `stacked` needs ≥2 children to be meaningful (and zellij is picky about a
+    // one-pane stack) — a lone/placeholder pane renders unstacked.
+    let stacked = if agents.len() >= 2 { " stacked=true" } else { "" };
+    format!(
+        r#"layout {{
+    tab name="{name}" {{
+        pane size=1 borderless=true {{
+            plugin location="zellij:tab-bar"
+        }}
+        pane{stacked} {{{panes}
+        }}
+        pane size=2 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
+    }}
+}}
+"#,
+        name = esc(tab_name),
+        stacked = stacked,
+        panes = panes
+    )
+}
+
 /// The chat dock's brain-pane command (native-terminal-desktop D-013): the
 /// canonical brain — `psu --brain` resumes THE pinned brain session exactly
 /// (no picker; psu launches + pins a fresh one when no pin exists or it no
@@ -681,6 +728,50 @@ mod tests {
         assert!(written.contains("name=\"brain\""));
         assert!(written.contains("args \"chat-pane\""));
         assert!(written.contains("stacked=true"));
+    }
+
+    // ── P-013 per-frame tabs ─────────────────────────────────────────────────
+
+    #[test]
+    fn frame_tab_kdl_stacks_the_frames_agents_as_watch_panes() {
+        let agents = vec![
+            ("su-aaa".to_string(), "🐝 su · su-aaa".to_string()),
+            ("su-bbb".to_string(), "🐝 su · su-bbb".to_string()),
+        ];
+        let kdl = frame_tab_kdl("☁ papercup-cloud", &agents);
+        assert!(kdl.contains("tab name=\"☁ papercup-cloud\""));
+        assert!(kdl.contains("stacked=true"));
+        assert!(kdl.contains("args \"watch-pane\" \"su-aaa\""));
+        assert!(kdl.contains("args \"watch-pane\" \"su-bbb\""));
+        assert!(kdl.contains("name=\"🐝 su · su-aaa\""));
+        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+        // The tab keeps its own bars (each zellij tab lays out independently).
+        assert!(kdl.contains("zellij:tab-bar"));
+        assert!(kdl.contains("zellij:status-bar"));
+    }
+
+    #[test]
+    fn frame_tab_kdl_placeholder_and_single_pane_are_unstacked() {
+        // No agents → a bare shell pane, no one-pane stack (zellij is picky).
+        let empty = frame_tab_kdl("☁ idle-frame", &[]);
+        assert!(!empty.contains("stacked=true"));
+        assert!(!empty.contains("watch-pane"));
+        let one = frame_tab_kdl(
+            "☁ one",
+            &[("su-x".to_string(), "🐝 x".to_string())],
+        );
+        assert!(!one.contains("stacked=true"));
+        assert!(one.contains("args \"watch-pane\" \"su-x\""));
+    }
+
+    #[test]
+    fn frame_tab_kdl_escapes_quotes() {
+        let kdl = frame_tab_kdl(
+            "☁ q\"uote",
+            &[("o-1".to_string(), "ti\"tle".to_string())],
+        );
+        assert!(kdl.contains("tab name=\"☁ q\\\"uote\""));
+        assert!(kdl.contains("name=\"ti\\\"tle\""));
     }
 
     #[test]

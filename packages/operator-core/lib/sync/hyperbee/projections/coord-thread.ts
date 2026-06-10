@@ -97,7 +97,6 @@ async function writeToPg(
       fed_ts        = EXCLUDED.fed_ts
     -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
     WHERE coord_threads.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= coord_threads.fed_ts
   `;
 }
@@ -123,6 +122,8 @@ export function buildCoordThreadProjection(
 ): TableProjection<CoordThreadRow> {
   return {
     tableTag: 'coord-threads',
+    // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
+    skipOwnOps: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

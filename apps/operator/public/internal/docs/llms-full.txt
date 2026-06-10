@@ -4021,6 +4021,55 @@ To exercise just the storage layer **without** an LLM, drive `CanonicalVectorSto
 * [`live-pg-regression-sentinel`](/internal/docs/agent-insights/live-pg-regression-sentinel/) — the broader “verify against live PG, not just unit tests” pattern.
 * [`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/) — PG URL resolution + the native fallback.
 
+# Manually-applied migrations must be re-run-safe — guard DDL or the auto-deploy dies on lock timeouts
+
+> The deploy pipeline re-applies every pending sql/<NNN> file on the live DB. A migration already applied by hand on the dev box re-runs at deploy time — and bare ALTER TABLE/CREATE POLICY/GRANT statements take ACCESS EXCLUSIVE locks that can hit the runner's lock_timeout and roll back the whole deploy. Wrap RLS/policy/grant DDL in existence-guarded DO blocks so a re-run takes zero locks.
+
+## What happened (live, 2026-06-09)
+
+[Section titled “What happened (live, 2026-06-09)”](#what-happened-live-2026-06-09)
+
+Migration `208-scout-ticks-and-lens-weights.sql` was applied **manually** to the dev box’s native PG (the documented dev chore — native `:5432` has no auto-runner). The auto-deploy pipeline then tried to apply the same file on the live DB at 20:00/20:30/20:45 and **all three deploys failed with `canceling statement due to lock timeout` and auto-rolled back**, stranding the live operator \~5 hours behind staging.
+
+`CREATE TABLE IF NOT EXISTS` no-ops cheaply — but the rest of a conventional migration does NOT:
+
+* `ALTER TABLE … ENABLE ROW LEVEL SECURITY` — ACCESS EXCLUSIVE, **every run**
+* `DROP POLICY IF EXISTS … ; CREATE POLICY …` — ACCESS EXCLUSIVE, every run
+* `GRANT …` — ACCESS EXCLUSIVE, every run
+
+On a table that’s already live (because the manual apply created it and resolvers/routines are already reading it), any concurrent reader queues those locks past the runner’s `lock_timeout` → the migrate step dies → rollback.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+A migration that can ever be **re-applied on a DB where it already ran** (which is every migration on this project, because of the manual-dev-apply + deploy-re-apply pattern) must make its lock-taking statements conditional:
+
+```sql
+DO $$ BEGIN
+  IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = 'harness_shared.t'::regclass) THEN
+    ALTER TABLE harness_shared.t ENABLE ROW LEVEL SECURITY;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='harness_shared'
+                  AND tablename='t' AND policyname='t_workspace_isolation') THEN
+    CREATE POLICY t_workspace_isolation ON harness_shared.t USING (…) WITH CHECK (…);
+  END IF;
+  IF NOT has_table_privilege('harness_app', 'harness_shared.t', 'INSERT') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.t TO harness_app;
+  END IF;
+END $$;
+```
+
+Guarded = the re-run takes **zero** table locks; the fresh-migrate path (embedded-pg, the `fresh-migrate.integration.test.ts` gate) executes the statements normally. See `208-scout-ticks-and-lens-weights.sql` for the worked fix, and mirror it instead of the older bare-DDL pattern in `202-*.sql`.
+
+## How to recognize it
+
+[Section titled “How to recognize it”](#how-to-recognize-it)
+
+* `/tmp/papercup-auto-deploy.log` shows `migrate: apply <NNN>-…` then `✖ deploy failed: canceling statement due to lock timeout` then a rollback.
+* `papercup-release` checkout SHA stops advancing while `origin/main` moves.
+* The live operator stays healthy (rollback works) — the failure is silent unless you look at the deploy log, so a stalled release SHA is the tell.
+
 # Mobile endpoints are a defineRoute flag, not a separate router
 
 > The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute under /api/device/* + a `cors: true` flag. Device JWTs resolve through requirePrincipal; isRevoked treats unknown devices as revoked, which bites synthetic test JWTs.
@@ -4072,6 +4121,50 @@ vi.mock('../device-store', async (orig) => ({
 [Section titled “Gotcha 3 — route-stack auth needs a DB; handler-direct tests don’t”](#gotcha-3--route-stack-auth-needs-a-db-handler-direct-tests-dont)
 
 Driving a `requirePrincipal`-gated route through `registerAllRoutes` + `app.request()` exercises the real resolver chain, which touches PG. In a no-DB test that throws (or flakily 500s). Either mock the auth/DB layer (the `auth.test.ts` pattern) or test the handler directly with a hand-built `RouteContext` (the `agent-tools-catchall.test.ts` pattern) — the latter is cleaner for verifying port fidelity.
+
+# Native-scheduler lockout — one scheduler of record for agents
+
+> Agent sessions (bees, Queen, role panes, wake resumes) are denied every client-native and OS scheduling surface, so a wake can only live in the harness routines table. The variadic --disallowedTools gotcha and the per-backend enforcement map.
+
+## What
+
+[Section titled “What”](#what)
+
+The hive’s liveness contract is **“a wake is always armed in `harness_shared.routines`”** (`hive:declare-wake` → the one-shot `hive-wake` row). That table is the single scheduler of record read by `hive:status`, Pause, the wake-mode gate, and the liveness backstop. A wake scheduled anywhere else — claude-code’s `CronCreate`/`ScheduleWakeup`/`/schedule`/`/loop`, or `crontab`/`at`/`systemd-run` through any backend’s shell — is invisible to all of it: the backstop double-fires, Pause can’t stage it, and a cron job outlives the hive as a zombie. So every **agent** launch is locked out of those surfaces (plan `native-scheduler-lockout-2026-06-09`). The owner’s own `psu su` sessions are untouched.
+
+## The enforcement map
+
+[Section titled “The enforcement map”](#the-enforcement-map)
+
+| Layer                                             | Mechanism                                                                                                                                               | Where                                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| claude T1 (its scheduler tools + skills)          | `--disallowedTools=…` at launch                                                                                                                         | `invoke.ts` extraFlags (every headless spawn) · `wake-executor.ts` resume leg · `psu-launcher.mjs` `roleLaunchArgs` + brain legs |
+| claude T2 (OS schedulers via Bash)                | `Bash(crontab:*)`-style deny patterns in the same flag (works hook-less, i.e. for headless bees) + the bash-resource-gate hook (catches compound forms) | canonical list: `@papercusp/orchestrator/native-scheduler-deny` · hook: `scripts/hooks/cc/pretooluse-bash-resource-gate.sh`      |
+| omp (no T1 surface — toolset audited 2026-06-09)  | coord-hook `tool_call` block on OS-scheduler commands                                                                                                   | `scripts/hooks/omp/coord-hook.ts` (`OS_SCHEDULER_CMD_RE`)                                                                        |
+| codex (no T1 surface — toolset probed 2026-06-09) | gate hook wired into the role home’s `hooks.json` — **inert upstream** (codex PreToolUse doesn’t fire, same as the lock hooks) but correct + ready      | `role-codex-home.ts` `writeCodexLockHooks({ agentSession: true })`                                                               |
+| All backends, intent layer                        | explicit prohibition in the prompts                                                                                                                     | `queen.md` wake section · `bee.md` Don’ts                                                                                        |
+
+The hook layers key off **`PAPERCUSP_AGENT_SESSION=1`**, set by every agent launch path (orchestrator spawn env, wake-executor resumes, psu role panes, the brain) and never by human sessions — the guard fails open for the owner.
+
+## Gotchas (all verified live, 2026-06-09)
+
+[Section titled “Gotchas (all verified live, 2026-06-09)”](#gotchas-all-verified-live-2026-06-09)
+
+* **`--disallowedTools` is variadic** (`<tools...>`): the space form greedily eats every following token — in the wake-executor’s case the positional wake text itself became “deny rules” and the run errored with no prompt. **Always use the single-token `=` form** (`--disallowedTools=A,B,C`).
+* **The deny holds under `--permission-mode bypassPermissions`** — the tool is removed from the model’s toolset, not merely permission-gated.
+* **`ScheduleWakeup` is present even in headless `claude -p` sessions**, so this is a live exposure for bees, not an interactive-only concern.
+* **Headless claude spawns load NO hooks** (minimal `CLAUDE_CONFIG_DIR`, creds symlink only) — that’s why the T2 Bash deny-patterns ride the launch flag instead of relying on the PreToolUse gate.
+* Bash prefix deny-patterns can’t match compound commands (`cd x && crontab …`) — the hook layer covers those; `at` is hook-only (a bare prefix rule would false-positive `atuin`/`attach`).
+* CLI flags don’t persist into resumes: **every resume leg must re-apply the flag** (the wake-executor does; that’s the leg that wakes the Queen).
+
+## Residual gaps (accepted, documented)
+
+[Section titled “Residual gaps (accepted, documented)”](#residual-gaps-accepted-documented)
+
+* Headless **omp** bees load no `-e` extension (auto-discovery dir is empty on this box), so their shell is prompt-governed only. Default bees are claude, which is fully covered.
+* **codex** PreToolUse emission is broken upstream (openai/codex #20204 / #16732) — the gate entry in `hooks.json` enforces nothing until that fixes, exactly like the lock hooks (D-011 in `role-codex-home.ts`).
+* Anything remote (`ssh host 'crontab …'`) is out of scope for local hooks.
+* `psu --resume` of a role session by the OWNER doesn’t re-apply the flag (owner-supervised; OQ-2 of the plan).
 
 # A new package in a CJS family must not set type:module (and needs main+types, not just exports)
 
@@ -11467,9 +11560,9 @@ The button source-of-truth allow-list lives in `packages/operator-core/lib/admin
 
 > Every command wired into the /admin ops dashboard — what it runs, what it depends on, what it produces.
 
-The operator is Vite now, not Next.js
+History: the operator frontend was Next.js until mid-2026
 
-The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`, a TanStack-Router SPA). Read any “Next.js app / Next standalone / `next dev` / `next start`” wording below as the **Vite** SPA (`:3055` dev) served by the `:3070` **Hono host** (`apps/operator/bin/hono-host.ts`). There is no `next.config.js` left in `apps/operator/`; the `/admin` run route is itself a Hono route, not a Next `route.ts`. See the `operator-next-is-retired` insight.
+Next.js is **fully removed** (`finish-next-removal-2026-06-01`): no `next` dependency, no `next.config.js`, no `next/*` shims. The operator frontend is the **Vite** SPA (`@papercusp/operator-vite`, TanStack Router, `:3055` in dev) served by the `:3070` **Hono host** (`apps/operator/bin/hono-host.ts`); the `/admin` run route is a Hono `endpoint-route` handler. See the `operator-next-is-retired` insight.
 
 ## How the page works
 
@@ -11703,9 +11796,9 @@ After editing, the new card appears immediately — the page fetches the list vi
 
 > How a production Papercusp binary is laid out, what it spawns at startup, and how the browser webview finds the operator server.
 
-The operator is Vite now, not Next.js
+History: the operator frontend was Next.js until mid-2026
 
-The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`, a TanStack-Router SPA). Read any “Next.js app / Next standalone / `next dev` / `next start`” wording below as the **Vite** SPA (`:3055` dev) served by the `:3070` **Hono host** (`apps/operator/bin/hono-host.ts`). There is no `next.config.js` left in `apps/operator/`. The shipped sidecar is an esbuild-bundled `serve.mjs`, **not** a Next.js standalone. (`apps/operator/app/**` is **not** dead code — operator-vite still imports its live page bodies via the `@/app` alias + `next/*` compat shims.) See the `operator-next-is-retired` insight.
+Next.js is **fully removed** (`finish-next-removal-2026-06-01`): no `next` dependency, no `next.config.js`, no `next/*` shims — the former `next/{navigation,link,dynamic}` adapter hooks live on as `apps/operator/lib/router-compat/*`. The operator frontend is the **Vite** SPA (`@papercusp/operator-vite`, TanStack Router, `:3055` in dev) served by the `:3070` **Hono host** (`apps/operator/bin/hono-host.ts`); the shipped sidecar is an esbuild-bundled `serve.mjs`. `apps/operator/app/**` is **not** dead code — operator-vite imports its live page bodies via the `@` alias (→ `apps/operator/`). See the `operator-next-is-retired` insight.
 
 ## Two repos, two stages
 
@@ -26195,25 +26288,28 @@ The build-time contract that *no PostHog code reaches end-user bundles unless th
 
 Feature flags are how Papercusp ships V1 with a minimal feature set while keeping the cut features in the codebase, ready to re-enable. The cut-for-V1 flags default to **off**; flags created for newly built features default to **on** in alpha (finished work ships active — the flag is the owner’s off-switch, not a dark launch). The operator falls back to bundled defaults when offline, and admins flip flags through the operator’s own UI — no PostHog dashboard required for day-to-day use.
 
-## The 12 flags
+## The 14 flags
 
-[Section titled “The 12 flags”](#the-12-flags)
+[Section titled “The 14 flags”](#the-14-flags)
 
 The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
 
-| Key                                    | TS constant                        | Default | What it gates                                                                                                                                                      |
-| -------------------------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false` | Publish-to-Cloudflare flow.                                                                                                                                        |
-| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                |
-| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                        |
-| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                           |
-| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false` | In-harness “design” tab + `/design` route + `/api/design/*` routes.                                                                                                |
-| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false` | Testing-only surfaces: the `pi` tab + the “add plugin” button.                                                                                                     |
-| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                           |
-| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                            |
-| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `false` | Desktop P2P video channel (the workbench `VideoGrid`). Ships dark until the live-camera E2E passes.                                                                |
-| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `false` | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Ships dark until the supervised live Tauri+mic pass.                                                      |
-| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `false` | Selects the active brand pack for the user-facing lexicon. Off = `classic` Papercusp; on = the `the-hive` bee pack. Presentation only — code/DB/MCP are unchanged. |
+| Key                                    | TS constant                        | Default | What it gates                                                                                                                                                                                            |
+| -------------------------------------- | ---------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `papercusp-cloudflare-publish`         | `FLAGS.CLOUDFLARE_PUBLISH`         | `false` | Publish-to-Cloudflare flow.                                                                                                                                                                              |
+| `papercusp-oracle`                     | `FLAGS.ORACLE`                     | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off).                                                                                                                      |
+| `papercusp-rust-port-ui`               | `FLAGS.RUST_PORT_UI`               | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today.                                                                                              |
+| `papercusp-harness-phases`             | `FLAGS.HARNESS_PHASES`             | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.                                                                                                                 |
+| `papercusp-design`                     | `FLAGS.DESIGN`                     | `false` | In-harness “design” tab + `/design` route + `/api/design/*` routes.                                                                                                                                      |
+| `papercusp-testing`                    | `FLAGS.TESTING`                    | `false` | Testing-only surfaces: the `pi` tab + the “add plugin” button.                                                                                                                                           |
+| `papercusp-inbox-durable-escalations`  | `FLAGS.INBOX_DURABLE_ESCALATIONS`  | `false` | Mirror chat decision cards to durable coord escalations (answer live or from the inbox).                                                                                                                 |
+| `papercusp-improvement-auto-implement` | `FLAGS.IMPROVEMENT_AUTO_IMPLEMENT` | `false` | Master switch for auto-implementing captured improvements. Off = capture + triage only.                                                                                                                  |
+| `papercusp-video-channels`             | `FLAGS.VIDEO_CHANNELS`             | `true`  | Desktop P2P video channel (the workbench `VideoGrid`). Owner-activated 2026-06-09 (alpha default-on policy); the live two-instance camera E2E is still outstanding.                                      |
+| `papercusp-voice-channels`             | `FLAGS.VOICE_CHANNELS`             | `true`  | Desktop P2P voice-channel surface (`VoiceChannelPanel`). Owner-activated 2026-06-09; the supervised live Tauri+mic pass is still outstanding.                                                            |
+| `papercusp-the-hive`                   | `FLAGS.THE_HIVE`                   | `true`  | Selects the active brand pack for the user-facing lexicon. On (default, owner-activated 2026-06-09) = the `the-hive` bee pack; off = `classic` Papercusp. Presentation only — code/DB/MCP are unchanged. |
+| `papercusp-blueprint-aware-settings`   | `FLAGS.BLUEPRINT_AWARE_SETTINGS`   | `true`  | The schema-driven harness settings panel (`BlueprintSettingsPanel`) rendered from the blueprint’s declared `params`. Off = the legacy `HarnessSettingsPanel`.                                            |
+| `papercusp-prompt-studio`              | `FLAGS.PROMPT_STUDIO`              | `true`  | The Prompt Studio surface at `/settings/prompt-studio` (edit the playbook/persona prompt sources with a live assembled-prompt preview) **and** its `/api/prompt-studio/*` routes.                        |
+| `papercusp-hive-agent-tabs`            | `FLAGS.HIVE_AGENT_TABS`            | `true`  | The unified agent-tabs dock (every agent surface as a real psu/Claude TUI session, per-agent wake-mode gate, per-type grouping). Off = the previous dock.                                                |
 
 > `papercusp-templates` (`FLAGS.TEMPLATES`) and `papercusp-marketplace` (`FLAGS.MARKETPLACE`) were **retired** (`revive-cupboard-distribution` D-004): the legacy :3057 marketplace + `/templates` routes/UI are deleted; distribution now lives in the (ungated) Cupboard. `papercusp-snapshots` (`FLAGS.SNAPSHOTS`) was **retired** (`retire-snapshots-instance-spec` D-005): the harness-snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible clone is the ungated, lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`). Their keys no longer exist in `FLAGS`.
 
@@ -26611,7 +26707,8 @@ curl -X POST http://localhost:3055/api/flags/preset \
 curl -s http://localhost:3055/api/flags/bootstrap | jq
 
 
-# Expected: source="unconfigured", every flag false
+# Expected: source="unconfigured", every flag at its FLAG_DEFAULTS value
+# (cut-for-V1 flags false; alpha default-on flags true — see the table above)
 ```
 
 ### "Add a new flag”
@@ -39529,6 +39626,164 @@ These reflect known in-progress migrations as of 2026-05-06; expect them to drif
 
 For a one-page summary of recent migrations and their commit hashes, see `/home/marsh-office/.claude/projects/-tmp/memory/project_omp_routing_migration.md` and `/home/marsh-office/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md`.
 
+# Repo conventions — the long form
+
+> The full detail behind CLAUDE.md's pointers — deployment model, retired surfaces, borrowable libs, branch/commit discipline, two-port model, database topology, test infrastructure.
+
+# Repo conventions — the long form
+
+[Section titled “Repo conventions — the long form”](#repo-conventions--the-long-form)
+
+> `CLAUDE.md` at the repo root carries the **invariants + pointers** every agent loads on every session. This page carries the **long-form detail** behind those pointers (moved here 2026-06-10, plan `token-usage-reduction-audit-2026-06-09` P-004). If a rule here contradicts CLAUDE.md, CLAUDE.md wins — update both.
+
+## Deployment model — desktop is the product
+
+[Section titled “Deployment model — desktop is the product”](#deployment-model--desktop-is-the-product)
+
+**Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19** (the “Transport selection by deployment context” doc-comment).
+
+The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — the `apps/operator/bin/{dev,prod}` standalone entrypoints are gone (the root `bin/dev`/`bin/prod`, which boot the Vite SPA + Hono host and invoke no Next, remain), and a `PreToolUse` hook blocks browser nav to its ports.
+
+`cd papercusp-desktop && npm run dev` boots embedded Postgres (writes `~/.papercusp/embedded-pg.json`), starts the operator sidecar against it, applies pending SQL migrations, and opens the Tauri webview. There is no “just the webapp” mode.
+
+Internal ports (do not open in a browser; the desktop drives them):
+
+* `:3055` — the operator’s **Vite** dev server (TanStack-Router SPA, `@papercusp/operator-vite`) consumed by the Tauri webview. **Next.js is retired** for the operator (`next dev`/`next start` blocked). ⚠ But `apps/operator/app/**` is **NOT** dead code — operator-vite still imports its live page implementations from there via the `@/app` alias + `next/*` compat shims (verified 2026-06-01; see plan `finish-next-removal-2026-06-01`).
+* `:3070` — operator harness sidecar API + these docs at `/internal/docs`.
+
+### Transport / persistence by deployment context
+
+[Section titled “Transport / persistence by deployment context”](#transport--persistence-by-deployment-context)
+
+| Concern            | Desktop (production)                                                                    | Browser (test/dev)                                                  |
+| ------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Sync transport     | **SSE primary** (`/api/zero-harness/sse` pushes invalidate/update via PG LISTEN/NOTIFY) | Zero WS primary, SSE fallback, polling as floor                     |
+| Persistence        | embedded-pg (real PG 17 via libs/papercusp/packages/embedded-postgres-server)           | Same — embedded-pg, NOT pglite                                      |
+| zero-cache process | **Not run** — operator sidecar serves SSE itself                                        | Production zero-cache service from docker-compose.papercup.prod.yml |
+| Runtime detection  | `window.__TAURI_INTERNALS__` + server-side `/api/desktop/version` fingerprint           | Neither present                                                     |
+| Override for tests | `localStorage.harnessSyncTransport = 'SSE'` to force desktop path in browser            | `'WEBSOCKETS'` to force browser path                                |
+
+**Stale docs to mistrust** (cross-checked 2026-05-11):
+
+* `libs/generic/sync/PASS_2_1_DECISION.md` (2026-05-06) declared “stop SSE” — **SUPERSEDED 2026-05-07** by the HarnessZeroProvider decision to make SSE primary on desktop. The doc has a header banner now but is otherwise frozen.
+* `libs/generic/sync/src/transports/sse/SSEAdapter.tsx`’s old header claimed “no current consumer, preserved-but-frozen” — corrected to reflect production use.
+* Any code comment or memory note that says “Zero WS is primary everywhere” or “SSE is dead” predates 2026-05-07 and is wrong for desktop.
+* Older text saying native PG was renamed `papercusp_legacy` to make standalone boots fail loudly is **stale** — native `papercusp` on `:5432` is alive and is the dev box’s substrate (see Database topology below).
+
+**When designing new sync-touching features:** desktop SSE is the path that matters. Browser WS is a fallback that lets developers test in a normal browser. If a feature only works under WS, it’s incomplete for production.
+
+## Retired / preserved-not-active surfaces
+
+[Section titled “Retired / preserved-not-active surfaces”](#retired--preserved-not-active-surfaces)
+
+Some code is **retired but deliberately kept** in the tree for reference — not deleted, not deployed, not tested, and not to be extended. Agents repeatedly mis-read these as active because they still look like workspaces, carry deploy config, or have recent commits. **Treat everything in this list as dead:** do not write tests for it, wire new code to it, or “revive” it without an explicit ask.
+
+| Surface                                                                                                                                                                                                                                                                        | Location                                                                                                                                           | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Restore                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `@papercup/web` — papercupai.com public site                                                                                                                                                                                                                                   | `_retired/papercup/`                                                                                                                               | Retired 2026-05-30. Dropped from the workspace glob + root scripts; `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` bannered (preserved, not deployed).                                                                                                                                                                                                                                                                                                                                              | `_retired/papercup/RESTORE.md` + git tag `papercup-web-retired-2026-05-30`                                                       |
+| Standalone operator webapp (`apps/operator` opened on `:3055` in a browser)                                                                                                                                                                                                    | `apps/operator` — run **only** via the Tauri shell                                                                                                 | Retired 2026-05-14; a `PreToolUse` hook blocks browsing its ports.                                                                                                                                                                                                                                                                                                                                                                                                                                              | n/a — the operator still ships, just not as a standalone webapp                                                                  |
+| `libs/zero-harness` — Zero ZQL schema/queries                                                                                                                                                                                                                                  | `libs/zero-harness`                                                                                                                                | On the Zero-retirement path; the ZQL package has **0 live importers** (only dead surfaces reference it: `libs/papercup-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don’t add tests.**                                                                                                                                                                                                                                                                                                  | n/a                                                                                                                              |
+| `libs/papercup-db` — fictional-org demo schema                                                                                                                                                                                                                                 | `libs/papercup-db`                                                                                                                                 | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate.                                                                                                                                                                                                                                                                                                                                                                                                                     | n/a                                                                                                                              |
+| `libs/holepunch-spike` — P2P spike                                                                                                                                                                                                                                             | `libs/holepunch-spike`                                                                                                                             | Phase-0 spike. **NOT zero-importers** — its `holepunch.d.ts` shim surface is implemented by `apps/operator/lib/sync/hyperbee/swarm.ts` and wired into \~10 orchestrator files (feature-claim, distributed-claim, instrumentation-node, …), so it is not a safe delete as-is.                                                                                                                                                                                                                                    | n/a                                                                                                                              |
+| `libs/papercup-shared/**/*View.tsx`                                                                                                                                                                                                                                            | `libs/papercup-shared`                                                                                                                             | The read-only `*View.tsx` components render the retired web surface; the non-view helpers (e.g. `_admin-paths`) are still shared and live.                                                                                                                                                                                                                                                                                                                                                                      | n/a                                                                                                                              |
+| Legacy `@papercusp/orchestrator` run-loop (`runMainLoop` + the `pre-loop`/`synthesizer`/`actions-block`/`checkpoints(-pg)`/`snapshot-state`/`snapshots-pg`/`mission-state-pg`/`dispatches-pg`/`distributed-claim-fetch` cluster + `bin/run.ts`, plus `git.ts`/`branch-iso.ts`) | `libs/papercusp/_retired/orchestrator-run-loop/` (+ superproject `_retired/orchestrator-run-loop/apps-operator-test/` for the 4 integration tests) | Retired 2026-06-06 (`archive-legacy-orchestrator-deadcode`). 0 live importers; superseded by the DBOS pipeline. Barrel + 4 package.json subpath exports pruned; the `cost-cap.ts`→`mission-state-pg` cross-edge severed (cost-cap is now FS-only). `lint:no-retired` guards against re-imports + a reappearing `/api/plugins/orchestrator/spawn` fetch.                                                                                                                                                         | `libs/papercusp/_retired/orchestrator-run-loop/RESTORE.md` + submodule git tag `legacy-orchestrator-run-loop-retired-2026-06-06` |
+| `@papercupai/orchestrator-spawn` plugin (never installed)                                                                                                                                                                                                                      | `libs/papercusp/_retired/orchestrator-spawn-plugin/`                                                                                               | Retired 2026-06-06. Superseded by `fleet/operator-spawn.ts`; its `/api/plugins/orchestrator/spawn` path 404’d.                                                                                                                                                                                                                                                                                                                                                                                                  | `libs/papercusp/_retired/orchestrator-spawn-plugin/RESTORE.md`                                                                   |
+| The harness-snapshot system (`@papercusp/export-state` FS-tarball lib + `snapshots:*` tools + `/api/snapshots/*` routes + the Cupboard `kind=snapshot` path + worker R2 blob store + the `SNAPSHOTS` flag + `snapshot_index` PG table)                                         | `_retired/snapshot-system/`                                                                                                                        | Retired 2026-06-09 (`retire-snapshots-instance-spec`). A monolithic-era abstraction; its jobs re-homed — distribution→blueprints, backup→git+PG, reproducible clone→the lightweight `InstanceSpec` (`packages/operator-core/lib/instance-spec/`, capture/boot/vary). `@papercusp/export-state` dropped from the workspace glob + lockfile; migration 199 drops `snapshot_index`. NOT the legacy `harness_snapshots(_consolidated)` iteration-snapshot tables (still live). `lint:no-retired` guards re-imports. | `_retired/snapshot-system/RESTORE.md` + git tag `snapshot-system-retired-2026-06-09`                                             |
+
+**Convention for retiring-but-keeping a surface:** (1) move it under `_retired/` — this drops it from the `apps/*` / `packages/*` workspace globs so npm, the affected-test runner, knip, and nx stop treating it as live (the structural signal that fools agents, not a prose note); (2) remove its root `package.json` scripts and banner any deploy config — **preserve, don’t delete**; (3) add a `RESTORE.md` in the moved directory with the exact re-wiring steps + the last-active commit, and cut a `git tag <name>-retired-<date>` restore point; (4) add a row to the table above. Restoration is then `git mv _retired/<x> <orig>` + re-apply the RESTORE.md steps.
+
+## Borrowable libraries — generic, domain-free, reusable anywhere
+
+[Section titled “Borrowable libraries — generic, domain-free, reusable anywhere”](#borrowable-libraries--generic-domain-free-reusable-anywhere)
+
+A growing set of our libraries carry **zero Papercusp/Restart domain coupling** — any project can borrow them. Where a host-specific value is needed it’s injected through a small seam (a `configure*()` call or a prop); Papercusp maps its own domain onto that seam in the operator, so the lib itself names no consuming app.
+
+**The catalog is `BORROWABLE.md` at the repo root** (generated — `npm run gen:borrowable`; source of truth `scripts/gen-borrowable-catalog.mjs`). It lists each borrowable lib with its description + repo, grouped by domain, plus a “reusable with host wiring” section for libs that keep a Papercusp tie-in by design (`locks`, `coordination`, `backup`, `docs-engine`, `host-platform`). As of 2026-05-31, **every borrowable lib is its own standalone (private) submodule under `libs/generic/*` → `github.com/Papercusp/<name>`** — the borrowable submodules were physically regrouped there, and the borrowable in-repo `packages/*` libs (rrf, search, memory, ipc-framing, ipc-endpoint-server, desktop-ipc, rate-limit, plan-parser, embedded-pg-discovery) were promoted to their own private repos. Only the kept-tie-in libs stay in `packages/` / `libs/`. Consumers import by package name (`@papercusp/<name>`), so the location is transparent. When you make a lib generic — or notice domain coupling leaking into one — add/adjust it in the generator and re-run. See `papercusp-systems-abstraction-2026-05-29`.
+
+**Generic-first — write it in `libs/generic` from the start, don’t migrate it later.** A genuinely domain-free algorithm (a textbook concurrency / distributed-systems / data-structure core: a supervision tree, fencing tokens, a topological sort, a token-bucket rate limiter, φ-accrual, a saga…) **must START as `libs/generic/<name>` behind a `configure*()`/port seam** — not written inside `packages/operator-core/lib` to be extracted in a later pass. The 2026-06-05 audit (`generalize-libs-to-generic-2026-06-05`) found a large batch of exactly that debt and had to migrate \~12 cores out of the app; the discipline below stops it re-accruing:
+
+* **`npm run lint:generic-first`** (advisory; `:all` for a full-tree sweep) flags a *substantial, zero-coupling* file that *names a generic CS concept* and landed in `operator-core/lib` / `apps/operator/lib`, and nudges it toward `libs/generic`. It’s informational by default (like `lint:knip` — it advises, never gates), since the signal is a heuristic. Both signals are required on purpose: structural decoupling alone flags \~200 files, so the concept name is the precision filter.
+* A genuinely app-local file whose concept keyword is incidental (e.g. “backpressure” describing browser audio buffering) goes in the `ALLOW` set in `scripts/check-generic-first.mjs` — don’t silence the whole lint.
+* The seam pattern itself: [generalizing-a-lib-host-seam-pattern](/internal/docs/agent-insights/generalizing-a-lib-host-seam-pattern).
+
+## Branch + commit discipline — the long form
+
+[Section titled “Branch + commit discipline — the long form”](#branch--commit-discipline--the-long-form)
+
+The branch model since the staging→main cutover (`staging-branch-pipeline-2026-06-06`):
+
+* **`staging`** — the integration branch / agent firehose. The repo at `/home/marsh-office/papercupai-workspace/papercup` is the canonical shared checkout and **must always have `staging` checked out**. Other agents (paperclip, the operator UI, dev servers, the harness fleet) all assume this. Branch-switching there breaks them all.
+* **`main`** — the GREEN branch. It only ever **fast-forwards** to a `staging` commit that passed the green-checkpoint suite (run in an isolated checkout). **Nothing and no one pushes `main` directly** — not you, not git-sync; only the green-checkpoint automation advances it. A fresh clone of `origin/main` is always a tested state, and the live `:3070` operator auto-serves it.
+
+We deliberately run one shared tree rather than many diverging worktrees: it’s simpler, and it spares everyone the merge-reconciliation tax later. The tradeoff is a messy history — your work gets swept into other agents’ commits and theirs into yours — and that’s expected and fine. Coordinate through **`locks:*`** (a `PreToolUse` hook claims files per-edit automatically; call `locks:acquire` by hand only for a multi-file change held across several edits) and **`coord:*`** (`coord:declare-intent` announces what you’re working on; handoffs + messages).
+
+**Symptoms that you’ve forgotten the branch rule:**
+
+* `git status` shows `On branch <not-staging>` in the shared checkout — switch back to `staging` immediately and recover any in-flight work via `git stash`.
+* Paperclip starts editing files that look stale or wrong — it almost certainly thinks it’s on a different branch than you.
+* Dev/prod servers start serving 404s or HMR-error pages for routes that exist on disk — branch divergence between server and source.
+
+**git-sync owns commit + push.** A background routine commits the whole shared tree (every agent’s work) and merges + pushes it to **`origin/staging`** on a schedule — the superproject **and** every submodule (each to its own default branch). You never `git add` / `git commit` / `git push`; just leave your work in the tree and it lands on origin within a few minutes. Don’t stash, branch, or scope pathspecs to isolate “your” diff — there are no per-agent commits; the routine packages whatever’s in the tree. An auto-merge conflict it can’t take is resolved by a `merge-resolver` agent, not you. The per-edit file-lock hook still serializes concurrent edits to the same file.
+
+From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly) runs the suite on staging HEAD in an isolated checkout and fast-forwards `main` when green; **release-trigger** (every 15 min) then auto-deploys green `main` to the live `:3070` operator (drain → swap → migrate → restart → health-check, auto-rollback). Your change being “in the tree” means it reaches `origin/main` + the live host as soon as the suite is green — and NOT before. The `/admin/git` tab shows the whole pipeline. Pause the routine only via `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03` + `staging-branch-pipeline-2026-06-06`.
+
+(Submodules are unchanged: each stays on its own default branch. The staging→main gate applies to the superproject; `main` only advances to staging commits whose pinned submodule SHAs passed the suite, so green `main` always resolves to a tested combination.)
+
+## The two-port model — where a server-side edit goes live
+
+[Section titled “The two-port model — where a server-side edit goes live”](#the-two-port-model--where-a-server-side-edit-goes-live)
+
+**Server-side code has no hot-reload.** The **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch. How an edit goes live depends on which host:
+
+* **`:3070` (`papercup-dev-api`) is the GREEN/stable operator** — it runs from the separate **release checkout** (`papercupai-workspace/papercup-release`), pinned to the green **`main` branch**. Restarting it just reboots the same green snapshot; **your `staging` edits are invisible to it** until the auto-serve pipeline carries them (green-checkpoint hourly FF, then release-trigger ≤15 min auto-deploy). A manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` still works for an immediate deploy. See `apps/operator/lib/release/README.md`.
+* **`:3170` (`papercup-staging-api`) is the staging operator** — it runs from the integration tree (the `staging` branch). To test a server-side edit live: `systemctl --user restart papercup-staging-api.service`, then probe `:3170`.
+* **The Tauri dev shell** spawns its own operator from the integration tree — reloading the desktop shell picks up `staging` edits in that context.
+
+(The `:3055` **Vite** dev server *does* hot-reload its own routes/components.) The tell that you’re testing stale server code: a probe lands in the *old* place — e.g. during the coord FS→PG cutover a `coord:send` kept writing `coord/*.jsonl` instead of Postgres because the host hadn’t reloaded. Probe where the write actually lands; if it’s stale, restart the *right* host (or deploy) and re-probe before trusting any result.
+
+## Database topology — the long form
+
+[Section titled “Database topology — the long form”](#database-topology--the-long-form)
+
+The **shipping** product is a desktop app backed by **embedded Postgres** (`embedded-postgres-server`, per-harness instance), discovered through `~/.papercusp/embedded-pg.json`. That remains the product direction, and code must keep working under it.
+
+**Reality on the standing dev box (verified 2026-06-01): the operator runs against NATIVE Postgres `papercusp` on `localhost:5432`, not embedded-pg.** `apps/operator/.env.local` pins `DATABASE_URL=postgresql://harness_admin:…@localhost:5432/papercusp`; the `:5432` cluster holds the live databases `papercusp` (operator), `papercusp_su`, and `papercusp_test`; **no embedded-pg is running** here. The old claim that native `papercusp` was renamed `papercusp_legacy` is **stale/false**.
+
+Practical implications:
+
+* **Never hardcode `localhost:5432`.** Resolve the admin DSN through `getHarnessAdminUrl()` so a code path works whether the box is on embedded-pg (discovery file) or the native-PG `DATABASE_URL` override.
+* **SQL migrations** in `libs/papercusp/libs/db/sql/<NNN>-*.sql` are applied automatically by the embedded-pg boot runner (`libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js`). Native `:5432` has **no** auto-runner.
+* ⚠ **A raw `psql "$DATABASE_URL" -f <file>` runs the DDL but does NOT record the migration in `harness_shared.schema_migrations`** — only the RUNNER records. An applied-but-unrecorded migration stays “pending” to the runner forever: the deploy’s migrate step re-runs it every deploy, and an idempotent re-run that contends for a lock (e.g. `ALTER … ENABLE ROW LEVEL SECURITY` on a live table) trips the deploy’s 15s `lock_timeout` and ROLLS BACK — this wedged the whole fleet’s deploys for \~1h on 2026-06-09 (migration `208-scout-ticks`, applied out-of-band, unrecorded). Apply via the runner (`db:migrate`, which records atomically) — or, if you must use `psql -f`, append `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('<NNN>-….sql', '<sha256-of-file-contents>')` in the same transaction.
+* **Don’t add features that only make sense against native PG** (cross-database queries, `pg_extension` not available in embedded-pg, OS-level pg tooling). If embedded-pg can’t run it, the product can’t ship it.
+
+See [storage policy](/internal/docs/system/storage-policy) for the PG-by-default rule, the acceptable-file-uses list, and the two-axes model (runtime store-of-record vs sync authority).
+
+## Test infrastructure — the long form
+
+[Section titled “Test infrastructure — the long form”](#test-infrastructure--the-long-form)
+
+* Test runner: **Vitest 4** (all layers). Shared config: `@papercusp/test-config` exports `defineVitestConfig`, `getTestPg` / `withTestSchema` (testcontainers-node Postgres), and `setupMsw` / `msw`.
+* Integration tests get a per-file Postgres schema (`t_<hex>`) on a reused `postgres:16-alpine` testcontainer. **Docker must be running locally** for integration tests. Run `npm run test:doctor` to verify your environment.
+* CI: per-PR `.github/workflows/test.yml` runs the affected unit + integration suites (results as a PR comment via JUnit); nightly `.github/workflows/test-nightly.yml` runs everything.
+* **Property-based tests:** use `fast-check` for invariant-style tests where examples undercount — encoders/decoders, slug rewrites, hash canonicalisation, validator predicates. Pattern: `<source>.property.test.ts` colocated with source. See `libs/papercup-shared/src/_admin-paths.property.test.ts`.
+* **knip** (`npm run lint:knip`, `:fix` to auto-remove): runs in CI **informationally** — never gates a merge. False positives live in `knip.json`’s `ignoreDependencies` allow-list.
+* **Flaky-test quarantine:** `quarantine.txt` at the repo root, one entry per line as `<workspace-name>::<file>`. Quarantined workspaces still run in CI but their failures don’t gate the merge. A PR that touches a quarantined test’s source must either de-quarantine it or document why it stays.
+* **Test secrets:** `TEST_<SERVICE>_KEY` naming, stored in GH Actions repository secrets. Do **not** check live keys into fixtures.
+* The affected-test walker (`scripts/affected-tests.mjs`) diffs against `origin/main`, maps changed files to npm workspaces, computes the reverse-dependency closure, and runs every affected workspace’s `test` (and optionally `test:integration`) script. If your edit touches `libs/papercusp/libs/db/**` (schema / migrations) → run `npm run test:all:integration` — schema changes affect every workspace and the dependency graph won’t catch them. `infra/**` / `Procfile*` → no automated coverage; verify manually.
+
+## Prompts are auto-generated — the long form
+
+[Section titled “Prompts are auto-generated — the long form”](#prompts-are-auto-generated--the-long-form)
+
+Every agent-facing prompt is ASSEMBLED at launch/spawn time from source files; the text an agent receives is a rendered artifact, regenerated on the next launch (a direct edit there is clobbered and never reaches anyone). The sources:
+
+* **Chat-surface role prompts** (operator, oracle, …) — assembled per-launch by `packages/operator-core/lib/prompt-assembly.ts` from three source layers in `apps/operator/prompts/`: `<role>.persona.md` (behavior) + the tools catalog (generated from each tool’s `defineTool({ guidance })`) + `<role>.tools.md` (cross-tool workflows). Pick the lowest layer that fits — per-tool guidance belongs on the `defineTool` call, not in prose.
+* **psu / SU collaborator playbooks** — sources are `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`, rendered per-launch by `renderSuPlaybook` (`packages/operator-core/lib/desktop-install/papercusp-files.ts`), which also splices the repo `CLAUDE.md` in as the “Project guide” section — a repo-convention change belongs in CLAUDE.md and reaches every psu session automatically. The live `:3070` psu serves the **release checkout’s** copy, so an edit reaches new psu launches only after the staging→green deploy carries it.
+* **Autonomous harness spawn prompts** (scoper → worker → validator → reviewer …) — sources at `libs/papercusp/packages/harness/prompts/<role>.md`, layered with `base/<role>.md` + kind/department overrides per the resolution rules in that directory’s `README.md`.
+* **Never edit rendered outputs:** `~/.papercusp/*-collaborator*.md` (vestigial installer dumps, not read at launch), anything under the `papercup-release` checkout, or an assembled prompt captured from a live session.
+
+In dev, prompt-source edits load immediately (`PAPERCUSP_RELOAD_PROMPTS=1`, default in development). After editing a `<role>.tools.md`, run the sync test: `cd packages/operator-core && npx vitest run tools-md-sync`. After a substantial edit to the SU engineer playbook, run the behavioral suite (`npm --prefix apps/operator run llm-test -- --target su`).
+
 # The Scout loop — autonomous generative ideation
 
 > The Hive's generative-exploration engine — a directed, corpus-grounded ideation cycle that produces novel, bettable proposals and routes them into the existing rails. The "missing third mode" of self-improvement.
@@ -42106,6 +42361,12 @@ Anything else → `FAIL` or `INCONCLUSIVE`. Don’t report PASS without positive
 * **`tauri-agent-tools screenshot --selector` is flaky on tiny elements.** A short input (e.g. the operator composer at \~187×42 px) sometimes returns a 1×1 PNG. Workaround: `screenshot --title Papercusp -o full.png` then crop in ImageMagick using the rect from `eval "JSON.stringify($('input').getBoundingClientRect())"`.
 * **`ipc-monitor` is silent for the operator chat.** The composer sends via HTTP/SSE to `/api/agent-mcp/operator-converse`, not via Tauri IPC. Use `console-monitor`, `rust-logs`, or `curl /api/operator/conversations/<id>` to corroborate. `ipc-monitor` *is* the right tool for plugin/host wiring, workspace switching, and shell-sidecar calls.
 * **Bridge port is per-process.** `tauri-agent-tools probe` reports the live port (e.g. `34875`); restart the dev shell and the port changes. Always `probe` before scripting a sequence.
+* **Radix tabs (and other pointerdown-activated Radix widgets) ignore plain `click`.** A programmatic `el.click()` (or the bridge `click` verb) dispatches only a `click` event; Radix `Tabs` activate on *pointerdown*, so the tab looks clicked but selection and the nuqs `?tab=` param never change — and your test silently measures nothing. Dispatch the full sequence: `for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}))`. Plain anchors are fine with `click`. (Found 2026-06-10; cost a full battery round of invalid tab numbers.)
+* **Close the Web Inspector before ANY memory or perf measurement.** All Tauri instances share one webview profile (`~/.local/share/com.papercusp.desktop`), and it restores the inspector OPEN from the last session. The inspector’s record buffers (its Network tab logs every SSE/API frame) grew \~1.9 GB across two nav batteries on 2026-06-10 and looked exactly like an app leak — closing it dropped RSS from 2.7 GB to 819 MB instantly. Latency numbers were unaffected; memory numbers with it open are garbage.
+* **Don’t measure under `tauri dev` on the shared dev box — launch the bare debug binary.** `tauri dev` watches `src-tauri/**`, and the fleet edits that tree continuously: a peer’s mid-flight Rust edit kills and rebuilds your app mid-test (and a peer’s compile error leaves you appless). Launch `./src-tauri/target/debug/papercusp-desktop` directly (the dev wrapper + bridge are compiled in) and pick the target via the build-switcher rail or a devUrl-restored URL.
+* **Wayland trap: a bare `DISPLAY=:9X` launch can land on the owner’s desktop.** GTK prefers Wayland when `WAYLAND_DISPLAY` is set, so the isolated-Xvfb recipe silently opens the window on the live seat (focus-steal). Always launch with `env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:9X …`.
+* **`screenshot` verb may demand sway/grim** (it probes the host platform, not your X11 instance). Fallback that always works on an Xvfb display: `WID=$(DISPLAY=:9X xdotool search --name Papercusp | tail -1); DISPLAY=:9X import -window $WID shot.png`.
+* **`operator-converse` trigger enum.** When poking `/api/agent-mcp/operator-converse` directly, `trigger` must be one of `user_message | quiet_wait_resume | open_canvas | user_says_ready | user_welcomed | continue` — anything else streams a single `event: error` frame (`invalid_args`) and closes.
 
 ### 15.4 Xvfb / xdotool / OCR fallback cookbook
 
@@ -42152,8 +42413,14 @@ DISPLAY=:90 openbox &                            echo $! > /tmp/openbox90.pid
 # Sanity — must be the real GPU, not llvmpipe:
 DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
 # Launch the app UNDER vglrun so WebKitGTK composites on the GPU:
-( cd papercusp-desktop && DISPLAY=:90 \
+( cd papercusp-desktop && env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 \
     vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &  echo $! > /tmp/tauri-xvfb.pid
+# ⚠ Wayland trap: without `env -u WAYLAND_DISPLAY GDK_BACKEND=x11` GTK may pick
+# the live Wayland seat and open the window on the OWNER'S desktop, ignoring :90.
+# ⚠ On the shared dev box prefer the BARE binary over `npm run dev` — the tauri-dev
+# watcher restarts/kills your app whenever the fleet edits src-tauri/** (see §15):
+#   env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 vglrun -d egl0 \
+#     ./src-tauri/target/debug/papercusp-desktop > /tmp/tauri-xvfb.log 2>&1 &
 # wait for window
 until DISPLAY=:90 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
 # The bridge binds an EPHEMERAL port (Server::http("127.0.0.1:0") in
@@ -42168,7 +42435,7 @@ convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png; tesseract /tmp/band.png
 
 Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null`.
 
-For a **release build** (no dev bridge) screenshots are your *only* window introspection — so GPU GL via VirtualGL is **mandatory** there, or the screenshot tells you nothing. On a **debug** build the bridge is still up on the isolated instance (`probe` finds it on `PAPERCUSP_BRIDGE_PORT`) — prefer the bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and use this VirtualGL stack only for the pixels.
+For a **release build** (no dev bridge) screenshots are your *only* window introspection — so GPU GL via VirtualGL is **mandatory** there, or the screenshot tells you nothing. On a **debug** build the bridge is still up on the isolated instance — find it with `tauri-agent-tools probe --pid <pid>` or the `/tmp/tauri-dev-bridge-<pid>.token` file (the port is ephemeral; there is **no** `PAPERCUSP_BRIDGE_PORT` env var). Prefer the bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and use this VirtualGL stack only for the pixels.
 
 # Coordination system — adversarial test coverage matrix
 

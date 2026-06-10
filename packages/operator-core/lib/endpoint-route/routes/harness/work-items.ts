@@ -90,6 +90,24 @@ async function fetchDimensionMaps(
   return { planMap, spineMap };
 }
 
+/**
+ * The full enriched read this route serves — listWorkItems + the v2 dimension
+ * joins. Exported so the `workItems.byHarness` sync-resolver entry serves the
+ * IDENTICAL rows the route does (one assembly, two transports).
+ */
+export async function listEnrichedWorkItems(opts: {
+  harness: string;
+  kind?: Parameters<typeof listWorkItems>[0]['kind'];
+  state?: string;
+  limit?: number;
+}): Promise<EnrichedWorkItem[]> {
+  const limit = Math.min(opts.limit ?? 200, 500);
+  const workItems = await listWorkItems({ harness: opts.harness, kind: opts.kind, state: opts.state, limit });
+  const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
+  const { planMap, spineMap } = await fetchDimensionMaps(opts.harness, featureIds);
+  return mergeWorkItemDimensions(workItems, planMap, spineMap);
+}
+
 const getWorkItems = defineTool({
   method: 'GET',
   path: '/harness/:slug/work-items',
@@ -102,10 +120,7 @@ const getWorkItems = defineTool({
     const state = url.searchParams.get('state') || undefined;
     const limit = Math.min(Number(url.searchParams.get('limit') ?? '200') || 200, 500);
     try {
-      const workItems = await listWorkItems({ harness: slug, kind, state, limit });
-      const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
-      const { planMap, spineMap } = await fetchDimensionMaps(slug, featureIds);
-      const enriched = mergeWorkItemDimensions(workItems, planMap, spineMap);
+      const enriched = await listEnrichedWorkItems({ harness: slug, kind, state, limit });
       return Response.json({ harness: slug, count: enriched.length, workItems: enriched });
     } catch (e) {
       return Response.json({ error: `work-items list failed: ${(e as Error).message}` }, { status: 500 });

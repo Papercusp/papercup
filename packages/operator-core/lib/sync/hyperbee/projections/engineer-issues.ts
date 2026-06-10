@@ -139,7 +139,6 @@ async function writeToPg(
       fed_ts            = EXCLUDED.fed_ts
     -- PG-level LWW guard — drop a strictly-older op (created_at is immutable, preserved).
     WHERE harness_shared.engineer_issues.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= harness_shared.engineer_issues.fed_ts
   `;
 }
@@ -166,6 +165,8 @@ export function buildEngineerIssuesProjection(
 ): TableProjection<EngineerIssueRow> {
   return {
     tableTag: 'engineer-issues',
+    // EI-117: CDC-captured table (mig 197 custom capture) — own-log ops are replays.
+    skipOwnOps: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

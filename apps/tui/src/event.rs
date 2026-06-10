@@ -146,6 +146,9 @@ pub enum Event {
         agent: String,
         result: Result<Vec<crate::models::PendingWake>, String>,
     },
+    /// The deployed cloud frames (hive-agent-tabs P-013) from
+    /// `/api/deploy/frames` — drives the per-frame zellij tabs in the dock.
+    Frames(Vec<crate::models::DeployFrameRow>),
     /// The federated p2p roster for the Hives tab (pui-hives-tab-2026-06-07) —
     /// every remote peer announced into `shared_presence`, via `coord:presence`.
     Hives(Vec<crate::models::PresenceRow>),

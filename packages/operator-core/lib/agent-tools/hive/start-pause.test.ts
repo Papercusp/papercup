@@ -46,7 +46,12 @@ const fakeSql = (strings: TemplateStringsArray | string[]): Promise<unknown[]> =
   if (/spawned_agents/i.test(text)) return Promise.resolve(beeRows);
   return Promise.resolve([]);
 };
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+// Partial mock: the wider import graph (agent-mcp bootstrap) needs the real
+// `generated` schema exports — only the PG handle is faked.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getOrgPg: () => ({ sql: fakeSql }) };
+});
 
 import hiveStart from './start';
 import hivePause from './pause';

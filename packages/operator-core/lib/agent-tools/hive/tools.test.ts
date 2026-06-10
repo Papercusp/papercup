@@ -52,6 +52,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: {} }),
 }));
+// start-hive-wake P-004/P-012: hive:status also reads the started bit + the
+// watchdog fire signal — both PG-backed, mocked at their module seams here.
+const getHiveStarted = vi.fn(async () => false);
+const recentWatchdogFires = vi.fn(async () => 0);
+vi.mock('../../hive/started', () => ({
+  getHiveStarted: (...a: unknown[]) => getHiveStarted(...(a as [])),
+}));
+vi.mock('../../hive/watchdog', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...(a as [])),
+}));
 
 // SUTs imported AFTER the seams are wired (each self-registers via defineTool).
 import declareWakeTool from './declare_wake';

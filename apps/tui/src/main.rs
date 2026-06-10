@@ -499,6 +499,21 @@ async fn run<B: Backend>(
                 tokio::spawn(wake_queue_act(agent, release, id, edited, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::CreateFrameTabs { tabs } => {
+                // P-013: one zellij tab per deployed frame, created via the
+                // companion's NewTab (new_tabs_with_layout). The reducer's diff
+                // is topology-gated, so tabs are only ever offered while a
+                // companion is linked; the None arm is a defensive no-op.
+                if let Some(c) = &companion {
+                    for (name, layout) in tabs {
+                        c.send(pui_companion_proto::Command::NewTab {
+                            name: Some(name),
+                            layout: Some(layout),
+                        });
+                    }
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchHives => {
                 // The federated p2p roster for the Hives tab — fetched off the
                 // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
@@ -3075,6 +3090,11 @@ async fn refetch_all(
     // top-bar renders dashes rather than the status bar toasting every poll.
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
+    }
+    // Deployed cloud frames (per-frame dock tabs, hive-agent-tabs P-013).
+    // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
+    if let Ok(fr) = client.deploy_frames().await {
+        let _ = tx.send(Event::Frames(fr));
     }
     match client.attention_typed().await {
         Ok(i) => {

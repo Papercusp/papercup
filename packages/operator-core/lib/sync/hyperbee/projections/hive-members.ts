@@ -118,7 +118,6 @@ async function writeToPg(
       fed_ts              = EXCLUDED.fed_ts
     -- PG-level LWW guard — drop a strictly-older op.
     WHERE harness_shared.hive_members.fed_ts IS NULL
-       OR EXCLUDED.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= harness_shared.hive_members.fed_ts
   `;
 }
@@ -147,6 +146,8 @@ export function buildHiveMembersProjection(
 ): TableProjection<HiveMemberRow> {
   return {
     tableTag: 'hive-members',
+    // EI-117: CDC-captured table (mig 189 custom capture) — own-log ops are replays.
+    skipOwnOps: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),

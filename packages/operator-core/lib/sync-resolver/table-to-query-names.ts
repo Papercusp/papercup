@@ -91,11 +91,30 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.project_spec_revisions': ['projectSpecRevisions.byProject'],
 
   // ── Cross-harness *Consolidated tables ────────────────────────────
-  'harness_shared.harness_features_consolidated': ['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug'],
+  // workItems.byHarness reads BOTH families (features_consolidated + engineer_issues)
+  // plus spawned_agents for spine-position — all three tables re-fire it.
+  'harness_shared.harness_features_consolidated': [
+    'featuresConsolidated.bySlug',
+    'featuresConsolidated.byPlanSlug',
+    'workItems.byHarness',
+  ],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
+  // engineer_issues = the issue-family store of the unified work_items surface
+  // (trigger added in migration 215).
+  'harness_shared.engineer_issues': ['workItems.byHarness'],
   'harness_shared.agent_runs_consolidated': [
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',
+  ],
+  // The agentRunsConsolidated.* rows JOIN spawned_agents for the run outcome
+  // (spawnStatus/exitCode/errorMessage/sessionId — adv-harness-tab-migration
+  // P-023), so an outcome flip must re-fire those queries too. The trigger is
+  // column-targeted (migration 213) so heartbeat writes don't spam this.
+  // workItems.byHarness joins the latest spawn per feature (spine position).
+  'harness_shared.spawned_agents': [
+    'agentRunsConsolidated.bySlug',
+    'agentRunsConsolidated.recent',
+    'workItems.byHarness',
   ],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 

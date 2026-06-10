@@ -20,11 +20,20 @@
  */
 import http from 'node:http';
 import { Readable } from 'node:stream';
-import { governorForBackend, type RateLimitGovernor } from '@papercusp/papercup-shared/agent';
+import {
+  governorForBackend,
+  PriorityAdmissionQueue,
+  priorityFromLabel,
+  type RateLimitGovernor,
+  type AdmissionSnapshot,
+} from '@papercusp/papercup-shared/agent';
 import { withOAuthBeta } from './credential-store';
 
 const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
-const DEFAULT_MAX_QUEUE_WAIT_MS = 10 * 60 * 1000; // 10 min: past this, fail-with-retry-after
+const DEFAULT_MAX_QUEUE_WAIT_MS = 2 * 60 * 1000; // 2 min: past this, fail-with-retry-after
+const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
+/** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
+export const PRIORITY_HEADER = 'x-papercusp-priority';
 const ANTHROPIC_VERSION = '2023-06-01';
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
@@ -43,8 +52,12 @@ export interface GatewayDeps {
   fetchImpl?: typeof fetch;
   /** The governor for a model (default: the shared per-account `claude-code` governor). */
   governorFor?(model: string): RateLimitGovernor;
-  /** Max admission wait before a synthetic 429+retry-after. Default 10 min. */
+  /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
+  /** Concurrency authority — max requests forwarded at once (the queue cap). Default 24. */
+  concurrency?: number;
+  /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
+  agingIntervalMs?: number;
   log?(level: 'info' | 'warn' | 'error', msg: string): void;
   /** Fired with each upstream response's headers + status (pool projection / observability). */
   onResponse?(headers: Record<string, string | undefined>, status: number, model: string): void;
@@ -56,6 +69,8 @@ export interface GatewayStats {
   totalRequests: number;
   inFlight: number;
   queueDepth: number;
+  /** Per-priority queue breakdown (P-011 / P-014). */
+  admission: AdmissionSnapshot;
   upstream429: number;
   queued429: number;
   upstreamErrors: number;
@@ -116,12 +131,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
   const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
+  const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
   const log = deps.log ?? (() => {});
-  const governorFor = deps.governorFor ?? ((model: string) => governorForBackend('claude-code', model, undefined, deps.accountId));
+  const queue = new PriorityAdmissionQueue({ maxConcurrent: concurrency, agingIntervalMs: deps.agingIntervalMs });
+  const rawGovernorFor = deps.governorFor ?? ((model: string) => governorForBackend('claude-code', model, undefined, deps.accountId));
+  // The QUEUE is the concurrency authority, so make the governor's own concurrency cap
+  // non-binding (raise it to the queue cap) and let the governor enforce only rate/pause/pace.
+  // Safe: the gateway runs in its own process with its own governor registry.
+  const governorFor = (model: string): RateLimitGovernor => {
+    const g = rawGovernorFor(model);
+    if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
+    return g;
+  };
 
   let totalRequests = 0;
-  let inFlight = 0;
-  let queueDepth = 0;
   let upstream429 = 0;
   let queued429 = 0;
   let upstreamErrors = 0;
@@ -130,12 +153,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // Reflect the opus bucket (the fleet's class) for the headline unified window.
     const gov = governorFor('claude-opus-4');
     const snap = gov.snapshot();
+    const admission = queue.snapshot();
     return {
       accountId: deps.accountId,
       upstreamBase,
       totalRequests,
-      inFlight,
-      queueDepth,
+      inFlight: admission.running,
+      queueDepth: admission.queued,
+      admission,
       upstream429,
       queued429,
       upstreamErrors,
@@ -165,9 +190,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const gov = governorFor(model);
 
     totalRequests++;
-    queueDepth++;
     const release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
-    queueDepth--;
     if (!release) {
       queued429++;
       const retryAfterSec = Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000));
@@ -181,7 +204,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
 
-    inFlight++;
     try {
       const token = await deps.token();
       const headers: Record<string, string> = {};
@@ -238,7 +260,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
         res.end();
       }
     } finally {
-      inFlight--;
       release();
     }
   }
@@ -258,7 +279,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway only proxies /v1/*' }, gateway: true });
       return;
     }
-    proxy(req, res, url).catch((e) => {
+    const pri = priorityFromLabel((req.headers[PRIORITY_HEADER] as string | undefined) ?? undefined);
+    queue.run(pri, () => proxy(req, res, url)).catch((e) => {
       upstreamErrors++;
       log('error', `proxy handler crashed: ${(e as Error).message}`);
       if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway internal error' }, gateway: true });

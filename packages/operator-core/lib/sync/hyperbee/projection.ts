@@ -57,6 +57,22 @@ export interface TableProjection<Row> {
   /** Table tag, matching `hyperbee-key-types.HYPERBEE_TABLE_TAGS`. */
   tableTag: string;
   /**
+   * EI-117 echo breaker. Set `true` on projections whose PG table is
+   * CDC-CAPTURED (a capture trigger enqueues local PG writes into
+   * `substrate_outbox`, the drain appends them to the own log): for those
+   * tables an own-log op is by construction a REPLAY of a row PG already
+   * authored, so applying it back is at best redundant and at worst a silent
+   * revert (an old op landing over newer local content) whose write re-enters
+   * the capture trigger as `origin='local'` — the self-sustaining echo storm
+   * behind EI-117 (plan-doc reverts) and a contributor to EI-125 (outbox
+   * bloat). Log-first tables (claims / queue / working-set / contributors /
+   * presence / prs / usage) must NOT set this — their PG state arrives via the
+   * merge, own ops included. Skipping is gated on log-source verification in
+   * `applyOpVia` (`op.sourceLogKeyHex === ownLogKeyHex`); paths without an
+   * `ownLogKeyHex` (legacy global-registry) skip nothing.
+   */
+  skipOwnOps?: boolean;
+  /**
    * Build the Hyperbee key for a given row. Single source of truth
    * for the per-table key shape — composer + parser stay aligned.
    */
@@ -154,6 +170,17 @@ export async function applyOpVia(
   if (!op.table) return false;
   const p = lookup(op.table);
   if (!p) return false;
+  // EI-117 echo breaker: skip log-source-VERIFIED own ops on CDC-captured
+  // tables (see `TableProjection.skipOwnOps`). Applies to puts AND dels — an
+  // own del is equally a replay of a delete PG already performed.
+  if (
+    p.skipOwnOps === true &&
+    applyOpts?.ownLogKeyHex !== undefined &&
+    op.sourceLogKeyHex !== undefined &&
+    op.sourceLogKeyHex === applyOpts.ownLogKeyHex
+  ) {
+    return false;
+  }
   if (op.type === 'del') {
     if (!op.hbKey) return false;
     // EI-79 step 2: thread the del op's wire ts so the deleter can ts-guard the
