@@ -574,11 +574,21 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
       '--collect',
       `--unit=${AUTO_DEPLOY_UNIT}`,
       `--working-directory=${root}`,
+      // EI-193: a transient unit inherits the systemd USER-MANAGER environment,
+      // NOT this process's — and after a reboot the manager PATH is the bare
+      // default (no linuxbrew/nvm node), so a bare `npx` dies with exit 127
+      // and auto-deploy silently stops (observed 2026-06-09: every deploy
+      // tick 127'd until a manual `systemctl --user import-environment PATH`).
+      // Pass THIS operator's PATH (it found node) + use the absolute tsx bin
+      // (same resolution as runScript) so the unit never depends on the
+      // manager environment. PATH is still needed: tsx's shebang is
+      // `#!/usr/bin/env node`.
+      `--setenv=PATH=${process.env.PATH ?? ''}`,
       'bash',
-      '-lc',
+      '-c',
       // P-014: `>` (truncate), not `>>` — each deploy's log is self-contained, so the
       // file can't grow unbounded; the durable record is pipeline_events + the journal.
-      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' npx tsx apps/operator/lib/release/deploy-cli.ts --execute > /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
+      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' apps/operator/lib/release/deploy-cli.ts --execute > /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
     ]);
     let stderr = '';
     child.stderr?.on('data', (d) => (stderr += String(d)));

@@ -407,11 +407,21 @@ Practical implications when writing code today:
   `localhost:5432`.
 - **Migration runner:** embedded-pg applies `sql/<NNN>-*.sql` automatically
   on boot; native `:5432` has **no** auto-runner, so on this dev box you apply
-  pending migrations manually (`psql "$DATABASE_URL" -f <file>`). Embedded-pg is
-  still the ship target, so the schema must work there too — but "system PG is
-  going away" is **not** true today: the dev box runs on native `:5432` (see the
-  topology note above), so don't write code that assumes embedded-pg is the only
-  reachable substrate.
+  pending migrations manually. **⚠ A raw `psql "$DATABASE_URL" -f <file>` runs
+  the DDL but does NOT record the migration in `harness_shared.schema_migrations`
+  — only the RUNNER records. An applied-but-unrecorded migration stays "pending"
+  to the runner forever: the DEPLOY's migrate step re-runs it every deploy, and an
+  idempotent re-run that contends for a lock (e.g. `ALTER … ENABLE ROW LEVEL
+  SECURITY` on a live, written-to table) trips the deploy's 15s `lock_timeout` and
+  ROLLS BACK — this wedged the whole fleet's deploys for ~1h on 2026-06-09
+  (migration `208-scout-ticks`, applied out-of-band, unrecorded).** So apply via
+  the runner (`db:migrate`, which records atomically) — or, if you must use
+  `psql -f`, append `INSERT INTO harness_shared.schema_migrations (filename,
+  sha256) VALUES ('<NNN>-….sql', '<sha256-of-file-contents>')` in the same
+  transaction. Embedded-pg is still the ship target, so the schema must work there
+  too — but "system PG is going away" is **not** true today: the dev box runs on
+  native `:5432` (see the topology note above), so don't write code that assumes
+  embedded-pg is the only reachable substrate.
 
 **Acceptable file uses (the short list):**
 - Bootstrap state that must be readable before a PG connection exists
