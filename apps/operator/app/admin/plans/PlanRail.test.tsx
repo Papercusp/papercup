@@ -65,6 +65,7 @@ function plan(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     title: slug,
     status: 'active',
     updated: null,
+    created: null,
     owner: null,
     archived: false,
     isLegacy: false,
@@ -83,10 +84,10 @@ function listOf(plans: PlanListRow[]): AsyncResult<{ plans: PlanListRow[] }> {
   return { data: { plans }, loading: false, error: null, refresh: vi.fn() };
 }
 
-function renderRail(plans: PlanListRow[]) {
+function renderRail(plans: PlanListRow[], searchParams = '') {
   return render(
     <PlanRail list={listOf(plans)} selectedSlugs={[]} query="" onSelect={vi.fn()} />,
-    { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
+    { wrapper: withNuqsTestingAdapter({ searchParams }) },
   );
 }
 
@@ -165,5 +166,34 @@ describe('PlanRail drag-to-reorder handle', () => {
       plan('y-2026-01-02', { startStatus: null }),
     ]);
     expect(container.querySelectorAll('.pc-plan-row__drag-handle').length).toBe(0);
+  });
+
+  it('does not offer drag under a non-default sort (drag edits priority, which that view does not show)', () => {
+    const { container } = renderRail(
+      [plan('a-2026-01-01'), plan('b-2026-01-02')],
+      '?pSort=title',
+    );
+    expect(container.querySelectorAll('.pc-plan-row__drag-handle').length).toBe(0);
+  });
+});
+
+describe('PlanRail pSort ordering', () => {
+  const rowSlugs = (container: HTMLElement) =>
+    Array.from(
+      container.querySelectorAll<HTMLElement>('.pc-plan-rail__item[data-plan-slug]'),
+    ).map((el) => el.dataset.planSlug);
+
+  it('applies the pSort nuqs key to the rendered order', () => {
+    const plans = [
+      plan('bravo', { startStatus: null, title: 'Bravo', updated: '2026-06-01' }),
+      plan('alpha', { startStatus: null, title: 'alpha', updated: '2026-01-01' }),
+    ];
+    // Default smart order: same bucket → updated desc → bravo first.
+    const byDefault = renderRail(plans);
+    expect(rowSlugs(byDefault.container as HTMLElement)).toEqual(['bravo', 'alpha']);
+    cleanup();
+    // Title sort: case-insensitive A–Z → alpha first.
+    const byTitle = renderRail(plans, '?pSort=title');
+    expect(rowSlugs(byTitle.container as HTMLElement)).toEqual(['alpha', 'bravo']);
   });
 });

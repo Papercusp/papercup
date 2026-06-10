@@ -43,6 +43,7 @@ function plan(
     title: slug,
     status,
     updated: '2026-06-01T00:00:00.000Z',
+    created: null,
     owner: null,
     archived: false,
     isLegacy: false,

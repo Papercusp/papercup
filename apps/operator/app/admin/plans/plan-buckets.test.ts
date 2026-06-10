@@ -18,6 +18,7 @@ function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
     title: 'Demo Plan',
     status: 'draft',
     updated: '2026-05-20',
+    created: null,
     owner: null,
     archived: false,
     isLegacy: false,
@@ -25,6 +26,7 @@ function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
     nextAction: null,
     harness: 'papercup',
     startStatus: null,
+    priority: null,
     ...overrides,
   };
 }

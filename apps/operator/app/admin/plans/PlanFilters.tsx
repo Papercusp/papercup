@@ -98,9 +98,11 @@ export default function PlanFilters({
     (archivedOnly ? 1 : 0) +
     (legacyOnly ? 1 : 0) +
     (inbox ? 1 : 0) +
-    (actionable ? 1 : 0);
+    (actionable ? 1 : 0) +
+    (sort !== 'default' ? 1 : 0);
 
   const activeTokens = [
+    sort !== 'default' ? { key: 'sort', label: `sort: ${planSortLabel(sort)}`, clear: () => setSort(null) } : null,
     dateWindow ? { key: 'date', label: `updated: ${dateWindowLabel(dateWindow)}`, clear: () => setDateWindow(null) } : null,
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
@@ -116,6 +118,7 @@ export default function PlanFilters({
     setLegacyOnly(false);
     setInbox(false);
     setActionable(false);
+    setSort(null);
   };
 
   return (
@@ -161,6 +164,14 @@ export default function PlanFilters({
             triggerClassName="pc-filters__select"
           />
         ) : null}
+
+        <Select
+          value={sort}
+          onChange={(v) => setSort(v === 'default' ? null : (v as PlanSort))}
+          options={PLAN_SORTS.map((s) => ({ value: s.id, label: s.label }))}
+          ariaLabel="Plan sort order"
+          triggerClassName="pc-filters__select"
+        />
       </div>
 
       <div className="pc-filters__quick" role="group" aria-label="Quick plan filters">

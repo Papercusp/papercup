@@ -3,7 +3,9 @@
 /**
  * Plan rail — the left-hand list of every plan, fed by usePlanList.
  *
- * P-102 deliverable. Sort: active first, then by `updated` desc.
+ * P-102 deliverable. Sort: the `pSort` nuqs key selects an order from
+ * plan-sorting.ts (PlanFilters owns the write); the default is the
+ * smart order — live buckets first, then by `updated` desc.
  * Search input (managed by PlansClient via the `q` nuqs key) filters
  * rows client-side over title + slug; full cross-plan search is P-104.
  *
@@ -28,6 +30,7 @@ import {
 } from './plans-api';
 import { type DateWindow } from './PlanFilters';
 import { applyPlanFilters } from './plan-filtering';
+import { comparePlans, PLAN_SORT_IDS, type PlanSort } from './plan-sorting';
 import { Tooltip } from '@/app/harness/Tooltip';
 
 /** Imperative handle PlansClient uses for J/K keyboard navigation. */
@@ -39,15 +42,6 @@ export interface PlanRailHandle {
 }
 
 const BUCKET_FILTER_VALUES: PlanBucket[] = ['draft', 'ready', 'running', 'shipped', 'rejected'];
-
-/** Rail sort order: live/actionable buckets first, terminals last. */
-const BUCKET_ORDER: Record<PlanBucket, number> = {
-  running: 0,
-  ready: 1,
-  draft: 2,
-  shipped: 3,
-  rejected: 4,
-};
 
 const COUNT_ORDER: Array<ItemStatus | 'unknown'> = [
   'wip',
@@ -116,6 +110,10 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const [fLegacy] = useQueryState('pLegacy', parseAsBoolean.withDefault(false));
   const [fInbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
   const [fActionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
+  const [fSort] = useQueryState(
+    'pSort',
+    parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
+  );
 
   const plans = data?.plans ?? [];
 
@@ -132,22 +130,14 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
       : filtered;
     const sel = new Set(selectedSlugs);
+    const cmp = comparePlans(fSort);
     const raw = [...bucketed].sort((a, b) => {
-      // Plans toggled into the filter float to the very top.
+      // Plans toggled into the filter float to the very top regardless
+      // of the chosen sort order — they're the working set.
       const selA = sel.has(a.slug) ? 0 : 1;
       const selB = sel.has(b.slug) ? 0 : 1;
       if (selA !== selB) return selA - selB;
-      const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
-      const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
-      if (sa !== sb) return sa - sb;
-      // Within the running bucket: sort by explicit priority (lower first),
-      // then by started_at (approximated by priority=null → last).
-      if (sa === BUCKET_ORDER.running) {
-        const pa = a.priority ?? Number.MAX_SAFE_INTEGER;
-        const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
-        if (pa !== pb) return pa - pb;
-      }
-      return (b.updated ?? '').localeCompare(a.updated ?? '');
+      return cmp(a, b);
     });
     // Apply local drag-reorder override for running plans (P-045).
     if (!runningOrder) return raw;
@@ -161,7 +151,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs, selectedKey, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -213,7 +203,11 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   // (React #310) — the loading→loaded transition tripped exactly that and
   // crashed the whole /admin/plans page to the error boundary.
   const runningPlans = sorted.filter((p) => bucketOf(p) === 'running');
-  const hasRunning = runningPlans.length > 1; // single-plan: no reorder needed
+  // Drag-to-reorder edits dispatch priority, which is only the visible
+  // order under the default smart sort — hide the handles otherwise so a
+  // drag can't silently rewrite priorities the current view doesn't show.
+  const reorderable = fSort === 'default';
+  const hasRunning = reorderable && runningPlans.length > 1; // single-plan: no reorder needed
   // Distinguishes a committed drop from an aborted drag (Esc / dropped outside
   // a row): `drop` fires before `dragend`, so by the time dragEnd runs this is
   // already true on success and false on abort.
