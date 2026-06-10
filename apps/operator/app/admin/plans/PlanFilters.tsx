@@ -18,6 +18,9 @@
  *   - archived:        pArchived     — archived-only rail filter
  *   - legacy:          pLegacy       — legacy-only rail filter
  *
+ * Sort (not a filter, same write-here/read-in-rail split):
+ *   - sort:            pSort         — rail order, see plan-sorting.ts
+ *
  * The owner dropdown is populated from the plan list that PlansClient
  * already fetches for the rail and overview metrics. Keeping a single
  * read avoids duplicate calls while search/filter interactions stay
@@ -27,6 +30,7 @@
 import { useMemo, type RefObject } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { type AsyncResult, type PlanListRow } from './plans-api';
+import { PLAN_SORTS, PLAN_SORT_IDS, planSortLabel, type PlanSort } from './plan-sorting';
 import { Select } from '@/app/harness/Select';
 
 export type DateWindow = 'today' | '7d' | '30d';
@@ -73,6 +77,10 @@ export default function PlanFilters({
   const [actionable, setActionable] = useQueryState(
     'pActionable',
     parseAsBoolean.withDefault(false),
+  );
+  const [sort, setSort] = useQueryState(
+    'pSort',
+    parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
   );
 
   // Distinct owners across all plans, for the owner dropdown.

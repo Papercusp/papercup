@@ -72,6 +72,9 @@ export interface PlanListRow {
   title: string | null;
   status: PlanStatus;
   updated: string | null;
+  /** Frontmatter created date — null when the plan never set one.
+   *  (May arrive undefined from a server predating the field.) */
+  created: string | null;
   owner: string | null;
   archived: boolean;
   isLegacy: boolean;

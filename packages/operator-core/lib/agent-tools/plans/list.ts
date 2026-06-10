@@ -76,6 +76,7 @@ type ListRow = {
   title: string | null;
   status: string;
   updated: string | null;
+  created: string | null;
   owner: string | null;
   archived: boolean;
   isLegacy: boolean;
@@ -191,6 +192,7 @@ export default defineTool({
           title: parsed.frontmatter.title ?? null,
           status,
           updated: parsed.frontmatter.updated ?? null,
+          created: parsed.frontmatter.created ?? null,
           owner: parsed.frontmatter.owner ?? null,
           archived,
           isLegacy: parsed.isLegacy,
