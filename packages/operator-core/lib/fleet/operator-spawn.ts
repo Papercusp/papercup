@@ -449,7 +449,7 @@ export async function spawnAgentInHarness(
   ensureSpawnHeartbeatLoop();
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
-  let finalStatus: string | null = null;
+  let finalStatus: 'done' | 'failed' | 'cancelled' | null = null;
   void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal, forceSessionId })
     .then((r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');

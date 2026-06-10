@@ -8,6 +8,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { routeWithWorkspace } from '../../../route-workspace';
+import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -15,16 +16,20 @@ export default defineTool({
   path: '/harness/all/kpis',
   auth: 'public',
   async handler() {
-    const [schemas, projTotals] = await routeWithWorkspace(async (tx) => {
-      const sch = await tx<{ nspname: string }[]>`
-        SELECT 'harness_' || REPLACE(slug, '-', '_') AS nspname
-          FROM harness_shared.projects WHERE slug IS NOT NULL
-      `;
+    // Harness totals + per-schema metrics derive from the LIVE installed-harness
+    // registry (workspace PG, same source as /api/installed) — NOT the legacy
+    // harness_shared.projects pots table, which only holds pre-rethink demo rows
+    // and made every total render 0 (EI-220).
+    const [registryProjects, projTotals] = await routeWithWorkspace(async (tx) => {
+      const reg = await loadHarnessRegistry();
       const pt = await tx<{ status: string; n: number }[]>`
         SELECT status, count(*)::int AS n FROM harness_shared.projects GROUP BY status
       `;
-      return [sch, pt] as const;
+      return [reg.projects, pt] as const;
     });
+    const schemas = registryProjects
+      .filter((p) => typeof p.slug === 'string' && p.slug.length > 0)
+      .map((p) => ({ nspname: 'harness_' + p.slug.replace(/-/g, '_') }));
 
     const { sql } = getOrgPg();
     const projectsByStatus: Record<string, number> = {};

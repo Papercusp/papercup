@@ -23,6 +23,7 @@ import {
   NoopBackend,
   HybridBackend,
   invalidateMemoryClient,
+  disposeMemoryClient,
   type MemoryBackend,
 } from '@papercusp/memory';
 import {
@@ -107,10 +108,10 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         return new Mem0Backend();
       },
       cleanup: async () => {
-        // Close the mem0 client's own PG pool BEFORE the drop — a live
-        // pooled connection can hold locks on bench tables and 55P03 the
-        // DROP (which once killed a full run's report).
-        invalidateMemoryClient();
+        // AWAIT the mem0 client's PG pool closure BEFORE the drop — a live
+        // pooled connection holds locks on bench tables and 55P03s the
+        // DROP (fire-and-forget invalidate still raced it; killed a run).
+        await disposeMemoryClient();
         if (!keep) await dropBenchSchema(pg);
         await pg.end();
       },
@@ -164,8 +165,8 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         return make();
       },
       cleanup: async () => {
-        // Pool-close before drop — same 55P03 protection as the mem0 ctx.
-        invalidateMemoryClient();
+        // Awaited pool-close before drop — same 55P03 protection as the mem0 ctx.
+        await disposeMemoryClient();
         if (!keep) {
           await dropBenchSchema(pg);
           fs.rmSync(dir, { recursive: true, force: true });
