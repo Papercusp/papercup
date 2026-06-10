@@ -132,3 +132,40 @@ describe('Phase 1d — backfilled guidance reaches the assembled prompt', () => 
     expect(whenMatches).toBe(2); // harness:list + chat:ask_choice, NOT plugin:unmigrated
   });
 });
+
+describe('P-009 (token-usage-reduction) — runtime blocks never disturb the cacheable prefix', () => {
+  it('runtime context is purely appended: assembly-with-runtime startsWith assembly-without', async () => {
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const toolNames = ['harness:list', 'chat:ask_choice'];
+    const base = assembleRolePrompt({ role: 'operator', toolNames });
+    const withRuntime = assembleRolePrompt({
+      role: 'operator',
+      toolNames,
+      runtime: [{ heading: 'Trigger', body: `run-id=abc ts=${Date.now()}` }],
+    });
+    expect(withRuntime.text.startsWith(base.text)).toBe(true);
+    // And the runtime section is the LAST contributor.
+    expect(withRuntime.sections[withRuntime.sections.length - 1]?.name).toBe('runtime');
+  });
+
+  it('two assemblies with different volatile runtime share a byte-identical prefix (prefix-hash)', async () => {
+    const { assembleRolePrompt } = await import('./prompt-assembly');
+    const toolNames = ['harness:list', 'harness:status'];
+    const a = assembleRolePrompt({
+      role: 'operator',
+      toolNames,
+      runtime: [{ heading: 'Trigger', body: 'run A at 2026-06-10T01:00:00Z' }],
+    });
+    const b = assembleRolePrompt({
+      role: 'operator',
+      toolNames,
+      runtime: [{ heading: 'Trigger', body: 'run B at 2026-06-10T09:59:59Z — totally different' }],
+    });
+    const runtimeChars = (p: { text: string; sections: Array<{ name: string; chars: number }> }) =>
+      p.sections.find((s) => s.name === 'runtime')?.chars ?? 0;
+    // Strip each assembly's own runtime tail; the remainder must be identical bytes.
+    const stableA = a.text.slice(0, a.text.length - runtimeChars(a));
+    const stableB = b.text.slice(0, b.text.length - runtimeChars(b));
+    expect(stableA).toBe(stableB);
+  });
+});

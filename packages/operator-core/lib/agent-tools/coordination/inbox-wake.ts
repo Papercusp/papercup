@@ -24,7 +24,7 @@
  */
 
 import { emitAwaitedEvent } from '../../events/await/engine';
-// P-007/D-005: the per-agent wake-mode gate (consumed below, gated on HIVE_AGENT_TABS).
+// hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 
@@ -55,8 +55,9 @@ export interface WakeRecipientsResult {
   keys: string[];
   /** Total wake awaits actually fired (sum over targets; 0 if none asleep). */
   woken: number;
-  /** Recipients whose wake was STAGED (manual mode under HIVE_AGENT_TABS) instead
-   *  of fired — always 0 in the default / flag-off path (P-007 / D-005). */
+  /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
+   *  primitive) instead of fired — always 0 when everything resolves `auto`
+   *  (the default). Graduated off the HIVE_AGENT_TABS flag (start-hive P-007). */
   staged: number;
 }
 
@@ -75,26 +76,18 @@ export async function wakeRecipients(
   opts: { summary?: string; payload?: unknown; source?: string; workspaceId?: string } = {},
 ): Promise<WakeRecipientsResult> {
   const targets = [...new Set(recipients)].filter((r) => !NON_WAKEABLE.has(r));
-  // P-007/D-005: the per-agent wake-MODE gate engages ONLY under HIVE_AGENT_TABS.
-  // Off (default) → fire every wake immediately = the shipped behavior. On → a
-  // `manual` recipient is STAGED for owner release/edit (P-008/P-009) instead of
-  // re-invoked. Fail-open: a flag-bus hiccup falls back to fire-immediately.
-  let gateOn = false;
-  try {
-    const [{ FLAGS }, { getFlag }] = await Promise.all([
-      import('@papercusp/flags'),
-      import('@papercusp/flags/server'),
-    ]);
-    gateOn = await getFlag(FLAGS.HIVE_AGENT_TABS, 'system');
-  } catch {
-    gateOn = false;
-  }
+  // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
+  // the HIVE_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
+  // hive's PAUSE primitive (hive:pause sets the global default to `manual`), so
+  // it must hold regardless of a UI flag — a flipped-off flag silently unmaking
+  // Pause would fire wakes into a frozen hive. Behavior-neutral otherwise:
+  // everything resolves `auto` by default, and auto fires immediately as before.
   const keys: string[] = [];
   let woken = 0;
   let staged = 0;
   for (const ownerId of targets) {
-    // Manual mode (gate on) → STAGE instead of fire; the agent is not re-invoked.
-    if (gateOn) {
+    // Manual mode → STAGE instead of fire; the agent is not re-invoked.
+    {
       let manual = false;
       try {
         manual = (await resolveWakeMode(ownerId)) === 'manual';

@@ -8,6 +8,7 @@ import {
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
+  resumeEnvFor,
   findUntrackedSession,
   claudeStoreHasSession,
   roleLaunchArgs,
@@ -138,6 +139,28 @@ describe('psu-launcher arg parsing', () => {
     expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }).args).toEqual([
       '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', 'uuid-2',
     ]);
+  });
+
+  it('resumeEnvFor: identity + workspace scope SURVIVE a tracked resume (psu-workspace-scoping fix)', () => {
+    // coordOwnerId is re-exported as PAPERCUSP_SID (wake-executor semantics —
+    // a fresh SID orphaned the old one's locks/awaits and detached the adv
+    // row); workspaceId rides out as PAPERCUSP_WORKSPACE so the MCP url/header
+    // carriers re-scope the resumed session.
+    expect(
+      resumeEnvFor({ agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' }),
+    ).toEqual({
+      PAPERCUSP_AGENT: 'claude',
+      PAPERCUSP_SID: 'su-abc',
+      PAPERCUSP_WORKSPACE: 'ws1',
+      PAPERCUSP_ADV_SESSION_ID: '7',
+    });
+  });
+
+  it('resumeEnvFor: untracked sessions (no adv row) mint a fresh SID and omit absent fields', () => {
+    expect(resumeEnvFor({ agent: 'omp' }, { mintSid: () => 'su-fresh' })).toEqual({
+      PAPERCUSP_AGENT: 'omp',
+      PAPERCUSP_SID: 'su-fresh',
+    });
   });
 
   it('planValue maps the NO_PLAN sentinel + empties to null', () => {

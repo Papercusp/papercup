@@ -5,15 +5,16 @@ sidebar:
   order: 2
 ---
 
-:::caution[The operator is Vite now, not Next.js]
-The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`,
-a TanStack-Router SPA). Read any "Next.js app / Next standalone / `next dev` /
-`next start`" wording below as the **Vite** SPA (`:3055` dev) served by the
-`:3070` **Hono host** (`apps/operator/bin/hono-host.ts`). There is no
-`next.config.js` left in `apps/operator/`. The shipped sidecar is an
-esbuild-bundled `serve.mjs`, **not** a Next.js standalone. (`apps/operator/app/**`
-is **not** dead code — operator-vite still imports its live page bodies via the
-`@/app` alias + `next/*` compat shims.) See the `operator-next-is-retired` insight.
+:::note[History: the operator frontend was Next.js until mid-2026]
+Next.js is **fully removed** (`finish-next-removal-2026-06-01`): no `next`
+dependency, no `next.config.js`, no `next/*` shims — the former
+`next/{navigation,link,dynamic}` adapter hooks live on as
+`apps/operator/lib/router-compat/*`. The operator frontend is the **Vite** SPA
+(`@papercusp/operator-vite`, TanStack Router, `:3055` in dev) served by the
+`:3070` **Hono host** (`apps/operator/bin/hono-host.ts`); the shipped sidecar is
+an esbuild-bundled `serve.mjs`. `apps/operator/app/**` is **not** dead code —
+operator-vite imports its live page bodies via the `@` alias (→ `apps/operator/`).
+See the `operator-next-is-retired` insight.
 :::
 
 ## Two repos, two stages

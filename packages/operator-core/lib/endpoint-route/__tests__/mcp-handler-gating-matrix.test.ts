@@ -53,6 +53,8 @@ const h = vi.hoisted(() => {
     isValidSuperuserBearer: vi.fn(
       (bearer: string | null | undefined): boolean => bearer === 'test-su-bearer',
     ),
+    /** SID→adv-row workspace fallback seam (psu-workspace-scoping fix). */
+    workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
   };
 });
 
@@ -110,6 +112,10 @@ vi.mock('../../superuser-token', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   // isLoopbackRequest stays REAL (pure header logic — part of the matrix).
   return { ...actual, isValidSuperuserBearer: h.isValidSuperuserBearer };
+});
+vi.mock('../../adv-sessions', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
 });
 vi.mock('../../resolve-harness-paths', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -535,6 +541,61 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.principal).toBeUndefined();
     expect(call.alsWorkspace).toBeUndefined();
     expect(h.withWorkspaceCalls).toEqual([]);
+    // No SID rode the request → the adv-row fallback is never consulted.
+    expect(h.workspaceForCoordOwner).not.toHaveBeenCalled();
+  });
+
+  // ── psu-workspace-scoping fix: header carrier + SID→adv-row fallback ──
+
+  it('x-papercusp-workspace header scopes a superuser call (OMP per-launch carrier) and beats ?workspace=', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&workspace=ws-url', { 'x-papercusp-workspace': 'ws-header' }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.ctx.workspaceId).toBe('ws-header');
+    expect(call.ctx.tx).toBe(h.fakeTx);
+    expect(h.withWorkspaceCalls).toEqual(['ws-header']);
+    expect(call.alsWorkspace).toBe('ws-header');
+    expect(h.workspaceForCoordOwner).not.toHaveBeenCalled(); // explicit scope → no lookup
+  });
+
+  it('no explicit workspace + a client SID → the adv-row fallback scopes the call', async () => {
+    h.workspaceForCoordOwner.mockResolvedValueOnce('ws-adv');
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-xyz'));
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(h.workspaceForCoordOwner).toHaveBeenCalledWith('su-xyz');
+    expect(call.ctx.workspaceId).toBe('ws-adv');
+    expect(call.ctx.tx).toBe(h.fakeTx);
+    expect(h.withWorkspaceCalls).toEqual(['ws-adv']);
+    expect(call.alsWorkspace).toBe('ws-adv');
+  });
+
+  it('a client SID with NO adv row falls through to unscoped `*` (pre-fix behavior)', async () => {
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-unknown'));
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(h.workspaceForCoordOwner).toHaveBeenCalledWith('su-unknown');
+    expect(call.ctx.workspaceId).toBe('*');
+    expect(call.ctx.tx).toBeUndefined();
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
+  it('x-papercusp-profile header gates like ?profile=power (psu --profile per-launch carrier)', async () => {
+    const res = await callTool(
+      'gatingtest:engineer',
+      {},
+      superuserExtra('&workspace=ws-test', { 'x-papercusp-profile': 'power' }),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^tool_not_available_for_profile: /);
+    expect(seen).toEqual([]);
   });
 
   it('a principal-gated BUILT-IN under an unscoped superuser fails with the workspace-scoping error (handler path)', async () => {

@@ -1,0 +1,293 @@
+/**
+ * The hive inference gateway — a localhost transparent `/v1/*` reverse proxy that PACES the
+ * fleet's requests through the existing rate governor and injects the bound account's OAuth, so
+ * one Max subscription can serve many concurrent bees without each `claude -p` bursting blind
+ * (hive-inference-gateway-2026-06-09 P-006 + P-007).
+ *
+ * Per request:
+ *   1. parse `model` + estimate tokens from the body (token-aware admission, P-010);
+ *   2. `governor.acquire(est)` — BLOCK until a slot frees (backpressure, D-004) rather than
+ *      bursting; a wait longer than `maxQueueWaitMs` returns a synthetic 429 + `retry-after`
+ *      (so a multi-hour capacity pause doesn't pin an HTTP socket open for hours);
+ *   3. inject `Authorization: Bearer <bound-account-token>` + `anthropic-beta: oauth-…`
+ *      (the bee sends UNAUTHENTICATED to 127.0.0.1) and forward to api.anthropic.com,
+ *      streaming SSE through untouched;
+ *   4. feed every response's `anthropic-ratelimit-*` headers back into the governor
+ *      (`recordResponse` → unified-utilization pace/pause, D-009) and `penalize()` on 429/529.
+ *
+ * The proxy is otherwise byte-transparent: it strips `content-encoding`/`content-length` on the
+ * way back (undici already decoded the body) and forces `accept-encoding: identity` upstream.
+ */
+import http from 'node:http';
+import { Readable } from 'node:stream';
+import { governorForBackend, type RateLimitGovernor } from '@papercusp/papercup-shared/agent';
+import { withOAuthBeta } from './credential-store';
+
+const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
+const DEFAULT_MAX_QUEUE_WAIT_MS = 10 * 60 * 1000; // 10 min: past this, fail-with-retry-after
+const ANTHROPIC_VERSION = '2023-06-01';
+/** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
+const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
+const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
+
+export interface GatewayDeps {
+  /** A fresh bearer for the bound account (the credential resolver's `current`). */
+  token(): Promise<string>;
+  /** Drop the cached token (called on an upstream 401). */
+  invalidateToken?(): void;
+  /** Bound account id — scopes the governor bucket + pool attribution. */
+  accountId: string;
+  /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
+  upstreamBase?: string;
+  /** `fetch` impl (injected in tests). Default global fetch. */
+  fetchImpl?: typeof fetch;
+  /** The governor for a model (default: the shared per-account `claude-code` governor). */
+  governorFor?(model: string): RateLimitGovernor;
+  /** Max admission wait before a synthetic 429+retry-after. Default 10 min. */
+  maxQueueWaitMs?: number;
+  log?(level: 'info' | 'warn' | 'error', msg: string): void;
+  /** Fired with each upstream response's headers + status (pool projection / observability). */
+  onResponse?(headers: Record<string, string | undefined>, status: number, model: string): void;
+}
+
+export interface GatewayStats {
+  accountId: string;
+  upstreamBase: string;
+  totalRequests: number;
+  inFlight: number;
+  queueDepth: number;
+  upstream429: number;
+  queued429: number;
+  upstreamErrors: number;
+  /** The bound account's most-constraining unified window, if seen (D-009 / P-014). */
+  unified?: { window: string; utilization: number; resetAt: number; rejected: boolean };
+  pausedUntil: number;
+}
+
+/** Rough token estimate for admission (refined once the account exposes real headroom). */
+export function estimateTokens(body: unknown): { inTok: number; outTok: number } {
+  let inTok = 0;
+  let outTok = 0;
+  if (body && typeof body === 'object') {
+    const b = body as { max_tokens?: number; system?: unknown; messages?: unknown };
+    // ~4 chars/token over the serialized system + messages.
+    const text = JSON.stringify({ system: b.system ?? '', messages: b.messages ?? [] });
+    inTok = Math.ceil(text.length / 4);
+    outTok = typeof b.max_tokens === 'number' ? b.max_tokens : 1024;
+  }
+  return { inTok, outTok };
+}
+
+/** Parse an upstream rate-limit reset (prefer the unified unix-seconds window) → {resetAt, retryAfterMs}. */
+export function parseRateReset(h: Record<string, string | undefined>, now = Date.now()): { resetAt?: number; retryAfterMs?: number } {
+  const out: { resetAt?: number; retryAfterMs?: number } = {};
+  const unified = h['anthropic-ratelimit-unified-5h-reset'] ?? h['anthropic-ratelimit-unified-reset'];
+  if (unified && /^\d+$/.test(unified)) out.resetAt = Number(unified) * 1000;
+  else {
+    const iso = h['anthropic-ratelimit-requests-reset'];
+    const t = iso ? Date.parse(iso) : NaN;
+    if (!Number.isNaN(t)) out.resetAt = t;
+  }
+  const ra = h['retry-after'];
+  if (ra && /^\d+$/.test(ra)) out.retryAfterMs = Number(ra) * 1000;
+  // Guard: a wildly-large retry-after that disagrees with a near unified reset is untrustworthy
+  // (observed: retry-after 15210s vs a 10-min reset). Prefer resetAt when both present.
+  if (out.resetAt && out.retryAfterMs && out.resetAt - now > 0 && out.retryAfterMs > out.resetAt - now) {
+    out.retryAfterMs = undefined;
+  }
+  return out;
+}
+
+function headersToObject(h: Headers): Record<string, string | undefined> {
+  const o: Record<string, string | undefined> = {};
+  h.forEach((v, k) => {
+    o[k.toLowerCase()] = v;
+  });
+  return o;
+}
+
+async function readBody(req: http.IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks);
+}
+
+export function createInferenceGateway(deps: GatewayDeps) {
+  const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
+  const doFetch = deps.fetchImpl ?? fetch;
+  const maxQueueWaitMs = deps.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS;
+  const log = deps.log ?? (() => {});
+  const governorFor = deps.governorFor ?? ((model: string) => governorForBackend('claude-code', model, undefined, deps.accountId));
+
+  let totalRequests = 0;
+  let inFlight = 0;
+  let queueDepth = 0;
+  let upstream429 = 0;
+  let queued429 = 0;
+  let upstreamErrors = 0;
+
+  function stats(): GatewayStats {
+    // Reflect the opus bucket (the fleet's class) for the headline unified window.
+    const gov = governorFor('claude-opus-4');
+    const snap = gov.snapshot();
+    return {
+      accountId: deps.accountId,
+      upstreamBase,
+      totalRequests,
+      inFlight,
+      queueDepth,
+      upstream429,
+      queued429,
+      upstreamErrors,
+      unified: snap.unified,
+      pausedUntil: snap.pausedUntil,
+    };
+  }
+
+  function sendJson(res: http.ServerResponse, status: number, body: unknown, extra?: Record<string, string>) {
+    res.writeHead(status, { 'content-type': 'application/json', ...extra });
+    res.end(JSON.stringify(body));
+  }
+
+  async function proxy(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const bodyBuf = await readBody(req);
+    let model = 'claude-opus-4';
+    let est = { inTok: 0, outTok: 1024 };
+    if (url.startsWith('/v1/messages') && bodyBuf.length) {
+      try {
+        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string };
+        if (typeof j.model === 'string') model = j.model;
+        est = estimateTokens(j);
+      } catch {
+        /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
+      }
+    }
+    const gov = governorFor(model);
+
+    totalRequests++;
+    queueDepth++;
+    const release = await gov.acquire(est, { maxWaitMs: maxQueueWaitMs });
+    queueDepth--;
+    if (!release) {
+      queued429++;
+      const retryAfterSec = Math.max(1, Math.ceil((gov.state.pausedUntil - Date.now()) / 1000));
+      log('warn', `admission timed out for ${model}; 429 retry-after ${retryAfterSec}s (account ${deps.accountId})`);
+      sendJson(
+        res,
+        429,
+        { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: account '${deps.accountId}' paced/paused; retry after ${retryAfterSec}s` }, gateway: true },
+        { 'retry-after': String(retryAfterSec) },
+      );
+      return;
+    }
+
+    inFlight++;
+    try {
+      const token = await deps.token();
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v === undefined || STRIP_REQUEST.has(k.toLowerCase())) continue;
+        headers[k] = Array.isArray(v) ? v.join(', ') : v;
+      }
+      headers['authorization'] = `Bearer ${token}`;
+      headers['anthropic-beta'] = withOAuthBeta(headers['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined));
+      if (!headers['anthropic-version']) headers['anthropic-version'] = ANTHROPIC_VERSION;
+      headers['accept-encoding'] = 'identity';
+
+      let up: Response;
+      try {
+        up = await doFetch(`${upstreamBase}${url}`, {
+          method: req.method,
+          headers,
+          body: bodyBuf.length ? bodyBuf : undefined,
+        });
+      } catch (e) {
+        upstreamErrors++;
+        log('error', `upstream fetch failed: ${(e as Error).message}`);
+        sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway upstream error: ${(e as Error).message}` }, gateway: true });
+        return;
+      }
+
+      const hobj = headersToObject(up.headers);
+      gov.recordResponse(hobj);
+      deps.onResponse?.(hobj, up.status, model);
+      if (up.status === 429 || up.status === 529) {
+        upstream429++;
+        gov.penalize(parseRateReset(hobj));
+      } else if (up.status === 401) {
+        deps.invalidateToken?.();
+      }
+
+      const outHeaders: Record<string, string> = {};
+      up.headers.forEach((v, k) => {
+        if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
+      });
+      res.writeHead(up.status, outHeaders);
+      if (up.body) {
+        const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+        nodeStream.pipe(res);
+        await new Promise<void>((resolve) => {
+          res.on('finish', () => resolve());
+          res.on('close', () => resolve());
+          nodeStream.on('error', () => {
+            res.destroy();
+            resolve();
+          });
+        });
+      } else {
+        res.end();
+      }
+    } finally {
+      inFlight--;
+      release();
+    }
+  }
+
+  const server = http.createServer((req, res) => {
+    const url = req.url ?? '/';
+    if (req.method === 'GET' && url === '/healthz') {
+      const s = stats();
+      sendJson(res, s.pausedUntil > Date.now() ? 503 : 200, { ok: true, ...s });
+      return;
+    }
+    if (req.method === 'GET' && (url === '/stats' || url === '/admin/stats')) {
+      sendJson(res, 200, stats());
+      return;
+    }
+    if (!url.startsWith('/v1/')) {
+      sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway only proxies /v1/*' }, gateway: true });
+      return;
+    }
+    proxy(req, res, url).catch((e) => {
+      upstreamErrors++;
+      log('error', `proxy handler crashed: ${(e as Error).message}`);
+      if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway internal error' }, gateway: true });
+      else res.destroy();
+    });
+  });
+
+  return {
+    server,
+    stats,
+    listen(port = 0): Promise<number> {
+      return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', () => {
+          const addr = server.address();
+          const p = typeof addr === 'object' && addr ? addr.port : port;
+          log('info', `inference-gateway listening on 127.0.0.1:${p} → ${upstreamBase} (account ${deps.accountId})`);
+          resolve(p);
+        });
+      });
+    },
+    port(): number {
+      const addr = server.address();
+      return typeof addr === 'object' && addr ? addr.port : 0;
+    },
+    close(): Promise<void> {
+      return new Promise((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+export type InferenceGateway = ReturnType<typeof createInferenceGateway>;

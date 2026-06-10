@@ -71,6 +71,8 @@ import './discovery/set_hive';
 import './hive/declare_wake';
 import './hive/wake';
 import './hive/status';
+import './hive/start';
+import './hive/pause';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
 import './hive/list';
 import './hive/get';
@@ -537,6 +539,25 @@ try {
   for (const ws of backgroundWorkspaceIds()) {
     void registerHiveWakeRules(ws).catch(() => {});
   }
+} catch {
+  /* never block boot */
+}
+
+// start-hive-wake-orchestration-2026-06-09 P-010 — the boot liveness check
+// (crash recovery): a STARTED hive whose host died mid-turn never ran the
+// turn-end hook, so it may sit started with no wake armed forever. Arm the
+// watchdog fallback for each such hive. Fail-soft; never blocks boot.
+import { hiveBootCheck } from '../hive/watchdog';
+try {
+  void hiveBootCheck()
+    .then((results) => {
+      for (const r of results) {
+        if (r.outcome === 'armed' || r.outcome === 'staged') {
+          console.warn(`[hive-watchdog] boot ${r.outcome} a fallback wake: ${r.reason}`);
+        }
+      }
+    })
+    .catch(() => {});
 } catch {
   /* never block boot */
 }

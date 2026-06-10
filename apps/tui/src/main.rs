@@ -483,6 +483,22 @@ async fn run<B: Backend>(
                 tokio::spawn(set_wake_mode(agent, mode, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::FetchWakeQueue { agent } => {
+                // P-009: list the agent's staged wakes for the review overlay.
+                tokio::spawn(fetch_wake_queue(agent, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::WakeQueueAct {
+                agent,
+                release,
+                id,
+                edited,
+            } => {
+                // P-009: release (as-is or edited) / skip one staged wake, then
+                // re-list so the overlay refreshes.
+                tokio::spawn(wake_queue_act(agent, release, id, edited, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchHives => {
                 // The federated p2p roster for the Hives tab — fetched off the
                 // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
@@ -2129,6 +2145,74 @@ async fn set_wake_mode(agent: String, mode: String, tx: UnboundedSender<Event>) 
     };
     if let Err(e) = res {
         let _ = tx.send(Event::Error(format!("wake-mode: {e}")));
+    }
+}
+
+/// P-009: list an agent's staged wakes (`coord:wake-queue {action:'list'}`) for
+/// the review overlay → `Event::WakeQueue`.
+async fn fetch_wake_queue(agent: String, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .run_tool(
+                "coord:wake-queue",
+                serde_json::json!({ "agent": agent, "action": "list" }),
+            )
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|v| {
+                crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string())
+            }),
+        Err(e) => Err(e.to_string()),
+    };
+    let _ = tx.send(Event::WakeQueue { agent, result });
+}
+
+/// P-009: release (as-is or with edited content) / skip ONE staged wake, then
+/// re-list the queue so the overlay refreshes. An act error rides the same
+/// `Event::WakeQueue` rail (Err → shown inline in the overlay).
+async fn wake_queue_act(
+    agent: String,
+    release: bool,
+    id: i64,
+    edited: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let action = if release { "release" } else { "skip" };
+    let res = match OperatorClient::from_discovery().await {
+        Ok(client) => {
+            let mut args = serde_json::json!({ "agent": agent, "action": action, "id": id });
+            if let Some(e) = edited {
+                args["edited"] = serde_json::Value::String(e);
+            }
+            client
+                .run_tool("coord:wake-queue", args)
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    // Surface a tool-level { ok:false, reason } as an error.
+                    let inner =
+                        crate::client::run_tool_inner_json(&v).map_err(|e| e.to_string())?;
+                    if inner.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                        Ok(())
+                    } else {
+                        Err(inner
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("wake-queue act failed")
+                            .to_string())
+                    }
+                })
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    match res {
+        Ok(()) => fetch_wake_queue(agent, tx).await,
+        Err(e) => {
+            let _ = tx.send(Event::WakeQueue {
+                agent,
+                result: Err(e),
+            });
+        }
     }
 }
 

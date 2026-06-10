@@ -1036,6 +1036,21 @@
             "packages/operator-core/lib/gym/**/*.test.tsx",
             "packages/operator-core/lib/gym-*.test.ts"
           ]
+        },
+        {
+          "id": "e2e",
+          "label": "Boot E2E",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/gym/wake-mode-run.ts"
+              ],
+              "label": "wake-mode autonomous chain links 1→4 (fake, zero-LLM — hive-loop-e2e P-006)"
+            }
+          ]
         }
       ]
     },

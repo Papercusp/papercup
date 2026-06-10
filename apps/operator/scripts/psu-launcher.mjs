@@ -791,11 +791,9 @@ function launchResume(session, { brain = false } = {}) {
   const { bin, args } = resumeArgsFor(session, { coordExtPath });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
 
-  // Per-session coord/lock owner (a fresh process gets a fresh SID).
+  // Identity + workspace scope survive the resume (see resumeEnvFor).
   const env = {
-    PAPERCUSP_AGENT: session.agent,
-    PAPERCUSP_SID: `su-${randomUUID()}`,
-    ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
+    ...resumeEnvFor(session),
     // Agent-session marker: the hook-level scheduler guard (bash gate / omp
     // coord-hook) only fires when this is set — never for the owner's own
     // sessions (native-scheduler-lockout D-003).

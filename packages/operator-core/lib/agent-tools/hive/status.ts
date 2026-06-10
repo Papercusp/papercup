@@ -16,12 +16,14 @@ import {
   readHiveWakeState,
   resolveHiveHomeSlug,
 } from '../../hive/wake';
+import { getHiveStarted } from '../../hive/started';
+import { recentWatchdogFires, watchdogFallbackSleepSec, watchdogStaleSec } from '../../hive/watchdog';
 
 export default defineTool({
   name: 'hive:status',
   profile: 'engineer',
   description:
-    "The Hive operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
+    "The Hive operator's current state: started/paused (the Start-Hive bit), the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, the floor, and the watchdog health signal (fallback fires in 24h). Read-only.",
   guidance: {
     when: 'To see when/whether the operator will wake next, or to verify a hive:declare-wake landed.',
     chaining: 'hive:declare-wake to change the declaration; hive:wake to fire now.',
@@ -42,6 +44,10 @@ export default defineTool({
     const ruleIds = listReactionRules()
       .filter((r) => r.id.startsWith(`hive-wake:${workspaceId}#`))
       .map((r) => r.id);
+    // start-hive-wake P-004/P-012: the Start/Pause state + the watchdog health
+    // signal (frequent fallback fires = a Queen prompt bug to fix, D-004).
+    const started = installSlug ? await getHiveStarted(workspaceId, installSlug) : false;
+    const watchdogFires24h = installSlug ? await recentWatchdogFires(workspaceId, installSlug) : 0;
 
     return {
       content: [
@@ -50,6 +56,12 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             harness: installSlug,
+            started,
+            watchdog: {
+              fires24h: watchdogFires24h,
+              fallbackSleepSec: watchdogFallbackSleepSec(),
+              staleSec: watchdogStaleSec(),
+            },
             time: time
               ? {
                   active: time.active,

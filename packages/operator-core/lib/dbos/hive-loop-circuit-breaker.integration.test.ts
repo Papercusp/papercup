@@ -27,7 +27,7 @@
  * throwaway PG, env-routed getOrgPg, PAPERCUSP_OPERATOR_BASE pinned at the stub
  * server so the decider fire NEVER reaches a real operator host.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { teardownTestPg } from '@papercusp/test-config';
@@ -139,6 +139,12 @@ async function backdate(seconds: number): Promise<void> {
 
 describe('autoloop circuit-breaker lifecycle (P-003)', () => {
   it('8 failures open the circuit; probes degrade to ~one per cap window; one success closes it', async () => {
+    // The WITHHELD console.warn is the gate's own observable signal — capture
+    // it so Phase 2 can ASSERT on it (and keep vitest-fail-on-console quiet).
+    // Installed INSIDE the test: fail-on-console re-patches console per-test in
+    // its own beforeEach, so a module-scope spy would be overwritten.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     // ── Phase 1: accumulate 8 consecutive fire errors through the live path.
     for (let i = 1; i <= 8; i++) {
       if (i > 1) await backdate(45); // > any backoff window → the re-fire is admitted
@@ -163,11 +169,13 @@ describe('autoloop circuit-breaker lifecycle (P-003)', () => {
     expect(open.retryAfterSec).toBeLessThanOrEqual(40);
 
     // A fire attempt inside the open window is WITHHELD: no invoke-route hit,
-    // counter frozen.
+    // counter frozen, and the handler logged the withholding.
+    warnSpy.mockClear();
     await fire();
     await new Promise((r) => setTimeout(r, 500)); // give a (wrong) fire time to surface
     expect(invokeHits.length).toBe(8);
     expect((await readState())?.errors).toBe(8);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('WITHHELD'))).toBe(true);
 
     // ── Phase 3: after a cap window, ONE half-open probe is admitted. The
     // operator still fails → counter grows, circuit stays open.

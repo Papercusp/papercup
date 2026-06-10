@@ -1296,6 +1296,45 @@ positive evidence — silence is not success.
 - **Bridge port is per-process.** `tauri-agent-tools probe` reports
   the live port (e.g. `34875`); restart the dev shell and the port
   changes. Always `probe` before scripting a sequence.
+- **Radix tabs (and other pointerdown-activated Radix widgets) ignore
+  plain `click`.** A programmatic `el.click()` (or the bridge `click`
+  verb) dispatches only a `click` event; Radix `Tabs` activate on
+  *pointerdown*, so the tab looks clicked but selection and the nuqs
+  `?tab=` param never change — and your test silently measures nothing.
+  Dispatch the full sequence:
+  `for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}))`.
+  Plain anchors are fine with `click`. (Found 2026-06-10; cost a full
+  battery round of invalid tab numbers.)
+- **Close the Web Inspector before ANY memory or perf measurement.**
+  All Tauri instances share one webview profile
+  (`~/.local/share/com.papercusp.desktop`), and it restores the
+  inspector OPEN from the last session. The inspector's record buffers
+  (its Network tab logs every SSE/API frame) grew ~1.9 GB across two
+  nav batteries on 2026-06-10 and looked exactly like an app leak —
+  closing it dropped RSS from 2.7 GB to 819 MB instantly. Latency
+  numbers were unaffected; memory numbers with it open are garbage.
+- **Don't measure under `tauri dev` on the shared dev box — launch the
+  bare debug binary.** `tauri dev` watches `src-tauri/**`, and the
+  fleet edits that tree continuously: a peer's mid-flight Rust edit
+  kills and rebuilds your app mid-test (and a peer's compile error
+  leaves you appless). Launch
+  `./src-tauri/target/debug/papercusp-desktop` directly (the dev
+  wrapper + bridge are compiled in) and pick the target via the
+  build-switcher rail or a devUrl-restored URL.
+- **Wayland trap: a bare `DISPLAY=:9X` launch can land on the owner's
+  desktop.** GTK prefers Wayland when `WAYLAND_DISPLAY` is set, so the
+  isolated-Xvfb recipe silently opens the window on the live seat
+  (focus-steal). Always launch with
+  `env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:9X …`.
+- **`screenshot` verb may demand sway/grim** (it probes the host
+  platform, not your X11 instance). Fallback that always works on an
+  Xvfb display: `WID=$(DISPLAY=:9X xdotool search --name Papercusp |
+  tail -1); DISPLAY=:9X import -window $WID shot.png`.
+- **`operator-converse` trigger enum.** When poking
+  `/api/agent-mcp/operator-converse` directly, `trigger` must be one of
+  `user_message | quiet_wait_resume | open_canvas | user_says_ready |
+  user_welcomed | continue` — anything else streams a single
+  `event: error` frame (`invalid_args`) and closes.
 
 ### 15.4 Xvfb / xdotool / OCR fallback cookbook
 
@@ -1351,8 +1390,14 @@ DISPLAY=:90 openbox &                            echo $! > /tmp/openbox90.pid
 # Sanity — must be the real GPU, not llvmpipe:
 DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
 # Launch the app UNDER vglrun so WebKitGTK composites on the GPU:
-( cd papercusp-desktop && DISPLAY=:90 \
+( cd papercusp-desktop && env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 \
     vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &  echo $! > /tmp/tauri-xvfb.pid
+# ⚠ Wayland trap: without `env -u WAYLAND_DISPLAY GDK_BACKEND=x11` GTK may pick
+# the live Wayland seat and open the window on the OWNER'S desktop, ignoring :90.
+# ⚠ On the shared dev box prefer the BARE binary over `npm run dev` — the tauri-dev
+# watcher restarts/kills your app whenever the fleet edits src-tauri/** (see §15):
+#   env -u WAYLAND_DISPLAY GDK_BACKEND=x11 DISPLAY=:90 vglrun -d egl0 \
+#     ./src-tauri/target/debug/papercusp-desktop > /tmp/tauri-xvfb.log 2>&1 &
 # wait for window
 until DISPLAY=:90 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
 # The bridge binds an EPHEMERAL port (Server::http("127.0.0.1:0") in
@@ -1370,6 +1415,8 @@ Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/
 For a **release build** (no dev bridge) screenshots are your *only* window
 introspection — so GPU GL via VirtualGL is **mandatory** there, or the
 screenshot tells you nothing. On a **debug** build the bridge is still up on the
-isolated instance (`probe` finds it on `PAPERCUSP_BRIDGE_PORT`) — prefer the
+isolated instance — find it with `tauri-agent-tools probe --pid <pid>` or the
+`/tmp/tauri-dev-bridge-<pid>.token` file (the port is ephemeral; there is **no**
+`PAPERCUSP_BRIDGE_PORT` env var). Prefer the
 bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and
 use this VirtualGL stack only for the pixels.

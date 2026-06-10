@@ -49,7 +49,7 @@ import {
 import { ROUNDTRIP_SPECS } from './roundtrip-specs';
 
 export const BENCH_SCOPE = 'bench';
-export type BenchBackendName = 'mem0' | 'claude-file' | 'noop' | 'hybrid';
+export type BenchBackendName = 'mem0' | 'claude-file' | 'noop' | 'hybrid' | 'claude-loaded-index';
 
 export interface BenchRunOptions {
   /** Which backends to bench (default all three). */
@@ -181,6 +181,39 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
       },
       embeds: true,
       extractionOnRemember: true,
+    };
+  }
+  if (name === 'claude-loaded-index') {
+    // The load-all-runtime model (P-012): writes land in a temp-dir claude-file
+    // store; search renders the FULL index and lets an LLM pick — the actual
+    // mechanism of the live always-loaded MEMORY.md, vs the claude-file
+    // backend's lexical search. LLM transport lazy-imported so the plain
+    // backends don't pay the llm-testing import.
+    const { llmCall } = await import('../../llm-testing/llm-client');
+    const { ClaudeLoadedIndexBackend, LOADED_INDEX_MODEL } = await import('./loaded-index-backend');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-bench-loaded-idx-'));
+    const make = () =>
+      new ClaudeLoadedIndexBackend(
+        new ClaudeFileMemoryBackend({ memoryDir: dir, createIfMissing: true }),
+        llmCall,
+      );
+    return {
+      backend: make(),
+      reinstantiate: make,
+      cleanup: async () => {
+        if (!keep) fs.rmSync(dir, { recursive: true, force: true });
+      },
+      reach: {
+        'readable from codex/omp/operator/memory-tab':
+          'FS-local only — same store as claude-file; this backend differs only in HOW recall happens',
+        'concurrent multi-agent writes': 'file-per-fact, last-write-wins per file (same as claude-file)',
+        'restart survival': 'yes — plain files',
+        requires:
+          `an LLM per search (${LOADED_INDEX_MODEL}; the live analogue is the main model reading the ` +
+          'loaded index at $0 marginal in-context) — cost rows below EXCLUDE that call',
+      },
+      embeds: false,
+      extractionOnRemember: false,
     };
   }
   return {

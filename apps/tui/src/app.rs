@@ -208,6 +208,18 @@ pub enum Action {
     /// P-008: set an agent's wake mode (auto|manual) via coord:wake-mode. The run
     /// loop spawns the run_tool call; the next roster poll refreshes the badge.
     SetWakeMode { agent: String, mode: String },
+    /// P-009: fetch an agent's staged wakes (coord:wake-queue list) for the
+    /// review overlay → `Event::WakeQueue`.
+    FetchWakeQueue { agent: String },
+    /// P-009: act on ONE staged wake — `release: true` delivers it (with
+    /// `edited` content when the owner edited), `false` skips it. The run loop
+    /// re-lists afterwards so the overlay refreshes.
+    WakeQueueAct {
+        agent: String,
+        release: bool,
+        id: i64,
+        edited: Option<String>,
+    },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
     FetchConversationDetail {
@@ -261,6 +273,45 @@ pub struct FleetActionMenu {
     /// External-window focus handle (adv_session_id, pid, window_id) — Some iff
     /// `can_focus_window`.
     pub focus: Option<(Option<i64>, Option<i64>, Option<String>)>,
+}
+
+/// The staged-wake review overlay's state (hive-agent-tabs P-009 / D-005).
+/// Opened with `W` on a Fleet agent; lists the agent's staged wakes with
+/// per-wake release / edit & release / skip. Modal while open.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WakeReview {
+    /// The agent whose queue is under review (owner id) + its roster label.
+    pub agent: String,
+    pub label: String,
+    pub pending: Vec<crate::models::PendingWake>,
+    /// Selection index into `pending`.
+    pub sel: usize,
+    /// `Some` while the owner is editing the selected wake's content before
+    /// release — the live input buffer ("edit" is an action within manual mode,
+    /// not a third mode, D-005).
+    pub edit: Option<String>,
+    /// True until the first list lands.
+    pub loading: bool,
+    /// True while a release/skip is in flight (blocks double-fires).
+    pub busy: bool,
+    /// The last fetch/act error, shown inline.
+    pub error: Option<String>,
+}
+
+impl WakeReview {
+    pub fn loading(agent: String, label: String) -> Self {
+        Self {
+            agent,
+            label,
+            loading: true,
+            ..Self::default()
+        }
+    }
+
+    /// The selected staged wake, if any.
+    pub fn selected(&self) -> Option<&crate::models::PendingWake> {
+        self.pending.get(self.sel)
+    }
 }
 
 /// A push-to-talk command on the Operator tab (voice-mode-tui-port D-007).
@@ -979,6 +1030,9 @@ pub struct App {
     /// `Some` while Enter on an unreachable agent has surfaced the `[r]/[n]/[f]`
     /// choices; the next `r`/`n`/`f`/Esc closes it. Captures keys while open.
     pub fleet_action_menu: Option<FleetActionMenu>,
+    /// `Some` while the staged-wake review overlay is open (P-009): the selected
+    /// agent's pending wakes + release/edit/skip state. Captures keys while open.
+    pub wake_review: Option<WakeReview>,
     /// Live workbench topology from the companion zellij plugin (P-004 / D-008):
     /// which agent is in which pane + tab. `None` until the companion links;
     /// replaced wholesale on each snapshot (idempotent — no diff bookkeeping).
@@ -1248,6 +1302,7 @@ impl App {
             unseen_notifs: 0,
             notif_seq: 0,
             fleet_action_menu: None,
+            wake_review: None,
             topology: None,
             hud_pane_id: None,
             companion_version: None,
@@ -2611,6 +2666,110 @@ impl App {
         }
     }
 
+    /// Handle a key while the staged-wake review overlay is open (P-009). Two
+    /// layers: EDITING (a live input buffer over the selected wake) consumes
+    /// typing/Backspace, Enter releases with the edited content, Esc cancels the
+    /// edit; otherwise j/k navigate, `r`/Enter release as-is, `e` opens the edit,
+    /// `s` skips, Esc closes. Always consumes the key (the overlay is modal).
+    fn wake_review_key(&mut self, code: KeyCode) -> Action {
+        let Some(rev) = self.wake_review.as_mut() else {
+            return Action::Render;
+        };
+        // Editing layer: the buffer owns printable keys until Enter/Esc.
+        if let Some(buf) = rev.edit.as_mut() {
+            return match code {
+                KeyCode::Esc => {
+                    rev.edit = None;
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    if rev.busy {
+                        return Action::Render;
+                    }
+                    let edited = buf.trim().to_string();
+                    let Some(pw) = rev.selected() else {
+                        rev.edit = None;
+                        return Action::Render;
+                    };
+                    let (agent, id) = (rev.agent.clone(), pw.id);
+                    rev.busy = true;
+                    rev.edit = None;
+                    Action::WakeQueueAct {
+                        agent,
+                        release: true,
+                        id,
+                        edited: if edited.is_empty() { None } else { Some(edited) },
+                    }
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
+        match code {
+            KeyCode::Esc => {
+                self.wake_review = None;
+                Action::Render
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !rev.pending.is_empty() {
+                    rev.sel = (rev.sel + 1).min(rev.pending.len() - 1);
+                }
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                rev.sel = rev.sel.saturating_sub(1);
+                Action::Render
+            }
+            KeyCode::Char('e') => {
+                // Open the edit buffer seeded with the staged content.
+                if let Some(pw) = rev.selected() {
+                    rev.edit = Some(pw.summary.clone().unwrap_or_default());
+                }
+                Action::Render
+            }
+            KeyCode::Char('r') | KeyCode::Enter => {
+                if rev.busy {
+                    return Action::Render;
+                }
+                let Some(pw) = rev.selected() else {
+                    return Action::Render;
+                };
+                let (agent, id) = (rev.agent.clone(), pw.id);
+                rev.busy = true;
+                Action::WakeQueueAct {
+                    agent,
+                    release: true,
+                    id,
+                    edited: None,
+                }
+            }
+            KeyCode::Char('s') => {
+                if rev.busy {
+                    return Action::Render;
+                }
+                let Some(pw) = rev.selected() else {
+                    return Action::Render;
+                };
+                let (agent, id) = (rev.agent.clone(), pw.id);
+                rev.busy = true;
+                Action::WakeQueueAct {
+                    agent,
+                    release: false,
+                    id,
+                    edited: None,
+                }
+            }
+            _ => Action::None,
+        }
+    }
+
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
     /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
@@ -3114,6 +3273,28 @@ impl App {
                 }
                 Action::Render
             }
+            Event::WakeQueue { agent, result } => {
+                // P-009: a staged-wake list (or an act error) landed. Stale-guard
+                // on the agent so a late response never paints another agent's
+                // overlay; a closed overlay drops the event silently.
+                if let Some(rev) = self.wake_review.as_mut() {
+                    if rev.agent == agent {
+                        rev.loading = false;
+                        rev.busy = false;
+                        match result {
+                            Ok(pending) => {
+                                rev.error = None;
+                                rev.pending = pending;
+                                if rev.sel >= rev.pending.len() {
+                                    rev.sel = rev.pending.len().saturating_sub(1);
+                                }
+                            }
+                            Err(e) => rev.error = Some(e),
+                        }
+                    }
+                }
+                Action::Render
+            }
             Event::LexiconPack(payload) => {
                 // The active brand pack landed (startup fetch). Store the resolved
                 // term→label map; user-facing labels route through it from now on.
@@ -3370,6 +3551,11 @@ impl App {
                 }
                 _ => return Action::None,
             }
+        }
+        // Staged-wake review overlay (P-009): modal while open — j/k select,
+        // r release · e edit & release · s skip · Esc close/cancel-edit.
+        if self.wake_review.is_some() {
+            return self.wake_review_key(code);
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.
@@ -3802,6 +3988,22 @@ impl App {
                     agent: entry.owner_id.clone(),
                     mode: mode.to_string(),
                 };
+            }
+            return Action::None;
+        }
+        // P-009 (hive-agent-tabs): flag-on, 'W' on the Fleet tab opens the SELECTED
+        // agent's staged-wake review overlay (release / edit & release / skip).
+        if self.hive_agent_tabs
+            && self.tab == Tab::Fleet
+            && !self.operator_dock_focused
+            && code == KeyCode::Char('W')
+        {
+            let sel = self.fleet.agent_sel;
+            let roster = self.visible_roster();
+            if let Some(entry) = roster.get(sel) {
+                let agent = entry.owner_id.clone();
+                self.wake_review = Some(WakeReview::loading(agent.clone(), entry.label.clone()));
+                return Action::FetchWakeQueue { agent };
             }
             return Action::None;
         }
@@ -4645,6 +4847,131 @@ mod tests {
         assert_eq!(next_wake_mode(Some("manual")), "auto");
         assert_eq!(next_wake_mode(Some("auto")), "manual");
         assert_eq!(next_wake_mode(None), "manual");
+    }
+
+    // ─── Staged-wake review overlay (hive-agent-tabs P-009) ───
+
+    fn pending_wake(id: i64, summary: &str) -> crate::models::PendingWake {
+        crate::models::PendingWake {
+            id,
+            owner_id: "su-aaa".into(),
+            summary: Some(summary.into()),
+            source: Some("routinesTick".into()),
+            created_at: "2026-06-09".into(),
+        }
+    }
+
+    fn app_with_review_open() -> App {
+        let mut a = App::new();
+        a.hive_agent_tabs = true;
+        a.switch_to(Tab::Fleet);
+        a.set_roster(vec![RosterEntry {
+            owner_id: "su-aaa".into(),
+            label: "su · su-aaa".into(),
+            liveness: "live".into(),
+            agent: Some("claude".into()),
+            wake_mode: Some("manual".into()),
+            ..Default::default()
+        }]);
+        a.fleet.agent_sel = 0;
+        let act = a.update(key('W', KeyModifiers::SHIFT));
+        assert_eq!(
+            act,
+            Action::FetchWakeQueue {
+                agent: "su-aaa".into()
+            }
+        );
+        assert!(a.wake_review.as_ref().expect("overlay open").loading);
+        a
+    }
+
+    #[test]
+    fn wake_review_opens_with_shift_w_and_paints_the_list() {
+        let mut a = app_with_review_open();
+        let act = a.update(Event::WakeQueue {
+            agent: "su-aaa".into(),
+            result: Ok(vec![pending_wake(7, "tick"), pending_wake(9, "mail")]),
+        });
+        assert_eq!(act, Action::Render);
+        let rev = a.wake_review.as_ref().unwrap();
+        assert!(!rev.loading && !rev.busy);
+        assert_eq!(rev.pending.len(), 2);
+        assert_eq!(rev.selected().unwrap().id, 7);
+    }
+
+    #[test]
+    fn wake_review_release_skip_and_edit_flow() {
+        let mut a = app_with_review_open();
+        a.update(Event::WakeQueue {
+            agent: "su-aaa".into(),
+            result: Ok(vec![pending_wake(7, "tick"), pending_wake(9, "mail")]),
+        });
+        // j selects #9; r releases it as-is and goes busy.
+        a.update(key('j', KeyModifiers::NONE));
+        let act = a.update(key('r', KeyModifiers::NONE));
+        assert_eq!(
+            act,
+            Action::WakeQueueAct {
+                agent: "su-aaa".into(),
+                release: true,
+                id: 9,
+                edited: None
+            }
+        );
+        assert!(a.wake_review.as_ref().unwrap().busy);
+        // Busy blocks a double-fire.
+        assert_eq!(a.update(key('s', KeyModifiers::NONE)), Action::Render);
+        // The refreshed list (released wake gone) clears busy + clamps sel.
+        a.update(Event::WakeQueue {
+            agent: "su-aaa".into(),
+            result: Ok(vec![pending_wake(7, "tick")]),
+        });
+        let rev = a.wake_review.as_ref().unwrap();
+        assert!(!rev.busy);
+        assert_eq!(rev.pending.len(), 1);
+        assert_eq!(rev.sel, 0);
+        // e seeds the edit buffer with the staged content; typing + Enter
+        // releases the EDITED text.
+        a.update(key('e', KeyModifiers::NONE));
+        assert_eq!(a.wake_review.as_ref().unwrap().edit.as_deref(), Some("tick"));
+        a.update(key('!', KeyModifiers::NONE));
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            act,
+            Action::WakeQueueAct {
+                agent: "su-aaa".into(),
+                release: true,
+                id: 7,
+                edited: Some("tick!".into())
+            }
+        );
+        // Empty queue + Esc closes the overlay.
+        a.update(Event::WakeQueue {
+            agent: "su-aaa".into(),
+            result: Ok(vec![]),
+        });
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(a.wake_review.is_none());
+    }
+
+    #[test]
+    fn wake_review_stale_guards_and_surfaces_errors() {
+        let mut a = app_with_review_open();
+        // A payload for ANOTHER agent never paints this overlay.
+        a.update(Event::WakeQueue {
+            agent: "su-zzz".into(),
+            result: Ok(vec![pending_wake(1, "other")]),
+        });
+        assert!(a.wake_review.as_ref().unwrap().loading);
+        assert!(a.wake_review.as_ref().unwrap().pending.is_empty());
+        // An act/fetch error shows inline and clears busy/loading.
+        a.update(Event::WakeQueue {
+            agent: "su-aaa".into(),
+            result: Err("boom".into()),
+        });
+        let rev = a.wake_review.as_ref().unwrap();
+        assert!(!rev.loading && !rev.busy);
+        assert_eq!(rev.error.as_deref(), Some("boom"));
     }
 
     fn plan(slug: &str) -> PlanSummary {

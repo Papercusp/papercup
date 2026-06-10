@@ -39,6 +39,15 @@ import type { GymAutoloopConfig, SetAutoloopInput } from './control-plane';
 /** Below this remaining budget an autoloop is not worth (or safe) firing. */
 export const GYM_AUTOLOOP_BUDGET_FLOOR_USD = 0.5;
 
+/**
+ * A row 'running' longer than this is a crash artifact, not a live cycle. The
+ * routine fires every 30 min and runs AT MOST one budget-bounded cycle, so 45
+ * min (1.5 cadences) is far past any legitimate cycle — while staying well
+ * clear of the durable-step replay window (a replayed tick sees a FRESH
+ * 'running' row and must still skip it).
+ */
+export const GYM_AUTOLOOP_STALE_RUNNING_MS = 45 * 60_000;
+
 // ---------------------------------------------------------------------------
 // P-032: triage-routed gym ideas → proposer candidate directions
 // ---------------------------------------------------------------------------
@@ -108,6 +117,22 @@ export function isEligibleAutoloop(cfg: GymAutoloopConfig, budgetFloorUsd: numbe
   if (cfg.status !== 'idle') return false;
   const remaining = remainingBudgetUsd(cfg);
   return remaining !== null && remaining > budgetFloorUsd;
+}
+
+/**
+ * A 'running' row untouched for `staleMs` is a crash artifact: the tick sets
+ * 'running' BEFORE the cycle and settles it after — even on a cycle error — so
+ * the only way a row STAYS 'running' is a host death mid-cycle (deploy swap,
+ * restart, OOM). Without reclaim such a row is never idle ⇒ never re-picked
+ * and the autoloop dead-locks forever (observed live 2026-06-10: stuck
+ * 'running' through four ticks after the 21:00 deploy/rollback window).
+ */
+export function isStaleRunning(
+  cfg: Pick<GymAutoloopConfig, 'status' | 'updatedAt'>,
+  nowMs: number,
+  staleMs: number,
+): boolean {
+  return cfg.status === 'running' && nowMs - cfg.updatedAt >= staleMs;
 }
 
 /** Least-recently-run first (never-run rows lead), slug as the stable tiebreak. */
@@ -180,10 +205,14 @@ export interface GymTickOutcome {
   /** The status the autoloop row settled at ('idle' | 'paused' | 'exhausted'). */
   settledStatus?: string;
   error?: string;
+  /** Slugs whose stale 'running' rows were reclaimed (crash recovery) this tick. */
+  reclaimed?: string[];
 }
 
 export interface GymTickOptions {
   budgetFloorUsd?: number;
+  /** Age past which a 'running' row is reclaimed as a crash artifact. */
+  staleRunningMs?: number;
 }
 
 /**

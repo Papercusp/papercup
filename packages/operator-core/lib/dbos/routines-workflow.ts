@@ -156,6 +156,24 @@ async function routinesTickImpl(): Promise<void> {
       if (!/Duplicat/i.test(String(e))) throw e;
     }
   }
+
+  // start-hive-wake-orchestration P-011 / D-003: the hive liveness sweep — a
+  // deterministic, zero-token dead-man's-switch check riding this existing 30s
+  // tick (NOT a cadence: the wake it may arm is the exception path). Started +
+  // demand + no wake armed + not mid-turn + stale → arm the fallback sleep.
+  // Fail-soft inside the module; one durable step so a crash mid-sweep resumes.
+  await DBOS.runStep(
+    async () => {
+      const { hiveWatchdogSweep } = await import('../hive/watchdog');
+      const results = await hiveWatchdogSweep();
+      for (const res of results) {
+        if (res.outcome === 'armed' || res.outcome === 'staged') {
+          console.warn(`[hive-watchdog] tick ${res.outcome} a fallback wake: ${res.reason}`);
+        }
+      }
+    },
+    { name: 'hive-watchdog-sweep' },
+  );
 }
 
 const routinesTickWorkflow = DBOS.registerWorkflow(routinesTickImpl, { name: 'routinesTick' });

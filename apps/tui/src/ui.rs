@@ -127,6 +127,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             && !app.show_notifs
             && !app.pot_picker_open
             && app.fleet_action_menu.is_none()
+            && app.wake_review.is_none()
         {
             draw_toast(f, t);
         }
@@ -145,6 +146,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_pot_picker(f, app);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
+    } else if let Some(rev) = &app.wake_review {
+        draw_wake_review(f, rev);
     }
 }
 
@@ -2524,6 +2527,81 @@ fn draw_fleet_menu(f: &mut Frame, menu: &crate::app::FleetActionMenu) {
             .block(Theme::popup_block(Line::from(format!(
                 " {} · reach agent ",
                 trunc(&menu.label, 28)
+            )))),
+        area,
+    );
+}
+
+/// The staged-wake review overlay (hive-agent-tabs P-009 / D-005): a manual-mode
+/// agent's pending wakes, oldest-first, with per-wake release / edit & release /
+/// skip. The edit layer swaps the footer for a live input line.
+fn draw_wake_review(f: &mut Frame, rev: &crate::app::WakeReview) {
+    let mut lines: Vec<Line> = Vec::new();
+    if rev.loading {
+        lines.push(Line::from(Span::styled("(loading staged wakes…)", Theme::dim())));
+    } else if let Some(err) = &rev.error {
+        lines.push(Line::from(Span::styled(format!("error: {err}"), Theme::danger())));
+        lines.push(Line::from(""));
+    }
+    if !rev.loading && rev.pending.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no staged wakes — incoming wakes stage here while the agent is in manual mode)",
+            Theme::dim(),
+        )));
+    }
+    for (i, pw) in rev.pending.iter().enumerate() {
+        let marker = if i == rev.sel { "> " } else { "  " };
+        let summary = pw.summary.clone().unwrap_or_else(|| "(no summary)".into());
+        let src = pw.source.clone().unwrap_or_default();
+        let mut spans = vec![
+            Span::raw(marker.to_string()),
+            Span::styled(format!("#{} ", pw.id), Theme::dim()),
+            Span::raw(trunc(&summary, 48).to_string()),
+        ];
+        if !src.is_empty() {
+            spans.push(Span::styled(format!("  · {}", trunc(&src, 16)), Theme::dim()));
+        }
+        let line = Line::from(spans);
+        lines.push(if i == rev.sel { line.style(Theme::selected()) } else { line });
+    }
+    lines.push(Line::from(""));
+    if let Some(buf) = &rev.edit {
+        // Edit layer: the input line + its own footer.
+        lines.push(Line::from(vec![
+            Span::styled("edit: ", Theme::title_active()),
+            Span::raw(buf.clone()),
+            Span::styled("▌", Theme::dim()),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "Enter release edited · Esc cancel edit",
+            Theme::dim(),
+        )));
+    } else {
+        let busy = if rev.busy { " · working…" } else { "" };
+        lines.push(Line::from(Span::styled(
+            format!("r/Enter release · e edit & release · s skip · j/k select · Esc close{busy}"),
+            Theme::dim(),
+        )));
+    }
+
+    let h = (lines.len() as u16 + 2).min(f.area().height);
+    let full = f.area();
+    let w = (full.width as u32 * 64 / 100).clamp(44, 84) as u16;
+    let area = Rect {
+        x: full.x + (full.width.saturating_sub(w)) / 2,
+        y: full.y + (full.height.saturating_sub(h)) / 2,
+        width: w.max(1),
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(
+                " {} · staged wakes ({}) ",
+                trunc(&rev.label, 24),
+                rev.pending.len()
             )))),
         area,
     );

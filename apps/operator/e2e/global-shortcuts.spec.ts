@@ -83,7 +83,10 @@ async function gotoAdv(page: Page, search: string): Promise<boolean> {
   expect([200, 304]).toContain(res?.status() ?? 0);
   return page
     .getByRole('tablist', { name: 'Adv sections' })
-    .waitFor({ state: 'visible', timeout: 30_000 })
+    // 60s, not the sibling specs' 30s: a cold Vite dev server transforming
+    // the adv shell for 4 parallel workers routinely needs >30s for the
+    // first paint, and this guard skipping = the whole test silently gone.
+    .waitFor({ state: 'visible', timeout: 60_000 })
     .then(() => true)
     .catch(() => false);
 }
@@ -138,7 +141,10 @@ test.describe('global keyboard shortcuts (dispatcher → router/nuqs effects)', 
     });
     expect([200, 304]).toContain(res?.status() ?? 0);
     const sheetMounted = await cheatSheet(page)
-      .waitFor({ state: 'visible', timeout: 30_000 })
+      // 60s, not the sibling specs' 30s: a cold Vite dev server transforming
+    // the adv shell for 4 parallel workers routinely needs >30s for the
+    // first paint, and this guard skipping = the whole test silently gone.
+    .waitFor({ state: 'visible', timeout: 60_000 })
       .then(() => true)
       .catch(() => false);
     test.skip(!sheetMounted && !(await page.locator('#root *').first().isVisible().catch(() => false)), SKIP_MSG);

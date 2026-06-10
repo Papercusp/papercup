@@ -785,6 +785,16 @@ defineTestDomain({
         'packages/operator-core/lib/gym/**/*.test.tsx',
         'packages/operator-core/lib/gym-*.test.ts',
       ] },
+    // Self-contained boot E2Es (testcontainer PG + a dedicated headless
+    // gym-operator; no live operator needed) — surfaced as runners.
+    { id: 'e2e', label: 'Boot E2E', runners: [
+        {
+          kind: 'node',
+          cmd: 'npx',
+          args: ['tsx', 'packages/operator-core/lib/gym/wake-mode-run.ts'],
+          label: 'wake-mode autonomous chain links 1→4 (fake, zero-LLM — hive-loop-e2e P-006)',
+        },
+      ] },
   ],
 });
 
