@@ -42,6 +42,7 @@ export default defineConfig({
         section('Design', 'design'),
         section('Desktop', 'desktop'),
         section('Endpoint System', 'endpoint-system'),
+        section('Harness', 'harness'),
         section('Implementation', 'implementation'),
         section('Plugins', 'plugins'),
         section('PostHog', 'posthog'),

@@ -56,3 +56,10 @@ packages/tooldef-mcp/dist/
 # the plans tools, not these files. (2026-06-06: a full `plans:export --toDir`
 # materialized all 293; this keeps them local-and-readable but out of git.)
 apps/operator/docs/plans/**/*.md
+
+# On-demand generated API projections (docs-and-memory-as-projections P-004):
+# NOT committed by design — they cold-import the full tool registry / re-doc
+# every lib export, so a committed copy churns on every tool or export change
+# fleet-wide. Regenerate with `npm run gen:openapi` / `npm run gen:lib-api`.
+.papercusp/openapi.json
+.papercusp/lib-api/

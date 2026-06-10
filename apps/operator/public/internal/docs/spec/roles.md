@@ -26,8 +26,12 @@ breakdown). The canonical role ids live in AGENT\_ROLES
 (packages/agent-mcp/src/role-config.ts): the pipeline is
 scoper → architect → worker → validator → reviewer → debugger →
 documenter → curator, plus the cross-cutting orchestrator,
-operator, and oracle roles. There is no
-planner role id today.
+operator, and oracle roles. A
+planner role id exists since 2026-06-09, but it is an
+interactive plan-authoring session (hive-agent-tabs), not this
+spec-level Planner pipeline role. Full current registry:
+Roles — the operational
+reference.
 
 Worker
 Every iteration with a `todo`/`failing` task

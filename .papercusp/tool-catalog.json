@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 362,
+  "count": 368,
   "tools": [
     {
       "name": "accounts:list",
@@ -1878,6 +1878,66 @@
       }
     },
     {
+      "name": "coord:wake-mode",
+      "http": {
+        "path": "/api/agent-tools/coord/wake-mode",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set an agent's wake mode — auto (wakes fire immediately) or manual (wakes are staged for the owner to release/edit/skip). Omit `mode` to read; omit `agent` to read/set the global default. The pause/edit gate (hive-agent-tabs D-005).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel"
+      ],
+      "guidance": {
+        "when": "Switching an agent (or the default) between auto and manual wake delivery — e.g. pausing a bee's auto-injected turns to review them first, or switching back.",
+        "notWhen": "Reading who's online or what an agent is doing — that's coord:presence / fleet:assignments. Reviewing the staged wakes themselves — that's coord:wake-queue."
+      }
+    },
+    {
+      "name": "coord:wake-queue",
+      "http": {
+        "path": "/api/agent-tools/coord/wake-queue",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Review a manual-mode agent's STAGED wakes: list them, release one (deliver as-is or edited as the agent's next turn), or skip one (discard). The pause/edit gate's review surface (hive-agent-tabs D-005 / P-009).",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel"
+      ],
+      "guidance": {
+        "when": "Reviewing a manual-mode agent's staged wakes from its pane — releasing the ones to deliver (optionally edited) and skipping the rest.",
+        "notWhen": "An auto-mode agent — its wakes fire immediately, nothing is staged. Changing the mode itself — that's coord:wake-mode."
+      }
+    },
+    {
       "name": "coord:watermark",
       "http": {
         "path": "/api/agent-tools/coord/watermark",
@@ -3624,6 +3684,32 @@
       }
     },
     {
+      "name": "fleet:sandbox_deps",
+      "http": {
+        "path": "/api/agent-tools/fleet/sandbox_deps",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Check the host dependencies of the fleet spawn sandbox (bubblewrap/socat/srt, the Ubuntu 24.04+ AppArmor userns profile, container nesting, platform support). Read-only; returns per-check verdicts with remedies.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "bee",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Fleet spawns fail at sandbox startup, before enabling the sandbox on a new host/deployment, or when auditing a frame/VM before placing work on it.",
+        "notWhen": "Diagnosing a running service being down (use dev:service_health) or a spawn failing for non-sandbox reasons (read its run log first).",
+        "chaining": "fleet:sandbox_deps {} → fix the failed checks via their remedy lines (or opt the host out with PAPERCUSP_FLEET_SANDBOX=0) → retry the spawn."
+      }
+    },
+    {
       "name": "fleet:selected_bee",
       "http": {
         "path": "/api/agent-tools/fleet/selected_bee",
@@ -4608,6 +4694,70 @@
       }
     },
     {
+      "name": "hive:pause",
+      "http": {
+        "path": "/api/agent-tools/hive/pause",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "PAUSE the hive: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Queen's pending time wake. Optionally drain live bees gracefully. Resume with hive:start.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user clicks Pause Hive / asks to freeze autonomous operation, or you need the colony quiet (incident, review, cost control).",
+        "notWhen": "To stop ONE bee — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.",
+        "chaining": "hive:pause { drainBees:true } for the harder stop → coord:wake-queue to review staged wakes → hive:start to resume."
+      }
+    },
+    {
+      "name": "hive:start",
+      "http": {
+        "path": "/api/agent-tools/hive/start",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "START the hive (the global control, distinct from a per-plan Start): persist hive_started=true, re-affirm the Queen's default event-wake subscriptions (plan-started / work-item-created / escalation), set the global wake-mode to auto, and wake the Queen now (floor-debounced). The liveness watchdog holds \"a wake is always armed\" from here until hive:pause.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user clicks Start Hive / asks to boot the colony, or you are bringing a paused hive back to autonomous operation.",
+        "notWhen": "To wake the Queen once without changing the started state — hive:wake. To start one plan — plans:start. To create a hive — hive:create.",
+        "chaining": "hive:status to verify (started, subscriptions, next wake); hive:pause to suspend."
+      }
+    },
+    {
       "name": "hive:status",
       "http": {
         "path": "/api/agent-tools/hive/status",
@@ -4615,7 +4765,7 @@
           "POST"
         ]
       },
-      "description": "The Hive operator's current wake declaration: the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, and the floor. Read-only.",
+      "description": "The Hive operator's current state: started/paused (the Start-Hive bit), the pending time wake (one-shot routine), event subscriptions + live rule ids, last wake, the floor, and the watchdog health signal (fallback fires in 24h). Read-only.",
       "capabilities": [
         "harness:read"
       ],
@@ -4858,6 +5008,38 @@
         "when": "To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen's judgment. (P-010) Pass harnessSlug to triage a specific Hive's ideas. (P-012) Type-routing: product→place as work-item in target; process/prompt→papercusp gate/gym.",
         "notWhen": "You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.",
         "chaining": "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas."
+      }
+    },
+    {
+      "name": "improvements:watchdog-status",
+      "http": {
+        "path": "/api/agent-tools/improvements/watchdog-status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary. Read-only — the diagnostic surface over harness_shared.watchdog_ticks.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "bee",
+        "sentinel"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for \"why did/didn't the watchdog file X?\".",
+        "notWhen": "You want the captured backlog itself — improvements:digest. You want one improvement — issues:get { id }. You want to file one — improvements:capture.",
+        "chaining": "improvements:watchdog-status → issues:get on a captured/self-escalated id → improvements:digest for the full backlog triage."
       }
     },
     {
@@ -5863,7 +6045,7 @@
           "POST"
         ]
       },
-      "description": "Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (identity / preference / project / correction). For transient state, use coord — not memory.",
+      "description": "Store a STABLE fact about the user into persistent memory. Use one of 4 kinds (user / feedback / project / reference). For transient state, use coord — not memory.",
       "capabilities": [
         "memory:write"
       ],

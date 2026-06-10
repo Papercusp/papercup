@@ -3,7 +3,7 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createInferenceGateway, estimateTokens, parseRateReset } from './gateway';
-import { RateLimitGovernor } from '@papercusp/papercup-shared/agent';
+import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercup-shared/agent';
 
 interface Upstream {
   server: http.Server;
@@ -179,6 +179,35 @@ test('non-/v1 paths 404', async () => {
   await boot((_req, res) => res.end('{}'));
   const res = await ask('/nope');
   assert.equal(res.status, 404);
+});
+
+test('default governor is ACCOUNT-KEYED so a gateway 429 feeds the account-pool observer (P-017)', async () => {
+  // No injected governorFor → the gateway must resolve the SAME per-account bucket
+  // (anthropic:<class>@<accountId>) that initAccountScaleObserver listens on, so an upstream
+  // 429 records against THIS account's pool projection (and only sustained exhaustion scales out).
+  resetGovernorRegistry();
+  const resetSec = Math.round(Date.now() / 1000) + 1800;
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      'anthropic-ratelimit-unified-5h-status': 'rejected',
+      'anthropic-ratelimit-unified-5h-reset': String(resetSec),
+    });
+    res.end('{"type":"error","error":{"type":"rate_limit_error"}}');
+  });
+  gw = createInferenceGateway({
+    accountId: 'acct-keyed',
+    upstreamBase: upstream.base,
+    token: async () => 'tok',
+    maxQueueWaitMs: 50,
+    // NOTE: no governorFor — exercise the real account-keyed resolution path.
+  });
+  port = await gw.listen(0);
+  await post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] });
+  // The account-keyed bucket the observer watches is now paused by the gateway's penalize().
+  const acctBucket = getGovernor('anthropic', 'opus', undefined, 'acct-keyed');
+  assert.ok(acctBucket.state.pausedUntil > Date.now(), 'gateway 429 paused the per-account governor bucket');
+  resetGovernorRegistry();
 });
 
 test('priority queue bounds forwarded concurrency (P-011 wiring)', async () => {

@@ -67,3 +67,45 @@ Their company-as-org-chart abstraction. CEO → CTO → engineers is opinionated
 Their goal hierarchy at the company level (CEO breakdown → CTO breakdown → …). Adopt parent-link on tasks (yes), but not the org structure.
 
 Mobile UX as a first-class concern. Useful for them (operators monitoring 20 companies). Papercusp's reference runtime is ops-shaped, not mobile-shaped. May change.
+
+### 13.5 The original Claude-Code framework survey (2026-04, historical)
+
+Before the first harness generation was written, 11+ Claude-Code agent
+frameworks were surveyed. This is the survey that shaped the original design;
+it's preserved here because the borrowed patterns still run in today's engine
+(each mapped below). Star counts, project status, and authorship are as of the
+survey date.
+
+| Framework                     | Core idea                                     | Pattern adopted                                                   |
+| ----------------------------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| gstack                        | 23 role-based slash commands, "boil the lake" | "Boil the lake" (do fewer things perfectly) in role prompts       |
+| Superpowers                   | 7-phase TDD iron law                          | TDD iron law in the validator                                     |
+| GSD                           | Per-phase orchestrators, state-to-disk        | Fresh contexts + cache-stable prompts                             |
+| Agentwise                     | 8 specialist agents in parallel + dashboard   | Real-time dashboard                                               |
+| Hermes                        | Autonomous orchestration with checkpoints     | Named checkpoints *(since deprecated → `needs-human` plan items)* |
+| Multi-Agent Ralph Loop        | MemPalace 4-layer memory                      | Layered memory (raw → summary → MEMORY → identity)                |
+| ComposioHQ Agent Orchestrator | Git worktrees per parallel agent              | Worktrees per lane *(now transient scratch worktrees)*            |
+| OpenSwarm                     | Linear-driven Worker/Reviewer pair            | rejected — no external task source                                |
+| Conductor                     | Two-mode parallelism                          | Competition mode *(since removed → work-item redundancy)*         |
+| claudecode-orchestrator       | "Quality through truth" + service smoke-test  | Evidence rule + smoke-test gate                                   |
+| MOLTRON                       | Self-evolving Skills.md                       | `TRICK:` observation-promotion convention                         |
+
+The ecosystem clustered into **skill packs** (gstack, Superpowers, GSD —
+human as orchestrator, one task at a time) and **multi-agent runtimes**
+(Agentwise, Hermes, Conductor, ComposioHQ — parallel agents, but each tied to
+*their* opinion of how the org should work). The harness took a third
+position: a small supervised loop with no opinion about the company, only the
+agent runtime — a bet the current blueprint-driven engine still embodies.
+
+Patterns rejected then that stayed rejected: external task sources
+(Linear/Notion), vector-DB memory for the inner loop, tmux/Discord/Slack as
+control surfaces, agents rewriting their own prompts (audit + determinism
+won), and AutoGPT-style infinite loops without decision verbs.
+
+Where the surviving inventions live now:
+[decision telemetry + ghost rate](/internal/docs/harness/decisions-timeline),
+the [validator's evidence rule](/internal/docs/harness/roles),
+[fresh contexts](/internal/docs/harness/decisions/fresh-contexts) +
+[prompt-cache discipline](/internal/docs/harness/decisions/prompt-cache),
+the [curator](/internal/docs/harness/decisions/curator), and the
+[full decision log](/internal/docs/harness/decisions/log).
