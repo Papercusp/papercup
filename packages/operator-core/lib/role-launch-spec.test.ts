@@ -10,11 +10,17 @@ const assembleRolePromptMock = vi.fn();
 const resolvePromptFileMock = vi.fn((_ctx: unknown, role: string): string | null =>
   role === 'planner' ? '/h/prompts/planner.md' : null,
 );
+const resolvePromptFilesMock = vi.fn((_ctx: unknown, role: string): string[] => {
+  const file = resolvePromptFileMock(_ctx, role);
+  return file ? [file] : [];
+});
 
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
   resolvePromptFile: (...args: unknown[]) =>
     resolvePromptFileMock(...(args as [unknown, string])),
+  resolvePromptFiles: (...args: unknown[]) =>
+    resolvePromptFilesMock(...(args as [unknown, string])),
 }));
 vi.mock('@papercusp/harness/paths', () => ({
   harnessRoot: vi.fn(() => '/h'),
