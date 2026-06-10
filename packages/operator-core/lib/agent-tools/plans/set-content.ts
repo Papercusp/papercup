@@ -81,14 +81,27 @@ const argsSchema = z.object({
     .describe(
       'Optional — the *why* behind this rewrite: the rejected alternative, the constraint that forced it, the argument that settled it. Stored on the plan revision and always loaded as context for any agent later launched from this plan (D-009). State it for a substantive rewrite; a trivial fix may omit it.',
     ),
+  allowShrink: z
+    .boolean()
+    .optional()
+    .describe(
+      'A body that shrinks the plan to under 20% of its current size is rejected as a probable mass deletion (`suspicious_shrink`) unless this is true. Pass it only when the shrink is intentional — e.g. archiving prose that moved elsewhere.',
+    ),
 });
 
 export type SetContentValue =
   | { ok: true; slug: string; contentHash: string }
   | { ok: false; code: 'not_found' }
   | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
+  | { ok: false; code: 'suspicious_shrink'; currentLength: number; proposedLength: number }
   | { ok: false; code: 'would_orphan_frontmatter' }
   | { ok: false; code: 'lint_failed'; errors: LintFinding[] };
+
+/** A proposed body this much smaller than the live one is treated as a
+ *  probable mass deletion (truncated paste, wrong-plan write, model
+ *  hallucinating a fresh doc) and rejected unless the caller passes
+ *  `allowShrink: true` (EI-83 / audit P-040). */
+export const SUSPICIOUS_SHRINK_RATIO = 0.2;
 
 /**
  * The pure CAS + legacy-boundary + lint decision for a set-content
@@ -103,7 +116,11 @@ export async function evaluateSetContent(
   content: string,
   slug: string,
   expectedHash: string | undefined,
-  opts: { expectedVersion?: number; meta?: { version: number; contentHash: string } | null } = {},
+  opts: {
+    expectedVersion?: number;
+    meta?: { version: number; contentHash: string } | null;
+    allowShrink?: boolean;
+  } = {},
 ): Promise<{ newBody: string | null; value: SetContentValue }> {
   if (current === null) {
     return { newBody: null, value: { ok: false, code: 'not_found' } };
@@ -124,6 +141,25 @@ export async function evaluateSetContent(
     return {
       newBody: null,
       value: { ok: false, code: 'stale', currentContent: current, currentHash, currentVersion },
+    };
+  }
+
+  // 1b. Mass-deletion guard (EI-83 / audit P-040) — a body that shrinks the
+  //     plan past SUSPICIOUS_SHRINK_RATIO is far more often a truncated
+  //     paste or a wrong-plan write than an intentional rewrite. Require
+  //     the caller to say so explicitly.
+  if (
+    !opts.allowShrink &&
+    content.length < current.length * SUSPICIOUS_SHRINK_RATIO
+  ) {
+    return {
+      newBody: null,
+      value: {
+        ok: false,
+        code: 'suspicious_shrink',
+        currentLength: current.length,
+        proposedLength: content.length,
+      },
     };
   }
 
@@ -190,6 +226,7 @@ export default defineTool({
         evaluateSetContent(current, args.content, args.slug, args.expectedHash, {
           expectedVersion: args.expectedVersion,
           meta,
+          allowShrink: args.allowShrink,
         }),
     );
 
@@ -224,6 +261,11 @@ export default defineTool({
         if (v.currentVersion != null) payload.currentVersion = v.currentVersion;
       } else if (v.code === 'lint_failed') {
         payload.errors = v.errors;
+      } else if (v.code === 'suspicious_shrink') {
+        payload.currentLength = v.currentLength;
+        payload.proposedLength = v.proposedLength;
+        payload.hint =
+          'The proposed body is under 20% of the live plan — looks like a mass deletion. If intentional, retry with allowShrink: true.';
       }
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(payload) }],

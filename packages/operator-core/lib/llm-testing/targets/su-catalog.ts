@@ -113,6 +113,29 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: "Update a plan's ## Now (state + next).",
     input: obj({ slug: { type: 'string' }, state: { type: 'string' }, next: { type: 'string' }, ...HARNESS_ARG }, ['slug']),
   },
+  {
+    name: 'plans:set-status',
+    description:
+      "Flip one plan item's status. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); done/dropped releases your claim.",
+    input: obj({
+      slug: { type: 'string' },
+      itemId: { type: 'string', description: 'P-NNN' },
+      status: { type: 'string', enum: ['todo', 'wip', 'blocked', 'needs-human', 'done', 'dropped'] },
+      note: { type: 'string' },
+      ...HARNESS_ARG,
+    }, ['slug', 'itemId', 'status']),
+  },
+  {
+    name: 'plan_items:claim',
+    description:
+      'Take the live, heartbeat-leased grip on a plan item — what you call when you actually START it.',
+    input: obj({
+      plan: { type: 'string', description: 'plan slug' },
+      item: { type: 'string', description: 'plan-item id (P-NNN)' },
+      intent: { type: 'string', description: 'one line on what you are doing' },
+      harness: { type: 'string' },
+    }, ['plan', 'item']),
+  },
   // --- work items (the unified work surface) ---
   {
     name: 'work_items:list',
@@ -187,11 +210,19 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // --- coordination (live working memory) ---
   {
     name: 'coord:declare-intent',
-    description: 'Declare what you are working on right now (intent, files, plan slug) so peers see you.',
+    description:
+      'Declare what you are working on right now (intent, files, plan slug) so peers see you. Passing `items` CLAIMS those plan items as your lane (requires current_plan_slug) — an unclaimed lane is invisible to the Queen and peers.',
     input: obj({
       intent: { type: 'string' },
       current_files: { type: 'array', items: { type: 'string' } },
       current_plan_slug: { type: 'string' },
+      items: {
+        type: 'array',
+        items: { type: 'string', pattern: '^P-\\d{3,}$' },
+        description:
+          'Plan items you are taking (your LANE) — each is auto-claimed; requires current_plan_slug. Pass [] to release the lane.',
+      },
+      harness: { type: 'string' },
     }, ['intent']),
   },
   {

@@ -64,6 +64,12 @@ export interface HandleAuthorityRpcOpts {
   /** Re-verify THIS machine is the authority for the harness before running the
    *  op (refuses a mis-routed op during a failover gap). Default: allow. */
   verifyIsAuthority?: (harnessSlug: string) => Promise<boolean> | boolean;
+  /**
+   * Dispatch against these handlers instead of the process-global registry.
+   * Lets a multi-instance rig (cross-machine E2E) give each simulated machine
+   * its own handler set — a single process can only hold one global registry.
+   */
+  handlers?: Record<string, AuthorityOpHandler>;
 }
 
 /**
@@ -76,7 +82,7 @@ export async function handleAuthorityRpc(
   env: AuthorityRpcEnvelope,
   opts: HandleAuthorityRpcOpts = {},
 ): Promise<HandleAuthorityRpcResult> {
-  const handler = _handlers.get(env.kind);
+  const handler = opts.handlers ? opts.handlers[env.kind] : _handlers.get(env.kind);
   if (!handler) return { ok: false, error: 'unknown_kind', message: `no handler for kind '${env.kind}'` };
 
   if (opts.verifyIsAuthority) {

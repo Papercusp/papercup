@@ -85,51 +85,68 @@ export const FILE_LOCK_OP_KINDS = {
 } as const;
 
 /**
+ * Build the file-lock authority op handlers bound to `coordinator` — the same
+ * validation + dispatch {@link registerFileLockAuthorityOps} installs globally,
+ * as a plain map. Lets a multi-instance rig (e.g. the cross-machine failover
+ * E2E) run the REAL handlers against per-instance stores, where the process-
+ * global registry can only model one machine.
+ */
+export function buildFileLockAuthorityHandlers(
+  coordinator: FileLockCoordinator,
+): Record<string, (payload: unknown, harnessSlug: string) => Promise<unknown>> {
+  return {
+    [FILE_LOCK_OP_KINDS.acquire]: async (payload) => {
+      const p = payload as Partial<FileLockAcquireParams>;
+      if (
+        !p ||
+        typeof p.owner !== 'string' ||
+        !Array.isArray(p.paths) ||
+        typeof p.intent !== 'string' ||
+        typeof p.coordinationDomain !== 'string'
+      ) {
+        throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
+      }
+      return coordinator.acquire({
+        owner: p.owner,
+        ownerLabel: p.ownerLabel,
+        paths: p.paths,
+        intent: p.intent,
+        ttlSec: typeof p.ttlSec === 'number' ? p.ttlSec : 1200,
+        waitMaxSec: p.waitMaxSec,
+        coordinationDomain: p.coordinationDomain,
+      });
+    },
+
+    [FILE_LOCK_OP_KINDS.release]: async (payload) => {
+      const p = payload as Partial<FileLockReleaseParams>;
+      if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
+        throw new Error('lock.release: invalid payload (owner, coordinationDomain required)');
+      }
+      return coordinator.release({
+        owner: p.owner,
+        lockId: p.lockId,
+        paths: p.paths,
+        allMine: p.allMine,
+        coordinationDomain: p.coordinationDomain,
+      });
+    },
+
+    [FILE_LOCK_OP_KINDS.queue]: async (payload) => {
+      const p = payload as Partial<FileLockQueueParams>;
+      if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
+        throw new Error('lock.queue: invalid payload (owner, coordinationDomain required)');
+      }
+      return coordinator.queue({ owner: p.owner, paths: p.paths, coordinationDomain: p.coordinationDomain });
+    },
+  };
+}
+
+/**
  * Register the file-lock authority op handlers against `coordinator`. Call ONCE
  * at boot. Each handler validates the payload shape, then runs the op locally.
  */
 export function registerFileLockAuthorityOps(coordinator: FileLockCoordinator): void {
-  registerAuthorityOp(FILE_LOCK_OP_KINDS.acquire, async (payload) => {
-    const p = payload as Partial<FileLockAcquireParams>;
-    if (
-      !p ||
-      typeof p.owner !== 'string' ||
-      !Array.isArray(p.paths) ||
-      typeof p.intent !== 'string' ||
-      typeof p.coordinationDomain !== 'string'
-    ) {
-      throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
-    }
-    return coordinator.acquire({
-      owner: p.owner,
-      ownerLabel: p.ownerLabel,
-      paths: p.paths,
-      intent: p.intent,
-      ttlSec: typeof p.ttlSec === 'number' ? p.ttlSec : 1200,
-      waitMaxSec: p.waitMaxSec,
-      coordinationDomain: p.coordinationDomain,
-    });
-  });
-
-  registerAuthorityOp(FILE_LOCK_OP_KINDS.release, async (payload) => {
-    const p = payload as Partial<FileLockReleaseParams>;
-    if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
-      throw new Error('lock.release: invalid payload (owner, coordinationDomain required)');
-    }
-    return coordinator.release({
-      owner: p.owner,
-      lockId: p.lockId,
-      paths: p.paths,
-      allMine: p.allMine,
-      coordinationDomain: p.coordinationDomain,
-    });
-  });
-
-  registerAuthorityOp(FILE_LOCK_OP_KINDS.queue, async (payload) => {
-    const p = payload as Partial<FileLockQueueParams>;
-    if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
-      throw new Error('lock.queue: invalid payload (owner, coordinationDomain required)');
-    }
-    return coordinator.queue({ owner: p.owner, paths: p.paths, coordinationDomain: p.coordinationDomain });
-  });
+  for (const [kind, handler] of Object.entries(buildFileLockAuthorityHandlers(coordinator))) {
+    registerAuthorityOp(kind, handler);
+  }
 }

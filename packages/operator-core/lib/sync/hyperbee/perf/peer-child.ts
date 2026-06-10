@@ -248,14 +248,17 @@ async function main(): Promise<void> {
 
     // Mesh-readiness: emit `admitted` once this peer has admitted at least one
     // remote log (the parent gates the load phase on every reader reporting it).
+    // Event-driven via handle.onAdmitted (audit P-022) — no 100ms polling. The
+    // immediate check covers a mesh that formed before this listener registered.
     let admittedReported = false;
-    const admissionTimer = setInterval(() => {
+    const reportAdmitted = () => {
       if (!admittedReported && handle!.admitted.size >= 2) {
         admittedReported = true;
         out({ evt: 'admitted', size: handle!.admitted.size });
       }
-    }, 100);
-    admissionTimer.unref();
+    };
+    const offAdmitted = handle.onAdmitted(reportAdmitted);
+    reportAdmitted();
 
     // Reader: 1Hz progress so the parent can watch catch-up.
     const progressTimer =

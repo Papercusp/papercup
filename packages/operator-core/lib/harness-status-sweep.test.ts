@@ -38,3 +38,17 @@ describe('harness-status-sweep: module shape', () => {
     expect(typeof _internals.tick).toBe('function');
   });
 });
+
+describe('harness-status-sweep: schemaIdentForSlug (audit P-029)', () => {
+  const { schemaIdentForSlug } = _internals;
+
+  it('maps the canonical slug grammar like migration 044', () => {
+    expect(schemaIdentForSlug('my-cool-harness')).toBe('harness_my_cool_harness');
+  });
+
+  it('never lets a non-[a-zA-Z0-9_] char into the identifier', () => {
+    for (const hostile of ['a.b', 'a"b', 'a;DROP TABLE x;--', 'a b', 'a/b', 'a$b']) {
+      expect(schemaIdentForSlug(hostile)).toMatch(/^harness_[a-zA-Z0-9_]+$/);
+    }
+  });
+});

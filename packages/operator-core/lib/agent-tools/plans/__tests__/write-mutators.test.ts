@@ -242,6 +242,85 @@ status: draft
     expect(out).toContain('## Decisions');
     expect(out).toContain('### D-001 — First');
   });
+
+  it('never appends into a suffixed heading like "## Decisions (settled)" (EI-141 / audit P-041)', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions (settled)
+
+### D-001 — old settled decision
+Date: 2026-05-01
+settled body
+
+## Next steps
+
+stuff
+`;
+    const out = appendDecisionToBody(doc, 'D-002', 'Fresh', 'Fresh body.', '2026-05-20', []);
+    // The suffixed section is untouched; a REAL ## Decisions section is created.
+    const settledSection = out.slice(
+      out.indexOf('## Decisions (settled)'),
+      out.indexOf('## Next steps'),
+    );
+    expect(settledSection).not.toContain('D-002');
+    expect(out).toMatch(/^## Decisions$/m);
+    expect(out).toContain('### D-002 — Fresh');
+  });
+
+  it('still matches a numbered Decisions heading ("## 5. Decisions")', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## 5. Decisions
+
+### D-001 — first
+Date: 2026-05-01
+body
+`;
+    const out = appendDecisionToBody(doc, 'D-002', 'Second', 'Body.', '2026-05-20', []);
+    // Appended into the existing numbered section — no new plain section.
+    expect(out).not.toMatch(/^## Decisions$/m);
+    expect(out.indexOf('### D-002')).toBeGreaterThan(out.indexOf('## 5. Decisions'));
+  });
+
+  it('never stacks blank lines at the insert point (EI-141 / audit P-041)', () => {
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions
+
+### D-001 — first
+Date: 2026-05-01
+body
+
+## Next steps
+
+stuff
+`;
+    // The splice point above "## Next steps" already sits on a blank line;
+    // pre-fix the block's leading \n stacked a second one.
+    const out = appendDecisionToBody(doc, 'D-002', 'Second', 'Body.', '2026-05-20', []);
+    expect(out).not.toContain('\n\n\n');
+    // Repeated appends stay stable too (the historical drift accumulator).
+    const out2 = appendDecisionToBody(out, 'D-003', 'Third', 'Body.', '2026-05-20', []);
+    expect(out2).not.toContain('\n\n\n');
+  });
 });
 
 describe('normalizeAffects (cross-plan affects[])', () => {

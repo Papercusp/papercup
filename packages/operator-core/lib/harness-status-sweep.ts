@@ -80,6 +80,15 @@ function pidIsAlive(pid: number): boolean {
  * than LANE_STALE_MS (run.sh would have either updated them or marked
  * them done by now).
  */
+/**
+ * Ident hygiene (audit P-029): the slug comes from the registry, but it
+ * still feeds a SQL identifier in sql.unsafe — sanitize to one plain
+ * segment like resources/harness/issues.ts does.
+ */
+function schemaIdentForSlug(slug: string): string {
+  return `harness_${slug.replace(/[^a-z0-9_]/gi, '_')}`;
+}
+
 async function sweepAgentRunsRunning(): Promise<void> {
   const reg = await loadHarnessRegistry();
   const projects = reg.projects ?? [];
@@ -89,10 +98,7 @@ async function sweepAgentRunsRunning(): Promise<void> {
       // Per-harness schema reach via search_path. Use postgres-js raw exec
       // on the org pool with set_config for the search path.
       const { sql } = getOrgPg();
-      // Ident hygiene (audit P-029): the slug comes from the registry, but it
-      // still feeds a SQL identifier — sanitize to one plain segment like
-      // resources/harness/issues.ts does.
-      const schema = `harness_${proj.slug.replace(/[^a-z0-9_]/gi, '_')}`;
+      const schema = schemaIdentForSlug(proj.slug);
       // Skip if the schema doesn't exist yet (uninstalled harness).
       const exists = await sql<{ exists: boolean }[]>`
         SELECT EXISTS (
@@ -220,6 +226,7 @@ export function stopHarnessStatusSweep(): void {
 /** Test-only hook so a unit test can trigger one tick deterministically. */
 export const _internals = {
   pidIsAlive,
+  schemaIdentForSlug,
   sweepAgentRunsRunning,
   sweepHarnessLanes,
   tick,

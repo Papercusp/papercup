@@ -337,6 +337,14 @@ export interface BootedHarnessHandle {
    */
   onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult>;
   /**
+   * Subscribe to peer admissions (audit P-022): fires once per newly-admitted
+   * remote log with the log key + the post-admission admitted-set size.
+   * Replaces 100ms `admitted.size` polling in the perf rigs. Returns an
+   * unsubscribe fn. Best-effort: a throwing listener is swallowed and never
+   * breaks admission or the merge pass.
+   */
+  onAdmitted(listener: (info: { logKeyHex: string; admittedSize: number }) => void): () => void;
+  /**
    * Revoke a device pubkey (D-004). Revocation = drop the pubkey from the
    * admitted set + stop reading its log:
    *   (a) add the pubkey to the `revoked` set so a re-announce is refused
@@ -712,13 +720,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
 
   // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
-  //   1. update() every REMOTE log first (the spike found remote `length`
+  //   1. drain queued admissions (audit P-022 — see admissionQueue below).
+  //   2. update() every REMOTE log first (the spike found remote `length`
   //      is stale until update() — own log is always current so skip it).
-  //   2. version-gate each log (drop unknown-newer ops, D-024).
-  //   3. mergeAdmittedLogs → LWW → existing projection writers → PG.
-  // Serialized via `merging` so the poll + on-admit + initial passes don't
-  // race a half-applied merge.
-  let merging = false;
+  //   3. version-gate each log (drop unknown-newer ops, D-024).
+  //   4. mergeAdmittedLogs → LWW → existing projection writers → PG.
+  // Serialized via the `inflightMerge` gate so the poll + on-admit + initial
+  // passes don't race a half-applied merge.
   let stopped = false;
   // Teardown hooks (Stage 5 outbox drain stopper, etc.) run once on close().
   const closeHooks = new Set<() => void | Promise<void>>();
@@ -738,10 +746,107 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // re-merge did after a drop). A log ADDITION is additive (its cursor starts
   // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
   let mergeCursor = createMergeCursor();
-  async function mergeNow(): Promise<number> {
-    if (merging || stopped) return 0;
-    merging = true;
+
+  // ── Admission queue (audit P-022, EI-115/EI-116 contributor) ── admitPeer
+  // used to mutate admitted/pubkeyToLogKey/admittedIdentities directly while a
+  // merge pass could be iterating them, and its mergeNow() no-op'd against an
+  // in-flight pass, deferring the newly-admitted log to the next 1s poll.
+  // Admissions now QUEUE here and are drained at the top of each pass under
+  // the merge gate; mergeNow coalesces (a request landing mid-pass re-runs the
+  // pass before the gate releases), so awaiting mergeNow after a queue push
+  // always covers that admission.
+  const admissionQueue: SignedAnnounce[] = [];
+
+  // 'admitted' listeners (audit P-022): consumers (perf rigs) previously
+  // polled handle.admitted.size on a 100ms timer to detect mesh-readiness —
+  // emit directly at admission instead. Best-effort: a throwing listener
+  // never breaks admission or the merge pass.
+  const admittedListeners = new Set<
+    (info: { logKeyHex: string; admittedSize: number }) => void
+  >();
+  function emitAdmitted(logKeyHex: string): void {
+    for (const listener of [...admittedListeners]) {
+      try {
+        listener({ logKeyHex, admittedSize: admitted.size });
+      } catch {
+        // listener errors never break admission
+      }
+    }
+  }
+
+  /** Drain queued admissions. MUST run under the merge gate (mergeOnePass). */
+  async function drainAdmissionQueue(): Promise<void> {
+    while (admissionQueue.length > 0) {
+      const frame = admissionQueue.shift()!;
+      try {
+        // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can
+        // find and drop the right admitted log (admitted is keyed by
+        // log_core_key).
+        pubkeyToLogKey.set(frame.device_pubkey, frame.log_core_key);
+        // Record the full identity for this admitted peer so
+        // `reverifyAdmitted()` can re-call verifyBinding without needing the
+        // original frame (rev-v2 A).
+        admittedIdentities.set(frame.log_core_key, {
+          devicePubkey: frame.device_pubkey,
+          githubLogin: frame.github_login,
+          githubUserId: frame.github_user_id,
+          attestationGistId: frame.attestation_gist_id,
+        });
+        if (!admitted.has(frame.log_core_key)) {
+          const remote = await openRemoteLog(store, frame.log_core_key);
+          admitted.set(frame.log_core_key, remote);
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'announce_admitted',
+            peerLabel(frame.log_core_key),
+          );
+          emitAdmitted(frame.log_core_key);
+        }
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+  }
+
+  // The merge gate. `inflightMerge` non-null = a pass chain is running. A
+  // mergeNow() arriving during it requests a re-run and returns the SAME
+  // promise — the chain keeps passing until no re-run is pending, so every
+  // caller observes its requested work (e.g. a queued admission) complete
+  // before its await resolves.
+  let inflightMerge: Promise<number> | null = null;
+  let mergeAgainRequested = false;
+  function mergeNow(): Promise<number> {
+    if (stopped) return Promise.resolve(0);
+    if (inflightMerge) {
+      mergeAgainRequested = true;
+      return inflightMerge;
+    }
+    inflightMerge = (async () => {
+      try {
+        let total = 0;
+        do {
+          mergeAgainRequested = false;
+          total += await mergeOnePass();
+        } while (mergeAgainRequested && !stopped);
+        return total;
+      } finally {
+        inflightMerge = null;
+      }
+    })();
+    return inflightMerge;
+  }
+
+  /** One serialized merge pass. Only ever called from mergeNow's gate. */
+  async function mergeOnePass(): Promise<number> {
     try {
+      // Queued admissions land first so THIS pass merges them (P-022).
+      await drainAdmissionQueue();
       const logs: AdmittedLog[] = [];
       for (const log of admitted.values()) {
         // Refresh remote logs so `length` reflects the writer's appends.
@@ -871,8 +976,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         e instanceof Error ? e.message : String(e),
       );
       return 0;
-    } finally {
-      merging = false;
     }
   }
 
@@ -996,41 +1099,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
 
   /**
-   * Open + admit a peer's remote log and trigger a merge. Extracted so the
-   * pending-retry path can use the same logic as the initial admit path.
+   * Queue + admit a peer's remote log and trigger a merge. The map mutations
+   * (admitted/pubkeyToLogKey/admittedIdentities) happen inside the merge gate
+   * (drainAdmissionQueue) so an in-flight pass never races them, and the
+   * coalescing mergeNow guarantees the admission is processed before the
+   * returned promise resolves (audit P-022). Extracted so the pending-retry
+   * path uses the same logic as the initial admit path.
    */
   async function admitPeer(frame: SignedAnnounce): Promise<AdmissionResult> {
-    try {
-      // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can find
-      // and drop the right admitted log (admitted is keyed by log_core_key).
-      pubkeyToLogKey.set(frame.device_pubkey, frame.log_core_key);
-      // Record the full identity for this admitted peer so `reverifyAdmitted()`
-      // can re-call verifyBinding without needing the original frame (rev-v2 A).
-      admittedIdentities.set(frame.log_core_key, {
-        devicePubkey: frame.device_pubkey,
-        githubLogin: frame.github_login,
-        githubUserId: frame.github_user_id,
-        attestationGistId: frame.attestation_gist_id,
-      });
-      if (!admitted.has(frame.log_core_key)) {
-        const remote = await openRemoteLog(store, frame.log_core_key);
-        admitted.set(frame.log_core_key, remote);
-        recordBootEvent(
-          opts.workspaceId,
-          opts.harnessSlug,
-          'announce_admitted',
-          peerLabel(frame.log_core_key),
-        );
-      }
-      await mergeNow();
-    } catch (e) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'announce_error',
-        e instanceof Error ? e.message : String(e),
-      );
-    }
+    admissionQueue.push(frame);
+    await mergeNow();
     return { admit: true };
   }
 
@@ -1065,82 +1143,96 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     await mergeNow();
   }
 
-  // ── Pending-peer retry timer (D-006) ── revisits peers that returned
+  // ── Pending-peer retry loop (D-006) ── revisits peers that returned
   // 'pending' (channel-2 file not yet visible) at each tick. For each pending
   // peer the decider is re-run with a fresh sig check; on 'verified' the peer
   // is admitted normally; on conclusive failure (binding_invalid/bad_sig/revoked)
   // or once the boot-scoped grace window has passed, the peer is removed
   // (announce_rejected). `.unref()`'d so the timer never keeps the process alive
   // and cleared in `close()` alongside the merge timer.
+  //
+  // RE-ENTRANCY (audit P-022): sequential rescheduling, NOT a bare
+  // setInterval(async …) — the old interval could fire a second tick while the
+  // first still awaited admit()/admitPeer(), double-processing the same
+  // pending peers. The next tick now arms only after the current one finishes.
   const pendingRetryMs = Number.isFinite(opts.pendingRetryMs as number)
     ? (opts.pendingRetryMs as number)
     : DEFAULT_PENDING_RETRY_MS;
-  const pendingRetryTimer =
-    pendingRetryMs > 0
-      ? setInterval(async () => {
-          if (stopped || pendingPeers.size === 0) return;
-          const nowMs = Date.now();
-          // Snapshot keys to iterate safely while the map mutates.
-          const keys = [...pendingPeers.keys()];
-          for (const devicePubkey of keys) {
-            const entry = pendingPeers.get(devicePubkey);
-            if (!entry) continue; // removed between snapshot + loop body
-            // Grace-window expiry: remove + reject, don't retry forever.
-            if (nowMs - entry.since > BOOT_PENDING_GRACE_MS) {
-              pendingPeers.delete(devicePubkey);
-              recordBootEvent(
-                opts.workspaceId,
-                opts.harnessSlug,
-                'announce_rejected',
-                `pending_grace_expired ${peerLabel(entry.frame.log_core_key)}`,
-              );
-              continue;
-            }
-            // Re-verify: re-build the AdmissionInput from the stored frame.
-            // Pass { nowMs: entry.since } so freshness is checked relative to
-            // the arrival timestamp, NOT the current wall-clock. The announce
-            // was fresh when it arrived (validated in onAnnounce). Re-running
-            // freshness against Date.now() would cap the effective retry window
-            // at DEFAULT_ANNOUNCE_WINDOW_MS (5 min), defeating the 30-min
-            // BOOT_PENDING_GRACE_MS grace window that the pending-retry exists for.
-            try {
-              const sigValid = verifyAnnounce(entry.frame, { nowMs: entry.since });
-              const input: AdmissionInput = {
-                device_pubkey: entry.frame.device_pubkey,
-                github_login: entry.frame.github_login,
-                github_user_id: entry.frame.github_user_id,
-                attestation_gist_id: entry.frame.attestation_gist_id,
-                sigValid,
-              };
-              const decision = await admit(input);
-              if (decision.admit) {
-                // Verified! Remove from pending + admit.
-                pendingPeers.delete(devicePubkey);
-                await admitPeer(entry.frame);
-              } else if (decision.reason !== 'pending') {
-                // Conclusive failure (binding_invalid / bad_sig / revoked) —
-                // stop retrying.
-                pendingPeers.delete(devicePubkey);
-                recordBootEvent(
-                  opts.workspaceId,
-                  opts.harnessSlug,
-                  'announce_rejected',
-                  `${decision.reason} ${peerLabel(entry.frame.log_core_key)}`,
-                );
-              }
-              // If still 'pending', leave in the map for the next tick.
-            } catch {
-              // Defensive: retry errors are silent (observability stays non-fatal).
-            }
-          }
-        }, pendingRetryMs)
-      : null;
-  if (
-    pendingRetryTimer &&
-    typeof (pendingRetryTimer as { unref?: () => void }).unref === 'function'
-  ) {
-    (pendingRetryTimer as { unref: () => void }).unref();
+  let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  async function retryPendingOnce(): Promise<void> {
+    if (stopped || pendingPeers.size === 0) return;
+    const nowMs = Date.now();
+    // Snapshot keys to iterate safely while the map mutates.
+    const keys = [...pendingPeers.keys()];
+    for (const devicePubkey of keys) {
+      const entry = pendingPeers.get(devicePubkey);
+      if (!entry) continue; // removed between snapshot + loop body
+      // Grace-window expiry: remove + reject, don't retry forever.
+      if (nowMs - entry.since > BOOT_PENDING_GRACE_MS) {
+        pendingPeers.delete(devicePubkey);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_rejected',
+          `pending_grace_expired ${peerLabel(entry.frame.log_core_key)}`,
+        );
+        continue;
+      }
+      // Re-verify: re-build the AdmissionInput from the stored frame.
+      // Pass { nowMs: entry.since } so freshness is checked relative to
+      // the arrival timestamp, NOT the current wall-clock. The announce
+      // was fresh when it arrived (validated in onAnnounce). Re-running
+      // freshness against Date.now() would cap the effective retry window
+      // at DEFAULT_ANNOUNCE_WINDOW_MS (5 min), defeating the 30-min
+      // BOOT_PENDING_GRACE_MS grace window that the pending-retry exists for.
+      try {
+        const sigValid = verifyAnnounce(entry.frame, { nowMs: entry.since });
+        const input: AdmissionInput = {
+          device_pubkey: entry.frame.device_pubkey,
+          github_login: entry.frame.github_login,
+          github_user_id: entry.frame.github_user_id,
+          attestation_gist_id: entry.frame.attestation_gist_id,
+          sigValid,
+        };
+        const decision = await admit(input);
+        if (decision.admit) {
+          // Verified! Remove from pending + admit.
+          pendingPeers.delete(devicePubkey);
+          await admitPeer(entry.frame);
+        } else if (decision.reason !== 'pending') {
+          // Conclusive failure (binding_invalid / bad_sig / revoked) —
+          // stop retrying.
+          pendingPeers.delete(devicePubkey);
+          recordBootEvent(
+            opts.workspaceId,
+            opts.harnessSlug,
+            'announce_rejected',
+            `${decision.reason} ${peerLabel(entry.frame.log_core_key)}`,
+          );
+        }
+        // If still 'pending', leave in the map for the next tick.
+      } catch {
+        // Defensive: retry errors are silent (observability stays non-fatal).
+      }
+    }
   }
+  function armPendingRetry(): void {
+    if (pendingRetryMs <= 0 || stopped) return;
+    const timer = setTimeout(async () => {
+      try {
+        await retryPendingOnce();
+      } catch {
+        // Defensive: a tick failure must never kill the retry chain.
+      } finally {
+        armPendingRetry(); // arm the NEXT tick only after this one finished
+      }
+    }, pendingRetryMs);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+    pendingRetryTimer = timer;
+  }
+  armPendingRetry();
 
   // ── Hyperswarm replication + announce exchange (4b) ──
   // Joins the swarm topic; the connection handler replicates the corestore
@@ -1251,6 +1343,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     admitted,
     mergeNow,
     onAnnounce,
+    onAdmitted(listener) {
+      admittedListeners.add(listener);
+      return () => {
+        admittedListeners.delete(listener);
+      };
+    },
     revoke,
     reverifyAdmitted,
     swarm: swarmHandle,
@@ -1294,7 +1392,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       }
       if (pendingRetryTimer) {
         try {
-          clearInterval(pendingRetryTimer);
+          // The retry loop is a self-rearming setTimeout chain (P-022);
+          // `stopped` (set above) prevents a mid-tick re-arm.
+          clearTimeout(pendingRetryTimer);
         } catch {
           // no-op
         }

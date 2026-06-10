@@ -35,6 +35,15 @@ export interface CorpusCase {
   createdAt: Date;
 }
 
+/**
+ * A corpus seed — a {@link CorpusCase} minus the fields assigned at seed time
+ * (`id` via generateStableCaseId, `rotationIndex`, `createdAt`). The seed
+ * arrays below carry `satisfies CorpusSeedCase[]` so shape drift (a bad
+ * rubric scoring value, a missing field) is a compile error while element
+ * types stay narrowly inferred.
+ */
+export type CorpusSeedCase = Omit<CorpusCase, 'id' | 'rotationIndex' | 'createdAt'>;
+
 // v1 IQ Battery Corpus seed data — 20 cases (5 per variant)
 
 /**
@@ -283,7 +292,7 @@ async function executeSearch(sql: Sql, userQuery: string) {
       ],
     },
   },
-];
+] satisfies CorpusSeedCase[];
 
 export const BuildSpecCases = [
   {
@@ -503,7 +512,7 @@ export const BuildSpecCases = [
       ],
     },
   },
-];
+] satisfies CorpusSeedCase[];
 
 export const FindTheFlawCases = [
   {
@@ -736,7 +745,7 @@ export const FindTheFlawCases = [
       ],
     },
   },
-];
+] satisfies CorpusSeedCase[];
 
 export const AnswerFromColonyMemoryCases = [
   {
@@ -926,7 +935,7 @@ export const AnswerFromColonyMemoryCases = [
       ],
     },
   },
-];
+] satisfies CorpusSeedCase[];
 
 export const AllCases = [
   ...FixInjectedBugCases,

@@ -23,7 +23,7 @@ vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
-import catchall from '../routes/plugin-runtime/catchall';
+import catchall, { isSafeSegment } from '../routes/plugin-runtime/catchall';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -49,10 +49,22 @@ describe('plugin-runtime catchall — loopback gate + path confinement (audit P-
     expect(buildPluginRuntime).not.toHaveBeenCalled();
   });
 
-  it('400 badIdent for a traversal slug (`..`)', async () => {
-    const res = await post('http://127.0.0.1:3070/plugin-runtime/%2e%2e/plug1/tasks/list');
+  it('400 badIdent for a double-encoded traversal slug (`%252e%252e` — survives URL normalization)', async () => {
+    // A well-formed `..` segment is collapsed by the URL layer before
+    // routing (404s above the handler); the smuggled-escape form reaches
+    // the param decode and must hit the in-handler guard.
+    const res = await post('http://127.0.0.1:3070/plugin-runtime/%252e%252e/plug1/tasks/list');
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'badIdent' });
+  });
+
+  it('isSafeSegment — unit matrix for the confinement guard', () => {
+    for (const bad of ['..', '.', '.hidden', 'a/b', 'a\\b', 'a..b', '%2e%2e', 'has space', '']) {
+      expect(isSafeSegment(bad), `should reject ${JSON.stringify(bad)}`).toBe(false);
+    }
+    for (const good of ['example-tool-pack', 'h1', 'pkg.name', 'a_b-c.d']) {
+      expect(isSafeSegment(good), `should accept ${JSON.stringify(good)}`).toBe(true);
+    }
   });
 
   it('400 badIdent for a plugin param smuggling a separator (`..%2fup`)', async () => {

@@ -21,11 +21,12 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
  * spawned_agents changes. The Refresh button is a manual `invalidate()` escape hatch.
  */
 
-interface WorkItemRow {
+export interface WorkItemRow {
   id: string;
   kind: string;
   family: string;
   title: string;
+  summary: string | null;
   state: string;
   assignee: string | null;
   assignedBy: string | null;
@@ -45,6 +46,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // the Features (fview/fq) / Issues (iview/iq) panels.
   const [kind, setKind] = useQueryState('wkind', parseAsString.withDefault(''));
   const [search, setSearch] = useQueryState('wq', parseAsString.withDefault(''));
+  // Row selection drives the global `?sel` the Detail pane reads — F-* resolves
+  // to the feature view, WI-* to the work-item view (same contract the retired
+  // Features/Issues panels had).
+  const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
 
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
@@ -168,6 +173,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
             columns={columns}
             rows={filtered}
             getRowId={(r) => r.id}
+            onRowClick={(r) => void setSelectedId(r.id)}
+            getRowBg={(r) =>
+              r.id === selectedId ? 'color-mix(in oklab, var(--accent), transparent 80%)' : undefined
+            }
             rowMinHeight={30}
             headerHeight={30}
           />

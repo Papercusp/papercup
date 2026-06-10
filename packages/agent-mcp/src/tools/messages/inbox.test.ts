@@ -102,13 +102,35 @@ describe('messages:inbox — slug → schema-identifier transform', () => {
     expect(state.idents).toContain('harness_my_cool_harness');
   });
 
-  it('a dotted slug replaces dots with underscores', async () => {
+  it('REJECTS a dotted slug before any identifier/query call (audit P-029)', async () => {
+    // Harness slugs are [a-z0-9-] (migration 044 derives the schema with
+    // only hyphen→underscore mapping). A dot used to survive SLUG_RE into
+    // the schema identifier — postgres-js splits dotted identifiers into
+    // qualified parts, so 'Repo.V2' addressed a DIFFERENT schema.table
+    // than any real harness schema. The grammar now rejects dots outright.
     const { tx, state } = makeTx({ rows: [] });
-    await tool.handler(
+    const res = await tool.handler(
       { slug: 'Repo.V2', detail: 'summary', status: 'pending', limit: 50 } as never,
       CTX(tx) as never,
     );
-    expect(state.idents).toContain('harness_repo_v2');
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.[0]).toContain('invalid slug');
+    expect(state.idents).toEqual([]);
+    expect(state.lastQueryStrings).toBeNull();
+  });
+
+  it('the identifier transform itself never lets a non-[a-z0-9_] char through', async () => {
+    // Defense-in-depth behind the SLUG_RE gate: the catch-all replace
+    // guarantees one plain segment even if the grammar drifts
+    // (resources/harness/issues.ts pattern).
+    const { tx, state } = makeTx({ rows: [] });
+    await tool.handler(
+      { slug: 'My-Cool-Harness', detail: 'summary', status: 'pending', limit: 50 } as never,
+      CTX(tx) as never,
+    );
+    for (const ident of state.idents) {
+      expect(ident).toMatch(/^harness_[a-z0-9_]+$/);
+    }
   });
 });
 

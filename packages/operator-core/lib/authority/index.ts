@@ -61,6 +61,7 @@ export {
 
 export {
   registerFileLockAuthorityOps,
+  buildFileLockAuthorityHandlers,
   FILE_LOCK_OP_KINDS,
   type FileLockCoordinator,
   type FileLockAcquireParams,

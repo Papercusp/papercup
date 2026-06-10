@@ -16,6 +16,7 @@ import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import FeatureEditor from '../../harness/FeatureEditor';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
+import type { WorkItemRow } from './WorkItemsPanel';
 import { runOutcome } from './run-outcome';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
@@ -148,11 +149,13 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [setUrlSel]);
   const onBack = !pinnedId && selHistory.length > 0 ? goBack : undefined;
 
-  // Resolve the selected item. F-* → feature, I-* → issue.
-  const kind: 'feature' | 'issue' | null = useMemo(() => {
+  // Resolve the selected item. F-* → feature, I-* → issue (legacy surface),
+  // WI-* → unified work item (the WorkItemsPanel grid sets these).
+  const kind: 'feature' | 'issue' | 'workItem' | null = useMemo(() => {
     if (!selectedId) return null;
     if (selectedId.startsWith('F-')) return 'feature';
     if (selectedId.startsWith('I-')) return 'issue';
+    if (selectedId.startsWith('WI-')) return 'workItem';
     return null;
   }, [selectedId]);
 
@@ -164,6 +167,19 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     () => (kind === 'issue' ? (issues ?? []).find((i) => i.id === selectedId) ?? null : null),
     [kind, issues, selectedId],
   );
+  // WI-* resolves against the same `workItems.byHarness` sync query the
+  // WorkItemsPanel grid reads (one assembly, identical rows). Only subscribed
+  // while a work item is actually selected.
+  const workItemsQuery = useSyncQuery<WorkItemRow>({
+    queryName: 'workItems.byHarness',
+    args: { harnessSlug: slug, limit: 300 },
+    enabled: Boolean(slug) && kind === 'workItem',
+  });
+  const workItemRows = workItemsQuery.loading ? null : workItemsQuery.data;
+  const workItem = useMemo(
+    () => (kind === 'workItem' ? (workItemRows ?? []).find((w) => w.id === selectedId) ?? null : null),
+    [kind, workItemRows, selectedId],
+  );
 
   useEffect(() => {
     if (pinnedId) {
@@ -172,23 +188,25 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
       api.setTitle(`Detail · ${feature.id}`);
     } else if (issue) {
       api.setTitle(`Detail · ${issue.id}`);
+    } else if (workItem) {
+      api.setTitle(`Detail · ${workItem.id}`);
     } else {
       api.setTitle('Detail');
     }
-  }, [api, pinnedId, feature, issue]);
+  }, [api, pinnedId, feature, issue, workItem]);
 
   if (!slug) {
-    return <Empty>Pick a harness to inspect features and issues.</Empty>;
+    return <Empty>Pick a harness to inspect its work items.</Empty>;
   }
 
   if (!selectedId) {
-    return <Empty>Pick a feature or issue from the lists to inspect.</Empty>;
+    return <Empty>Pick a work item from the list to inspect.</Empty>;
   }
 
-  if (selectedId && !feature && !issue) {
+  if (selectedId && !feature && !issue && !workItem) {
     // The id is in the URL but the lists haven't settled yet (or it's a
-    // stale selection). Show a brief loading state until both lists load.
-    if (features === null || issues === null) {
+    // stale selection). Show a brief loading state until the lists load.
+    if (features === null || issues === null || (kind === 'workItem' && workItemRows === null)) {
       return <Empty>Loading {selectedId}…</Empty>;
     }
     return <Empty tone="error">No item found for {selectedId}.</Empty>;
@@ -213,7 +231,81 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   if (issue) {
     return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} patchIssue={patchIssue} />;
   }
+  if (workItem) {
+    return <WorkItemDetail workItem={workItem} onSelect={onSelect} onBack={onBack} />;
+  }
   return null;
+}
+
+/**
+ * WorkItemDetail — read-only detail for a unified WI-* work item (the rows the
+ * WorkItemsPanel grid serves). Issue-family items (bug/change/task) have no
+ * legacy I-* row, so this is their only detail view; mutation verbs stay on
+ * the agent surface (`work_items:*`) for now.
+ */
+function WorkItemDetail({
+  workItem,
+  onSelect,
+  onBack,
+}: {
+  workItem: WorkItemRow;
+  onSelect: (id: string) => void;
+  onBack?: () => void;
+}) {
+  const fields: Array<[string, React.ReactNode]> = [
+    ['Kind', `${workItem.kind} (${workItem.family} family)`],
+    ['State', workItem.state],
+    ['Severity', workItem.severity ?? '—'],
+    [
+      'Assignee',
+      workItem.assignee
+        ? `${workItem.assignee}${workItem.assignedBy ? ` · by ${workItem.assignedBy}` : ''}`
+        : '—',
+    ],
+    ['Priority', workItem.priority ?? '—'],
+    ['Rank', workItem.rank ?? '—'],
+    [
+      'Stage',
+      workItem.spineRole ? `${workItem.spineRole}${workItem.spineStatus ? ` (${workItem.spineStatus})` : ''}` : '—',
+    ],
+    ['Updated', workItem.updatedAt ? new Date(workItem.updatedAt).toLocaleString() : '—'],
+  ];
+  return (
+    <div className="pc-adv-detail">
+      <header className="pc-adv-detail__header">
+        <BackChip onBack={onBack} />
+        <div className="pc-adv-detail__id">{workItem.id}</div>
+        <div className="pc-adv-detail__title">{workItem.title}</div>
+      </header>
+      <div className="pc-adv-detail__body">
+        <div className="pc-adv-detail__section">
+          {fields.map(([label, value]) => (
+            <div key={label} className="pc-adv-detail__status-row">
+              <span className="pc-adv-detail__muted">{label}</span>
+              <span>{value}</span>
+            </div>
+          ))}
+          {workItem.planSlug ? (
+            <div className="pc-adv-detail__status-row">
+              <span className="pc-adv-detail__muted">Plan</span>
+              <code className="pc-adv-detail__code">{workItem.planSlug}</code>
+            </div>
+          ) : null}
+        </div>
+        {workItem.summary ? (
+          <div className="pc-adv-detail__section">
+            <div className="pc-adv-detail__prose">{workItem.summary}</div>
+          </div>
+        ) : null}
+        {/* Feature-family rows keep their richer F-* detail: cross-link to it. */}
+        {workItem.family === 'feature' && workItem.id.startsWith('F-') ? (
+          <button type="button" className="pc-adv-detail__link-btn" onClick={() => onSelect(workItem.id)}>
+            Open feature detail <ArrowUpRight size={12} />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function BackChip({ onBack }: { onBack?: () => void }) {

@@ -21,9 +21,13 @@ import { requireLoopbackOr403 } from '../../loopback-guard';
  * names under papercuspRoot() via join(), so they must be single, plain
  * segments — no dots-only names, no separators, no traversal. Mirrors the
  * harness-slug grammar (mig 044) plus the dot npm-style plugin dirs use.
+ * (The URL layer already collapses well-formed `..` segments before
+ * routing; this guard is the in-handler backstop for smuggled escapes —
+ * double-encoded `%252e`, backslashes, raw-socket clients.) Exported for
+ * tests.
  */
 const SAFE_SEGMENT_RE = /^(?!\.)[a-z0-9._-]+$/i;
-function isSafeSegment(s: string): boolean {
+export function isSafeSegment(s: string): boolean {
   return SAFE_SEGMENT_RE.test(s) && !s.includes('..') && !s.includes('/') && !s.includes('\\');
 }
 
