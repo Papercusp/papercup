@@ -427,6 +427,13 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
     delete childEnv.CLAUDE_CODE_SESSION_ID;
     delete childEnv.CLAUDE_CODE_ENTRYPOINT;
     delete childEnv.CLAUDECODE;
+    // Explicit credential-dir OVERRIDE (the deliberate cousin of the accidental
+    // leak above): when the user-global ~/.claude is headless-broken (`claude -p`
+    // sends a server-rejected access token and never refreshes — observed
+    // 2026-06-10), point the gym's agents at a known-good config dir.
+    if (process.env.GYM_WAKE_CLAUDE_CONFIG_DIR) {
+      childEnv.CLAUDE_CONFIG_DIR = process.env.GYM_WAKE_CLAUDE_CONFIG_DIR;
+    }
     operator = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env: childEnv,

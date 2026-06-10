@@ -63,6 +63,10 @@ export interface HyperswarmLike {
   leave(topic: Buffer): Promise<void> | void;
   on(event: 'connection', listener: (socket: unknown, info?: unknown) => void): unknown;
   off?(event: 'connection', listener: (socket: unknown, info?: unknown) => void): unknown;
+  /** Live peer sockets (real Hyperswarm exposes a Set). A topic joined on a
+   *  shared swarm AFTER a socket exists never re-emits 'connection' for it, so
+   *  late joiners must attach to these retroactively. */
+  connections?: Iterable<unknown>;
 }
 
 export interface JoinHarnessSwarmOpts {
@@ -103,6 +107,62 @@ export interface JoinHarnessSwarmOpts {
   onAnnounce?: (frame: SignedAnnounce) => Promise<AdmissionResult> | void;
 }
 
+/** Muxers that already carry our announce pair-notifier (one per muxer). */
+const announcePairedMuxers = new WeakSet<object>();
+/** Latest announce-channel opts per muxer, for the lazy-accept notifier. On a
+ *  shared swarm the same socket serves several topics; the announce channel is
+ *  protocol-keyed (one per socket), so last-writer-wins is the existing
+ *  duplicate-channel semantics, now visible to the notifier too. */
+const announceOptsByMuxer = new WeakMap<
+  object,
+  { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] }
+>();
+
+/** Create + open the announce channel on a muxer (returns silently when the
+ *  channel already exists on it). Split from openAnnounceChannel so the
+ *  protomux pair-notifier can re-create the channel synchronously. */
+function createAnnounceChannel(
+  mux: ReturnType<typeof Protomux.from>,
+  opts: { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] },
+): void {
+  // Send OUR announce from the channel's `onopen` — Protomux invokes onopen
+  // only once the channel is fully paired (the remote opened the matching
+  // protocol). Sending synchronously after `open()` can DROP the first
+  // announce on a fresh connection (the peer's channel isn't open yet), and
+  // announces aren't re-sent → the peer would never be admitted. Sending on
+  // onopen guarantees delivery. Guard `sent` so a duplicate onopen (or a
+  // re-pair) can't double-send.
+  let message: { send(value: SignedAnnounce): void } | null = null;
+  let sent = false;
+  const sendOurAnnounce = (): void => {
+    if (sent || !opts.ourAnnounce || !message) return;
+    sent = true;
+    try {
+      message.send(opts.ourAnnounce);
+    } catch {
+      // best-effort — replication still proceeds
+    }
+  };
+  const channel = mux.createChannel({
+    protocol: ANNOUNCE_PROTOCOL,
+    onopen: sendOurAnnounce,
+  });
+  if (!channel) return; // already open on this muxer (duplicate) — nothing to do
+  message = channel.addMessage<SignedAnnounce>({
+    encoding: c.json,
+    onmessage: (frame: SignedAnnounce) => {
+      if (!opts.onAnnounce) return;
+      try {
+        // onAnnounce may be async; never let a rejection crash the muxer.
+        void Promise.resolve(opts.onAnnounce(frame)).catch(() => {});
+      } catch {
+        // synchronous throw — swallow
+      }
+    },
+  });
+  channel.open();
+}
+
 /** Open the `papercusp/announce` channel on the shared muxer for one peer
  *  connection, wire inbound announces to `onAnnounce`, and send `ourAnnounce`.
  *  Defensive: any protomux error is swallowed — a peer that can't speak the
@@ -114,44 +174,39 @@ function openAnnounceChannel(
   if (!opts.onAnnounce && !opts.ourAnnounce) return;
   try {
     // Protomux.from REUSES socket.userData when corestore.replicate(socket)
-    // already attached it, so the announce shares the replication muxer.
+    // already attached it, so the announce shares the replication muxer. Pin
+    // the muxer on the stream when unset (the hypercore convention) so every
+    // later protocol on this socket reuses it instead of double-muxing.
     const mux = Protomux.from(socket);
-    // Send OUR announce from the channel's `onopen` — Protomux invokes onopen
-    // only once the channel is fully paired (the remote opened the matching
-    // protocol). Sending synchronously after `open()` can DROP the first
-    // announce on a fresh connection (the peer's channel isn't open yet), and
-    // announces aren't re-sent → the peer would never be admitted. Sending on
-    // onopen guarantees delivery. Guard `sent` so a duplicate onopen (or a
-    // re-pair) can't double-send.
-    let message: { send(value: SignedAnnounce): void } | null = null;
-    let sent = false;
-    const sendOurAnnounce = (): void => {
-      if (sent || !opts.ourAnnounce || !message) return;
-      sent = true;
+    const s = socket as { userData?: unknown };
+    if (!s.userData) s.userData = mux;
+    announceOptsByMuxer.set(mux, opts);
+    // LAZY-ACCEPT pair-notifier (once per muxer): on a SHARED swarm the two
+    // ends attach to an existing socket at different times (the socket may
+    // predate both, opened by the hive-directory gossip). The earlier end's
+    // channel-open reaches the later end before any matching channel exists,
+    // and protomux REJECTS it — permanently, opens are never re-sent — so the
+    // earlier end could never pair. The notifier accepts a pending open by
+    // creating our channel SYNCHRONOUSLY (the directory-gossip late-join
+    // lesson — see directory-swarm.ts).
+    if (!announcePairedMuxers.has(mux)) {
+      announcePairedMuxers.add(mux);
       try {
-        message.send(opts.ourAnnounce);
+        mux.pair({ protocol: ANNOUNCE_PROTOCOL }, () => {
+          const cur = announceOptsByMuxer.get(mux);
+          if (cur) {
+            try {
+              createAnnounceChannel(mux, cur);
+            } catch {
+              // best-effort — a failed lazy accept degrades to the old reject
+            }
+          }
+        });
       } catch {
-        // best-effort — replication still proceeds
+        // pair() unsupported on this muxer build — connect-time channels still pair
       }
-    };
-    const channel = mux.createChannel({
-      protocol: ANNOUNCE_PROTOCOL,
-      onopen: sendOurAnnounce,
-    });
-    if (!channel) return; // already open on this muxer (duplicate) — nothing to do
-    message = channel.addMessage<SignedAnnounce>({
-      encoding: c.json,
-      onmessage: (frame: SignedAnnounce) => {
-        if (!opts.onAnnounce) return;
-        try {
-          // onAnnounce may be async; never let a rejection crash the muxer.
-          void Promise.resolve(opts.onAnnounce(frame)).catch(() => {});
-        } catch {
-          // synchronous throw — swallow
-        }
-      },
-    });
-    channel.open();
+    }
+    createAnnounceChannel(mux, opts);
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }
@@ -285,6 +340,24 @@ export async function joinHarnessSwarm(
   };
 
   opts.swarm.on('connection', handler);
+  // Shared-swarm late join: a socket opened by an EARLIER topic's join (the
+  // hive-directory gossip, another harness) never re-emits 'connection', so a
+  // topic joined later must attach replication + the announce channel to the
+  // EXISTING sockets itself — otherwise two peers already connected via the
+  // directory silently never federate the harness (found by the packaged
+  // browse→join→federate smoke).
+  try {
+    for (const socket of opts.swarm.connections ?? []) {
+      const pk = (socket as { remotePublicKey?: unknown } | null)?.remotePublicKey;
+      try {
+        handler(socket, pk ? { publicKey: pk } : undefined);
+      } catch {
+        // per-socket best-effort — a bad existing socket can't block the join
+      }
+    }
+  } catch {
+    // connections iteration is best-effort (absent on minimal fakes)
+  }
   const discovery = opts.swarm.join(opts.topic, { server: true, client: true });
   // Best-effort flush — some Hyperswarm builds expose this, some
   // don't. Either way, returning before flush is fine because peers

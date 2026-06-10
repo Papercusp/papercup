@@ -254,6 +254,42 @@ describe('joinHarnessSwarm — happy path', () => {
   });
 });
 
+describe('joinHarnessSwarm — shared-swarm late join (existing sockets)', () => {
+  it('attaches replication + announce to sockets that existed BEFORE the join', async () => {
+    const { swarm } = fakeSwarm();
+    const { store, replicateArgs } = fakeStore();
+    // A socket opened earlier by ANOTHER topic's join (e.g. the hive-directory
+    // gossip) — present in swarm.connections, but 'connection' never re-fires.
+    const existing = {
+      __muxId: 'pre-existing',
+      pipe: vi.fn(),
+      remotePublicKey: Buffer.from('cd'.repeat(32), 'hex'),
+    };
+    (swarm as { connections?: Iterable<unknown> }).connections = [existing];
+    const connectedKeys: Array<string | undefined> = [];
+    const h = await joinHarnessSwarm({
+      store,
+      topic: topic32(),
+      swarm,
+      ourAnnounce: announceFixture(),
+      onPeerConnected: (k) => connectedKeys.push(k),
+    });
+    expect(replicateArgs).toEqual([existing]);
+    expect(h.connectionCount).toBe(1);
+    expect(connectedKeys).toEqual(['cd'.repeat(32)]);
+    const st = fakeChannels.get(existing);
+    expect(st?.opened).toBe(true);
+    expect(st?.sent).toEqual([announceFixture()]);
+  });
+
+  it('tolerates a swarm without connections (minimal fakes)', async () => {
+    const { swarm } = fakeSwarm();
+    const { store } = fakeStore();
+    const h = await joinHarnessSwarm({ store, topic: topic32(), swarm });
+    expect(h.connectionCount).toBe(0);
+  });
+});
+
 describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
   const BANNED_KEY = '11'.repeat(32);
   const BANNED_IP = '198.51.100.9';
