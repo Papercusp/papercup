@@ -21,7 +21,6 @@
 
 import { withWorkspace } from '@papercusp/db-org';
 import { hashPlanContent } from './content-hash';
-import type { AcquireBusy } from '../locks/su-lock-store';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -47,17 +46,38 @@ export interface WithPlanLockOpts {
   /** Advisory-lock acquisition budget before reporting busy. Default ~5s. */
   ttlSec?: number;
   /**
-   * Optional hook run *after* the upsert, while the advisory lock is still
-   * held — the `plans:*` verbs append a `plan_revisions` row here so `seq`
-   * allocation is race-free. Best-effort; a throw propagates (the row is
-   * already written).
+   * Optional hook run *after* the upsert transaction commits (EI-118).
+   * The `plans:*` verbs append a `plan_revisions` row here. `scope` is
+   * the (workspaceId, harnessSlug) this lock resolved for the write —
+   * pass it through so the revision lands in the plan's own workspace
+   * (audit P-008). Best-effort; a throw propagates (the row is already
+   * written).
    */
-  afterWrite?: (writtenBody: string) => Promise<void>;
+  afterWrite?: (
+    writtenBody: string,
+    scope: { workspaceId: string; harnessSlug: string },
+  ) => Promise<void>;
+}
+
+/**
+ * One blocked-path entry in a busy result. Shaped like the locks
+ * store's AcquireBusy except `expires_ts` is NULLABLE: the plans
+ * advisory lock is transaction-scoped — it releases at the holder's
+ * commit, so there is no holder TTL to report. The old code filled
+ * this with the CALLER's own acquire deadline, which read as "the
+ * holder expires in ~5s" and was simply false (audit P-045).
+ */
+export interface PlanBusy {
+  path: string;
+  owner: string;
+  owner_label: string | null;
+  intent: string;
+  expires_ts: Date | null;
 }
 
 export interface BusyError {
   kind: 'busy';
-  busy: AcquireBusy[];
+  busy: PlanBusy[];
 }
 
 export interface AppliedResult<T> {
@@ -136,7 +156,10 @@ export async function withPlanLock<T>(
             owner: 'unknown',
             owner_label: null,
             intent: 'another plans write is in progress',
-            expires_ts: new Date(deadline),
+            // The advisory lock releases at the holder's COMMIT — there
+            // is no knowable holder expiry (audit P-045). Callers retry;
+            // they must not schedule around a fabricated timestamp.
+            expires_ts: null,
           },
         ],
       } satisfies BusyError;
@@ -222,7 +245,7 @@ export async function withPlanLock<T>(
         writtenBody: string | null;
       };
       if (writtenBody !== null && opts.afterWrite) {
-        await opts.afterWrite(writtenBody);
+        await opts.afterWrite(writtenBody, { workspaceId, harnessSlug });
       }
       return applied;
     }
@@ -239,7 +262,9 @@ export async function withPlanLock<T>(
             owner: 'unknown',
             owner_label: null,
             intent: 'another plans write is in progress',
-            expires_ts: new Date(),
+            // No knowable holder expiry — see the acquire-path comment
+            // (audit P-045).
+            expires_ts: null,
           },
         ],
       } satisfies BusyError;

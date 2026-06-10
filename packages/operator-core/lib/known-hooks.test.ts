@@ -1,59 +1,53 @@
 /**
- * Coverage for getKnownHooks — derives lifecycle hook names by grepping
- * runHook('<name>') out of the orchestrator main-loop, deduped + sorted, 30s
- * cache, 'pre-worker' floor. Real temp main-loop file under a mocked harnessPath.
+ * Coverage + drift guard for the DBOS hook registry (audit P-016 / EI-94).
+ *
+ * The registry is static; the drift guard greps every live `runHook('<name>')`
+ * call site under lib/dbos/ and asserts set equality with the registry's
+ * `live` rows — adding a hook call without a registry row (or a row without a
+ * call site) fails here, which is what keeps a hand-maintained table honest.
  */
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DBOS_PIPELINE_HOOKS, getKnownHooks } from './known-hooks';
 
-const H = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fs = require('node:fs');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const os = require('node:os');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const path = require('node:path');
-  return { base: fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-')) };
-});
-// getKnownHooks reads `${harnessPath('..')}/orchestrator/src/main-loop.ts`;
-// return our temp base for any arg so the path resolves under it.
-vi.mock('./harness-paths', () => ({ harnessPath: () => H.base }));
-
-const mainLoop = () => join(H.base, 'orchestrator', 'src', 'main-loop.ts');
-const writeMainLoop = (src: string) => {
-  mkdirSync(join(H.base, 'orchestrator', 'src'), { recursive: true });
-  writeFileSync(mainLoop(), src);
-};
-
-beforeEach(() => {
-  vi.resetModules();
-  rmSync(join(H.base, 'orchestrator'), { recursive: true, force: true });
-});
-afterAll(() => rmSync(H.base, { recursive: true, force: true }));
+const libDir = dirname(fileURLToPath(import.meta.url));
 
 describe('getKnownHooks', () => {
-  it('extracts + dedupes + sorts runHook names from the main-loop', async () => {
-    writeMainLoop(`
-      await runHook('pre-worker');
-      foo(); await runHook("post-validate");
-      await runHook('pre-worker'); // dup
-      await runHook('pre-review');
-    `);
-    const { getKnownHooks } = await import('./known-hooks');
-    expect(getKnownHooks()).toEqual(['post-validate', 'pre-review', 'pre-worker']);
+  it('returns exactly the live hooks, sorted', () => {
+    expect(getKnownHooks()).toEqual(['afterDone', 'on-escalate']);
   });
 
-  it("floors to ['pre-worker'] when the main-loop is missing", async () => {
-    const { getKnownHooks } = await import('./known-hooks');
-    expect(getKnownHooks()).toEqual(['pre-worker']);
+  it('never advertises lost (EI-95 backlog) hooks', () => {
+    const lost = DBOS_PIPELINE_HOOKS.filter((h) => h.status === 'lost').map((h) => h.name);
+    expect(lost.length).toBeGreaterThan(0);
+    // The old grep-of-retired-main-loop floor value stays catalogued as lost,
+    // never advertised (EI-94: the UI listed 'pre-worker' though nothing fires it).
+    expect(lost).toContain('pre-worker');
+    for (const name of lost) expect(getKnownHooks()).not.toContain(name);
   });
 
-  it('caches within the TTL', async () => {
-    writeMainLoop(`runHook('alpha')`);
-    const { getKnownHooks } = await import('./known-hooks');
-    expect(getKnownHooks()).toEqual(['alpha']);
-    writeMainLoop(`runHook('alpha'); runHook('beta')`); // added after first read
-    expect(getKnownHooks()).toEqual(['alpha']); // still cached
+  it('registry names are unique', () => {
+    const names = DBOS_PIPELINE_HOOKS.map((h) => h.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe('registry drift guard', () => {
+  it("matches the live pipeline's runHook call sites under lib/dbos/", () => {
+    const dbosDir = join(libDir, 'dbos');
+    const found = new Set<string>();
+    const re = /\brunHook\(\s*['"]([A-Za-z][\w-]*)['"]/g;
+    for (const entry of readdirSync(dbosDir, { recursive: true })) {
+      const rel = String(entry);
+      if (!rel.endsWith('.ts') || rel.endsWith('.test.ts')) continue;
+      const src = readFileSync(join(dbosDir, rel), 'utf8');
+      for (const m of src.matchAll(re)) found.add(m[1]);
+    }
+    const live = DBOS_PIPELINE_HOOKS.filter((h) => h.status === 'live')
+      .map((h) => h.name)
+      .sort();
+    expect([...found].sort()).toEqual(live);
   });
 });

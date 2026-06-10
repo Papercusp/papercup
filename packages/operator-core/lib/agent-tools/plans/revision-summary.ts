@@ -122,8 +122,9 @@ export interface SummarizeRevisionResult {
  */
 export async function summarizeRevisionRationale(
   revisionId: number,
+  opts: { workspaceId?: string } = {},
 ): Promise<SummarizeRevisionResult | null> {
-  const rev = await getPlanRevisionById(revisionId);
+  const rev = await getPlanRevisionById(revisionId, opts);
   if (!rev) return null;
 
   if (rev.rationale && rev.rationale.trim().length > 0) {
@@ -172,7 +173,7 @@ export async function summarizeRevisionRationale(
     }
     // The `rationale IS NULL` guard inside means a rationale authored
     // concurrently is never clobbered — we still report ours.
-    await setPlanRevisionRationale(revisionId, rationale);
+    await setPlanRevisionRationale(revisionId, rationale, opts);
     return { revisionId, summarized: true, rationale, reason: 'generated' };
   } catch (err) {
     console.warn(

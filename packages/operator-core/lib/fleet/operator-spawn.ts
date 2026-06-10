@@ -195,6 +195,10 @@ export interface OperatorSpawnInput {
   brief?: string | null;
   /** Extra KEY=value positional args for the child invoke. */
   extras?: string[];
+  /** Optional per-spawn invoke timeout override (ms), threaded to
+   *  spawnInvokeOnce (audit P-015 / EI-172). Unset → the runner's
+   *  PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS default. */
+  timeoutMs?: number | null;
   /** Lineage: the spawning turn/agent. Recorded as parent_spawn_id. */
   parentSpawnId?: string | null;
   /** Role of the spawner (default 'operator'). */
@@ -450,7 +454,11 @@ export async function spawnAgentInHarness(
 
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
   let finalStatus: 'done' | 'failed' | 'cancelled' | null = null;
-  void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal, forceSessionId })
+  void spawnInvokeOnce(project.path, role, extras, extraEnv, {
+    signal: abort.signal,
+    forceSessionId,
+    ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+  })
     .then((r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');
       return finishSpawn(sql, {

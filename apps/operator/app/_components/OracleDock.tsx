@@ -935,8 +935,17 @@ export function OracleDock() {
       if (sdkFrame?.src) setChatwootFrameSrc((prev) => (prev === sdkFrame.src ? prev : sdkFrame.src));
     };
     findSdkConversationUrl();
-    const timer = window.setInterval(findSdkConversationUrl, 750);
-    return () => window.clearInterval(timer);
+    // The SDK iframe appears (and its src gains cw_conversation=) at an
+    // unpredictable moment after the Chatwoot script boots. React to the DOM
+    // mutation instead of polling on a 750ms timer (audit P-064; A7-adjacent).
+    const observer = new MutationObserver(findSdkConversationUrl);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src'],
+    });
+    return () => observer.disconnect();
   }, [supportActive, supportEverOpened]);
 
   // Mounted-marker + event bridge so SupportChatButton (and anything else

@@ -20,7 +20,7 @@
  */
 
 import { hashPlanContent } from './content-hash';
-import { readPlanBySlug, type PlanSourceOpts } from './source';
+import { readPlanBySlug, resolvePlanScope, type PlanSourceOpts } from './source';
 import { listPlanRevisions } from './revisions';
 import type { PlanStatus } from './parser';
 
@@ -174,10 +174,10 @@ export async function buildPlanContextBundle(
 
   let rationales: PlanBundleRationale[] = [];
   try {
-    const revisions = await listPlanRevisions(
-      slug,
-      opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {},
-    );
+    // Full (workspaceId, harnessSlug) scope so the rationale digest
+    // reads the plan's own workspace spine (audit P-008 / mig 218).
+    const scope = await resolvePlanScope(opts);
+    const revisions = await listPlanRevisions(slug, scope);
     rationales = revisions
       .filter((r) => typeof r.rationale === 'string' && r.rationale.trim().length > 0)
       .map((r) => ({

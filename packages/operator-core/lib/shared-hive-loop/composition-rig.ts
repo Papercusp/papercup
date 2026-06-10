@@ -259,20 +259,39 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     VALUES ('p-shl', 'SharedHiveLoop', 'active', ${opts.harnessSlug}, ${opts.workspaceId}, 0, 0)
   `;
 
-  // The REAL migration files, verbatim — minus psql meta-commands (`\set …`),
-  // which the embedded-pg migration runner strips and raw sql.unsafe rejects.
+  // The REAL migration files, verbatim — minus psql meta-commands (`\set …`)
+  // and the standalone BEGIN;/COMMIT; wrappers, both of which the embedded-pg
+  // migration runner handles and raw pooled sql.unsafe rejects. (plpgsql BEGIN
+  // bodies are indented/inline — the line-anchored match never touches them.)
   for (const file of [
     'archive/102-substrate-outbox.sql',
     'archive/103-issues-workspace-id-fill-trigger.sql',
+    '131-engineer-issues.sql',
     '188-work-item-claims.sql',
     '195-work-item-redundancy.sql',
   ]) {
     const text = readFileSync(join(SQL_DIR, file), 'utf8')
       .split('\n')
-      .filter((l) => !l.trimStart().startsWith('\\'))
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
       .join('\n');
     await sql.unsafe(text);
   }
+
+  // The unified work-item lookup probes the issue family too (getIssue's
+  // ISSUE_COLS) — columns later migrations (136/142/152/178) added to the
+  // mig-131 table, condensed here since those migrations touch tables this
+  // schema doesn't carry. The rig never writes issue-family rows; the columns
+  // only need to exist for the SELECT.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'bug',
+      ADD COLUMN IF NOT EXISTS assigned_by text,
+      ADD COLUMN IF NOT EXISTS assigned_at timestamptz,
+      ADD COLUMN IF NOT EXISTS payload jsonb,
+      ADD COLUMN IF NOT EXISTS assignee_rank integer,
+      ADD COLUMN IF NOT EXISTS rank_writer text,
+      ADD COLUMN IF NOT EXISTS rank_updated_at timestamptz;
+  `);
 
   // Migration 214's stamp_local_federated_write function VERBATIM (sliced
   // before its 11-table attach loop — this schema has two of the eleven), then
@@ -669,8 +688,12 @@ export class CompositionRig {
     cell: SwarmCell,
     items: Array<{ id: string; title?: string; kind?: 'feature' | 'research-task' | 'chunk'; redundancy?: number }>,
   ): Promise<void> {
-    const now = this.now();
-    for (const it of items) {
+    const base = this.now();
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      // Staggered created_ts — the claim path tiebreaks on created_ts ASC, so
+      // seeded ties would make the no-steering claim order nondeterministic.
+      const t = base + i;
       await cell.sql`
         INSERT INTO harness_shared.harness_features_consolidated
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts,
@@ -678,7 +701,7 @@ export class CompositionRig {
         VALUES
           (${this.workspaceId}, ${this.harnessSlug}, ${it.id},
            ${it.title ?? `Item ${it.id}`}, ${'seeded by the composition rig'}, 'todo', 0,
-           ${it.kind ?? 'feature'}, FALSE, ${now}, ${now}, ${now}, ${it.redundancy ?? null})
+           ${it.kind ?? 'feature'}, FALSE, ${t}, ${t}, ${t}, ${it.redundancy ?? null})
         ON CONFLICT (harness_slug, feature_id) DO NOTHING`;
     }
   }
@@ -795,18 +818,22 @@ export class CompositionRig {
     return { view, steered };
   }
 
-  /** Drive merge+drain on both cells to a HELD fixed point (the Stage-6 loop). */
-  async converge(opts: { maxPasses?: number } = {}): Promise<{ passes: number; fixedPoint: boolean }> {
+  /**
+   * Drive merge+drain to a HELD fixed point (the Stage-6 loop). `cells`
+   * restricts which cells are driven — a killed swarm is modeled by simply
+   * never driving it again (its replicated log stays readable to survivors).
+   */
+  async converge(opts: { maxPasses?: number; cells?: CellName[] } = {}): Promise<{ passes: number; fixedPoint: boolean }> {
     const max = opts.maxPasses ?? 12;
-    const { a, b } = this.cells;
+    const driven = (opts.cells ?? ['a', 'b']).map((n) => this.cells[n]);
     for (let pass = 1; pass <= max; pass++) {
-      await Promise.all([a.handle.mergeNow(), b.handle.mergeNow()]);
-      const [dA, dB] = await Promise.all([drainOutboxOnce(a.handle, a.sql), drainOutboxOnce(b.handle, b.sql)]);
-      if (dA === 0 && dB === 0) {
+      await Promise.all(driven.map((c) => c.handle.mergeNow()));
+      const drains = await Promise.all(driven.map((c) => drainOutboxOnce(c.handle, c.sql)));
+      if (drains.every((d) => d === 0)) {
         // Confirm the fixed point HOLDS across one more full cycle.
-        await Promise.all([a.handle.mergeNow(), b.handle.mergeNow()]);
-        const [dA2, dB2] = await Promise.all([drainOutboxOnce(a.handle, a.sql), drainOutboxOnce(b.handle, b.sql)]);
-        if (dA2 === 0 && dB2 === 0) return { passes: pass, fixedPoint: true };
+        await Promise.all(driven.map((c) => c.handle.mergeNow()));
+        const again = await Promise.all(driven.map((c) => drainOutboxOnce(c.handle, c.sql)));
+        if (again.every((d) => d === 0)) return { passes: pass, fixedPoint: true };
       }
       // Real swarm replication needs a beat between passes.
       await sleep(150);

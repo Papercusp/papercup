@@ -5,12 +5,19 @@ import { dirname, join } from 'node:path';
 
 let tmpHome = '';
 let fakeOmp = '';
+let realPath = '';
 
 beforeEach(() => {
   vi.resetModules();
   tmpHome = mkdtempSync(join(tmpdir(), 'ensure-omp-su-'));
   fakeOmp = join(tmpHome, 'bin', 'omp');
   mkdirSync(dirname(fakeOmp), { recursive: true });
+  // P-080: binaries resolve via a pure-Node PATH scan now (no shell).
+  // Pin PATH to ONLY the fake bin dir so the test never sees the host's
+  // real omp / leftover omp-su.
+  writeFileSync(fakeOmp, '#!/usr/bin/env bash\n');
+  realPath = process.env.PATH ?? '';
+  process.env.PATH = dirname(fakeOmp);
 
   vi.doMock('node:os', async () => {
     const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -18,11 +25,6 @@ beforeEach(() => {
   });
 
   vi.doMock('node:child_process', async () => ({
-    execSync: (command: string, opts?: { encoding?: string }) => {
-      if (command === 'command -v omp') return opts?.encoding ? `${fakeOmp}\n` : Buffer.from(`${fakeOmp}\n`);
-      if (command === 'command -v omp-su') return opts?.encoding ? `${join(dirname(fakeOmp), 'omp-su')}\n` : Buffer.from(`${join(dirname(fakeOmp), 'omp-su')}\n`);
-      throw new Error(`unexpected command: ${command}`);
-    },
     execFileSync: () => undefined,
   }));
 
@@ -36,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.env.PATH = realPath;
   vi.doUnmock('node:os');
   vi.doUnmock('node:child_process');
   vi.doUnmock('./desktop-install/papercusp-files');
@@ -64,5 +67,12 @@ describe('ensure-omp-su', () => {
 
     // The wrapper is retired — ensure must NOT (re)write or refresh it.
     expect(readFileSync(wrapper, 'utf8')).toBe('#!/usr/bin/env bash\necho stale\n');
+  });
+
+  it('falls back to ~/.local/bin for the wrapper dir when omp is not on PATH (P-080 non-shell scan)', async () => {
+    rmSync(fakeOmp); // no omp anywhere on the pinned PATH
+    const mod = await import('./ensure-omp-su');
+    const state = mod.readEngineerOmpBootstrapState(tmpHome);
+    expect(state.wrapperPath).toBe(join(tmpHome, '.local', 'bin', 'omp-su'));
   });
 });

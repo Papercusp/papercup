@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -35,14 +35,15 @@ interface PreferenceEntry {
 
 type FilterMode = 'all' | 'user-typed' | 'operator-proposed';
 
-
+const FILTER_MODES: FilterMode[] = ['all', 'user-typed', 'operator-proposed'];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default function OperatorSettingsPage() {
   const [cfg, setCfg] = useState<OperatorConfig | null>(null);
   const [entries, setEntries] = useState<PreferenceEntry[]>([]);
-  const [filter, setFilter] = useState<FilterMode>('all');
+  // User-meaningful list filter → URL via nuqs (visible to ui:get_state).
+  const [filter, setFilter] = useQueryState('filter', parseAsStringEnum<FilterMode>(FILTER_MODES).withDefault('all'));
   const [loading, setLoading] = useState(true);
 
   const [statsOpen, setStatsOpen] = useQueryState('stats', parseAsBoolean.withDefault(false));

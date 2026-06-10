@@ -29,6 +29,9 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolvePlanScope } from './source';
 import { getPlanRevisionById } from './revisions';
 import { readPlanRunTranscript } from './runs';
 
@@ -52,6 +55,7 @@ const argsSchema = z.object({
     .int()
     .positive()
     .describe('Global plan_revisions id (from plans:revisions rows).'),
+  harness: harnessArg,
   query: z
     .string()
     .optional()
@@ -96,7 +100,11 @@ export default defineTool({
   async handler(args: TranscriptArgs, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     try {
-      const revision = await getPlanRevisionById(args.revisionId);
+      // Workspace scope: revision rows are RLS-isolated per workspace
+      // (audit P-008 / mig 218); resolve it from the harness arg.
+      const harnessSlug = resolveCtxHarnessSlug(harnessScopedCtx(args.harness, ctx));
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const revision = await getPlanRevisionById(args.revisionId, { workspaceId: scope.workspaceId });
       if (!revision) {
         return {
           isError: true,

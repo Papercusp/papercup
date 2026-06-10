@@ -19,6 +19,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { listPlanRevisions } from './revisions';
+import { resolvePlanScope } from './source';
 
 const ALL_ROLES = [
   'scoper',
@@ -61,7 +62,10 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     try {
-      const revisions = await listPlanRevisions(args.slug, harnessSlug ? { harnessSlug } : {});
+      // Resolve the full (workspaceId, harnessSlug) scope so the read
+      // targets the plan's own workspace spine (audit P-008 / mig 218).
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const revisions = await listPlanRevisions(args.slug, scope);
       ctxAny.metadata?.({ slug: args.slug, revisionCount: revisions.length });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ revisions }) }],

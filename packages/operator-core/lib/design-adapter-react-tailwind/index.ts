@@ -23,7 +23,7 @@ export interface ReactTailwindAdapterOpts {
 export function createReactTailwindAdapter(
   opts: ReactTailwindAdapterOpts = {},
 ): DesignEcosystemAdapter {
-  const sourcePaths = opts.registrySourcePaths ?? ['libs/papercusp/apps/web/app/harness/'];
+  const sourcePaths = opts.registrySourcePaths ?? ['libs/papercusp/_retired/apps-web/app/harness/'];
   return {
     id: 'papercusp-design-react-tailwind',
     displayName: 'React + Tailwind (papercusp)',

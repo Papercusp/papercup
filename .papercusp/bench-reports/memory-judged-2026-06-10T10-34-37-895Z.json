@@ -1,0 +1,338 @@
+{
+  "startedAt": "2026-06-10T10:34:37.895Z",
+  "finishedAt": "2026-06-10T10:44:02.324Z",
+  "judgeModel": "claude-sonnet-4-6",
+  "rubricVersion": "memory-usefulness.v1",
+  "corpusVersion": "v1",
+  "goldVersion": "v1",
+  "sampleSize": 24,
+  "sampledQueryIds": [
+    "lg-001",
+    "lg-002",
+    "lg-003",
+    "lg-004",
+    "lg-005",
+    "lg-006",
+    "lg-007",
+    "lg-008",
+    "ei-001",
+    "ei-002",
+    "ei-003",
+    "ei-004",
+    "ei-005",
+    "ei-006",
+    "ei-007",
+    "ei-008",
+    "ss-001",
+    "ss-002",
+    "ss-003",
+    "ss-004",
+    "ss-005",
+    "ss-006",
+    "ss-007",
+    "ss-008"
+  ],
+  "excludedClasses": [
+    "hard-negative"
+  ],
+  "cards": [
+    {
+      "backend": "hybrid",
+      "outcomes": [
+        {
+          "queryId": "lg-001",
+          "class": "lexical-gap",
+          "query": "our point-in-time copies keep ballooning in size because every run folds the prior archive into the new one over and over",
+          "topResultKey": "feedback_backup_self_exclusion",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1011,
+          "judgeCostUsd": 0.0315212,
+          "judgeNotes": "The top memory result is highly useful for the stated intent. Despite a lexical gap between the query vocabulary ('point-in-time copies ballooning', 'folds the prior archive') and the result vocabulary ('kopia snapshots', 'repo recursively re-includes previous repo'), the result precisely describes the same root cause: the backup repository lives inside its own source tree, so each snapshot ingests all prior snapshot data, causing unbounded cumulative growth. The result further delivers the fix location, specific IGNORE_PATTERNS entries, commit history, diagnostic command, and a hazard warning about a related but incorrect fix — everything an agent would need to resolve the stated problem."
+        },
+        {
+          "queryId": "lg-002",
+          "class": "lexical-gap",
+          "query": "the program shrank to a tiny speck on my screen so I can see no content, but the markup inside reports everything mounted",
+          "topResultKey": "feedback_check_window_size_not_viewport",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1694,
+          "judgeCostUsd": 0.025484450000000002,
+          "judgeNotes": "The top-1 memory result is an excellent match for the stated intent. The intent describes a window collapsed to a tiny visual point while internal DOM checks all report the page as fully mounted — the retrieved memory explains exactly this failure mode (OS window at 10×10 while the webview viewport reports 1280×500), names the diagnostic tool to confirm the window size, and gives the concrete repair command. Relevance, specificity, and actionability are all at the maximum level."
+        },
+        {
+          "queryId": "lg-003",
+          "class": "lexical-gap",
+          "query": "logging into the other coding assistant by reusing its saved credentials got me signed out of my real account",
+          "topResultKey": "feedback_codex_auth_probe_hazard",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1165,
+          "judgeCostUsd": 0.03160495,
+          "judgeNotes": "The top retrieval result is an excellent match for the stated intent. The user's colloquial description — 'logging into the other coding assistant by reusing its saved credentials got me signed out of my real account' — maps precisely to the memory's technical account: copying ~/.codex/auth.json into a throwaway CODEX_HOME caused Codex's single-use rotating OAuth refresh token to be consumed server-side, invalidating the real on-disk token and forcing a re-login. Despite the lexical gap (colloquial vs. technical language), the memory carries the exact failure mode, its cause, a diagnostic check (stat mtime), and remediation steps. This is the ideal retrieval outcome for a lexical-gap class test."
+        },
+        {
+          "queryId": "lg-004",
+          "class": "lexical-gap",
+          "query": "the screen rendered empty with no errors after I trimmed an unused package from the manifest",
+          "topResultKey": "feedback_vite_silent_external_bare_import",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1127,
+          "judgeCostUsd": 0.02653645,
+          "judgeNotes": "The top-1 memory result is an exact semantic match for the stated intent. The intent describes a blank screen with no errors after removing a package — the retrieved memory covers precisely that failure mode (Vite/Rollup externalizing an unresolvable bare import, React mounting nothing, zero console noise), explains the root cause (removed package was a transitive dep still directly imported), and provides actionable diagnosis commands. The lexical gap between the user's symptom-level language and the technical cause was successfully bridged."
+        },
+        {
+          "queryId": "lg-005",
+          "class": "lexical-gap",
+          "query": "I yanked a database relation but later some stored routines blow up complaining the thing they read from is gone",
+          "topResultKey": "feedback_drop_table_cascade_not_function_bodies",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1154,
+          "judgeCostUsd": 0.026291449999999997,
+          "judgeNotes": "The top memory result is a near-perfect match for the stated intent. The intent describes dropping a database table and having stored functions/procedures break because they still reference the dropped table. The retrieved memory explains exactly this failure mode in Postgres (CASCADE does not remove plpgsql/SQL function body dependencies), provides a concrete project-history example (b2b_quote_item drop breaking fn_recompute_reserved_qty), supplies a diagnostic query to find all affected functions, and prescribes a recovery procedure including how to verify the fix. Relevance, specificity, and actionability are all maximally high."
+        },
+        {
+          "queryId": "lg-006",
+          "class": "lexical-gap",
+          "query": "removing one API endpoint also wiped out the type definitions and shared utility code that happened to live just above the next one",
+          "topResultKey": "project_papercusp_first_party_tool_pattern",
+          "topResultExpected": false,
+          "usefulness": 1,
+          "searchLatencyMs": 1368,
+          "judgeCostUsd": 0.04073995,
+          "judgeNotes": "The top-1 retrieval result is essentially irrelevant to the stated intent. The intent concerns a code co-location hazard — type definitions and shared utility code living in the same file section as an API endpoint, such that deleting one endpoint also removes adjacent shared code. The returned memory is about MCP tool file placement (package-side vs. operator-side), auto-loading mechanics, and a migration caution about not deleting legacy routes while the UI still references them. While it touches API routes in the same codebase, it carries none of the specific facts needed: nothing about type definitions, nothing about shared utility code, nothing about file-section co-location, and nothing about preventing collateral deletion of non-endpoint code."
+        },
+        {
+          "queryId": "lg-007",
+          "class": "lexical-gap",
+          "query": "a peer took over my in-progress assignment because the tracker marked me idle after I spent a while heads-down in the editor making code changes",
+          "topResultKey": "feedback_recheck_plan_status_before_starting",
+          "topResultExpected": false,
+          "usefulness": 3,
+          "searchLatencyMs": 1690,
+          "judgeCostUsd": 0.04459545,
+          "judgeNotes": "The top retrieval result addresses the general multi-agent coordination failure (peer overtaking in-progress work) with a concrete prior incident and actionable protocol steps, but does not address the specific causal mechanism stated in the intent — the tracker marking the agent idle due to editor-only activity. The result bridges part of the lexical gap but misses the idle-detection angle entirely."
+        },
+        {
+          "queryId": "lg-008",
+          "class": "lexical-gap",
+          "query": "the virtual machine seems to die on a clock — gets terminated every couple of minutes and brought back",
+          "topResultKey": "feedback_qemu_io_error_pause",
+          "topResultExpected": false,
+          "usefulness": 1,
+          "searchLatencyMs": 1207,
+          "judgeCostUsd": 0.0443757,
+          "judgeNotes": "The top retrieved memory describes a QEMU vm that pauses on disk io-error and must be manually resumed — a single, static hang. The intent describes a completely different failure mode: a VM being periodically and automatically terminated then restarted on a clock (every couple of minutes). While both involve QEMU VMs, the retrieved fact does not address watchdog timers, supervisory restart loops, systemd/cron-driven kill cycles, resource-limit evictions, or any other mechanism that would cause repeating timed kill+restart behavior. The result would not concretely help an agent diagnosing or resolving the described symptom."
+        },
+        {
+          "queryId": "ei-001",
+          "class": "exact-identifier",
+          "query": "[boot-migrate] FAILED 000-baseline.sql: must be owner of function task_lineage",
+          "topResultKey": "feedback_drop_table_cascade_not_function_bodies",
+          "topResultExpected": false,
+          "usefulness": 0,
+          "searchLatencyMs": 629,
+          "judgeCostUsd": 0.033494449999999995,
+          "judgeNotes": "The top memory result is entirely irrelevant to the stated intent. The intent describes a PostgreSQL migration failure with a specific ownership error ('must be owner of function task_lineage'), which is a permissions/role problem. The retrieved memory concerns DROP TABLE CASCADE silently leaving dangling function-body references — a completely different failure class. No part of the result addresses ownership transfer, REASSIGN OWNED, ALTER FUNCTION … OWNER TO, or any mechanism for resolving 'must be owner' errors."
+        },
+        {
+          "queryId": "ei-002",
+          "class": "exact-identifier",
+          "query": "ListMcpResourcesTool not found in environment",
+          "topResultKey": "feedback_avoid_mcp_resources_tool",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 429,
+          "judgeCostUsd": 0.0182067,
+          "judgeNotes": "The top memory result is highly relevant and directly addresses the intent 'ListMcpResourcesTool not found in environment'. It explicitly names the tool, explains why it errors, provides historical evidence of the failure pattern, and gives concrete actionable guidance on what to do instead. This is an ideal retrieval result for the stated intent."
+        },
+        {
+          "queryId": "ei-003",
+          "class": "exact-identifier",
+          "query": "getHarnessAdminUrl resolve admin DSN",
+          "topResultKey": "project_adv_live_in_operator_vite",
+          "topResultExpected": false,
+          "usefulness": 1,
+          "searchLatencyMs": 561,
+          "judgeCostUsd": 0.037656449999999994,
+          "judgeNotes": "The top memory result returned for the intent 'getHarnessAdminUrl resolve admin DSN' is architectural documentation about the operator-vite build pipeline, harness tab component locations, and admin shell routing. It contains no mention of a 'getHarnessAdminUrl' function, no DSN (Data Source Name) resolution logic, no connection string construction, and no URL-building logic. The result is largely irrelevant to the stated retrieval intent, which appears to need a specific function or pattern for resolving an admin data-source/connection URL from a harness context."
+        },
+        {
+          "queryId": "ei-004",
+          "class": "exact-identifier",
+          "query": "papercup-vm-mac.service keeps getting SIGTERM'd",
+          "topResultKey": "feedback_mac_vm_systemd_kill_loop",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 651,
+          "judgeCostUsd": 0.02683545,
+          "judgeNotes": "The top memory result is a near-perfect match for the intent 'papercup-vm-mac.service keeps getting SIGTERM'd'. It identifies the exact service file path, root-causes the kill loop (Type=forking + no pid file written), states the fix (Type=simple, TimeoutStartUSec=infinity, PIDFile=empty), supplies the exact diagnostic command, and adds regression/APFS damage context — everything an agent acting on that intent would need."
+        },
+        {
+          "queryId": "ei-005",
+          "class": "exact-identifier",
+          "query": "allocate migration number with db:next-migration",
+          "topResultKey": "feedback_use_db_next_migration_for_numbers",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 427,
+          "judgeCostUsd": 0.02401745,
+          "judgeNotes": "The top-1 memory result is a perfect match for the stated intent. It names the exact tool (db:next-migration), explains the underlying mechanism (advisory-lock-protected GREATEST(max-on-disk, max-reserved)+1), provides the precise filesystem path where the migration file should land, and reinforces the rule with a concrete collision incident. An agent acting on this intent would have everything needed to proceed correctly."
+        },
+        {
+          "queryId": "ei-006",
+          "class": "exact-identifier",
+          "query": "PAPERCUSP_USE_TS_ORCHESTRATOR=0 escape hatch",
+          "topResultKey": "project_papercusp_pg_topology",
+          "topResultExpected": false,
+          "usefulness": 1,
+          "searchLatencyMs": 446,
+          "judgeCostUsd": 0.039512450000000005,
+          "judgeNotes": "The top memory result returned for the intent 'PAPERCUSP_USE_TS_ORCHESTRATOR=0 escape hatch' is a broad Papercusp database-topology and agent-spawning note. It covers embedded-PG architecture, migration runner details, standing dev-api service env fixes, and buggy claude-code spawn mechanics — but never mentions PAPERCUSP_USE_TS_ORCHESTRATOR, its semantics, or how to use it as an escape hatch. The specific fact the intent needs is entirely absent."
+        },
+        {
+          "queryId": "ei-007",
+          "class": "exact-identifier",
+          "query": "qemu werror=stop pauses VM on disk write failure",
+          "topResultKey": "feedback_qemu_io_error_pause",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1663,
+          "judgeCostUsd": 0.019940950000000002,
+          "judgeNotes": "The top memory result is an excellent match for the stated intent. It directly explains QEMU's werror=stop behavior, describes exactly how it pauses a VM on disk write failure, gives concrete symptoms, and provides step-by-step remediation. The result is highly specific, operationally rich, and directly carries the fact the intent needs."
+        },
+        {
+          "queryId": "ei-008",
+          "class": "exact-identifier",
+          "query": "ERR_CONTENT_DECODING_FAILED in the browser console",
+          "topResultKey": "feedback_proxy_strip_content_encoding",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 382,
+          "judgeCostUsd": 0.01948695,
+          "judgeNotes": "The top memory result is a near-perfect match for the stated intent. It directly explains the root cause of ERR_CONTENT_DECODING_FAILED in the context of a reverse proxy, provides the mechanism (undici transparent decompression + header passthrough mismatch), gives the concrete fix (strip content-encoding and content-length in the header-copy loop), and includes a real incident trace with file path, commit hash, and symptom signature. This is maximally useful retrieval."
+        },
+        {
+          "queryId": "ss-001",
+          "class": "session-start-intent",
+          "query": "running e2e tests for the Papercusp desktop app",
+          "topResultKey": "feedback_browser_e2e_verify_ui_fixes",
+          "topResultExpected": false,
+          "usefulness": 5,
+          "searchLatencyMs": 1134,
+          "judgeCostUsd": 0.02579595,
+          "judgeNotes": "The top memory result is highly useful for the stated intent. It directly addresses running Playwright e2e tests for the Papercusp desktop app, providing the exact installation path, API patterns (.mjs script, chromium.launch, page.goto, page.on), and a concrete rationale for why browser-driven tests are necessary over unit tests or curl. The result is project-specific, actionable, and carries all the procedural facts an agent would need to immediately execute e2e tests."
+        },
+        {
+          "queryId": "ss-002",
+          "class": "session-start-intent",
+          "query": "verifying a frontend fix in the browser before telling the user it's done",
+          "topResultKey": "feedback_browser_e2e_verify_ui_fixes",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 839,
+          "judgeCostUsd": 0.0261047,
+          "judgeNotes": "The top memory result is an excellent match for the intent 'verifying a frontend fix in the browser before telling the user it's done.' It directly prescribes a Playwright-based browser e2e verification workflow, explains the historical lesson motivating the rule, provides the exact installation path for Playwright in the project, and gives a concrete code pattern for headless browser testing — all of which are precisely what an agent with this intent needs."
+        },
+        {
+          "queryId": "ss-003",
+          "class": "session-start-intent",
+          "query": "adding a new SQL migration to the shared papercup tree",
+          "topResultKey": "feedback_use_db_next_migration_for_numbers",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1905,
+          "judgeCostUsd": 0.023441700000000003,
+          "judgeNotes": "The top memory result is a near-perfect match for the stated intent. It delivers the exact procedure an agent needs when adding a SQL migration to the shared papercup tree: use `db:next-migration` to reserve the migration number, not manual disk inspection. It also supplies the target path, a concrete historical collision example, the rationale (advisory lock preventing concurrent-agent collisions), and a cross-reference to the project blackboard. No deterministic violations were flagged, and there are no novel behavioral failures to report."
+        },
+        {
+          "queryId": "ss-004",
+          "class": "session-start-intent",
+          "query": "dropping a Postgres table that other code might still reference",
+          "topResultKey": "feedback_drop_table_cascade_not_function_bodies",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1589,
+          "judgeCostUsd": 0.0195432,
+          "judgeNotes": "The top memory result is highly relevant and directly useful for the intent of dropping a Postgres table that other code might still reference. It provides a specific, hard-won lesson about CASCADE's blind spots (function bodies with plain SQL references), a concrete diagnostic query using pg_proc/prosrc, a recommended fix workflow, and real project context. This is essentially the exact fact pattern the intent needs."
+        },
+        {
+          "queryId": "ss-005",
+          "class": "session-start-intent",
+          "query": "deploying the Restart storefront to production",
+          "topResultKey": "reference_restart_repo",
+          "topResultExpected": false,
+          "usefulness": 2,
+          "searchLatencyMs": 1744,
+          "judgeCostUsd": 0.0331932,
+          "judgeNotes": "The top memory result returned project-context facts (repo path, dev-server URL, localhost API port, UI verification skill, Hindsight MCP notes) rather than any production-deployment-specific information. The repo location is a weak prerequisite, but the bulk of the result addresses local development workflow. Nothing in the result speaks to build commands, hosting target, environment variables, CI/CD pipeline, or any deployment procedure — the facts an agent would actually need to deploy to production."
+        },
+        {
+          "queryId": "ss-006",
+          "class": "session-start-intent",
+          "query": "starting the Restart dev services because :3001 is down",
+          "topResultKey": "project_restart_stack",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1273,
+          "judgeCostUsd": 0.026570200000000002,
+          "judgeNotes": "The top-1 memory result is an exceptionally strong match for the stated intent. It directly names the project, gives the startup command, maps port 3001 to the 'web' service, walks through the stale-socket trap that most likely explains why :3001 is down, and even includes a 'How to apply' note that explicitly covers the 'app at :3001 is down' scenario. The result carries every fact an agent needs to diagnose and restart the service without any follow-up lookup."
+        },
+        {
+          "queryId": "ss-007",
+          "class": "session-start-intent",
+          "query": "implementing a new operator MCP tool",
+          "topResultKey": "project_papercusp_first_party_tool_pattern",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 1297,
+          "judgeCostUsd": 0.02431795,
+          "judgeNotes": "The top memory result is a near-perfect match for the intent 'implementing a new operator MCP tool'. It provides the exact file locations, the registration API, auto-loading mechanics, concrete examples, and migration guidance — everything an agent would need to implement an operator-side MCP tool from scratch."
+        },
+        {
+          "queryId": "ss-008",
+          "class": "session-start-intent",
+          "query": "moving new durable operator state into storage",
+          "topResultKey": "feedback_pg_canonical_no_mirrors",
+          "topResultExpected": true,
+          "usefulness": 5,
+          "searchLatencyMs": 657,
+          "judgeCostUsd": 0.02547745,
+          "judgeNotes": "The top-1 retrieval result is directly on-point for the intent 'moving new durable operator state into storage'. It unambiguously names Postgres as the canonical storage target, prescribes the exact write-path pattern for new state ('new write paths target PG only'), forbids FS-mirroring anti-patterns, and points to a specific documentation file. An agent acting on the intent would be concretely and immediately helped."
+        }
+      ],
+      "meanUsefulness": 3.9166666666666665,
+      "usefulRate": 0.75,
+      "byClass": {
+        "lexical-gap": {
+          "n": 8,
+          "meanUsefulness": 3.75,
+          "usefulRate": 0.75
+        },
+        "exact-identifier": {
+          "n": 8,
+          "meanUsefulness": 3.375,
+          "usefulRate": 0.625
+        },
+        "session-start-intent": {
+          "n": 8,
+          "meanUsefulness": 4.625,
+          "usefulRate": 0.875
+        }
+      },
+      "judgeCostUsd": 0.6947448
+    }
+  ],
+  "doubleScore": {
+    "n": 5,
+    "meanAbsDelta": 0,
+    "maxAbsDelta": 0
+  },
+  "notes": [
+    "hard-negative class excluded from judging (ill-posed for \"top-result usefulness\"); the deterministic tier's false-positive rate covers it."
+  ],
+  "markdown": "# Memory bench — T3 judged-usefulness tier\n\njudge: `claude-sonnet-4-6` · rubric: `memory-usefulness.v1` · sample: 24 queries (corpus v1, gold v1; excluded: hard-negative)\n\n| backend | mean usefulness (0–5) | useful rate (≥3) | lexical-gap mean | exact-identifier mean | session-start-intent mean | judge cost |\n|---|---|---|---|---|---|---|\n| hybrid | 3.92 | 75% | 3.75 | 3.38 | 4.63 | $0.695 |\n\njudge agreement (double-scored n=5): mean |Δ| 0.00, max |Δ| 0.00 on the 0–5 usefulness axis\n\nnote: hard-negative class excluded from judging (ill-posed for \"top-result usefulness\"); the deterministic tier's false-positive rate covers it."
+}

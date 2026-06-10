@@ -9,6 +9,9 @@ export default defineVitestConfig({
     'test/**/*.integration.test.ts',
     'app/**/*.integration.test.ts',
     'lib/**/*.integration.test.ts',
+    // The cc/omp hook scripts' live-operator rungs (coord-e2e P-008) live
+    // beside the scripts they exercise, like their unit siblings.
+    'scripts/**/*.integration.test.ts',
   ],
   // P-015 (self-contained-migration-baseline-2026-06-02): stand up the COMPLETE
   // harness_shared schema once per run by applying the real migration set, and expose

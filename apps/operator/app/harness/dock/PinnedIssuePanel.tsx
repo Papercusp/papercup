@@ -3,8 +3,10 @@
  *
  * Spec: apps/operator/docs/dockview-migration-plan-v4.md §3.2
  *
- * Backed by /api/harness/<slug>/issues-list (filtered client-side for
- * the one issue). Auto-refresh 10s.
+ * Data: useHarnessIssues (one-shot REST bootstrap + live
+ * issuesConsolidated.bySlug sync overlay), filtered client-side for the
+ * one issue — the consolidated row carries every field rendered here. The
+ * legacy 10s fetch poll is gone (audit P-058).
  *
  * Params:
  *   harnessSlug: string (required)
@@ -13,28 +15,10 @@
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import type { PanelComponentProps } from './panel-registry';
-
-interface Issue {
-  id: string;
-  title: string;
-  severity?: string;
-  status?: string;
-  source?: string;
-  foundAt?: string;
-  evidence?: string | null;
-  repro?: string | null;
-  suggestedFix?: string | null;
-  codePointer?: string | null;
-  linkedFeatureId?: string | null;
-  attempts?: number;
-  notes?: Array<unknown>;
-}
-
-interface IssuesResponse {
-  issues: Issue[];
-}
+import { useHarnessIssues } from '../../adv/harnesses/useHarnessData';
+import { LazyDetails } from '../../_components/LazyDetails';
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: '#dc2626',
@@ -55,38 +39,14 @@ const STATUS_COLORS: Record<string, string> = {
 export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const issueId = (params.issueId as string) || '';
-  const [issue, setIssue] = useState<Issue | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const { issues, error } = useHarnessIssues(slug);
+  const issue = issues?.find((x) => x.id === issueId) ?? null;
 
   useEffect(() => {
-    if (!slug || !issueId) return;
-    setError(null);
-    let cancel = false;
-    const load = async () => {
-      try {
-        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list`);
-        if (!r.ok) throw new Error(`status ${r.status}`);
-        const j: IssuesResponse = await r.json();
-        if (cancel) return;
-        const i = j.issues.find((x) => x.id === issueId);
-        if (!i) {
-          setError(new Error(`Issue ${issueId} not found in ${slug}`));
-          return;
-        }
-        setIssue(i);
-        api.setTitle(`📌 ${i.id}: ${i.title.slice(0, 30)}${i.title.length > 30 ? '…' : ''}`);
-      } catch (e) {
-        if (cancel) return;
-        setError(e as Error);
-      }
-    };
-    load();
-    const id = setInterval(load, 10_000);
-    return () => {
-      cancel = true;
-      clearInterval(id);
-    };
-  }, [slug, issueId, api]);
+    if (issue) {
+      api.setTitle(`📌 ${issue.id}: ${issue.title.slice(0, 30)}${issue.title.length > 30 ? '…' : ''}`);
+    }
+  }, [issue, api]);
 
   if (!slug || !issueId) {
     return (
@@ -98,7 +58,13 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
   if (error)
     return (
       <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>
-        Failed: {error.message}
+        Failed: {error}
+      </div>
+    );
+  if (issues && !issue)
+    return (
+      <div style={{ padding: 16, fontSize: 13, color: '#f87171' }}>
+        Issue {issueId} not found in {slug}
       </div>
     );
   if (!issue)
@@ -169,16 +135,11 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
       {issue.evidence && <Section label="Evidence" body={issue.evidence} />}
       {issue.suggestedFix && <Section label="Suggested fix" body={issue.suggestedFix} />}
       {issue.notes && issue.notes.length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary
-            style={{
-              cursor: 'pointer',
-              color: 'var(--fg-mute)',
-              fontSize: 11,
-            }}
-          >
-            notes ({issue.notes.length})
-          </summary>
+        <LazyDetails
+          style={{ marginTop: 8 }}
+          summaryStyle={{ cursor: 'pointer', color: 'var(--fg-mute)', fontSize: 11 }}
+          summary={`notes (${issue.notes.length})`}
+        >
           <pre
             style={{
               margin: '4px 0 0',
@@ -191,7 +152,7 @@ export function PinnedIssuePanel({ params, api }: PanelComponentProps) {
           >
             {JSON.stringify(issue.notes, null, 2)}
           </pre>
-        </details>
+        </LazyDetails>
       )}
     </div>
   );
@@ -219,17 +180,12 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function Section({ label, body }: { label: string; body: string }) {
   return (
-    <details style={{ marginTop: 8 }} open>
-      <summary
-        style={{
-          cursor: 'pointer',
-          color: 'var(--fg-mute)',
-          fontSize: 11,
-          fontWeight: 600,
-        }}
-      >
-        {label}
-      </summary>
+    <LazyDetails
+      style={{ marginTop: 8 }}
+      defaultOpen
+      summaryStyle={{ cursor: 'pointer', color: 'var(--fg-mute)', fontSize: 11, fontWeight: 600 }}
+      summary={label}
+    >
       <pre
         style={{
           margin: '4px 0 0',
@@ -243,6 +199,6 @@ function Section({ label, body }: { label: string; body: string }) {
       >
         {body}
       </pre>
-    </details>
+    </LazyDetails>
   );
 }

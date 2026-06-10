@@ -90,6 +90,12 @@ describe('outboxRowToLocalWriteOp — features', () => {
       taken_by: 'alice',
       taken_at: '2024-05-29T12:00:00.000Z',
       expires_at: '2024-05-29T13:00:00.000Z',
+      // Dispatch columns (migs 136/178/191/195) — to_jsonb always carries them.
+      item_kind: 'research-task',
+      feature_order: 7,
+      swarm_affinity: 'swarm-b',
+      redundancy: 2,
+      payload: { question: 'q?' },
       author_pubkey: 'deadbeef',
       origin: 'local',
     },
@@ -134,7 +140,27 @@ describe('outboxRowToLocalWriteOp — features', () => {
       // TIMESTAMPTZ ISO strings converted back to epoch ms.
       taken_at: Date.parse('2024-05-29T12:00:00.000Z'),
       expires_at: Date.parse('2024-05-29T13:00:00.000Z'),
+      // Dispatch columns federate (su-ae509 2026-06-10 — Queen steering was
+      // dropped here, never reaching remote swarms).
+      item_kind: 'research-task',
+      feature_order: 7,
+      swarm_affinity: 'swarm-b',
+      redundancy: 2,
+      payload: { question: 'q?' },
     });
+  });
+
+  it('an OLD-shape outbox row (no dispatch columns) maps them to null and still validates', () => {
+    const { item_kind, feature_order, swarm_affinity, redundancy, payload, ...oldRow } =
+      featureOutboxRow.row as Record<string, unknown>;
+    const op = outboxRowToLocalWriteOp({ ...featureOutboxRow, row: oldRow })!;
+    const value = op.value as HarnessFeatureRow;
+    expect(isHarnessFeatureRow(value)).toBe(true);
+    expect(value.item_kind).toBeNull();
+    expect(value.feature_order).toBeNull();
+    expect(value.swarm_affinity).toBeNull();
+    expect(value.redundancy).toBeNull();
+    expect(value.payload).toBeNull();
   });
 
   it('converts null TIMESTAMPTZ fields to null (not NaN)', () => {

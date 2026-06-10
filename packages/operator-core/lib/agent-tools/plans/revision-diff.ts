@@ -22,6 +22,9 @@
 import { createPatch } from 'diff';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolvePlanScope } from './source';
 import { getPlanRevisionPairById, type PlanRevisionPair } from './revisions';
 
 const ALL_ROLES = [
@@ -44,6 +47,7 @@ const argsSchema = z.object({
     .int()
     .positive()
     .describe('The plan_revisions row id (from plans:revisions.id) to diff against its predecessor.'),
+  harness: harnessArg,
 });
 
 /**
@@ -83,7 +87,11 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
     try {
-      const pair = await getPlanRevisionPairById(args.revisionId);
+      // Workspace scope: revision rows are RLS-isolated per workspace
+      // (audit P-008 / mig 218); resolve it from the harness arg.
+      const harnessSlug = resolveCtxHarnessSlug(harnessScopedCtx(args.harness, ctx));
+      const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const pair = await getPlanRevisionPairById(args.revisionId, { workspaceId: scope.workspaceId });
       if (!pair) {
         return {
           content: [

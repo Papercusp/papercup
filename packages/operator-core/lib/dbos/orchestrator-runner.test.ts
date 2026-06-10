@@ -5,7 +5,33 @@ import {
   formatInvokeStderr,
   debuggerGateDecision,
   pickReactiveBeforeWorkerRole,
+  invokeTimeoutMs,
+  governorMaxWaitMs,
 } from './orchestrator-runner';
+
+describe('lazy env knobs (audit P-015 / EI-172)', () => {
+  test('invokeTimeoutMs + governorMaxWaitMs read env at call time, not import time', () => {
+    const prevT = process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS;
+    const prevG = process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS;
+    try {
+      delete process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS;
+      delete process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS;
+      expect(invokeTimeoutMs()).toBe(600_000);
+      expect(governorMaxWaitMs()).toBe(1_800_000);
+      // The module was imported long before these env writes — the values must
+      // still be honored (the old module-init consts ignored them: EI-172).
+      process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS = '1234';
+      process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS = '5678';
+      expect(invokeTimeoutMs()).toBe(1234);
+      expect(governorMaxWaitMs()).toBe(5678);
+    } finally {
+      if (prevT === undefined) delete process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS = prevT;
+      if (prevG === undefined) delete process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS;
+      else process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS = prevG;
+    }
+  });
+});
 
 describe('extractAgentOutput — strip orchestrator timestamp log lines', () => {
   test('drops [2026-…] timestamp lines, keeps the agent body', () => {

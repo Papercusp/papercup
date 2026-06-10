@@ -219,6 +219,11 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
       taken_by            TEXT,
       taken_at            TIMESTAMPTZ,
       expires_at          TIMESTAMPTZ,
+      item_kind           TEXT NOT NULL DEFAULT 'feature', -- dispatch columns (migs 136/178/191/195)
+      feature_order       INTEGER,
+      swarm_affinity      TEXT,
+      redundancy          INTEGER,
+      payload             JSONB,
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT, -- EI-79 step 2 (mig 181): PG-level LWW guard column

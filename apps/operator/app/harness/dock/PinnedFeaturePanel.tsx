@@ -4,8 +4,12 @@
  * Spec: apps/operator/docs/dockview-migration-plan-v4.md §3.2
  *
  * Backed by /api/harness/<slug>/status (filtered client-side for the
- * one feature). Auto-refresh 10s. Used as the target of "Pin as panel"
- * actions on feature rows in RealFeaturesPanel.
+ * one feature — the REST read carries rich fields like notes/metadata the
+ * consolidated sync row doesn't). The legacy 10s poll is gone (audit
+ * P-058): the featuresConsolidated.bySlug subscription (useHarnessFeatures)
+ * watches this feature's core fields and re-pulls REST when they change.
+ * Used as the target of "Pin as panel" actions on feature rows in
+ * RealFeaturesPanel.
  *
  * Params:
  *   harnessSlug: string (required)
@@ -16,6 +20,8 @@
 
 import { useEffect, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
+import { useHarnessFeatures } from '../../adv/harnesses/useHarnessData';
+import { LazyDetails } from '../../_components/LazyDetails';
 
 interface Feature {
   id: string;
@@ -50,6 +56,11 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
   const [feature, setFeature] = useState<Feature | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
+  // Live core fields for this feature via the consolidated subscription.
+  // Their changes are the refetch trigger for the rich REST read below.
+  const { features: liveFeatures } = useHarnessFeatures(slug);
+  const live = liveFeatures?.find((f) => f.id === featureId) ?? null;
+
   useEffect(() => {
     if (!slug || !featureId) return;
     setError(null);
@@ -73,12 +84,12 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
       }
     };
     load();
-    const id = setInterval(load, 10_000);
     return () => {
       cancel = true;
-      clearInterval(id);
     };
-  }, [slug, featureId, api]);
+    // live core-field changes (status/attempts/review) re-pull the rich REST
+    // detail — push-driven freshness instead of the old 10s timer.
+  }, [slug, featureId, api, live?.status, live?.attempts, live?.needsReview]);
 
   if (!slug || !featureId) {
     return (
@@ -179,16 +190,11 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
         <Row label="tags" value={feature.tags.join(', ')} />
       )}
       {feature.metadata && Object.keys(feature.metadata).length > 0 && (
-        <details style={{ marginTop: 8 }}>
-          <summary
-            style={{
-              cursor: 'pointer',
-              color: 'var(--fg-mute)',
-              fontSize: 11,
-            }}
-          >
-            metadata
-          </summary>
+        <LazyDetails
+          style={{ marginTop: 8 }}
+          summaryStyle={{ cursor: 'pointer', color: 'var(--fg-mute)', fontSize: 11 }}
+          summary="metadata"
+        >
           <pre
             style={{
               margin: '4px 0 0',
@@ -201,19 +207,14 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           >
             {JSON.stringify(feature.metadata, null, 2)}
           </pre>
-        </details>
+        </LazyDetails>
       )}
       {feature.notes && (
-        <details style={{ marginTop: 8 }}>
-          <summary
-            style={{
-              cursor: 'pointer',
-              color: 'var(--fg-mute)',
-              fontSize: 11,
-            }}
-          >
-            notes
-          </summary>
+        <LazyDetails
+          style={{ marginTop: 8 }}
+          summaryStyle={{ cursor: 'pointer', color: 'var(--fg-mute)', fontSize: 11 }}
+          summary="notes"
+        >
           <pre
             style={{
               margin: '4px 0 0',
@@ -226,7 +227,7 @@ export function PinnedFeaturePanel({ params, api }: PanelComponentProps) {
           >
             {feature.notes}
           </pre>
-        </details>
+        </LazyDetails>
       )}
     </div>
   );

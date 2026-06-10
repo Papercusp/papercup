@@ -15,7 +15,7 @@
  * collision risk.
  */
 import { useState, useMemo } from 'react';
-import { useQueryState, parseAsString } from 'nuqs';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import type React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -65,8 +65,10 @@ const BUCKETS: Bucket[] = ['all', 'pending', 'accepted', 'ignored'];
 
 export default function DesignDashboard({ slug }: { slug: string }) {
   const workspaceId = useWorkspaceId();
-  const [activePane, setActivePane] = useState<Pane>('features');
-  const [bucket, setBucket] = useState<Bucket>('all');
+  // Pane + bucket are user-meaningful selectors → URL via nuqs (agents read
+  // the URL through ui:get_state; useState would make them invisible).
+  const [activePane, setActivePane] = useQueryState('pane', parseAsStringEnum<Pane>(PANES).withDefault('features'));
+  const [bucket, setBucket] = useQueryState('bucket', parseAsStringEnum<Bucket>(BUCKETS).withDefault('all'));
   const [selectedFeatureId, setSelectedFeatureId] = useQueryState('feature', parseAsString);
   const [registryQuery, setRegistryQuery] = useState('');
 

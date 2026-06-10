@@ -1,7 +1,7 @@
 /**
  * hive-directory-meta.test.ts — owned-hive metadata persistence (p2p-hive P-004).
  *
- * Mocks the registry blob (loadHarnessRegistry/saveHarnessRegistry) so the
+ * Mocks the registry blob (loadHarnessRegistry/mutateHarnessRegistry) so the
  * create/edit/list/delete + the invite-secret guard test without PG.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,8 +9,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const store: { reg: Record<string, unknown> } = { reg: { projects: [] } };
 vi.mock('./harness-registry', () => ({
   loadHarnessRegistry: async () => JSON.parse(JSON.stringify(store.reg)),
-  saveHarnessRegistry: async (r: Record<string, unknown>) => {
-    store.reg = JSON.parse(JSON.stringify(r));
+  mutateHarnessRegistry: async (
+    mutator: (reg: Record<string, unknown>) => Record<string, unknown>,
+  ) => {
+    store.reg = JSON.parse(JSON.stringify(mutator(JSON.parse(JSON.stringify(store.reg)))));
+    return store.reg;
   },
 }));
 

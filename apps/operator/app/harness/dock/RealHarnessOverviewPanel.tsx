@@ -14,6 +14,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import type { PanelComponentProps } from './panel-registry';
 
 interface StatusResponse {
@@ -88,6 +89,23 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
+  // Push triggers: the REST /status aggregate has no single sync row, so
+  // subscribe to the two consolidated feeds whose changes move this panel —
+  // features (counts/progress) and agent runs (alive) — and re-pull REST
+  // when either pushes. Replaces the legacy 5s fetch poll (audit P-058);
+  // SSE invalidations are dedupe-windowed server-side so the refetch rate
+  // stays bounded.
+  const { data: featureRows } = useSyncQuery<unknown>({
+    queryName: 'featuresConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+  const { data: runRows } = useSyncQuery<unknown>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+
   useEffect(() => {
     if (!slug) return;
     setError(null);
@@ -108,12 +126,11 @@ export function RealHarnessOverviewPanel({ params, api }: PanelComponentProps) {
       }
     };
     load();
-    const id = setInterval(load, 5_000);
     return () => {
       cancel = true;
-      clearInterval(id);
     };
-  }, [slug, phase, api]);
+    // featureRows/runRows identity changes on each sync push → refetch.
+  }, [slug, phase, api, featureRows, runRows]);
 
   // Total + done percentage
   const stats = useMemo(() => {

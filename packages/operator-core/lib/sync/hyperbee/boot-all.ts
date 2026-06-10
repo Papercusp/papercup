@@ -4,9 +4,12 @@
  * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24
  *       + papercusp-dogfood-phase11-multi-engineer-2026-05-25 (P-078).
  *
- * One entry point per process. Discovers every harness in the active
- * workspace, calls `bootHarnessSubstrate` per harness, stashes the
- * handle in a module-level Map keyed by
+ * One entry point per process. Discovers every harness across every
+ * workspace FROM THE PG REGISTRY (`harness_shared.harness_registry`, the
+ * single source of truth since mig 025 — audit P-078: the old
+ * registry.json + readdirSync read silently booted ZERO harnesses when
+ * the file was stale), calls `bootHarnessSubstrate` per harness, stashes
+ * the handle in a module-level Map keyed by
  * `${workspaceId}::${harnessSlug}`, and exposes lookup + teardown.
  *
  * Idempotent at every level:
@@ -29,7 +32,6 @@
  * removed in Stage 4d; the Model B substrate is the default.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
 import { join } from 'node:path';
 import {
@@ -58,29 +60,18 @@ function workspaceRootForId(workspaceId: string): string {
   return join(workspacesRoot(), workspaceId);
 }
 
-/** True if the workspace dir holds at least one `harnesses/<slug>/` entry. */
-function harnessSlugsFor(workspaceId: string): string[] {
-  const wsRoot = workspaceRootForId(workspaceId);
-  const harnessesDir =
-    process.env.PAPERCUSP_HARNESSES_DIR ?? join(wsRoot, '.papercusp', 'harnesses');
-  if (!existsSync(harnessesDir)) return [];
-  let entries: string[];
-  try {
-    entries = readdirSync(harnessesDir);
-  } catch {
-    return [];
-  }
-  const slugs: string[] = [];
-  for (const name of entries) {
-    if (name.startsWith('.')) continue;
-    const candidate = join(harnessesDir, name);
-    try {
-      if (statSync(candidate).isDirectory()) slugs.push(name);
-    } catch {
-      // ignore — racing readdir / unlink etc.
-    }
-  }
-  return slugs;
+/**
+ * Harness slugs for a workspace — from the PG registry (audit P-078).
+ * `harness_shared.harness_registry` (loadHarnessRegistry, mig 025) is the
+ * single source of truth; the old `readdirSync('.papercusp/harnesses')`
+ * returned [] on ANY error, silently booting zero harnesses when the dir
+ * was stale/missing. PG failures here are LOUD: they throw to the per-
+ * workspace catch in `bootAllHarnessesForActiveWorkspace`.
+ */
+async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]> {
+  const { loadHarnessRegistry } = await import('../../harness-registry');
+  const reg = await loadHarnessRegistry(workspaceId);
+  return reg.projects.map((p) => p.slug);
 }
 
 export interface BootSingleResult {
@@ -91,10 +82,16 @@ export interface BootSingleResult {
 }
 
 export interface BootAllOpts {
-  /** Override workspace list. Default: every workspace in the registry. */
+  /** Override workspace list. Default: every workspace with a
+   *  `harness_shared.harness_registry` row (PG — audit P-078). */
   workspaceIds?: string[];
   /** Per-harness boot timeout. Default 30s. */
   perHarnessTimeoutMs?: number;
+  /**
+   * Override per-workspace harness discovery (tests inject; unit tests must
+   * not touch PG). Default: the PG registry via `loadHarnessRegistry`.
+   */
+  discoverHarnessSlugs?: (workspaceId: string) => Promise<string[]>;
   /**
    * Override the swarm-binding resolver. Default reads
    * `.papercusp/shared.json` via `resolveHarnessPaths` and returns
@@ -282,10 +279,23 @@ export async function bootSingleHarness(
 export async function bootAllHarnessesForActiveWorkspace(
   opts: BootAllOpts = {},
 ): Promise<BootAllResult> {
-  const workspaceIds = opts.workspaceIds ?? readRegistryWorkspaceIds();
+  const workspaceIds = opts.workspaceIds ?? (await readRegistryWorkspaceIds());
+  const discover = opts.discoverHarnessSlugs ?? harnessSlugsFromPgRegistry;
   const tasks: Array<Promise<BootSingleResult>> = [];
   for (const wsId of workspaceIds) {
-    const slugs = harnessSlugsFor(wsId);
+    let slugs: string[];
+    try {
+      slugs = await discover(wsId);
+    } catch (e) {
+      // LOUD per-workspace failure (audit P-078): the old FS read returned []
+      // on any error — a silent zero-boot. Other workspaces still boot.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[boot-all] harness discovery failed for workspace '${wsId}' — booting NOTHING for it:`,
+        e instanceof Error ? e.message : String(e),
+      );
+      continue;
+    }
     for (const slug of slugs) {
       tasks.push(
         bootSingleHarness(wsId, slug, {
@@ -429,23 +439,16 @@ export function _setHandleForTests(
   handles.set(key(workspaceId, harnessSlug), handle);
 }
 
-function readRegistryWorkspaceIds(): string[] {
-  try {
-    const path = join(workspacesRoot(), 'registry.json');
-    if (!existsSync(path)) return [];
-    const text = readFileSync(path, 'utf8');
-    const parsed = JSON.parse(text) as {
-      workspaces?: Array<{ id?: string }>;
-    };
-    return (parsed.workspaces ?? [])
-      .map((w) => w.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-/** Exposed for tests + diagnostics. */
-export function _harnessSlugsFor(workspaceId: string): string[] {
-  return harnessSlugsFor(workspaceId);
+/**
+ * Workspace ids to boot — every workspace holding a PG harness_registry row
+ * (a workspace without one has no harnesses to boot). Replaces the stale-able
+ * `~/.papercusp-workspaces/registry.json` read (audit P-078). Throws on a PG
+ * failure: host-bootstrap's caller logs it loudly — a visible boot failure
+ * beats the old silent zero-harness boot.
+ */
+async function readRegistryWorkspaceIds(): Promise<string[]> {
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+  const rows = await sql<{ workspace_id: string }[]>`
+    SELECT workspace_id FROM harness_shared.harness_registry`;
+  return rows.map((r) => r.workspace_id);
 }

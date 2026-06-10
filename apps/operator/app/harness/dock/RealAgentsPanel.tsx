@@ -1,27 +1,17 @@
 /**
- * RealAgentsPanel — agent runs list backed by /api/harness/<slug>/agents.
+ * RealAgentsPanel — agent runs list.
  *
- * Auto-refreshes every 5s while panel is visible. Shows role, runId,
- * running status, size, and last-event timestamp.
+ * Data: useHarnessAgents (one-shot REST bootstrap + live
+ * agentRunsConsolidated.bySlug sync overlay) — the legacy 5s fetch poll
+ * is gone (audit P-058). Shows role, runId, running status, size, and
+ * last-event timestamp.
  */
 
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
-
-interface AgentRun {
-  runId: string;
-  role: string;
-  ts?: number;
-  sizeBytes: number;
-  running: boolean;
-  lastEventTs?: number;
-}
-
-interface AgentsResponse {
-  runs: AgentRun[];
-}
+import { useHarnessAgents } from '../../adv/harnesses/useHarnessData';
 
 const ROLE_COLORS: Record<string, string> = {
   scoper: '#60a5fa',
@@ -48,38 +38,17 @@ function fmtBytes(n: number): string {
 
 export function RealAgentsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
-  const [data, setData] = useState<AgentsResponse | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const { agents, error } = useHarnessAgents(slug);
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
-    if (!slug) return;
-    let cancel = false;
-    const load = async () => {
-      try {
-        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agents`);
-        if (!r.ok) throw new Error(`status ${r.status}`);
-        const j: AgentsResponse = await r.json();
-        if (cancel) return;
-        setData(j);
-        api.setTitle(`Agents: ${slug} (${j.runs.length})`);
-      } catch (e) {
-        if (cancel) return;
-        setError(e as Error);
-      }
-    };
-    load();
-    const id = setInterval(load, 5_000);
-    return () => {
-      cancel = true;
-      clearInterval(id);
-    };
-  }, [slug, api]);
+    if (agents) api.setTitle(`Agents: ${slug} (${agents.length})`);
+  }, [agents, slug, api]);
 
   const visible = useMemo(() => {
-    if (!data) return [];
-    return showAll ? data.runs : data.runs.filter((r) => r.running);
-  }, [data, showAll]);
+    if (!agents) return [];
+    return showAll ? agents : agents.filter((r) => r.running);
+  }, [agents, showAll]);
 
   if (!slug)
     return (
@@ -88,8 +57,8 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
       </div>
     );
   if (error)
-    return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>;
-  if (!data)
+    return <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error}</div>;
+  if (!agents)
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…
@@ -125,7 +94,7 @@ export function RealAgentsPanel({ params, api }: PanelComponentProps) {
           {showAll ? 'All' : 'Running only'} ({visible.length})
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--fg-mute)' }}>
-          auto-refresh 5s
+          live
         </span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', fontSize: 12 }}>

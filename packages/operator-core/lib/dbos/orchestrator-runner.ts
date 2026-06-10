@@ -76,10 +76,15 @@ import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 import { initRateLimitConfig } from '../rate-limit-config';
 import { recordUsageHeaders } from '../agent-usage-telemetry';
 
-const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
+// Audit P-015 (EI-172): read these env knobs LAZILY, per spawn — as module-init
+// consts they froze at first import, so setting/changing the env after host boot
+// (or per test case) was silently ignored. Exported for unit testing.
+export const invokeTimeoutMs = (): number =>
+  Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
 // (the director re-tries later). Unattended → wait generously, but bounded.
-const GOVERNOR_MAX_WAIT_MS = Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000);
+export const governorMaxWaitMs = (): number =>
+  Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000);
 
 /**
  * Strip the orchestrator's `[2026-…]` timestamp log lines from invoke-once
@@ -236,7 +241,7 @@ export async function spawnInvokeOnce(
       // so its separate subscription tracks its separate rate limits (and its pauses carry
       // the account id, driving the Queen's scale-out). Unset locally ⇒ the global bucket.
       const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
-      const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
+      const release = await gov.acquire({}, { maxWaitMs: governorMaxWaitMs() });
       if (!release) {
         return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
       }
@@ -303,7 +308,7 @@ function runChild(
     const timer = setTimeout(() => {
       timedOut = true;
       killTree('SIGTERM');
-    }, timeoutMs ?? INVOKE_TIMEOUT_MS);
+    }, timeoutMs ?? invokeTimeoutMs());
     // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM the
     // tree now, SIGKILL it after a grace period if it ignores the term.
     const onAbort = () => {
@@ -479,6 +484,43 @@ function harnessFinalizeRecipe(projectDir: string): FinalizeRecipe | undefined {
   }
 }
 
+// Audit P-036: the debugger gate runs on every pipeline invocation past the
+// attempt threshold — opening (and tearing down) a fresh postgres() pool each
+// time burned a connection slot + startup round-trips per spawn. Cache one
+// admin client per (url, harness) instead. Deliberately NOT getHarnessPg():
+// that helper is app-role and RLS-subject, so without a withWorkspace
+// transaction the attempts read would silently return zero rows and the gate
+// would never fire; this hook's contract is admin-role + per-harness
+// search_path. Keyed by URL too so an embedded-pg discovery change (new port
+// after a desktop restart) builds a fresh client instead of pinning the old.
+const DEBUGGER_PG_CACHE_MAX = 8;
+const debuggerPgCache = new Map<string, ReturnType<typeof postgres>>();
+function debuggerPgFor(harnessSlug: string): ReturnType<typeof postgres> {
+  const url = getHarnessAdminUrl();
+  const key = `${url}|${harnessSlug}`;
+  const hit = debuggerPgCache.get(key);
+  if (hit) {
+    // Re-insert to refresh LRU recency.
+    debuggerPgCache.delete(key);
+    debuggerPgCache.set(key, hit);
+    return hit;
+  }
+  if (debuggerPgCache.size >= DEBUGGER_PG_CACHE_MAX) {
+    const oldest = debuggerPgCache.entries().next().value;
+    if (oldest) {
+      debuggerPgCache.delete(oldest[0]);
+      void oldest[1].end({ timeout: 2 }).catch(() => {});
+    }
+  }
+  const pg = postgres(url, {
+    max: 1,
+    connect_timeout: 5,
+    connection: { search_path: `harness_${harnessSlug},harness_shared,public` },
+  });
+  debuggerPgCache.set(key, pg);
+  return pg;
+}
+
 const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, workspaceId }) => {
   const project = await resolveProject(harnessSlug, workspaceId);
   if (!project) return { fired: false };
@@ -496,11 +538,7 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
   const cfgThreshold = configGet<number | undefined>(cfg, 'debugger.threshold', undefined);
   const threshold = Number(cfgThreshold ?? harnessBlueprintKnobs(projectDir)?.debuggerThreshold ?? 3);
 
-  const pg = postgres(getHarnessAdminUrl(), {
-    max: 1,
-    connect_timeout: 5,
-    connection: { search_path: `harness_${harnessSlug},harness_shared,public` },
-  });
+  const pg = debuggerPgFor(harnessSlug);
   try {
     const attRows = await pg<Array<{ attempts: number | bigint | null }>>`
       SELECT attempts FROM harness_features
@@ -533,9 +571,8 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
   } catch (err) {
     console.warn(`[dbos-debugger] ${harnessSlug}/${featureId} gate error (non-fatal):`, err instanceof Error ? err.message : err);
     return { fired: false };
-  } finally {
-    await pg.end({ timeout: 2 }).catch(() => {});
   }
+  // No pg.end() here — the client is cached per harness (P-036).
 };
 
 /**

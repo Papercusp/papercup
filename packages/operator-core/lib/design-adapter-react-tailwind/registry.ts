@@ -30,7 +30,7 @@ const HANDCURATED: RegistryEntry[] = [
     states: ['hover', 'focus', 'active'],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: 'libs/papercusp/apps/web/app/harness/Button.tsx' },
+        sourcePointer: { path: 'libs/papercusp/_retired/apps-web/app/harness/Button.tsx' },
         importHint: "import { Button } from '@papercusp/ui'",
         propMap: { label: 'children', icon: 'leftIcon' },
       },
@@ -47,7 +47,7 @@ const HANDCURATED: RegistryEntry[] = [
     variants: ['ghost', 'outline'],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: 'libs/papercusp/apps/web/app/harness/Button.tsx' },
+        sourcePointer: { path: 'libs/papercusp/_retired/apps-web/app/harness/Button.tsx' },
         importHint: "import { Button } from '@papercusp/ui'",
         propMap: { label: 'children' },
       },
@@ -64,7 +64,7 @@ const HANDCURATED: RegistryEntry[] = [
     ],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: 'libs/papercusp/apps/web/app/harness/Select.tsx' },
+        sourcePointer: { path: 'libs/papercusp/_retired/apps-web/app/harness/Select.tsx' },
         importHint: "import { Select } from '@papercusp/ui'",
       },
     },
@@ -79,7 +79,7 @@ const HANDCURATED: RegistryEntry[] = [
     ],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: 'libs/papercusp/apps/web/app/harness/Checkbox.tsx' },
+        sourcePointer: { path: 'libs/papercusp/_retired/apps-web/app/harness/Checkbox.tsx' },
         importHint: "import { Checkbox } from '@papercusp/ui'",
       },
     },
@@ -94,7 +94,7 @@ const HANDCURATED: RegistryEntry[] = [
     ],
     ecosystems: {
       [ECOSYSTEM]: {
-        sourcePointer: { path: 'libs/papercusp/apps/web/app/harness/Banner.tsx' },
+        sourcePointer: { path: 'libs/papercusp/_retired/apps-web/app/harness/Banner.tsx' },
         importHint: "import { Banner } from '@papercusp/ui'",
       },
     },

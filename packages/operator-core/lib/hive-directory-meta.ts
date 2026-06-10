@@ -33,16 +33,22 @@ export async function saveOwnedHiveMeta(meta: HiveDirectoryMeta, workspaceId?: s
   if (meta.visibility === 'invite' && !meta.inviteSecret) {
     throw new Error(`saveOwnedHiveMeta: hive ${meta.hiveId} is invite-visibility but has no inviteSecret`);
   }
-  const reg = await loadHarnessRegistry(workspaceId);
-  reg.hiveDirectoryMeta = { ...(reg.hiveDirectoryMeta ?? {}), [meta.hiveId]: meta };
-  await saveHarnessRegistry(reg, workspaceId);
+  // Atomic RMW (audit P-006 class) — and saveHarnessRegistry historically
+  // DROPPED hiveDirectoryMeta on write, so this module's saves never stuck.
+  await mutateHarnessRegistry(
+    (reg) => ({
+      ...reg,
+      hiveDirectoryMeta: { ...(reg.hiveDirectoryMeta ?? {}), [meta.hiveId]: meta },
+    }),
+    workspaceId,
+  );
 }
 
 /** Remove a hive's directory metadata (delete / stop publishing). */
 export async function deleteOwnedHiveMeta(hiveId: string, workspaceId?: string): Promise<void> {
-  const reg = await loadHarnessRegistry(workspaceId);
-  if (reg.hiveDirectoryMeta?.[hiveId]) {
-    delete reg.hiveDirectoryMeta[hiveId];
-    await saveHarnessRegistry(reg, workspaceId);
-  }
+  await mutateHarnessRegistry((reg) => {
+    if (!reg.hiveDirectoryMeta?.[hiveId]) return reg;
+    const { [hiveId]: _gone, ...rest } = reg.hiveDirectoryMeta;
+    return { ...reg, hiveDirectoryMeta: rest };
+  }, workspaceId);
 }

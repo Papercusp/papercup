@@ -90,6 +90,17 @@ File: `agent-tools/coordination/__tests__/cross-agent-isolation.integration.test
 | presence staleness / revoked transitions | partial | ✅ |
 | subscribe→inject only reaches subscribers | 🟢 | ✅ |
 
+### Watermark crash-restart (C2)
+
+File: `agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts` (4, plan `coord-system-e2e-testing-2026-06-10` P-002 — real PG; a "process" is a dedicated connection + fresh `PgCoordLog`/`PgWatermarkStore` bound into the host seams, and a hard kill discards every in-memory object).
+
+| Cell | Before | Now |
+|---|---|---|
+| LINE (`messages`): consume to N, hard-kill, restart → resumes at exactly N+1 (no replay after a committed turn, no skip) | ❌ | 🔴 |
+| EVENT (`escalations`): same exact-N+1 resume; re-put on an existing msg_id mints no second record | ❌ | 🔴 |
+| crash BEFORE the turn-end commit → aborted turn's entries re-seen in full (at-least-once, never a skip) | ❌ | 🔴 |
+| SAME-TS boundary: committing a partially-consumed same-ts group skips its siblings (the ts-cursor sharp edge) + the safe-commit rule (commit the previous distinct ts → re-seen, never skipped) | ❌ silent | ⚪ pinned (logged below) |
+
 ### Locks (C1)
 
 Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator).
@@ -147,6 +158,7 @@ File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 te
 | admission gate (rejecting peer never federates) | partial | ✅ |
 | revocation drops a peer mid-session | partial | 🔴 |
 | no duplication (one op merged twice → one row) | 🟢 | ✅ |
+| **3-peer partition/rejoin** (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 `three-peer-partition-rejoin.test.ts` |
 
 ### work_items claim/lease (C3)
 
@@ -222,6 +234,16 @@ Both legs verified green on this box (claude 2.1.169, codex).
   Tracked in `coord-system-e2e-testing-2026-06-10` (P-006 note; the two-box
   variant is P-010, owner-gated). Not silent: the fail-open path itself is
   covered by the cells above.
+- **The ts-based watermark's same-ts boundary.** The watermark cursors are ISO
+  timestamps and the inbox filter is strictly-later, so a consumer that
+  commits the ts of a PARTIALLY-consumed same-ts group will never see that
+  group's remaining entries. Pinned (not fixed) in
+  `watermark-crash-restart.integration.test.ts` with the safe-commit rule a
+  consumer must follow: when consumption ends mid-group, commit the previous
+  DISTINCT ts (re-see beats skip). A structural fix would key the cursor by
+  `(ts, msg_id)` — a protocol change tracked in
+  `coord-system-e2e-testing-2026-06-10` (P-002 note), not silently absorbed
+  here.
 - **Holder→authority heartbeat re-assert as a production op kind.** The D-005
   handover protocol (holders re-assert held locks to a new authority; the
   `LockSetReconstructor` rebuilds within one heartbeat interval) is proven E2E

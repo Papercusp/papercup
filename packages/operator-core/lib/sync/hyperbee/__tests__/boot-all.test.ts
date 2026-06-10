@@ -140,11 +140,57 @@ describe('boot-all — substrate orchestrator', () => {
     expect(result.results).toEqual([]);
   });
 
-  it('bootAllHarnessesForActiveWorkspace skips workspaces with no harnesses dir', async () => {
+  it('bootAllHarnessesForActiveWorkspace skips workspaces whose registry holds no harnesses', async () => {
     const result = await bootAllHarnessesForActiveWorkspace({
-      workspaceIds: ['ws-with-no-harnesses-dir-12345'],
+      workspaceIds: ['ws-with-empty-registry-12345'],
+      discoverHarnessSlugs: async () => [],
     });
     expect(result.attempted).toBe(0);
+  });
+
+  it('P-078: boots every slug the registry discovery returns (PG is the source, not the FS)', async () => {
+    const discovered: string[] = [];
+    const result = await bootAllHarnessesForActiveWorkspace({
+      workspaceIds: ['ws-pg-registry'],
+      discoverHarnessSlugs: async (ws) => {
+        discovered.push(ws);
+        return ['h1', 'h2'];
+      },
+      // Throwing resolver fails each boot BEFORE real corestore spin-up —
+      // we only assert the discovery → bootSingleHarness routing here.
+      resolveSwarmBinding: async () => {
+        throw new Error('skip-real-boot');
+      },
+    });
+    expect(discovered).toEqual(['ws-pg-registry']);
+    expect(result.attempted).toBe(2);
+    expect(result.failed).toBe(2);
+    expect(result.results.map((r) => r.harnessSlug).sort()).toEqual(['h1', 'h2']);
+  });
+
+  it('P-078: a discovery failure is LOUD and does not abort the other workspaces', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await bootAllHarnessesForActiveWorkspace({
+        workspaceIds: ['ws-bad', 'ws-good'],
+        discoverHarnessSlugs: async (ws) => {
+          if (ws === 'ws-bad') throw new Error('pg exploded');
+          return ['h-good'];
+        },
+        resolveSwarmBinding: async () => {
+          throw new Error('skip-real-boot');
+        },
+      });
+      // ws-bad contributed nothing but ws-good still booted (failed = fake boot).
+      expect(result.attempted).toBe(1);
+      expect(result.results[0]).toMatchObject({ workspaceId: 'ws-good', harnessSlug: 'h-good' });
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining("harness discovery failed for workspace 'ws-bad'"),
+        expect.anything(),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('listBootedHandles returns empty when no handles', () => {
@@ -220,7 +266,7 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
   });
 
   it('bootAllHarnessesForActiveWorkspace forwards resolveSwarmBinding to per-harness', async () => {
-    // No harnesses-dir → no per-harness boots, but we can verify the
+    // Empty registry → no per-harness boots, but we can verify the
     // option is accepted without error.
     const calls: number = 0;
     const fakeResolver: SwarmBindingResolver = async () => {
@@ -228,7 +274,8 @@ describe('boot-all — Phase 11 P-078 swarm-binding resolution', () => {
       return null;
     };
     const result = await bootAllHarnessesForActiveWorkspace({
-      workspaceIds: ['ws-no-harness-dir-resolver'],
+      workspaceIds: ['ws-empty-registry-resolver'],
+      discoverHarnessSlugs: async () => [],
       resolveSwarmBinding: fakeResolver,
     });
     expect(result.attempted).toBe(0);

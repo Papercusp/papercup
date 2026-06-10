@@ -9,7 +9,7 @@
  * A4 batch 43). `PHASE_ORDER` inlines (no other consumer remains).
  */
 import { existsSync } from 'node:fs';
-import { writeFile, appendFile, mkdir } from 'node:fs/promises';
+import { writeFile, appendFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
@@ -55,8 +55,6 @@ const promote = defineTool({
 
     const ts = Math.floor(Date.now() / 1000);
     const id = `promotion-${ts}-${from}-to-${to}`;
-    const reviewsDir = join(fromPath, '.papercusp', 'pending-reviews');
-    await mkdir(reviewsDir, { recursive: true });
 
     let criteria: Record<string, unknown> = {
       allFeaturesPassed: true,
@@ -116,7 +114,9 @@ const promote = defineTool({
         });
       void notifySyncInvalidate('pendingReviews.byHarness', { harnessSlug: project.slug });
     }
-    await writeFile(join(reviewsDir, `${id}.json`), JSON.stringify(item, null, 2), 'utf8');
+    // PG is canonical for pending reviews (storage policy, audit P-077) — no
+    // worktree JSON is written anymore. confirm reads/resolves via PG; the
+    // FS overwrite there only services pre-P-077 promotion files.
 
     const notesPath = join(fromPath, '.papercusp', 'supervisor-notes.md');
     const block = `\n## promotion ${new Date().toISOString()}\n\nFeature freeze initiated. Only process failing features. Emit promotion-handoff.md when all features passed.\nPromotion item: ${id}\n`;
@@ -139,18 +139,26 @@ const confirmPromotion = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const id = (ctx.params.id as string).replace(/[^A-Za-z0-9_.-]/g, '');
 
-    let found: { path: string; obj: any } | null = null;
-    for (const phase of PHASE_ORDER) {
-      const p = phasePath(project, phase);
-      const f = join(p, '.papercusp', 'pending-reviews', `${id}.json`);
-      const raw = safeRead(f);
-      if (raw) { found = { path: f, obj: JSON.parse(raw) }; break; }
-    }
-    if (!found) return Response.json({ error: 'promotion not found' }, { status: 404 });
+    // PG is canonical (audit P-077): look the promotion up in pending_reviews
+    // instead of scanning phase worktrees for a JSON file.
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
+    const { and, eq } = await import('drizzle-orm');
+    const prev = generated.pendingReviewsInHarnessShared;
+    const rows = await db
+      .select({ payload: prev.payload, phase: prev.phase, resolved: prev.resolved })
+      .from(prev)
+      .where(and(
+        eq(prev.workspaceId, activeWorkspaceId()),
+        eq(prev.harnessSlug, project.slug),
+        eq(prev.reviewId, id),
+      ))
+      .limit(1);
+    if (!rows.length) return Response.json({ error: 'promotion not found' }, { status: 404 });
 
-    const { obj } = found;
+    const obj = { ...(rows[0].payload as any) };
     if (obj.kind !== 'promotion') return Response.json({ error: 'not a promotion item' }, { status: 400 });
-    if (obj.resolved) return Response.json({ error: 'already resolved' }, { status: 409 });
+    if (rows[0].resolved || obj.resolved) return Response.json({ error: 'already resolved' }, { status: 409 });
 
     const from = phasePhaseLabel(obj.from);
     const to = phasePhaseLabel(obj.to);
@@ -247,8 +255,6 @@ const confirmPromotion = defineTool({
     let newSha = '';
     try { newSha = execFileSync('git', ['-C', toPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { /* ignore */ }
     {
-      const { db } = (await import('@papercusp/db-org')).getOrgPg();
-      const { generated } = await import('@papercusp/db-org');
       const hp = generated.harnessPromotionsInHarnessShared;
       await db
         .insert(hp)
@@ -287,7 +293,27 @@ const confirmPromotion = defineTool({
 
     obj.resolved = true;
     obj.status = 'promoted';
-    await writeFile(found.path, JSON.stringify(obj, null, 2), 'utf8');
+    await db
+      .update(prev)
+      .set({ resolved: true, payload: obj as any })
+      .where(and(
+        eq(prev.workspaceId, activeWorkspaceId()),
+        eq(prev.harnessSlug, project.slug),
+        eq(prev.phase, rows[0].phase),
+        eq(prev.reviewId, id),
+      ));
+    void notifySyncInvalidate('pendingReviews.byHarness', { harnessSlug: project.slug });
+    // FS back-compat: a pre-P-077 promotion wrote a JSON into its from-phase
+    // worktree. Overwrite it in place when present (never create one) — the
+    // watcher's deleteReview is unconditional and a stale unresolved file
+    // would clobber the PG row we just resolved.
+    for (const phase of PHASE_ORDER) {
+      const legacy = join(phasePath(project, phase), '.papercusp', 'pending-reviews', `${id}.json`);
+      if (existsSync(legacy)) {
+        await writeFile(legacy, JSON.stringify(obj, null, 2), 'utf8');
+        break;
+      }
+    }
 
     return Response.json({ ok: true, sha: newSha, promotion: obj });
   },

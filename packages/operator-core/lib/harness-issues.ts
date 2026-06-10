@@ -186,9 +186,11 @@ export async function saveIssues(project: ProjectEntry, file: IssuesFile): Promi
 }
 
 /**
- * Inline re-implementation of the harness UI's `parse-md.ts` parser —
- * extracts structured Issues from `issues.md`. Keep in sync with
- * `apps/web/app/harness/issues/parse-md.ts`. Synthesizes Issue rows
+ * Inline re-implementation of the legacy harness UI's `parse-md.ts` parser —
+ * extracts structured Issues from `issues.md`. The original now lives at
+ * `libs/papercusp/_retired/apps-web/app/harness/issues/parse-md.ts` (app
+ * retired 2026-06-10, audit P-079) — this copy is the live one. Synthesizes
+ * Issue rows
  * when PG has no curated rows yet on a harness (read-only seed — not
  * persisted until a mutation happens).
  */

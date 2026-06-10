@@ -30,7 +30,7 @@ import {
 } from './git-history';
 import {
   countPlanRevisions,
-  insertBackfillRevisions,
+  insertBackfillRevisionsIfEmpty,
   type BackfillRevisionInput,
 } from './revisions';
 import type { ResolveIdentityCtx } from '../coordination/identity';
@@ -80,77 +80,90 @@ export function commitToBackfillInput(
 }
 
 /**
- * Backfill one plan. Runs the whole idempotency check + git walk +
- * insert inside the plan-file lock so it serializes against live
- * writes. Returns a per-plan result; never throws.
+ * Backfill one plan. The git walk (up to 200 sequential `git show`
+ * subprocesses) runs BEFORE the plan lock is taken — holding the
+ * advisory lock across seconds of git reads blocked every live write
+ * to the plan and pinned a pool connection (audit P-044). The
+ * idempotency check + inserts then run in ONE transaction inside the
+ * lock (`insertBackfillRevisionsIfEmpty`), so a live revision landing
+ * mid-backfill either skips it or rolls the whole plan back — never a
+ * partial spine. Returns a per-plan result; never throws.
  */
 export async function backfillPlanRevisionsForSlug(
   ctx: ResolveIdentityCtx,
   slug: string,
 ): Promise<PlanBackfillResult> {
-  let locked;
   try {
-    locked = await withPlanLock<PlanBackfillResult>(
+    // Phase 1 — read-only, lock-free. The cheap pre-check makes the
+    // common re-run (`skipped_existing`) cost one COUNT instead of a
+    // git walk; the authoritative check re-runs transactionally below.
+    const existing = await countPlanRevisions(slug);
+    if (existing > 0) {
+      return { slug, status: 'skipped_existing', revisionsInserted: 0 };
+    }
+
+    const history = await readPlanHistory(slug, { limit: BACKFILL_HISTORY_LIMIT });
+    if (!history.ok) {
+      return { slug, status: 'error', revisionsInserted: 0, message: history.message };
+    }
+    if (history.commits.length === 0) {
+      return { slug, status: 'no_history', revisionsInserted: 0 };
+    }
+
+    // git log is newest-first; backfill oldest-first so `seq`
+    // 1..N runs chronologically.
+    const oldestFirst = [...history.commits].reverse();
+    const inputs: BackfillRevisionInput[] = [];
+    for (const commit of oldestFirst) {
+      const at = await readPlanFileAtCommit(slug, commit.hash);
+      if (!at.ok) {
+        return {
+          slug,
+          status: 'error',
+          revisionsInserted: 0,
+          message: `git show ${commit.hash}: ${at.message ?? at.code}`,
+        };
+      }
+      // Empty content = the file did not exist at this commit
+      // (pre-creation / pre-rename) — skip it.
+      if (at.content.length === 0) continue;
+      inputs.push(commitToBackfillInput(commit, at.content));
+    }
+    if (inputs.length === 0) {
+      return { slug, status: 'no_history', revisionsInserted: 0 };
+    }
+
+    // Phase 2 — the write. The plan lock serializes against other
+    // backfills and plan writes; the check+insert single transaction
+    // (D-015 idempotency) is what makes a concurrent live revision
+    // safe either way.
+    const locked = await withPlanLock<PlanBackfillResult>(
       ctx as never,
       { slug, intent: 'plans:backfill-revisions' },
       async (): Promise<{ newBody: string | null; value: PlanBackfillResult }> => {
-        // Idempotency (D-015): a plan with any rows is left alone.
-        const existing = await countPlanRevisions(slug);
-        if (existing > 0) {
-          return {
-            newBody: null,
-            value: { slug, status: 'skipped_existing', revisionsInserted: 0 },
-          };
-        }
-
-        const history = await readPlanHistory(slug, { limit: BACKFILL_HISTORY_LIMIT });
-        if (!history.ok) {
-          return {
-            newBody: null,
-            value: { slug, status: 'error', revisionsInserted: 0, message: history.message },
-          };
-        }
-        if (history.commits.length === 0) {
-          return {
-            newBody: null,
-            value: { slug, status: 'no_history', revisionsInserted: 0 },
-          };
-        }
-
-        // git log is newest-first; backfill oldest-first so `seq`
-        // 1..N runs chronologically.
-        const oldestFirst = [...history.commits].reverse();
-        const inputs: BackfillRevisionInput[] = [];
-        for (const commit of oldestFirst) {
-          const at = await readPlanFileAtCommit(slug, commit.hash);
-          if (!at.ok) {
-            return {
-              newBody: null,
-              value: {
-                slug,
-                status: 'error',
-                revisionsInserted: 0,
-                message: `git show ${commit.hash}: ${at.message ?? at.code}`,
-              },
-            };
-          }
-          // Empty content = the file did not exist at this commit
-          // (pre-creation / pre-rename) — skip it.
-          if (at.content.length === 0) continue;
-          inputs.push(commitToBackfillInput(commit, at.content));
-        }
-
-        const inserted = await insertBackfillRevisions(slug, inputs);
+        const res = await insertBackfillRevisionsIfEmpty(slug, inputs);
         return {
           newBody: null,
-          value: {
-            slug,
-            status: inserted > 0 ? 'backfilled' : 'no_history',
-            revisionsInserted: inserted,
-          },
+          value: res.skippedExisting
+            ? { slug, status: 'skipped_existing', revisionsInserted: 0 }
+            : {
+                slug,
+                status: res.inserted > 0 ? 'backfilled' : 'no_history',
+                revisionsInserted: res.inserted,
+              },
         };
       },
     );
+
+    if (locked.kind === 'busy') {
+      return {
+        slug,
+        status: 'busy',
+        revisionsInserted: 0,
+        message: 'plan file is locked by another agent',
+      };
+    }
+    return locked.value;
   } catch (err) {
     return {
       slug,
@@ -159,16 +172,6 @@ export async function backfillPlanRevisionsForSlug(
       message: err instanceof Error ? err.message : String(err),
     };
   }
-
-  if (locked.kind === 'busy') {
-    return {
-      slug,
-      status: 'busy',
-      revisionsInserted: 0,
-      message: 'plan file is locked by another agent',
-    };
-  }
-  return locked.value;
 }
 
 /**
