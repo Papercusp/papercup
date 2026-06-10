@@ -23,7 +23,15 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 
 const SLUG = process.env.GYM_ROUTINE_SLUG ?? 'papercup';
-const ROUTINE = { name: 'gym-cycle', target: 'system:gym-cycle', cron: '0 */30 * * * *' }; // every 30 min
+// Every 30 min at :10/:40 — deliberately OFFSET from the deploy boundary. A
+// gym cycle is a long-running in-host job (boots a gym-operator, runs evals),
+// and on the standing dev box release-trigger (:00/:15/:30/:45) + the hourly
+// green-checkpoint systematically deploy-restart the host at ~:30 — a cycle
+// started at :00/:30 was killed mid-flight by the deploy EVERY hour (verified
+// live 2026-06-10: cycles at 00:30 + 01:30 both died ~10s in; the stale-running
+// reclaim in autoloop-tick.ts recovered the row each time but the cycle never
+// completed). :10/:40 gives a cycle the maximum clearance from that rhythm.
+const ROUTINE = { name: 'gym-cycle', target: 'system:gym-cycle', cron: '0 10,40 * * * *' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
