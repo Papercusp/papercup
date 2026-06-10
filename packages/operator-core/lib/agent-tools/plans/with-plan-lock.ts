@@ -201,12 +201,32 @@ export async function withPlanLock<T>(
           -- never reaches the outbox/log (so a later replay reverts it).
           origin        = 'local'
       `;
-      if (opts.afterWrite) {
-        await opts.afterWrite(newBody);
-      }
     }
 
-    return { kind: 'applied', value, filePath, version: newVersion } satisfies AppliedResult<T>;
+    return {
+      kind: 'applied',
+      value,
+      filePath,
+      version: newVersion,
+      writtenBody: newBody,
+    } satisfies AppliedResult<T> & { writtenBody: string | null };
+  }).then(async (result) => {
+    // EI-118 (audit P-007): afterWrite (revision recording) runs AFTER the
+    // withWorkspace transaction commits — never inside it. Inside, a stalled
+    // afterWrite left the tx idle-in-transaction holding RowExclusiveLock on
+    // harness_plans, wedging every plans write fleet-wide. The trade is
+    // deliberate: a failed afterWrite now loses one revision row instead of
+    // rolling back the committed plan write (and instead of wedging the fleet).
+    if (result.kind === 'applied') {
+      const { writtenBody, ...applied } = result as AppliedResult<T> & {
+        writtenBody: string | null;
+      };
+      if (writtenBody !== null && opts.afterWrite) {
+        await opts.afterWrite(writtenBody);
+      }
+      return applied;
+    }
+    return result;
   }).catch((err: unknown) => {
     // A lock_timeout (if a future caller sets one) surfaces as busy rather
     // than a hard error; everything else propagates.

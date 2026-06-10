@@ -84,7 +84,7 @@ export async function countAllPendingWakes(): Promise<Map<string, number>> {
     GROUP BY owner_id
   `;
   const out = new Map<string, number>();
-  for (const r of rows as Array<{ owner_id: string; n: number }>) {
+  for (const r of rows as unknown as Array<{ owner_id: string; n: number }>) {
     if (r.owner_id) out.set(r.owner_id, Number(r.n));
   }
   return out;

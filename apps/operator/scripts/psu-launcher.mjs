@@ -997,10 +997,12 @@ async function roleFlow(args, role, rolesMeta) {
     if (agentInvalidForRole(args.agent)) {
       throw new Error('--agent must be claude, omp, or codex for a role session');
     }
-    if (!args.harness) throw new Error('--harness is required for a role session');
     agent = args.agent;
     workspace = args.workspace || null;
-    harness = args.harness;
+    // No --harness = a WORKSPACE-LEVEL role session (owner-confirmed,
+    // hive-agent-tabs P-003: operator/planner launch harness-less — the SU
+    // model). bootstrap-role still 400s a feature-consuming role without one.
+    harness = args.harness || null;
     feature = args.feature || null;
     plan = args.noPlan ? null : (args.plan || null);
   }
@@ -1027,7 +1029,7 @@ async function roleFlow(args, role, rolesMeta) {
   });
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
-      `  ·  harness ${res.harnessSlug}  ·  session ${res.sessionId ?? '?'}`,
+      `  ·  ${res.harnessSlug ? `harness ${res.harnessSlug}` : 'workspace-level (no harness)'}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
   // Role sessions are AGENT sessions across all backends: the marker arms the

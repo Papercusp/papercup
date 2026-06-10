@@ -46,8 +46,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
-import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { resolvePromptFile } from '@papercusp/orchestrator';
+import { assembleRolePrompt, resolvePromptFile } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { promptsDir } from './prompt-assembly';
 import {

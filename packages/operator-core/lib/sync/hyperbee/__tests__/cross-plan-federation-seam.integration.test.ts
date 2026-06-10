@@ -308,16 +308,23 @@ describe('cross-plan two-peer federation seam — content round-trip via the rea
 });
 
 describe('cross-plan federation seam — origin derivation + isolation contracts', () => {
-  it('ORIGIN derivation: a self-origin op (sourceLogKeyHex == ownLogKeyHex) applies as local', async () => {
+  it('ORIGIN derivation: a self-origin op (sourceLogKeyHex == ownLogKeyHex) on a CDC table is SKIPPED (EI-117 echo breaker)', async () => {
     await dbA.sql`
       INSERT INTO harness_shared.coord_conversations
         (workspace_id, id, kind, scope, harness_slug, asker_id, body, state)
       VALUES (${WS}, 'conv-self', 'question', 'harness', ${HARNESS}, 'su-A', 'echo', 'open')`;
-    // Drain stamped with B's OWN log key → the apply path classifies it origin='local'.
-    await drainAtoB(PEER_B_LOG);
-    const [row] = await dbB.sql<{ origin: string }[]>`
-      SELECT origin FROM harness_shared.coord_conversations WHERE id='conv-self'`;
-    expect(row.origin).toBe('local');
+    // Drain stamped with B's OWN log key → the apply path classifies it as an
+    // own-log op. coord_conversations is CDC-captured (mig 144), so an own-log
+    // op is by construction a REPLAY of a row B's PG already authored —
+    // re-applying it as origin='local' is exactly the capture-echo vector
+    // behind EI-117. The contract is now: skipped entirely (skipOwnOps); the
+    // own-source → origin='local' derivation itself stays covered at unit
+    // level (projection.test.ts) and on log-first projections.
+    const applied = await drainAtoB(PEER_B_LOG);
+    expect(applied).toBe(0);
+    const rows = await dbB.sql`
+      SELECT 1 FROM harness_shared.coord_conversations WHERE id='conv-self'`;
+    expect(rows).toHaveLength(0);
   });
 
   it("ISOLATION (a): an operator-scope conversation never enters A's outbox — it does not federate", async () => {

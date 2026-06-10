@@ -64,7 +64,7 @@ describe('parseRequestContext — happy path', () => {
 });
 
 describe('parseRequestContext — required param validation', () => {
-  it.each(['harness', 'workspace', 'role', 'run', 'spawn'])(
+  it.each(['workspace', 'role', 'run', 'spawn'])(
     'throws InvalidRequestContextError when %s is omitted, with that exact missing key',
     (omit) => {
       const params: Record<string, string | undefined> = { ...ALL_REQUIRED };
@@ -80,8 +80,15 @@ describe('parseRequestContext — required param validation', () => {
     },
   );
 
+  it('harness is OPTIONAL — absent/whitespace → the "*" unscoped sentinel (workspace-level role session, hive-agent-tabs P-003)', () => {
+    const params: Record<string, string | undefined> = { ...ALL_REQUIRED };
+    delete params.harness;
+    expect(parseRequestContext(url(params)).harnessSlug).toBe('*');
+    expect(parseRequestContext(url({ ...ALL_REQUIRED, harness: '  ' })).harnessSlug).toBe('*');
+  });
+
   it('reports EVERY omitted required key, in declaration order', () => {
-    // Omit all required params.
+    // Omit all required params (harness is optional → never reported).
     let err: unknown;
     try {
       parseRequestContext(BASE);
@@ -90,7 +97,6 @@ describe('parseRequestContext — required param validation', () => {
     }
     expect(err).toBeInstanceOf(InvalidRequestContextError);
     expect((err as InvalidRequestContextError).missing).toEqual([
-      'harness',
       'workspace',
       'role',
       'run',

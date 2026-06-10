@@ -29,6 +29,9 @@ import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import {
@@ -431,6 +434,14 @@ export async function spawnAgentInHarness(
   if (input.brief) {
     extraEnv.QUEEN_BRIEF = input.brief;
   }
+
+  // P-012 (hive-inference-gateway): when the INFERENCE_GATEWAY flag is ON (default OFF),
+  // point this bee at the localhost pacing gateway (ANTHROPIC_BASE_URL=127.0.0.1:<port>) so
+  // it egresses through ONE bound account paced against the unified 5h/7d budget (D-009)
+  // instead of bursting blind. The bee keeps its ~/.claude credential symlink (the gateway
+  // strips + reinjects auth), so flag-OFF instantly reverts to direct egress. Fails CLOSED:
+  // if the gateway service is down the bee's request is refused rather than bursting direct.
+  Object.assign(extraEnv, gatewaySpawnEnv(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')));
 
   // Register an abort handle so fleet:cancel can stop the child (EI-40).
   const abort = new AbortController();

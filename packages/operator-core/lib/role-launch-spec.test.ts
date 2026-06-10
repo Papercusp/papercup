@@ -7,9 +7,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const assembleRolePromptMock = vi.fn();
+const resolvePromptFileMock = vi.fn((_ctx: unknown, role: string): string | null =>
+  role === 'planner' ? '/h/prompts/planner.md' : null,
+);
 
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
+  resolvePromptFile: (...args: unknown[]) =>
+    resolvePromptFileMock(...(args as [unknown, string])),
+}));
+vi.mock('@papercusp/harness/paths', () => ({
+  harnessRoot: vi.fn(() => '/h'),
+}));
+// The chat-surface prompts dir for the workspace-level (harness-less) role
+// branch — pointed at a temp dir each test writes persona files into.
+let promptsDirValue = '/nonexistent-prompts';
+vi.mock('./prompt-assembly', () => ({
+  promptsDir: () => promptsDirValue,
 }));
 // Deterministic signer: append a fixed exp+sig so the URL is assertable.
 vi.mock('./spawn-signing', () => ({
@@ -43,6 +57,9 @@ vi.mock('./papercusp-root', () => ({
   papercuspPathForWorkspace: vi.fn((ws: string) => `/ws-root/${ws}`),
 }));
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildRoleLaunchSpec, buildLaunchSpec } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
@@ -143,6 +160,72 @@ describe('buildRoleLaunchSpec', () => {
       buildRoleLaunchSpec({ role: 'scoper', workspaceId: 'papercusp-workspace', harnessSlug: 'papercup', operatorBaseUrl: 'http://x' }),
     ).rejects.toThrow(/not registered in workspace "papercusp-workspace"/);
     expect(assembleRolePromptMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildRoleLaunchSpec — WORKSPACE-LEVEL (harness-less) role session (hive-agent-tabs P-003)', () => {
+  it('operator: chat persona (+tools.md) prompt, workspace-root cwd, MCP URL signed WITHOUT a harness param', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
+    writeFileSync(join(dir, 'operator.persona.md'), 'OPERATOR PERSONA');
+    writeFileSync(join(dir, 'operator.tools.md'), 'OPERATOR TOOLS PLAYBOOK');
+    promptsDirValue = dir;
+
+    const spec = await buildRoleLaunchSpec({
+      role: 'operator',
+      workspaceId: 'default',
+      harnessSlug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+
+    // The shared harness assembler is NOT used — no harness to resolve.
+    expect(assembleRolePromptMock).not.toHaveBeenCalled();
+    expect(resolveProjectDir).not.toHaveBeenCalled();
+    expect(spec.harnessSlug).toBeNull();
+    // cwd = the SELECTED workspace's root (the buildSuLaunchSpec mirror).
+    expect(spec.cwd).toBe('/ws-root/default');
+    // The prompt is the chat-surface persona + tools playbook + runtime context
+    // telling the session it is unscoped.
+    expect(spec.promptText).toContain('OPERATOR PERSONA');
+    expect(spec.promptText).toContain('OPERATOR TOOLS PLAYBOOK');
+    expect(spec.promptText).toContain('harness_required');
+    expect(spec.promptFile).toBe(join(dir, 'operator.persona.md'));
+    // Signed role URL with NO harness param — ctx lands as the '*' sentinel.
+    const u = new URL(spec.mcpUrl);
+    expect(u.searchParams.has('harness')).toBe(false);
+    expect(u.searchParams.get('role')).toBe('operator');
+    expect(u.searchParams.get('workspace')).toBe('default');
+    expect(u.searchParams.get('sig')).toBe('TESTSIG');
+    expect(u.searchParams.get('client')).toBe(spec.sid);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('planner: falls back to the spawn persona (prompts/planner.md) when no chat persona exists', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
+    promptsDirValue = dir; // empty — no planner.persona.md
+    const spawnPersona = join(dir, 'planner.md');
+    writeFileSync(spawnPersona, 'PLANNER SPAWN PERSONA');
+    resolvePromptFileMock.mockReturnValueOnce(spawnPersona);
+
+    const spec = await buildRoleLaunchSpec({
+      role: 'planner',
+      workspaceId: 'default',
+      harnessSlug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(spec.promptText).toContain('PLANNER SPAWN PERSONA');
+    expect(spec.promptFile).toBe(spawnPersona);
+    expect(new URL(spec.mcpUrl).searchParams.has('harness')).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('throws for a role with no workspace-level persona at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
+    promptsDirValue = dir;
+    resolvePromptFileMock.mockReturnValueOnce(null);
+    await expect(
+      buildRoleLaunchSpec({ role: 'worker', workspaceId: 'default', harnessSlug: null, operatorBaseUrl: 'http://x' }),
+    ).rejects.toThrow(/no workspace-level persona/);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

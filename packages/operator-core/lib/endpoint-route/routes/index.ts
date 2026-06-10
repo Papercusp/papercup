@@ -292,6 +292,7 @@ import adminBackupOrphanCleanup from './admin/backup-orphan-cleanup';
 import adminCommands from './admin/commands';
 import adminDeployAccountsList from './admin/deploy-accounts-list';
 import adminDeployAccountsRegister from './admin/deploy-accounts-register';
+import adminInferenceGatewayStats from './admin/inference-gateway-stats';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminEmbedBackfill from './admin/embed-backfill';
 import adminExecuteAction from './admin/execute-action';
@@ -685,6 +686,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminCommands as AnyRoute),
   ...flatten(adminDeployAccountsList as AnyRoute),
   ...flatten(adminDeployAccountsRegister as AnyRoute),
+  ...flatten(adminInferenceGatewayStats as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminEmbedBackfill as AnyRoute),
   ...flatten(adminExecuteAction as AnyRoute),

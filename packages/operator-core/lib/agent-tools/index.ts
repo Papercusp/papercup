@@ -387,6 +387,10 @@ import './fleet/drain';
 // in-memory swarm-pane→bee-pane selection relay (NOT PG — DB is not a transport).
 import './fleet/bee_mail';
 import './fleet/selected_bee';
+// Host-dependency diagnostic for the fleet OS sandbox (fleet-spawn-sandbox P-011):
+// bubblewrap/socat/srt presence, the Ubuntu 24.04+ AppArmor userns profile,
+// container nesting — with per-check remedies.
+import './fleet/sandbox_deps';
 
 // Coordination ops as blueprint primitives — the dual-surface decision tools
 // (coordination-ops-as-blueprint-primitives-2026-06-04 D-001). coord:vote /
