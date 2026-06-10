@@ -1,14 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { z } from 'zod';
-import { getServerCapabilities } from './server-catalog';
-import type { ToolDefinitionMeta } from './from-tooldef';
+import { getServerCapabilities, type NamedProjectedTool } from './server-catalog';
 
-const CATALOG: ToolDefinitionMeta[] = [
-  { name: 'harness:list', capability: 'harness:read', description: 'List harnesses.', tier: 'low', args: z.object({ filter: z.string().optional() }) },
-  { name: 'features:get', capability: 'features:read', description: 'Get a feature.', tier: 'low', args: z.object({ id: z.string() }) }, // required arg → excluded
-  { name: 'backup:promote', capability: 'backup:write', description: 'Promote a backup.', tier: 'high', args: z.object({}) }, // destructive + high → confirm
-  { name: 'operator:conv_voice', capability: 'voice:use', description: 'Voice.', tier: 'low', args: z.object({}) }, // streaming → excluded
-  { name: 'plans:list', capability: 'plans:read', description: 'List plans.', tier: 'low', args: z.object({}) },
+/** Projected-shaped fixture entry (the registry stores JSON Schema input). */
+function entry(
+  name: string,
+  capability: string,
+  o?: { required?: string[]; agentRoles?: string[]; description?: string },
+): NamedProjectedTool {
+  return {
+    name,
+    tool: {
+      description: o?.description ?? `Tool ${name}.`,
+      inputSchema: { type: 'object', properties: {}, ...(o?.required ? { required: o.required } : {}) },
+      capabilities: capability ? [capability] : [],
+      agentRoles: o?.agentRoles,
+    },
+  };
+}
+
+const CATALOG: NamedProjectedTool[] = [
+  entry('harness:list', 'harness:read', { description: 'List harnesses.' }),
+  entry('features:get', 'features:read', { required: ['id'] }), // required arg → excluded
+  entry('backup:promote', 'backup:write'), // destructive (name) → confirm
+  entry('operator:conv_voice', 'voice:use'), // streaming → excluded
+  entry('plans:list', 'plans:read'),
 ];
 
 const superuser = { capabilities: new Set(['*']) };
@@ -36,16 +51,25 @@ describe('getServerCapabilities', () => {
   });
 
   it('filters by role so the listing matches invocability (no-allowlist tools always pass)', () => {
-    const cat: ToolDefinitionMeta[] = [
-      { name: 'harness:list', capability: 'harness:read', description: 'List.', tier: 'low', args: z.object({}) }, // no roles → always
-      { name: 'worker:only', capability: 'worker:read', description: 'W.', tier: 'low', args: z.object({}), roles: ['worker'] },
-      { name: 'ops:thing', capability: 'ops:read', description: 'O.', tier: 'low', args: z.object({}), roles: ['operator', 'worker'] },
+    const cat: NamedProjectedTool[] = [
+      entry('harness:list', 'harness:read'), // no roles → always
+      entry('worker:only', 'worker:read', { agentRoles: ['worker'] }),
+      entry('ops:thing', 'ops:read', { agentRoles: ['operator', 'worker'] }),
     ];
     const ids = getServerCapabilities({ principal: superuser, role: 'operator', catalog: cat }).map((c) => c.id);
     expect(ids).toEqual(['harness:list', 'ops:thing']); // worker:only excluded for operator
     // Without a role, no role filtering.
     const all = getServerCapabilities({ principal: superuser, catalog: cat }).map((c) => c.id);
     expect(all).toContain('worker:only');
+  });
+
+  it('lists role-gated tools (the hive:start regression — absent from the legacy catalog)', () => {
+    // hive:start-shaped: role-gated (agentRoles incl. operator), all-optional args.
+    const cat: NamedProjectedTool[] = [
+      entry('hive:start', 'harness:write', { agentRoles: ['operator', 'worker', 'bee'] }),
+    ];
+    const caps = getServerCapabilities({ principal: superuser, role: 'operator', catalog: cat });
+    expect(caps.map((c) => c.id)).toEqual(['hive:start']);
   });
 
   it('every returned capability is non-excluded and runs server-side', () => {

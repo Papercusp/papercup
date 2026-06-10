@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { schemaRequiresArgs } from './introspection';
 import { actionDefToCapability } from './from-action-registry';
-import { toolDefinitionToCapability, type ToolDefinitionMeta } from './from-tooldef';
+import { toolDefinitionToCapability, projectedToolToCapability, type ToolDefinitionMeta } from './from-tooldef';
 import { humanizeCapabilityId } from './format';
 import { paletteEligibility, isPaletteVisible, requiresPaletteConfirm } from './safety-filter';
 import type { Capability } from './types';
@@ -21,6 +21,29 @@ describe('schemaRequiresArgs', () => {
   it('false for no schema', () => {
     expect(schemaRequiresArgs(undefined)).toBe(false);
     expect(schemaRequiresArgs(null)).toBe(false);
+  });
+  it('JSON Schema flavour: required array decides', () => {
+    expect(schemaRequiresArgs({ type: 'object', properties: { q: { type: 'string' } } })).toBe(false);
+    expect(schemaRequiresArgs({ type: 'object', properties: {}, required: [] })).toBe(false);
+    expect(schemaRequiresArgs({ type: 'object', properties: { id: { type: 'string' } }, required: ['id'] })).toBe(true);
+  });
+  it('JSON Schema flavour: required-with-default does not require an arg (Zod 4 output-mode artifact)', () => {
+    // hive:pause-shaped: z.boolean().default(false) → required:['drainBees'] + default on the prop.
+    expect(
+      schemaRequiresArgs({
+        type: 'object',
+        properties: { harness: { type: 'string' }, drainBees: { type: 'boolean', default: false } },
+        required: ['drainBees'],
+      }),
+    ).toBe(false);
+    // …but a genuine required field alongside a defaulted one still requires args.
+    expect(
+      schemaRequiresArgs({
+        type: 'object',
+        properties: { id: { type: 'string' }, verbose: { type: 'boolean', default: false } },
+        required: ['id', 'verbose'],
+      }),
+    ).toBe(true);
   });
 });
 
@@ -111,6 +134,52 @@ describe('toolDefinitionToCapability', () => {
   it('streaming / interactive → exclude', () => {
     expect(paletteEligibility(toolDefinitionToCapability(tool({ name: 'operator:conv_voice', capability: 'voice:use' })))).toBe('exclude');
     expect(paletteEligibility(toolDefinitionToCapability(tool({ name: 'chat:ask_choice', capability: 'chat:use' })))).toBe('exclude');
+  });
+});
+
+// ── projected-registry adapter (role-gated tools live ONLY here) ─────────
+describe('projectedToolToCapability', () => {
+  const lowTier = () => 'low' as const;
+
+  it('maps a hive:start-shaped role-gated tool to an invocable capability', () => {
+    const cap = projectedToolToCapability(
+      'hive:start',
+      {
+        description: 'START the hive.',
+        inputSchema: { type: 'object', properties: { harness: { type: 'string' } } }, // all optional
+        capabilities: ['harness:write'],
+        agentRoles: ['operator', 'worker', 'bee'],
+        guidance: { when: 'The user clicks Start Hive.' },
+      },
+      lowTier,
+    );
+    expect(cap.id).toBe('hive:start');
+    expect(cap.requiresArgs).toBe(false);
+    expect(cap.gating.agentRoles).toContain('operator');
+    expect(cap.gating.auth?.capabilities).toEqual(['harness:write']);
+    expect(cap.agentDescription).toBe('The user clicks Start Hive.');
+    expect(paletteEligibility(cap)).not.toBe('exclude');
+  });
+
+  it('takes the highest tier across capabilities and flags high as destructive', () => {
+    const tiers: Record<string, 'low' | 'medium' | 'high'> = { 'a:read': 'low', 'b:write': 'high' };
+    const cap = projectedToolToCapability(
+      'b:thing',
+      { description: 'd', inputSchema: {}, capabilities: ['a:read', 'b:write'] },
+      (c) => tiers[c] ?? 'low',
+    );
+    expect(cap.tier).toBe('high');
+    expect(cap.destructive).toBe(true);
+  });
+
+  it('required input → requiresArgs → palette-excluded', () => {
+    const cap = projectedToolToCapability(
+      'x:get',
+      { description: 'd', inputSchema: { type: 'object', required: ['id'] }, capabilities: [] },
+      lowTier,
+    );
+    expect(cap.requiresArgs).toBe(true);
+    expect(paletteEligibility(cap)).toBe('exclude');
   });
 });
 

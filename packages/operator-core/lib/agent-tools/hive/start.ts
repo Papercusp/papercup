@@ -77,7 +77,8 @@ export default defineTool({
       harness: installSlug,
       workspaceId,
     });
-    // Live UI reflection (P-006): the header control reads hive.controlState.
+    // Live UI reflection (P-006): the AdvShell harness-bar control
+    // (AdvNowRunning) reads hive.controlState.
     void import('../../sync-sse')
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
       .catch(() => {});

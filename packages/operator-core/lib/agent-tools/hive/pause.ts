@@ -74,7 +74,8 @@ export default defineTool({
     await setHiveStarted(workspaceId, installSlug, false);
     await setDefaultWakeMode('manual');
     await clearHiveTimeWake(sql, installSlug);
-    // Live UI reflection (P-006): the header control reads hive.controlState.
+    // Live UI reflection (P-006): the AdvShell harness-bar control
+    // (AdvNowRunning) reads hive.controlState.
     void import('../../sync-sse')
       .then(({ notifySyncInvalidate }) => notifySyncInvalidate('hive.controlState', {}))
       .catch(() => {});

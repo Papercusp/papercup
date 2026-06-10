@@ -60,3 +60,63 @@ export function toolDefinitionToCapability(def: ToolDefinitionMeta): Capability 
 export function tooldefCatalogToCapabilities(defs: readonly ToolDefinitionMeta[]): Capability[] {
   return defs.map(toolDefinitionToCapability);
 }
+
+/**
+ * The fields of a projected-registry `ProjectedTool` entry this adapter reads
+ * (structural, so this module stays free of `@papercusp/tooldef` imports).
+ *
+ * The projected registry is the FULL tool surface: principal-gated tools
+ * (auto-projected from the legacy catalog), role-gated tools
+ * (`requirePrincipal: false` — these NEVER enter the legacy `getCatalog()`),
+ * and plugin tools. The palette listing + invoke must read THIS shape — the
+ * legacy-catalog read silently dropped every role-gated group (hive:*,
+ * flags:*, …), so the Start Hive button got `no tool named "hive:start"`.
+ */
+export interface ProjectedToolMeta {
+  description: string;
+  /** JSON Schema for tool input (already projected from Zod at register time). */
+  inputSchema: Record<string, unknown>;
+  /** Required capability strings (empty = no capability gate). */
+  capabilities: readonly string[];
+  /** Agent-persona allowlist, if the tool carries one. */
+  agentRoles?: readonly string[];
+  guidance?: { when?: string };
+}
+
+const TIER_ORDER: Record<CapabilityRiskTier, number> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * Map a projected-registry entry to a palette `Capability`. `tierFor` is the
+ * host's capability→tier resolver (injected to keep this module dependency-
+ * free); a multi-capability tool gets its highest capability's tier.
+ */
+export function projectedToolToCapability(
+  name: string,
+  tool: ProjectedToolMeta,
+  tierFor: (capability: string) => CapabilityRiskTier,
+): Capability {
+  const tier = tool.capabilities.reduce<CapabilityRiskTier>(
+    (acc, c) => (TIER_ORDER[tierFor(c)] > TIER_ORDER[acc] ? tierFor(c) : acc),
+    'low',
+  );
+  const destructive =
+    DESTRUCTIVE_RE.test(name) || tool.capabilities.some((c) => DESTRUCTIVE_RE.test(c)) || tier === 'high';
+
+  return {
+    id: name,
+    title: humanizeCapabilityId(name),
+    description: shorten(tool.description),
+    agentDescription: tool.guidance?.when ?? tool.description,
+    runsIn: 'server',
+    requiresArgs: schemaRequiresArgs(tool.inputSchema),
+    destructive,
+    streaming: STREAMING_RE.test(name),
+    interactive: INTERACTIVE_RE.test(name),
+    tier,
+    gating: {
+      agentRoles: tool.agentRoles ? [...tool.agentRoles] : undefined,
+      auth: { capabilities: [...tool.capabilities] },
+    },
+    surfaces: { mcp: true },
+  };
+}

@@ -15,7 +15,7 @@
  */
 import {
   lookupByMcpName,
-  getCatalog,
+  tierFor,
   BRAIN_PRINCIPAL_ROLE,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -23,7 +23,7 @@ import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
-import { toolDefinitionToCapability, type ToolDefinitionMeta } from './from-tooldef';
+import { projectedToolToCapability } from './from-tooldef';
 import { paletteEligibility } from './safety-filter';
 import type { Capability } from './types';
 
@@ -65,19 +65,23 @@ export async function invokeServerCapability(opts: {
   args?: unknown;
   confirmed?: boolean;
 }): Promise<InvokeResult> {
-  const def = getCatalog().find((t) => t.name === opts.name) as ToolDefinitionMeta | undefined;
-  if (!def) {
+  // The projected registry is the lookup of record — it carries EVERY tool
+  // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
+  // role-gated tools, which is how the Start Hive button got
+  // `no tool named "hive:start"` for a tool MCP dispatched fine.
+  const projected = lookupByMcpName(opts.name);
+  if (!projected) {
     return { ok: false, status: 404, code: 'unknown_tool', message: `no tool named "${opts.name}"` };
   }
 
-  const guard = paletteInvokeGuard(toolDefinitionToCapability(def), opts.confirmed === true);
+  const cap = projectedToolToCapability(
+    opts.name,
+    { ...projected, capabilities: projected.capabilities as readonly string[] },
+    tierFor,
+  );
+  const guard = paletteInvokeGuard(cap, opts.confirmed === true);
   if (!guard.allow) {
     return { ok: false, status: guard.status, code: guard.code, message: guard.message };
-  }
-
-  const projected = lookupByMcpName(opts.name);
-  if (!projected) {
-    return { ok: false, status: 404, code: 'unknown_tool', message: `no projected tool "${opts.name}"` };
   }
 
   const workspaceId = activeWorkspaceId();
