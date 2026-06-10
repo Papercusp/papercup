@@ -90,6 +90,71 @@ describe('su-locks wait subsystem', async () => {
     await _resetForTests();
   }, 60_000);
 
+  it.skipIf(!live)('long coordination domain (>54 chars): release succeeds and the waiter push-wakes', async () => {
+    // Regression for the 2026-06-09 "channel name too long" incident: PG caps
+    // channel names at 63 bytes — LISTEN (identifier) silently TRUNCATES a
+    // longer name while pg_notify() (text arg) RAISES. With the raw
+    // `ch_coord_<domain>` naming, any domain over 54 chars (e.g. the live
+    // release checkout's realpath, 56) made the grant cascade's pg_notify
+    // abort the WHOLE release transaction: the lock could not be released
+    // while a waiter was queued, and the waiter never woke. The fix bounds
+    // the channel as ch_coord_<md5(domain)> on both the SQL and LISTEN sides
+    // (sql/013-bounded-notify-channel.sql / coordNotifyChannel).
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const ws = `wait-long-domain-${Date.now()}-${'x'.repeat(64)}`;
+    expect(`ch_coord_${ws}`.length).toBeGreaterThan(63); // the failing precondition
+
+    const a = await inWorkspaceTxn(ws, 'agent-a', (tx) => tryAcquire(tx, {
+      coordinationDomain: ws, owner: 'agent-a', ownerLabel: 'A',
+      paths: normalizePaths(['lib/long.ts']),
+      intent: 'hold the file', ttlSec: 60,
+    }));
+    expect(a.ok).toBe(true);
+
+    let wakeResolve: ((via: 'notify' | 'backstop') => void) | null = null;
+    let ticketId: string | null = null;
+    const unsub = await subscribeWorkspace(ws, (tid) => {
+      if (ticketId && tid === ticketId && wakeResolve) {
+        const r = wakeResolve;
+        wakeResolve = null;
+        r('notify');
+      }
+    });
+
+    const inserted = await inWorkspaceTxn(ws, 'agent-b', (tx) => tryInsertWaiter(tx, {
+      coordinationDomain: ws, owner: 'agent-b', ownerLabel: 'B',
+      paths: ['lib/long.ts'], intent: 'want it', ttlSec: 60, maxWaitSec: 30,
+    }));
+    expect(inserted.ok).toBe(true);
+    ticketId = (inserted as { ticket_id: string }).ticket_id;
+
+    const wakeP = new Promise<'notify' | 'backstop'>((resolve) => {
+      wakeResolve = resolve;
+      // 10s discriminator: the push wake is nominally sub-second; only the
+      // (broken) no-NOTIFY world would drift to a poll backstop.
+      setTimeout(() => { if (wakeResolve) { const r = wakeResolve; wakeResolve = null; r('backstop'); } }, 10_000);
+    });
+
+    // Pre-fix this release THREW ("channel name too long") and rolled back.
+    await inWorkspaceTxn(ws, 'agent-a', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-a', lockId: (a as { lock_id: string }).lock_id,
+    }));
+
+    expect(await wakeP).toBe('notify');
+
+    const status = await readWaiterStatus(sql, ticketId);
+    expect(status.status).toBe('granted');
+    expect(status.granted_lock_id).toBeTruthy();
+
+    await inWorkspaceTxn(ws, 'agent-b', (tx) => tryRelease(tx, {
+      coordinationDomain: ws, owner: 'agent-b', lockId: status.granted_lock_id!,
+    }));
+    await unsub();
+    await _resetListenersForTests();
+    await _resetForTests();
+  }, 60_000);
+
   it.skipIf(!live)('waiter cap rejects the (MAX+1)th wait', async () => {
     await ensureBootstrap();
     const sql = getTxPool();

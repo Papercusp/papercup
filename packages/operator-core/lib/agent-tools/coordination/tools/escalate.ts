@@ -4,6 +4,12 @@
  * The channel that earns the right to interrupt. Use sparingly — only
  * for decisions the agent should not make alone. The UI surfaces open
  * escalations prominently; coord:resolve closes them out.
+ *
+ * Emits (start-hive-wake-orchestration-2026-06-09 P-001 / D-001): the open
+ * escalation also fires a `coord:emit` lifecycle notification to the plan's
+ * watchers (the openEscalation record itself is addressed `to: ['human']`
+ * only, so this is additive, not a duplicate). The Queen's default wake
+ * subscription rides the same tool event (lib/hive/wake-defaults).
  */
 
 import { z } from 'zod';
@@ -25,6 +31,23 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // Demand surfaces as an EVENT (start-hive-wake P-001 / D-001). The escalation
+  // record goes to the human; this lifecycle emit reaches the plan's watchers
+  // ([] when plan-less ⇒ recorded, delivered to no inbox — audit without noise).
+  emits: [
+    {
+      fire: 'coord:emit',
+      when: (e) => Boolean((e.result?.data as { ok?: boolean } | undefined)?.ok),
+      render: (e) => {
+        const a = e.args as { severity?: string; summary?: string; plan_slug?: string };
+        return {
+          category: 'escalation',
+          summary: `escalation (${a.severity ?? '?'}): ${a.summary ?? ''}`,
+          ...(a.plan_slug ? { plan_slug: a.plan_slug, to: [`@plan:${a.plan_slug}`] } : { to: [] }),
+        };
+      },
+    },
+  ],
   args: z.object({
     severity: z.enum(SEVERITY),
     summary: z.string().min(1).max(280),

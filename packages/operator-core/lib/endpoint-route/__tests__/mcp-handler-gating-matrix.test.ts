@@ -1,0 +1,557 @@
+/**
+ * MCP transport gating matrix — drives the REAL `tools/list` / `tools/call`
+ * request handlers registered by routes/transport/_mcp-handler.ts and pins
+ * the auth → role → profile → workspace boundary end-to-end (the
+ * "handler-path test for that wiring" that tool-auth-gating.test.ts's header
+ * records as still owed).
+ *
+ * NOT duplicated here (already covered elsewhere):
+ *   - tool-auth-gating.test.ts — the projected WRAPPER's principal+tx gate
+ *     (`t.fn({}, {})` throws), issues:list's identity gate, and the
+ *     operator-converse allowedTools↔registry sync.
+ *   - transport-mcp-notifications.test.ts — buildMcpToolContext's emit /
+ *     notifications/progress wiring.
+ *   - tool-allowlist.test.ts — parseToolsAllowlist/filterListingsByAllowlist
+ *     as unit functions (here we only pin their WIRING into tools/list).
+ *   - role-principal-caps.test.ts — loadRoleCapabilities row/blueprint logic
+ *     and effectiveDispatchWorkspace as a unit (here: its dispatch wiring).
+ *
+ * Harness: `createMcpHandler` is mocked to capture the JSON-RPC request
+ * handlers; the registry is the REAL one (agent-tools/index side-effect
+ * import) plus two synthetic probe tools under the 'gating-matrix-test'
+ * plugin. PG seams (db-org, spawn-signing, power-user-token, superuser
+ * bearer, harness paths) are stubbed; everything between the request handler
+ * and the tool fn — tryBuildSpawnContext, the profile gate, the power-user
+ * clamp, EI-30 workspace promotion, tx/principal synthesis, the tooldef
+ * dispatch stack — runs for real.
+ */
+import { createRequire } from 'node:module';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+
+const h = vi.hoisted(() => {
+  const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    unsafe: async (..._a: unknown[]) => [] as unknown[],
+  });
+  const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
+  });
+  return {
+    fakeTx,
+    fakeSql,
+    /** Every workspace id the (mocked) withWorkspace opened a tx for. */
+    withWorkspaceCalls: [] as string[],
+    handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
+    verifySpawnParams: vi.fn(
+      async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
+    ),
+    logVerificationFailure: vi.fn(async (_rec: unknown): Promise<void> => {}),
+    verifyAccessToken: vi.fn(
+      async (_bearer: string): Promise<Record<string, unknown> | null> => null,
+    ),
+    isValidSuperuserBearer: vi.fn(
+      (bearer: string | null | undefined): boolean => bearer === 'test-su-bearer',
+    ),
+  };
+});
+
+// Capture the ListTools/CallTool handlers instead of standing up the real
+// streamable-HTTP transport. Keyed by the SDK schema's method literal.
+vi.mock('mcp-handler', () => ({
+  createMcpHandler: (
+    setup: (server: {
+      server: { setRequestHandler: (schema: unknown, fn: unknown) => void };
+    }) => void,
+  ) => {
+    setup({
+      server: {
+        setRequestHandler: (schema: unknown, fn: unknown) => {
+          const s = schema as {
+            shape?: { method?: { value?: string; _def?: { value?: string } } };
+          };
+          const method = s?.shape?.method?.value ?? s?.shape?.method?._def?.value;
+          h.handlers.set(String(method), fn as (req: unknown, extra: unknown) => Promise<unknown>);
+        },
+      },
+    });
+    return () => {
+      throw new Error('HTTP fetch handler is not exercised by this test');
+    };
+  },
+}));
+
+// PG seams. Spread the real modules so the wide agent-tools import graph keeps
+// every other export; only the connection/verification leaves are stubbed.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.fakeSql }),
+    withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
+      h.withWorkspaceCalls.push(ws);
+      return fn(h.fakeTx);
+    },
+  };
+});
+vi.mock('../../spawn-signing', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    verifySpawnParams: h.verifySpawnParams,
+    logVerificationFailure: h.logVerificationFailure,
+  };
+});
+vi.mock('../../power-user-token', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, verifyAccessToken: h.verifyAccessToken };
+});
+vi.mock('../../superuser-token', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  // isLoopbackRequest stays REAL (pure header logic — part of the matrix).
+  return { ...actual, isValidSuperuserBearer: h.isValidSuperuserBearer };
+});
+vi.mock('../../resolve-harness-paths', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    resolveHarnessPaths: async () => ({
+      projectDir: '/tmp/gating-matrix-proj',
+      stateDir: '/tmp/gating-matrix-state',
+    }),
+  };
+});
+
+// _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
+// schemas; under vite-node's ESM transform there is no module-scope require,
+// so provide the global fallback before the module loads.
+(globalThis as { require?: NodeJS.Require }).require ??= createRequire(import.meta.url);
+// No pinned tool manifest — tools/list must expose the live registry.
+process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.json';
+delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+
+await import('../routes/transport/_mcp-handler');
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog } =
+  await import('@papercusp/agent-mcp');
+const { currentRequestWorkspaceId } = await import('../../workspace-als');
+
+/* ─── Synthetic probe tools ──────────────────────────────────────────── */
+
+interface SeenCall {
+  tool: string;
+  args: unknown;
+  ctx: UnifiedToolContext;
+  /** The request-scoped ALS workspace at handler time (P-022 pin). */
+  alsWorkspace: string | undefined;
+}
+const seen: SeenCall[] = [];
+
+function probeFn(name: string) {
+  return async (input: unknown, ctx: UnifiedToolContext) => {
+    seen.push({ tool: name, args: input, ctx, alsWorkspace: currentRequestWorkspaceId() });
+    return { content: [{ type: 'text' as const, text: `${name}-ok` }] };
+  };
+}
+
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: role-gated to scoper',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:scoped' } },
+  fn: probeFn('gatingtest:scoped'),
+});
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: engineer-profile, operator role',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['operator'],
+  profile: 'engineer',
+  expose: { mcp: { name: 'gatingtest:engineer' } },
+  fn: probeFn('gatingtest:engineer'),
+});
+
+afterAll(() => {
+  unregisterProjectedToolsForPlugin('gating-matrix-test');
+});
+
+/* ─── Drivers ────────────────────────────────────────────────────────── */
+
+const MCP = 'http://127.0.0.1:3070/api/mcp';
+
+/** mcp-handler-shaped `extra` (requestInfo.{url,headers}) on a loopback host. */
+function extraFor(url: string, headers: Record<string, string> = {}): unknown {
+  return { requestInfo: { url, headers: { host: '127.0.0.1:3070', ...headers } } };
+}
+
+/** A per-spawn signed URL (sig verification itself is mocked OK by default). */
+function signedUrl(over: Record<string, string> = {}): string {
+  const u = new URL(MCP);
+  const params: Record<string, string> = {
+    harness: 'papercup',
+    workspace: 'ws-test',
+    role: 'scoper',
+    run: 'run-1',
+    spawn: 'spawn-1',
+    exp: '9999999999',
+    sig: 'test-sig',
+    ...over,
+  };
+  for (const [k, v] of Object.entries(params)) if (v !== '') u.searchParams.set(k, v);
+  return u.toString();
+}
+
+function superuserExtra(query = '', headers: Record<string, string> = {}): unknown {
+  return extraFor(`${MCP}?superuser=1${query}`, {
+    authorization: 'Bearer test-su-bearer',
+    ...headers,
+  });
+}
+
+const POWER_CLAIMS = {
+  t: 'access',
+  workspaceId: 'ws-claim',
+  userId: 'u-1',
+  authSessionId: 'sess-1',
+  exp: 9999999999,
+};
+
+interface ToolsListResult {
+  tools: Array<{ name: string }>;
+}
+interface CallResult {
+  isError?: boolean;
+  content: Array<{ type: string; text?: string }>;
+}
+
+async function listTools(extra: unknown): Promise<ToolsListResult> {
+  return (await h.handlers.get('tools/list')!({}, extra)) as ToolsListResult;
+}
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  extra: unknown,
+): Promise<CallResult> {
+  return (await h.handlers.get('tools/call')!(
+    { params: { name, arguments: args } },
+    extra,
+  )) as CallResult;
+}
+const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+beforeEach(() => {
+  vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
+  seen.length = 0;
+  h.withWorkspaceCalls.length = 0;
+  delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+});
+
+/* ─── tools/list ─────────────────────────────────────────────────────── */
+
+describe('tools/list — strict-mode listing matrix', () => {
+  it('handlers were captured for both verbs', () => {
+    expect(h.handlers.has('tools/list')).toBe(true);
+    expect(h.handlers.has('tools/call')).toBe(true);
+  });
+
+  it('a spawn URL that FAILS signature verification gets an EMPTY list (mirrors tools/call)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.verifySpawnParams.mockResolvedValueOnce({ ok: false, reason: 'expired' });
+      const res = await listTools(extraFor(signedUrl()));
+      expect(res.tools).toEqual([]);
+      // The failure is audited, not silent.
+      expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
+      expect(h.logVerificationFailure.mock.calls[0][0]).toMatchObject({
+        reason: 'expired',
+        claimedRole: 'scoper',
+        claimedWorkspace: 'ws-test',
+      });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[spawn-signing] rejected MCP request: expired'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('?superuser=1 from a NON-loopback host is a failed ctx → empty list (real isLoopbackRequest)', async () => {
+    const res = await listTools(
+      extraFor(`${MCP}?superuser=1`, {
+        host: 'evil.example.com',
+        authorization: 'Bearer test-su-bearer',
+      }),
+    );
+    expect(res.tools).toEqual([]);
+  });
+
+  it('a verified role-scoped caller sees ONLY tools its role admits', async () => {
+    const res = await listTools(extraFor(signedUrl({ role: 'scoper' })));
+    const names = res.tools.map((t) => t.name);
+    expect(names).toContain('gatingtest:scoped');
+    expect(names).not.toContain('gatingtest:engineer'); // operator-only
+    // Full-matrix invariant: nothing listed excludes scoper in its allowlist.
+    const violations = names.filter((n) => {
+      const reg = lookupByMcpName(n);
+      return Boolean(reg?.agentRoles && !reg.agentRoles.includes('scoper'));
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('a different role does NOT see the scoper-only tool', async () => {
+    const res = await listTools(extraFor(signedUrl({ role: 'worker' })));
+    expect(res.tools.map((t) => t.name)).not.toContain('gatingtest:scoped');
+  });
+
+  it('?tools= allowlist narrows the listing to exactly the named set', async () => {
+    const u = new URL(signedUrl({ role: 'scoper' }));
+    u.searchParams.set('tools', 'gatingtest:scoped, definitely:not-registered');
+    const res = await listTools(extraFor(u.toString()));
+    expect(res.tools.map((t) => t.name)).toEqual(['gatingtest:scoped']);
+  });
+
+  it('superuser listing is operator-role-filtered (call-time bypass does NOT widen the list)', async () => {
+    const res = await listTools(superuserExtra());
+    const names = res.tools.map((t) => t.name);
+    expect(names).toContain('gatingtest:engineer'); // agentRoles: ['operator']
+    expect(names).not.toContain('gatingtest:scoped'); // scoper-only stays hidden
+  });
+
+  it('superuser ?profile=power hides engineer-profile tools from the listing', async () => {
+    const res = await listTools(superuserExtra('&profile=power'));
+    const names = res.tools.map((t) => t.name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names).not.toContain('gatingtest:engineer');
+  });
+
+  it('a bare probe (no spawn params at all) keeps the soft, UNfiltered listing', async () => {
+    const res = await listTools(extraFor(MCP));
+    const names = res.tools.map((t) => t.name);
+    expect(names).toContain('gatingtest:scoped');
+    expect(names).toContain('gatingtest:engineer');
+  });
+});
+
+/* ─── tools/call — auth rejection BEFORE dispatch ────────────────────── */
+
+describe('tools/call — auth failures reject before any dispatch', () => {
+  it('an invalid/expired spawn signature → request_rejected, no fall-through to bearer dispatch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.verifySpawnParams.mockResolvedValueOnce({ ok: false, reason: 'expired' });
+      // Use a LEGACY catalog tool name: if the handler wrongly fell through to
+      // bearer dispatch we would see `invalid_bearer`, not `request_rejected`.
+      const legacyName = getCatalog()[0]?.name;
+      expect(legacyName).toBeTruthy();
+      const res = await callTool(legacyName!, {}, extraFor(signedUrl()));
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toBe('request_rejected: spawn_sig_expired');
+      expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('PAPERCUSP_REQUIRE_SPAWN_SIG=1: an UNSIGNED URL that claims a spawn ctx is rejected + audited', async () => {
+    process.env.PAPERCUSP_REQUIRE_SPAWN_SIG = '1';
+    const res = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ sig: '', exp: '' })));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: spawn_sig_missing_sig_required_mode');
+    expect(h.logVerificationFailure).toHaveBeenCalledTimes(1);
+    expect(h.logVerificationFailure.mock.calls[0][0]).toMatchObject({
+      reason: 'missing_sig_required_mode',
+      claimedRole: 'scoper',
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('?superuser=1 with a bad bearer → superuser_invalid_bearer, tool never executes', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      extraFor(`${MCP}?superuser=1&workspace=ws-test`, { authorization: 'Bearer wrong' }),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: superuser_invalid_bearer');
+    expect(seen).toEqual([]);
+  });
+
+  it('?superuser=1 from a non-loopback origin → superuser_non_loopback', async () => {
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      extraFor(`${MCP}?superuser=1`, {
+        host: 'evil.example.com',
+        authorization: 'Bearer test-su-bearer',
+      }),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: superuser_non_loopback');
+    expect(seen).toEqual([]);
+  });
+
+  it('?power_user=1 with an invalid/expired access token → power_user_invalid_token', async () => {
+    // verifyAccessToken default-resolves null (expired / tampered / unknown).
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      extraFor(`${MCP}?power_user=1`, { authorization: 'Bearer stale-token' }),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: power_user_invalid_token');
+    expect(seen).toEqual([]);
+  });
+
+  it('unknown tool name → unknown_tool error envelope', async () => {
+    const res = await callTool('gatingtest:does-not-exist', {}, extraFor(MCP));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('unknown_tool: no tool named "gatingtest:does-not-exist"');
+  });
+
+  it('a projected tool called WITHOUT any spawn ctx → invalid_request_context (not unknown)', async () => {
+    const res = await callTool('gatingtest:scoped', {}, extraFor(MCP));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^invalid_request_context: /);
+    expect(textOf(res)).toContain('harness/workspace/role/run/spawn');
+    expect(seen).toEqual([]);
+  });
+
+  it('legacy bearer fallback: catalog tool + no bearer → invalid_bearer BEFORE the handler runs', async () => {
+    const legacyName = getCatalog()[0]?.name;
+    expect(legacyName).toBeTruthy();
+    const res = await callTool(legacyName!, {}, extraFor(MCP)); // no Authorization header
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('invalid_bearer: Bearer token did not resolve to a principal');
+  });
+});
+
+/* ─── tools/call — role / profile / workspace dispatch matrix ────────── */
+
+describe('tools/call — role, profile, and workspace gating through the dispatcher', () => {
+  it('out-of-role call → role_not_allowed, handler NOT executed', async () => {
+    const res = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ role: 'worker' })));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe(
+      'role_not_allowed: Role "worker" cannot call tool "gatingtest:scoped" (allowed roles: scoper)',
+    );
+    expect(seen).toEqual([]);
+  });
+
+  it('in-role call dispatches with a synthesized least-privilege principal + workspace tx + ALS pin', async () => {
+    const res = await callTool('gatingtest:scoped', { a: 1 }, extraFor(signedUrl({ role: 'scoper' })));
+    expect(res.isError).toBeUndefined();
+    expect(textOf(res)).toBe('gatingtest:scoped-ok');
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.args).toEqual({ a: 1 });
+    expect(call.ctx.workspaceId).toBe('ws-test');
+    expect(call.ctx.role).toBe('scoper');
+    // tx synthesized via withWorkspace(ws-test); principal is the role's own,
+    // NOT a bypass (gateBypass all-false for signed role-scoped callers).
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+    expect(call.ctx.tx).toBe(h.fakeTx);
+    expect(call.ctx.principal?.slug).toBe('system:scoper');
+    expect(call.ctx.principal?.capabilities.has('agent_tools:read')).toBe(true);
+    expect(call.ctx.gateBypass).toEqual({ role: false, capability: false, quota: false });
+    // P-022: the request-scoped workspace ALS is pinned for the handler.
+    expect(call.alsWorkspace).toBe('ws-test');
+  });
+
+  it('superuser BYPASSES the role allowlist on the same tool (workspace-scoped call)', async () => {
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&workspace=ws-test'));
+    expect(res.isError).toBeUndefined();
+    expect(textOf(res)).toBe('gatingtest:scoped-ok');
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.ctx.isSuperuser).toBe(true);
+    expect(call.ctx.principal?.slug).toBe('system:operator');
+    expect(call.ctx.gateBypass).toEqual({ role: true, capability: true, quota: true });
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+  });
+
+  it('power-profile callers cannot invoke engineer-profile tools by name (mirrors the list filter)', async () => {
+    h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
+    const res = await callTool(
+      'gatingtest:engineer',
+      {},
+      extraFor(`${MCP}?power_user=1`, { authorization: 'Bearer pu-token' }),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe(
+      'tool_not_available_for_profile: "gatingtest:engineer" is not available in the power-engineer profile',
+    );
+    expect(seen).toEqual([]);
+  });
+
+  it('superuser testing ?profile=power hits the SAME profile gate (no superuser carve-out)', async () => {
+    const res = await callTool('gatingtest:engineer', {}, superuserExtra('&profile=power&workspace=ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/^tool_not_available_for_profile: /);
+    expect(seen).toEqual([]);
+  });
+
+  it('power-user workspace is CLAMPED to the token claim — URL ?workspace= and the workspace ARG are both overridden', async () => {
+    h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
+    const res = await callTool(
+      'gatingtest:scoped',
+      { workspace: 'evil-workspace', x: 1 },
+      extraFor(`${MCP}?power_user=1&workspace=evil-workspace`, {
+        authorization: 'Bearer pu-token',
+      }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.ctx.workspaceId).toBe('ws-claim'); // token claim, never the URL
+    expect((call.args as Record<string, unknown>).workspace).toBe('ws-claim'); // arg overwritten
+    expect(call.ctx.isPowerUser).toBe(true);
+    // Power-user bypasses role+capability but NOT quota.
+    expect(call.ctx.gateBypass).toEqual({ role: true, capability: true, quota: false });
+    expect(h.withWorkspaceCalls).toEqual(['ws-claim']);
+  });
+
+  it('EI-30: an UNSCOPED superuser passing a per-call `workspace` arg dispatches under THAT workspace', async () => {
+    const res = await callTool('gatingtest:scoped', { workspace: 'ws-arg' }, superuserExtra());
+    expect(res.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.ctx.workspaceId).toBe('ws-arg');
+    expect(call.ctx.principal?.slug).toBe('system:operator');
+    expect(call.ctx.tx).toBe(h.fakeTx);
+    expect(h.withWorkspaceCalls).toEqual(['ws-arg']);
+    expect(call.alsWorkspace).toBe('ws-arg');
+  });
+
+  it('an UNSCOPED superuser call with NO workspace gets neither tx nor principal nor ALS pin', async () => {
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra());
+    expect(res.isError).toBeUndefined(); // this probe tool itself needs no principal
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    expect(call.ctx.workspaceId).toBe('*');
+    expect(call.ctx.tx).toBeUndefined();
+    expect(call.ctx.principal).toBeUndefined();
+    expect(call.alsWorkspace).toBeUndefined();
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
+  it('a principal-gated BUILT-IN under an unscoped superuser fails with the workspace-scoping error (handler path)', async () => {
+    // The wrapper-level version of this gate is pinned in tool-auth-gating.test.ts;
+    // this is the handler-path wiring its header records as owed.
+    // (console silenced: the dispatch stack's invoke catch currently carries a
+    // transient `[DBG dispatch-stack catch]` console.error from an in-flight
+    // debugging session on the shared tree — not part of this contract.)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(lookupByMcpName('features:get')).toBeTruthy();
+      const res = await callTool('features:get', {}, superuserExtra());
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toMatch(/^unauthorized: /);
+      expect(textOf(res)).toContain('requires a workspace-scoped call');
+    } finally {
+      err.mockRestore();
+    }
+  });
+});

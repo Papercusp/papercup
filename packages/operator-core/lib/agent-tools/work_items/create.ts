@@ -5,6 +5,12 @@
  * bug/change file an issue (engineer_issues); feature/research-task/chunk land in
  * the harness work queue (harness_features_consolidated). A `chunk` carries a
  * `parent` (D-004).
+ *
+ * Emits (start-hive-wake-orchestration-2026-06-09 P-001 / D-001): a successful
+ * create fires a `coord:emit` lifecycle notification scoped to the item's tagged
+ * topics — new demand surfaces as an event. The Queen's default wake
+ * subscription rides the same tool event (lib/hive/wake-defaults); the `urgent`
+ * flag remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -25,6 +31,31 @@ export default defineTool({
   capability: 'work_items:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // New demand surfaces as an EVENT (start-hive-wake P-001 / D-001). Scoped to
+  // the item's tagged topics ([] when untagged ⇒ the lifecycle row is recorded
+  // with no inbox delivery — the audit value without fleet-wide noise; the
+  // Queen's wake rides the tool event itself, not this message).
+  emits: [
+    {
+      fire: 'coord:emit',
+      when: (e) => Boolean((e.result?.data as { ok?: boolean } | undefined)?.ok),
+      render: (e) => {
+        const data = e.result.data as {
+          workItem?: { id?: string; kind?: string; title?: string; harness?: string | null };
+        };
+        const wi = data.workItem ?? {};
+        const topics = Array.isArray((e.args as { topics?: unknown }).topics)
+          ? ((e.args as { topics: string[] }).topics)
+          : [];
+        return {
+          category: 'demand',
+          summary: `work item created: ${wi.id ?? '?'} (${wi.kind ?? '?'}) — ${wi.title ?? ''}`,
+          ...(wi.harness ? { body: `harness: ${wi.harness}` } : {}),
+          to: topics.map((t) => `@topic:${t}`),
+        };
+      },
+    },
+  ],
   args: z.object({
     kind: z.enum([...WORK_ITEM_KINDS] as [string, ...string[]]),
     title: z.string().min(1).max(200),

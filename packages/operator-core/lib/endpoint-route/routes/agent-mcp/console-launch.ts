@@ -246,51 +246,19 @@ function buildOneliner(
   ].join(' && ').replace(' && (', ' ; (');
 }
 
-/**
- * Safety floor for INTERACTIVE launches (P-012 / D-013 residual 3). A
- * human-initiated console WAIVES brain admission (no `new_subagent` worth-it
- * round-trip — the human is the judgment + the durability), but STILL passes the
- * deterministic safety floor: the absolute concurrency ceiling
- * (`maxSimultaneousAgents`), the plan's last-resort guard. Over-ceiling → refuse
- * with an actionable message (the human can `fleet:cancel` a spawn or raise the
- * cap live). Reading the floor also feeds the interactive launch into the same
- * headroom picture the brain consults, so console sessions are no longer
- * invisible to the floor.
- *
- * Fail-OPEN: if the headroom read throws (e.g. PG briefly down) we NEVER block a
- * human launch on it — the floor is a guard, not a gate that can wedge a person.
- *
- * Lazy import: `fleet/operator-spawn` pulls `dbos/orchestrator-runner` (which
- * registers the DBOS workflow graph at module load), so importing it eagerly here
- * would drag those process-global registrations into this route's import graph.
- */
-export async function checkInteractiveSafetyFloor(): Promise<{ ok: boolean; reason?: string }> {
-  try {
-    const { getSpawnHeadroom } = await import('../../../fleet/operator-spawn');
-    const floor = await getSpawnHeadroom(activeWorkspaceId());
-    if (floor.headroom <= 0) {
-      return {
-        ok: false,
-        reason:
-          `console launch refused by the safety floor: ${floor.running} agent(s) running ≥ ceiling ` +
-          `${floor.ceiling} (maxSimultaneousAgents). Interactive launches WAIVE brain admission but still ` +
-          `pass the floor (P-012 / D-013) — fleet:cancel a spawn or raise maxSimultaneousAgents ` +
-          `(operator:rate_limit_config), then retry.`,
-      };
-    }
-    dlog(`safety floor OK: running=${floor.running} ceiling=${floor.ceiling} headroom=${floor.headroom} (admission waived — human-initiated)`);
-    return { ok: true };
-  } catch (e: any) {
-    // Fail-open: never block a human-initiated launch on a floor-read failure.
-    dlog(`safety floor read failed (${e?.message}); proceeding (fail-open for interactive)`);
-    return { ok: true };
-  }
-}
+// Safety floor for INTERACTIVE launches (P-012 / D-013 residual 3): the shared
+// helper lives in lib/interactive-safety-floor.ts so EVERY interactive launch
+// route (this console launch + adv/launch-su's psu web launch) passes the same
+// floor — admission waived (human-initiated), ceiling still enforced, fail-open
+// on a read error. Re-exported for compat (console-launch-floor.test.ts + any
+// existing importer).
+export { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
+import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 
 async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): Promise<void> {
   // Safety floor (admission waived, human-initiated) — refuse over-ceiling. The
   // GET ?action=spawn handler catches + dlogs this throw, so no terminal launches.
-  const floor = await checkInteractiveSafetyFloor();
+  const floor = await checkInteractiveSafetyFloor(dlog);
   if (!floor.ok) throw new Error(floor.reason);
   const envelope = await buildConsoleEnvelope({
     workspaceId: activeWorkspaceId(),
@@ -384,7 +352,7 @@ const post = defineTool({
     // Safety floor (P-012 / D-013): interactive launches waive brain admission
     // but still pass the deterministic floor (the absolute concurrency ceiling).
     // Over-ceiling → 429 with an actionable message; admission itself is waived.
-    const floorCheck = await checkInteractiveSafetyFloor();
+    const floorCheck = await checkInteractiveSafetyFloor(dlog);
     if (!floorCheck.ok) return jsonRes({ status: 'error', error: floorCheck.reason }, 429);
     let body: {
       slug?: string | null;

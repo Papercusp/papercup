@@ -8,6 +8,11 @@
  * plans-pg-canonical-migration-2026-06-03).
  * If the plan was previously paused or done it is re-activated.
  * Starting an already-started plan is a no-op (idempotent).
+ *
+ * Emits (start-hive-wake-orchestration-2026-06-09 P-001 / D-001): on a REAL
+ * op_status transition (`transitioned: true` — not the idempotent re-start) a
+ * `coord:emit` lifecycle notification fires to the plan's watchers. The Queen's
+ * default wake subscription rides the same tool event (lib/hive/wake-defaults).
  */
 
 import { z } from 'zod';
@@ -52,6 +57,30 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'bee'],
   modality: ['text'],
+  // Demand surfaces as an EVENT (start-hive-wake P-001 / D-001): a real
+  // started-transition notifies the plan's watchers. The idempotent re-start
+  // (`transitioned: false`) stays silent — no watcher value, no Queen demand.
+  emits: [
+    {
+      fire: 'coord:emit',
+      when: (e) => Boolean((e.result?.data as { transitioned?: boolean } | undefined)?.transitioned),
+      render: (e) => {
+        const data = e.result.data as {
+          slug: string;
+          harnessSlug?: string;
+          previousOpStatus?: string | null;
+          autoApproved?: boolean;
+        };
+        return {
+          category: 'demand',
+          summary: `plan started: ${data.slug}${data.previousOpStatus ? ` (was ${data.previousOpStatus})` : ''}`,
+          ...(data.autoApproved ? { body: 'draft auto-approved → ready by the start' } : {}),
+          plan_slug: data.slug,
+          to: [`@plan:${data.slug}`],
+        };
+      },
+    },
+  ],
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
@@ -89,20 +118,32 @@ export default defineTool({
     // op_status lives on the plan's own harness_plans row (folded from the
     // retired harness_plan_status table). Preserve the first-ever start time via
     // COALESCE so re-starting a paused/done plan keeps its original op_started_at.
+    // The locked self-join carries the PRIOR op_status out so the result can say
+    // whether this start was a real transition (the emits/wake gate) or the
+    // idempotent no-op re-start.
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx<{ op_status: string; op_updated_at: string }[]>`
-        UPDATE harness_shared.harness_plans
+      return tx<{ op_status: string; op_updated_at: string; prev_op_status: string | null }[]>`
+        UPDATE harness_shared.harness_plans AS p
            SET op_status     = 'started',
-               op_started_at = COALESCE(op_started_at, ${now}),
+               op_started_at = COALESCE(p.op_started_at, ${now}),
                op_updated_at = ${now}
-         WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
-           AND harness_slug = ${harnessSlug}
-           AND plan_slug    = ${args.slug}
-        RETURNING op_status, op_updated_at
+          FROM (
+            SELECT plan_slug, op_status AS prev_op_status
+              FROM harness_shared.harness_plans
+             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+               AND harness_slug = ${harnessSlug}
+               AND plan_slug    = ${args.slug}
+               FOR UPDATE
+          ) prev
+         WHERE p.workspace_id = ${DEFAULT_WORKSPACE_ID}
+           AND p.harness_slug = ${harnessSlug}
+           AND p.plan_slug    = prev.plan_slug
+        RETURNING p.op_status, p.op_updated_at, prev.prev_op_status
       `;
     });
 
     const row = rows[0];
+    const transitioned = row ? row.prev_op_status !== 'started' : false;
 
     // Starting a plan IS the approval signal — if it's still a draft,
     // auto-advance the frontmatter to 'ready' so the lifecycle reflects
@@ -129,7 +170,7 @@ export default defineTool({
       /* best effort — the plan is started regardless of the status flip */
     }
 
-    ctxAny.metadata?.({ slug: args.slug, harnessSlug, status: row?.op_status, autoApproved });
+    ctxAny.metadata?.({ slug: args.slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });
     return {
       content: [
         {
@@ -140,6 +181,11 @@ export default defineTool({
             status: 'started',
             updatedAt: row?.op_updated_at,
             autoApproved,
+            // True only when this call ACTUALLY flipped op_status to 'started'
+            // (false on the idempotent re-start / missing row) — the gate the
+            // emits rule + the Queen's wake subscription match on (P-001).
+            transitioned,
+            previousOpStatus: row?.prev_op_status ?? null,
           }),
         },
       ],

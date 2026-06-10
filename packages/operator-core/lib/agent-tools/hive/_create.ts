@@ -166,7 +166,20 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       console.warn(`[hive:create] materialize triggers failed (${opts.slug}): ${e instanceof Error ? e.message : e}`);
     }
 
-    // 6. Initial wake (optional): fire the Queen now, or declare a time wake.
+    // 6. Arm the Queen's DEFAULT event-wake subscriptions (start-hive-wake
+    //    P-002 / D-001): plan-started / work-item-created / escalation-raised.
+    //    REPLACE — a fresh hive has no tuned policy to preserve. Best-effort:
+    //    hive:start re-affirms (ENSURE) so a transient failure here self-heals.
+    try {
+      const { armDefaultHiveWakeSubscriptions } = await import('../../hive/wake-defaults');
+      await armDefaultHiveWakeSubscriptions(ws, { mode: 'replace' });
+    } catch (e) {
+      console.warn(
+        `[hive:create] default wake-subscription arm failed (${opts.slug}): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+
+    // 7. Initial wake (optional): fire the Queen now, or declare a time wake.
     //    ROOT launch (no `parent`) — the no-nest guard passes for a parentless hive.
     let waked = false;
     if (opts.wakeInSeconds != null) {

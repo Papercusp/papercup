@@ -22,6 +22,7 @@ import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
 import { recordAdvSession } from '../../../adv-sessions';
+import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;

@@ -309,11 +309,25 @@ describe('§9 wait subsystem via HTTP MCP', () => {
     }, { timeoutMs: 30_000 });
 
     await new Promise<void>((r) => setTimeout(r, 2000));
-    await callTool(A, 'locks:release', { lock_id: lockA });
+    const rel = await callTool(A, 'locks:release', { lock_id: lockA });
+    // The release MUST free exactly the held path. The 2026-06-09 failure
+    // mode was here, not in the wake: with a >54-char coordination domain
+    // the grant cascade's pg_notify raised "channel name too long" and
+    // rolled back the WHOLE release — A kept the lock and B timed out
+    // busy. Asserting the release result pins the real failure to the
+    // right call instead of surfacing as a mysterious rb.ok=false.
+    expect((rel.released as unknown[] | undefined)?.length, JSON.stringify(rel)).toBe(1);
     lockA = '';
 
     const rb = await bPromise;
-    expect(rb.ok).toBe(true);
+    expect(rb.ok, JSON.stringify(rb)).toBe(true);
+    // Push-wake SLO — the 12s in this test's name, now enforced. The wake
+    // is event-driven (grant cascade NOTIFY → LISTEN), nominally sub-second
+    // after A's release at t≈2s; 12s leaves ~10s of slack for a loaded box.
+    // The 30s poll ceiling in acquire.ts is a silent-drop BACKSTOP, not the
+    // wake mechanism — a wake that needs it (waited_sec ≈ max_sec) means
+    // the NOTIFY path is broken and MUST fail here, not pass slowly.
+    expect(rb.waited_sec as number, `waited_sec=${rb.waited_sec}`).toBeLessThanOrEqual(12);
     if (rb.lock_id) await callTool(B, 'locks:release', { lock_id: rb.lock_id });
   }, 40_000);
 });

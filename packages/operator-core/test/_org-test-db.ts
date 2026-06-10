@@ -71,6 +71,14 @@ export interface OrgTestDb {
   appSql: postgres.Sql;
   /** harness_admin (superuser, RLS-BYPASS) — for test assertions. */
   adminSql: postgres.Sql;
+  /** DSN of the harness_app client — for env-routing the REAL getOrgPgApp()
+   *  (`HARNESS_DATABASE_URL`) the way _baseline-coord-fixture does. */
+  appDsn: string;
+  /** DSN of the harness_admin client — for `HARNESS_ADMIN_DATABASE_URL` /
+   *  `DATABASE_URL` env-routing and as a DBOS systemDatabaseUrl. */
+  adminDsn: string;
+  /** The throwaway database name (diagnostics). */
+  dbName: string;
   cleanup: () => Promise<void>;
 }
 
@@ -104,8 +112,10 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
 
   const host = u.hostname;
   const port = u.port;
-  const appSql = postgres(`postgresql://harness_app:harness_app_pwd@${host}:${port}/${dbName}`, clientOpts);
-  const adminSql = postgres(`postgresql://harness_admin:harness_admin_pwd@${host}:${port}/${dbName}`, clientOpts);
+  const appDsn = `postgresql://harness_app:harness_app_pwd@${host}:${port}/${dbName}`;
+  const adminDsn = `postgresql://harness_admin:harness_admin_pwd@${host}:${port}/${dbName}`;
+  const appSql = postgres(appDsn, clientOpts);
+  const adminSql = postgres(adminDsn, clientOpts);
 
   const cleanup = async () => {
     await appSql.end({ timeout: 5 }).catch(() => {});
@@ -120,5 +130,5 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
     }
   };
 
-  return { appSql, adminSql, cleanup };
+  return { appSql, adminSql, appDsn, adminDsn, dbName, cleanup };
 }
