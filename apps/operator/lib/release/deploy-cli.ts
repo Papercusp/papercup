@@ -101,8 +101,15 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
 
   const plan = await gatherPlan(cfg, { target, force });
 
-  out(JSON.stringify({ mode: execute ? 'execute' : 'plan', config: { releaseRoot: cfg.releaseRoot, releaseRef: cfg.releaseRef, unit: cfg.systemdUnit }, plan }, null, 2));
-  // P-008: machine-readable plan on ONE delimited line for the release-trigger routine.
+  // The pretty plan goes to STDERR (human-readable); STDOUT carries ONLY the single
+  // marker line. CRITICAL for cross-version compat: the release-trigger runs this CLI
+  // from the integration tree, so a DEPLOYED (older) release-trigger — which still
+  // brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))` — runs THIS newer CLI.
+  // Two JSON objects on stdout (pretty + marker) made that slice span both + the marker
+  // text → invalid JSON → "could not parse deploy plan" → NO deploys (the pipeline
+  // wedged on 2026-06-09). One object on stdout keeps the old brace-slice (it lands on
+  // the marker JSON, which carries `.plan`) AND the new marker parse both working.
+  err(JSON.stringify({ mode: execute ? 'execute' : 'plan', config: { releaseRoot: cfg.releaseRoot, releaseRef: cfg.releaseRef, unit: cfg.systemdUnit }, plan }, null, 2));
   out(`${DEPLOY_PLAN_MARKER} ${JSON.stringify({ mode: execute ? 'execute' : 'plan', plan })}`);
 
   if (plan.warnings.length) {

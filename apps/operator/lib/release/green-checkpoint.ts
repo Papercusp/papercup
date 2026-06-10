@@ -379,10 +379,15 @@ if (require.main === module) {
     noPush: process.argv.includes('--no-push'),
   })
     .then((r) => {
-      console.log(JSON.stringify(r, null, 2));
-      // P-008: machine-readable result on ONE delimited line, so the release-actions
-      // routine parses this instead of brace-slicing the whole stdout (fragile to any
-      // log line that happens to contain braces).
+      // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
+      // single marker line. CRITICAL for cross-version compat: the routine that invokes
+      // this CLI runs from the integration tree, so a DEPLOYED (older) green-checkpoint
+      // handler — which still brace-slices stdout `slice(indexOf('{'), lastIndexOf('}'))`
+      // — runs THIS newer CLI. Two JSON objects on stdout (pretty + marker) made that
+      // slice span both + the marker text → invalid JSON → recorded 'error' (and wedged
+      // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
+      // parse both working.
+      console.error(JSON.stringify(r, null, 2));
       console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
       process.exit(0);
     })
