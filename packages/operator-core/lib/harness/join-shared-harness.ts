@@ -580,6 +580,27 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
           // Best-effort — boot_federate's own soft-skip handles a bad clone dir.
         }
       }
+      // The booter resolves the harness PATH through the workspace registry
+      // (resolveHarnessPaths) — but the join-link route only registers the
+      // clone AFTER the whole join returns, which is too late for THIS boot:
+      // an unregistered slug resolves to /tmp/papercusp-unresolved/… and the
+      // binding resolver silently boots the substrate LOCAL-ONLY (no swarm
+      // join — found by the browse→join→federate smoke's federate leg).
+      // Register the clone before booting; the route's later registration
+      // skips an already-present slug.
+      if (state.cloneDir) {
+        try {
+          const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
+          const reg = await loadHarnessRegistry();
+          if (!reg.projects.some((p) => p.slug === opts.slug)) {
+            reg.projects.push({ slug: opts.slug, path: state.cloneDir });
+            await saveHarnessRegistry(reg);
+          }
+        } catch {
+          // Best-effort — an unregistered harness boots local-only, exactly
+          // the pre-fix behavior; the route's post-join registration still runs.
+        }
+      }
       const { activeWorkspaceId } = await import('../workspace-registry');
       await stepBootFederate({
         workspaceId: activeWorkspaceId(),

@@ -116,10 +116,17 @@ export async function handleJoinLink(
     throw e;
   }
 
-  // Register the harness in the workspace registry.
+  // Register the harness in the workspace registry. The join orchestrator's
+  // boot_federate step already registers the clone (the substrate boot
+  // resolves the harness path through the registry, so it must exist BEFORE
+  // the boot) — reload and skip when present; pushing onto the stale pre-join
+  // `reg` would clobber that entry.
   if (state.cloneDir) {
-    reg.projects.push({ slug, path: state.cloneDir });
-    await deps.saveRegistry(reg);
+    const reg2 = await deps.loadRegistry();
+    if (!reg2.projects.some((p) => p.slug === slug)) {
+      reg2.projects.push({ slug, path: state.cloneDir });
+      await deps.saveRegistry(reg2);
+    }
 
     // Scaffold the harness schema (best-effort — don't fail the join if this fails).
     try {
