@@ -39,26 +39,6 @@
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
-// ── TEMP EI-272 DIAGNOSTIC (revert before turn end) ──
-import { EventEmitter } from 'node:events';
-const origEmit = EventEmitter.prototype.emit;
-EventEmitter.prototype.emit = function (ev: string | symbol, ...args: unknown[]) {
-  if (ev === 'error' && (this as EventEmitter).listenerCount('error') === 0) {
-    const e = args[0] as { message?: string; code?: string } | undefined;
-    // eslint-disable-next-line no-console
-    console.error(
-      `[zero-listener-error] class=${(this as object).constructor?.name} msg=${e?.message} code=${e?.code} site=${new Error('x').stack?.split('\n').slice(2, 6).join(' | ')}`,
-    );
-  }
-  return origEmit.apply(this, [ev, ...args] as never) as boolean;
-};
-process.on('uncaughtException', (err) => {
-  // eslint-disable-next-line no-console
-  console.error(
-    `[uncaught-diag] msg=${err?.message} code=${(err as { code?: string })?.code} stack=${err?.stack?.split('\n').slice(0, 8).join(' | ')}`,
-  );
-});
-// ── END TEMP ──
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,9 +48,27 @@ import Hyperswarm from 'hyperswarm';
 
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
 import { type HyperswarmLike } from '../swarm';
+import { _setSwarmGuardForTests, type SwarmGuard } from '../swarm-guard';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
+
+/**
+ * The DoS guard's connection-rate limit keys on IP (CONN_RATE: 30 conns / 10s,
+ * ban TTL 10 min). On a one-box rig ALL peers share 127.0.0.1, so kill-reconnect
+ * churn cross-bans the HONEST peers and the test can never converge (root cause
+ * of the EI-272 red). Production peers have distinct IPs; the guard has its own
+ * unit suite. The rig swaps in an allow-all guard — chaos here tests the
+ * REPLICATION path, not the DoS ceiling.
+ */
+const RIG_GUARD: SwarmGuard = {
+  firewall: () => false,
+  isBannedKey: () => false,
+  isBannedIp: () => false,
+  banKey: () => {},
+  banIp: () => {},
+  recordConnection: async () => ({ allow: true }),
+};
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -84,6 +82,7 @@ afterEach(async () => {
   }
   _resetCacheForTests();
   _resetBootHistoryForTests();
+  _setSwarmGuardForTests(null);
 });
 
 function makeWorkspaceRoot(prefix: string): string {
@@ -206,16 +205,25 @@ function forceReconnectAll(all: HyperswarmLike[], topicHex: string): void {
 }
 
 describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)', () => {
-  // EI-272: landed red — never green at the gate (5 consecutive holds 11:18Z–
-  // 15:18Z 2026-06-10) and fails identically local: no convergence within 60s
-  // after churn + 3 uncaught ECONNRESETs that escape the swarm.ts/
-  // directory-swarm.ts socket-error guards added alongside. Skip-gated, NOT
-  // deleted: the uncaught-reset bug class this asserts is real. Re-enable
-  // (remove .skip) when the reset paths are fully guarded and this passes 3
-  // consecutive gate runs. Owner: coord-e2e P-004.
+  // EI-272 RESOLVED (was skip-gated after holding the gate 5 runs on
+  // 2026-06-10): the red had TWO causes, both rig-level, found by tracing the
+  // zero-listener error emitter —
+  //   1. non-convergence: the DoS guard's IP-keyed connection-rate limit
+  //      (30/10s, 10-min ban) cross-banned the HONEST peers, because every
+  //      one-box peer shares 127.0.0.1 → RIG_GUARD above sizes it out;
+  //   2. the 3 uncaught ECONNRESETs: hyperswarm flips `forceRelaying` after
+  //      dial errors, routing reconnects through the IN-PROCESS testnet DHT
+  //      nodes; a kill then reset the RELAY's NoiseSecretStream, which nothing
+  //      in-process guarded → the testnet-node guards above.
+  // The production-side guards this test originally caught (unhandled socket
+  // 'error' in swarm.ts/directory-swarm.ts connection handlers = host crash)
+  // remain in place and load-bearing. 3 consecutive green runs at ~2.6s each
+  // before re-enable.
   it(
     'converges with no loss/dup under kill-reconnect churn; admission + mid-session revocation stay enforced',
     async () => {
+      _setSwarmGuardForTests(RIG_GUARD);
+
       const testnet = await createTestnet(3);
       cleanups.push(async () => {
         try {
@@ -224,6 +232,16 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
           /* ignore */
         }
       });
+      // The in-process testnet DHT nodes RELAY connections when a peer's
+      // direct dial keeps erroring (hyperswarm flips `forceRelaying` on error
+      // codes). A kill that severs a relayed leg resets the RELAY's
+      // NoiseSecretStream — inside these in-process nodes, where nothing else
+      // owns error handling. Guard them like any consumer must.
+      for (const node of (testnet as { nodes?: Array<{ on?: (ev: string, fn: (s: unknown) => void) => void }> }).nodes ?? []) {
+        node.on?.('connection', (s) =>
+          (s as { on?: (ev: string, fn: () => void) => void }).on?.('error', () => {}),
+        );
+      }
 
       const workspaceId = 'ws-chaos-test';
       const harnessSlug = 'sheets';
@@ -306,11 +324,13 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
         honestKeys.push(`F-A-${r}`, `F-B-${r}`);
 
         // Seeded chaos: kill EVERY live connection mid-replication on the
-        // rounds the seeded coin picks, then force reconnects.
+        // rounds the seeded coin picks, then force reconnects. Rounds are
+        // PACED (300ms) so kills land on live links, not on each other.
         if (rand() < 0.4) {
           killsFired += killConnections(swarms.A) + killConnections(swarms.B) + killConnections(swarms.M);
           forceReconnectAll(Object.values(swarms), topicHex);
         }
+        await new Promise((r) => setTimeout(r, 300));
 
         // Bounded merge nudges — replication progresses whenever a link is up.
         await A.mergeNow();
@@ -341,7 +361,10 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
       // a winner can only change once, so a second apply would be a replay bug).
       for (const [name, spy] of Object.entries({ A: applies.A, B: applies.B })) {
         const counts = new Map<string, number>();
-        for (const c of spy.mock.calls) counts.set(c[0].hbKey, (counts.get(c[0].hbKey) ?? 0) + 1);
+        for (const c of spy.mock.calls) {
+          const key = c[0].hbKey ?? '';
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
         for (const k of honestKeys) {
           expect(counts.get(k), `${name} applied ${k} ${counts.get(k)} times`).toBe(1);
         }
@@ -353,7 +376,7 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
       expect(A.admitted.has(mLogKey)).toBe(false);
       expect(B.admitted.has(mLogKey)).toBe(false);
       const mKeysAtHonest = [...applies.A.mock.calls, ...applies.B.mock.calls]
-        .map((c) => c[0].hbKey)
+        .map((c) => c[0].hbKey ?? '')
         .filter((k) => k.startsWith('F-M-'));
       expect(mKeysAtHonest).toEqual([]);
 

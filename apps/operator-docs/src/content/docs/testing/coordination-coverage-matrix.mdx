@@ -163,6 +163,17 @@ File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 te
 | no duplication (one op merged twice → one row) | 🟢 | ✅ |
 | **3-peer partition/rejoin** (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 `three-peer-partition-rejoin.test.ts` |
 
+### Swarm-path chaos — real Hyperswarm under churn (C2)
+
+File: `sync/hyperbee/__tests__/swarm-chaos.test.ts` (plan `coord-system-e2e-testing-2026-06-10` P-004; ~2.6s, seeded LCG kill schedule, offline testnet DHT). Chaos = repeated mid-replication CONNECTION KILLS + reconnect churn — the only failure shape a reliable UDX transport can surface to the substrate (loss/reorder are absorbed below the byte stream; injecting them in-stream would fabricate impossible corruption). History: landed red and held the gate (EI-272) — root causes were rig-level (the IP-keyed DoS conn-rate ceiling cross-bans one-box peers sharing 127.0.0.1; in-process testnet RELAY streams take unguarded resets when `forceRelaying` engages); both documented in-file.
+
+| Cell | Before | Now |
+|---|---|---|
+| **unhandled socket `'error'` on swarm connections = host-CRASH class** — an unclean peer disconnect raised an uncaught ECONNRESET; guards now first-line in both connection handlers (`swarm.ts`, `directory-swarm.ts`) | ❌ crash | 🔴 found + fixed by this test |
+| convergence under seeded kill-reconnect churn: every honest op exactly once per key on both peers (no loss, no dup) | ❌ | 🔴 |
+| admission enforced across churn: a failing channel-2 binding re-announces on every reconnect, never admitted, ops never merge | partial (single connect) | 🔴 |
+| MID-SESSION revocation survives reconnect churn (re-announce refused), with a live-wire positive control op proving the assertion isn't vacuous | ❌ | 🔴 |
+
 ### work_items claim/lease (C3)
 
 File: `work-item-claims-concurrency.integration.test.ts` (7 tests, real PG).
