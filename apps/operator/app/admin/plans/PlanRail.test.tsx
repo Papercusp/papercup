@@ -76,6 +76,7 @@ function plan(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     harness: '',
     startStatus: 'started',
     priority: null,
+    maxImportance: null,
     ...over,
   };
 }

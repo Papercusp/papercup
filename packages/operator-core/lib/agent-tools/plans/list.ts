@@ -76,7 +76,7 @@ type ListRow = {
   title: string | null;
   status: string;
   /** Last REAL activity — the PG `updated_at` write timestamp (ISO; the
-   *  trigger skips no-op bumps, mig 209). Falls back to the authored
+   *  trigger skips no-op bumps, mig 211). Falls back to the authored
    *  frontmatter date if the timestamp is ever absent. */
   updated: string | null;
   created: string | null;

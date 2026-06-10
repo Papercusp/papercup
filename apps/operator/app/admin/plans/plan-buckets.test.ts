@@ -27,6 +27,7 @@ function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
     harness: 'papercup',
     startStatus: null,
     priority: null,
+    maxImportance: null,
     ...overrides,
   };
 }

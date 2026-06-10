@@ -52,6 +52,7 @@ function plan(
     harness: 'h',
     startStatus,
     priority: null,
+    maxImportance: null,
     ...over,
   };
 }

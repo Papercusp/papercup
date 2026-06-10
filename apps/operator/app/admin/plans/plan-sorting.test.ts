@@ -27,6 +27,7 @@ function row(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     harness: 'papercup',
     startStatus: null,
     priority: null,
+    maxImportance: null,
     ...over,
   };
 }
@@ -138,6 +139,51 @@ describe('progress sort', () => {
       row('fresh', { itemCounts: { todo: 5 } }),
     ];
     expect(slugsBy('progress', rows)).toEqual(['done', 'half', 'fresh', 'empty']);
+  });
+});
+
+describe('needs-human / blocked count sorts', () => {
+  const rows = [
+    row('none', { itemCounts: { todo: 3 }, updated: '2026-06-09' }),
+    row('two', { itemCounts: { 'needs-human': 2, blocked: 1 } }),
+    row('five', { itemCounts: { 'needs-human': 5, blocked: 3 } }),
+    row('no-items'),
+  ];
+
+  it('needs-human: biggest pile first; zero-count plans fall to recency', () => {
+    expect(slugsBy('needs-human', rows)).toEqual(['five', 'two', 'none', 'no-items']);
+  });
+
+  it('blocked: most-stuck first', () => {
+    expect(slugsBy('blocked', rows)).toEqual(['five', 'two', 'none', 'no-items']);
+  });
+});
+
+describe('urgency sort', () => {
+  it('hottest open item wins; plans with nothing open (null) last', () => {
+    const rows = [
+      row('normal-plan', { maxImportance: 'normal' }),
+      row('all-done', { maxImportance: null, updated: '2026-06-09' }),
+      row('urgent-plan', { maxImportance: 'urgent' }),
+      row('high-plan', { maxImportance: 'high' }),
+      row('low-plan', { maxImportance: 'low' }),
+    ];
+    expect(slugsBy('urgency', rows)).toEqual([
+      'urgent-plan',
+      'high-plan',
+      'normal-plan',
+      'low-plan',
+      'all-done',
+    ]);
+  });
+
+  it('tolerates rows from a server predating maxImportance (undefined ≡ null → last)', () => {
+    const stale = row('stale');
+    delete (stale as { maxImportance?: unknown }).maxImportance;
+    expect(slugsBy('urgency', [stale, row('hot', { maxImportance: 'low' })])).toEqual([
+      'hot',
+      'stale',
+    ]);
   });
 });
 

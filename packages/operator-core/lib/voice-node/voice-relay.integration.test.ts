@@ -92,7 +92,19 @@ describe('voice relay (blind-relay over an isolated DHT testnet)', () => {
       cleanups.push(() => A.destroy(), () => B.destroy());
 
       const topic = randomBytes(32).toString('hex');
+      // SEQUENTIAL join: A announces and we await the flush BEFORE B joins.
+      // A simultaneous join deterministically deadlocks on a loopback testnet:
+      // each side's single join-time announce+lookup query completes in
+      // milliseconds — before the OTHER side's announce record lands — and
+      // hyperswarm's next discovery refresh is REFRESH_INTERVAL (10 min) +
+      // jitter away (hyperswarm/lib/peer-discovery.js), far past any test
+      // bound. Verified: both announces ARE in the DHT (a third node's lookup
+      // finds both), each peer just never re-queries. Sequencing the joins is
+      // the realistic choreography (caller present, callee joins) and is how
+      // the hyperbee two-peer swarm tests pass deterministically; it changes
+      // nothing about what this test proves (relay pairing + audio).
       const chanA = A.joinChannel(topic);
+      await chanA.announced();
       const chanB = B.joinChannel(topic);
 
       await until(

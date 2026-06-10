@@ -16,6 +16,7 @@ import {
   writeEndpointIpcDiscovery,
   readEndpointIpcDiscovery,
   endpointIpcDiscoveryPath,
+  endpointIpcDiscoveryPathForPort,
 } from './endpoint-ipc-discovery';
 
 beforeEach(async () => {
@@ -61,5 +62,40 @@ describe('endpoint-ipc discovery file', () => {
 
     await writeFile(endpointIpcDiscoveryPath(), JSON.stringify({ pid: 1 }), 'utf8');
     expect(await readEndpointIpcDiscovery()).toBeNull();
+  });
+});
+
+describe('per-port discovery (EI-190)', () => {
+  const savedPort = process.env.PAPERCUSP_HONO_PORT;
+  afterEach(() => {
+    if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+    else process.env.PAPERCUSP_HONO_PORT = savedPort;
+  });
+
+  it('names the per-port file endpoint-ipc.<port>.json beside the singleton', () => {
+    expect(endpointIpcDiscoveryPathForPort(3170)).toBe(
+      join(h.home, '.papercusp', 'endpoint-ipc.3170.json'),
+    );
+  });
+
+  it('writes BOTH the per-port file and the legacy singleton, identical payloads with the port', async () => {
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    await writeEndpointIpcDiscovery('/tmp/sockets/eipc-test.sock');
+
+    const perPort = JSON.parse(await readFile(endpointIpcDiscoveryPathForPort(3170), 'utf8'));
+    const singleton = JSON.parse(await readFile(endpointIpcDiscoveryPath(), 'utf8'));
+    expect(perPort).toEqual(singleton);
+    expect(perPort).toMatchObject({
+      socketPath: '/tmp/sockets/eipc-test.sock',
+      pid: process.pid,
+      port: 3170,
+    });
+  });
+
+  it('defaults the port to 3070 when PAPERCUSP_HONO_PORT is unset', async () => {
+    delete process.env.PAPERCUSP_HONO_PORT;
+    await writeEndpointIpcDiscovery('/tmp/sockets/eipc-default.sock');
+    const perPort = JSON.parse(await readFile(endpointIpcDiscoveryPathForPort(3070), 'utf8'));
+    expect(perPort.port).toBe(3070);
   });
 });
