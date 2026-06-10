@@ -17,7 +17,7 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { getAllBlockedPlanItems, applyPlanItemBlocks, planItemRef } from '../../issue-blocks-merge';
-import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
+import { IMPORTANCE_LEVELS, ITEM_STATUSES, PLAN_STATUSES, type Importance } from './parser';
 import { reconcileStartStatus } from './plan-start-state';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
@@ -75,6 +75,9 @@ type ListRow = {
   slug: string;
   title: string | null;
   status: string;
+  /** Last REAL activity — the PG `updated_at` write timestamp (ISO; the
+   *  trigger skips no-op bumps, mig 209). Falls back to the authored
+   *  frontmatter date if the timestamp is ever absent. */
   updated: string | null;
   created: string | null;
   owner: string | null;
@@ -90,7 +93,23 @@ type ListRow = {
    * SOME harness, falling back to the workspace primary).
    */
   harness: string;
+  /** Importance of the hottest OPEN item (done/dropped excluded), null
+   *  when nothing is open. Missing `importance:` keyword = 'normal'. */
+  maxImportance: Importance | null;
 };
+
+/** Most → least urgent rank, per IMPORTANCE_LEVELS order. */
+const IMPORTANCE_RANK = Object.fromEntries(
+  IMPORTANCE_LEVELS.map((level, i) => [level, i]),
+) as Record<Importance, number>;
+
+/** PG timestamps arrive as Date (node-postgres) or string depending on
+ *  pool config — normalize to ISO; null when absent/unparseable. */
+function isoOrNull(ts: unknown): string | null {
+  if (!ts) return null;
+  const d = new Date(ts as string | number | Date);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
 
 export default defineTool({
   name: 'plans:list',
@@ -167,6 +186,7 @@ export default defineTool({
         const slug = parsed.frontmatter.slug ?? parsed.slug;
 
         let itemCounts: ListRow['itemCounts'] = null;
+        let maxImportance: Importance | null = null;
         if (!parsed.isLegacy) {
           const { items } = applyPlanItemBlocks(
             resolveEffectiveStatus(parsed).items,
@@ -175,6 +195,14 @@ export default defineTool({
           const counts: Record<string, number> = {};
           for (const it of items) {
             counts[it.effectiveStatus] = (counts[it.effectiveStatus] ?? 0) + 1;
+            // Hottest open item — a done/dropped urgent item shouldn't keep
+            // the plan ranked "most urgent".
+            if (it.effectiveStatus !== 'done' && it.effectiveStatus !== 'dropped') {
+              const imp = it.importance ?? 'normal';
+              if (maxImportance === null || IMPORTANCE_RANK[imp] < IMPORTANCE_RANK[maxImportance]) {
+                maxImportance = imp;
+              }
+            }
           }
           itemCounts = counts;
         }
@@ -191,7 +219,7 @@ export default defineTool({
           slug,
           title: parsed.frontmatter.title ?? null,
           status,
-          updated: parsed.frontmatter.updated ?? null,
+          updated: isoOrNull(row.updatedAt) ?? parsed.frontmatter.updated ?? null,
           created: parsed.frontmatter.created ?? null,
           owner: parsed.frontmatter.owner ?? null,
           archived,
@@ -203,6 +231,7 @@ export default defineTool({
           // (shipped/superseded) can never be operationally started/paused.
           startStatus: reconcileStartStatus(row.opStatus, status),
           priority: row.opPriority,
+          maxImportance,
         });
       }
     }

@@ -71,6 +71,9 @@ export interface PlanListRow {
   slug: string;
   title: string | null;
   status: PlanStatus;
+  /** Last REAL activity on the plan — the PG `updated_at` write timestamp
+   *  (ISO), guarded server-side against no-op bumps. Falls back to the
+   *  authored frontmatter date on rows a stale server serializes. */
   updated: string | null;
   /** Frontmatter created date — null when the plan never set one.
    *  (May arrive undefined from a server predating the field.) */
@@ -91,6 +94,10 @@ export interface PlanListRow {
   startStatus: PlanStartStatus;
   /** Cross-plan dispatch rank — lower = dispatched first. Null = no explicit priority (uses started_at order). */
   priority: number | null;
+  /** Importance of the plan's hottest OPEN item (done/dropped excluded);
+   *  null when no items are open. Items without an `importance:` keyword
+   *  count as 'normal'. (Undefined from a server predating the field.) */
+  maxImportance: Importance | null;
 }
 
 export interface PlanItem {

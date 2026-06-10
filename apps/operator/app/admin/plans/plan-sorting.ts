@@ -12,7 +12,7 @@
  * order is a flat sort across buckets.
  */
 
-import { bucketOf, type PlanBucket, type PlanListRow } from './plans-api';
+import { bucketOf, IMPORTANCE_LEVELS, type Importance, type PlanBucket, type PlanListRow } from './plans-api';
 
 export type PlanSort =
   | 'default'
@@ -20,6 +20,9 @@ export type PlanSort =
   | 'updated-asc'
   | 'created-desc'
   | 'created-asc'
+  | 'needs-human'
+  | 'urgency'
+  | 'blocked'
   | 'priority'
   | 'progress'
   | 'title';
@@ -30,6 +33,9 @@ export const PLAN_SORTS: ReadonlyArray<{ id: PlanSort; label: string }> = [
   { id: 'updated-asc', label: 'Oldest updated' },
   { id: 'created-desc', label: 'Recently created' },
   { id: 'created-asc', label: 'Oldest created' },
+  { id: 'needs-human', label: 'Needs human' },
+  { id: 'urgency', label: 'Most urgent' },
+  { id: 'blocked', label: 'Blocked' },
   { id: 'priority', label: 'Priority' },
   { id: 'progress', label: 'Progress' },
   { id: 'title', label: 'Title A–Z' },
@@ -90,6 +96,15 @@ function tiebreak(a: PlanListRow, b: PlanListRow): number {
   return cmpDate(a.updated, b.updated, -1) || a.slug.localeCompare(b.slug);
 }
 
+function countOf(p: PlanListRow, key: 'needs-human' | 'blocked'): number {
+  return (p.itemCounts ?? {})[key] ?? 0;
+}
+
+/** Most → least urgent, per IMPORTANCE_LEVELS order. */
+const IMPORTANCE_RANK: Record<Importance, number> = Object.fromEntries(
+  IMPORTANCE_LEVELS.map((level, i) => [level, i]),
+) as Record<Importance, number>;
+
 /**
  * Comparator for the given sort order. Selected-plan pinning is NOT
  * applied here — that's rail-local UI state PlanRail layers on top.
@@ -106,6 +121,20 @@ export function comparePlans(
       return (a, b) => cmpDate(a.created, b.created, -1) || tiebreak(a, b);
     case 'created-asc':
       return (a, b) => cmpDate(a.created, b.created, 1) || tiebreak(a, b);
+    case 'needs-human':
+      // Biggest waiting-on-a-human pile first — "rank my inbox".
+      return (a, b) => countOf(b, 'needs-human') - countOf(a, 'needs-human') || tiebreak(a, b);
+    case 'blocked':
+      // Most-stuck plans first.
+      return (a, b) => countOf(b, 'blocked') - countOf(a, 'blocked') || tiebreak(a, b);
+    case 'urgency':
+      // Hottest OPEN item wins (urgent > high > normal > low); plans with
+      // no open items (maxImportance null, or a pre-field server) last.
+      return (a, b) => {
+        const ra = a.maxImportance ? IMPORTANCE_RANK[a.maxImportance] : 99;
+        const rb = b.maxImportance ? IMPORTANCE_RANK[b.maxImportance] : 99;
+        return ra - rb || tiebreak(a, b);
+      };
     case 'priority':
       // Dispatch rank: lower = dispatched first; unranked plans last.
       return (a, b) => {

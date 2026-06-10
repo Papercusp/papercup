@@ -30,6 +30,21 @@ export function endpointIpcDiscoveryPath(): string {
   return join(homedir(), REL_DIR, REL_FILE);
 }
 
+/**
+ * Per-port discovery file (EI-190). The legacy singleton above is
+ * LAST-WRITER-WINS between operators — on the dev box BOTH :3070 (release)
+ * and :3170 (staging) boot through host-bootstrap, so the desktop's /api
+ * target was whichever operator restarted most recently, and a stale file
+ * (dead writer pid) silently degraded /api to the HTTP fallback. Each
+ * operator now ALSO publishes `endpoint-ipc.<port>.json`, so a reader can
+ * target a specific operator deliberately — the desktop dev-wrapper's build
+ * switcher reads the file matching its selected build (papercusp-desktop
+ * src-tauri: read_dev_ipc_socket_for_port).
+ */
+export function endpointIpcDiscoveryPathForPort(port: number): string {
+  return join(homedir(), REL_DIR, `endpoint-ipc.${port}.json`);
+}
+
 export interface EndpointIpcDiscovery {
   /** Unix-socket / named-pipe path the IPC server is listening on. */
   socketPath: string;
@@ -37,17 +52,31 @@ export interface EndpointIpcDiscovery {
   pid: number;
   /** Epoch-ms the server came up. */
   startedAt: number;
+  /** The hono port this operator serves (EI-190; absent in legacy files). */
+  port?: number;
 }
 
-/** Publish the resolved socket path. Best-effort; throws only on FS failure. */
+/**
+ * Publish the resolved socket path: the per-port file (EI-190) plus the
+ * legacy singleton for readers that predate it. Best-effort; throws only on
+ * FS failure. The port comes from PAPERCUSP_HONO_PORT (set for the systemd
+ * operators and the desktop-spawned sidecar; the sidecar's value is its
+ * cold-start hint, which `serve --ensure` reuse may diverge from — harmless,
+ * since the packaged desktop learns the socket via the stdout handshake, not
+ * this file).
+ */
 export async function writeEndpointIpcDiscovery(socketPath: string): Promise<void> {
   await mkdir(join(homedir(), REL_DIR), { recursive: true });
+  const port = Number(process.env.PAPERCUSP_HONO_PORT) || 3070;
   const payload: EndpointIpcDiscovery = {
     socketPath,
     pid: process.pid,
     startedAt: Date.now(),
+    port,
   };
-  await writeFile(endpointIpcDiscoveryPath(), JSON.stringify(payload, null, 2), 'utf8');
+  const body = JSON.stringify(payload, null, 2);
+  await writeFile(endpointIpcDiscoveryPathForPort(port), body, 'utf8');
+  await writeFile(endpointIpcDiscoveryPath(), body, 'utf8');
 }
 
 /** Read the discovery file, or null when missing/corrupt. */

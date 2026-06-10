@@ -79,8 +79,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
-  // OFF by default — desktop video ships dark behind the live-camera E2E (P-010).
-  [FLAGS.VIDEO_CHANNELS]: false,
+  // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
+  // the live two-instance camera E2E (holepunch-video P-010) is still outstanding
+  // but the owner chose to run it live (same call as VOICE_CHANNELS below).
+  [FLAGS.VIDEO_CHANNELS]: true,
   // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
   // the supervised live Tauri+mic pass (holepunch-voice-channels D-014) is still
   // outstanding but the owner chose to run it live.
