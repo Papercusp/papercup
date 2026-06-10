@@ -71,7 +71,7 @@
 		})();
 	</script> </sl-sidebar-state-persist> <div class="md:sl-hidden"> <div class="mobile-preferences sl-flex astro-4jhdek2y"> <div class="social-icons astro-4jhdek2y">  </div> <starlight-theme-select>  <label style="--sl-select-width: 6.25em" class="astro-uz6zttx3"> <span class="sr-only astro-uz6zttx3">Select theme</span> <svg aria-hidden="true" class="icon label-icon astro-uz6zttx3 astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg> <select autocomplete="off" class="astro-uz6zttx3"> <option value="dark" class="astro-uz6zttx3">Dark</option><option value="light" class="astro-uz6zttx3">Light</option><option value="auto" selected class="astro-uz6zttx3">Auto</option> </select> <svg aria-hidden="true" class="icon caret astro-uz6zttx3 astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg> </label> </starlight-theme-select>  <script>
 	StarlightThemeProvider.updatePickers();
-</script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-qafgledt">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-jefxwshy"> <aside class="right-sidebar-container print:hidden astro-jefxwshy"> <div class="right-sidebar astro-jefxwshy"> <div class="lg:sl-hidden astro-kbli7oav"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-csav6yad"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-csav6yad"><details id="starlight__mobile-toc" class="astro-csav6yad"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-csav6yad"><span class="toggle sl-flex astro-csav6yad">On this page<svg aria-hidden="true" class="caret astro-csav6yad astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-csav6yad"></span></summary><div class="dropdown astro-csav6yad"><ul class="isMobile astro-pxheskv6" style="--depth: 0;"> <li class="astro-pxheskv6" style="--depth: 0;"> <a href="#_top" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-four-test-classes-that-were-missing" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The four test classes that were missing</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-keystone" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The keystone</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#failure-mode-matrix" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Failure-mode matrix</span> </a> <ul class="isMobile astro-pxheskv6" style="--depth: 1;"> <li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--the-liveness-ladder-c4--ei-152-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — the liveness ladder (C4) + EI-152 (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--pump--coalescing--retry-c6" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — pump / coalescing / retry (C6)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#coord-substrate-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Coord substrate (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#locks-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Locks (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#federation-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Federation (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#work_items-claimlease-c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">work_items claim/lease (C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#multi-session-concurrency-e2e-c3--the-capstone" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Multi-session concurrency E2E (C3) — the capstone</span> </a>  </li> </ul> </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#closed-since-first-publication" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Closed since first publication</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#accepted-gaps-logged--not-silent" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Accepted gaps (logged — not silent)</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-kbli7oav"><div class="sl-container astro-kbli7oav"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-pxheskv6" style="--depth: 0;"> <li class="astro-pxheskv6" style="--depth: 0;"> <a href="#_top" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-four-test-classes-that-were-missing" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The four test classes that were missing</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-keystone" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The keystone</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#failure-mode-matrix" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Failure-mode matrix</span> </a> <ul class="astro-pxheskv6" style="--depth: 1;"> <li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--the-liveness-ladder-c4--ei-152-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — the liveness ladder (C4) + EI-152 (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--pump--coalescing--retry-c6" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — pump / coalescing / retry (C6)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#coord-substrate-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Coord substrate (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#locks-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Locks (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#federation-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Federation (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#work_items-claimlease-c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">work_items claim/lease (C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#multi-session-concurrency-e2e-c3--the-capstone" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Multi-session concurrency E2E (C3) — the capstone</span> </a>  </li> </ul> </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#closed-since-first-publication" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Closed since first publication</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#accepted-gaps-logged--not-silent" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Accepted gaps (logged — not silent)</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-jefxwshy">  <main data-pagefind-body class="astro-tk57yek3" lang="en" dir="ltr">    <div class="content-panel astro-v2nboseb"> <div class="sl-container astro-v2nboseb"> <h1 id="_top" class="astro-pagnsjzf">Coordination system — adversarial test coverage matrix</h1> </div> </div> <div class="content-panel astro-v2nboseb"> <div class="sl-container astro-v2nboseb"> <div class="sl-markdown-content"> <aside aria-label="Why this exists" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Why this exists </p>  <div class="starlight-aside__content"><p><strong>EI-152</strong> and <strong>EI-153</strong> — two real coordination bugs — shipped <em>past 27 green
+</script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-qafgledt">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-jefxwshy"> <aside class="right-sidebar-container print:hidden astro-jefxwshy"> <div class="right-sidebar astro-jefxwshy"> <div class="lg:sl-hidden astro-kbli7oav"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-csav6yad"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-csav6yad"><details id="starlight__mobile-toc" class="astro-csav6yad"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-csav6yad"><span class="toggle sl-flex astro-csav6yad">On this page<svg aria-hidden="true" class="caret astro-csav6yad astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-csav6yad"></span></summary><div class="dropdown astro-csav6yad"><ul class="isMobile astro-pxheskv6" style="--depth: 0;"> <li class="astro-pxheskv6" style="--depth: 0;"> <a href="#_top" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-four-test-classes-that-were-missing" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The four test classes that were missing</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-keystone" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The keystone</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#failure-mode-matrix" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Failure-mode matrix</span> </a> <ul class="isMobile astro-pxheskv6" style="--depth: 1;"> <li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--the-liveness-ladder-c4--ei-152-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — the liveness ladder (C4) + EI-152 (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--pump--coalescing--retry-c6" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — pump / coalescing / retry (C6)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#coord-substrate-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Coord substrate (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#watermark-crash-restart-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Watermark crash-restart (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#locks-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Locks (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#lock-authority--remote-leg-over-http-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Lock authority — remote leg over HTTP (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#lock-authority--failover-mid-hold--fencing-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Lock authority — failover mid-hold + fencing (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#federation-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Federation (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#swarm-path-chaos--real-hyperswarm-under-churn-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Swarm-path chaos — real Hyperswarm under churn (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#work_items-claimlease-c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">work_items claim/lease (C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#multi-session-concurrency-e2e-c3--the-capstone" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Multi-session concurrency E2E (C3) — the capstone</span> </a>  </li> </ul> </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#closed-since-first-publication" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Closed since first publication</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#accepted-gaps-logged--not-silent" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Accepted gaps (logged — not silent)</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-kbli7oav"><div class="sl-container astro-kbli7oav"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-pxheskv6" style="--depth: 0;"> <li class="astro-pxheskv6" style="--depth: 0;"> <a href="#_top" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-four-test-classes-that-were-missing" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The four test classes that were missing</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#the-keystone" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">The keystone</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#failure-mode-matrix" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Failure-mode matrix</span> </a> <ul class="astro-pxheskv6" style="--depth: 1;"> <li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--the-liveness-ladder-c4--ei-152-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — the liveness ladder (C4) + EI-152 (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#wake-system--pump--coalescing--retry-c6" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Wake system — pump / coalescing / retry (C6)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#coord-substrate-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Coord substrate (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#watermark-crash-restart-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Watermark crash-restart (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#locks-c1" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Locks (C1)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#lock-authority--remote-leg-over-http-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Lock authority — remote leg over HTTP (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#lock-authority--failover-mid-hold--fencing-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Lock authority — failover mid-hold + fencing (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#federation-c2c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Federation (C2/C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#swarm-path-chaos--real-hyperswarm-under-churn-c2" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Swarm-path chaos — real Hyperswarm under churn (C2)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#work_items-claimlease-c3" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">work_items claim/lease (C3)</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 1;"> <a href="#multi-session-concurrency-e2e-c3--the-capstone" class="astro-pxheskv6" style="--depth: 1;"> <span class="astro-pxheskv6" style="--depth: 1;">Multi-session concurrency E2E (C3) — the capstone</span> </a>  </li> </ul> </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#closed-since-first-publication" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Closed since first publication</span> </a>  </li><li class="astro-pxheskv6" style="--depth: 0;"> <a href="#accepted-gaps-logged--not-silent" class="astro-pxheskv6" style="--depth: 0;"> <span class="astro-pxheskv6" style="--depth: 0;">Accepted gaps (logged — not silent)</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-jefxwshy">  <main data-pagefind-body class="astro-tk57yek3" lang="en" dir="ltr">    <div class="content-panel astro-v2nboseb"> <div class="sl-container astro-v2nboseb"> <h1 id="_top" class="astro-pagnsjzf">Coordination system — adversarial test coverage matrix</h1> </div> </div> <div class="content-panel astro-v2nboseb"> <div class="sl-container astro-v2nboseb"> <div class="sl-markdown-content"> <aside aria-label="Why this exists" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Why this exists </p>  <div class="starlight-aside__content"><p><strong>EI-152</strong> and <strong>EI-153</strong> — two real coordination bugs — shipped <em>past 27 green
 wake-executor tests</em>. Both escaped for the same reason: the existing suite was
 <strong>single-agent unit tests with the real seams mocked</strong>. They asserted the happy
 path but never <strong>cross-agent isolation</strong>, the <strong>real socket / resume / config
@@ -237,7 +237,7 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 <p><strong>EI-152 red-on-pre-fix verified</strong>: reverting the no-handle <code dir="auto">findPsuHost</code> block in
 <code dir="auto">wake-executor.ts</code> flips <code dir="auto">no-handle + live socket → delivered</code> to <code dir="auto">park</code> (red).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="wake-system--pump--coalescing--retry-c6">Wake system — pump / coalescing / retry (C6)</h3><a class="sl-anchor-link" href="#wake-system--pump--coalescing--retry-c6"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Wake system — pump / coalescing / retry (C6)”</span></a></div>
-<p>File: <code dir="auto">events/await/wake-pump-isolation.integration.test.ts</code> (+ <code dir="auto">await-store.integration.test.ts</code>, <code dir="auto">engine.test.ts</code> for the pre-existing store/pump mechanics).</p>
+<p>File: <code dir="auto">events/await/wake-pump-isolation.integration.test.ts</code> (+ <code dir="auto">await-store.integration.test.ts</code>, <code dir="auto">engine.test.ts</code> for the pre-existing store/pump mechanics; <code dir="auto">events/await/wake-on-message.integration.test.ts</code> for the coord-e2e P-009 verb-to-socket composition).</p>
 
 
 
@@ -273,7 +273,22 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 
 
 
-<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><code dir="auto">armInboxWake</code> re-arm idempotency (one standing row)</td><td>🟢 store-level</td><td>✅ arm-level (real PG)</td></tr><tr><td>per-subscriber coalescing (no duplicate turn)</td><td>mocked</td><td>🟢 store + 🟢 engine</td></tr><tr><td>retry/backoff → dead at max attempts</td><td>🟢 store-level</td><td>🟢</td></tr><tr><td><strong>cross-agent</strong>: A’s emit never delivered to B (real <code dir="auto">emitAwaitedEvent</code>)</td><td>❌</td><td>🔴</td></tr><tr><td>end-to-end pump delivers via live socket, not peer</td><td>❌</td><td>🔴</td></tr></tbody></table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><code dir="auto">armInboxWake</code> re-arm idempotency (one standing row)</td><td>🟢 store-level</td><td>✅ arm-level (real PG)</td></tr><tr><td>per-subscriber coalescing (no duplicate turn)</td><td>mocked</td><td>🟢 store + 🟢 engine</td></tr><tr><td>retry/backoff → dead at max attempts</td><td>🟢 store-level</td><td>🟢</td></tr><tr><td><strong>cross-agent</strong>: A’s emit never delivered to B (real <code dir="auto">emitAwaitedEvent</code>)</td><td>❌</td><td>🔴</td></tr><tr><td>end-to-end pump delivers via live socket, not peer</td><td>❌</td><td>🔴</td></tr><tr><td><strong>wake-on-message, UNMOCKED verb→socket</strong> (P-009): real <code dir="auto">coord:send {wake:true}</code> → real engine/store/pump → addressee’s live socket gets the turn; bystander (armed + socketed) untouched; message durably in the inbox</td><td>❌ engine mocked at the verb</td><td>🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>)</td></tr><tr><td>wake-on-message, inject-only contract: <code dir="auto">wake:false</code> enqueues but never touches the socket and never consumes the standing watch</td><td>❌</td><td>🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>)</td></tr><tr><td><strong>wake-on-message, RESUME path</strong> (P-009): real <code dir="auto">claude</code> resume in the EI-155 isolated config dir carries the REAL <code dir="auto">wakeTurnText</code> (coord message reference) into the resumed turn’s transcript</td><td>❌</td><td>🔴 gated live-smoke (<code dir="auto">resume-spawn-live.ts</code> claude leg — PASS 2026-06-10, transcript 14→26 lines, wake text present)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="coord-substrate-c1">Coord substrate (C1)</h3><a class="sl-anchor-link" href="#coord-substrate-c1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Coord substrate (C1)”</span></a></div>
 <p>File: <code dir="auto">agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts</code> (10 tests, real <code dir="auto">PgCoordLog</code>/<code dir="auto">PgPresenceStore</code>).</p>
 
@@ -317,8 +332,41 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 
 
 <table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><code dir="auto">coord:send</code> A→B reaches B and <strong>no one else</strong></td><td>🟢 in-mem</td><td>🔴 real PG</td></tr><tr><td>inbox is owner-scoped; A can’t read B’s</td><td>🟢 in-mem</td><td>✅</td></tr><tr><td>A cannot ack/suppress B’s broadcast</td><td>🟢</td><td>✅</td></tr><tr><td>workspace_id isolation (A can’t reach B cross-workspace)</td><td>❌</td><td>🔴</td></tr><tr><td>presence staleness / revoked transitions</td><td>partial</td><td>✅</td></tr><tr><td>subscribe→inject only reaches subscribers</td><td>🟢</td><td>✅</td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h3"><h3 id="watermark-crash-restart-c2">Watermark crash-restart (C2)</h3><a class="sl-anchor-link" href="#watermark-crash-restart-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Watermark crash-restart (C2)”</span></a></div>
+<p>File: <code dir="auto">agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts</code> (4, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-002 — real PG; a “process” is a dedicated connection + fresh <code dir="auto">PgCoordLog</code>/<code dir="auto">PgWatermarkStore</code> bound into the host seams, and a hard kill discards every in-memory object).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>LINE (<code dir="auto">messages</code>): consume to N, hard-kill, restart → resumes at exactly N+1 (no replay after a committed turn, no skip)</td><td>❌</td><td>🔴</td></tr><tr><td>EVENT (<code dir="auto">escalations</code>): same exact-N+1 resume; re-put on an existing msg_id mints no second record</td><td>❌</td><td>🔴</td></tr><tr><td>crash BEFORE the turn-end commit → aborted turn’s entries re-seen in full (at-least-once, never a skip)</td><td>❌</td><td>🔴</td></tr><tr><td>SAME-TS boundary: committing a partially-consumed same-ts group skips its siblings (the ts-cursor sharp edge) + the safe-commit rule (commit the previous distinct ts → re-seen, never skipped)</td><td>❌ silent</td><td>⚪ pinned (logged below)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="locks-c1">Locks (C1)</h3><a class="sl-anchor-link" href="#locks-c1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Locks (C1)”</span></a></div>
-<p>Files: <code dir="auto">agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts</code> (7 tests, live <code dir="auto">papercusp_su</code>) + the <code dir="auto">PreToolUse</code> file-lock hook: <code dir="auto">apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts</code> (fail-open) + <code dir="auto">pretooluse-locks-decision.test.ts</code> (decision rendering, stub operator).</p>
+<p>Files: <code dir="auto">agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts</code> (7 tests, live <code dir="auto">papercusp_su</code>) + the <code dir="auto">PreToolUse</code> file-lock hook: <code dir="auto">apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts</code> (fail-open) + <code dir="auto">pretooluse-locks-decision.test.ts</code> (decision rendering, stub operator) + <code dir="auto">pretooluse-locks-live.integration.test.ts</code> (the LIVE-operator rung, coord-e2e P-008 — live-gated, skips when no operator answers).</p>
 
 
 
@@ -369,7 +417,118 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 
 
 
-<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>A cannot release/heartbeat B’s lock (lock_id keying)</td><td>🟢 aba</td><td>✅ adversarial (replay B’s lock_id)</td></tr><tr><td>store-layer block-on-held (B’s acquire on A’s path → busy)</td><td>partial</td><td>✅</td></tr><tr><td>ABA stale-handle no-op</td><td>🟢</td><td>✅</td></tr><tr><td>named-resource drain (exclusive vs shared)</td><td>🟢</td><td>✅</td></tr><tr><td>lock-authority election (lowest live pubkey, failover)</td><td>🟢</td><td>✅ pure <code dir="auto">decideAuthority</code></td></tr><tr><td><strong>file-lock hook fail-open</strong> (operator unreachable → allow + marker; bounded retry)</td><td>partial</td><td>✅ (<code dir="auto">cc-hooks.test.ts</code>)</td></tr><tr><td><strong>file-lock hook block-on-held → <code dir="auto">permissionDecision:deny</code></strong> (busy → reason the model sees)</td><td>❌ live-smoke only</td><td>🔴 stub operator (<code dir="auto">pretooluse-locks-decision.test.ts</code>)</td></tr><tr><td>file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing)</td><td>❌</td><td>🔴</td></tr></tbody></table>
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>A cannot release/heartbeat B’s lock (lock_id keying)</td><td>🟢 aba</td><td>✅ adversarial (replay B’s lock_id)</td></tr><tr><td>store-layer block-on-held (B’s acquire on A’s path → busy)</td><td>partial</td><td>✅</td></tr><tr><td>ABA stale-handle no-op</td><td>🟢</td><td>✅</td></tr><tr><td>named-resource drain (exclusive vs shared)</td><td>🟢</td><td>✅</td></tr><tr><td>lock-authority election (lowest live pubkey, failover)</td><td>🟢</td><td>✅ pure <code dir="auto">decideAuthority</code></td></tr><tr><td><strong>file-lock hook fail-open</strong> (operator unreachable → allow + marker; bounded retry)</td><td>partial</td><td>✅ (<code dir="auto">cc-hooks.test.ts</code>)</td></tr><tr><td><strong>file-lock hook block-on-held → <code dir="auto">permissionDecision:deny</code></strong> (busy → reason the model sees)</td><td>❌ live-smoke only</td><td>🔴 stub operator (<code dir="auto">pretooluse-locks-decision.test.ts</code>) + 🔴 LIVE operator: deny names holder label + declared intent + the queue-and-sleep guidance (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>)</td></tr><tr><td>file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing)</td><td>❌</td><td>🔴 + LIVE full cycle: deny → <code dir="auto">wake_on_grant</code> queue → release → grant cascade → hook allows + caches <code dir="auto">&#x3C;tool_use_id>.lock</code> → PostToolUse release frees the path (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>, 5 tests)</td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h3"><h3 id="lock-authority--remote-leg-over-http-c2">Lock authority — remote leg over HTTP (C2)</h3><a class="sl-anchor-link" href="#lock-authority--remote-leg-over-http-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Lock authority — remote leg over HTTP (C2)”</span></a></div>
+<p>Files: <code dir="auto">lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts</code> (6, real PG su-lock store + real loopback HTTP, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-006) + <code dir="auto">lib/authority/__tests__/transport-wiring.test.ts</code> (9) + the pre-existing <code dir="auto">peer-rpc-transport.integration.test.ts</code> / <code dir="auto">two-instance-authority.integration.test.ts</code> (+ hive variant).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>generic remote dispatch over real HTTP (<code dir="auto">routeToAuthority</code> → transport → <code dir="auto">handleAuthorityRpc</code>)</td><td>🟢</td><td>✅</td></tr><tr><td>transport REGISTERED at boot + addressing precedence (configured resolver > env map > null → fail-open)</td><td>❌ production transport never registered (D-002 blocker)</td><td>🔴 <code dir="auto">transport-wiring.ts</code> + tests</td></tr><tr><td>REAL file-lock chain: <code dir="auto">routeFileLockOp</code> → boot-wired <code dir="auto">HttpPeerRpcTransport</code> → boot-registered <code dir="auto">lock.*</code> handlers → real PG store</td><td>❌ fake store + hand-registered kinds only</td><td>🔴</td></tr><tr><td>cross-wire mutual exclusion (B busy on A’s held path) + cross-wire release frees the contender</td><td>partial (fake store)</td><td>🔴</td></tr><tr><td><code dir="auto">not_authority</code> refusal during a failover gap → fail-open with loud warning</td><td>❌</td><td>🔴</td></tr><tr><td>authority unreachable → fail-open, local advisory grant</td><td>🟢 generic leg</td><td>✅ file-lock leg</td></tr><tr><td>unmanaged domain → pure local, zero wire traffic</td><td>🟢</td><td>✅</td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h3"><h3 id="lock-authority--failover-mid-hold--fencing-c2c3">Lock authority — failover mid-hold + fencing (C2/C3)</h3><a class="sl-anchor-link" href="#lock-authority--failover-mid-hold--fencing-c2c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Lock authority — failover mid-hold + fencing (C2/C3)”</span></a></div>
+<p>Files: <code dir="auto">lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts</code> (7, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + <code dir="auto">authority-failover-flood.integration.test.ts</code> (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig <code dir="auto">_two-instance-authority-rig.ts</code>: two simulated machines with per-instance stores + the REAL handlers (<code dir="auto">buildFileLockAuthorityHandlers</code>), hardened verification (<code dir="auto">resolveHardenedAuthority</code>), and the D-005 <code dir="auto">LockSetReconstructor</code> handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire</td><td>❌ pure parts only</td><td>🔴 composed over the wire</td></tr><tr><td>epoch bumps on takeover; deposed authority’s stale-epoch grant fenced out downstream (<code dir="auto">fenceValid</code>)</td><td>🟢 pure</td><td>✅ E2E</td></tr><tr><td>deposed authority refuses mis-routed ops (<code dir="auto">not_authority</code>) → requester fails open loud</td><td>❌</td><td>🔴</td></tr><tr><td>optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such)</td><td>❌</td><td>🔴</td></tr><tr><td>cross-wire release at the NEW authority frees the contender post-rebuild</td><td>❌</td><td>🔴</td></tr><tr><td>anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after</td><td>🟢 pure</td><td>✅ E2E</td></tr><tr><td>FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover)</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable)</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>holder→authority heartbeat re-assert op over the production transport</td><td>❌</td><td>⚪ rig-local <code dir="auto">lock.assert</code> op kind — the production heartbeat-op wiring is a residual (logged below)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="federation-c2c3">Federation (C2/C3)</h3><a class="sl-anchor-link" href="#federation-c2c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Federation (C2/C3)”</span></a></div>
 <p>File: <code dir="auto">sync/hyperbee/__tests__/federation-adversarial.integration.test.ts</code> (6 tests, real two-peer DHT).</p>
 
@@ -407,7 +566,45 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 
 
 
-<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>peer-log → projection → PG round-trip (no loss)</td><td>🟢</td><td>✅</td></tr><tr><td><strong>wrong tableTag silently dropped</strong> (pins op-key invariant)</td><td>❌</td><td>🔴</td></tr><tr><td>admission gate (rejecting peer never federates)</td><td>partial</td><td>✅</td></tr><tr><td>revocation drops a peer mid-session</td><td>partial</td><td>🔴</td></tr><tr><td>no duplication (one op merged twice → one row)</td><td>🟢</td><td>✅</td></tr></tbody></table>
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>peer-log → projection → PG round-trip (no loss)</td><td>🟢</td><td>✅</td></tr><tr><td><strong>wrong tableTag silently dropped</strong> (pins op-key invariant)</td><td>❌</td><td>🔴</td></tr><tr><td>admission gate (rejecting peer never federates)</td><td>partial</td><td>✅</td></tr><tr><td>revocation drops a peer mid-session</td><td>partial</td><td>🔴</td></tr><tr><td>no duplication (one op merged twice → one row)</td><td>🟢</td><td>✅</td></tr><tr><td><strong>3-peer partition/rejoin</strong> (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo)</td><td>❌ 2-peer only</td><td>🔴 <code dir="auto">three-peer-partition-rejoin.test.ts</code></td></tr></tbody></table>
+<div class="sl-heading-wrapper level-h3"><h3 id="swarm-path-chaos--real-hyperswarm-under-churn-c2">Swarm-path chaos — real Hyperswarm under churn (C2)</h3><a class="sl-anchor-link" href="#swarm-path-chaos--real-hyperswarm-under-churn-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Swarm-path chaos — real Hyperswarm under churn (C2)”</span></a></div>
+<p>File: <code dir="auto">sync/hyperbee/__tests__/swarm-chaos.test.ts</code> (plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-004; ~2.6s, seeded LCG kill schedule, offline testnet DHT). Chaos = repeated mid-replication CONNECTION KILLS + reconnect churn — the only failure shape a reliable UDX transport can surface to the substrate (loss/reorder are absorbed below the byte stream; injecting them in-stream would fabricate impossible corruption). History: landed red and held the gate (EI-272) — root causes were rig-level (the IP-keyed DoS conn-rate ceiling cross-bans one-box peers sharing 127.0.0.1; in-process testnet RELAY streams take unguarded resets when <code dir="auto">forceRelaying</code> engages); both documented in-file.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><strong>unhandled socket <code dir="auto">'error'</code> on swarm connections = host-CRASH class</strong> — an unclean peer disconnect raised an uncaught ECONNRESET; guards now first-line in both connection handlers (<code dir="auto">swarm.ts</code>, <code dir="auto">directory-swarm.ts</code>)</td><td>❌ crash</td><td>🔴 found + fixed by this test</td></tr><tr><td>convergence under seeded kill-reconnect churn: every honest op exactly once per key on both peers (no loss, no dup)</td><td>❌</td><td>🔴</td></tr><tr><td>admission enforced across churn: a failing channel-2 binding re-announces on every reconnect, never admitted, ops never merge</td><td>partial (single connect)</td><td>🔴</td></tr><tr><td>MID-SESSION revocation survives reconnect churn (re-announce refused), with a live-wire positive control op proving the assertion isn’t vacuous</td><td>❌</td><td>🔴</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="work_items-claimlease-c3">work_items claim/lease (C3)</h3><a class="sl-anchor-link" href="#work_items-claimlease-c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “work_items claim/lease (C3)”</span></a></div>
 <p>File: <code dir="auto">work-item-claims-concurrency.integration.test.ts</code> (7 tests, real PG).</p>
 
@@ -513,6 +710,34 @@ Gated (needs creds → not CI); each agent leg SKIPS when its CLI is absent/unau
 Both legs verified green on this box (claude 2.1.169, codex).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="accepted-gaps-logged--not-silent">Accepted gaps (logged — not silent)</h2><a class="sl-anchor-link" href="#accepted-gaps-logged--not-silent"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Accepted gaps (logged — not silent)”</span></a></div>
 <aside aria-label="Accepted gaps" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>Accepted gaps </p>  <div class="starlight-aside__content"><ul>
-<li><em>None outstanding for this suite.</em> The two gaps logged at first publication
-(interactive-claude config isolation, real resume spawn) are both closed above.</li>
-</ul></div> </aside> </div> <footer class="sl-flex astro-a4xayftd"> <div class="meta sl-flex astro-a4xayftd">  <p>Last updated: <time datetime="2026-06-09T06:30:36.000Z">Jun 9, 2026</time></p> </div> <div class="pagination-links print:hidden astro-7owt327e" dir="ltr"> <a href="/internal/docs/testing/p079-bidirectional-federation.html" rel="prev" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-7owt327e"> Previous <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">P-079 runbook — live bidirectional federation acceptance</span> </span> </a>  </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+<li><strong>Production peer ADDRESSING for the authority remote leg.</strong> The HTTP
+transport is boot-registered and the whole file-lock chain is proven over a
+real wire, but <code dir="auto">shared_presence</code> carries identity, not a network address — so
+on a real multi-box deployment no peer address resolves until a topology layer
+calls <code dir="auto">configurePeerAddressResolver</code> or sets
+<code dir="auto">PAPERCUSP_AUTHORITY_PEER_ADDRESSES</code>. Until then every remote-authority op
+fails OPEN with a loud warning (D-004 — git-merge is the data backstop).
+Tracked in <code dir="auto">coord-system-e2e-testing-2026-06-10</code> (P-006 note; the two-box
+variant is P-010, owner-gated). Not silent: the fail-open path itself is
+covered by the cells above.</li>
+<li><strong>The ts-based watermark’s same-ts boundary.</strong> The watermark cursors are ISO
+timestamps and the inbox filter is strictly-later, so a consumer that
+commits the ts of a PARTIALLY-consumed same-ts group will never see that
+group’s remaining entries. Pinned (not fixed) in
+<code dir="auto">watermark-crash-restart.integration.test.ts</code> with the safe-commit rule a
+consumer must follow: when consumption ends mid-group, commit the previous
+DISTINCT ts (re-see beats skip). A structural fix would key the cursor by
+<code dir="auto">(ts, msg_id)</code> — a protocol change tracked in
+<code dir="auto">coord-system-e2e-testing-2026-06-10</code> (P-002 note), not silently absorbed
+here.</li>
+<li><strong>Holder→authority heartbeat re-assert as a production op kind.</strong> The D-005
+handover protocol (holders re-assert held locks to a new authority; the
+<code dir="auto">LockSetReconstructor</code> rebuilds within one heartbeat interval) is proven E2E
+with a rig-local <code dir="auto">lock.assert</code> op. Production wiring — a <code dir="auto">lock.assert</code> kind in
+<code dir="auto">file-lock-authority-ops.ts</code> fired from the locks heartbeat path on authority
+change — is not built yet. Until it is, a failover’s rebuild window behaves as
+pure fail-open (D-004). Tracked in <code dir="auto">coord-system-e2e-testing-2026-06-10</code>
+(P-007 note).</li>
+<li>The two gaps logged at first publication (interactive-claude config
+isolation, real resume spawn) are both closed above.</li>
+</ul></div> </aside> </div> <footer class="sl-flex astro-a4xayftd"> <div class="meta sl-flex astro-a4xayftd">  <p>Last updated: <time datetime="2026-06-10T15:50:40.000Z">Jun 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-7owt327e" dir="ltr"> <a href="/internal/docs/testing/p079-bidirectional-federation.html" rel="prev" class="astro-7owt327e"> <svg aria-hidden="true" class="astro-7owt327e astro-qzl3felg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-7owt327e"> Previous <br class="astro-7owt327e"> <span class="link-title astro-7owt327e">P-079 runbook — live bidirectional federation acceptance</span> </span> </a>  </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

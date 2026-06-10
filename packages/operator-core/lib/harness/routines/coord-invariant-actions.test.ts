@@ -1,0 +1,157 @@
+/**
+ * coord-invariant-actions — unit tests for the Layer D watchers
+ * (coord-system-e2e-testing-2026-06-10 P-012/P-013): the pure probe verdict,
+ * the fake-driven probe cycle (happy path, contention violation, mid-cycle
+ * failure leaves no held lock), the pure invariant evaluation (each check's
+ * threshold + stable dedup titles), and registration.
+ */
+import { describe, expect, it } from 'vitest';
+
+import {
+  evaluateProbe,
+  runProbeCycle,
+  evaluateInvariants,
+  DEFAULT_THRESHOLDS,
+  PROBE_A,
+  PROBE_B,
+  type ProbeDeps,
+  type ProbeStep,
+  type InvariantSnapshot,
+} from './coord-invariant-actions';
+import { getSystemAction } from './system-actions';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+
+const idA = { ownerId: PROBE_A, ownerLabel: PROBE_A, source: 'omp-hook-session', workspaceId: 'ws', userId: null } as AgentIdentity;
+const idB = { ownerId: PROBE_B, ownerLabel: PROBE_B, source: 'omp-hook-session', workspaceId: 'ws', userId: null } as AgentIdentity;
+
+/** A well-behaved in-memory coordination + lock fake. */
+function fakeDeps(over: Partial<ProbeDeps> = {}): ProbeDeps & { held: Map<string, string> } {
+  const held = new Map<string, string>();
+  let seq = 0;
+  let clock = 0;
+  const deps: ProbeDeps & { held: Map<string, string> } = {
+    held,
+    send: async () => ({ msg_id: `m-${++seq}`, ts: new Date(1_700_000_000_000 + seq).toISOString() }),
+    inboxHas: async () => true,
+    ack: async () => {},
+    ackedHas: async () => true,
+    acquire: async (owner) => {
+      const cur = held.get('probe');
+      if (cur && cur !== owner) return { ok: false, busyOwner: cur };
+      held.set('probe', owner);
+      return { ok: true };
+    },
+    release: async (owner) => {
+      if (held.get('probe') === owner) held.delete('probe');
+    },
+    now: () => (clock += 10),
+    ...over,
+  };
+  return deps;
+}
+
+describe('runProbeCycle + evaluateProbe', () => {
+  it('happy path: all seven steps pass and the lock ends free', async () => {
+    const deps = fakeDeps();
+    const steps = await runProbeCycle(deps, idA, idB);
+    expect(steps.map((s) => s.step)).toEqual([
+      'ping', 'inbox', 'ack', 'lock-acquire', 'lock-contend', 'lock-release', 'lock-regrant',
+    ]);
+    expect(steps.every((s) => s.ok)).toBe(true);
+    expect(deps.held.size).toBe(0);
+    const verdict = evaluateProbe(steps, 10_000);
+    expect(verdict.ok).toBe(true);
+    expect(verdict.sloBreached).toBe(false);
+  });
+
+  it('a contender GRANTED a held lock is a violation, and the holder still releases', async () => {
+    const deps = fakeDeps({
+      acquire: async () => ({ ok: true }), // mutual exclusion broken
+    });
+    const steps = await runProbeCycle(deps, idA, idB);
+    const contend = steps.find((s) => s.step === 'lock-contend');
+    expect(contend?.ok).toBe(false);
+    expect(contend?.detail).toContain('GRANTED');
+    const verdict = evaluateProbe(steps, 10_000);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.failedStep).toBe('lock-contend');
+  });
+
+  it('a throwing step records the failure and stops the cycle', async () => {
+    const deps = fakeDeps({ inboxHas: async () => Promise.reject(new Error('inbox query died')) });
+    const steps = await runProbeCycle(deps, idA, idB);
+    expect(steps.map((s) => s.step)).toEqual(['ping', 'inbox']);
+    expect(steps[1].ok).toBe(false);
+    expect(steps[1].detail).toContain('inbox query died');
+  });
+
+  it('a clean-but-slow cycle breaches the SLO', () => {
+    const steps: ProbeStep[] = [
+      { step: 'ping', ok: true, ms: 6_000 },
+      { step: 'inbox', ok: true, ms: 6_000 },
+    ];
+    const verdict = evaluateProbe(steps, 10_000);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.sloBreached).toBe(true);
+    expect(verdict.failedStep).toBeUndefined();
+  });
+});
+
+describe('evaluateInvariants', () => {
+  const NOW = Date.parse('2026-06-10T12:00:00Z');
+  const cleanSnap: InvariantSnapshot = {
+    openHandoffTs: [],
+    openEscalationTs: [],
+    longExpiredLocks: 0,
+    presenceGhosts: 0,
+    wakeQueueDepth: 0,
+    wakeQueueOldestMs: null,
+  };
+  const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
+
+  it('a clean snapshot yields no violations', () => {
+    expect(evaluateInvariants(cleanSnap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+  });
+
+  it('each check fires past its threshold with a STABLE dedup title', () => {
+    const snap: InvariantSnapshot = {
+      openHandoffTs: [hoursAgo(13), hoursAgo(1)], // 1 stuck, 1 fresh
+      openEscalationTs: [hoursAgo(7)],
+      longExpiredLocks: 2,
+      presenceGhosts: 3,
+      wakeQueueDepth: 51,
+      wakeQueueOldestMs: NOW - 1_000,
+    };
+    const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+    expect(violations.map((v) => v.title)).toEqual([
+      'coord invariant: handoffs stuck pending past 12h',
+      'coord invariant: escalations unacked past 6h',
+      'coord invariant: file locks held past TTL without sweep',
+      'coord invariant: presence ghosts lingering past 72h',
+      'coord invariant: wake-queue depth/age growth',
+    ]);
+    // Stability: re-evaluating yields the SAME titles (the dedup key).
+    expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW).map((v) => v.title)).toEqual(
+      violations.map((v) => v.title),
+    );
+  });
+
+  it('fresh handoffs/escalations under the window do not fire', () => {
+    const snap = { ...cleanSnap, openHandoffTs: [hoursAgo(11)], openEscalationTs: [hoursAgo(5)] };
+    expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+  });
+
+  it('wake-queue fires on AGE even when depth is small', () => {
+    const snap = { ...cleanSnap, wakeQueueDepth: 1, wakeQueueOldestMs: NOW - 7 * 3_600_000 };
+    const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+});
+
+describe('registration', () => {
+  it('both system actions are registered by the module side-effect', () => {
+    expect(getSystemAction('coord-probe-canary')).toBeTypeOf('function');
+    expect(getSystemAction('coord-invariant-monitor')).toBeTypeOf('function');
+  });
+});

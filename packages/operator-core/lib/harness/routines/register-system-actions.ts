@@ -51,6 +51,14 @@
  *     a canary still un-terminal past its deadline files a forensics-laden
  *     improvement. Self-gates on the canary harness being registered; seeded
  *     ACTIVE (seed-hive-canary-routine.ts).
+ *   - `system:coord-probe-canary` + `system:coord-invariant-monitor` —
+ *     coord-system-e2e-testing-2026-06-10 P-012/P-013 (Layer D). The live
+ *     probe-pair verb-cycle canary (15 min, SLO'd, self-sweeping) and the
+ *     hourly substrate invariant checks (stuck handoffs, unacked escalations,
+ *     expired-unswept locks, presence ghosts, wake-queue growth); violations
+ *     file deduped improvements. The ONE home for substrate monitors — the
+ *     shared-hive-loop P-012/P-013 checks plug in here. Seeded ACTIVE
+ *     (seed-coord-invariant-routines.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -65,3 +73,4 @@ import './gym-actions';
 import '../../interactive-usage/interactive-usage-action';
 import './token-report-action';
 import './hive-canary-action';
+import './coord-invariant-actions';

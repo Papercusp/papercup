@@ -43389,15 +43389,18 @@ Legend: ✅ covered (new) · 🟢 covered (pre-existing) · 🔴 was a gap, now 
 
 [Section titled “Wake system — pump / coalescing / retry (C6)”](#wake-system--pump--coalescing--retry-c6)
 
-File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.integration.test.ts`, `engine.test.ts` for the pre-existing store/pump mechanics).
+File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.integration.test.ts`, `engine.test.ts` for the pre-existing store/pump mechanics; `events/await/wake-on-message.integration.test.ts` for the coord-e2e P-009 verb-to-socket composition).
 
-| Cell                                                                     | Before         | Now                   |
-| ------------------------------------------------------------------------ | -------------- | --------------------- |
-| `armInboxWake` re-arm idempotency (one standing row)                     | 🟢 store-level | ✅ arm-level (real PG) |
-| per-subscriber coalescing (no duplicate turn)                            | mocked         | 🟢 store + 🟢 engine  |
-| retry/backoff → dead at max attempts                                     | 🟢 store-level | 🟢                    |
-| **cross-agent**: A’s emit never delivered to B (real `emitAwaitedEvent`) | ❌              | 🔴                    |
-| end-to-end pump delivers via live socket, not peer                       | ❌              | 🔴                    |
+| Cell                                                                                                                                                                                                                    | Before                      | Now                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `armInboxWake` re-arm idempotency (one standing row)                                                                                                                                                                    | 🟢 store-level              | ✅ arm-level (real PG)                                                                                                |
+| per-subscriber coalescing (no duplicate turn)                                                                                                                                                                           | mocked                      | 🟢 store + 🟢 engine                                                                                                 |
+| retry/backoff → dead at max attempts                                                                                                                                                                                    | 🟢 store-level              | 🟢                                                                                                                   |
+| **cross-agent**: A’s emit never delivered to B (real `emitAwaitedEvent`)                                                                                                                                                | ❌                           | 🔴                                                                                                                   |
+| end-to-end pump delivers via live socket, not peer                                                                                                                                                                      | ❌                           | 🔴                                                                                                                   |
+| **wake-on-message, UNMOCKED verb→socket** (P-009): real `coord:send {wake:true}` → real engine/store/pump → addressee’s live socket gets the turn; bystander (armed + socketed) untouched; message durably in the inbox | ❌ engine mocked at the verb | 🔴 (`wake-on-message.integration.test.ts`)                                                                           |
+| wake-on-message, inject-only contract: `wake:false` enqueues but never touches the socket and never consumes the standing watch                                                                                         | ❌                           | 🔴 (`wake-on-message.integration.test.ts`)                                                                           |
+| **wake-on-message, RESUME path** (P-009): real `claude` resume in the EI-155 isolated config dir carries the REAL `wakeTurnText` (coord message reference) into the resumed turn’s transcript                           | ❌                           | 🔴 gated live-smoke (`resume-spawn-live.ts` claude leg — PASS 2026-06-10, transcript 14→26 lines, wake text present) |
 
 ### Coord substrate (C1)
 
@@ -43414,22 +43417,70 @@ File: `agent-tools/coordination/__tests__/cross-agent-isolation.integration.test
 | presence staleness / revoked transitions                  | partial   | ✅          |
 | subscribe→inject only reaches subscribers                 | 🟢        | ✅          |
 
+### Watermark crash-restart (C2)
+
+[Section titled “Watermark crash-restart (C2)”](#watermark-crash-restart-c2)
+
+File: `agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts` (4, plan `coord-system-e2e-testing-2026-06-10` P-002 — real PG; a “process” is a dedicated connection + fresh `PgCoordLog`/`PgWatermarkStore` bound into the host seams, and a hard kill discards every in-memory object).
+
+| Cell                                                                                                                                                                                            | Before   | Now                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------- |
+| LINE (`messages`): consume to N, hard-kill, restart → resumes at exactly N+1 (no replay after a committed turn, no skip)                                                                        | ❌        | 🔴                      |
+| EVENT (`escalations`): same exact-N+1 resume; re-put on an existing msg\_id mints no second record                                                                                              | ❌        | 🔴                      |
+| crash BEFORE the turn-end commit → aborted turn’s entries re-seen in full (at-least-once, never a skip)                                                                                         | ❌        | 🔴                      |
+| SAME-TS boundary: committing a partially-consumed same-ts group skips its siblings (the ts-cursor sharp edge) + the safe-commit rule (commit the previous distinct ts → re-seen, never skipped) | ❌ silent | ⚪ pinned (logged below) |
+
 ### Locks (C1)
 
 [Section titled “Locks (C1)”](#locks-c1)
 
-Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator).
+Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator) + `pretooluse-locks-live.integration.test.ts` (the LIVE-operator rung, coord-e2e P-008 — live-gated, skips when no operator answers).
 
-| Cell                                                                                        | Before            | Now                                                    |
-| ------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------ |
-| A cannot release/heartbeat B’s lock (lock\_id keying)                                       | 🟢 aba            | ✅ adversarial (replay B’s lock\_id)                    |
-| store-layer block-on-held (B’s acquire on A’s path → busy)                                  | partial           | ✅                                                      |
-| ABA stale-handle no-op                                                                      | 🟢                | ✅                                                      |
-| named-resource drain (exclusive vs shared)                                                  | 🟢                | ✅                                                      |
-| lock-authority election (lowest live pubkey, failover)                                      | 🟢                | ✅ pure `decideAuthority`                               |
-| **file-lock hook fail-open** (operator unreachable → allow + marker; bounded retry)         | partial           | ✅ (`cc-hooks.test.ts`)                                 |
-| **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) |
-| file-lock hook allow-on-grant caches lock\_id for release (+ SSE-framed parsing)            | ❌                 | 🔴                                                     |
+| Cell                                                                                        | Before            | Now                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A cannot release/heartbeat B’s lock (lock\_id keying)                                       | 🟢 aba            | ✅ adversarial (replay B’s lock\_id)                                                                                                                                                                                  |
+| store-layer block-on-held (B’s acquire on A’s path → busy)                                  | partial           | ✅                                                                                                                                                                                                                    |
+| ABA stale-handle no-op                                                                      | 🟢                | ✅                                                                                                                                                                                                                    |
+| named-resource drain (exclusive vs shared)                                                  | 🟢                | ✅                                                                                                                                                                                                                    |
+| lock-authority election (lowest live pubkey, failover)                                      | 🟢                | ✅ pure `decideAuthority`                                                                                                                                                                                             |
+| **file-lock hook fail-open** (operator unreachable → allow + marker; bounded retry)         | partial           | ✅ (`cc-hooks.test.ts`)                                                                                                                                                                                               |
+| **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) + 🔴 LIVE operator: deny names holder label + declared intent + the queue-and-sleep guidance (`pretooluse-locks-live.integration.test.ts`)                    |
+| file-lock hook allow-on-grant caches lock\_id for release (+ SSE-framed parsing)            | ❌                 | 🔴 + LIVE full cycle: deny → `wake_on_grant` queue → release → grant cascade → hook allows + caches `<tool_use_id>.lock` → PostToolUse release frees the path (`pretooluse-locks-live.integration.test.ts`, 5 tests) |
+
+### Lock authority — remote leg over HTTP (C2)
+
+[Section titled “Lock authority — remote leg over HTTP (C2)”](#lock-authority--remote-leg-over-http-c2)
+
+Files: `lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts` (6, real PG su-lock store + real loopback HTTP, plan `coord-system-e2e-testing-2026-06-10` P-006) + `lib/authority/__tests__/transport-wiring.test.ts` (9) + the pre-existing `peer-rpc-transport.integration.test.ts` / `two-instance-authority.integration.test.ts` (+ hive variant).
+
+| Cell                                                                                                                            | Before                                                  | Now                              |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------- |
+| generic remote dispatch over real HTTP (`routeToAuthority` → transport → `handleAuthorityRpc`)                                  | 🟢                                                      | ✅                                |
+| transport REGISTERED at boot + addressing precedence (configured resolver > env map > null → fail-open)                         | ❌ production transport never registered (D-002 blocker) | 🔴 `transport-wiring.ts` + tests |
+| REAL file-lock chain: `routeFileLockOp` → boot-wired `HttpPeerRpcTransport` → boot-registered `lock.*` handlers → real PG store | ❌ fake store + hand-registered kinds only               | 🔴                               |
+| cross-wire mutual exclusion (B busy on A’s held path) + cross-wire release frees the contender                                  | partial (fake store)                                    | 🔴                               |
+| `not_authority` refusal during a failover gap → fail-open with loud warning                                                     | ❌                                                       | 🔴                               |
+| authority unreachable → fail-open, local advisory grant                                                                         | 🟢 generic leg                                          | ✅ file-lock leg                  |
+| unmanaged domain → pure local, zero wire traffic                                                                                | 🟢                                                      | ✅                                |
+
+### Lock authority — failover mid-hold + fencing (C2/C3)
+
+[Section titled “Lock authority — failover mid-hold + fencing (C2/C3)”](#lock-authority--failover-mid-hold--fencing-c2c3)
+
+Files: `lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts` (7, plan `coord-system-e2e-testing-2026-06-10` P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + `authority-failover-flood.integration.test.ts` (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig `_two-instance-authority-rig.ts`: two simulated machines with per-instance stores + the REAL handlers (`buildFileLockAuthorityHandlers`), hardened verification (`resolveHardenedAuthority`), and the D-005 `LockSetReconstructor` handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).
+
+| Cell                                                                                                                                                    | Before            | Now                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
+| authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire                                                 | ❌ pure parts only | 🔴 composed over the wire                                                                           |
+| epoch bumps on takeover; deposed authority’s stale-epoch grant fenced out downstream (`fenceValid`)                                                     | 🟢 pure           | ✅ E2E                                                                                               |
+| deposed authority refuses mis-routed ops (`not_authority`) → requester fails open loud                                                                  | ❌                 | 🔴                                                                                                  |
+| optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such)                                              | ❌                 | 🔴                                                                                                  |
+| cross-wire release at the NEW authority frees the contender post-rebuild                                                                                | ❌                 | 🔴                                                                                                  |
+| anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after                                  | 🟢 pure           | ✅ E2E                                                                                               |
+| FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover)                      | ❌                 | 🔴 flood test                                                                                       |
+| re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after       | ❌                 | 🔴 flood test                                                                                       |
+| fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable) | ❌                 | 🔴 flood test                                                                                       |
+| holder→authority heartbeat re-assert op over the production transport                                                                                   | ❌                 | ⚪ rig-local `lock.assert` op kind — the production heartbeat-op wiring is a residual (logged below) |
 
 ### Federation (C2/C3)
 
@@ -43437,13 +43488,27 @@ Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (
 
 File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 tests, real two-peer DHT).
 
-| Cell                                                        | Before  | Now |
-| ----------------------------------------------------------- | ------- | --- |
-| peer-log → projection → PG round-trip (no loss)             | 🟢      | ✅   |
-| **wrong tableTag silently dropped** (pins op-key invariant) | ❌       | 🔴  |
-| admission gate (rejecting peer never federates)             | partial | ✅   |
-| revocation drops a peer mid-session                         | partial | 🔴  |
-| no duplication (one op merged twice → one row)              | 🟢      | ✅   |
+| Cell                                                                                                                                                                                                                                                     | Before        | Now                                      |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------- |
+| peer-log → projection → PG round-trip (no loss)                                                                                                                                                                                                          | 🟢            | ✅                                        |
+| **wrong tableTag silently dropped** (pins op-key invariant)                                                                                                                                                                                              | ❌             | 🔴                                       |
+| admission gate (rejecting peer never federates)                                                                                                                                                                                                          | partial       | ✅                                        |
+| revocation drops a peer mid-session                                                                                                                                                                                                                      | partial       | 🔴                                       |
+| no duplication (one op merged twice → one row)                                                                                                                                                                                                           | 🟢            | ✅                                        |
+| **3-peer partition/rejoin** (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 `three-peer-partition-rejoin.test.ts` |
+
+### Swarm-path chaos — real Hyperswarm under churn (C2)
+
+[Section titled “Swarm-path chaos — real Hyperswarm under churn (C2)”](#swarm-path-chaos--real-hyperswarm-under-churn-c2)
+
+File: `sync/hyperbee/__tests__/swarm-chaos.test.ts` (plan `coord-system-e2e-testing-2026-06-10` P-004; \~2.6s, seeded LCG kill schedule, offline testnet DHT). Chaos = repeated mid-replication CONNECTION KILLS + reconnect churn — the only failure shape a reliable UDX transport can surface to the substrate (loss/reorder are absorbed below the byte stream; injecting them in-stream would fabricate impossible corruption). History: landed red and held the gate (EI-272) — root causes were rig-level (the IP-keyed DoS conn-rate ceiling cross-bans one-box peers sharing 127.0.0.1; in-process testnet RELAY streams take unguarded resets when `forceRelaying` engages); both documented in-file.
+
+| Cell                                                                                                                                                                                                                    | Before                   | Now                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------------- |
+| **unhandled socket `'error'` on swarm connections = host-CRASH class** — an unclean peer disconnect raised an uncaught ECONNRESET; guards now first-line in both connection handlers (`swarm.ts`, `directory-swarm.ts`) | ❌ crash                  | 🔴 found + fixed by this test |
+| convergence under seeded kill-reconnect churn: every honest op exactly once per key on both peers (no loss, no dup)                                                                                                     | ❌                        | 🔴                            |
+| admission enforced across churn: a failing channel-2 binding re-announces on every reconnect, never admitted, ops never merge                                                                                           | partial (single connect) | 🔴                            |
+| MID-SESSION revocation survives reconnect churn (re-announce refused), with a live-wire positive control op proving the assertion isn’t vacuous                                                                         | ❌                        | 🔴                            |
 
 ### work\_items claim/lease (C3)
 
@@ -43492,7 +43557,10 @@ Full real claude/codex resume spawn: CLOSED (live-smoke)
 
 Accepted gaps
 
-* *None outstanding for this suite.* The two gaps logged at first publication (interactive-claude config isolation, real resume spawn) are both closed above.
+* **Production peer ADDRESSING for the authority remote leg.** The HTTP transport is boot-registered and the whole file-lock chain is proven over a real wire, but `shared_presence` carries identity, not a network address — so on a real multi-box deployment no peer address resolves until a topology layer calls `configurePeerAddressResolver` or sets `PAPERCUSP_AUTHORITY_PEER_ADDRESSES`. Until then every remote-authority op fails OPEN with a loud warning (D-004 — git-merge is the data backstop). Tracked in `coord-system-e2e-testing-2026-06-10` (P-006 note; the two-box variant is P-010, owner-gated). Not silent: the fail-open path itself is covered by the cells above.
+* **The ts-based watermark’s same-ts boundary.** The watermark cursors are ISO timestamps and the inbox filter is strictly-later, so a consumer that commits the ts of a PARTIALLY-consumed same-ts group will never see that group’s remaining entries. Pinned (not fixed) in `watermark-crash-restart.integration.test.ts` with the safe-commit rule a consumer must follow: when consumption ends mid-group, commit the previous DISTINCT ts (re-see beats skip). A structural fix would key the cursor by `(ts, msg_id)` — a protocol change tracked in `coord-system-e2e-testing-2026-06-10` (P-002 note), not silently absorbed here.
+* **Holder→authority heartbeat re-assert as a production op kind.** The D-005 handover protocol (holders re-assert held locks to a new authority; the `LockSetReconstructor` rebuilds within one heartbeat interval) is proven E2E with a rig-local `lock.assert` op. Production wiring — a `lock.assert` kind in `file-lock-authority-ops.ts` fired from the locks heartbeat path on authority change — is not built yet. Until it is, a failover’s rebuild window behaves as pure fail-open (D-004). Tracked in `coord-system-e2e-testing-2026-06-10` (P-007 note).
+* The two gaps logged at first publication (interactive-claude config isolation, real resume spawn) are both closed above.
 
 # P-079 runbook — live bidirectional federation acceptance
 
