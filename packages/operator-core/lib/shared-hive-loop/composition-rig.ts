@@ -591,7 +591,11 @@ export class CompositionRig {
     this.cleanups.push(
       () =>
         new Promise<void>((r) => {
-          this.server?.close(() => r());
+          // killAuthority() may already have closed + nulled the server — an
+          // optional-chained close would never fire its callback (a hang).
+          if (!this.server) return r();
+          this.server.closeAllConnections?.();
+          this.server.close(() => r());
           this.server = null;
         }),
     );
@@ -663,6 +667,7 @@ export class CompositionRig {
   async killAuthority(): Promise<void> {
     this.authorityKilled = true;
     this.frozenLastSeen.set(this.cells.a.electionPubkey, this.now());
+    this.server?.closeAllConnections?.();
     await new Promise<void>((r) => (this.server ? this.server.close(() => r()) : r()));
     this.server = null;
     this.log('authority (cell a) killed — endpoint closed, presence frozen');

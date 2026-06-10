@@ -152,10 +152,15 @@ const inputStep: RouteStep = {
 const invokeStep: RouteStep = {
   name: 'invoke',
   async run(exec) {
-    const timeoutSec = exec.def.timeoutSec ?? 30;
-    const timer = setTimeout(() => exec.abort.abort(), timeoutSec * 1000);
-    if (typeof timer.unref === 'function') timer.unref();
-    exec.timeoutTimer = timer;
+    // `timeoutSec: null` = no watchdog — long-lived SSE/streaming routes
+    // whose handler legitimately outlives any fixed budget (EI-110: the 30s
+    // default turned healthy streams into 408s).
+    const timeoutSec = exec.def.timeoutSec === null ? null : exec.def.timeoutSec ?? 30;
+    if (timeoutSec !== null) {
+      const timer = setTimeout(() => exec.abort.abort(), timeoutSec * 1000);
+      if (typeof timer.unref === 'function') timer.unref();
+      exec.timeoutTimer = timer;
+    }
 
     try {
       const result = exec.def.handler(exec.req, {

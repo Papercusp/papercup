@@ -32,6 +32,9 @@ export default defineTool({
   method: 'GET',
   path: '/deploy/:slug/frame-view',
   auth: 'public',
+  // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
+  // default 408'd healthy streams).
+  timeoutSec: null,
   // SSE — one route-stack run per long-lived connection; don't sample it.
   sampleRate: 0,
   async handler(req, ctx) {

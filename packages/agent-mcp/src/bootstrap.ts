@@ -45,9 +45,10 @@ import './tools/artifacts/delete';
 // operator-side import the package can't make. tasks:update + tasks:close were
 // removed — they referenced a non-existent 'update_feature' op and never worked.
 
-// mcp-ui fixture (Phase E) — proves the UI tool path; replace with a
-// real use case when one lands. See tools/dev/hello-card.ts.
-import './tools/dev/hello-card';
+// The dev:hello-card mcp-ui fixture and the dead hindsight:recall tool
+// (deprecated 2026-05-09, degraded-empty ever since, zero callers) were
+// REMOVED from the catalog — audit P-047. Bring a real mcp-ui tool when
+// one lands; the registration shape is one defineTool import here.
 
 // Resources — read-only browsable URIs (Phase A: agent-mcp resources)
 import './resources/harness/list';

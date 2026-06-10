@@ -110,6 +110,7 @@
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
     "lint:tsc": "node scripts/lint-tsc.mjs",
+    "lint:migrations": "node scripts/lint-migrations.mjs",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
   },

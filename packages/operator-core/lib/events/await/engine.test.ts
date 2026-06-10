@@ -239,3 +239,44 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.failed).toBe(1);
   });
 });
+
+describe('pump guard is keyed per workspace (audit P-033)', () => {
+  it("workspace B pumps while A's pump is in flight; same-workspace reentry stays blocked", async () => {
+    let releaseA!: (rows: unknown[]) => void;
+    let parkedOnce = false;
+    const claimedWorkspaces: string[] = [];
+    (h.store.claimDueDeliveries as unknown as { mockImplementation: (fn: (opts: { workspaceId?: string }) => Promise<unknown[]>) => void }).mockImplementation(
+      async ({ workspaceId }) => {
+        claimedWorkspaces.push(workspaceId ?? '?');
+        if (workspaceId === 'ws-a' && !parkedOnce) {
+          parkedOnce = true; // only A's FIRST claim parks; later pumps complete normally
+          return new Promise<unknown[]>((res) => {
+            releaseA = res;
+          });
+        }
+        return [];
+      },
+    );
+
+    const pumpA = pumpWakeDeliveries('ws-a'); // parks inside claimDueDeliveries; guard entry held
+    await Promise.resolve(); // let A reach its claim call
+    expect(claimedWorkspaces).toEqual(['ws-a']);
+
+    // Same-workspace reentry: still guarded — returns empty WITHOUT claiming.
+    const reentry = await pumpWakeDeliveries('ws-a');
+    expect(reentry.claimed).toBe(0);
+    expect(claimedWorkspaces).toEqual(['ws-a']);
+
+    // Cross-workspace: B must proceed (the old module-global boolean silently
+    // swallowed this kick — cross-workspace wake starvation).
+    await pumpWakeDeliveries('ws-b');
+    expect(claimedWorkspaces).toEqual(['ws-a', 'ws-b']);
+
+    releaseA([]);
+    await pumpA;
+
+    // A's guard entry cleared with its pump — it can pump again.
+    await pumpWakeDeliveries('ws-a');
+    expect(claimedWorkspaces).toEqual(['ws-a', 'ws-b', 'ws-a']);
+  });
+});

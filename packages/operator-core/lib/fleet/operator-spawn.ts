@@ -23,6 +23,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveProject } from '../harness-core';
@@ -34,6 +35,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { recordSpawn, finishSpawn } from './spawn-tree';
+import type { Db } from './pg-stores';
 import {
   heartbeatSpawns,
   reclaimOrphanedSpawns,
@@ -205,6 +207,13 @@ export interface OperatorSpawnInput {
   parentRole?: string;
   planSlug?: string | null;
   itemId?: string | null;
+  /**
+   * Caller-supplied dedupe key (audit P-017, EI-73). A retry of the SAME
+   * logical spawn (e.g. after a route timeout) passes the same key and gets
+   * the original spawnId back (`deduped: true`) instead of a second agent.
+   * Scoped per workspace; unique-indexed (migration 219).
+   */
+  idempotencyKey?: string | null;
 }
 
 export interface OperatorSpawnResult {
@@ -217,6 +226,9 @@ export interface OperatorSpawnResult {
   /** Set on an over-ceiling rejection: the wake key to sleep on (D-004 —
    *  `events:await { event: awaitEvent }`, end the turn, retry on wake). */
   awaitEvent?: string | null;
+  /** True when idempotencyKey matched an existing spawn — `spawnId` is that
+   *  original spawn; no new agent was launched (P-017/EI-73). */
+  deduped?: boolean;
 }
 
 /** Walk up to the nearest `.git` ancestor (mirrors locks/coordination-domain.ts). */
@@ -242,12 +254,78 @@ function newSpawnId(): string {
   return `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
 
-async function countRunning(workspaceId: string): Promise<number> {
-  const { sql } = getOrgPg();
+async function countRunning(workspaceId: string, db?: Db): Promise<number> {
+  const sql = db ?? getOrgPg().sql;
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId} AND status IN ('running', 'restarting')`;
   return Number(rows[0]?.n ?? 0);
+}
+
+export type SpawnAdmission =
+  | { kind: 'admitted' }
+  | { kind: 'duplicate'; spawnId: string }
+  | { kind: 'over_cap'; running: number; cap: number };
+
+/**
+ * Atomic spawn admission (audit P-017 + P-039, EI-73): reclaim → idempotency
+ * dedupe → cap count → record, in ONE transaction serialized per workspace by
+ * an advisory xact lock. Closes two races the old
+ * reclaim-then-count-then-insert sequence had under read-committed:
+ *   • two concurrent spawns both read running<cap and both recorded
+ *     (ceiling overshoot, P-039);
+ *   • a route-timeout retry of the SAME logical spawn launched a second agent
+ *     (EI-73) — a caller-supplied idempotencyKey now returns the original row
+ *     instead. The partial unique index from migration 219 backstops the
+ *     dedupe even outside this lock.
+ *
+ * `record` runs inside the transaction only when admission succeeds; it must
+ * use the handed tx. Exported for the real-PG concurrency tests.
+ */
+export async function admitSpawn(
+  sql: Sql,
+  opts: {
+    workspaceId: string;
+    /** The spawn id `record` inserts — the idempotency key is stamped on it. */
+    spawnId: string;
+    idempotencyKey: string | null;
+    cap: number;
+    record: (tx: Db) => Promise<void>;
+  },
+): Promise<{ admission: SpawnAdmission; reclaimed: { count: number; workspaces: string[] } }> {
+  let reclaimed = { count: 0, workspaces: [] as string[] };
+  const admission = (await sql.begin(async (tx): Promise<SpawnAdmission> => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`opspawn:${opts.workspaceId}`}))`;
+
+    // Reclaim orphaned rows (a host that died mid-spawn left 'running' rows
+    // that never flip) BEFORE counting, so the ceiling reflects live spawns
+    // only and a dead host's rows can never wedge it (P-011). Announce is the
+    // caller's job, AFTER commit.
+    const r = await reclaimOrphanedSpawns(tx);
+    reclaimed = { count: r.reclaimed, workspaces: r.workspaces };
+
+    if (opts.idempotencyKey) {
+      const dup = await tx<{ spawn_id: string }[]>`
+        SELECT spawn_id FROM harness_shared.spawned_agents
+         WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${opts.idempotencyKey}
+         LIMIT 1`;
+      if (dup.length > 0) return { kind: 'duplicate', spawnId: dup[0].spawn_id };
+    }
+
+    const running = await countRunning(opts.workspaceId, tx);
+    if (running >= opts.cap) return { kind: 'over_cap', running, cap: opts.cap };
+
+    await opts.record(tx);
+    if (opts.idempotencyKey) {
+      // Separate UPDATE so the recordSpawn input type stays untouched; same
+      // transaction, so the key is never observable without the row.
+      await tx`UPDATE harness_shared.spawned_agents
+                  SET idempotency_key = ${opts.idempotencyKey}
+                WHERE spawn_id = ${opts.spawnId}`;
+    }
+    return { kind: 'admitted' };
+  })) as SpawnAdmission;
+  return { admission, reclaimed };
 }
 
 /**
@@ -347,50 +425,77 @@ export async function spawnAgentInHarness(
     return fail(`spawn rejected: harness "${slug}" project dir missing on disk: ${project.path}`);
   }
 
-  // Reclaim orphaned rows (a host that died mid-spawn left 'running' rows that
-  // never flip) BEFORE counting, so the ceiling reflects live spawns only and a
-  // dead host's rows can never wedge it (P-011). Best-effort; the periodic sweep
-  // is the backstop.
-  await reclaimAndAnnounce();
+  const spawnId = newSpawnId();
+  const runId = `opspawn-${Date.now()}-${randomUUID().slice(0, 6)}`;
+  const { sql } = getOrgPg();
+  const idemKey = (input.idempotencyKey ?? '').trim() || null;
 
-  // Global concurrency ceiling — the single deterministic safety floor (P-007),
-  // read live from rate_limit_config (maxSimultaneousAgents); durable count holds
-  // across restarts. This is the hard backstop, NOT the worth-it allocator (the
-  // brain decides worth-it, informed by getSpawnHeadroom). Over-ceiling is a
-  // QUEUE+AWAIT, not a silent drop (D-004): the result carries the wake key the
-  // caller sleeps on; every slot-free (completion or reclaim) announces it.
-  const cap = spawnConcurrencyCeiling();
-  const running = await countRunning(input.workspaceId).catch(() => 0);
-  if (running >= cap) {
+  // Atomic admission (audit P-017 + P-039, EI-73) — see admitSpawn.
+  // Over-ceiling stays a QUEUE+AWAIT, not a silent drop (D-004): the result
+  // carries the wake key the caller sleeps on.
+  let admission: SpawnAdmission;
+  let reclaimed: { count: number; workspaces: string[] };
+  try {
+    ({ admission, reclaimed } = await admitSpawn(sql, {
+      workspaceId: input.workspaceId,
+      spawnId,
+      idempotencyKey: idemKey,
+      cap: spawnConcurrencyCeiling(),
+      record: (tx) =>
+        recordSpawn(tx, {
+          spawnId,
+          workspaceId: input.workspaceId,
+          harnessSlug: slug,
+          parentSpawnId: input.parentSpawnId ?? null,
+          parentRole: input.parentRole ?? 'operator',
+          childRole: role,
+          runId,
+          featureId: input.featureId ?? null,
+          chunkId: input.chunkId ?? null,
+          planSlug: input.planSlug ?? null,
+          itemId: input.itemId ?? null,
+          // The child's coord/lock owner is its spawnId — the link
+          // fleet:cancel uses to release its locks/claims transitively.
+          sessionOwner: spawnId,
+          coordinationDomain: lockDomainFor(project.path),
+          status: 'running',
+        }),
+    }));
+  } catch (err) {
+    return fail(
+      `spawn admission failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Announce reclaimed slots AFTER commit (the announce wakes waiters who
+  // immediately re-count — they must see our committed admission).
+  await Promise.all(
+    reclaimed.workspaces.map((ws) =>
+      announceSpawnSlotFreed(ws, `${reclaimed.count} orphaned spawn slot(s) reclaimed`),
+    ),
+  );
+
+  if (admission.kind === 'duplicate') {
+    console.log(
+      `[operator-spawn] idempotent replay: key "${idemKey}" already spawned ${admission.spawnId} — not spawning again (EI-73)`,
+    );
+    return {
+      ok: true,
+      spawnId: admission.spawnId,
+      harness: slug,
+      projectDir: project.path,
+      error: null,
+      deduped: true,
+    };
+  }
+  if (admission.kind === 'over_cap') {
     const awaitEvent = spawnSlotEventKey(input.workspaceId);
     const res = await fail(
-      `spawn rejected: ${running} spawns already running (fleet ceiling ${cap} — maxSimultaneousAgents). ` +
+      `spawn rejected: ${admission.running} spawns already running (fleet ceiling ${admission.cap} — maxSimultaneousAgents). ` +
       `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
     );
     return { ...res, awaitEvent };
   }
-
-  const spawnId = newSpawnId();
-  const runId = `opspawn-${Date.now()}-${randomUUID().slice(0, 6)}`;
-  const { sql } = getOrgPg();
-  await recordSpawn(sql, {
-    spawnId,
-    workspaceId: input.workspaceId,
-    harnessSlug: slug,
-    parentSpawnId: input.parentSpawnId ?? null,
-    parentRole: input.parentRole ?? 'operator',
-    childRole: role,
-    runId,
-    featureId: input.featureId ?? null,
-    chunkId: input.chunkId ?? null,
-    planSlug: input.planSlug ?? null,
-    itemId: input.itemId ?? null,
-    // The child's coord/lock owner is its spawnId — the link fleet:cancel uses
-    // to release its locks/claims transitively.
-    sessionOwner: spawnId,
-    coordinationDomain: lockDomainFor(project.path),
-    status: 'running',
-  });
 
   // P-016/D-007: claude bees get a forced native session id, recorded here so the
   // unified hive-tabs bee pane can attach `claude --resume <session_id>` (P-004).

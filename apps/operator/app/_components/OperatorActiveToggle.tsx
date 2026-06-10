@@ -87,6 +87,8 @@ function useOperatorSleepUntil(): number {
     window.addEventListener(SLEEP_CHANGE_EVENT, refresh);
     // When the deadline passes, re-render so the chip drops the
     // "(sleeping Nm)" suffix without the user having to refresh.
+    // Pure UI timer over sessionStorage (no fetch) — the documented
+    // UI-timer exception to the no-polling rule (audit P-058).
     const tick = setInterval(refresh, 5000);
     return () => {
       window.removeEventListener(SLEEP_CHANGE_EVENT, refresh);

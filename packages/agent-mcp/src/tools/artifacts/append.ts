@@ -11,11 +11,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 
+// NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
+// entry gated nothing (audit P-047).
 const WRITE_ROLES = [
   'scoper',
   'architect',
   'worker',
-  'tester',
   'debugger',
   'operator',
   'documenter',
@@ -39,7 +40,6 @@ export default defineTool({
   rolesQuota: {
     worker: { perChunk: 50 },
     architect: { perRun: 200 },
-    tester: { perRun: 200 },
     scoper: { perRun: 200 },
     operator: { perRun: 500 },
   },

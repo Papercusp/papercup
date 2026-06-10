@@ -67,7 +67,6 @@ const EXACT: Record<string, CapabilityTier> = {
   // half is governed by the tool's own reason/audit/storm-limit/critical-section
   // guardrails (D-009), NOT by tier gating.
   'turn:interrupt': 'medium',
-  'hindsight:recall': 'medium',
   'search:read': 'medium',
   // High — secrets, outbound network, cross-plugin reads, audit, dispatch wildcards
   'audit:read': 'high',
@@ -76,7 +75,6 @@ const EXACT: Record<string, CapabilityTier> = {
   'intel:read': 'high',
   'workspaces:read': 'low',
   'harness:dispatch': 'high',
-  'hindsight:retain': 'high',
   // /dev page process kill — Tier 1 sensitive. Requires bearer; agents
   // (URL spawn ctx, no bearer) cannot call. Dashboard hits it via the
   // operator's superuser-token. Defense-in-depth: handler enforces a

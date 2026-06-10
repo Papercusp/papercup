@@ -81,25 +81,49 @@ export default function CoordHistory() {
     return params.toString();
   }, [sources, planSlug, owner]);
 
-  const refresh = useCallback(async () => {
+  // In-flight request is aborted on filter change/unmount so a slow stale
+  // response can never clobber a newer one (audit P-064 poll race).
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`/api/coord/history?${queryString}`);
+      const r = await fetch(`/api/coord/history?${queryString}`, { signal });
       if (!r.ok) throw new Error(`status ${r.status}`);
       const j = (await r.json()) as HistoryResponse;
       setData(j);
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [queryString]);
 
+  // Documented polling exception (audit P-058): coord_event_log — the
+  // fleet's highest-write table — has no emit_change_notify trigger, so
+  // there is no sync invalidation to subscribe to (dev.coordFeed exists in
+  // the resolver but nothing fires it). Attaching a per-row NOTIFY trigger
+  // there is an owner-gated trade-off; until then this dev viewer polls 5s
+  // while visible and pauses when the tab is hidden.
   useEffect(() => {
-    refresh();
-    const id = window.setInterval(refresh, 5000);
-    return () => window.clearInterval(id);
+    let controller = new AbortController();
+    void refresh(controller.signal);
+    const tick = () => {
+      if (document.visibilityState === 'hidden') return;
+      controller.abort();
+      controller = new AbortController();
+      void refresh(controller.signal);
+    };
+    const id = window.setInterval(tick, 5000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      controller.abort();
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [refresh]);
 
   const toggleSource = (s: HistoryItem['source']) => {
@@ -115,7 +139,7 @@ export default function CoordHistory() {
     <div className="text-slate-100">
       <div className="mb-3 flex justify-end">
         <button
-          onClick={refresh}
+          onClick={() => void refresh()}
           className="rounded bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600 disabled:opacity-50"
           disabled={loading}
         >

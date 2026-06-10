@@ -49,6 +49,8 @@ export default defineTool({
     extras: z.array(z.string().max(500)).max(16).optional()
       .describe('Extra KEY=value args passed to the child invoke.'),
     workspace: z.string().max(120).optional(),
+    idempotency_key: z.string().min(1).max(200).optional()
+      .describe('Dedupe key for retries (EI-73): pass the SAME key when retrying a spawn that may have already landed (e.g. after a timeout) — a match returns the original spawn_id with deduped:true instead of launching a second agent.'),
   }),
   async handler(args, ctx) {
     const actor = resolveAgentIdentity(ctx);
@@ -82,6 +84,7 @@ export default defineTool({
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',
+      idempotencyKey: args.idempotency_key ?? null,
     });
     return {
       content: [
@@ -96,6 +99,7 @@ export default defineTool({
             // Over-ceiling (D-004): never drop or busy-wait — sleep on this key
             // and retry the same spawn on wake (a slot-free announces it).
             ...(res.awaitEvent ? { await_event: res.awaitEvent } : {}),
+            ...(res.deduped ? { deduped: true } : {}),
             next: res.ok
               ? 'fleet:tree { spawn_id } to watch; fleet:cancel { spawn_id } to abort.'
               : res.awaitEvent

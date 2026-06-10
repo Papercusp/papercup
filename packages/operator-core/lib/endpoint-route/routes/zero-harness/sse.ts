@@ -21,6 +21,9 @@ export default defineTool({
   method: 'GET',
   path: '/zero-harness/sse',
   auth: 'public',
+  // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
+  // default 408'd healthy streams).
+  timeoutSec: null,
   // Pure sync-transport — exempt from route_invocations telemetry so the
   // table doesn't flood (plan Q7: sampleRate 0 for pure sync transports).
   sampleRate: 0,

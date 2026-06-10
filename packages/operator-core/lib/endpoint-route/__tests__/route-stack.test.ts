@@ -196,6 +196,32 @@ describe('invoke step', () => {
     const res = await app.request('/harness/sheets');
     expect(await res.json()).toEqual({ slug: 'sheets' });
   });
+
+  it('timeoutSec: null disables the watchdog (long-lived SSE routes, EI-110)', async () => {
+    vi.useFakeTimers();
+    try {
+      const app = freshApp();
+      registerRoute(app, defineTool({
+        method: 'GET', path: '/stream', auth: 'public',
+        timeoutSec: null,
+        handler: (_req, ctx) => new Promise<Response>((resolve) => {
+          // Resolves well past the 30s default; only an abort could beat it.
+          const t = setTimeout(() => resolve(Response.json({ ok: true })), 60_000);
+          if (typeof t.unref === 'function') t.unref();
+          ctx.signal.addEventListener('abort', () =>
+            resolve(Response.json({ aborted: true }, { status: 599 })),
+          );
+        }),
+      }));
+      const pending = app.request('/stream');
+      await vi.advanceTimersByTimeAsync(61_000); // would fire a 30s watchdog twice over
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true }); // never aborted
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('registerAllRoutes — duplicate guard', () => {

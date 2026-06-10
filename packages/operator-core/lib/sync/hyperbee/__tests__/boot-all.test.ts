@@ -6,6 +6,9 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
@@ -22,6 +25,13 @@ import {
 import type { BootedHarnessHandle } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
 import { makeFakeBootedHandle } from './fake-booted-handle';
+
+// The DEFAULT discovery path (no discoverHarnessSlugs override) reads the PG
+// registry via loadHarnessRegistry — mocked here so unit tests never touch PG.
+const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({ projects: [] as Array<{ slug: string; path: string }> }));
+vi.mock('../../../harness-registry', () => ({
+  loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
+}));
 
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
   return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
@@ -166,6 +176,33 @@ describe('boot-all — substrate orchestrator', () => {
     expect(result.attempted).toBe(2);
     expect(result.failed).toBe(2);
     expect(result.results.map((r) => r.harnessSlug).sort()).toEqual(['h1', 'h2']);
+  });
+
+  it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
+    const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      loadHarnessRegistryMock.mockResolvedValueOnce({
+        projects: [
+          { slug: 'live-h', path: liveDir },
+          { slug: 'dead-h', path: '/nonexistent/papercusp-boot-all-test' },
+        ],
+      });
+      const result = await bootAllHarnessesForActiveWorkspace({
+        workspaceIds: ['ws-pg-default-discovery'],
+        // NO discoverHarnessSlugs override — exercises harnessSlugsFromPgRegistry.
+        resolveSwarmBinding: async () => {
+          throw new Error('skip-real-boot');
+        },
+      });
+      expect(loadHarnessRegistryMock).toHaveBeenCalledWith('ws-pg-default-discovery');
+      expect(result.attempted).toBe(1); // dead-h filtered out
+      expect(result.results[0]).toMatchObject({ harnessSlug: 'live-h' });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('dead-h'));
+    } finally {
+      warnSpy.mockRestore();
+      rmSync(liveDir, { recursive: true, force: true });
+    }
   });
 
   it('P-078: a discovery failure is LOUD and does not abort the other workspaces', async () => {

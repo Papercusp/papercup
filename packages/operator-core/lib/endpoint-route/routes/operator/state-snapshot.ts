@@ -25,6 +25,9 @@ export default defineTool({
   method: 'GET',
   path: '/operator/state-snapshot',
   auth: 'public',
+  // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
+  // default 408'd healthy streams).
+  timeoutSec: null,
   // SSE — one route-stack run per long-lived connection; a route_invocations
   // row per connect carries little signal (RFC Q7). Don't record it.
   sampleRate: 0,

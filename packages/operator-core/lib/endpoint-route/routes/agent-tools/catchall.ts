@@ -179,6 +179,11 @@ export default methods.map((method) =>
     method,
     path: PATH,
     auth: 'public',
+    // Tool transport — streamed tool calls outlive any fixed route budget,
+    // and non-streamed dispatch enforces its own per-tool timeoutSec /
+    // idleTimeoutSec. The route-stack watchdog is redundant here and 408'd
+    // healthy streams (EI-110).
+    timeoutSec: null,
     // Phase E3 — the phone calls built-in tools cross-origin
     // (api.papercuspai.com → this host). `cors: true` mounts the
     // shared CORS middleware so the preflight + Authorization

@@ -2,70 +2,141 @@
 /**
  * lint:tsc — Check TypeScript type errors in operator-core against a baseline.
  *
- * Gates NEW type errors while allowing pre-existing baseline errors. Baseline
- * is stored in packages/operator-core/.tsc-baseline.json and captures the error
- * count at the time it was created. Future runs that exceed this count fail.
+ * Gates NEW type errors while allowing pre-existing baseline errors, with two
+ * hard rules (audit P-073, EI-104 — a frozen 475-error baseline must not
+ * neutralize strictness):
+ *
+ *   1. RATCHET-ONLY-DOWN: when the current count is BELOW the baseline, the
+ *      baseline auto-tightens to the new count — improvements lock in and
+ *      can't silently regress. `--update` can likewise only LOWER the
+ *      baseline; raising it is a deliberate human act (edit the JSON with a
+ *      justification in the change).
+ *   2. SYNTAX HARD-FAIL: any file with a parse-level error (TS1xxx — the file
+ *      fails to compile at all, so tsc under-reports everything behind it)
+ *      fails the lint regardless of the count vs baseline.
  *
  * Usage:
- *   npm run lint:tsc              # Check against baseline (fail if > baseline)
- *   npm run lint:tsc -- --update  # Update baseline to current error count
+ *   npm run lint:tsc              # Check against baseline
+ *   npm run lint:tsc -- --update  # Explicitly lower the baseline (never raises)
  *
  * Exit codes:
- *   0 — errors are at or below baseline (OK)
- *   1 — errors exceed baseline, or script error
+ *   0 — OK (at baseline, or ratcheted down)
+ *   1 — new errors above baseline, syntax-broken files, or script error
  */
 
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
-const updateFlag = process.argv.includes('--update');
 
-// Run tsc and capture output
-let tscOutput = '';
-try {
-  tscOutput = execSync('npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1', {
-    cwd: ROOT,
-    encoding: 'utf-8',
-  });
-} catch (e) {
-  tscOutput = e.stdout || '';
+/** Parse tsc output into { file, code } entries (file null when unattributable). */
+export function parseTscErrors(tscOutput) {
+  const errors = [];
+  for (const line of String(tscOutput).split('\n')) {
+    const m = line.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+):/);
+    if (m) {
+      errors.push({ file: m[1], code: m[4] });
+      continue;
+    }
+    const bare = line.match(/error (TS\d+):/);
+    if (bare) errors.push({ file: null, code: bare[1] });
+  }
+  return errors;
 }
 
-// Count errors
-const errorCount = (tscOutput.match(/error TS\d+/g) || []).length;
-
-// Load baseline
-let baseline;
-try {
-  baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
-} catch {
-  console.error(`❌ Failed to read baseline file: ${baselineFile}`);
-  process.exit(1);
+/** Files carrying parse-level (TS1xxx) errors — they fail to compile at all. */
+export function syntaxBrokenFiles(errors) {
+  const files = new Set();
+  for (const e of errors) {
+    if (/^TS1\d{3}$/.test(e.code)) files.add(e.file ?? '(unattributed)');
+  }
+  return [...files].sort();
 }
 
-const baselineCount = baseline.operatorCoreErrorCount ?? 0;
-
-console.log(`TSC type errors in operator-core: ${errorCount} (baseline: ${baselineCount})`);
-
-if (updateFlag) {
-  baseline.operatorCoreErrorCount = errorCount;
-  baseline.updatedAt = new Date().toISOString();
-  writeFileSync(baselineFile, JSON.stringify(baseline, null, 2) + '\n');
-  console.log(`✓ Updated baseline to ${errorCount} errors`);
-  process.exit(0);
+/**
+ * Pure gate decision.
+ * @returns {{ verdict: 'fail-syntax'|'fail-exceeds'|'ok-ratchet'|'ok', newBaseline?: number, brokenFiles?: string[] }}
+ */
+export function decide({ errorCount, baselineCount, brokenFiles }) {
+  if (brokenFiles.length > 0) return { verdict: 'fail-syntax', brokenFiles };
+  if (errorCount > baselineCount) return { verdict: 'fail-exceeds' };
+  if (errorCount < baselineCount) return { verdict: 'ok-ratchet', newBaseline: errorCount };
+  return { verdict: 'ok' };
 }
 
-if (errorCount > baselineCount) {
-  const excess = errorCount - baselineCount;
-  console.error(`❌ Type error count exceeded baseline by ${excess} error(s).`);
-  console.error(`   Current: ${errorCount}, Baseline: ${baselineCount}`);
-  console.error(`   To update the baseline: npm run lint:tsc -- --update`);
-  process.exit(1);
+function main() {
+  const updateFlag = process.argv.includes('--update');
+
+  let tscOutput = '';
+  let tscThrew = false;
+  try {
+    tscOutput = execSync('npx tsc -p packages/operator-core/tsconfig.json --noEmit 2>&1', {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (e) {
+    tscThrew = true;
+    tscOutput = e.stdout || '';
+  }
+  if (tscThrew && !tscOutput) {
+    // tsc itself failed to run (no diagnostics at all) — never treat that as
+    // zero errors, it would auto-ratchet the baseline to 0 and mask everything.
+    console.error('❌ tsc produced no output — toolchain failure, not a clean run.');
+    process.exit(1);
+  }
+
+  const errors = parseTscErrors(tscOutput);
+  const errorCount = errors.length;
+  const brokenFiles = syntaxBrokenFiles(errors);
+
+  let baseline;
+  try {
+    baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
+  } catch {
+    console.error(`❌ Failed to read baseline file: ${baselineFile}`);
+    process.exit(1);
+  }
+  const baselineCount = baseline.operatorCoreErrorCount ?? 0;
+
+  console.log(`TSC type errors in operator-core: ${errorCount} (baseline: ${baselineCount})`);
+
+  const writeBaseline = (count, why) => {
+    baseline.operatorCoreErrorCount = count;
+    baseline.updatedAt = new Date().toISOString();
+    writeFileSync(baselineFile, JSON.stringify(baseline, null, 2) + '\n');
+    console.log(`✓ ${why}: baseline → ${count} errors`);
+  };
+
+  const result = decide({ errorCount, baselineCount, brokenFiles });
+
+  switch (result.verdict) {
+    case 'fail-syntax':
+      console.error(`❌ ${result.brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — hard fail regardless of baseline:`);
+      for (const f of result.brokenFiles) console.error(`   - ${f}`);
+      process.exit(1);
+      break;
+    case 'fail-exceeds':
+      console.error(`❌ Type error count exceeded baseline by ${errorCount - baselineCount} error(s).`);
+      console.error(`   Current: ${errorCount}, Baseline: ${baselineCount}`);
+      console.error(`   Fix the new errors — the baseline only ratchets DOWN (raising it is a hand-edit of ${baselineFile} with justification).`);
+      process.exit(1);
+      break;
+    case 'ok-ratchet':
+      // Ratchet-only-down: lock the improvement in (with or without --update).
+      writeBaseline(result.newBaseline, 'Ratcheted down');
+      process.exit(0);
+      break;
+    default:
+      if (updateFlag) console.log('✓ --update: count equals baseline — nothing to lower.');
+      console.log('✓ Type error count is at or below baseline');
+      process.exit(0);
+  }
 }
 
-console.log(`✓ Type error count is at or below baseline`);
-process.exit(0);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main();
+}

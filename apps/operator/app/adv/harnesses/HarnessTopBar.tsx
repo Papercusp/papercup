@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { Activity, CheckCircle2, Coins, LayoutGrid, Network } from 'lucide-react';
 import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { resetLayout } from '../../harness/dock/dock-actions';
@@ -39,6 +40,21 @@ export default function HarnessTopBar({ slug }: Props) {
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [lanes, setLanes] = useState<LanesPayload | null>(null);
 
+  // Push triggers replacing the legacy 4s poll (audit P-058): the /status +
+  // /lanes REST aggregates have no single sync row, so refetch them whenever
+  // the consolidated feature feed (counts/progress) or agent-run feed (lane
+  // starts/stops, alive) pushes. Server-side dedupe bounds the refetch rate.
+  const { data: featureRows } = useSyncQuery<unknown>({
+    queryName: 'featuresConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+  const { data: runRows } = useSyncQuery<unknown>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
+
   useEffect(() => {
     if (!slug) {
       setStatus(null);
@@ -46,27 +62,23 @@ export default function HarnessTopBar({ slug }: Props) {
       return;
     }
     let cancelled = false;
-    const refresh = () => {
-      Promise.all([
-        fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`).then((r) =>
-          r.ok ? (r.json() as Promise<StatusPayload>) : null,
-        ),
-        fetch(`/api/harness/${encodeURIComponent(slug)}/lanes?phase=staging`).then((r) =>
-          r.ok ? (r.json() as Promise<LanesPayload>) : null,
-        ),
-      ]).then(([s, l]) => {
-        if (cancelled) return;
-        setStatus(s);
-        setLanes(l);
-      });
-    };
-    refresh();
-    const id = window.setInterval(refresh, 4000);
+    Promise.all([
+      fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`).then((r) =>
+        r.ok ? (r.json() as Promise<StatusPayload>) : null,
+      ),
+      fetch(`/api/harness/${encodeURIComponent(slug)}/lanes?phase=staging`).then((r) =>
+        r.ok ? (r.json() as Promise<LanesPayload>) : null,
+      ),
+    ]).then(([s, l]) => {
+      if (cancelled) return;
+      setStatus(s);
+      setLanes(l);
+    });
     return () => {
       cancelled = true;
-      window.clearInterval(id);
     };
-  }, [slug]);
+    // featureRows/runRows identity changes on each sync push → refetch.
+  }, [slug, featureRows, runRows]);
 
   const passedCount = status?.counts?.passed ?? 0;
   const totalCount = useMemo(

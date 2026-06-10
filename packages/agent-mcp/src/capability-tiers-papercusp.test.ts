@@ -51,13 +51,11 @@ const EXACT_ROWS: Array<[string, 'low' | 'medium' | 'high']> = [
   ['messages:write', 'medium'],
   ['routines:write', 'medium'],
   ['proposals:write', 'medium'],
-  ['hindsight:recall', 'medium'],
   ['search:read', 'medium'],
   // High — secrets, outbound network, cross-plugin reads, audit, dispatch
   ['audit:read', 'high'],
   ['intel:read', 'high'],
   ['harness:dispatch', 'high'],
-  ['hindsight:retain', 'high'],
   ['processes:kill', 'high'],
 ];
 

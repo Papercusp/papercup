@@ -15,19 +15,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
 import { openPanel, focusPanel } from './dock-actions';
-
-interface Feature {
-  id: string;
-  title: string;
-  status: string;
-  summary?: string;
-  needs_human_review?: boolean;
-}
-
-interface StatusResponse {
-  features: Feature[];
-  counts: Record<string, number>;
-}
+import { useHarnessFeatures } from '../../adv/harnesses/useHarnessData';
 
 type FilterKey = 'all' | 'todo' | 'failing' | 'validating' | 'passed' | 'deprecated';
 
@@ -41,40 +29,29 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
-  const [data, setData] = useState<StatusResponse | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  // Live data via useHarnessFeatures (REST bootstrap + consolidated sync
+  // overlay) — replaces the one-shot fetch that left this panel stale
+  // until reopen (audit P-058).
+  const { features, error } = useHarnessFeatures(slug);
   const [filter, setFilter] = useState<FilterKey>('all');
 
   useEffect(() => {
-    if (!slug) return;
-    setError(null);
-    let cancel = false;
-    fetch(`/api/harness/${encodeURIComponent(slug)}/status`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`);
-        return r.json();
-      })
-      .then((j: StatusResponse) => {
-        if (cancel) return;
-        setData(j);
-        // Update panel title with slug + count so multiple instances are
-        // distinguishable in the tab strip.
-        api.setTitle(`Features: ${slug} (${j.features.length})`);
-      })
-      .catch((e: Error) => {
-        if (cancel) return;
-        setError(e);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug, api]);
+    // Update panel title with slug + count so multiple instances are
+    // distinguishable in the tab strip.
+    if (features) api.setTitle(`Features: ${slug} (${features.length})`);
+  }, [features, slug, api]);
+
+  const counts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const f of features ?? []) out[f.status] = (out[f.status] ?? 0) + 1;
+    return out;
+  }, [features]);
 
   const filtered = useMemo(() => {
-    if (!data) return [];
-    if (filter === 'all') return data.features;
-    return data.features.filter((f) => f.status === filter);
-  }, [data, filter]);
+    if (!features) return [];
+    if (filter === 'all') return features;
+    return features.filter((f) => f.status === filter);
+  }, [features, filter]);
 
   if (!slug) {
     return (
@@ -87,12 +64,12 @@ export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
   if (error) {
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>
-        Failed: {error.message}
+        Failed: {error}
       </div>
     );
   }
 
-  if (!data) {
+  if (!features) {
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…
@@ -117,8 +94,8 @@ export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
           (key) => {
             const count =
               key === 'all'
-                ? data.features.length
-                : (data.counts[key] ?? 0);
+                ? features.length
+                : (counts[key] ?? 0);
             const active = filter === key;
             return (
               <button
@@ -203,7 +180,7 @@ export function RealFeaturesPanel({ params, api }: PanelComponentProps) {
                   {f.id}
                 </span>
                 <span style={{ flex: 1, color: 'var(--fg)' }}>{f.title}</span>
-                {f.needs_human_review && (
+                {f.needsReview && (
                   <span
                     style={{
                       fontSize: 10,

@@ -22,6 +22,37 @@ interface SearchHit {
   score: number;
 }
 
+/**
+ * Run one kind's search: FTS first, ILIKE fallback on failure — and if
+ * the fallback ALSO fails, record `<kind>_unavailable` instead of
+ * erroring the whole search (audit P-048). One kind's outage (dropped
+ * table, bad grant, aborted query) degrades that kind only; every
+ * other kind still answers.
+ */
+async function searchKind(
+  kind: Kind,
+  hits: SearchHit[],
+  degradedReasons: string[],
+  fts: () => Promise<SearchHit[]>,
+  ilike: () => Promise<SearchHit[]>,
+): Promise<void> {
+  try {
+    hits.push(...(await fts()));
+    return;
+  } catch {
+    // `_search` missing (pre-013) or any FTS failure — try ILIKE.
+  }
+  try {
+    hits.push(...(await ilike()));
+    degradedReasons.push(`${kind}_using_ilike_fallback`);
+  } catch (e) {
+    console.warn(
+      `[search:query] ${kind} unavailable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    degradedReasons.push(`${kind}_unavailable`);
+  }
+}
+
 export default defineTool({
   name: 'search:query',
   capability: 'search:read',
@@ -41,117 +72,137 @@ export default defineTool({
 
     // FTS path: plainto_tsquery is forgiving (accepts user-supplied text).
     // We use ts_rank_cd for ordering. If the `_search` column is missing
-    // (013 not applied), the catch falls back to ILIKE.
+    // (013 not applied), searchKind falls back to ILIKE — and a kind whose
+    // fallback ALSO fails degrades alone (audit P-048).
+    const q = `%${args.query}%`;
+
     if (wantKind('tasks')) {
-      try {
-        const rows = await ctx.tx<
-          Array<{ harness_slug: string; feature_id: string; title: string; summary: string; rank: number }>
-        >`
-          SELECT harness_slug, feature_id, title, summary,
-                 ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.harness_features_consolidated
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) {
-          hits.push({
+      await searchKind(
+        'tasks',
+        hits,
+        degradedReasons,
+        async () => {
+          const rows = await ctx.tx<
+            Array<{ harness_slug: string; feature_id: string; title: string; summary: string; rank: number }>
+          >`
+            SELECT harness_slug, feature_id, title, summary,
+                   ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.harness_features_consolidated
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({
             kind: 'tasks',
             id: `${r.harness_slug}/${r.feature_id}`,
             snippet: r.title || (r.summary ?? '').slice(0, 100),
             score: Number(r.rank),
-          });
-        }
-      } catch {
-        // Fallback: ILIKE
-        const q = `%${args.query}%`;
-        const rows = await ctx.tx<Array<{ harness_slug: string; feature_id: string; title: string; summary: string }>>`
-          SELECT harness_slug, feature_id, title, summary
-            FROM harness_shared.harness_features_consolidated
-           WHERE title ILIKE ${q} OR summary ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) {
-          hits.push({
+          }));
+        },
+        async () => {
+          const rows = await ctx.tx<
+            Array<{ harness_slug: string; feature_id: string; title: string; summary: string }>
+          >`
+            SELECT harness_slug, feature_id, title, summary
+              FROM harness_shared.harness_features_consolidated
+             WHERE title ILIKE ${q} OR summary ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({
             kind: 'tasks',
             id: `${r.harness_slug}/${r.feature_id}`,
             snippet: r.title || (r.summary ?? '').slice(0, 100),
             score: 1,
-          });
-        }
-        degradedReasons.push('tasks_using_ilike_fallback');
-      }
+          }));
+        },
+      );
     }
 
     if (wantKind('goals')) {
-      try {
-        const rows = await ctx.tx<Array<{ id: string; title: string; rank: number }>>`
-          SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.goals
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) hits.push({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) });
-      } catch {
-        const q = `%${args.query}%`;
-        const rows = await ctx.tx<Array<{ id: string; title: string; body: string }>>`
-          SELECT id, title, body FROM harness_shared.goals
-           WHERE title ILIKE ${q} OR body ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) hits.push({ kind: 'goals', id: r.id, snippet: r.title, score: 1 });
-        degradedReasons.push('goals_using_ilike_fallback');
-      }
+      await searchKind(
+        'goals',
+        hits,
+        degradedReasons,
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; title: string; rank: number }>>`
+            SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.goals
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: Number(r.rank) }));
+        },
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; title: string; body: string }>>`
+            SELECT id, title, body FROM harness_shared.goals
+             WHERE title ILIKE ${q} OR body ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'goals', id: r.id, snippet: r.title, score: 1 }));
+        },
+      );
     }
 
     if (wantKind('projects')) {
-      try {
-        const rows = await ctx.tx<Array<{ id: string; slug: string; name: string; rank: number }>>`
-          SELECT id, slug, name, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.projects
-           WHERE _search @@ plainto_tsquery('english', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) {
-          hits.push({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) });
-        }
-      } catch {
-        const q = `%${args.query}%`;
-        const rows = await ctx.tx<Array<{ id: string; slug: string; name: string }>>`
-          SELECT id, slug, name FROM harness_shared.projects
-           WHERE name ILIKE ${q} OR slug ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) hits.push({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 });
-        degradedReasons.push('projects_using_ilike_fallback');
-      }
+      await searchKind(
+        'projects',
+        hits,
+        degradedReasons,
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; slug: string; name: string; rank: number }>>`
+            SELECT id, slug, name, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
+              FROM harness_shared.projects
+             WHERE _search @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: Number(r.rank) }));
+        },
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; slug: string; name: string }>>`
+            SELECT id, slug, name FROM harness_shared.projects
+             WHERE name ILIKE ${q} OR slug ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'projects', id: r.slug ?? r.id, snippet: r.name, score: 1 }));
+        },
+      );
     }
 
     if (wantKind('audit')) {
-      try {
-        const rows = await ctx.tx<Array<{ id: string; subject: string; action: string; rank: number }>>`
-          SELECT id, subject, action,
-                 ts_rank_cd(_search, plainto_tsquery('simple', ${args.query})) AS rank
-            FROM harness_shared.audit_log
-           WHERE _search @@ plainto_tsquery('simple', ${args.query})
-           ORDER BY rank DESC
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) {
-          hits.push({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) });
-        }
-      } catch {
-        const q = `%${args.query}%`;
-        const rows = await ctx.tx<Array<{ id: string; subject: string; action: string }>>`
-          SELECT id, subject, action FROM harness_shared.audit_log
-           WHERE subject ILIKE ${q} OR action ILIKE ${q}
-           LIMIT ${args.limit}
-        `;
-        for (const r of rows) hits.push({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 });
-        degradedReasons.push('audit_using_ilike_fallback');
-      }
+      await searchKind(
+        'audit',
+        hits,
+        degradedReasons,
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; subject: string; action: string; rank: number }>>`
+            SELECT id, subject, action,
+                   ts_rank_cd(_search, plainto_tsquery('simple', ${args.query})) AS rank
+              FROM harness_shared.audit_log
+             WHERE _search @@ plainto_tsquery('simple', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: Number(r.rank) }));
+        },
+        async () => {
+          const rows = await ctx.tx<Array<{ id: string; subject: string; action: string }>>`
+            SELECT id, subject, action FROM harness_shared.audit_log
+             WHERE subject ILIKE ${q} OR action ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({ kind: 'audit', id: r.id, snippet: `${r.action}: ${r.subject}`, score: 0.5 }));
+        },
+      );
+    }
+
+    // `messages` has never had a search block — surface the gap honestly
+    // when a caller asks for it EXPLICITLY instead of silently returning
+    // nothing (noticed during audit P-048; jsonb/messages FTS is the
+    // deferred v1.5 noted in the header).
+    if (args.kinds?.includes('messages')) {
+      degradedReasons.push('messages_not_implemented');
     }
 
     // Sort across kinds by score descending so highest-confidence hits land first.

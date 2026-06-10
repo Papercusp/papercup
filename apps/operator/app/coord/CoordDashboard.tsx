@@ -15,7 +15,7 @@
  */
 
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import CoordHistory from './CoordHistory';
 import { LivenessDot, livenessFromHeartbeat } from './presence-ui';
 
@@ -120,7 +120,9 @@ function HookHealthBanner() {
       }
     }
     tick();
-    const id = setInterval(tick, 15_000);
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void tick();
+    }, 15_000);
     return () => {
       live = false;
       clearInterval(id);
@@ -164,6 +166,13 @@ interface PresenceRecord {
   stale: boolean;
 }
 
+// Documented polling exception (audit P-058): the /coord dev page reads
+// heartbeat-cadence presence + file-backed health endpoints with no PG
+// sync-invalidation source (attaching NOTIFY triggers to presence/
+// coord_event_log is an owner-gated trade-off — the heartbeat churn would
+// out-shout the dedupe window). Poll while visible, pause when hidden;
+// in-flight responses abort on supersede so a slow stale reply never
+// clobbers a newer one (audit P-064 race class).
 function usePolledJson<T>(url: string, intervalMs = 5000): {
   data: T | null;
   error: string | null;
@@ -173,23 +182,40 @@ function usePolledJson<T>(url: string, intervalMs = 5000): {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, { signal: controller.signal });
       if (!r.ok) throw new Error(`status ${r.status}`);
       setData((await r.json()) as T);
     } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [url]);
   useEffect(() => {
-    refresh();
-    const id = window.setInterval(refresh, intervalMs);
-    return () => window.clearInterval(id);
+    void refresh();
+    const tick = () => {
+      if (document.visibilityState === 'hidden') return;
+      void refresh();
+    };
+    const id = window.setInterval(tick, intervalMs);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      abortRef.current?.abort();
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [refresh, intervalMs]);
   return { data, error, loading, refresh };
 }

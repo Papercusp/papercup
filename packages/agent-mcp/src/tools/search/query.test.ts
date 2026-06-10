@@ -24,8 +24,9 @@ type Rows = unknown[];
 interface KindScript {
   /** FTS result; if `'throw'`, the FTS query rejects → ILIKE fallback runs. */
   fts: Rows | 'throw';
-  /** ILIKE fallback rows (used only when fts==='throw'). */
-  ilike?: Rows;
+  /** ILIKE fallback rows (used only when fts==='throw'); `'throw'` makes
+   *  the fallback fail too → the kind degrades alone (audit P-048). */
+  ilike?: Rows | 'throw';
 }
 
 /** table-name fragment → kind, so the mock can route a query to its script. */
@@ -55,6 +56,7 @@ function makeTx(scripts: Record<string, KindScript>) {
       return Promise.resolve(script.fts);
     }
     // ILIKE fallback
+    if (script.ilike === 'throw') return Promise.reject(new Error('relation does not exist'));
     return Promise.resolve(script.ilike ?? []);
   };
   return tx;
@@ -154,5 +156,37 @@ describe('search:query — FTS throws → ILIKE fallback per kind', () => {
     expect(auditHit.score).toBe(0.5);
     expect(auditHit.snippet).toBe('act: s');
     expect(res.degradedReasons).toContain('audit_using_ilike_fallback');
+  });
+});
+
+describe('search:query — per-kind isolation when BOTH legs fail (audit P-048)', () => {
+  it('a kind whose FTS and ILIKE both throw degrades alone; other kinds still answer', async () => {
+    const tx = makeTx({
+      tasks: { fts: 'throw', ilike: 'throw' }, // dead kind
+      goals: { fts: [{ id: 'g1', title: 'still here', rank: 0.7 }] },
+    });
+    // Pre-fix this REJECTED the whole handler (the fallback was unwrapped).
+    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons).toContain('tasks_unavailable');
+    const kinds = (res.data as Array<{ kind: string }>).map((h) => h.kind);
+    expect(kinds).toContain('goals');
+    expect(kinds).not.toContain('tasks');
+  });
+
+  it('an explicit messages request reports messages_not_implemented instead of a silent empty', async () => {
+    const tx = makeTx({});
+    const res = await tool.handler({ query: 'x', kinds: ['messages'], limit: 25 } as never, CTX(tx) as never);
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons).toContain('messages_not_implemented');
+    expect(res.data).toEqual([]);
+  });
+
+  it('default all-kinds search does NOT flag messages (only an explicit ask does)', async () => {
+    const tx = makeTx({ goals: { fts: [{ id: 'g1', title: 'g', rank: 0.5 }] } });
+    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
+    expect((res as { degradedReasons?: string[] }).degradedReasons ?? []).not.toContain(
+      'messages_not_implemented',
+    );
   });
 });

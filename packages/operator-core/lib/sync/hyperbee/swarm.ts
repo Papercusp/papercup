@@ -281,6 +281,14 @@ export async function joinHarnessSwarm(
   let connectionCount = 0;
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
+    // An unclean peer disconnect (reset / timeout / mid-replication death)
+    // emits 'error' on the connection socket; with no listener Node escalates
+    // it to an UNCAUGHT EXCEPTION — i.e. a remote peer dying could crash this
+    // whole host process. Found by the P-004 swarm-chaos test
+    // (coord-system-e2e-testing-2026-06-10); hyperswarm's own docs require the
+    // consumer to handle connection errors. The reconnect path is discovery's
+    // job — the error itself is just churn.
+    (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown })?.on?.('error', () => {});
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
     const remoteIp = extractRemoteIp(socket);
 

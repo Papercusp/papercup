@@ -154,6 +154,9 @@ export default methods.map((method) =>
     method,
     path: PATH,
     auth: 'public',
+    // Tool transport — streamed plugin calls outlive any fixed route budget;
+    // dispatch enforces its own per-tool timeouts (EI-110).
+    timeoutSec: null,
     handler: dispatchHttp,
   }),
 );

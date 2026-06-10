@@ -98,7 +98,10 @@ export function isUserTreePath(path: string): boolean {
  * directories, not source). The line is per-harness so it goes in
  * the harness's `.gitignore`, not the workspace's.
  */
-export const USER_TREES_GITIGNORE_LINE = '/' + USER_TREES_ROOT_REL_PATH + '/' as const;
+// (no `as const` — a const assertion is illegal on a concatenation
+// expression, TS1355; this was the one parse-broken file the old
+// count-only baseline silently absorbed.)
+export const USER_TREES_GITIGNORE_LINE = '/' + USER_TREES_ROOT_REL_PATH + '/';
 
 /**
  * Discriminated result for "where can this user write?"

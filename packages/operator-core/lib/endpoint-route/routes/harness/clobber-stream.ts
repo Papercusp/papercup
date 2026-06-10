@@ -29,6 +29,9 @@ export default defineTool({
   method: 'GET',
   path: '/harness/:slug/clobber-stream',
   auth: 'public',
+  // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
+  // default 408'd healthy streams).
+  timeoutSec: null,
   // SSE — one route-stack run per long-lived connection; per-connect
   // sampling carries no signal.
   sampleRate: 0,

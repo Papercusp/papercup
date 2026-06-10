@@ -12,22 +12,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PanelComponentProps } from './panel-registry';
 import { openPanel, focusPanel } from './dock-actions';
-
-interface Issue {
-  id: string;
-  title: string;
-  severity?: string;
-  status?: string;
-  source?: string;
-  foundAt?: string;
-  evidence?: string | null;
-  attempts?: number;
-}
-
-interface IssuesResponse {
-  issues: Issue[];
-  pending?: unknown[];
-}
+import { useHarnessIssues } from '../../adv/harnesses/useHarnessData';
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: 'var(--bad)',
@@ -49,48 +34,31 @@ type Filter = 'all' | 'open' | 'triaged' | 'fixed' | 'closed';
 
 export function RealIssuesPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
-  const [data, setData] = useState<IssuesResponse | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  // Live data via useHarnessIssues (REST bootstrap + consolidated sync
+  // overlay) — replaces the one-shot fetch that left this panel stale
+  // until reopen (audit P-058).
+  const { issues, error } = useHarnessIssues(slug);
   const [filter, setFilter] = useState<Filter>('open');
 
   useEffect(() => {
-    if (!slug) return;
-    setError(null);
-    let cancel = false;
-    fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`status ${r.status}`);
-        return r.json();
-      })
-      .then((j: IssuesResponse) => {
-        if (cancel) return;
-        setData(j);
-        api.setTitle(`Issues: ${slug} (${j.issues.length})`);
-      })
-      .catch((e: Error) => {
-        if (cancel) return;
-        setError(e);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug, api]);
+    if (issues) api.setTitle(`Issues: ${slug} (${issues.length})`);
+  }, [issues, slug, api]);
 
   const filtered = useMemo(() => {
-    if (!data) return [];
-    if (filter === 'all') return data.issues;
-    return data.issues.filter((i) => i.status === filter);
-  }, [data, filter]);
+    if (!issues) return [];
+    if (filter === 'all') return issues;
+    return issues.filter((i) => i.status === filter);
+  }, [issues, filter]);
 
   const counts = useMemo(() => {
-    if (!data) return { all: 0, open: 0, triaged: 0, fixed: 0, closed: 0 };
-    const acc = { all: data.issues.length, open: 0, triaged: 0, fixed: 0, closed: 0 };
-    for (const i of data.issues) {
+    if (!issues) return { all: 0, open: 0, triaged: 0, fixed: 0, closed: 0 };
+    const acc = { all: issues.length, open: 0, triaged: 0, fixed: 0, closed: 0 };
+    for (const i of issues) {
       const s = i.status ?? '';
       if (s in acc) (acc as Record<string, number>)[s] += 1;
     }
     return acc;
-  }, [data]);
+  }, [issues]);
 
   if (!slug) {
     return (
@@ -101,10 +69,10 @@ export function RealIssuesPanel({ params, api }: PanelComponentProps) {
   }
   if (error) {
     return (
-      <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error.message}</div>
+      <div style={{ padding: 16, fontSize: 13, color: 'var(--bad)' }}>Failed: {error}</div>
     );
   }
-  if (!data) {
+  if (!issues) {
     return (
       <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
         Loading {slug}…

@@ -24,6 +24,9 @@ export default defineTool({
   method: 'GET',
   path: '/coord/inbox/sse',
   auth: 'public',
+  // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
+  // default 408'd healthy streams).
+  timeoutSec: null,
   sampleRate: 0,
   async handler(req) {
     return sseResponse({

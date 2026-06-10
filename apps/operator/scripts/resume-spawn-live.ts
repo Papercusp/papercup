@@ -41,7 +41,8 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { resumeCommandFor } from '../../../packages/operator-core/lib/events/await/wake-executor';
+import { resumeCommandFor, wakeTurnText } from '../../../packages/operator-core/lib/events/await/wake-executor';
+import type { DeliveryWork } from '../../../packages/operator-core/lib/events/await/types';
 import { writeInteractiveClaudeConfig } from '../../../packages/operator-core/lib/interactive-claude-config';
 
 // A cheap model keeps the smoke's ~4 real turns near-free. Override via env.
@@ -145,22 +146,40 @@ function claudeLeg(): Leg {
     }
     const before = jsonlLines(transcript);
 
-    // 2. Resume via the REAL wake-executor command builder (zero drift).
-    const cmd = resumeCommandFor({ agent: 'claude', sessionId, ompThreadId: null }, 'Reply with the single word AGAIN.');
+    // 2. Resume via the REAL wake-executor command builder (zero drift) — and
+    //    with the REAL wake turn text (coord-e2e P-009: the resume path of
+    //    wake-on-message). The prompt is exactly what executeWake's resume rung
+    //    would inject for an always-armed inbox-wake fired by a directed
+    //    coord:send {wake:true}, so this leg proves the message-bearing wake
+    //    renders in the woken session's transcript, not just that resume works.
+    const wakeText = wakeTurnText({
+      id: 9001,
+      eventKey: `coord:inbox-wake:${sid}`,
+      note: 'always-armed inbox-wake (resume-spawn-live P-009 rung)',
+      summary: 'coord:send wake-rung ping — read your inbox',
+      payload: null,
+    } as DeliveryWork) + ' Reply with the single word AGAIN.';
+    const cmd = resumeCommandFor({ agent: 'claude', sessionId, ompThreadId: null }, wakeText);
     if (!cmd) return { agent: 'claude', status: 'fail', detail: 'resumeCommandFor returned null for a claude session with a sessionId' };
-    log(`  claude: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== 'Reply with the single word AGAIN.').join(' ')} <text>\``);
+    log(`  claude: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== wakeText).join(' ')} <wake-turn-text>\``);
     const resume = run(cmd.bin, cmd.args, { cwd, env });
     if (resume.code !== 0) {
       return { agent: 'claude', status: 'fail', detail: `resume exited ${resume.code}: ${resume.stderr.slice(0, 240)}` };
     }
 
     // 3. Deterministic proof: the resume appended turns to the SAME transcript —
-    //    so `--resume <uuid>` found + continued the exact session (not a new one).
+    //    so `--resume <uuid>` found + continued the exact session (not a new one)
+    //    — AND the appended content carries the wake turn (the coord message
+    //    reference the woken session acts on).
     const after = jsonlLines(transcript);
     if (after <= before) {
       return { agent: 'claude', status: 'fail', detail: `resume did not grow the session transcript (${before} → ${after} lines) — it did not continue the session` };
     }
-    return { agent: 'claude', status: 'pass', detail: `resumed exact session ${sessionId.slice(0, 8)}…; transcript ${before} → ${after} lines` };
+    const transcriptText = readFileSync(transcript, 'utf8');
+    if (!transcriptText.includes('coord:send wake-rung ping')) {
+      return { agent: 'claude', status: 'fail', detail: 'resumed transcript grew but does NOT contain the injected wake turn text — the wake prompt did not reach the session' };
+    }
+    return { agent: 'claude', status: 'pass', detail: `resumed exact session ${sessionId.slice(0, 8)}…; transcript ${before} → ${after} lines; wake turn text present in the resumed turn` };
   } finally {
     rmSync(configDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

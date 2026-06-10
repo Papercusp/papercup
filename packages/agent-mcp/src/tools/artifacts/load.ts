@@ -15,12 +15,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
 
+// NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
+// entry gated nothing (audit P-047).
 const ALL_ROLES = [
   'scoper',
   'architect',
   'worker',
   'validator',
-  'tester',
   'reviewer',
   'debugger',
   'operator',

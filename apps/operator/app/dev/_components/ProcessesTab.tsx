@@ -88,7 +88,12 @@ export default function ProcessesTab() {
       }
     }
     refresh();
-    const id = setInterval(refresh, 5_000);
+    // Documented polling exception (audit P-058): the process list is OS
+    // state scanned server-side — there is no PG table to drive a sync
+    // invalidation. 5s while the dev tab is visible; paused when hidden.
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh();
+    }, 5_000);
     return () => {
       cancelled = true;
       clearInterval(id);

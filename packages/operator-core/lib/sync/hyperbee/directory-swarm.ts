@@ -217,6 +217,10 @@ export function createDirectoryGossip(opts: CreateDirectoryGossipOpts): Director
   const handler = (socket: unknown): void => {
     connectionCount++;
     sockets.add(socket);
+    // Unclean disconnect guard — same as joinHarnessSwarm's handler: an
+    // unhandled socket 'error' (peer reset) is an uncaught exception that can
+    // crash the host. Found by the P-004 swarm-chaos test.
+    (socket as { on?: (ev: string, fn: (e: unknown) => void) => unknown }).on?.('error', () => {});
     (socket as { once?: (ev: string, fn: () => void) => unknown }).once?.('close', () => {
       sockets.delete(socket);
     });

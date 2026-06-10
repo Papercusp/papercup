@@ -32,6 +32,7 @@
  * removed in Stage 4d; the Model B substrate is the default.
  */
 
+import { existsSync } from 'node:fs';
 import { workspacesRoot } from '../../workspace-registry';
 import { join } from 'node:path';
 import {
@@ -67,11 +68,32 @@ function workspaceRootForId(workspaceId: string): string {
  * returned [] on ANY error, silently booting zero harnesses when the dir
  * was stale/missing. PG failures here are LOUD: they throw to the per-
  * workspace catch in `bootAllHarnessesForActiveWorkspace`.
+ *
+ * PATH-LIVENESS FILTER: only entries whose project `path` exists on disk
+ * boot — a substrate needs its on-disk home. Registry debris with deleted
+ * paths is real at scale (live DB 2026-06-10: 73 of 99 entries were dead —
+ * 72 from a test-clone workspace) and booting ghosts would re-create the
+ * EI-125-era thundering herd. Skips are logged once per boot pass; the
+ * durable cleanup belongs in the registry, not here.
  */
 async function harnessSlugsFromPgRegistry(workspaceId: string): Promise<string[]> {
   const { loadHarnessRegistry } = await import('../../harness-registry');
   const reg = await loadHarnessRegistry(workspaceId);
-  return reg.projects.map((p) => p.slug);
+  const live: string[] = [];
+  const dead: string[] = [];
+  for (const p of reg.projects) {
+    if (p.path && existsSync(p.path)) live.push(p.slug);
+    else dead.push(p.slug);
+  }
+  if (dead.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[boot-all] workspace '${workspaceId}': skipping ${dead.length} registry ` +
+        `entr${dead.length === 1 ? 'y' : 'ies'} with missing project path ` +
+        `(stale registry debris): ${dead.slice(0, 5).join(', ')}${dead.length > 5 ? ', …' : ''}`,
+    );
+  }
+  return live;
 }
 
 export interface BootSingleResult {

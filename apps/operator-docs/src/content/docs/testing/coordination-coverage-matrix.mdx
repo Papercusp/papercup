@@ -67,7 +67,7 @@ Legend: ✅ covered (new) · 🟢 covered (pre-existing) · 🔴 was a gap, now 
 
 ### Wake system — pump / coalescing / retry (C6)
 
-File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.integration.test.ts`, `engine.test.ts` for the pre-existing store/pump mechanics).
+File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.integration.test.ts`, `engine.test.ts` for the pre-existing store/pump mechanics; `events/await/wake-on-message.integration.test.ts` for the coord-e2e P-009 verb-to-socket composition).
 
 | Cell | Before | Now |
 |---|---|---|
@@ -76,6 +76,9 @@ File: `events/await/wake-pump-isolation.integration.test.ts` (+ `await-store.int
 | retry/backoff → dead at max attempts | 🟢 store-level | 🟢 |
 | **cross-agent**: A's emit never delivered to B (real `emitAwaitedEvent`) | ❌ | 🔴 |
 | end-to-end pump delivers via live socket, not peer | ❌ | 🔴 |
+| **wake-on-message, UNMOCKED verb→socket** (P-009): real `coord:send {wake:true}` → real engine/store/pump → addressee's live socket gets the turn; bystander (armed + socketed) untouched; message durably in the inbox | ❌ engine mocked at the verb | 🔴 (`wake-on-message.integration.test.ts`) |
+| wake-on-message, inject-only contract: `wake:false` enqueues but never touches the socket and never consumes the standing watch | ❌ | 🔴 (`wake-on-message.integration.test.ts`) |
+| **wake-on-message, RESUME path** (P-009): real `claude` resume in the EI-155 isolated config dir carries the REAL `wakeTurnText` (coord message reference) into the resumed turn's transcript | ❌ | 🔴 gated live-smoke (`resume-spawn-live.ts` claude leg — PASS 2026-06-10, transcript 14→26 lines, wake text present) |
 
 ### Coord substrate (C1)
 
@@ -103,7 +106,7 @@ File: `agent-tools/coordination/__tests__/watermark-crash-restart.integration.te
 
 ### Locks (C1)
 
-Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator).
+Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (7 tests, live `papercusp_su`) + the `PreToolUse` file-lock hook: `apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts` (fail-open) + `pretooluse-locks-decision.test.ts` (decision rendering, stub operator) + `pretooluse-locks-live.integration.test.ts` (the LIVE-operator rung, coord-e2e P-008 — live-gated, skips when no operator answers).
 
 | Cell | Before | Now |
 |---|---|---|
@@ -113,8 +116,8 @@ Files: `agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts` (
 | named-resource drain (exclusive vs shared) | 🟢 | ✅ |
 | lock-authority election (lowest live pubkey, failover) | 🟢 | ✅ pure `decideAuthority` |
 | **file-lock hook fail-open** (operator unreachable → allow + marker; bounded retry) | partial | ✅ (`cc-hooks.test.ts`) |
-| **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) |
-| file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing) | ❌ | 🔴 |
+| **file-lock hook block-on-held → `permissionDecision:deny`** (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (`pretooluse-locks-decision.test.ts`) + 🔴 LIVE operator: deny names holder label + declared intent + the queue-and-sleep guidance (`pretooluse-locks-live.integration.test.ts`) |
+| file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing) | ❌ | 🔴 + LIVE full cycle: deny → `wake_on_grant` queue → release → grant cascade → hook allows + caches `<tool_use_id>.lock` → PostToolUse release frees the path (`pretooluse-locks-live.integration.test.ts`, 5 tests) |
 
 ### Lock authority — remote leg over HTTP (C2)
 
