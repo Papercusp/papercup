@@ -362,6 +362,71 @@ describe('joinSharedHarness orchestrator', () => {
     };
   }
 
+  it('synthesizes .papercusp/shared.json in the clone from the LINK when absent (joiner self-sufficiency)', async () => {
+    const { mkdtempSync, rmSync, existsSync, readFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join: joinPath } = await import('node:path');
+    const cloneDir = mkdtempSync(joinPath(tmpdir(), 'join-synth-'));
+    try {
+      // Resume path: persisted state says clone_repo is DONE with a REAL dir, so
+      // the orchestrator goes straight to publish_binding → boot_federate.
+      const persisted = {
+        slug: SLUG,
+        linkTopic: TOPIC,
+        steps: {
+          oauth_attest: { id: 'oauth_attest', status: 'done' },
+          clone_repo: { id: 'clone_repo', status: 'done' },
+          publish_binding: { id: 'publish_binding', status: 'pending' },
+          boot_federate: { id: 'boot_federate', status: 'pending' },
+          await_admission_merge: { id: 'await_admission_merge', status: 'pending' },
+          route_insights: { id: 'route_insights', status: 'pending' },
+        },
+        cloneDir,
+        attestationGistId: 'gist-injected-123',
+      };
+      const finalState = await joinSharedHarness({
+        link,
+        slug: SLUG,
+        token: 'tok-ok',
+        githubUserId: USER_ID,
+        githubLogin: LOGIN,
+        keychainId: KEYCHAIN_ID,
+        existingGistId: 'gist-injected-123',
+        fetchFn: makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]),
+        execFileFn: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+        mkdirFn: vi.fn().mockResolvedValue(undefined),
+        readStateFn: vi.fn().mockResolvedValue(persisted),
+        writeStateFn: vi.fn().mockResolvedValue(undefined),
+        bootFederateFn: vi.fn().mockResolvedValue({ state: 'booted' }),
+        readAdmittedCountFn: vi.fn().mockReturnValue(1),
+        awaitAdmissionTimeoutMs: 1000,
+        awaitAdmissionPollMs: 50,
+        sleepFn: async () => {},
+        octokit: makeFakeOctokit(),
+      });
+      expect(finalState.steps.boot_federate.status).toBe('done');
+      const cfgPath = joinPath(cloneDir, '.papercusp', 'shared.json');
+      expect(existsSync(cfgPath)).toBe(true);
+      const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      expect(cfg).toMatchObject({
+        topic: TOPIC,
+        github_repository_id: link.repoId,
+        github_remote: `https://github.com/${GITHUB_FULL}`,
+        privacy: 'shared-private',
+        claim_status: 'unclaimed',
+        schema_version: 1,
+      });
+      // Must pass the REAL validator the boot path's loader applies — a shape
+      // mismatch would silently boot local-only again.
+      const { isHarnessSharedConfig } = await import('../harness-shared-config-types');
+      expect(isHarnessSharedConfig(cfg)).toBe(true);
+      const { loadSharedConfigFromProjectDir } = await import('../load-shared-config');
+      expect(loadSharedConfigFromProjectDir(cloneDir)?.github_repository_id).toBe(link.repoId);
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true });
+    }
+  });
+
   it('completes all 6 steps and sets cloneDir + completedAt', async () => {
     // step1: channel1 verify (injected gist skips gist creation)
     const fetchFn = makeFetch([

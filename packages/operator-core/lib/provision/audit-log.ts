@@ -15,7 +15,7 @@
  */
 
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { and, asc, eq, gt, sql as dsql } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import { activeWorkspaceId } from '../workspace-registry';
 import { publish as publishAudit } from '../provision-audit-bus';
 
@@ -76,6 +76,11 @@ export async function appendAudit(
   publishAudit(`${harness}:${plugin}`, { ts, ...entry });
 }
 
+/**
+ * Read audit entries for (harness, plugin), ascending by time. `limit`
+ * keeps the MOST RECENT entries (the tail) — callers show the latest
+ * slice of the log, never its first page.
+ */
 export async function readAudit(
   harness: string,
   plugin: string,
@@ -92,12 +97,15 @@ export async function readAudit(
     eq(t.pluginSlug, plugin),
   );
   const where = since ? and(baseWhere, gt(t.ts, new Date(since) as any)) : baseWhere;
+  // Fetch newest-first so `limit` clamps to the tail, then flip back to
+  // ascending for callers (ascending + LIMIT would return the OLDEST rows).
   const rows = (await db
     .select({ ts: t.ts, kind: t.kind, runId: t.runId, data: t.data })
     .from(t)
     .where(where)
-    .orderBy(asc(t.ts), asc(t.id))
+    .orderBy(desc(t.ts), desc(t.id))
     .limit(limit)) as unknown as Array<{ ts: Date; kind: AuditKind; runId: string | null; data: Record<string, unknown> | null }>;
+  rows.reverse();
 
   return rows.map((r) => ({
     ts: r.ts.toISOString(),

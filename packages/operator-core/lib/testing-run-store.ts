@@ -156,6 +156,11 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
   if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
   if (s.kind === 'admin-suite') return;
   if (s.status === 'running') return;
+  // Under vitest the store's own lifecycle tests spawn throwaway node/shell
+  // children ('sleeper', 'no-such-bin', …); persisting those would spray junk
+  // rows into whatever live DB the dev box exposes. A test that wants the
+  // persistence path mocks @papercusp/db-org or sets the opt-in env.
+  if (process.env.VITEST && !process.env.PAPERCUSP_TEST_RUNS_PERSIST) return;
   try {
     const filePath = s.filePath ?? s.label;
     const startedAtIso = new Date(s.startedAt).toISOString();
@@ -171,18 +176,8 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
       commit = ctx.commit;
     } catch { /* fail-soft */ }
 
-    const pg = await import('postgres');
-    const url =
-      process.env.HARNESS_ADMIN_DATABASE_URL ??
-      process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
-      'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
-    const sql = pg.default(url, {
-      max: 1,
-      connect_timeout: 1,
-      idle_timeout: 1,
-      max_lifetime: 5,
-      onnotice: () => {},
-    });
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
@@ -193,7 +188,6 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => { /* swallow — D-007 */ });
-    try { await sql.end({ timeout: 1 }); } catch { /* swallow */ }
   } catch { /* swallow — D-007 */ }
 }
 

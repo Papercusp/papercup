@@ -543,6 +543,43 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
       state.steps.boot_federate.status !== 'phase_0_pending') {
     markRunning('boot_federate');
     try {
+      // The booter resolves the swarm binding from `.papercusp/shared.json` in
+      // the clone — which only exists if the OWNER committed+pushed it. The
+      // JOIN LINK carries everything the file holds (topic + github + repo_id),
+      // so synthesize it when absent; otherwise a fresh joiner boots SILENTLY
+      // local-only ("done" with no swarm join — found by the packaged
+      // browse→join→federate smoke). The owner's committed copy always wins.
+      if (state.cloneDir) {
+        try {
+          const { existsSync, mkdirSync, writeFileSync } = await import('node:fs');
+          const { join: joinPath, dirname } = await import('node:path');
+          const { HARNESS_SHARED_CONFIG_REL_PATH, HARNESS_SHARED_CONFIG_SCHEMA_VERSION } =
+            await import('./harness-shared-config-types');
+          const cfgPath = joinPath(state.cloneDir, HARNESS_SHARED_CONFIG_REL_PATH);
+          // Only when the clone REALLY exists (unit tests mock the clone step).
+          if (existsSync(state.cloneDir) && !existsSync(cfgPath)) {
+            mkdirSync(dirname(cfgPath), { recursive: true });
+            writeFileSync(
+              cfgPath,
+              `${JSON.stringify(
+                {
+                  claim_status: 'unclaimed',
+                  created_at: Date.now(),
+                  github_remote: `https://github.com/${opts.link.github}`,
+                  github_repository_id: opts.link.repoId,
+                  privacy: 'shared-private',
+                  schema_version: HARNESS_SHARED_CONFIG_SCHEMA_VERSION,
+                  topic: opts.link.topic,
+                },
+                null,
+                2,
+              )}\n`,
+            );
+          }
+        } catch {
+          // Best-effort — boot_federate's own soft-skip handles a bad clone dir.
+        }
+      }
       const { activeWorkspaceId } = await import('../workspace-registry');
       await stepBootFederate({
         workspaceId: activeWorkspaceId(),
