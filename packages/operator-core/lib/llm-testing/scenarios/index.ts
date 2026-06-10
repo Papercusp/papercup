@@ -82,6 +82,8 @@ import { SU_S07_POSITIONAL_WRITE } from './su/S07-positional-write';
 import { SU_S08_COMPACT_READ } from './su/S08-compact-read';
 // SU-S09: token-efficient-coord-injection P-011 — positional [coord+N] read gate
 import { SU_S09_COORD_INJECTION_READ } from './su/S09-coord-injection-read';
+// SU-S10: claim-discipline-enforcement-2026-06-10 P-006 — claim-before-work gate
+import { SU_S10_CLAIM_BEFORE_WORK } from './su/S10-claim-before-work';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -152,6 +154,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S07_POSITIONAL_WRITE,
   SU_S08_COMPACT_READ,
   SU_S09_COORD_INJECTION_READ,
+  SU_S10_CLAIM_BEFORE_WORK,
 ];
 
 export function getScenario(id: string): Scenario {

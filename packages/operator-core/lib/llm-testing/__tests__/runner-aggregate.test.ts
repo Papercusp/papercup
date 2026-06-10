@@ -90,6 +90,7 @@ describe('scenario registry', () => {
       'su-S07-positional-write',
       'su-S08-compact-read',
       'su-S09-coord-injection-read',
+      'su-S10-claim-before-work',
     ].sort());
   });
 
