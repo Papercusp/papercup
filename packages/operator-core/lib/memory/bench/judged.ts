@@ -401,7 +401,16 @@ export async function runJudgedTier(opts: JudgedTierOptions): Promise<JudgedTier
       });
     } finally {
       log(`[${name}] cleanup…`);
-      await ctx.cleanup();
+      // Non-fatal: a cleanup failure (e.g. a 55P03 lock timeout on the schema
+      // drop) must never destroy the judged outcomes — a full 18-query run's
+      // report was once lost to exactly that.
+      try {
+        await ctx.cleanup();
+      } catch (e) {
+        const msg = (e as Error).message.slice(0, 120);
+        notes.push(`[${name}] cleanup failed (non-fatal): ${msg}`);
+        log(`[${name}] cleanup FAILED (non-fatal): ${msg}`);
+      }
     }
   }
 
