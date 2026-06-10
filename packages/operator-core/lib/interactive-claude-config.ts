@@ -27,8 +27,20 @@
  * and the user's PERSONAL MEMORY files (psu-isolation P-002 / D-001 — below).
  * Every other top-level entry — `.credentials.json`, `settings.json`, `plugins/`,
  * `commands/`, … — is symlinked back to the real `~/.claude/<entry>` (writes pass
- * through, so an OAuth refresh / settings change is never divergent), the sibling
- * `~/.claude.json` is symlinked in, and `projects/` is a fresh real directory.
+ * through for in-place writers), the sibling `~/.claude.json` is symlinked in,
+ * and `projects/` is a fresh real directory.
+ *
+ * ⚠ CREDENTIALS DO NOT STAY SYMLINKED. claude rewrites `.credentials.json` by
+ * REPLACING the file (temp + rename), so the first OAuth refresh / `/login`
+ * inside a session swaps the symlink for a divergent real-file fork — and with
+ * Anthropic's single-use rotating refresh tokens, forks mutually invalidate
+ * (the every-terminal-relogin cascade; upstream anthropics/claude-code#48786).
+ * The fix is NOT here: the operator's background reconciler
+ * (`claude-credential-sync.ts`) converges every fork + the global file on the
+ * newest bundle. This launcher's part is the reconcile-before-mirror call in
+ * `writeInteractiveClaudeConfig`, so a NEW session symlinks a global file that
+ * already holds the newest family member (seed-from-newest,
+ * claude-credential-sync-2026-06-10 P-002).
  *
  * ── psu prompt isolation (P-002 / D-001) ──────────────────────────────────────
  * A psu session must be governed ONLY by the psu playbook (+ the P-001 project-
@@ -76,6 +88,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { reconcileClaudeCredentials } from './claude-credential-sync';
 
 export interface InteractiveClaudeConfig {
   /** Absolute path to set as the interactive session's `CLAUDE_CONFIG_DIR`. */
@@ -137,6 +150,16 @@ export function writeInteractiveClaudeConfig(opts: {
   const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);
   mkdirSync(configDir, { recursive: true });
+
+  // Seed-from-newest: converge the global file (and any forks) on the newest
+  // OAuth bundle BEFORE mirroring, so the `.credentials.json` symlink below
+  // points at a live token even when a peer session rotated it last.
+  // Best-effort — a launch must never fail on credential reconciliation.
+  try {
+    reconcileClaudeCredentials({ home });
+  } catch {
+    /* claude surfaces a stale credential the same as before this existed */
+  }
 
   // Mirror every top-level `~/.claude` entry EXCEPT the transcript store.
   const srcClaude = join(home, '.claude');

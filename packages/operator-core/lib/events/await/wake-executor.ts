@@ -35,6 +35,7 @@ import {
   codexHomeForSessionKey,
 } from '@papercusp/orchestrator/session-launch-dirs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
+import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid, spawnPty, writePty } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
@@ -386,6 +387,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if (owner) {
       const cfgDir = sessionClaudeConfigDir(owner);
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
+    }
+    // Fleet token (claude-credential-sync-2026-06-10 P-003): an autonomous wake
+    // turn authenticates with the dedicated non-rotating setup-token when the
+    // owner has minted one, so fleet refreshes never consume the interactive
+    // OAuth family's single-use refresh token (the every-terminal-relogin
+    // cascade). Mirrors the orchestrator spawn leg (invoke.ts). Absent token ⇒
+    // unchanged (the session's config-dir credentials).
+    if (resumeAgent === 'claude') {
+      const fleetToken = readFleetClaudeToken();
+      if (fleetToken) env.CLAUDE_CODE_OAUTH_TOKEN = fleetToken;
     }
     // codex finds the session's history + baked superuser MCP only inside its
     // per-session CODEX_HOME — point the resumed `codex exec resume` at it

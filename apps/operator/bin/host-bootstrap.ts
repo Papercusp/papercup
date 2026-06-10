@@ -21,6 +21,9 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
+import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { startMobileVoiceWs } from '@papercusp/operator-core/lib/device-voice-ws';
 import { startDesktopVoiceWs } from '@papercusp/operator-core/lib/voice-node/desktop-voice-ws';
 import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/device-push-credentials';
@@ -225,6 +228,16 @@ export function runBootstrap(): void {
   // `stuck` → an I-STUCK issue in dispatchOneHarness). The sweep module is kept
   // (not deleted) for the revert; it is simply no longer started.
   //   try { ensureWaveAdvanceSweep(); } catch { … }   // ← retired
+
+  // Claude OAuth credential sync — keeps the claudeAiOauth bundle converged
+  // across ~/.claude and every per-session CLAUDE_CONFIG_DIR fork so rotating
+  // refresh tokens never mutually invalidate (the every-terminal-relogin
+  // cascade, claude-credential-sync-2026-06-10). Flag is consulted per pass.
+  try {
+    startClaudeCredentialSync({ isEnabled: () => getFlag(FLAGS.CLAUDE_CRED_SYNC) });
+  } catch (e) {
+    console.warn('[claude-cred-sync] failed to start:', (e as Error)?.message ?? e);
+  }
 
   // TTL-based row expiry. Replaces ad-hoc lazy-deletes scattered across
   // operator-scan-lock, operator-claims, harness_status stalled-detection,
