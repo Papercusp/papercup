@@ -21,10 +21,14 @@ export interface UsageSample {
   bucketKey: string;
   provider: string;
   modelClass: string;
-  source: 'headers' | 'jsonl';
+  /** 'headers' (in-process meridian) | 'jsonl' (subprocess result) | 'interactive'
+      (local Claude Code transcript ingest — token-usage-reduction-audit P-001). */
+  source: 'headers' | 'jsonl' | 'interactive';
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
+  /** Prompt-cache WRITE tokens (1.25× input price) — migration 210. */
+  cacheCreationTokens?: number;
   costUsd?: number;
   /** Per-run model id (migration 170) — enables estimated pricing + attribution. */
   model?: string;
@@ -49,6 +53,7 @@ export interface UsageBucketSummary {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   spendUsd: number;
   /** (1 - remaining/limit) × 100 from the most-recent header sample; null when no ceiling known. */
   usagePct: number | null;
@@ -61,6 +66,7 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
   spendUsd: number;
   buckets: UsageBucketSummary[];
 }
@@ -89,12 +95,12 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
     await sql`
       INSERT INTO ${sql(TABLE)}
         (workspace_id, ts, bucket_key, provider, model_class, source,
-         input_tokens, output_tokens, cache_read_tokens, cost_usd,
+         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
          model, cost_source, harness_slug, run_id, role,
          rl_requests_limit, rl_requests_remaining, rl_tokens_limit, rl_tokens_remaining, rl_reset_at)
       VALUES (
         ${ws}, ${Date.now()}, ${sample.bucketKey}, ${sample.provider}, ${sample.modelClass}, ${sample.source},
-        ${n(sample.inputTokens)}, ${n(sample.outputTokens)}, ${n(sample.cacheReadTokens)}, ${costUsd},
+        ${n(sample.inputTokens)}, ${n(sample.outputTokens)}, ${n(sample.cacheReadTokens)}, ${n(sample.cacheCreationTokens)}, ${costUsd},
         ${sample.model ?? null}, ${costSource}, ${sample.harnessSlug ?? null}, ${sample.runId ?? null}, ${sample.role ?? null},
         ${n(sample.rlRequestsLimit)}, ${n(sample.rlRequestsRemaining)}, ${n(sample.rlTokensLimit)}, ${n(sample.rlTokensRemaining)}, ${n(sample.rlResetAt)}
       )
@@ -111,7 +117,13 @@ export async function recordUsageHeaders(
   provider: string,
   modelClass: string,
   headers: Record<string, string | undefined>,
-  tokens?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number },
+  tokens?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    costUsd?: number;
+  },
 ): Promise<void> {
   const h: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(headers)) h[k.toLowerCase()] = v;
@@ -152,7 +164,13 @@ export async function recordUsageTokens(
   bucketKey: string,
   provider: string,
   modelClass: string,
-  usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number },
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    costUsd?: number;
+  },
 ): Promise<void> {
   if (
     usage.inputTokens === undefined &&
@@ -172,6 +190,7 @@ interface Row {
   input_tokens: string | null;
   output_tokens: string | null;
   cache_read_tokens: string | null;
+  cache_creation_tokens: string | null;
   cost_usd: number | null;
   rl_tokens_limit: string | null;
   rl_tokens_remaining: string | null;
@@ -191,6 +210,7 @@ export async function summarizeUsage(windowMs = 60 * 60 * 1000): Promise<UsageSu
              SUM(COALESCE(input_tokens, 0)) AS input_tokens,
              SUM(COALESCE(output_tokens, 0)) AS output_tokens,
              SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
+             SUM(COALESCE(cache_creation_tokens, 0)) AS cache_creation_tokens,
              SUM(COALESCE(cost_usd, 0)) AS cost_usd
         FROM ${sql(TABLE)}
        WHERE workspace_id = ${ws} AND ts >= ${since}
@@ -211,17 +231,20 @@ export async function summarizeUsage(windowMs = 60 * 60 * 1000): Promise<UsageSu
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let spendUsd = 0;
   const buckets: UsageBucketSummary[] = rows.map((r) => {
     const c = Number(r.calls);
     const it = Number(r.input_tokens ?? 0);
     const ot = Number(r.output_tokens ?? 0);
     const crt = Number(r.cache_read_tokens ?? 0);
+    const cct = Number(r.cache_creation_tokens ?? 0);
     const cost = Number(r.cost_usd ?? 0);
     calls += c;
     inputTokens += it;
     outputTokens += ot;
     cacheReadTokens += crt;
+    cacheCreationTokens += cct;
     spendUsd += cost;
     const limit = r.rl_tokens_limit !== null ? Number(r.rl_tokens_limit) : null;
     const remaining = r.rl_tokens_remaining !== null ? Number(r.rl_tokens_remaining) : null;
@@ -235,11 +258,12 @@ export async function summarizeUsage(windowMs = 60 * 60 * 1000): Promise<UsageSu
       inputTokens: it,
       outputTokens: ot,
       cacheReadTokens: crt,
+      cacheCreationTokens: cct,
       spendUsd: cost,
       usagePct,
       rlResetAt: r.rl_reset_at !== null ? Number(r.rl_reset_at) : null,
     };
   });
 
-  return { windowMs, calls, inputTokens, outputTokens, cacheReadTokens, spendUsd, buckets };
+  return { windowMs, calls, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, spendUsd, buckets };
 }

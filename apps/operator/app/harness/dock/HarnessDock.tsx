@@ -164,7 +164,7 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   // the dock is wedged.
   useLayoutResetShortcut(() => {
     restoredOnceRef.current = false;
-    void reset();
+    void reset().catch((err) => console.error('[HarnessDock] reset failed:', err));
   });
   // Plugin panels — registers in panelRegistry via /api/plugins. Hot-swap
   // (§8.3) handles registration that lands after layout hydration.
@@ -289,7 +289,9 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   useEffect(() => {
     const onResetLayout = () => {
       restoredOnceRef.current = false;
-      void reset();
+      // Surface failures — a rejected reset (e.g. the IPC 204 null-body bug)
+      // previously vanished here and the dock silently kept the old layout.
+      void reset().catch((err) => console.error('[HarnessDock] reset failed:', err));
     };
     const onLoadLayout = (e: Event) => {
       const detail = (e as CustomEvent<{ name?: string }>).detail;

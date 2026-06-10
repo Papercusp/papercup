@@ -833,6 +833,7 @@ export function wireOrchestratorInvokeRunner(): void {
       inputTokens: ev.inputTokens,
       outputTokens: ev.outputTokens,
       cacheReadTokens: ev.cacheReadTokens,
+      cacheCreationTokens: ev.cacheCreationTokens,
       costUsd: ev.costUsd,
     });
   });

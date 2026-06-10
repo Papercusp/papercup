@@ -36,6 +36,11 @@
  *     cycle for the least-recently-run enabled+idle+budgeted autoloop, with
  *     triage-routed gym ideas fed to the proposer. Seeded INACTIVE
  *     (lib/gym/seed-gym-routine.ts).
+ *   - `system:interactive-usage-ingest` + `system:token-weekly-report` —
+ *     token-usage-reduction-audit-2026-06-09 P-001/P-003. Tail local Claude Code
+ *     transcripts into `agent_usage_samples` (source='interactive'); broadcast a
+ *     week-over-week token/spend report. Both SQL/FS-only (no LLM calls); seeded
+ *     INACTIVE (seed-token-telemetry-routines.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -46,3 +51,5 @@ import '../../scout/register-scout-action';
 import './session-dir-gc-action';
 import './wake-brain-action';
 import './gym-actions';
+import '../../interactive-usage/interactive-usage-action';
+import './token-report-action';
