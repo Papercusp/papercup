@@ -14,7 +14,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 
-const SLUG_RE = /^[a-z0-9._-]+$/i;
+// No dots: the slug feeds a schema IDENTIFIER below, and a dot would survive
+// into it (postgres-js splits dotted identifiers into qualified parts) —
+// harness slugs are [a-z0-9-] per migration 044's derivation (audit P-029).
+const SLUG_RE = /^[a-z0-9_-]+$/i;
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 export default defineTool({
@@ -42,8 +45,10 @@ export default defineTool({
     }
     // Per-harness schemas are `harness_<lower-slug, hyphens→underscores>`
     // (migration 044's `'harness_' || lower(replace(slug,'-','_'))`). Slug
-    // is validated above; identifier embedding via ctx.tx() is safe.
-    const schemaIdent = ctx.tx(`harness_${args.slug.toLowerCase().replace(/-/g, '_')}`);
+    // is validated above; the catch-all replace additionally guarantees the
+    // identifier is a single plain segment (resources/harness/issues.ts
+    // pattern, audit P-029).
+    const schemaIdent = ctx.tx(`harness_${args.slug.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
     const statusFilter = args.status === 'all' ? null : args.status;
     const featureFilter = args.feature_id ?? null;
     let rows: Array<Record<string, unknown>> = [];

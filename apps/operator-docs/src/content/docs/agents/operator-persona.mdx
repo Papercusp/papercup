@@ -47,7 +47,7 @@ Conv AI minutes.
 | Replan | `HarnessDashboard.replanHarness` | `"Replanning {slug}."` | "Still scoping." (30s, 1×) | "Replan done — N added, M deprecated." (with PG counts from new `/scoper-result/<ID>` endpoint) |
 | Cleanup | `HarnessDashboard.cleanupHarness` | "Cleaning up." | "Still pruning." (30s, 1×) | "Cleanup done — M deprecated." |
 | Supervisor | command palette `supervisor` | "Running supervisor." | "Still reviewing." (30s, 1×) | `Supervisor: &lt;outcome&gt;` |
-| Provision | `ForkProvisioningProgress` | `"Provisioning {plugin}."` | "Still working." (60s, max 4×) | "Provisioning complete." / `Provisioning failed: &lt;reason&gt;` |
+| Provision | _no live caller_ (`ForkProvisioningProgress` retired 2026-06-10 with the snapshot system; policy kind kept in `op-narration-policy.ts`) | `"Provisioning {plugin}."` | "Still working." (60s, max 4×) | "Provisioning complete." / `Provisioning failed: &lt;reason&gt;` |
 | Smoke test | (caller wires) | (silent) | — | `Smoke test: &lt;reason&gt;` |
 | Scan | (caller wires) | (silent) | — | (silent unless suggestions surfaced) |
 | Delegate | `OperatorDelegationListener` | (silent — voice already said "looking into that") | "Still researching." → "Still on it." → "Still working through it." (30s, max 3×) | "Delegate finished — details in the panel." |

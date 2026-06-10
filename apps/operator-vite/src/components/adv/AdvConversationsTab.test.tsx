@@ -168,6 +168,26 @@ describe('AdvConversationsTab — simplified design', () => {
     expect(screen.getByText(/Question & discussion threads/i)).toBeTruthy();
   });
 
+  // D-008 (conversations-tab-simplify-2026-06-08): the per-view one-liners are
+  // THE ratified copy, including the two P-009 deltas (Deliberations +
+  // Agent chats). Pinned exactly so the next copy churn is caught at review.
+  it('renders the ratified D-008 one-liner for every view', () => {
+    const FINAL_DESCS: Record<string, string> = {
+      threads: 'Questions & discussions — reply, accept, promote.',
+      deliberations: 'Group decisions — proposals and votes.',
+      agentchats: 'What each pipeline agent said, with token + cost detail.',
+      messages: 'Work-item-scoped agent → agent messages.',
+      operator: 'Your chat sessions with the operator.',
+      feed: 'Raw coordination events, newest first.',
+    };
+    for (const [view, desc] of Object.entries(FINAL_DESCS)) {
+      nuqsState.conv = view;
+      render(<AdvConversationsTab />);
+      expect(screen.getByText(desc)).toBeTruthy();
+      cleanup();
+    }
+  });
+
   it('shows Activity log as the secondary view with grouped filters', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);

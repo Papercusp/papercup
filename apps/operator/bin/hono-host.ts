@@ -57,13 +57,17 @@ runBootstrap();
 
 // Port/host: `PAPERCUSP_HONO_PORT`/`PAPERCUSP_BIND_HOST` are the explicit
 // knobs (dev). The packaged desktop's Tauri main spawns the sidecar with
-// the generic `PORT`/`HOSTNAME` it already sets for every sidecar — accept
-// those as fallbacks so G4 needs no extra env wiring.
+// the generic `PORT` it already sets for every sidecar — accept that as a
+// fallback so G4 needs no extra env wiring. The bind host is deliberately
+// NOT read from `HOSTNAME`: that generic var is routinely the machine's
+// name in shells/containers, which silently turned the default into a
+// non-loopback bind (audit P-027). Binding off-loopback now requires the
+// explicit `PAPERCUSP_BIND_HOST` opt-in. (The packaged desktop set
+// HOSTNAME=127.0.0.1 anyway, so it is unaffected.)
 const port = Number(
   process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070,
 );
-const hostname =
-  process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
+const hostname = process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1';
 
 // Export the resolved port so selfUrl() builds correct server-side
 // self-fetch origins inside this host (the operator brain's agentmcp

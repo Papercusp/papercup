@@ -24,13 +24,13 @@ import type { JSONSchemaType } from 'ajv';
 export function makeAjvResolver<T = Record<string, unknown>>(schema: object) {
   // Cast: plugin schemas are loose JSON Schema, not JSONSchemaType<T>.
   // The resolver accepts the looser shape at runtime.
-  return ajvResolver<T>(
-    schema as JSONSchemaType<T>,
-    {
-      formats: fullFormats,
-    },
-    {
-      mode: 'async',
-    },
-  );
+  //
+  // No `mode: 'async'`: @hookform/resolvers/ajv compiles `$async: true` in
+  // that mode, and ajv async validators return a Promise (always truthy) —
+  // the resolver then reports `errors: {}` for INVALID data and the real
+  // failure escapes as an unhandled rejection. Plugin schemas are plain
+  // synchronous JSON Schema; sync mode is the only correct one here.
+  return ajvResolver<T>(schema as JSONSchemaType<T>, {
+    formats: fullFormats,
+  });
 }

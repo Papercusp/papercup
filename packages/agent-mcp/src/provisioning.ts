@@ -15,6 +15,18 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
+
+/**
+ * Tell every live auth cache (auth.ts LISTEN) that this principal's
+ * capabilities changed. Runs inside the write tx — PG queues the NOTIFY
+ * and delivers it on commit (dropped on rollback).
+ */
+type Tx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
+function notifyPrincipalChanged(tx: Tx, workspaceId: string, slug: string): Promise<unknown> {
+  const payload = JSON.stringify({ workspace_id: workspaceId, slug });
+  return tx`SELECT pg_notify(${PRINCIPAL_INVALIDATE_CHANNEL}, ${payload})`;
+}
 
 export interface ProvisionSystemPrincipalArgs {
   workspaceId: string;

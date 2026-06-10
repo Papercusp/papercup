@@ -225,11 +225,12 @@ export async function runBeekeeperBattery(config: BeekeeperConfig, deps: Beekeep
     }
   }
 
-  const passedCases = outcomes.filter((o) => o.status === 'scored').length;
+  const scored = outcomes.filter((o) => o.status === 'scored');
+  const passedCases = scored.length;
+  // Mean over SCORED outcomes only — when every run errored/rate-limited the
+  // divisor is 0 and the old outcomes.length guard still produced 0/0 = NaN.
   const meanComposite =
-    outcomes.length > 0
-      ? outcomes.reduce((sum, o) => sum + o.composite, 0) / outcomes.filter((o) => o.status === 'scored').length
-      : 0;
+    scored.length > 0 ? scored.reduce((sum, o) => sum + o.composite, 0) / scored.length : 0;
 
   return {
     instanceId,

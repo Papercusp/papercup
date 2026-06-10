@@ -305,6 +305,40 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     expect(ids).toContain(freshId);     // kept (drained < 24h ago)
   });
 
+  it('GC is SCOPED: a drain only GCs its own (workspace, harness) rows — other scopes keep their old-drained rows (EI-125)', async () => {
+    const now = Date.now();
+    const oldDrainedAt = now - OUTBOX_GC_AGE_MS - 60_000;
+    // Old-drained rows in THREE scopes: mine, same-ws other-harness, other-ws.
+    const mineOld = await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated', op: 'put', key: 'F-MINE-OLD',
+      row: featureRow('F-MINE-OLD'), drained_at: oldDrainedAt,
+    });
+    const otherHarnessOld = await seedOutbox(db.sql, {
+      harness_slug: 'other', table_name: 'harness_features_consolidated', op: 'put',
+      key: 'F-OTHER-OLD', row: featureRow('F-OTHER-OLD'), drained_at: oldDrainedAt,
+    });
+    const otherWsOld = await seedOutbox(db.sql, {
+      workspace_id: 'other_ws', table_name: 'harness_features_consolidated', op: 'put',
+      key: 'F-OTHERWS-OLD', row: featureRow('F-OTHERWS-OLD'), drained_at: oldDrainedAt,
+    });
+
+    // Drain as (WS, SLUG): only mineOld may be GC'd.
+    await drainOutboxOnce(makeFakeHandle().handle, db.sql, { now });
+    let ids = (await db.sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.substrate_outbox ORDER BY id`).map((r) => Number(r.id));
+    expect(ids).not.toContain(mineOld);        // own scope GC'd
+    expect(ids).toContain(otherHarnessOld);    // other harness untouched
+    expect(ids).toContain(otherWsOld);         // other workspace untouched
+
+    // The other-harness drain GCs its own row; the other-ws row still survives.
+    const otherHandle = makeFakeHandle({ harnessSlug: 'other' }).handle;
+    await drainOutboxOnce(otherHandle, db.sql, { now });
+    ids = (await db.sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.substrate_outbox ORDER BY id`).map((r) => Number(r.id));
+    expect(ids).not.toContain(otherHarnessOld);
+    expect(ids).toContain(otherWsOld);
+  });
+
   // ── startOutboxDrain ─────────────────────────────────────────────────────────
   it('startOutboxDrain runs an initial catch-up drain immediately', async () => {
     await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-INIT', row: featureRow('F-INIT') });

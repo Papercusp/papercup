@@ -10,10 +10,11 @@
  *   - kind='pi'      → harness_shared.pi_sessions.capabilities (only if
  *     ended_at IS NULL).
  *
- * In-memory cap state is keyed by (workspace_id, principal_slug). It's
- * loaded from disk into memory on first lookup; revocation events
- * (handled by the operator's permissions UI) emit a NOTIFY that the
- * server LISTENs to in order to invalidate the cache.
+ * In-memory cap state is keyed by (workspace_id, principal_slug) in a
+ * bounded TTL+LRU cache (negative results included). Capability writes
+ * (provisioning.ts) emit a NOTIFY on PRINCIPAL_INVALIDATE_CHANNEL that
+ * this module LISTENs to in order to invalidate eagerly; the TTL bounds
+ * staleness if the LISTEN is unavailable.
  */
 
 import { createHash } from 'node:crypto';
@@ -35,9 +36,95 @@ function rolesForPrincipal(kind: 'system' | 'pi', slug: string): ReadonlySet<str
   return undefined;
 }
 
-const CACHE = new Map<string, Principal>();
+/**
+ * NOTIFY channel for principal capability changes. Emitters live in
+ * provisioning.ts (the single capability write site) — `pg_notify` inside the
+ * write tx, so the signal is delivered on commit and dropped on rollback.
+ * Payload: JSON `{ workspace_id, slug }` (slug as stored in token_index,
+ * e.g. "system:operator" / "pi:<session_id>").
+ */
+export const PRINCIPAL_INVALIDATE_CHANNEL = 'agent_mcp_principal_invalidate';
+
+/** Positive entries: revocation lag is bounded by this even if LISTEN is down. */
+const CACHE_TTL_MS = 60_000;
+/** Negative entries (ended session / missing row / hash mismatch): short, so a
+ *  just-provisioned principal racing a probe isn't blocked for long. */
+const NEGATIVE_TTL_MS = 15_000;
+/** LRU bound — pi sessions accumulate one entry each (EI-79 contributor). */
+const CACHE_MAX = 512;
+
+type CacheEntry = { principal: Principal | null; expiresAt: number };
+const CACHE = new Map<string, CacheEntry>();
+
 function cacheKey(workspaceId: string, slug: string): string {
   return `${workspaceId}:${slug}`;
+}
+
+function cacheGet(ck: string): CacheEntry | undefined {
+  const entry = CACHE.get(ck);
+  if (!entry) return undefined;
+  if (Date.now() >= entry.expiresAt) {
+    CACHE.delete(ck);
+    return undefined;
+  }
+  // Refresh LRU recency — Map iterates in insertion order, so re-inserting
+  // moves the entry to the tail and eviction below always takes the head.
+  CACHE.delete(ck);
+  CACHE.set(ck, entry);
+  return entry;
+}
+
+function cacheSet(ck: string, principal: Principal | null): void {
+  if (!CACHE.has(ck) && CACHE.size >= CACHE_MAX) {
+    const oldest = CACHE.keys().next().value;
+    if (oldest !== undefined) CACHE.delete(oldest);
+  }
+  CACHE.delete(ck);
+  CACHE.set(ck, {
+    principal,
+    expiresAt: Date.now() + (principal ? CACHE_TTL_MS : NEGATIVE_TTL_MS),
+  });
+}
+
+let listenerStarted = false;
+let listenerWarned = false;
+
+/**
+ * Start the LISTEN that makes `invalidate()` fire on capability writes.
+ * Lazy (first resolveBearer) + idempotent; fails open — without it the TTL
+ * still bounds revocation lag at CACHE_TTL_MS instead of "until restart".
+ */
+function ensureInvalidationListener(): void {
+  if (listenerStarted) return;
+  listenerStarted = true;
+  const { sql } = getOrgPg();
+  // Unit tests (and any non-postgres-js stand-in) mock sql as a bare tagged
+  // template without .listen — skip silently there.
+  const listen = (sql as unknown as { listen?: unknown }).listen;
+  if (typeof listen !== 'function') return;
+  void sql
+    .listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload: string) => {
+      try {
+        const parsed = JSON.parse(payload) as { workspace_id?: unknown; slug?: unknown };
+        if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
+          invalidate(parsed.workspace_id, parsed.slug);
+          return;
+        }
+      } catch {
+        // fall through to the safe fallback
+      }
+      CACHE.clear();
+    })
+    .catch((err: unknown) => {
+      listenerStarted = false; // retry on a later resolve
+      if (!listenerWarned) {
+        listenerWarned = true;
+        console.warn(
+          '[agent-mcp auth] principal-invalidate LISTEN failed (TTL still bounds staleness):',
+          err,
+        );
+      }
+    });
 }
 
 function bearerHash(bearer: string): string {
@@ -73,13 +160,19 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
     return null;
   }
 
-  // Cache check.
+  ensureInvalidationListener();
+
+  // Cache check — negative entries (ended sessions etc.) are cached too, so a
+  // dead bearer hammering the server doesn't re-load capabilities every call.
   const ck = cacheKey(workspaceId, slug);
-  const cached = CACHE.get(ck);
-  if (cached) return cached;
+  const cached = cacheGet(ck);
+  if (cached) return cached.principal;
 
   const capabilities = await loadCapabilities(workspaceId, kind, slug, bearerHash(bearer));
-  if (!capabilities) return null;
+  if (!capabilities) {
+    cacheSet(ck, null);
+    return null;
+  }
 
   // Bearer-token-resolved principals are 'trusted' — the bearer hash was
   // verified against the row in PG. authMethod stays 'bearer-token'
@@ -94,7 +187,7 @@ export async function resolveBearer(bearer: string): Promise<Principal | null> {
     trust: 'trusted',
     ...(roles ? { roles } : {}),
   };
-  CACHE.set(ck, principal);
+  cacheSet(ck, principal);
   return principal;
 }
 
@@ -145,4 +238,13 @@ export function invalidate(workspaceId: string, slug: string): void {
 /** Test-only. */
 export function _resetAuthCacheForTests(): void {
   CACHE.clear();
+  listenerStarted = false;
+  listenerWarned = false;
 }
+
+/** Test-only — TTL/bound constants for the cache tests. */
+export const _authCacheTuning = {
+  ttlMs: CACHE_TTL_MS,
+  negativeTtlMs: NEGATIVE_TTL_MS,
+  max: CACHE_MAX,
+} as const;

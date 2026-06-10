@@ -31,6 +31,20 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+/**
+ * Shell-metacharacter guard for the verify step (audit P-030): test commands
+ * can be doc-harvested (arbitrary README text), so verification runs them
+ * WITHOUT a shell as a whitespace-split argv. Returns null when the command
+ * needs shell syntax — the caller records it as not-auto-verified instead of
+ * executing it. Exported for tests.
+ */
+const SHELL_META_RE = /[|&;<>$`\\!*?(){}[\]~#\n\r'"]/;
+export function splitTestCommandArgv(command: string): string[] | null {
+  if (SHELL_META_RE.test(command)) return null;
+  const argv = command.trim().split(/\s+/).filter(Boolean);
+  return argv.length ? argv : null;
+}
+
 /** Max bytes of each harvested instruction doc folded into the override. */
 const HARVEST_CAP = 8_000;
 /** Tail of test output captured on a non-zero / failed verify run. */
@@ -329,13 +343,21 @@ export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): Dete
   if (!testCommand) notes.push('no test command detected from ecosystem or instruction docs');
 
   // ── VERIFY the test command by running it once (D-023) ─────────────────────
+  // The command can be doc-HARVESTED (arbitrary README text), so it runs
+  // WITHOUT a shell as a plain argv (audit P-030). Ecosystem-detected commands
+  // (`npm test`, `cargo test`, …) split cleanly; anything needing shell syntax
+  // is left unverified rather than handed to /bin/sh.
   const runTests = opts.runTests !== false;
-  if (testCommand && runTests) {
+  const argv = testCommand && runTests ? splitTestCommandArgv(testCommand.command) : null;
+  if (testCommand && runTests && !argv) {
+    notes.push(
+      `test command not auto-verified (shell metacharacters; harvested commands run without a shell): ${testCommand.command}`,
+    );
+  } else if (testCommand && runTests && argv) {
     const timeoutMs = opts.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
     const startedAt = Date.now();
-    const res = spawnSync(testCommand.command, {
+    const res = spawnSync(argv[0], argv.slice(1), {
       cwd: repoPath,
-      shell: true,
       timeout: timeoutMs,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
@@ -346,7 +368,8 @@ export function detectFromRepo(repoPath: string, opts: DetectOptions = {}): Dete
     testCommand.exitCode = typeof res.status === 'number' ? res.status : null;
     testCommand.verified = res.status === 0;
     if (!testCommand.verified) {
-      const combined = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim();
+      const spawnErr = res.error && !timedOut ? `\n[spawn error] ${res.error.message}` : '';
+      const combined = `${res.stdout ?? ''}\n${res.stderr ?? ''}${spawnErr}`.trim();
       testCommand.output = combined.slice(-OUTPUT_TAIL);
       notes.push(
         timedOut

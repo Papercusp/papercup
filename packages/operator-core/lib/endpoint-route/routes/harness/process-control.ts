@@ -15,6 +15,7 @@ import { readdirSync, readlinkSync, readFileSync } from 'node:fs';
 import { resolvePhasedProject, isHarnessDriverCmdline } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -47,6 +48,9 @@ const pause = defineTool({
   path: '/harness/:slug/pause',
   auth: 'public',
   async handler(req, ctx) {
+    // Signals arbitrary PIDs under the project path — loopback-only (audit P-025).
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const pids = findHarnessPids(project.path);
@@ -63,6 +67,8 @@ const unpause = defineTool({
   path: '/harness/:slug/unpause',
   auth: 'public',
   async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const pids = findHarnessPids(project.path);
@@ -79,6 +85,8 @@ const stop = defineTool({
   path: '/harness/:slug/stop',
   auth: 'public',
   async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     try {

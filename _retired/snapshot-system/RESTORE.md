@@ -36,7 +36,12 @@ the one remaining job — the **reproducible clone** — became the lightweight
 - **`operator-vite-routes/`** ← `apps/operator-vite/src/routes/` — `snapshots/` +
   `installed-snapshots.tsx` (the SPA snapshot routes).
 - **`operator-app-ui/`** ← `apps/operator/app/` — `snapshots/` + `installed-snapshots/`
-  (the `SnapshotsClient` / `InstalledSnapshotsClient` / `ForkClient` page implementations).
+  (the `SnapshotsClient` / `InstalledSnapshotsClient` / `ForkClient` page implementations),
+  plus `_components/ForkCompletionForm.tsx` + `_components/ForkProvisioningProgress.tsx`
+  (the fork completion/provisioning flow ForkClient rendered — moved 2026-06-10, audit
+  P-059; they were missed in the Phase B sweep). Note `ProvisionStream.tsx` stayed live
+  in `app/_components/` — it is the structured-streams D-003 deliverable for the live
+  `/api/provision/stream` feed, not snapshot-specific.
 - **`operator-public/`** ← `apps/operator-public/src/routes/` — `blobs.ts` (the R2
   snapshot-tarball blob routes) + `snapshot-blobs.test.ts`.
 - **`apps-operator-test/`** ← `apps/operator/test/` — `snapshot-index.integration.test.ts`,

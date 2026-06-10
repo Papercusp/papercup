@@ -14,6 +14,18 @@ import { buildPluginRuntime } from '../../../plugin-host';
 import type { Capability, Plugin } from '@papercusp/plugin-sdk';
 import { papercuspRoot } from '../../../papercusp-root';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
+
+/**
+ * Path-segment confinement (audit P-026): slug + plugin become directory
+ * names under papercuspRoot() via join(), so they must be single, plain
+ * segments — no dots-only names, no separators, no traversal. Mirrors the
+ * harness-slug grammar (mig 044) plus the dot npm-style plugin dirs use.
+ */
+const SAFE_SEGMENT_RE = /^(?!\.)[a-z0-9._-]+$/i;
+function isSafeSegment(s: string): boolean {
+  return SAFE_SEGMENT_RE.test(s) && !s.includes('..') && !s.includes('/') && !s.includes('\\');
+}
 
 interface ManifestShape {
   name: string;
@@ -49,8 +61,20 @@ export default defineTool({
   path: '/plugin-runtime/:slug/:plugin/*',
   auth: 'public',
   async handler(req, ctx) {
+    // The dispatcher reaches secrets/db/fetch/storage services — loopback-only
+    // (audit P-026). Legitimate callers (Tauri webview, harness agents, the
+    // operator itself) are all on-box.
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
+
     const slug = ctx.params.slug as string;
     const pluginName = ctx.params.plugin as string;
+    if (!isSafeSegment(slug) || !isSafeSegment(pluginName)) {
+      return Response.json(
+        { error: 'badIdent', detail: 'slug/plugin must be plain path segments' },
+        { status: 400 },
+      );
+    }
     // Hono's `*` wildcard captures the remainder as a single string;
     // split into service/method segments.
     const url = new URL(req.url);

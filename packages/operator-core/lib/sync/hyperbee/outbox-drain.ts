@@ -19,9 +19,10 @@
  * briefly down). This is CDC within one process — NOT polling-as-transport
  * (D-3). It also runs an immediate catch-up drain on start.
  *
- * Inline 24h GC: each drain also deletes rows drained > 24h ago, keeping the
- * outbox table small without a separate sweeper (user-approved default — open
- * question 1 in the plan).
+ * Inline 24h GC: each drain also deletes ITS OWN (workspace, harness) rows
+ * drained > 24h ago, keeping the outbox table small without a separate sweeper
+ * (user-approved default — open question 1 in the plan). The GC is scoped per
+ * handle so N booted harnesses don't run N concurrent global DELETEs (EI-125).
  *
  * NOT wired into boot here — Stage 5 calls `startOutboxDrain` from boot-all.ts.
  */
@@ -108,13 +109,15 @@ export async function drainOutboxOnce(
   const now = opts.now ?? Date.now();
   const batch = opts.batch ?? DEFAULT_DRAIN_BATCH;
 
-  // Inline 24h GC — keep the table small. BOUNDED + BATCHED: a backlog of
-  // millions of drained rows must NOT become one unbounded DELETE — that single
-  // statement never commits before the memory-watchdog recycles the host
-  // (~every 12 min), so the backlog grows without bound (this produced a 102 GB
-  // substrate_outbox, 2026-06-08). Instead delete in capped batches, each its
-  // own committed statement so progress survives a restart, up to a bounded
-  // number per pass; the drain loop re-runs until the backlog clears.
+  // Inline 24h GC — keep the table small. SCOPED to this handle's (workspace,
+  // harness): every booted harness runs its own drain loop, so an unscoped GC
+  // means N concurrent global DELETEs fighting over the same rows + locks
+  // (root cause of EI-125 alongside the unbounded DELETE — this produced a
+  // 102 GB substrate_outbox, 2026-06-08). Scoping also rides the
+  // (workspace_id, harness_slug, drained_at, id) drain index. BOUNDED +
+  // BATCHED: each capped batch is its own committed statement so progress
+  // survives the memory-watchdog recycle (~every 12 min); the drain loop
+  // re-runs until the backlog clears.
   // Best-effort: a GC failure must not block the drain, so swallow it.
   try {
     for (let i = 0; i < OUTBOX_GC_MAX_BATCHES; i++) {
@@ -122,7 +125,9 @@ export async function drainOutboxOnce(
         WITH del AS (
           SELECT id
             FROM harness_shared.substrate_outbox
-           WHERE drained_at IS NOT NULL
+           WHERE workspace_id = ${handle.workspaceId}
+             AND harness_slug = ${handle.harnessSlug}
+             AND drained_at IS NOT NULL
              AND drained_at < ${now - OUTBOX_GC_AGE_MS}
            LIMIT ${OUTBOX_GC_BATCH}
         )

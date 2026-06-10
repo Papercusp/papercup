@@ -89,7 +89,10 @@ async function sweepAgentRunsRunning(): Promise<void> {
       // Per-harness schema reach via search_path. Use postgres-js raw exec
       // on the org pool with set_config for the search path.
       const { sql } = getOrgPg();
-      const schema = `harness_${proj.slug.replace(/-/g, '_')}`;
+      // Ident hygiene (audit P-029): the slug comes from the registry, but it
+      // still feeds a SQL identifier — sanitize to one plain segment like
+      // resources/harness/issues.ts does.
+      const schema = `harness_${proj.slug.replace(/[^a-z0-9_]/gi, '_')}`;
       // Skip if the schema doesn't exist yet (uninstalled harness).
       const exists = await sql<{ exists: boolean }[]>`
         SELECT EXISTS (
@@ -97,9 +100,12 @@ async function sweepAgentRunsRunning(): Promise<void> {
         ) AS exists
       `;
       if (!exists[0]?.exists) continue;
+      // Identifier is sanitized above; the cutoff travels as a bound
+      // parameter, not string interpolation (audit P-029).
       await sql.unsafe(
         `UPDATE ${schema}.agent_runs SET running = false
-          WHERE running = true AND updated_ts < ${cutoff}`,
+          WHERE running = true AND updated_ts < $1`,
+        [cutoff],
       );
     } catch (e) {
       console.warn(`[harness-status-sweep] agent_runs sweep failed for ${proj.slug}:`, (e as Error)?.message ?? e);

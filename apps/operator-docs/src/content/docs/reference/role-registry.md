@@ -12,7 +12,7 @@ sidebar:
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/prompts/<role>.md`. Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (21 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (39 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (22 built-in roles) + `libs/papercusp/packages/harness/prompts/*.md` (41 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -20,7 +20,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 
 | Role | Persona | Summary |
 |---|---|---|
-| `scoper` | ✓ | (lowercase, alnum + hyphen/underscore — server enforces and returns 400 on violation). Aim for 0–4 tags per feature; more than 4 dilutes signal. |
+| `scoper` | ✓ | You are the **SCOPER** in a multi-agent harness. You translate "what we want" |
 | `architect` | ✓ | You are the **ARCHITECT** in an autonomous coding harness. |
 | `worker` | ✓ | You are the **WORKER** in a 3-agent autonomous coding harness. |
 | `validator` | ✓ | You are the **VALIDATOR** in a 3-agent autonomous coding harness. |
@@ -31,6 +31,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `operator` | — | chat/runtime surface — no spawn persona |
 | `oracle` | — | chat/runtime surface — no spawn persona |
 | `bee` | ✓ | Bee (generic Hive worker) — You are a **bee** — a generic implementation agent in the Hive, placed and woken by |
+| `planner` | ✓ | Planner (interactive plan author) — You are a **planner** — an interactive, owner-driven session for authoring and |
 | `orchestrator` | — | chat/runtime surface — no spawn persona |
 | `promote` | ✓ | Promote agent — You promote a plan's `## Promote` policy into the harness as features — **all |
 | `security-reviewer` | ✓ | You are the **SECURITY-REVIEW EXPERT** for this harness. |
@@ -61,6 +62,7 @@ These have a spawn persona but are not `AGENT_ROLES` entries — blueprint decid
 | `migration-director` | Migration Director (per-migration-task durable pipeline) — You are the **migration-director** for a SINGLE migration-task inside a durable |
 | `migration-verifier` | Migration Verifier — You verify that a migration task — the one named in `FEATURE_ID` — is **green**: |
 | `proposer` | Proposer (target-blueprint edit synthesizer) — You are the **proposer** for the `gym` blueprint. From the judged eval-matrix, you |
+| `release-fixer` | You are the **Release-Fixer** — Papercusp's automated green-checkpoint gate fixer. |
 | `research-director` | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable |
 | `researcher` | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written |
 | `review-director` | Review Director (per-review-task durable pipeline) — You are the **review-director** for a SINGLE review-task inside a durable pipeline |

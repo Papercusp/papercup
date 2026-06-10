@@ -130,8 +130,8 @@ const VIEW_DEFS: ReadonlyArray<{
   Icon: typeof MessageCircle;
 }> = [
   { id: 'threads', label: 'Threads', desc: 'Questions & discussions — reply, accept, promote.', Icon: MessageCircle },
-  { id: 'deliberations', label: 'Deliberations', desc: 'Threaded coord deliberations and votes.', Icon: MessagesSquare },
-  { id: 'agentchats', label: 'Agent chats', desc: 'Pipeline transcripts per role, tokens and cost.', Icon: Bot },
+  { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — proposals and votes.', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chats', desc: 'What each pipeline agent said, with token + cost detail.', Icon: Bot },
   { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
   { id: 'operator', label: 'Operator', desc: 'Your chat sessions with the operator.', Icon: UserRound },
   { id: 'feed', label: 'Activity log', desc: 'Raw coordination events, newest first.', Icon: Radio },

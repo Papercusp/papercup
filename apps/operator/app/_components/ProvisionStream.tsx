@@ -15,8 +15,11 @@
  * projection + raw-line ANSI renderer live in `provision-stream-steps.ts`
  * (pure, unit-tested); this component is now just the wiring.
  *
- * Public props are unchanged so callers (ForkProvisioningProgress) are
- * untouched. Calls onDone(outcome) when the server emits a terminal event.
+ * Currently has no mounted caller: its last consumer (the snapshot-fork
+ * ForkProvisioningProgress flow) was retired with the snapshot system
+ * (_retired/snapshot-system/). Kept as the canonical viewer for the live
+ * /api/provision/stream feed. Calls onDone(outcome) when the server emits a
+ * terminal event.
  */
 
 import { StructuredStreamView } from './StructuredStreamView';
