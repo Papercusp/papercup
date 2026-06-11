@@ -17,7 +17,10 @@ import type { MiddlewareHandler } from 'hono';
 const LOCAL_API_CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'authorization, content-type, if-match, last-event-id, x-requested-with',
+    // x-papercusp-workspace: per-window workspace context — stamped on every
+    // operator API fetch, incl. crossOriginUrl()'s sibling-loopback shards;
+    // a preflight that disallows it blocks the whole call (2026-06-10).
+    'authorization, content-type, if-match, last-event-id, x-requested-with, x-papercusp-workspace',
   'Access-Control-Allow-Credentials': 'true',
   'Access-Control-Max-Age': '600',
   Vary: 'Origin, Access-Control-Request-Headers',

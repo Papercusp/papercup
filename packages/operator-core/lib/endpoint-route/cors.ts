@@ -45,7 +45,18 @@ export function corsFor(origins?: readonly string[]): MiddlewareHandler {
       ? (origin) => (origin && origins.includes(origin) ? origin : '')
       : (origin) => defaultCorsOrigin(origin),
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['authorization', 'content-type', 'last-event-id', 'x-papercusp-run-id'],
+    allowHeaders: [
+      'authorization',
+      'content-type',
+      'last-event-id',
+      'x-papercusp-run-id',
+      // Per-window workspace context — stamped on EVERY operator API fetch by
+      // installWorkspaceHeaderFetch, including the deliberately cross-origin
+      // sibling-loopback calls from crossOriginUrl() (saved-prompts, git/show).
+      // Omitting it here makes those preflights strip the header and the
+      // browser block the call outright (harness-settings e2e, 2026-06-10).
+      'x-papercusp-workspace',
+    ],
     credentials: true,
     maxAge: 600,
   });

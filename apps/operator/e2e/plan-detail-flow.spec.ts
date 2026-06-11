@@ -150,8 +150,10 @@ test.describe('/admin/plans — plan detail flow', () => {
 
     await expect(page.locator('[aria-label="Plans with matching items"]')).toBeVisible();
     await expect(page.getByRole('button', { name: /New plan/ })).toBeVisible();
-    // The rail's view switcher: Plans / Inbox / Sessions.
-    await expect(page.getByRole('button', { name: 'Plans', exact: true })).toBeVisible();
+    // The rail's view switcher: Plans / Inbox / Sessions. The active view's
+    // button carries a CSS-generated "✓" badge (plans.css "selected ✓") that
+    // Chromium folds into the accessible name — so match the prefix, not exact.
+    await expect(page.getByRole('button', { name: /^Plans\b/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Inbox/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Sessions/ })).toBeVisible();
 

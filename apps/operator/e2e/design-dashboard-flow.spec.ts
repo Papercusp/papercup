@@ -148,7 +148,10 @@ const paneTab = (page: Page, pane: string) =>
 const bucketBtn = (page: Page, bucket: string) =>
   page
     .locator('[role="group"][aria-label="Filter design features by status"]')
-    .getByRole('button', { name: new RegExp(`^${bucket}\\b`) });
+    // The button's accessible name is the label IMMEDIATELY followed by its
+    // count chip ("all47", "pending0") — digits are word chars, so a \b after
+    // the label never matches when the count is non-zero. Anchor label+digits.
+    .getByRole('button', { name: new RegExp(`^${bucket}\\d*$`) });
 
 /**
  * Navigate and report whether the dashboard mounted. 'notfound' means the
