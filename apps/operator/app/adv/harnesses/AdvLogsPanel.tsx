@@ -127,17 +127,17 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
   ], []);
 
   if (!slug) {
-    return <div className="pc-adv-logs__empty">No harness slug in params.</div>;
+    return <div className="pc-advpanel__empty">No harness slug in params.</div>;
   }
 
   return (
-    <div className="pc-adv-logs">
-      <div className="pc-adv-logs__bar">
+    <div className="pc-advpanel pc-adv-logs">
+      <div className="pc-advpanel__bar">
         {LEVEL_FILTERS.map((key) => (
           <button
             key={key}
             type="button"
-            className="pc-adv-logs__chip"
+            className="pc-advpanel__chip"
             aria-pressed={filter === key}
             onClick={() => void setFilter(key)}
             style={key !== 'all' ? { color: LEVEL_ACCENT[key] } : undefined}
@@ -147,24 +147,30 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
         ))}
         <input
           type="text"
-          className="pc-adv-logs__source"
+          className="pc-advpanel__input"
           value={sourceFilter}
           onChange={(e) => void setSourceFilter(e.target.value)}
           placeholder="source filter"
           aria-label="Filter log events by source"
         />
         <Tooltip label="Refresh log">
-          <button type="button" className="pc-adv-logs__refresh" onClick={() => refresh()} aria-label="Refresh log">
-            <RefreshCw size={12} aria-hidden />
+          <button
+            type="button"
+            className="pc-advpanel__iconbtn"
+            onClick={() => refresh()}
+            disabled={loading}
+            aria-label="Refresh log"
+          >
+            <RefreshCw size={13} aria-hidden className={loading ? 'pc-advpanel__spin' : undefined} />
           </button>
         </Tooltip>
       </div>
 
       <div className="pc-adv-logs__body">
         {error ? (
-          <div className="pc-adv-logs__empty pc-adv-logs__empty--err">Failed: {error}</div>
+          <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
         ) : loading ? (
-          <div className="pc-adv-logs__empty">Loading {slug}…</div>
+          <div className="pc-advpanel__empty">Loading {slug}…</div>
         ) : (
           <RichGrid<LogRow>
             inline
@@ -174,18 +180,10 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
             columnWidths={colWidths}
             onColumnWidthsChange={setColWidths}
             getRowId={(r) => r.id}
-            headerHeight={26}
+            headerHeight={30}
             rowMinHeight={24}
-            headerStyle={{
-              background: 'var(--bg-2, rgba(255,255,255,0.045))',
-              color: 'var(--fg-mute, #7f9bb4)',
-              borderBottom: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
-              fontSize: 10,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-            }}
             empty={
-              <div className="pc-adv-logs__empty">
+              <div className="pc-advpanel__empty">
                 {events && events.length ? 'No events match the filter.' : 'No log events yet.'}
               </div>
             }
@@ -194,36 +192,6 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       </div>
 
       <style>{`
-        .pc-adv-logs { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
-        .pc-adv-logs__bar {
-          display: flex; align-items: center; gap: 4px;
-          padding: 6px 8px; flex-shrink: 0;
-          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-        }
-        .pc-adv-logs__chip {
-          padding: 2px 8px; font-size: 11px; color: var(--fg);
-          background: transparent;
-          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-          border-radius: 999px; cursor: pointer; text-transform: lowercase;
-        }
-        .pc-adv-logs__chip[aria-pressed="true"] {
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 50%);
-        }
-        .pc-adv-logs__source {
-          margin-left: 6px; flex: 1; min-width: 80px;
-          padding: 2px 8px; font-size: 11px; color: var(--fg);
-          background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-          border-radius: 6px;
-        }
-        .pc-adv-logs__source::placeholder { color: var(--fg-mute); }
-        .pc-adv-logs__refresh {
-          display: inline-flex; align-items: center; padding: 4px;
-          color: var(--fg-mute); background: transparent; border: 0;
-          border-radius: 4px; cursor: pointer;
-        }
-        .pc-adv-logs__refresh:hover { color: var(--fg); }
         .pc-adv-logs__body {
           flex: 1; min-height: 0; overflow: auto;
           font-family: ui-monospace, monospace; font-size: 11px;
@@ -239,8 +207,6 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
           font-family: ui-monospace, monospace;
           white-space: pre-wrap; word-break: break-word;
         }
-        .pc-adv-logs__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); font-family: system-ui; }
-        .pc-adv-logs__empty--err { color: var(--bad, #f87171); }
       `}</style>
     </div>
   );

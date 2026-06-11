@@ -181,24 +181,21 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
     [rows, sort],
   );
 
-  // Early returns render before the main tree's <style> mounts — inline the
-  // empty-state look so they're styled regardless.
-  const EMPTY: React.CSSProperties = { padding: 16, fontSize: 13, color: 'var(--fg-mute, #7f9bb4)' };
-  if (!slug) return <div className="pc-adv-empty" style={EMPTY}>No harness selected.</div>;
-  if (error) return <div className="pc-adv-empty" style={EMPTY}>Contributors unavailable: {error}</div>;
-  if (rows === null) return <div className="pc-adv-empty" style={EMPTY}>Loading contributors…</div>;
-  if (rows.length === 0) return <div className="pc-adv-empty" style={EMPTY}>No contributors yet.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">No harness selected.</div>;
+  if (error) return <div className="pc-advpanel__empty pc-advpanel__empty--err">Contributors unavailable: {error}</div>;
+  if (rows === null) return <div className="pc-advpanel__empty">Loading contributors…</div>;
+  if (rows.length === 0) return <div className="pc-advpanel__empty">No contributors yet.</div>;
 
   return (
-    <div className="pc-adv-contributors">
-      <div className="pc-adv-contributors__sortbar" role="tablist" aria-label="Sort contributors">
+    <div className="pc-advpanel pc-adv-contributors">
+      <div className="pc-advpanel__bar" role="tablist" aria-label="Sort contributors">
         {SORTS.map((s) => (
           <button
             key={s.key}
             type="button"
             role="tab"
             aria-selected={sort === s.key}
-            className={sort === s.key ? 'is-active' : undefined}
+            className="pc-advpanel__chip"
             onClick={() => void setSort(s.key)}
           >
             {s.label}
@@ -264,25 +261,7 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
           );
         })}
       </ul>
-      {/* This panel shipped with NO styles at all (the classes were defined
-          nowhere) — every row rendered as raw inline text. */}
       <style>{`
-        .pc-adv-contributors { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
-        .pc-adv-contributors__sortbar {
-          display: flex; gap: 4px; padding: 6px 8px; flex-shrink: 0;
-          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-        }
-        .pc-adv-contributors__sortbar button {
-          padding: 2px 10px; font-size: 11px; color: var(--fg-mute, #7f9bb4);
-          background: transparent; border: 1px solid transparent;
-          border-radius: 999px; cursor: pointer;
-        }
-        .pc-adv-contributors__sortbar button.is-active,
-        .pc-adv-contributors__sortbar button[aria-selected="true"] {
-          color: var(--fg, #e7f7ff);
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
-        }
         .pc-adv-contributors__list {
           list-style: none; margin: 0; padding: 0;
           flex: 1; min-height: 0; overflow-y: auto;

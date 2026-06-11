@@ -15,26 +15,6 @@ import { InsightsTab, type InsightsTabProps } from '../../harness/insights/Insig
 import { HarnessClaimHeader } from '../../_components/HarnessClaimHeader';
 import { useHarnessClaimStatus } from './useHarnessClaimStatus';
 
-const MSG: React.CSSProperties = { padding: 16, fontSize: 13, color: 'var(--fg-mute)' };
-
-// Flat frost retry button — a bare <button> here renders as the silver 3D OS
-// default (no globals baseline for buttons); style it on-theme inline since
-// this panel has no <style> block.
-const RETRY_BTN: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 5,
-  marginLeft: 8,
-  padding: '3px 10px',
-  fontSize: 12,
-  fontWeight: 600,
-  color: 'var(--fg-dim, #b9d4e8)',
-  background: 'var(--bg-2, rgba(255, 255, 255, 0.045))',
-  border: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
-  borderRadius: 6,
-  cursor: 'pointer',
-};
-
 export default function AdvInsightsPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const [data, setData] = useState<InsightsTabProps | null>(null);
@@ -64,18 +44,23 @@ export default function AdvInsightsPanel({ params }: PanelComponentProps) {
     };
   }, [slug, tick]);
 
-  if (!slug) return <div style={MSG}>No harness selected.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">No harness selected.</div>;
   if (error) {
     return (
-      <div style={{ ...MSG, color: 'var(--bad, #f87171)' }}>
+      <div className="pc-advpanel__empty pc-advpanel__empty--err">
         Failed to load insights: {error}{' '}
-        <button type="button" onClick={() => setTick((t) => t + 1)} style={RETRY_BTN}>
+        <button
+          type="button"
+          className="pc-advpanel__btn"
+          style={{ marginLeft: 8 }}
+          onClick={() => setTick((t) => t + 1)}
+        >
           <RefreshCw size={12} aria-hidden /> Retry
         </button>
       </div>
     );
   }
-  if (!data) return <div style={MSG}>Loading insights…</div>;
+  if (!data) return <div className="pc-advpanel__empty">Loading insights…</div>;
 
   // Overlay the real claim status onto the ProjectCard badge (P-069a) when
   // the claim-status read has landed; otherwise the insights fallback stands.
@@ -91,7 +76,7 @@ export default function AdvInsightsPanel({ params }: PanelComponentProps) {
     : data;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div className="pc-advpanel">
       {claim && (
         <div style={{ padding: '12px 16px 0' }}>
           <HarnessClaimHeader

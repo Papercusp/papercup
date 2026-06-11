@@ -115,12 +115,12 @@ export default function AdvAgentsPanel({ params }: PanelComponentProps) {
   );
 
   if (!slug) {
-    return <div className="pc-adv-agents__empty">No harness slug in params.</div>;
+    return <div className="pc-advpanel__empty">No harness slug in params.</div>;
   }
 
   return (
-    <div className="pc-adv-agents">
-      <div className="pc-adv-agents__bar">
+    <div className="pc-advpanel pc-adv-agents">
+      <div className="pc-advpanel__bar">
         <div className="pc-adv-agents__views" role="tablist" aria-label="Agents sub-view">
           {(['working', 'runs'] as const).map((v) => (
             <button
@@ -128,7 +128,7 @@ export default function AdvAgentsPanel({ params }: PanelComponentProps) {
               type="button"
               role="tab"
               aria-selected={view === v}
-              className="pc-adv-agents__view-tab"
+              className="pc-advpanel__chip"
               onClick={() => void setView(v)}
             >
               {v === 'working' ? 'Working' : 'Runs'}
@@ -272,11 +272,11 @@ function WorkingView({ slug }: { slug: string }) {
   return (
     <div className="pc-adv-agents__list">
       {query.error ? (
-        <div className="pc-adv-agents__empty pc-adv-agents__empty--err">
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">
           Failed: {query.error.message}
         </div>
       ) : agents === null ? (
-        <div className="pc-adv-agents__empty">Loading {slug}…</div>
+        <div className="pc-advpanel__empty">Loading {slug}…</div>
       ) : (
         <RichGrid<WorkingAgent>
           columns={columns}
@@ -288,19 +288,10 @@ function WorkingView({ slug }: { slug: string }) {
           onRowClick={(r) => {
             if (r.doing) void setSelectedId(r.doing.id);
           }}
-          headerHeight={26}
-          rowMinHeight={32}
-          headerStyle={{
-            background: 'var(--bg-2, rgba(255,255,255,0.045))',
-            color: 'var(--fg-mute, #7f9bb4)',
-            borderBottom:
-              '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
-            fontSize: 10,
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-          }}
+          headerHeight={30}
+          rowMinHeight={30}
           empty={
-            <div className="pc-adv-agents__empty">
+            <div className="pc-advpanel__empty">
               No agents working in {slug} right now — claims and spawns land here live.
             </div>
           }
@@ -331,7 +322,7 @@ function RunsView({ slug }: { slug: string }) {
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: visible.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 34,
+    estimateSize: () => 30,
     overscan: 12,
   });
   useEffect(() => {
@@ -417,10 +408,10 @@ function RunsView({ slug }: { slug: string }) {
 
   return (
     <>
-      <div className="pc-adv-agents__bar pc-adv-agents__bar--sub">
+      <div className="pc-advpanel__bar">
         <button
           type="button"
-          className="pc-adv-agents__toggle"
+          className="pc-advpanel__chip"
           aria-pressed={showAll}
           onClick={() => void setShowAll((v) => !v)}
         >
@@ -433,20 +424,22 @@ function RunsView({ slug }: { slug: string }) {
         <Tooltip label="Refresh agent runs">
           <button
             type="button"
-            className="pc-adv-agents__refresh"
+            className="pc-advpanel__iconbtn"
+            style={{ marginLeft: 'auto' }}
             onClick={() => refresh()}
+            disabled={loading}
             aria-label="Refresh agent runs"
           >
-            <RefreshCw size={12} aria-hidden />
+            <RefreshCw size={13} aria-hidden className={loading ? 'pc-advpanel__spin' : undefined} />
           </button>
         </Tooltip>
       </div>
 
       <div ref={scrollRef} className="pc-adv-agents__list">
         {error ? (
-          <div className="pc-adv-agents__empty pc-adv-agents__empty--err">Failed: {error}</div>
+          <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
         ) : loading ? (
-          <div className="pc-adv-agents__empty">Loading {slug}…</div>
+          <div className="pc-advpanel__empty">Loading {slug}…</div>
         ) : (
           <RichGrid<HarnessAgentRun>
             inline
@@ -463,19 +456,10 @@ function RunsView({ slug }: { slug: string }) {
             onRowClick={(r) => {
               if (r.featureId) void setSelectedId(r.featureId);
             }}
-            headerHeight={26}
-            rowMinHeight={32}
-            headerStyle={{
-              background: 'var(--bg-2, rgba(255,255,255,0.045))',
-              color: 'var(--fg-mute, #7f9bb4)',
-              borderBottom:
-                '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
-              fontSize: 10,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-            }}
+            headerHeight={30}
+            rowMinHeight={30}
             empty={
-              <div className="pc-adv-agents__empty">
+              <div className="pc-advpanel__empty">
                 {showAll ? 'No agent runs for this harness yet.' : 'No agents running.'}
               </div>
             }
@@ -489,24 +473,7 @@ function RunsView({ slug }: { slug: string }) {
 function PanelStyles() {
   return (
     <style>{`
-      .pc-adv-agents { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
-      .pc-adv-agents__bar {
-        display: flex; align-items: center; gap: 8px;
-        padding: 6px 8px; flex-shrink: 0;
-        border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-      }
-      .pc-adv-agents__bar--sub { border-bottom: 0; padding-bottom: 0; }
-      .pc-adv-agents__views { display: inline-flex; gap: 2px; }
-      .pc-adv-agents__view-tab {
-        padding: 2px 10px; font-size: 11px; color: var(--fg-mute);
-        background: transparent; border: 1px solid transparent;
-        border-radius: 999px; cursor: pointer;
-      }
-      .pc-adv-agents__view-tab[aria-selected="true"] {
-        color: var(--fg);
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
-      }
+      .pc-adv-agents__views { display: inline-flex; gap: 4px; }
       .pc-adv-agents__bar-rest { margin-left: auto; }
       .pc-adv-agents__legend {
         display: inline-flex; gap: 10px; flex-shrink: 1; min-width: 0;
@@ -522,25 +489,8 @@ function PanelStyles() {
         font-size: 11.5px; color: var(--fg, #e7f7ff);
       }
       .pc-adv-agents__doing--idle { color: var(--fg-mute); font-style: italic; }
-      .pc-adv-agents__toggle {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 2px 9px; font-size: 11px; color: var(--fg);
-        background: transparent;
-        border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-        border-radius: 999px; cursor: pointer;
-      }
-      .pc-adv-agents__toggle[aria-pressed="true"] {
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
-      }
       .pc-adv-agents__count { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-size: 10px; }
       .pc-adv-agents__hint { font-size: 10px; color: var(--fg-mute); }
-      .pc-adv-agents__refresh {
-        margin-left: auto; display: inline-flex; align-items: center;
-        padding: 4px; color: var(--fg-mute); background: transparent;
-        border: 0; border-radius: 4px; cursor: pointer;
-      }
-      .pc-adv-agents__refresh:hover { color: var(--fg); border-color: var(--accent); }
       .pc-adv-agents__list { flex: 1; min-height: 0; overflow: auto; }
       .pc-adv-agents__dot {
         display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -567,8 +517,6 @@ function PanelStyles() {
       .pc-adv-agents__num {
         font-size: 10px; color: var(--fg-mute); font-variant-numeric: tabular-nums;
       }
-      .pc-adv-agents__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); }
-      .pc-adv-agents__empty--err { color: var(--bad, #f87171); }
     `}</style>
   );
 }

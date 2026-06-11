@@ -11,6 +11,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Tooltip } from '../../harness/Tooltip';
+import { StatusPill } from '../../harness/primitives';
+import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 const PHASES = ['staging', 'testing', 'production'] as const;
@@ -30,17 +32,6 @@ interface StatusResponse {
   missionInputTokens: number;
   missionOutputTokens: number;
 }
-
-// Per-status accent — token-first with hex fallbacks (see AdvAgentsPanel).
-const STATUS_ACCENT: Record<string, string> = {
-  passed: 'var(--good, #4ade80)',
-  todo: 'var(--fg-mute)',
-  in_progress: 'var(--accent-strong, #7dd3fc)',
-  validating: 'var(--warn, #fbbf24)',
-  failing: 'var(--bad, #f87171)',
-  blocked: 'var(--bad, #f87171)',
-  deprecated: 'color-mix(in oklab, var(--fg-mute), transparent 25%)',
-};
 
 export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
@@ -117,17 +108,17 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
     });
   };
 
-  if (!slug) return <div className="pc-adv-ov__empty">No harness slug in params.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">No harness slug in params.</div>;
 
   return (
-    <div className="pc-adv-ov">
+    <div className="pc-advpanel pc-adv-ov">
       {error ? (
-        <div className="pc-adv-ov__empty pc-adv-ov__empty--err">Failed: {error}</div>
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
       ) : !data ? (
-        <div className="pc-adv-ov__empty">Loading {slug}…</div>
+        <div className="pc-advpanel__empty">Loading {slug}…</div>
       ) : (
         <>
-          <div className="pc-adv-ov__head">
+          <div className="pc-advpanel__bar">
             <span className="pc-adv-ov__slug">{data.project.slug}</span>
             <span className={`pc-adv-ov__dot${data.alive ? ' is-alive' : ''}`} aria-hidden />
             <span className="pc-adv-ov__alive">{data.alive ? 'alive' : 'idle'}</span>
@@ -136,27 +127,24 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
             <Tooltip label="Refresh status">
               <button
                 type="button"
-                className="pc-adv-ov__refresh"
+                className="pc-advpanel__iconbtn"
+                style={{ marginLeft: 'auto' }}
                 onClick={() => setTick((t) => t + 1)}
                 aria-label="Refresh status"
               >
-                <RefreshCw size={12} aria-hidden />
+                <RefreshCw size={13} aria-hidden />
               </button>
             </Tooltip>
           </div>
 
-          <div className="pc-adv-ov__path" title={data.project.path}>
-            {data.project.path}
-          </div>
-
-          <div className="pc-adv-ov__phases" role="tablist" aria-label="Phase">
+          <div className="pc-advpanel__bar" role="tablist" aria-label="Phase">
             {PHASES.map((p) => (
               <button
                 key={p}
                 type="button"
                 role="tab"
                 aria-selected={p === phase}
-                className="pc-adv-ov__phase"
+                className="pc-advpanel__chip"
                 onClick={() => switchPhase(p)}
               >
                 {p}
@@ -164,59 +152,62 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
             ))}
           </div>
 
-          {stats ? (
-            <div className="pc-adv-ov__progress">
-              <div className="pc-adv-ov__progress-head">
-                <span>Progress</span>
-                <span className="pc-adv-ov__muted">
-                  {stats.passed} / {stats.total} ({stats.pct}%)
-                </span>
-              </div>
-              <div className="pc-adv-ov__bar">
-                <div className="pc-adv-ov__bar-fill" style={{ transform: `scaleX(${stats.pct / 100})` }} />
-              </div>
+          <div className="pc-adv-ov__body">
+            <div className="pc-adv-ov__path" title={data.project.path}>
+              {data.project.path}
             </div>
-          ) : null}
 
-          <div className="pc-adv-ov__counts">
-            {Object.entries(data.counts).map(([k, v]) => (
-              <div key={k} className="pc-adv-ov__count">
-                <span
-                  className="pc-adv-ov__count-dot"
-                  style={{ background: STATUS_ACCENT[k] ?? 'var(--fg-mute)' }}
-                  aria-hidden
-                />
-                <span className="pc-adv-ov__count-label">{k}</span>
-                <span className="pc-adv-ov__count-num">{v}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="pc-adv-ov__misc">
-            <div>iteration: {data.iteration}</div>
-            {data.lastDecision ? (
-              <div className="pc-adv-ov__last" title={data.lastDecision}>
-                last: {data.lastDecision}
+            {stats ? (
+              <div className="pc-adv-ov__progress">
+                <div className="pc-adv-ov__progress-head">
+                  <span>Progress</span>
+                  <span className="pc-adv-ov__muted">
+                    {stats.passed} / {stats.total} ({stats.pct}%)
+                  </span>
+                </div>
+                <div className="pc-adv-ov__bar">
+                  <div className="pc-adv-ov__bar-fill" style={{ transform: `scaleX(${stats.pct / 100})` }} />
+                </div>
               </div>
             ) : null}
-            <div>
-              cost: ${data.missionCostUsd.toFixed(2)} · in/out:{' '}
-              {Math.round(data.missionInputTokens / 1000)}k/{Math.round(data.missionOutputTokens / 1000)}k
+
+            <div className="pc-adv-ov__counts">
+              {Object.entries(data.counts).map(([k, v]) => (
+                <div key={k} className="pc-adv-ov__count">
+                  {/* Canonical status chip (theme.ts STATUS table via StatusPill) —
+                      the same pill language the Work-items grid speaks; unknown
+                      statuses fall back to the table's neutral meta. */}
+                  <StatusPill status={k as HarnessStatus} size="xs" variant="chip" />
+                  <span className="pc-adv-ov__count-num">{v}</span>
+                </div>
+              ))}
             </div>
-            {data.pendingCheckpoints > 0 ? <div>checkpoints pending: {data.pendingCheckpoints}</div> : null}
-            {data.activeCompetitions > 0 ? <div>active competitions: {data.activeCompetitions}</div> : null}
+
+            <div className="pc-adv-ov__misc">
+              <div>iteration: {data.iteration}</div>
+              {data.lastDecision ? (
+                <div className="pc-adv-ov__last" title={data.lastDecision}>
+                  last: {data.lastDecision}
+                </div>
+              ) : null}
+              <div>
+                cost: ${data.missionCostUsd.toFixed(2)} · in/out:{' '}
+                {Math.round(data.missionInputTokens / 1000)}k/{Math.round(data.missionOutputTokens / 1000)}k
+              </div>
+              {data.pendingCheckpoints > 0 ? <div>checkpoints pending: {data.pendingCheckpoints}</div> : null}
+              {data.activeCompetitions > 0 ? <div>active competitions: {data.activeCompetitions}</div> : null}
+            </div>
           </div>
         </>
       )}
 
       <style>{`
-        .pc-adv-ov {
+        .pc-adv-ov__body {
+          flex: 1; min-height: 0; overflow: auto;
           display: flex; flex-direction: column; gap: 12px;
-          height: 100%; min-height: 0; overflow: auto;
           padding: 12px; font-size: 12px; color: var(--fg);
         }
-        .pc-adv-ov__head { display: flex; align-items: center; gap: 8px; }
-        .pc-adv-ov__slug { font-weight: 600; font-size: 13px; }
+        .pc-adv-ov__slug { font-weight: 600; font-size: 13px; color: var(--fg); }
         .pc-adv-ov__dot {
           width: 8px; height: 8px; border-radius: 50%;
           background: color-mix(in oklab, var(--fg-mute), transparent 30%);
@@ -227,30 +218,14 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
         }
         .pc-adv-ov__alive { color: var(--fg-mute); font-size: 11px; }
         .pc-adv-ov__badge {
-          padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 3px;
+          padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px;
+          letter-spacing: 0.05em; white-space: nowrap;
           color: color-mix(in oklab, var(--warn, #fbbf24), white 55%);
-          background: color-mix(in oklab, var(--warn, #fbbf24), black 55%);
+          background: color-mix(in oklab, var(--warn, #fbbf24), transparent 84%);
         }
-        .pc-adv-ov__refresh {
-          margin-left: auto; display: inline-flex; align-items: center; padding: 4px;
-          color: var(--fg-mute); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
-        }
-        .pc-adv-ov__refresh:hover { color: var(--fg); background: color-mix(in oklab, var(--fg), transparent 90%); }
         .pc-adv-ov__path {
           color: var(--fg-mute); font-size: 11px; font-family: ui-monospace, monospace;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .pc-adv-ov__phases {
-          display: flex; gap: 2px;
-          border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 25%);
-        }
-        .pc-adv-ov__phase {
-          padding: 4px 12px; font-size: 11px; background: transparent;
-          color: var(--fg-mute); border: 0; border-bottom: 2px solid transparent;
-          cursor: pointer; margin-bottom: -1px; text-transform: capitalize;
-        }
-        .pc-adv-ov__phase[aria-selected="true"] {
-          color: var(--fg); border-bottom-color: var(--accent, #38bdf8);
         }
         .pc-adv-ov__progress-head { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; }
         .pc-adv-ov__muted { color: var(--fg-mute); }
@@ -259,18 +234,17 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
           background: color-mix(in oklab, var(--border), transparent 25%);
         }
         .pc-adv-ov__bar-fill { height: 100%; width: 100%; background: var(--good, #4ade80); transform-origin: left; transition: transform 0.3s; }
-        .pc-adv-ov__counts { display: flex; flex-direction: column; gap: 4px; }
-        .pc-adv-ov__count { display: flex; align-items: baseline; gap: 8px; font-size: 11px; }
-        .pc-adv-ov__count-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; align-self: center; }
-        .pc-adv-ov__count-label { flex: 1; color: var(--fg-mute); text-transform: capitalize; }
-        .pc-adv-ov__count-num { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+        .pc-adv-ov__counts { display: flex; flex-direction: column; gap: 5px; }
+        .pc-adv-ov__count {
+          display: flex; align-items: center; justify-content: space-between; gap: 8px;
+          font-size: 11px;
+        }
+        .pc-adv-ov__count-num { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--fg); }
         .pc-adv-ov__misc {
           font-size: 11px; color: var(--fg-mute); padding-top: 8px; display: flex; flex-direction: column; gap: 2px;
           border-top: 1px solid color-mix(in oklab, var(--border), transparent 45%);
         }
         .pc-adv-ov__last { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .pc-adv-ov__empty { padding: 16px; font-size: 13px; color: var(--fg-mute); }
-        .pc-adv-ov__empty--err { color: var(--bad, #f87171); }
       `}</style>
     </div>
   );

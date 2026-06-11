@@ -16,6 +16,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
 import { groupByHive } from './harness-hive-groups';
 import './adv-dock.css';
+import './adv-panel-chrome.css';
 
 export interface AdvProjectEntry {
   slug: string;

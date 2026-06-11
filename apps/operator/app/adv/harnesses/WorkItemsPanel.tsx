@@ -218,14 +218,14 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     },
   ];
 
-  if (!slug) return <div style={{ padding: 16, color: 'var(--fg-mute)' }}>Pick a harness to view its work items.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div className="pc-adv-wi__bar">
+    <div className="pc-advpanel">
+      <div className="pc-advpanel__bar">
         <input
           type="text"
-          className="pc-adv-wi__search"
+          className="pc-advpanel__input"
           value={search}
           onChange={(e) => void setSearch(e.target.value)}
           placeholder="Filter work items…"
@@ -235,7 +235,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           value={kind || ALL_KINDS}
           onChange={(v) => void setKind(v === ALL_KINDS ? '' : v)}
           ariaLabel="Filter by kind"
-          triggerClassName="pc-adv-wi__select"
+          triggerClassName="pc-advpanel__select"
           options={[
             { value: ALL_KINDS, label: 'all kinds' },
             ...kinds.map((k) => ({ value: k, label: k })),
@@ -244,21 +244,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
         <Tooltip label="Refresh work items">
           <button
             type="button"
-            className="pc-adv-wi__refresh"
+            className="pc-advpanel__iconbtn"
             onClick={() => query.invalidate()}
             disabled={loading}
             aria-label="Refresh work items"
           >
-            <RefreshCw size={13} aria-hidden className={loading ? 'pc-adv-wi__spin' : undefined} />
+            <RefreshCw size={13} aria-hidden className={loading ? 'pc-advpanel__spin' : undefined} />
           </button>
         </Tooltip>
       </div>
       {error ? (
-        <div style={{ padding: 16, color: 'var(--bad, #f87171)', fontSize: 12.5 }}>Could not load work items: {error}</div>
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">Could not load work items: {error}</div>
       ) : !items ? (
-        <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 12.5 }}>Loading work items…</div>
+        <div className="pc-advpanel__empty">Loading work items…</div>
       ) : filtered.length === 0 ? (
-        <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 12.5 }}>
+        <div className="pc-advpanel__empty">
           {items.length === 0 ? 'No work items for this harness.' : 'No work items match the filter.'}
         </div>
       ) : (
@@ -279,61 +279,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           />
         </div>
       )}
-      <style>{`
-        .pc-adv-wi__bar {
-          display: flex; align-items: center; gap: 8px;
-          padding: 7px 10px; flex-shrink: 0;
-          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-        }
-        /* Search input — frost surface, sky-tinted border, matching the
-           Logs/Agents panel inputs (was a default-baseline box). */
-        .pc-adv-wi__search {
-          flex: 1; min-width: 80px;
-          padding: 4px 9px; font-size: 12px; color: var(--fg, #e7f7ff);
-          background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-          border-radius: 6px;
-        }
-        .pc-adv-wi__search::placeholder { color: var(--fg-mute, #7f9bb4); }
-        .pc-adv-wi__search:focus {
-          outline: none;
-          border-color: var(--accent, #38bdf8);
-          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-        }
-        /* House Select trigger. triggerClassName drops Select's default inline
-           style, so this provides the FULL trigger layout (not just colours),
-           sized to match the input. */
-        .pc-adv-wi__select {
-          display: inline-flex; align-items: center; justify-content: space-between; gap: 6px;
-          min-height: 28px; padding: 0 9px;
-          font-size: 12px; font-family: inherit; color: var(--fg, #e7f7ff);
-          background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-          border-radius: 6px; cursor: pointer; outline: none;
-        }
-        .pc-adv-wi__select:hover { border-color: var(--accent, #38bdf8); }
-        .pc-adv-wi__select:focus-visible {
-          border-color: var(--accent, #38bdf8);
-          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-        }
-        /* Flat icon refresh button — replaces the default 3D OS <button>
-           (silver outset bevel — a HR9 violation). */
-        .pc-adv-wi__refresh {
-          display: inline-flex; align-items: center; justify-content: center;
-          width: 28px; height: 28px; flex-shrink: 0;
-          color: var(--fg-mute, #7f9bb4);
-          background: var(--bg-2, rgba(255, 255, 255, 0.045));
-          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-          border-radius: 6px; cursor: pointer;
-        }
-        .pc-adv-wi__refresh:hover:not(:disabled) {
-          color: var(--fg, #e7f7ff);
-          border-color: var(--accent, #38bdf8);
-        }
-        .pc-adv-wi__refresh:disabled { opacity: 0.5; cursor: default; }
-        .pc-adv-wi__spin { animation: pc-adv-wi-spin 0.8s linear infinite; }
-        @keyframes pc-adv-wi-spin { to { transform: rotate(360deg); } }
-      `}</style>
     </div>
   );
 }
