@@ -17,7 +17,7 @@ vi.mock('./embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { appendForcedSessionId, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
+import { appendForcedSessionId, applyBackendSwap, applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
 // (P-012 gave worker/validator/documenter/bee/scanner/judge committed tiers,
@@ -292,6 +292,50 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus' });
+  });
+});
+
+describe('applyBackendSwap + per-tier backend (PAPERCUSP_SPAWN_BACKEND)', () => {
+  it('swaps the base command to the target backend default only when backends differ', () => {
+    expect(applyBackendSwap('claude -p --model haiku', 'omp')).toBe('omp -p');
+    expect(applyBackendSwap('omp -p', 'claude-code')).toBe('claude -p');
+    expect(applyBackendSwap('omp -p', 'codex')).toBe('codex exec');
+    // same backend → the host's tuned command survives untouched
+    expect(applyBackendSwap('claude -p --model haiku --effort low', 'claude-code')).toBe('claude -p --model haiku --effort low');
+    // absent/unknown backend → no-op
+    expect(applyBackendSwap('claude -p', undefined)).toBe('claude -p');
+    expect(applyBackendSwap('claude -p', 'gemini')).toBe('claude -p');
+  });
+
+  it('buildInvokeOnce swaps the command, applies the model, and pins AGENT_BACKEND', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
+    vi.stubEnv('AGENT_BACKEND', 'claude-code');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const env = buildInvokeOnce(spec({
+      role: 'merge-resolver',
+      extraEnv: { PAPERCUSP_SPAWN_MODEL: 'anthropic/claude-opus-4-8', PAPERCUSP_SPAWN_BACKEND: 'omp' },
+    })).env;
+    expect(env.AGENT_CMD).toBe('omp -p --model anthropic/claude-opus-4-8');
+    expect(env.CLAUDE).toBe('omp -p --model anthropic/claude-opus-4-8');
+    // the child's resolveAgentBackend prefers AGENT_BACKEND — must follow the swap
+    expect(env.AGENT_BACKEND).toBe('omp');
+    expect(env.PAPERCUSP_SPAWN_BACKEND).toBe('omp');
+  });
+
+  it('without a spawn backend the inherited AGENT_BACKEND is untouched', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_BACKEND', 'claude-code');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const env = buildInvokeOnce(spec({ role: 'merge-resolver' })).env;
+    expect(env.AGENT_BACKEND).toBe('claude-code');
+  });
+
+  it('resolveSpawnBackendModel follows the backend override for the governor bucket + session-id decision', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('bee', 'haiku', 'omp')).toEqual({ backend: 'omp', model: 'haiku' });
+    vi.stubEnv('AGENT_CMD', 'omp -p');
+    expect(resolveSpawnBackendModel('bee', 'opus:high', 'claude-code')).toEqual({ backend: 'claude-code', model: 'opus' });
   });
 });
 

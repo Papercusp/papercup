@@ -4049,11 +4049,11 @@ cmd({"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ret"}]}})
 1. `papercup-vm-mac.service` now runs `boot-sonoma-durable.sh` (`Type=forking` + `PIDFile=qemu.pid` + QMP `ExecStop`). The old `boot-sonoma.sh` is manual-installer-use only.
 2. **The wedge’s real mechanism (P-001, FIXED 2026-06-11):** `ScanPolicy=0` listed OpenCore’s own ESP as a boot entry named “EFI” — and as the FIRST entry it was the *default*, so `Timeout=2` auto-booted OpenCore into itself in an infinite EFI loop (\~100% CPU, black/parked picker, zero disk writes). Fixed by `Misc.Security.ScanPolicy = 0x10303` (FS\_LOCK|DEVICE\_LOCK + APFS|HFS + SATA) in `EFI/OC/config.plist` on `OpenCore.qcow2` — the ESP is never scanned, `Macintosh HD` is the only entry, and a cold boot reaches sshd unattended. Edit the plist via `qemu-nbd --connect=/dev/nbd0 OpenCore/OpenCore.qcow2` + mount `p1` (qemu must be DOWN). A picker-era NVRAM default (ctrl+enter) does NOT stick reliably here — fix ScanPolicy instead.
 
-## Known-broken: GUI-session auth (loginwindow) on this VM
+## GUI-session auth (loginwindow) on this VM — passwords DIVERGE by layer
 
-[Section titled “Known-broken: GUI-session auth (loginwindow) on this VM”](#known-broken-gui-session-auth-loginwindow-on-this-vm)
+[Section titled “GUI-session auth (loginwindow) on this VM — passwords DIVERGE by layer”](#gui-session-auth-loginwindow-on-this-vm--passwords-diverge-by-layer)
 
-`loginwindow` rejects the correct password (`aviweiss`) that ssh/sudo accept; `sysadminctl -resetPasswordFor` refuses with “Operation is not permitted without secure token unlock”; kcpassword auto-login is ignored. The VM’s secure-token/SRP credential path is wedged (PAM is fine). Don’t burn time on it: do verification headlessly over SSH (the desktop app’s own log carries window/SwiftTerm/webview evidence), and use `remote-viewer spice://127.0.0.1:5930` interactively only if a human wants pixels. Screen-lock/display-sleep knobs that normally help (`sysadminctl -screenLock off`, `pmset displaysleep 0`) error or don’t bite under this broken token state.
+CORRECTED 2026-06-11: the original “secure-token wedge” diagnosis was wrong. The GUI credential path (loginwindow / lock screen) simply has a **different password** (`avraham`) from the PAM path that ssh/sudo accept (`aviweiss`). A day of “loginwindow rejects the correct password” was a wrong password; the owner supplied the GUI one and the locked session unlocked first try. To unlock for agent verification: wake the display with a QMP `send-key` (`shift`), type the GUI password char-by-char via `send-key`, send `ret`, then `screendump` for pixels. If you hit auth errors from `sysadminctl` / kcpassword anyway, suspect a wrong-password loop before any secure-token theory — verify which password each auth layer actually holds.
 
 ## Related
 
@@ -41006,6 +41006,7 @@ Three behaviours the composition owns:
 * **No-human-prompt autonomy (D-010).** The only input is `deps` (an injected `ScoutLlmCall` + ports); there is no human-input parameter and no `askUser`. The cycle wraps the LLM call in a recorder so every step’s call lands in `result.calls` — the single surface the “no human authored a prompt” invariant and cost accounting read from.
 * **Survivors (D-005).** `keep` + `moonshot` proceed to recombine; `reject` is dropped (the moonshot bucket survives so leaps aren’t over-pruned).
 * **Per-cycle budget (D-010).** `limits.maxCostUsd` halts the cycle before the next LLM-spending step; `limits.maxIdeators` clamps the ideator roster.
+* **Empty-digest guard (EI-303).** A digest with zero meta-patterns in every lane (`digestIsEmpty`) early-exits `stop: 'empty-digest'` before the first costed step — a fresh/quiet hive spends $0 instead of paying the full ideator roster to reach `no-ideas`. `headline`/`generatedAt` don’t count; only patterns ground ideas.
 
 `ScoutCycleResult` carries every stage (`digest`, `ideas`, `scored`, `survivors`, `proposals`, `routed`, `provenance`, `calls`, `costUsd`, `stop`) so the invariants suite can assert at each boundary.
 

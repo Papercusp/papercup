@@ -122,3 +122,23 @@ export function assertTextRequires(pattern: RegExp, meta: Meta): CustomAssert {
     eval: (run) => (run.turns.some((t) => pattern.test(t.assistantText)) ? [] : [violation(meta)]),
   };
 }
+
+/** ERROR unless `pattern` matches within the FIRST `withinTurns` assistant
+ *  turns — for the SAME-TURN class of rules (the behavior must fire when its
+ *  cue lands, not get queued for close-out; agent policies §19). A full-run
+ *  assertTextRequires would pass a deferred mention on the last turn, which is
+ *  exactly the failure mode under test. */
+export function assertTextRequiresWithin(
+  pattern: RegExp,
+  withinTurns: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) =>
+      run.turns.slice(0, withinTurns).some((t) => pattern.test(t.assistantText))
+        ? []
+        : [violation(meta)],
+  };
+}

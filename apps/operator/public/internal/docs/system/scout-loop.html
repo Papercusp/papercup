@@ -164,6 +164,11 @@ and cost accounting read from.</li>
 dropped (the moonshot bucket survives so leaps aren’t over-pruned).</li>
 <li><strong>Per-cycle budget (D-010).</strong> <code dir="auto">limits.maxCostUsd</code> halts the cycle before the next
 LLM-spending step; <code dir="auto">limits.maxIdeators</code> clamps the ideator roster.</li>
+<li><strong>Empty-digest guard (EI-303).</strong> A digest with zero meta-patterns in every lane
+(<code dir="auto">digestIsEmpty</code>) early-exits <code dir="auto">stop: 'empty-digest'</code> before the first costed
+step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
+to reach <code dir="auto">no-ideas</code>. <code dir="auto">headline</code>/<code dir="auto">generatedAt</code> don’t count; only patterns ground
+ideas.</li>
 </ul>
 <p><code dir="auto">ScoutCycleResult</code> carries every stage (<code dir="auto">digest</code>, <code dir="auto">ideas</code>, <code dir="auto">scored</code>, <code dir="auto">survivors</code>,
 <code dir="auto">proposals</code>, <code dir="auto">routed</code>, <code dir="auto">provenance</code>, <code dir="auto">calls</code>, <code dir="auto">costUsd</code>, <code dir="auto">stop</code>) so the invariants

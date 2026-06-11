@@ -18,7 +18,33 @@
 import { invokeOnceBin, tsxBin } from './harness-paths';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
+import { DEFAULT_BACKEND_CMDS, type AgentBackend } from './agent-config-constants';
 import type { TurnBackend } from '@papercusp/papercup-shared/agent';
+
+/** Backend a command's binary drives (the same discriminator
+    resolveSpawnBackendModel / effectiveBackend use). */
+function cmdBackend(cmd: string): AgentBackend {
+  const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  if (/codex/.test(bin)) return 'codex';
+  if (/claude/.test(bin)) return 'claude-code';
+  return 'omp';
+}
+
+/**
+ * Swap the base agent command to `backend`'s default when it differs from the
+ * command's own backend (per-tier backend, queen-model-tier-selection). The
+ * host command's flags are deliberately NOT carried over — they're
+ * binary-specific (a claude flag means nothing to omp); backend-specific
+ * flags (stream format, scheduler deny) are appended by the child's invoke
+ * path from the resolved backend, not from AGENT_CMD. No-op when the
+ * backends already match, so the host's tuned command survives the usual case.
+ */
+export function applyBackendSwap(baseCmd: string, backend?: string): string {
+  if (!backend) return baseCmd;
+  const target = backend as AgentBackend;
+  if (!DEFAULT_BACKEND_CMDS[target] || cmdBackend(baseCmd) === target) return baseCmd;
+  return DEFAULT_BACKEND_CMDS[target];
+}
 
 /**
  * Infer the `{ backend, model }` the spawned CLI will actually use for `role` — from the
@@ -34,8 +60,10 @@ import type { TurnBackend } from '@papercusp/papercup-shared/agent';
 export function resolveSpawnBackendModel(
   role: string,
   overrideSpec?: string,
+  overrideBackend?: string,
 ): { backend: TurnBackend; model: string } {
-  const cmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', role, overrideSpec);
+  const base = applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', overrideBackend);
+  const cmd = applyRoleModel(base, role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
   const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
@@ -167,8 +195,14 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // spawnAgentInHarness from fleet:spawn's model/tier arg (P-001). It also rides
   // the child's env, where invoke.ts resolveModel consults it first (covers the
   // config.aiBackend agentCmd-swap path this command-level append can't reach).
+  // PAPERCUSP_SPAWN_BACKEND (per-tier backend) swaps the base command to that
+  // backend's default before the model is applied — and must ALSO override the
+  // inherited AGENT_BACKEND below: the child's resolveAgentBackend prefers the
+  // explicit env over binary inference, so a swapped command with a stale
+  // AGENT_BACKEND would mis-resolve every backend-keyed flag.
+  const spawnBackend = spec.extraEnv?.PAPERCUSP_SPAWN_BACKEND;
   const roleAgentCmd = applyRoleModel(
-    process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+    applyBackendSwap(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spawnBackend),
     spec.role,
     spec.extraEnv?.PAPERCUSP_SPAWN_MODEL,
   );
@@ -188,6 +222,11 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     EXTRAS_JSON: JSON.stringify(spec.extras),
     AGENT_CMD: agentCmd,
     CLAUDE: agentCmd,
+    // Per-tier backend swap: pin the child's explicit backend to the swapped
+    // one (resolveAgentBackend prefers AGENT_BACKEND over binary inference).
+    ...(spawnBackend && DEFAULT_BACKEND_CMDS[spawnBackend as AgentBackend]
+      ? { AGENT_BACKEND: spawnBackend }
+      : {}),
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned
     // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts

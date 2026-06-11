@@ -124,4 +124,24 @@ describe('resolveTierSpec — user-defined menu', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet' });
   });
+
+  it('per-tier backend rides the resolution — including through a clamp', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const withBackends = [
+      { name: 'eco', spec: 'haiku', backend: 'omp' as const },
+      { name: 'normal', spec: 'sonnet' },
+      { name: 'turbo', spec: 'opus:max', backend: 'claude-code' as const },
+    ];
+    // direct pick carries its backend
+    expect(resolveTierSpec({ tier: 'turbo', role: 'bee', tiers: withBackends })).toMatchObject({
+      ok: true, spec: 'opus:max', backend: 'claude-code',
+    });
+    // backend-less tier has no backend field
+    const normal = resolveTierSpec({ tier: 'normal', role: 'bee', tiers: withBackends });
+    expect((normal as { backend?: string }).backend).toBeUndefined();
+    // a floor clamp adopts the clamped-TO tier's backend (worker floor=sonnet → 'normal', no backend)
+    const clamped = resolveTierSpec({ tier: 'eco', role: 'worker', tiers: withBackends });
+    expect(clamped).toMatchObject({ ok: true, tier: 'normal', clamped: 'floor' });
+    expect((clamped as { backend?: string }).backend).toBeUndefined();
+  });
 });

@@ -76,18 +76,19 @@ pkill killing every peer's Tauri instance). Kill by exact pid from
    (qemu must be DOWN). A picker-era NVRAM default (ctrl+enter) does NOT
    stick reliably here — fix ScanPolicy instead.
 
-## Known-broken: GUI-session auth (loginwindow) on this VM
+## GUI-session auth (loginwindow) on this VM — passwords DIVERGE by layer
 
-`loginwindow` rejects the correct password (`aviweiss`) that ssh/sudo
-accept; `sysadminctl -resetPasswordFor` refuses with "Operation is not
-permitted without secure token unlock"; kcpassword auto-login is ignored.
-The VM's secure-token/SRP credential path is wedged (PAM is fine). Don't
-burn time on it: do verification headlessly over SSH (the desktop app's
-own log carries window/SwiftTerm/webview evidence), and use
-`remote-viewer spice://127.0.0.1:5930` interactively only if a human wants
-pixels. Screen-lock/display-sleep knobs that normally help
-(`sysadminctl -screenLock off`, `pmset displaysleep 0`) error or don't
-bite under this broken token state.
+CORRECTED 2026-06-11: the original "secure-token wedge" diagnosis was
+wrong. The GUI credential path (loginwindow / lock screen) simply has a
+**different password** (`avraham`) from the PAM path that ssh/sudo accept
+(`aviweiss`). A day of "loginwindow rejects the correct password" was a
+wrong password; the owner supplied the GUI one and the locked session
+unlocked first try. To unlock for agent verification: wake the display
+with a QMP `send-key` (`shift`), type the GUI password char-by-char via
+`send-key`, send `ret`, then `screendump` for pixels. If you hit auth
+errors from `sysadminctl` / kcpassword anyway, suspect a wrong-password
+loop before any secure-token theory — verify which password each auth
+layer actually holds.
 
 ## Related
 

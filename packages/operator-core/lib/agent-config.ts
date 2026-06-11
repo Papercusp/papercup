@@ -113,9 +113,11 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   };
 }
 
-/** Validate the stored tier menu: an array of { name, spec } with a non-empty
-    lowercase-unique name and a syntactically valid model spec. Invalid entries
-    are dropped (absence → DEFAULT_MODEL_TIERS at resolution time). */
+/** Validate the stored tier menu: an array of { name, spec, backend? } with a
+    non-empty lowercase-unique name, a syntactically valid model spec, and an
+    optional known backend. Invalid entries are dropped (absence →
+    DEFAULT_MODEL_TIERS at resolution time); an invalid backend value drops to
+    inherit rather than killing the row. */
 export function parseTiers(raw: unknown): ModelTier[] {
   if (!Array.isArray(raw)) return [];
   const out: ModelTier[] = [];
@@ -124,10 +126,15 @@ export function parseTiers(raw: unknown): ModelTier[] {
     if (!entry || typeof entry !== 'object') continue;
     const name = typeof (entry as ModelTier).name === 'string' ? (entry as ModelTier).name.trim() : '';
     const spec = typeof (entry as ModelTier).spec === 'string' ? (entry as ModelTier).spec.trim() : '';
+    const backend = (entry as ModelTier).backend;
     const key = name.toLowerCase();
     if (!name || !spec || seen.has(key) || !isValidModelSpec(spec)) continue;
     seen.add(key);
-    out.push({ name, spec });
+    out.push({
+      name,
+      spec,
+      ...((AGENT_BACKENDS as readonly string[]).includes(backend as string) ? { backend } : {}),
+    });
   }
   return out;
 }

@@ -32,8 +32,14 @@
  */
 
 import { setPeerRpcTransport } from './peer-rpc-transport';
-import { HttpPeerRpcTransport, type PeerAddressResolver } from './http-peer-rpc-transport';
+import {
+  HttpPeerRpcTransport,
+  type PeerAddressResolver,
+  type EnvelopeSignerConfig,
+} from './http-peer-rpc-transport';
 import type { PeerRef } from './lock-authority';
+import { resolveLocalAnnounceIdentity } from '../sync/hyperbee/local-announce-identity';
+import { signWithDeviceKey } from '../identity/sign-with-device-key';
 
 export const PEER_ADDRESSES_ENV = 'PAPERCUSP_AUTHORITY_PEER_ADDRESSES';
 
@@ -90,15 +96,44 @@ export async function resolvePeerAddress(peer: PeerRef): Promise<string | null> 
 let _wired = false;
 
 /**
+ * EI-322: the production envelope signer — resolve the local device identity
+ * (keychain + gh-auth, the SAME identity the announce signer uses) once, and
+ * sign each outgoing RPC with the device key via `signWithDeviceKey`. Returns
+ * null when identity can't be resolved (no gh-auth / no keychain) → the RPC goes
+ * unsigned, the same safe degradation as the fail-open transport. The transport
+ * memoizes this, so the async resolution runs at most once.
+ */
+async function resolveDeviceEnvelopeSigner(): Promise<EnvelopeSignerConfig | null> {
+  try {
+    const identity = await resolveLocalAnnounceIdentity({});
+    return {
+      devicePubkey: identity.devicePubkeyBase64,
+      sign: (bytes: Buffer) => signWithDeviceKey(identity.keychainId, bytes),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Register the HTTP authority transport. Idempotent; called at boot from the
  * file-lock authority wiring (agent-tools barrel side-effect). A deployment rig
  * that calls `setPeerRpcTransport` itself AFTER boot still wins — this guard
  * only stops the boot path from re-registering over it.
+ *
+ * The transport signs every outgoing RPC with the device key (EI-322); the
+ * receiving authority requires that signature when `papercusp-authority-rpc-signed`
+ * is on. `signerOverride` lets a rig inject a deterministic signer.
  */
-export function wireAuthorityRpcTransport(): void {
+export function wireAuthorityRpcTransport(opts?: { signerOverride?: EnvelopeSignerConfig }): void {
   if (_wired) return;
   _wired = true;
-  setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: resolvePeerAddress }));
+  setPeerRpcTransport(
+    new HttpPeerRpcTransport({
+      resolveAddress: resolvePeerAddress,
+      envelopeSigner: opts?.signerOverride ?? resolveDeviceEnvelopeSigner,
+    }),
+  );
 }
 
 /** Test seam: reset the wiring + resolver + env-map cache. */

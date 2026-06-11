@@ -60,7 +60,22 @@ export interface ModelTier {
   name: string;
   /** Model spec this tier resolves to (e.g. 'opus:high'). */
   spec: string;
+  /** Backend this tier runs on. Absent = inherit the host's agent command
+      (the usual case). When set and different from the host backend, the
+      spawn's base command is swapped to this backend's default
+      (DEFAULT_BACKEND_CMDS) before the model spec is applied — so a tier can
+      be e.g. quick-on-omp while deep stays on claude. */
+  backend?: AgentBackend;
 }
+
+/** Default agent command per backend — used when a per-tier backend swap
+    needs a base command for a backend the host's AGENT_CMD doesn't drive.
+    Mirrors the /settings/agent placeholders + run.sh defaults. */
+export const DEFAULT_BACKEND_CMDS: Record<AgentBackend, string> = {
+  'claude-code': 'claude -p',
+  omp: 'omp -p',
+  codex: 'codex exec',
+};
 
 /**
  * The default tier menu when the user hasn't defined one — ordered WEAKEST →

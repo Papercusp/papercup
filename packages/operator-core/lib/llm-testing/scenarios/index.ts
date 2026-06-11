@@ -86,6 +86,8 @@ import { SU_S09_COORD_INJECTION_READ } from './su/S09-coord-injection-read';
 import { SU_S10_CLAIM_BEFORE_WORK } from './su/S10-claim-before-work';
 // SU-S11: coord-system-e2e-testing-2026-06-10 P-011 — same-file lock-contention protocol gate
 import { SU_S11_LOCK_CONTENTION_PROTOCOL } from './su/S11-lock-contention-protocol';
+// SU-S12: same-turn insight capture (agent policies §19 timing rule; EI-328/EI-329)
+import { SU_S12_SAME_TURN_INSIGHT } from './su/S12-same-turn-insight';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -158,6 +160,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S09_COORD_INJECTION_READ,
   SU_S10_CLAIM_BEFORE_WORK,
   SU_S11_LOCK_CONTENTION_PROTOCOL,
+  SU_S12_SAME_TURN_INSIGHT,
 ];
 
 export function getScenario(id: string): Scenario {

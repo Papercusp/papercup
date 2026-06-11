@@ -15,14 +15,26 @@
  * (the same posture as the lock hook POSTing to :3070). The verifyIsAuthority
  * guard is the app-level check that this machine should serialize the op at all.
  *
+ * EI-322: the CALLER is now authenticated too. When the `papercusp-authority-rpc-signed`
+ * flag is ON (default), the handler requires an Ed25519-signed envelope (`auth`):
+ * `buildAuthorityCallerVerifier` proves the caller controls `device_pubkey`,
+ * binds it to the op's `holderPubkey`, and refuses a revoked device — closing the
+ * self-reported-holder hole that EI-284's revocation gate alone could not. The
+ * transport always signs (transport-wiring), so enabling is safe single-box; the
+ * flag is the cross-machine rollout lever. OFF = legacy (verifyIsAuthority +
+ * EI-284 only). EI-322 supersedes EI-284 as the tracking item for this surface.
+ *
  * Reachability only LIGHTS UP cross-machine once a PeerAddressResolver maps a
  * peer's device_pubkey to its operator URL (the mesh mapping) and a transport is
  * registered (setPeerRpcTransport) — until then no peer routes here. The dispatch
  * itself is verified by the loopback + two-instance authority tests.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { handleAuthorityRpc, type AuthorityRpcEnvelope } from '../../../authority/authority-op-registry';
 import { lockAuthorityFor } from '../../../authority/lock-authority';
+import { buildAuthorityCallerVerifier } from '../../../authority/verify-authority-caller';
 
 export default defineTool({
   method: 'POST',
@@ -30,8 +42,8 @@ export default defineTool({
   // PUBLIC by design (auth-tier Wave-1 named exception): peers route remote
   // authority ops here cross-machine via HttpPeerRpcTransport — a loopback
   // tier would break the federated lock authority. The verifyIsAuthority
-  // check + the mesh transport are the app-level perimeter; the missing
-  // caller-standing check is tracked as EI-284.
+  // check + the mesh transport are the transport-level perimeter; the
+  // caller-authentication (EI-322, flag-gated) is the application-level one.
   auth: 'public',
   async handler(req) {
     let body: AuthorityRpcEnvelope;
@@ -43,7 +55,10 @@ export default defineTool({
     if (!body || typeof body.harnessSlug !== 'string' || typeof body.kind !== 'string') {
       return Response.json({ ok: false, error: 'invalid_envelope' }, { status: 400 });
     }
+    // EI-322: require a valid signed caller envelope when enforcement is on.
+    const requireSigned = await getFlag(FLAGS.AUTHORITY_RPC_SIGNED, 'system');
     const result = await handleAuthorityRpc(body, {
+      verifyCaller: requireSigned ? buildAuthorityCallerVerifier() : undefined,
       // Refuse an op we shouldn't serialize: a peer may have routed here during a
       // failover gap when we are no longer the authority for this harness.
       verifyIsAuthority: async (harnessSlug) => {

@@ -14,7 +14,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { Select } from '../../harness/Select';
 import {
+  AGENT_BACKENDS,
   DEFAULT_MODEL_TIERS,
   SURFACE_KEYS,
   isValidModelSpec,
@@ -22,6 +24,12 @@ import {
   type ModelTier,
   type SurfaceKey,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+
+/** Options for a backend pick that may also inherit (per-surface, per-tier). */
+const BACKEND_CHOICE_OPTIONS = [
+  { value: 'inherit', label: 'Inherit global' },
+  ...AGENT_BACKENDS.map((b) => ({ value: b, label: b })),
+];
 
 /** Local select value: a concrete backend, or 'inherit' = omit from the map. */
 type SurfaceChoice = 'inherit' | AgentBackend;
@@ -70,11 +78,15 @@ const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator',
     queen's per-task tier pick applies (others can be added via the JSON). */
 const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
 
-/** Mid-edit tier rows (drafts, so plain useState like the other form fields). */
+/** Mid-edit tier rows (drafts, so plain useState like the other form fields).
+    `backend: ''` = inherit the global agent command. */
 interface TierRow {
   name: string;
   spec: string;
+  backend: '' | AgentBackend;
 }
+
+const tierToRow = (t: ModelTier): TierRow => ({ name: t.name, spec: t.spec, backend: t.backend ?? '' });
 
 export default function AgentSettingsPage() {
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
@@ -96,7 +108,7 @@ export default function AgentSettingsPage() {
   // Model-tier menu rows, ordered weakest → strongest (the order IS the
   // strength ranking the spawn clamp uses). Empty list = the committed
   // defaults apply at resolution time; the editor seeds them for visibility.
-  const [tierRows, setTierRows] = useState<TierRow[]>([...DEFAULT_MODEL_TIERS]);
+  const [tierRows, setTierRows] = useState<TierRow[]>(DEFAULT_MODEL_TIERS.map(tierToRow));
   const [tiersCustomized, setTiersCustomized] = useState(false);
   // Per-role ceiling: '' = no ceiling (strongest tier allowed).
   const [tierCeilings, setTierCeilings] = useState<Record<string, string>>({});
@@ -133,7 +145,7 @@ export default function AgentSettingsPage() {
       );
       const fetchedTiers = d.config.tiers ?? [];
       setTiersCustomized(fetchedTiers.length > 0);
-      setTierRows(fetchedTiers.length > 0 ? fetchedTiers : [...DEFAULT_MODEL_TIERS]);
+      setTierRows((fetchedTiers.length > 0 ? fetchedTiers : DEFAULT_MODEL_TIERS).map(tierToRow));
       setTierCeilings(d.config.tierCeilings ?? {});
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
@@ -195,7 +207,7 @@ export default function AgentSettingsPage() {
         return;
       }
       seenNames.add(name.toLowerCase());
-      cleanedTiers.push({ name, spec });
+      cleanedTiers.push({ name, spec, ...(row.backend ? { backend: row.backend } : {}) });
     }
     const isDefaultMenu = JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
     const tiersOut = isDefaultMenu ? [] : cleanedTiers;
@@ -376,9 +388,15 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Leave as-is to track the built-in menu."
+          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Backend 'Inherit global' runs the tier on the backend above; picking one swaps that spawn onto that CLI. Leave as-is to track the built-in menu."
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
+              <span style={{ width: 14 }} />
+              <span style={{ width: 120 }}>Tier</span>
+              <span style={{ width: 200 }}>Model spec</span>
+              <span>Backend</span>
+            </div>
             {tierRows.map((row, i) => (
               <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right' }}>{i + 1}</span>
@@ -386,6 +404,7 @@ export default function AgentSettingsPage() {
                   className="pc-input"
                   style={{ fontSize: 13, padding: '2px 6px', width: 120 }}
                   placeholder="tier name"
+                  aria-label={`Tier ${i + 1} name`}
                   value={row.name}
                   onChange={(e) => {
                     setTiersCustomized(true);
@@ -396,10 +415,23 @@ export default function AgentSettingsPage() {
                   className="pc-input"
                   style={{ fontSize: 13, padding: '2px 6px', width: 200, fontFamily: 'monospace' }}
                   placeholder="model[:effort], e.g. opus:high"
+                  aria-label={`Tier ${i + 1} model spec`}
                   value={row.spec}
                   onChange={(e) => {
                     setTiersCustomized(true);
                     setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, spec: e.target.value } : r)));
+                  }}
+                />
+                <Select
+                  value={row.backend || 'inherit'}
+                  ariaLabel={`Tier ${i + 1} backend`}
+                  options={BACKEND_CHOICE_OPTIONS}
+                  triggerStyle={{ fontSize: 13 }}
+                  onChange={(v) => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.map((r, j) =>
+                      j === i ? { ...r, backend: v === 'inherit' ? '' : (v as AgentBackend) } : r,
+                    ));
                   }}
                 />
                 <button
@@ -422,7 +454,7 @@ export default function AgentSettingsPage() {
                 style={{ fontSize: 11, padding: '2px 8px' }}
                 onClick={() => {
                   setTiersCustomized(true);
-                  setTierRows((prev) => [...prev, { name: '', spec: '' }]);
+                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '' }]);
                 }}
               >
                 + add tier
@@ -433,7 +465,7 @@ export default function AgentSettingsPage() {
                 style={{ fontSize: 11, padding: '2px 8px' }}
                 onClick={() => {
                   setTiersCustomized(false);
-                  setTierRows([...DEFAULT_MODEL_TIERS]);
+                  setTierRows(DEFAULT_MODEL_TIERS.map(tierToRow));
                 }}
               >
                 reset to defaults
@@ -453,27 +485,26 @@ export default function AgentSettingsPage() {
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {CEILING_ROLES.map((role) => (
-              <label key={role} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <div key={role} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
                 <code style={{ minWidth: 110 }}>{role}</code>
-                <select
-                  className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 'auto' }}
-                  value={tierCeilings[role] ?? ''}
-                  onChange={(e) =>
+                <Select
+                  value={tierCeilings[role] ?? 'none'}
+                  ariaLabel={`Tier ceiling for ${role}`}
+                  triggerStyle={{ fontSize: 13 }}
+                  options={[
+                    { value: 'none', label: 'No ceiling' },
+                    ...tierRows.filter((t) => t.name.trim()).map((t) => ({ value: t.name, label: t.name })),
+                  ]}
+                  onChange={(v) =>
                     setTierCeilings((prev) => {
                       const next = { ...prev };
-                      if (e.target.value) next[role] = e.target.value;
+                      if (v && v !== 'none') next[role] = v;
                       else delete next[role];
                       return next;
                     })
                   }
-                >
-                  <option value="">No ceiling</option>
-                  {tierRows.filter((t) => t.name.trim()).map((t) => (
-                    <option key={t.name} value={t.name}>{t.name}</option>
-                  ))}
-                </select>
-              </label>
+                />
+              </div>
             ))}
           </div>
         </FormField>
@@ -484,31 +515,28 @@ export default function AgentSettingsPage() {
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {SURFACE_KEYS.map((surface) => (
-              <label
+              <div
                 key={surface}
                 style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
               >
                 <code style={{ minWidth: 110 }}>{surface}</code>
-                <select
-                  className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 'auto' }}
+                <Select
                   value={surfaceBackends[surface]}
-                  onChange={(e) =>
+                  ariaLabel={`Backend for ${surface}`}
+                  triggerStyle={{ fontSize: 13 }}
+                  options={BACKEND_CHOICE_OPTIONS}
+                  onChange={(v) =>
                     setSurfaceBackends((prev) => ({
                       ...prev,
-                      [surface]: e.target.value as SurfaceChoice,
+                      [surface]: v as SurfaceChoice,
                     }))
                   }
-                >
-                  <option value="inherit">Inherit global</option>
-                  <option value="omp">omp</option>
-                  <option value="claude-code">claude-code</option>
-                  <option value="codex">codex</option>
-                </select>
+                />
                 <input
                   className="pc-input"
                   style={{ fontSize: 13, padding: '2px 6px', width: 160 }}
                   placeholder="model (optional)"
+                  aria-label={`Model for ${surface}`}
                   value={surfaceModels[surface]}
                   onChange={(e) =>
                     setSurfaceModels((prev) => ({
@@ -517,7 +545,7 @@ export default function AgentSettingsPage() {
                     }))
                   }
                 />
-              </label>
+              </div>
             ))}
           </div>
         </FormField>

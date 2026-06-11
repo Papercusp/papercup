@@ -34,6 +34,10 @@ export interface TierResolution {
   tier: string;
   /** The tier that was asked for. */
   requestedTier: string;
+  /** Backend the resolved tier pins (PAPERCUSP_SPAWN_BACKEND). Absent =
+      inherit the host's agent command. Comes from the RESOLVED tier — a
+      clamp adopts the clamped-to tier's backend along with its spec. */
+  backend?: string;
   /** Set when the pick was clamped, with the bound that did it. */
   clamped?: 'floor' | 'ceiling';
   /** Human-readable note on why the clamp happened (for the spawn log/row). */
@@ -132,6 +136,7 @@ export function resolveTierSpec(opts: {
     spec: tiers[idx].spec,
     tier: tiers[idx].name,
     requestedTier: requested,
+    ...(tiers[idx].backend ? { backend: tiers[idx].backend } : {}),
     ...(clamped ? { clamped, note } : {}),
   };
 }

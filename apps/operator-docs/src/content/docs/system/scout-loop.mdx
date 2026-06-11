@@ -89,6 +89,11 @@ Three behaviours the composition owns:
   dropped (the moonshot bucket survives so leaps aren't over-pruned).
 - **Per-cycle budget (D-010).** `limits.maxCostUsd` halts the cycle before the next
   LLM-spending step; `limits.maxIdeators` clamps the ideator roster.
+- **Empty-digest guard (EI-303).** A digest with zero meta-patterns in every lane
+  (`digestIsEmpty`) early-exits `stop: 'empty-digest'` before the first costed
+  step — a fresh/quiet hive spends $0 instead of paying the full ideator roster
+  to reach `no-ideas`. `headline`/`generatedAt` don't count; only patterns ground
+  ideas.
 
 `ScoutCycleResult` carries every stage (`digest`, `ideas`, `scored`, `survivors`,
 `proposals`, `routed`, `provenance`, `calls`, `costUsd`, `stop`) so the invariants

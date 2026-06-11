@@ -92,6 +92,7 @@ describe('scenario registry', () => {
       'su-S09-coord-injection-read',
       'su-S10-claim-before-work',
       'su-S11-lock-contention-protocol',
+      'su-S12-same-turn-insight',
     ].sort());
   });
 

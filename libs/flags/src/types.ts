@@ -107,6 +107,15 @@ export const FLAGS = {
   // and model args are honored regardless — this gates only the Queen's
   // autonomous escalation lever.
   QUEEN_TIER_SELECTION: "papercusp-queen-tier-selection",
+  // EI-322 (authenticated authority RPC): when ON, POST /api/authority/rpc
+  // REQUIRES a valid Ed25519-signed caller envelope (sig + freshness +
+  // non-revoked device) before running a mutating lock/claim op — closing the
+  // self-reported-holderPubkey hole on the cross-machine path. OFF = legacy
+  // behavior (verifyIsAuthority + the EI-284 revocation gate only; unsigned
+  // callers accepted). The transport ALWAYS signs, so enabling is safe on a
+  // box where every peer runs current code; the flag is the cross-machine
+  // rollout lever (sign everywhere → then enforce).
+  AUTHORITY_RPC_SIGNED: "papercusp-authority-rpc-signed",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -168,6 +177,13 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // floor/ceiling-clamped, so the safety envelope holds with the flag on; OFF
   // is the kill-switch if her judgment misfires.
   [FLAGS.QUEEN_TIER_SELECTION]: true,
+  // ON by default (alpha flags-default-on policy + EI-322 security fix): the
+  // transport ALWAYS signs and cross-machine authority RPC is not yet wired in
+  // production (no peer addressing), so enabling enforcement now hardens the
+  // surface with zero live-traffic risk. OFF is the cross-machine rollout lever
+  // (deploy signing everywhere, THEN this stays/comes on) and the emergency
+  // revert if a real unsigned peer must be tolerated.
+  [FLAGS.AUTHORITY_RPC_SIGNED]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -23,10 +23,17 @@
  * it shouldn't serialize.
  */
 
+import type { AuthorityRpcAuth } from './authority-rpc-envelope';
+
 export interface AuthorityRpcEnvelope {
   harnessSlug: string;
   kind: string;
   payload: unknown;
+  /** EI-322: the optional Ed25519-signed caller-auth wrapper. Present when the
+   *  sender signs (HttpPeerRpcTransport with a `signEnvelope`); verified by the
+   *  receiving route's `verifyCaller`. Absent for in-process rigs that call
+   *  `handleAuthorityRpc` directly without a verifyCaller hook. */
+  auth?: AuthorityRpcAuth;
 }
 
 /** A handler that executes one op kind locally on the authority. */
@@ -56,14 +63,27 @@ export interface HandleAuthorityRpcResult {
   ok: boolean;
   result?: unknown;
   /** Set when ok is false — a machine-readable reason. */
-  error?: 'unknown_kind' | 'not_authority' | 'handler_error';
+  error?: 'unknown_kind' | 'not_authority' | 'handler_error' | 'unauthenticated';
   message?: string;
 }
+
+/** The verdict from a caller-auth check (EI-322). On success it returns the
+ *  PROVEN device pubkey so callers can log / further-bind it. */
+export type VerifyCallerResult = { ok: true; devicePubkey: string } | { ok: false; reason: string };
 
 export interface HandleAuthorityRpcOpts {
   /** Re-verify THIS machine is the authority for the harness before running the
    *  op (refuses a mis-routed op during a failover gap). Default: allow. */
   verifyIsAuthority?: (harnessSlug: string) => Promise<boolean> | boolean;
+  /**
+   * EI-322: authenticate the CALLER before running the op. Verifies `env.auth`'s
+   * Ed25519 signature + freshness, that the proven device is not revoked, and
+   * that it matches the op's claimed holder. Runs BEFORE verifyIsAuthority (an
+   * unauthenticated caller learns nothing about our authority status). Default:
+   * skip (in-process rigs dispatch unauthenticated); the real route always wires
+   * it (flag-gated).
+   */
+  verifyCaller?: (env: AuthorityRpcEnvelope) => Promise<VerifyCallerResult> | VerifyCallerResult;
   /**
    * Dispatch against these handlers instead of the process-global registry.
    * Lets a multi-instance rig (cross-machine E2E) give each simulated machine
@@ -84,6 +104,20 @@ export async function handleAuthorityRpc(
 ): Promise<HandleAuthorityRpcResult> {
   const handler = opts.handlers ? opts.handlers[env.kind] : _handlers.get(env.kind);
   if (!handler) return { ok: false, error: 'unknown_kind', message: `no handler for kind '${env.kind}'` };
+
+  // EI-322: authenticate the caller FIRST — before we reveal anything (even our
+  // authority status) to an unproven peer.
+  if (opts.verifyCaller) {
+    let verdict: VerifyCallerResult;
+    try {
+      verdict = await opts.verifyCaller(env);
+    } catch (err) {
+      verdict = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (!verdict.ok) {
+      return { ok: false, error: 'unauthenticated', message: verdict.reason };
+    }
+  }
 
   if (opts.verifyIsAuthority) {
     let isAuth = false;

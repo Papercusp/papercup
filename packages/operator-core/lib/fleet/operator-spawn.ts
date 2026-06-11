@@ -397,6 +397,7 @@ export async function spawnAgentInHarness(
   // tier silently running at the default would be the EI-7 class of bug.
   let spawnModelSpec: string | null = (input.modelSpec ?? '').trim() || null;
   let spawnModelTier: string | null = null;
+  let spawnModelBackend: string | null = null;
   if (!spawnModelSpec && input.tier && input.tier.trim()) {
     const [{ resolveTierSpec }, { readAgentConfig }] = await Promise.all([
       import('./model-tiers'),
@@ -412,6 +413,7 @@ export async function spawnAgentInHarness(
     if (!resolved.ok) return fail(`spawn rejected: ${resolved.error}`);
     spawnModelSpec = resolved.spec;
     spawnModelTier = resolved.tier;
+    spawnModelBackend = resolved.backend ?? null;
     if (resolved.note) console.log(`[operator-spawn] ${resolved.note}`);
   }
 
@@ -525,7 +527,7 @@ export async function spawnAgentInHarness(
   // AGENT_CMD/AGENT_MODELS for the role); omp resumes by thread id + codex by
   // rollout, so they mint none. The UPDATE is best-effort — a not-yet-migrated DB
   // (session_id from mig 203) must never break a spawn.
-  const { backend } = resolveSpawnBackendModel(role, spawnModelSpec ?? undefined);
+  const { backend } = resolveSpawnBackendModel(role, spawnModelSpec ?? undefined, spawnModelBackend ?? undefined);
   const forceSessionId = backend === 'claude-code' ? randomUUID() : undefined;
   if (forceSessionId) {
     try {
@@ -571,6 +573,11 @@ export async function spawnAgentInHarness(
   // covering the aiBackend agentCmd-swap path the command-level append can't reach.
   if (spawnModelSpec) {
     extraEnv.PAPERCUSP_SPAWN_MODEL = spawnModelSpec;
+  }
+  // Per-tier backend: buildInvokeOnce swaps the base command to this backend's
+  // default and pins the child's AGENT_BACKEND to match.
+  if (spawnModelBackend) {
+    extraEnv.PAPERCUSP_SPAWN_BACKEND = spawnModelBackend;
   }
 
   // P-012 (hive-inference-gateway): when the INFERENCE_GATEWAY flag is ON (default OFF),

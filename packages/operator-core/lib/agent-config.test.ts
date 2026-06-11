@@ -76,6 +76,16 @@ describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', ()
     expect(parseTiers({ not: 'array' })).toEqual([]);
   });
 
+  it('keeps a known backend on a tier row; drops an unknown one (row survives as inherit)', () => {
+    expect(parseTiers([
+      { name: 'eco', spec: 'haiku', backend: 'omp' },
+      { name: 'turbo', spec: 'opus:max', backend: 'gemini' },
+    ])).toEqual([
+      { name: 'eco', spec: 'haiku', backend: 'omp' },
+      { name: 'turbo', spec: 'opus:max' },
+    ]);
+  });
+
   it('ceilings: keeps role→tier-name entries; drops names absent from a NON-EMPTY menu', () => {
     const tiers = [{ name: 'quick', spec: 'haiku' }, { name: 'deep', spec: 'opus' }];
     expect(parseTierCeilings({ bee: 'deep', worker: 'nope', '': 'deep', queen: 7 }, tiers)).toEqual({ bee: 'deep' });
