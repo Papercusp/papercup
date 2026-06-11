@@ -2663,22 +2663,34 @@ fn draw_palette(f: &mut Frame, app: &App) {
 /// the returned rect. Headers start with two spaces to stay aligned with the
 /// "> " highlight-symbol indent of stateful lists.
 pub(crate) fn block_with_header(f: &mut Frame, area: Rect, block: Block, header: &str) -> Rect {
+    block_with_header_rows(
+        f,
+        area,
+        block,
+        vec![Line::from(Span::styled(header.to_string(), Theme::header()))],
+    )
+}
+
+/// `block_with_header` for N pre-styled header lines (e.g. the colony roster's
+/// kind legend above its column header). Same contract: callers render their
+/// list WITHOUT a block into the returned rect.
+pub(crate) fn block_with_header_rows(
+    f: &mut Frame,
+    area: Rect,
+    block: Block,
+    rows_above: Vec<Line<'static>>,
+) -> Rect {
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height == 0 {
         return inner;
     }
+    let n = rows_above.len() as u16;
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(n), Constraint::Min(0)])
         .split(inner);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            header.to_string(),
-            Theme::header(),
-        ))),
-        rows[0],
-    );
+    f.render_widget(Paragraph::new(rows_above), rows[0]);
     rows[1]
 }
 

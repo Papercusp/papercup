@@ -480,6 +480,33 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
+/// Compact liveness legend (owner ask 2026-06-11): the roster's dot vocabulary
+/// plus the heartbeat age that produces each state. The AGE THRESHOLDS mirror
+/// `operator-core/lib/liveness.ts` (LIVE_MS 60s · STALE_MS 10min) — the backend
+/// derives the status and pui only renders it, so these labels are documentation
+/// of the wire contract, not a second derivation.
+fn liveness_legend_spans() -> Vec<Span<'static>> {
+    let entries: [(&str, &str, bool, &str); 3] = [
+        (glyph::liveness::LIVE, "live <1m", false, "live"),
+        (glyph::liveness::IDLE, "idle <10m", false, "idle"),
+        (glyph::liveness::STALE, "stale ≥10m", true, "stale"),
+    ];
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (dot, label, stale, liveness)) in entries.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                " · ",
+                ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray),
+            ));
+        }
+        spans.push(Span::styled(
+            format!("{dot} {label}"),
+            Theme::liveness_style(stale, liveness),
+        ));
+    }
+    spans
+}
+
 /// The MANUAL wake-mode badge text (P-008): the staged-wake count rides on the
 /// badge when anything is pending review (" ⏸MANUAL·3"), bare otherwise.
 fn wake_badge_text(pending: i64) -> String {
@@ -615,12 +642,28 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
             app.plan_filter.len()
         )
     };
-    // Styled column header above the roster (D-005).
-    let body_area = crate::ui::block_with_header(
+    // Styled column header above the roster (D-005) — one compact legend line
+    // rides above it (owner ask 2026-06-11): the kind glyphs (♛ 🐝 🛡 📋 🛠,
+    // flag-on — flag-off rows carry no glyphs) + the liveness dots with their
+    // heartbeat-age thresholds (always — the dots render regardless of flag).
+    let header = format!("    {:<7}{:<31}{}", "agent", "doing now", "todos");
+    let mut legend_spans: Vec<Span<'static>> = Vec::new();
+    if app.hive_agent_tabs {
+        legend_spans.extend(crate::agent_pane_kind::legend_line().spans);
+        legend_spans.push(Span::raw("   "));
+    } else {
+        legend_spans.push(Span::raw(" "));
+    }
+    legend_spans.extend(liveness_legend_spans());
+    let header_rows: Vec<Line<'static>> = vec![
+        Line::from(legend_spans),
+        Line::from(Span::styled(header, Theme::header())),
+    ];
+    let body_area = crate::ui::block_with_header_rows(
         f,
         area,
         Theme::block(Line::from(title), true),
-        &format!("    {:<7}{:<31}{}", "agent", "doing now", "todos"),
+        header_rows,
     );
     let list = List::new(body)
         .highlight_style(Theme::selected())
@@ -762,6 +805,33 @@ mod tests {
         // P-008: bare badge when nothing staged; the count rides on it otherwise.
         assert_eq!(wake_badge_text(0), " ⏸MANUAL");
         assert_eq!(wake_badge_text(3), " ⏸MANUAL·3");
+    }
+
+    #[test]
+    fn liveness_legend_names_each_dot_with_its_heartbeat_threshold() {
+        // Owner ask 2026-06-11: the legend documents the wire contract —
+        // thresholds mirror operator-core/lib/liveness.ts (LIVE_MS/STALE_MS).
+        let text: String = liveness_legend_spans()
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            text,
+            format!(
+                "{} live <1m · {} idle <10m · {} stale ≥10m",
+                glyph::liveness::LIVE,
+                glyph::liveness::IDLE,
+                glyph::liveness::STALE
+            )
+        );
+        // Each entry is tinted with the same style the roster dot uses.
+        let spans = liveness_legend_spans();
+        assert_eq!(
+            spans[0].style,
+            Theme::liveness_style(false, "live"),
+            "live entry mis-styled"
+        );
+        assert_eq!(spans[4].style, Theme::liveness_style(true, "stale"));
     }
 
     fn row(owner: &str, kind: &str, summary: &str) -> ActivityRow {

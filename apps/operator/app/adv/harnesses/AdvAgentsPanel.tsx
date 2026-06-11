@@ -21,9 +21,11 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { LIVE_MS, STALE_MS } from '@papercusp/operator-core/lib/liveness';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { getRoleStyle } from '../../harness/theme';
 import { Tooltip } from '../../harness/Tooltip';
+import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 
 // The colony tab's kind vocabulary (apps/tui agent_pane_kind.rs glyphs) —
@@ -44,6 +46,28 @@ const KIND_LEGEND: Array<{ kind: string; hint: string }> = [
   { kind: 'sentinel', hint: 'Sentinel — the always-on, owner-facing operator chat persona' },
   { kind: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
   { kind: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
+];
+
+// Liveness legend (owner ask 2026-06-11) — thresholds read straight off the
+// canonical constants (lib/liveness — the same leaf deriveLiveness uses), so
+// the labels can't drift from the derivation.
+const fmtAgeBound = (ms: number) => (ms % 60_000 === 0 ? `${ms / 60_000}m` : `${Math.round(ms / 1000)}s`);
+const LIVENESS_LEGEND: Array<{ liveness: 'live' | 'idle' | 'stale'; label: string; hint: string }> = [
+  {
+    liveness: 'live',
+    label: `live <${fmtAgeBound(LIVE_MS)}`,
+    hint: `Live — a heartbeat (tool call) within the last ${fmtAgeBound(LIVE_MS)}`,
+  },
+  {
+    liveness: 'idle',
+    label: `idle <${fmtAgeBound(STALE_MS)}`,
+    hint: `Idle — last heartbeat ${fmtAgeBound(LIVE_MS)}–${fmtAgeBound(STALE_MS)} ago (may be mid-reasoning; heartbeats only fire on tool boundaries)`,
+  },
+  {
+    liveness: 'stale',
+    label: `stale ≥${fmtAgeBound(STALE_MS)}`,
+    hint: `Stale — no heartbeat for ${fmtAgeBound(STALE_MS)}+ (session presumed ended)`,
+  },
 ];
 
 // One agent row from `fleetAssignments.byHarness` (the fleet:assignments
@@ -113,11 +137,20 @@ export default function AdvAgentsPanel({ params }: PanelComponentProps) {
         </div>
         <span className="pc-adv-agents__bar-rest" id="pc-adv-agents-bar-slot" />
         {view === 'working' ? (
-          <span className="pc-adv-agents__legend" aria-label="Agent kind legend">
+          <span className="pc-adv-agents__legend" aria-label="Agent kind and liveness legend">
             {KIND_LEGEND.map(({ kind, hint }) => (
               <Tooltip key={kind} label={hint}>
                 <span className="pc-adv-agents__legend-item">
                   {KIND_GLYPH[kind]} {kind}
+                </span>
+              </Tooltip>
+            ))}
+            <span className="pc-adv-agents__legend-gap" aria-hidden />
+            {LIVENESS_LEGEND.map(({ liveness, label, hint }) => (
+              <Tooltip key={liveness} label={hint}>
+                <span className="pc-adv-agents__legend-item">
+                  <LivenessDot liveness={liveness} size={7} title="" />
+                  {label}
                 </span>
               </Tooltip>
             ))}
