@@ -21,6 +21,7 @@ import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { startMemoryWatchdog } from '@papercusp/operator-core/lib/memory-watchdog';
 import { gracefulHostRecycle } from '@papercusp/operator-core/lib/host-recycle';
+import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 
 // Resilience guard: when an MCP/SSE client disconnects mid-stream, the
 // `mcp-handler` dependency's response adapter enqueues onto an already-closed
@@ -93,6 +94,19 @@ const server = serve({ fetch: handler, port, hostname }, (info) => {
   const pinWarning = workspacePinWarning();
   if (pinWarning) console.warn(pinWarning);
 });
+
+// PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets
+// 3056). The HTTP control plane (/pty/spawn|input|resize|kill) lives in this
+// host's routes, and PiPanel PREFERS ws://:<port>/pty/<id> (AttachAddon) over
+// the SSE fallback — but the server lost its boot wiring when the Next
+// instrumentation.ts path was retired, leaving the WS transport silently dead
+// (pty-stack.integration.test.ts pins it). Must run in THIS process: the pty
+// registry the WS attaches to is in-process state shared with the spawn
+// routes. Fail-soft on EADDRINUSE (a sibling host already bound it).
+const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
+if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
+  startPtyWsServer({ port: ptyWsPort });
+}
 
 // Bounded-RSS self-recycle: the host leaks retained heap under fleet load
 // (~0.2 GB/min, no plateau); past ~4 GB the GC pauses stall the event loop and

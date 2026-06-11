@@ -38,6 +38,38 @@ export function defaultOwnerId(): string {
   return `${hostname()}:${process.pid}`;
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM = the pid exists but belongs to another user — still alive.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * EI-281: a crashed runner's claim otherwise blocks its scenario for the full
+ * TTL (the gate's runner-aggregate su-S11 attempt sat behind a 10-min stale
+ * claim from a dead pid). Default owner ids are `${hostname()}:${pid}` — when
+ * the holder is on THIS host and its pid is gone, the claim is reapable now
+ * rather than at expiry (the same liveness probe the lock store uses). A
+ * custom owner id without the host:pid shape, or a holder on another host,
+ * is never treated as dead.
+ */
+export function holderIsDeadLocalPid(
+  ownerId: string,
+  host: string = hostname(),
+  isAlive: (pid: number) => boolean = pidAlive,
+): boolean {
+  const idx = ownerId.lastIndexOf(':');
+  if (idx <= 0) return false;
+  const ownerHost = ownerId.slice(0, idx);
+  const pid = Number(ownerId.slice(idx + 1));
+  if (ownerHost !== host || !Number.isInteger(pid) || pid <= 0) return false;
+  return !isAlive(pid);
+}
+
 export interface ClaimKeyInput {
   scenarioId: string;
   identityHash: string;
@@ -100,6 +132,16 @@ export async function tryClaim(opts: TryClaimOpts): Promise<ClaimResult> {
   const holder = holders[0];
   if (!holder) {
     // Race: holder expired between our reap and our select. One retry.
+    return tryClaim(opts);
+  }
+  if (holderIsDeadLocalPid(holder.owner_id)) {
+    // Crashed local runner (EI-281) — reap its claim and retry instead of
+    // reporting busy until the TTL lapses.
+    await sql`
+      DELETE FROM harness_shared.llm_test_claims
+       WHERE claim_key = ${claimKey}
+         AND owner_id = ${holder.owner_id}
+    `;
     return tryClaim(opts);
   }
   return {

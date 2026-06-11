@@ -54,6 +54,24 @@ describe('classifyAgentPane', () => {
     expect(classifyAgentPane({ role: null }).kind).toBe('bee');
   });
 
+  it('the registered `queen` role → queen/auto (hive invoke-route launches)', () => {
+    expect(classifyAgentPane({ role: 'queen' })).toEqual({ kind: 'queen', driveMode: 'auto' });
+  });
+
+  it("the owner's psu sessions → su/responsive, NOT the bee fallback (P-005)", () => {
+    // Explicit role.
+    expect(classifyAgentPane({ role: 'su' })).toEqual({ kind: 'su', driveMode: 'responsive' });
+    // Role-less presence with the psu su- coord-id prefix (the common roster shape).
+    expect(classifyAgentPane({ ownerId: 'su-0e3fdf01-144f-48c8-8949-7e8ab88f9501' })).toEqual({
+      kind: 'su',
+      driveMode: 'responsive',
+    });
+    // A ROLE-stamped su- owner keeps its role classification (role wins).
+    expect(classifyAgentPane({ role: 'worker', ownerId: 'su-abc' }).kind).toBe('bee');
+    // Nursery spawn ids (s-<ts>-…) never match the su arm.
+    expect(classifyAgentPane({ ownerId: 's-1781144142976-494394ea' }).kind).toBe('bee');
+  });
+
   it('case-insensitive on role', () => {
     expect(classifyAgentPane({ role: 'OPERATOR' }).kind).toBe('sentinel');
   });
@@ -66,8 +84,8 @@ describe('classifyAgentPane', () => {
     }
   });
 
-  it('exposes exactly the four kinds + two modes', () => {
-    expect(AGENT_PANE_KINDS).toEqual(['queen', 'bee', 'sentinel', 'planner']);
+  it('exposes exactly the five kinds + two modes', () => {
+    expect(AGENT_PANE_KINDS).toEqual(['queen', 'bee', 'sentinel', 'planner', 'su']);
     expect(DRIVE_MODES).toEqual(['auto', 'responsive']);
   });
 });

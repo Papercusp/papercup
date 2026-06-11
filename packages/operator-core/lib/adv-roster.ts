@@ -208,7 +208,7 @@ export function mergeRosterEntries(
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
-    const pane = classifyAgentPane({ role: adv?.role ?? null });
+    const pane = classifyAgentPane({ role: adv?.role ?? null, ownerId: p.ownerId });
     const claims = claimsByOwner.get(p.ownerId) ?? [];
     const currentPlanSlug = p.currentPlanSlug ?? adv?.planSlug ?? null;
     return {

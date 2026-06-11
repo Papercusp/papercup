@@ -501,6 +501,20 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
         .map(|r| {
             // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
             let dot = Theme::liveness_marker(r.stale, &r.liveness);
+            // P-004 (progress-tab-agents-convergence, owner ask 2026-06-11): the
+            // kind GLYPH leads each roster row — ♛ queen · 🐝 bee · 🛡 sentinel ·
+            // 📋 planner · 🛠 su (the owner's own psu sessions) — so workers and
+            // owner sessions read apart at a glance, same vocabulary as the pane
+            // titles. Flag-on; flag-off keeps the legacy dot-only row.
+            let kind = crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind);
+            let glyph_cell = match (app.hive_agent_tabs, kind) {
+                (true, Some(k)) => Span::styled(
+                    format!("{} ", k.glyph()),
+                    ratatui::style::Style::default().fg(k.color()),
+                ),
+                (true, None) => Span::raw("  ".to_string()),
+                _ => Span::raw(String::new()),
+            };
             let agent = r.agent.clone().unwrap_or_else(|| "-".into());
             // The "what it's doing" cell: live activity summary, else intent/role.
             let act = latest
@@ -520,10 +534,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
             // Sentinel/Planner). zellij has no per-pane color (D-008), so pui draws
             // it here where it owns the chrome. Flag-off → plain (current).
             let agent_cell = format!(" {:<6} ", trunc(&agent, 6));
-            let agent_span = match (
-                app.hive_agent_tabs,
-                crate::agent_pane_kind::AgentPaneKind::from_opt(&r.agent_pane_kind),
-            ) {
+            let agent_span = match (app.hive_agent_tabs, kind) {
                 (true, Some(k)) => {
                     Span::styled(agent_cell, ratatui::style::Style::default().fg(k.color()))
                 }
@@ -554,6 +565,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
             };
             ListItem::new(Line::from(vec![
                 dot,
+                glyph_cell,
                 agent_span,
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),

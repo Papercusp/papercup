@@ -33,6 +33,14 @@ import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch'
 
 const BASE_PORT = Number(process.env.MOBILE_VOICE_WS_PORT ?? 3068);
 const PORT_RANGE = 8;
+/**
+ * Papercusp service ports the walk must NEVER squat. Walking +1 from a taken
+ * base can land on a sibling service's canonical port — observed live
+ * 2026-06-10: with 3068 held, the staging host's walk reached :3070 during a
+ * green-host restart window and the voice WSS answered the operator API port
+ * with 426s while the real host crash-looped on EADDRINUSE.
+ */
+const RESERVED_PORTS = new Set([3055, 3056, 3070, 3170]);
 const DEFAULT_WAKE_WORD = process.env.MOBILE_WAKE_WORD ?? 'hey operator';
 
 // Pin started/chosenPort on globalThis so Next dev HMR re-imports of
@@ -88,6 +96,20 @@ export function startMobileVoiceWs(): void {
 }
 
 async function tryListen(port: number, attempt: number): Promise<void> {
+  // Skip reserved papercusp service ports instead of binding them (the walk
+  // still consumes the attempt so the range stays bounded).
+  if (RESERVED_PORTS.has(port)) {
+    if (attempt + 1 < PORT_RANGE) {
+      console.warn(`[mobile-voice] port ${port} is a reserved papercusp service port — skipping`);
+      void tryListen(port + 1, attempt + 1);
+    } else {
+      console.error(
+        `[mobile-voice] FATAL: walk exhausted at reserved port ${port}; voice WS will not start.`,
+      );
+      mvState.started = false;
+    }
+    return;
+  }
   const wss = new WebSocketServer({
     port,
     path: '/api/device/voice',

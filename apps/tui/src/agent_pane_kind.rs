@@ -12,13 +12,16 @@
 //! P-011 grouping); kept here so the contract is locked from P-001.
 #![allow(dead_code)]
 
-/// The four owner-facing dock pane kinds. Mirrors `AGENT_PANE_KINDS` (backend).
+/// The five owner-facing dock pane kinds. Mirrors `AGENT_PANE_KINDS` (backend).
+/// `Su` = the owner's own interactive psu session (progress-tab-agents-convergence
+/// P-005): visible in the colony ROSTER, never dock-paned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentPaneKind {
     Queen,
     Bee,
     Sentinel,
     Planner,
+    Su,
 }
 
 impl AgentPaneKind {
@@ -30,6 +33,7 @@ impl AgentPaneKind {
             "bee" => Some(Self::Bee),
             "sentinel" => Some(Self::Sentinel),
             "planner" => Some(Self::Planner),
+            "su" => Some(Self::Su),
             _ => None,
         }
     }
@@ -46,6 +50,7 @@ impl AgentPaneKind {
             Self::Bee => "bee",
             Self::Sentinel => "sentinel",
             Self::Planner => "planner",
+            Self::Su => "su",
         }
     }
 
@@ -58,6 +63,7 @@ impl AgentPaneKind {
             Self::Bee => "🐝",
             Self::Sentinel => "🛡",
             Self::Planner => "📋",
+            Self::Su => "🛠",
         }
     }
 
@@ -70,6 +76,9 @@ impl AgentPaneKind {
             Self::Bee => Color::Yellow,
             Self::Sentinel => Color::Cyan,
             Self::Planner => Color::Green,
+            // Owner sessions render in the neutral fg family — present but not
+            // competing with the worker-kind accents.
+            Self::Su => Color::Gray,
         }
     }
 
@@ -83,6 +92,9 @@ impl AgentPaneKind {
             Self::Queen => 1,
             Self::Bee => 2,
             Self::Planner => 3,
+            // su sessions are never dock-paned, but the roster sorts by rank —
+            // the owner's own sessions list after the dock kinds.
+            Self::Su => 4,
         }
     }
 
@@ -92,7 +104,7 @@ impl AgentPaneKind {
     /// None for unglyphed names (the colony driver, bars, user panes).
     pub fn from_glyph_prefix(title: &str) -> Option<Self> {
         let t = title.trim_start();
-        [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner]
+        [Self::Queen, Self::Bee, Self::Sentinel, Self::Planner, Self::Su]
             .into_iter()
             .find(|&k| t.starts_with(k.glyph()))
     }
@@ -152,6 +164,7 @@ mod tests {
             ("bee", AgentPaneKind::Bee),
             ("sentinel", AgentPaneKind::Sentinel),
             ("planner", AgentPaneKind::Planner),
+            ("su", AgentPaneKind::Su),
         ] {
             assert_eq!(AgentPaneKind::from_wire(s), Some(k));
             assert_eq!(k.as_wire(), s);
@@ -182,6 +195,7 @@ mod tests {
             AgentPaneKind::Bee,
             AgentPaneKind::Sentinel,
             AgentPaneKind::Planner,
+            AgentPaneKind::Su,
         ];
         for k in kinds {
             assert!(!k.glyph().is_empty(), "every kind needs a glyph");
@@ -201,6 +215,7 @@ mod tests {
         assert!(AgentPaneKind::Sentinel.group_rank() < AgentPaneKind::Queen.group_rank());
         assert!(AgentPaneKind::Queen.group_rank() < AgentPaneKind::Bee.group_rank());
         assert!(AgentPaneKind::Bee.group_rank() < AgentPaneKind::Planner.group_rank());
+        assert!(AgentPaneKind::Planner.group_rank() < AgentPaneKind::Su.group_rank());
     }
 
     #[test]

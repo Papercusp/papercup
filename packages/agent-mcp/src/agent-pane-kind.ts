@@ -22,6 +22,13 @@
  *                 `sentinel` *role* (a fleet watcher → `bee` kind above). The
  *                 owner-facing tab named "Sentinel" is the operator persona.
  *   - planner   — an agent launched from Create → New plan (P-006). Responsive.
+ *   - su        — the owner's own interactive engineer session (psu): `su-…`
+ *                 coord ids, never a nursery spawn. Responsive; NEVER paned by
+ *                 the dock driver (it's the owner's terminal, not a dock agent).
+ *                 Added by progress-tab-agents-convergence-2026-06-11 P-005 —
+ *                 the old fallback classified psu sessions as bees, so neither
+ *                 roster could tell the owner's sessions from workers (and the
+ *                 dock driver would have tried to resume-pane them).
  *
  * `driveMode` is the ORTHOGONAL axis (D-003 / D-005): `auto` = the system
  * auto-injects the next turn (cadence loop / event wake); `responsive` = the
@@ -29,7 +36,7 @@
  * mode (D-005) can still flip an `auto` agent to manual at runtime.
  */
 
-export const AGENT_PANE_KINDS = ['queen', 'bee', 'sentinel', 'planner'] as const;
+export const AGENT_PANE_KINDS = ['queen', 'bee', 'sentinel', 'planner', 'su'] as const;
 export type AgentPaneKind = (typeof AGENT_PANE_KINDS)[number];
 
 export const DRIVE_MODES = ['auto', 'responsive'] as const;
@@ -48,29 +55,44 @@ export interface AgentPaneClass {
 export type AgentLaunchHint = 'brain' | 'planner' | undefined;
 
 /**
- * Classify an agent into its dock pane-kind + drive mode from its role and an
- * optional launch hint. Precedence (most specific first):
- *   1. brain launch OR the `brain` principal role → queen / auto  (BRAIN_PRINCIPAL_ROLE)
+ * Classify an agent into its dock pane-kind + drive mode from its role, an
+ * optional launch hint, and (for hint-less roster entries) its coord owner id.
+ * Precedence (most specific first):
+ *   1. brain launch OR the `brain` principal role OR the registered `queen`
+ *      role (the hive blueprint's placement decider) → queen / auto
  *   2. planner launch/role   → planner / responsive
  *   3. operator role         → sentinel / responsive   (the owner-facing persona)
  *   4. oracle role           → sentinel / responsive   (a responsive Q&A chat)
- *   5. everything else       → bee / auto   (pipeline roles, the generic `bee`,
+ *   5. su role, or a role-less `su-…` owner id → su / responsive (the owner's
+ *      own interactive psu session — never dock-paned)
+ *   6. everything else       → bee / auto   (pipeline roles, the generic `bee`,
  *                              the `sentinel` WATCHER role, reviewers, orchestrator…)
  */
 export function classifyAgentPane(input: {
   role?: string | null;
   launch?: AgentLaunchHint;
+  ownerId?: string | null;
 }): AgentPaneClass {
   const role = (input.role ?? '').trim().toLowerCase();
-  // The Queen is the brain: a `psu --brain` launch (hint) OR the `brain` principal
-  // role an active brain session carries (BRAIN_PRINCIPAL_ROLE) — so an active
-  // roster entry (role-only, no launch hint) still classifies as queen.
-  if (input.launch === 'brain' || role === 'brain') return { kind: 'queen', driveMode: 'auto' };
+  // The Queen is the brain: a `psu --brain` launch (hint), the `brain` principal
+  // role an active brain session carries (BRAIN_PRINCIPAL_ROLE), or the
+  // registered `queen` role itself (hive invoke-route launches; EI-286
+  // follow-up — before the role was registered the live Queen fell to the bee
+  // arm and glyphed 🐝).
+  if (input.launch === 'brain' || role === 'brain' || role === 'queen') {
+    return { kind: 'queen', driveMode: 'auto' };
+  }
   if (input.launch === 'planner' || role === 'planner') {
     return { kind: 'planner', driveMode: 'responsive' };
   }
   if (role === 'operator' || role === 'oracle') {
     return { kind: 'sentinel', driveMode: 'responsive' };
+  }
+  // The owner's interactive engineer sessions: an explicit su role, or a
+  // role-less presence whose coord id carries the psu `su-` prefix (nursery
+  // spawns mint `s-<ts>-…` ids / role-stamped rows, so they never match).
+  if (role === 'su' || (!role && (input.ownerId ?? '').startsWith('su-'))) {
+    return { kind: 'su', driveMode: 'responsive' };
   }
   return { kind: 'bee', driveMode: 'auto' };
 }
