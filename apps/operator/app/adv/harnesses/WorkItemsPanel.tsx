@@ -2,9 +2,11 @@
 
 import { useEffect, useMemo, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { Select } from '../../harness/Select';
+import { Tooltip } from '../../harness/Tooltip';
 import { IssueStatusPill, SeverityPill, StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -230,26 +232,36 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border)' }}>
+      <div className="pc-adv-wi__bar">
         <input
           type="text"
+          className="pc-adv-wi__search"
           value={search}
           onChange={(e) => void setSearch(e.target.value)}
           placeholder="Filter work items…"
-          style={{ flex: 1, fontSize: 12.5, padding: '4px 8px' }}
+          aria-label="Filter work items"
         />
         <Select
           value={kind || ALL_KINDS}
           onChange={(v) => void setKind(v === ALL_KINDS ? '' : v)}
           ariaLabel="Filter by kind"
+          triggerClassName="pc-adv-wi__select"
           options={[
             { value: ALL_KINDS, label: 'all kinds' },
             ...kinds.map((k) => ({ value: k, label: k })),
           ]}
         />
-        <button type="button" onClick={() => query.invalidate()} disabled={loading} style={{ fontSize: 11.5, padding: '4px 10px' }}>
-          {loading ? '…' : 'Refresh'}
-        </button>
+        <Tooltip label="Refresh work items">
+          <button
+            type="button"
+            className="pc-adv-wi__refresh"
+            onClick={() => query.invalidate()}
+            disabled={loading}
+            aria-label="Refresh work items"
+          >
+            <RefreshCw size={13} aria-hidden className={loading ? 'pc-adv-wi__spin' : undefined} />
+          </button>
+        </Tooltip>
       </div>
       {error ? (
         <div style={{ padding: 16, color: 'var(--bad, #f87171)', fontSize: 12.5 }}>Could not load work items: {error}</div>
@@ -277,6 +289,61 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           />
         </div>
       )}
+      <style>{`
+        .pc-adv-wi__bar {
+          display: flex; align-items: center; gap: 8px;
+          padding: 7px 10px; flex-shrink: 0;
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+        }
+        /* Search input — frost surface, sky-tinted border, matching the
+           Logs/Agents panel inputs (was a default-baseline box). */
+        .pc-adv-wi__search {
+          flex: 1; min-width: 80px;
+          padding: 4px 9px; font-size: 12px; color: var(--fg, #e7f7ff);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+          border-radius: 6px;
+        }
+        .pc-adv-wi__search::placeholder { color: var(--fg-mute, #7f9bb4); }
+        .pc-adv-wi__search:focus {
+          outline: none;
+          border-color: var(--accent, #38bdf8);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
+        }
+        /* House Select trigger. triggerClassName drops Select's default inline
+           style, so this provides the FULL trigger layout (not just colours),
+           sized to match the input. */
+        .pc-adv-wi__select {
+          display: inline-flex; align-items: center; justify-content: space-between; gap: 6px;
+          min-height: 28px; padding: 0 9px;
+          font-size: 12px; font-family: inherit; color: var(--fg, #e7f7ff);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+          border-radius: 6px; cursor: pointer; outline: none;
+        }
+        .pc-adv-wi__select:hover { border-color: var(--accent, #38bdf8); }
+        .pc-adv-wi__select:focus-visible {
+          border-color: var(--accent, #38bdf8);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
+        }
+        /* Flat icon refresh button — replaces the default 3D OS <button>
+           (silver outset bevel — a HR9 violation). */
+        .pc-adv-wi__refresh {
+          display: inline-flex; align-items: center; justify-content: center;
+          width: 28px; height: 28px; flex-shrink: 0;
+          color: var(--fg-mute, #7f9bb4);
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+          border-radius: 6px; cursor: pointer;
+        }
+        .pc-adv-wi__refresh:hover:not(:disabled) {
+          color: var(--fg, #e7f7ff);
+          border-color: var(--accent, #38bdf8);
+        }
+        .pc-adv-wi__refresh:disabled { opacity: 0.5; cursor: default; }
+        .pc-adv-wi__spin { animation: pc-adv-wi-spin 0.8s linear infinite; }
+        @keyframes pc-adv-wi-spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }

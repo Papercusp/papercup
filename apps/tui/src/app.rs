@@ -2454,37 +2454,22 @@ impl App {
             // (zellij has no per-pane color — D-008 — so the glyph carries the type).
             let title =
                 crate::agent_pane_kind::glyph_prefixed_title(&title, kind, self.hive_agent_tabs);
-            let rank = kind.map(|k| k.group_rank()).unwrap_or(u8::MAX);
             out.push((
                 // P-011: group same-type panes — the batch appends in group-rank
                 // order so bees land together, planners together. Unknown → last.
-                rank,
+                kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
                 // P-004: flag-on, a claude bee resumes as a real Claude TUI
                 // (claude --resume <session_id>); else the read-only watch-pane.
                 crate::mux::PaneSpec::new(r.dock_pane_argv(self.hive_agent_tabs))
                     .titled(title)
                     .stacked_autoclose(),
             ));
-            // Owner ask 2026-06-11: every bee pane gets a COMPANION wake-queue
-            // pane (`pui wake-pane <owner>`) so its staged wakes are reviewable
-            // right next to it. Flag-on only (the wake UI family rides
-            // hive-agent-tabs). Same rank, pushed immediately after its bee —
-            // the stable sort keeps the pair adjacent. The pane SELF-EXITS when
-            // its bee is gone AND its queue is drained (wake_pane_should_exit),
-            // so departed bees don't accrete dead panes.
-            if self.hive_agent_tabs {
-                let glyph = kind.map(|k| k.glyph()).unwrap_or("🐝");
-                out.push((
-                    rank,
-                    crate::mux::PaneSpec::new(vec![
-                        "pui".to_string(),
-                        "wake-pane".to_string(),
-                        r.owner_id.clone(),
-                    ])
-                    .titled(format!("{glyph}⏸ {}", short_owner(&r.owner_id)))
-                    .stacked_autoclose(),
-                ));
-            }
+            // NOTE (owner ask 2026-06-11): bees do NOT get a per-bee wake pane
+            // here. zellij stacks can't nest a chat|wakes split, and a bee is a
+            // dynamically-stacked pane, so an INLINE per-bee wake pane needs the
+            // companion to split a live pane (a staged follow-up). Bees review
+            // their staged wakes via the fleet-wide "⏸ wakes" board for now; the
+            // queen gets her inline split in the dock KDL (chat_dock_kdl).
             // Record the owner directly — the flag-on argv is `claude --resume
             // <session_id>` (no owner at argv[2]), so parsing argv would dedup on
             // the wrong key and re-pane the bee every refresh.
@@ -5391,18 +5376,13 @@ mod tests {
         ]);
         let specs = a.watch_panes_to_open();
         let titles: Vec<&str> = specs.iter().map(|s| s.title.as_deref().unwrap_or("")).collect();
-        // Flag-on, every agent pane has a COMPANION wake-queue pane (owner ask
-        // 2026-06-11) directly after it — 4 agents ⇒ 8 specs.
-        assert_eq!(specs.len(), 8);
-        // Bees (rank 2) before planners (rank 3); roster order within a group;
-        // each companion adjacent to its agent.
-        assert!(titles[0].starts_with("🐝") && titles[2].starts_with("🐝"), "{titles:?}");
-        assert!(titles[1].starts_with("🐝⏸") && titles[3].starts_with("🐝⏸"), "{titles:?}");
-        assert!(titles[4].starts_with("📋") && titles[6].starts_with("📋"), "{titles:?}");
-        assert!(titles[5].starts_with("📋⏸") && titles[7].starts_with("📋⏸"), "{titles:?}");
-        // The companion runs the per-agent wake board for ITS owner.
-        assert_eq!(specs[1].argv, vec!["pui", "wake-pane", "b-1"]);
-        assert!(specs[1].close_on_exit, "companion must autoclose with the dock");
+        // One pane per agent (owner ask 2026-06-11: bees do NOT get a per-bee
+        // wake pane — they review via the fleet-wide board; the queen's inline
+        // split lives in the dock KDL). 4 agents ⇒ 4 specs.
+        assert_eq!(specs.len(), 4);
+        // Bees (rank 2) before planners (rank 3); roster order within a group.
+        assert!(titles[0].starts_with("🐝") && titles[1].starts_with("🐝"), "{titles:?}");
+        assert!(titles[2].starts_with("📋") && titles[3].starts_with("📋"), "{titles:?}");
         // The dedup set records OWNER ids (not argv[2], which is a session id for
         // a flag-on claude --resume bee) — a re-refresh opens nothing.
         for o in ["p-1", "b-1", "p-2", "b-2"] {
