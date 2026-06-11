@@ -803,14 +803,32 @@ pub enum Tab {
     Agent,
 }
 
-/// Which half of the [`Tab::Agent`] pane has keyboard focus (owner ask
-/// 2026-06-11). Tab toggles; the chat composer takes keys when Chat, the wake
-/// board's review keys when Wakes.
+/// The [`Tab::Agent`] pane's view (owner ask 2026-06-11) — like the colony
+/// tab, `Tab` ZOOMS a section fullscreen rather than switching focus. It cycles
+/// Split → ChatFull → WakesFull → Split. Keys route to whatever is active: the
+/// chat composer in Split + ChatFull (chat is the primary surface), the wake
+/// board's review keys in WakesFull.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentHalf {
+pub enum AgentView {
+    /// Both halves visible: [chat | wakes]. Chat takes keys; wakes is a live
+    /// read-only review (zoom it to act on it).
     #[default]
-    Chat,
-    Wakes,
+    Split,
+    /// Chat fullscreen (more room to type/read); chat takes keys.
+    ChatFull,
+    /// Wake board fullscreen; the board's review keys (j/k · r/e/s · R/S) drive it.
+    WakesFull,
+}
+
+impl AgentView {
+    /// `Tab`'s cycle: Split → ChatFull → WakesFull → Split.
+    fn next(self) -> Self {
+        match self {
+            AgentView::Split => AgentView::ChatFull,
+            AgentView::ChatFull => AgentView::WakesFull,
+            AgentView::WakesFull => AgentView::Split,
+        }
+    }
 }
 
 impl Tab {
@@ -1169,8 +1187,8 @@ pub struct App {
     /// fleet-wide "⏸ wakes" pane; Queen/Owner for a per-agent pane. Set once
     /// from argv at launch; the refresh loop + `g` refetch both honor it.
     pub wake_filter: WakeFilter,
-    /// Which half of the [`Tab::Agent`] pane has keyboard focus (Tab toggles).
-    pub agent_focus: AgentHalf,
+    /// The [`Tab::Agent`] pane's view: Tab zooms a section fullscreen (cycle).
+    pub agent_view: AgentView,
     /// The last P-011 regroup target sent to the companion — the spam guard:
     /// the same mis-ordered topology snapshot never refires the same repair.
     pub last_regroup: Option<Vec<u32>>,
@@ -1460,7 +1478,7 @@ impl App {
                 ..WakeBoard::default()
             },
             wake_filter: WakeFilter::default(),
-            agent_focus: AgentHalf::default(),
+            agent_view: AgentView::default(),
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
@@ -3228,20 +3246,18 @@ impl App {
     }
 
     /// The agent-pane keymap (owner ask 2026-06-11): one pane split [chat |
-    /// wakes]. `Tab` toggles which half is focused; keys then route to that
-    /// half — the chat composer (type + Enter to send, like the Operator tab)
-    /// when Chat, the wake board's review keys when Wakes.
+    /// wakes], where `Tab` ZOOMS a section fullscreen (like the colony tab),
+    /// cycling Split → ChatFull → WakesFull → Split. Keys route to whatever is
+    /// active — the chat composer (type + Enter to send, like the Operator tab)
+    /// in Split/ChatFull, the wake board's review keys in WakesFull.
     fn agent_pane_key(&mut self, code: KeyCode) -> Action {
         if code == KeyCode::Tab {
-            self.agent_focus = match self.agent_focus {
-                AgentHalf::Chat => AgentHalf::Wakes,
-                AgentHalf::Wakes => AgentHalf::Chat,
-            };
+            self.agent_view = self.agent_view.next();
             return Action::Render;
         }
-        match self.agent_focus {
-            AgentHalf::Wakes => self.wake_board_key(code),
-            AgentHalf::Chat => match code {
+        match self.agent_view {
+            AgentView::WakesFull => self.wake_board_key(code),
+            AgentView::Split | AgentView::ChatFull => match code {
                 KeyCode::Enter => {
                     if self.chat_streaming {
                         return Action::Render; // a turn is in flight — wait for it
@@ -5905,34 +5921,37 @@ mod tests {
     }
 
     #[test]
-    fn agent_pane_tab_toggles_focus_and_routes_keys_to_the_right_half() {
+    fn agent_pane_tab_zooms_sections_and_routes_keys_to_the_active_one() {
         let mut a = App::new();
         a.tab = Tab::Agent;
         a.update(Event::WakeBoard {
             result: Ok((vec![board_group("su-q", vec![pending_wake(7, "boot")])], None)),
         });
-        // Default focus is Chat: printable keys land in the chat composer.
-        assert_eq!(a.agent_focus, AgentHalf::Chat);
+        // Default Split: chat is the active surface — printable keys type into it.
+        assert_eq!(a.agent_view, AgentView::Split);
         a.update(key('h', KeyModifiers::NONE));
         a.update(key('i', KeyModifiers::NONE));
         assert_eq!(a.chat_input, "hi");
-        // Enter on a non-empty draft sends it (chat half).
         let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert_eq!(act, Action::SendChat("hi".into()));
-        assert_eq!(a.chat_input, "");
-        // Tab flips focus to the wakes half.
+        // Tab → ChatFull: still chat keys, just zoomed.
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.agent_focus, AgentHalf::Wakes);
-        // Now 'r' is a wake-board release, NOT a chat keystroke.
+        assert_eq!(a.agent_view, AgentView::ChatFull);
+        a.update(key('x', KeyModifiers::NONE));
+        assert_eq!(a.chat_input, "x");
+        // Tab → WakesFull: now the board's review keys drive it; 'r' releases.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.agent_view, AgentView::WakesFull);
+        a.chat_input.clear();
         let act = a.update(key('r', KeyModifiers::NONE));
         assert_eq!(
             act,
             Action::WakeBoardAct { agent: "su-q".into(), verb: "release", id: Some(7), edited: None }
         );
         assert_eq!(a.chat_input, ""); // the keystroke did NOT reach the composer
-        // Tab flips back to chat.
+        // Tab → back to Split (the cycle wraps).
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.agent_focus, AgentHalf::Chat);
+        assert_eq!(a.agent_view, AgentView::Split);
     }
 
     #[test]

@@ -43312,6 +43312,17 @@ PASS only if **all of**:
 
 Anything else → `FAIL` or `INCONCLUSIVE`. Don’t report PASS without positive evidence — silence is not success.
 
+### 14.1 Performance grading on the shared box (standing rule)
+
+[Section titled “14.1 Performance grading on the shared box (standing rule)”](#141-performance-grading-on-the-shared-box-standing-rule)
+
+Adopted by the owner 2026-06-11 from the load-sensitivity characterization (`papercup:e2e/perf-load-sensitivity-2026-06-11.md`, sampled over loadavg 9.5–48.6):
+
+1. **Grade on medians (≥5 samples) at any load.** Medians proved load-insensitive (≤0.2ms shift quiet→heavy) — a median-based PASS/WARN/FAIL needs no loadavg gate.
+2. **Never grade tails or single samples under load.** p90/max degrade up to \~25× under fleet load; any tail-based or single-sample FAIL taken at `load1 > ~24` must be re-sampled in a quiet window before filing.
+3. **Record loadavg per sample** so grades are auditable.
+4. Chat TTFT: grade the app-side split only (under 50ms); provider first-token inside the accepted 6.5–12.2s band is infra, not an app regression.
+
 ## 15. Common gotchas
 
 [Section titled “15. Common gotchas”](#15-common-gotchas)
