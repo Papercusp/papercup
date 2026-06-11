@@ -69,10 +69,10 @@ jobs:
           CI: 'true'
         run: node scripts/affected-tests.mjs --all --integration
 
-      - name: Run slow tier (orchestrator main-loop)
-        env:
-          CI: 'true'
-        run: npm run test:slow --workspace @papercusp/orchestrator
+      # (The "slow tier" step — orchestrator main-loop — was removed 2026-06-11:
+      # the legacy run-loop and its main-loop.test.ts were retired to
+      # libs/papercusp/_retired/orchestrator-run-loop, which left the tier
+      # permanently empty and exiting 1 (WI-123 round 4).)
 
       - name: Run benchmarks (libs/generic/papergrid)
         if: always()
