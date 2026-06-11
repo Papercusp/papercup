@@ -24,6 +24,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
+import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 
 /**
  * Memory injection is a best-effort enhancement — never load-bearing —
@@ -79,6 +80,14 @@ export interface MemoryInjectionInput {
    * access to. Omit/[] to skip the harness pool entirely.
    */
   harnessSlugs?: readonly string[];
+  /**
+   * Hive pools to pull (`hive:<slug>` scope — learning-packs P-004). Usually
+   * OMITTED: the helper resolves the owning hives from `harnessSlugs` via the
+   * registry (member `hive_slug` / `harness_kind:'hive'` home). Pass
+   * explicitly to skip that lookup or to recall a hive with no harness in
+   * scope; pass `[]` to suppress the hive pull entirely.
+   */
+  hiveSlugs?: readonly string[];
   /** Recent user-turn content concatenated. Empty string returns null. */
   queryContext: string;
   /** Defaults to 6. */
@@ -165,12 +174,32 @@ export async function buildMemoryContextBlock(
     harnessSlugs = harnessSlugs.slice(0, MAX_HARNESS_FANOUT);
   }
 
-  // The store holds only STABLE facts now — user + harness scopes (D-005:
-  // the deprecated `workspace:`/`shared` scope is drained, so there is no
-  // workspace pull). The backend fans out per scope; `limit` is per-pool,
-  // which is exactly the user-pool-vs-harness-pool asymmetry we want.
+  // Hive pools (learning-packs P-004): resolve the owning hives from the
+  // harness slugs unless the caller pinned them. Best-effort — a registry
+  // hiccup degrades to "no hive pull", never blocks the turn.
+  let hiveSlugs: string[] = [];
+  if (input.hiveSlugs !== undefined) {
+    hiveSlugs = input.hiveSlugs.filter((s) => typeof s === 'string' && s.length > 0);
+  } else if (harnessSlugs.length > 0) {
+    try {
+      hiveSlugs = await withTimeout(
+        resolveHiveSlugsForHarnesses(input.workspaceId, harnessSlugs),
+        'hive-resolve',
+      );
+    } catch (err) {
+      noteMemoryFailure(err);
+      hiveSlugs = [];
+    }
+  }
+  if (hiveSlugs.length > MAX_HARNESS_FANOUT) hiveSlugs = hiveSlugs.slice(0, MAX_HARNESS_FANOUT);
+
+  // The store holds only STABLE facts now — user + harness + hive scopes
+  // (D-005: the deprecated `workspace:`/`shared` scope is drained, so there is
+  // no workspace pull). The backend fans out per scope; `limit` is per-pool,
+  // which is exactly the user-pool-vs-pool asymmetry we want.
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
+  let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   try {
     const minScore = injectMinScore();
     const minLexScore = injectMinLexScore();
@@ -187,14 +216,27 @@ export async function buildMemoryContextBlock(
         })
       : Promise.resolve([]);
 
-    const [userEntries, harnessEntries] = await withTimeout(
-      Promise.all([userPull, harnessPull]),
+    const hivePull: Promise<MemoryEntry[]> = hiveSlugs.length > 0
+      ? backend.search(input.queryContext, {
+          scope: hiveSlugs.map(hiveScopeKey),
+          limit: PER_HARNESS_LIMIT,
+          minScore,
+          minLexScore,
+        })
+      : Promise.resolve([]);
+
+    const [userEntries, harnessEntries, hiveEntries] = await withTimeout(
+      Promise.all([userPull, harnessPull, hivePull]),
       'search',
     );
     userResults = userEntries;
     harnessHits = harnessEntries.map((hit) => ({
       hit,
       slug: hit.scope.startsWith('harness:') ? hit.scope.slice('harness:'.length) : hit.scope,
+    }));
+    hiveHits = hiveEntries.map((hit) => ({
+      hit,
+      slug: hiveSlugFromScope(hit.scope) ?? hit.scope,
     }));
   } catch (err) {
     noteMemoryFailure(err);
@@ -204,7 +246,7 @@ export async function buildMemoryContextBlock(
     return null;
   }
 
-  if (userResults.length + harnessHits.length === 0) return null;
+  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
   // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
   // watermark window so a stable fact is delivered ONCE, not re-injected
@@ -213,6 +255,7 @@ export async function buildMemoryContextBlock(
   const candidateIds = [
     ...userResults.map((h) => h.id),
     ...harnessHits.map(({ hit }) => hit.id),
+    ...hiveHits.map(({ hit }) => hit.id),
   ].filter((id): id is string => typeof id === 'string' && id.length > 0);
   // (ids are always present on neutral entries; the filter guards legacy/odd rows)
   if (candidateIds.length > 0) {
@@ -222,12 +265,13 @@ export async function buildMemoryContextBlock(
       if (recent.size > 0) {
         userResults = userResults.filter((h) => !(h.id && recent.has(h.id)));
         harnessHits = harnessHits.filter(({ hit }) => !(hit.id && recent.has(hit.id)));
+        hiveHits = hiveHits.filter(({ hit }) => !(hit.id && recent.has(hit.id)));
       }
     } catch {
       /* swallow — dedup is hygiene, never load-bearing */
     }
   }
-  if (userResults.length + harnessHits.length === 0) return null;
+  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
   const fmtScope = (entry: MemoryEntry, slug?: string): string => {
     const kind = entry.kind ?? 'unknown';
@@ -245,6 +289,9 @@ export async function buildMemoryContextBlock(
   const lines: string[] = [];
   for (const h of userResults) lines.push(`- ${fmtScope(h)}${fmtId(h)} ${h.text}`);
   for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`);
+  // Hive pool — labeled `@ hive:<slug>` so an agent can tell shared-Hive
+  // knowledge (learnings, conventions) from its harness's own pool.
+  for (const { hit, slug } of hiveHits) lines.push(`- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`);
 
   // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
   // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql
@@ -252,6 +299,7 @@ export async function buildMemoryContextBlock(
   const surfacedIds: string[] = [];
   for (const h of userResults) if (h.id) surfacedIds.push(h.id);
   for (const { hit } of harnessHits) if (hit.id) surfacedIds.push(hit.id);
+  for (const { hit } of hiveHits) if (hit.id) surfacedIds.push(hit.id);
   if (surfacedIds.length > 0) {
     void (async () => {
       try {

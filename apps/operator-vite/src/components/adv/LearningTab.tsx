@@ -255,13 +255,28 @@ function ImprovementsView() {
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({ queryName: 'learning.improvements', args: {}, staleTime: 30_000 });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
+  // Source facet (`?lsrc=`): who filed it — Scout / Queen / system / … (payload.sourceRole).
+  const [src, setSrc] = useQueryState('lsrc', parseAsString);
 
-  const rows = useMemo<ScoredItem[]>(() => {
+  const allRows = useMemo<ScoredItem[]>(() => {
     if (!digest) return [];
     if (lane === 'auto') return digest.autoEligible;
     if (lane === 'human') return digest.humanQueue;
     return [...digest.autoEligible, ...digest.humanQueue];
   }, [digest, lane]);
+
+  const sources = useMemo<string[]>(() => {
+    const s = new Set<string>();
+    for (const it of [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])]) {
+      if (it.source) s.add(it.source);
+    }
+    return [...s].sort();
+  }, [digest]);
+
+  const rows = useMemo<ScoredItem[]>(
+    () => (src ? allRows.filter((it) => it.source === src) : allRows),
+    [allRows, src],
+  );
 
   const resolved = digest?.byState?.resolved ?? 0;
 
@@ -280,6 +295,22 @@ function ImprovementsView() {
       <div className="pc-learning__sectionhead">
         <h2>Captured improvements</h2>
         <div className="pc-learning__inlinetools">
+          {sources.length > 0 ? (
+            <select
+              className="pc-learning__srcselect"
+              aria-label="Filter by who filed it"
+              title="Who filed it — Scout-routed ideas, Queen captures, system watchdog, …"
+              value={src ?? ''}
+              onChange={(e) => void setSrc(e.target.value || null)}
+            >
+              <option value="">Any source</option>
+              {sources.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
             {LANES.map((l) => (
               <button
@@ -341,6 +372,11 @@ function ImprovementRow({ item }: { item: ScoredItem }) {
           {item.severity ?? '—'}
         </span>
         {item.ideaType ? <span className="pc-learning__chip pc-learning__chip--idea">{item.ideaType}</span> : null}
+        {item.source ? (
+          <span className="pc-learning__chip" title={`Filed by ${item.source}`}>
+            {item.source}
+          </span>
+        ) : null}
         <span
           className={`pc-learning__chip pc-learning__chip--${human ? 'human' : 'auto'}`}
           title={human ? 'Waits for your review' : 'An agent may fix this on its own'}
@@ -1023,6 +1059,11 @@ function LearningStyles() {
       }
       .pc-learning__sev { width: 4px; height: 100%; min-height: 18px; border-radius: 3px; }
       .pc-learning__row--link { cursor: pointer; }
+      .pc-learning__srcselect {
+        font-size: 11px; padding: 3px 7px; border-radius: 7px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-dim, #b9d4e8);
+      }
       .pc-learning__row--link:hover, .pc-learning__row--link:focus-visible { border-color: var(--accent, rgba(125, 211, 252, 0.45)); background: var(--bg-3, rgba(255, 255, 255, 0.06)); }
       .pc-learning__id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__title { font-size: 12.5px; color: var(--fg, #e7f7ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

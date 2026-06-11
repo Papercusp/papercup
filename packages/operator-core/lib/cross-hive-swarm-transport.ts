@@ -71,6 +71,13 @@ export interface SwarmCrossHiveTransportOpts {
   fastWindowMs?: number;
   /** Steady-state keepalive cadence after the fast window (default 60s). */
   slowRefreshMs?: number;
+  /**
+   * Fired when a channel's HELLO identifies the remote Hive — i.e. a peer Hive
+   * just became reachable (connect OR reconnect). The boot wiring uses it to
+   * force-drain that peer's durable outbox (hive-network-surface-2026-06-11
+   * P-001). Best-effort: a throwing callback is swallowed.
+   */
+  onPeerHello?: (hivePubkey: string) => void;
 }
 
 export interface SwarmCrossHiveTransport extends CrossHiveTransport {
@@ -147,6 +154,11 @@ export function makeSwarmCrossHiveTransport(opts: SwarmCrossHiveTransportOpts): 
           if (!frame || typeof frame !== 'object') return;
           if (frame.t === 'hello' && typeof frame.hivePubkey === 'string') {
             oc.remotePubkey = frame.hivePubkey;
+            try {
+              opts.onPeerHello?.(frame.hivePubkey);
+            } catch {
+              /* best-effort — a reconnect hook must never break the channel */
+            }
             return;
           }
           if (frame.t === 'env' && frame.env && typeof frame.env === 'object') {

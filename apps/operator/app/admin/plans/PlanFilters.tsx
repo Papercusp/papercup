@@ -15,6 +15,7 @@
  *   - owner:           pOwner        — frontmatter owner
  *   - has-needs-human: pInbox        — at least one needs-human item
  *   - has-actionable:  pActionable   — at least one effective-todo item
+ *   - scout-origin:    pScout        — plans the Scout loop routed (origin 'scout')
  *   - archived:        pArchived     — archived-only rail filter
  *   - legacy:          pLegacy       — legacy-only rail filter
  *
@@ -78,6 +79,10 @@ export default function PlanFilters({
     'pActionable',
     parseAsBoolean.withDefault(false),
   );
+  const [scout, setScout] = useQueryState(
+    'pScout',
+    parseAsBoolean.withDefault(false),
+  );
   const [sort, setSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -99,6 +104,7 @@ export default function PlanFilters({
     (legacyOnly ? 1 : 0) +
     (inbox ? 1 : 0) +
     (actionable ? 1 : 0) +
+    (scout ? 1 : 0) +
     (sort !== 'default' ? 1 : 0);
 
   const activeTokens = [
@@ -107,6 +113,7 @@ export default function PlanFilters({
     owner ? { key: 'owner', label: `owner: ${owner}`, clear: () => setOwner(null) } : null,
     inbox ? { key: 'needs-human', label: 'has needs-human', clear: () => setInbox(false) } : null,
     actionable ? { key: 'actionable', label: 'has actionable', clear: () => setActionable(false) } : null,
+    scout ? { key: 'scout', label: 'scout-created', clear: () => setScout(false) } : null,
     archivedOnly ? { key: 'archived', label: 'archived', clear: () => setArchivedOnly(false) } : null,
     legacyOnly ? { key: 'legacy', label: 'legacy', clear: () => setLegacyOnly(false) } : null,
   ].flatMap((token) => (token ? [token] : []));
@@ -118,6 +125,7 @@ export default function PlanFilters({
     setLegacyOnly(false);
     setInbox(false);
     setActionable(false);
+    setScout(false);
     setSort(null);
   };
 
@@ -188,6 +196,7 @@ export default function PlanFilters({
         ))}
         <Toggle on={inbox} onChange={setInbox} label="needs human" />
         <Toggle on={actionable} onChange={setActionable} label="actionable" />
+        <Toggle on={scout} onChange={setScout} label="scout" />
         <Toggle on={legacyOnly} onChange={setLegacyOnly} label="legacy" />
         <Toggle on={archivedOnly} onChange={setArchivedOnly} label="archived" />
       </div>

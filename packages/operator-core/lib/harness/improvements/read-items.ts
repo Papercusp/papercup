@@ -53,7 +53,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === 'string') : undefined;
   const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
   const decidedReason = typeof p.decidedReason === 'string' && p.decidedReason.trim() ? p.decidedReason : undefined;
-  const sourceRole = typeof p.sourceRole === 'string' ? (p.sourceRole as 'Queen' | 'bee' | 'system' | 'human') : undefined;
+  const sourceRole = typeof p.sourceRole === 'string' ? (p.sourceRole as 'Queen' | 'bee' | 'system' | 'Scout' | 'human') : undefined;
   return {
     id: issue.id,
     kind,

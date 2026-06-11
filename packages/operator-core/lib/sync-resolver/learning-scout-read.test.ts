@@ -14,10 +14,13 @@ import { readScoutSnapshot, normalizeScoutTick, isUndefinedTable } from './learn
 
 type Handler = () => Promise<Array<Record<string, unknown>>>;
 
-function fakeSql(opts: { rails?: Handler; ticks?: Handler }): Sql {
+function fakeSql(opts: { rails?: Handler; items?: Handler; ticks?: Handler }): Sql {
   const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
     const text = strings.join(' ');
-    if (text.includes('scout_routed_ideas')) return (opts.rails ?? (async () => []))();
+    // Both ledger reads hit scout_routed_ideas — the aggregate groups by rail,
+    // the per-item read selects idea_id.
+    if (text.includes('GROUP BY rail')) return (opts.rails ?? (async () => []))();
+    if (text.includes('idea_id')) return (opts.items ?? (async () => []))();
     if (text.includes('scout_ticks')) return (opts.ticks ?? (async () => []))();
     return Promise.resolve([]);
   };
@@ -50,6 +53,53 @@ describe('readScoutSnapshot', () => {
     });
   });
 
+  it('maps the recent routed-idea rows into the UI shape (epoch-ms routed_at, null-safe optionals)', async () => {
+    const sql = fakeSql({
+      rails: async () => [{ rail: 'plan', count: 1 }],
+      items: async () => [
+        {
+          idea_id: 'scout-idea-reframing-1-0',
+          lens: 'reframing',
+          rail: 'plan',
+          routed_ref: 'plan:scout-something-2026-06-11',
+          title: 'A reframed idea',
+          routed_at: '1781210000000', // bigint arrives as a string
+          outcome: null,
+        },
+        {
+          idea_id: 'scout-idea-analogical-1-0',
+          lens: 'analogical',
+          rail: 'improvement',
+          routed_ref: 'wi:EI-340',
+          title: null,
+          routed_at: null,
+          outcome: 'won',
+        },
+      ],
+    });
+    const snap = await readScoutSnapshot(sql, 'ws-1');
+    expect(snap.recent).toEqual([
+      {
+        ideaId: 'scout-idea-reframing-1-0',
+        lens: 'reframing',
+        rail: 'plan',
+        routedRef: 'plan:scout-something-2026-06-11',
+        title: 'A reframed idea',
+        routedAt: new Date(1781210000000).toISOString(),
+        outcome: null,
+      },
+      {
+        ideaId: 'scout-idea-analogical-1-0',
+        lens: 'analogical',
+        rail: 'improvement',
+        routedRef: 'wi:EI-340',
+        title: null,
+        routedAt: null,
+        outcome: 'won',
+      },
+    ]);
+  });
+
   it('omits the tick half silently when scout_ticks does not exist yet (42P01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql({
@@ -59,7 +109,7 @@ describe('readScoutSnapshot', () => {
       },
     });
     const snap = await readScoutSnapshot(sql, 'ws-1');
-    expect(snap).toEqual({ totalRouted: 0, railCounts: [], lastTick: null });
+    expect(snap).toEqual({ totalRouted: 0, railCounts: [], recent: [], lastTick: null });
     expect(warn).not.toHaveBeenCalled();
   });
 

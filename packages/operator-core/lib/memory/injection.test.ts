@@ -12,6 +12,13 @@ vi.mock('./backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
 
+// The harness registry backs the member→hive resolution (learning-packs
+// P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
+let registryProjects: Array<{ slug: string; harness_kind?: string; hive_slug?: string }> = [];
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({ projects: registryProjects })),
+}));
+
 import { buildMemoryContextBlock, lastUserContext } from './injection';
 import { getMemoryBackend } from './backend';
 import { _resetForTests } from './bump-last-surfaced';
@@ -37,6 +44,7 @@ const useBackend = (b: ReturnType<typeof mockBackend>): void => {
 beforeEach(() => {
   vi.mocked(getMemoryBackend).mockReset();
   sqlRows = [];
+  registryProjects = [];
   _resetForTests();
 });
 

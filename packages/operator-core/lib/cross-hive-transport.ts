@@ -165,6 +165,113 @@ export async function flushCrossHiveOutbox(deps: {
   return { delivered, pending: (await deps.outbox.pending()).length };
 }
 
+/* ── Ask ledger (C-1) — the durable record of the ask lifecycle ───────────────── */
+
+/** One `cross_hive_asks` row (hive-network-surface C-1, camelCase). The ASKING side's
+ *  durable record of an outbound request and the reply that settled it. */
+export interface CrossHiveAskRow {
+  workspaceId: string;
+  hiveSlug: string;
+  id: string;
+  peerPubkey: string;
+  direction: 'out' | 'in';
+  kind: CrossHiveRequestKind;
+  subject: string;
+  body: string;
+  correlationId: string;
+  state: 'queued' | 'sent' | 'answered' | 'declined' | 'expired';
+  replyBody: string | null;
+  replyTs: string | null;
+  /** The ownerId that enqueued the ask (proposed C-1 amendment — populated by hive:ask
+   *  when adopted; the receive side coord-notifies it on reply when present). */
+  askedBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RecordReplyResult =
+  /** The row legally transitioned (queued|sent → answered|declined) — emit the C-4 event. */
+  | { outcome: 'transitioned'; row: CrossHiveAskRow }
+  /** Already answered/declined/expired — a dup delivery (the outbox redelivers); do NOT re-emit. */
+  | { outcome: 'already-settled'; row: CrossHiveAskRow }
+  /** No OUT row matches (correlation_id, peer_pubkey) — unsolicited, or the ledger store
+   *  has not landed yet (the null stub). The C-4 event still fires with a synthetic payload. */
+  | { outcome: 'not-found' };
+
+/** The receive side's ledger PORT (production: B-02's PG store over `cross_hive_asks`).
+ *  `recordReply` persists an inbound answer/decline onto the originating OUT ask. */
+export interface CrossHiveAskLedger {
+  recordReply(input: {
+    correlationId: string;
+    replyKind: CrossHiveReplyKind;
+    replyBody: string;
+    /** The replying Hive — must match the asked peer (a third party cannot settle the ask). */
+    peerPubkey: string;
+  }): Promise<RecordReplyResult>;
+}
+
+/** A ledger that records nothing — the production default until the PG store lands,
+ *  and the explicit "no ledger" choice for boundary uses that don't track asks. */
+export const NULL_CROSS_HIVE_ASK_LEDGER: CrossHiveAskLedger = {
+  async recordReply() {
+    return { outcome: 'not-found' };
+  },
+};
+
+/** In-memory reference CrossHiveAskLedger with the C-1 legality guards — the
+ *  unit-test + stub-first default (the InMemoryCrossHiveOutbox of the ask ledger). */
+export class InMemoryCrossHiveAskLedger implements CrossHiveAskLedger {
+  private readonly rows = new Map<string, CrossHiveAskRow>();
+
+  /** Seed an outbound ask (state queued|sent) — what hive:ask's enqueue will do in PG. */
+  seed(row: CrossHiveAskRow): void {
+    this.rows.set(row.correlationId, row);
+  }
+
+  get(correlationId: string): CrossHiveAskRow | undefined {
+    return this.rows.get(correlationId);
+  }
+
+  async recordReply(input: {
+    correlationId: string;
+    replyKind: CrossHiveReplyKind;
+    replyBody: string;
+    peerPubkey: string;
+  }): Promise<RecordReplyResult> {
+    const row = this.rows.get(input.correlationId);
+    if (!row || row.direction !== 'out' || row.peerPubkey !== input.peerPubkey) {
+      return { outcome: 'not-found' };
+    }
+    if (row.state !== 'queued' && row.state !== 'sent') {
+      return { outcome: 'already-settled', row };
+    }
+    const now = new Date().toISOString();
+    const updated: CrossHiveAskRow = {
+      ...row,
+      state: input.replyKind === 'answer' ? 'answered' : 'declined',
+      replyBody: input.replyBody,
+      replyTs: now,
+      updatedAt: now,
+    };
+    this.rows.set(input.correlationId, updated);
+    return { outcome: 'transitioned', row: updated };
+  }
+}
+
+/* ── C-4 event keys ────────────────────────────────────────────────────────────── */
+
+/**
+ * The C-4 event key a reply fires (hive-network-surface C-4): the asking Queen
+ * registers `events:await` on these right after sending (a decline unblocks as much
+ * as an answer — await both). Consumers (hive:ask guidance) import these helpers
+ * rather than re-templating the strings.
+ */
+export function crossHiveReplyEventKey(replyKind: CrossHiveReplyKind, correlationId: string): string {
+  return replyKind === 'answer'
+    ? `cross-hive:answered:${correlationId}`
+    : `cross-hive:declined:${correlationId}`;
+}
+
 /* ── Receive ───────────────────────────────────────────────────────────────────── */
 
 export type CrossHiveReceiveResult =

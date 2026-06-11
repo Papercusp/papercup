@@ -60,7 +60,7 @@ describe('buildCapturePort', () => {
 
     expect(res).toEqual({ id: 'EI-42', created: true });
     const input = fake.mock.calls[0][0];
-    expect(input.sourceRole).toBe('Queen'); // D-010 — Scout is prompt-free, the Queen gates
+    expect(input.sourceRole).toBe('Scout'); // artifact-side provenance stamp (improvement-source:Scout); the Queen still gates (D-010)
     expect(input.kind).toBe('change');
     expect(input.scope).toBe('operator');
   });

@@ -55,6 +55,9 @@ export interface ScoredItem {
   ideaLifecycleState?: import('./lifecycle').IdeaLifecycleState;
   /** The Queen's (or the scheduled pass's) recorded type-route, when triaged. */
   triageDecision?: 'place' | 'gate' | 'gym' | 'reject';
+  /** Who filed it (payload.sourceRole, P-010): 'Scout' | 'Queen' | 'bee' | 'system';
+   *  undefined = human/legacy. Drives the Learning tab's source filter. */
+  source?: string;
 }
 
 export interface DupCluster {
@@ -359,6 +362,7 @@ export function buildDigest(
       ideaType,
       ...(c.ideaLifecycle ? { ideaLifecycleState: c.ideaLifecycle.state } : {}),
       ...(c.ideaLifecycle?.triageDecision ? { triageDecision: c.ideaLifecycle.triageDecision } : {}),
+      ...(c.sourceRole ? { source: c.sourceRole } : {}),
     };
     // Only OPEN items go into the actionable queues.
     if (!isOpen) continue;

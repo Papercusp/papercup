@@ -9,6 +9,9 @@
  *   receiveCrossHive (verify sig → load THIS Hive's grants → admit → translate)
  *     · loadGrants = loadCrossHiveGrants(ws, hiveSlug)  ← the P-002 grant store
  *     · requestPorts = makeLiveBoundaryPorts(...)        ← ask→conversation / work-request→work_item
+ *     · replies (answer/decline) persist to the C-1 ask ledger + fire the C-4
+ *       event `cross-hive:answered|declined:<correlationId>` (+ coord notify to
+ *       the asking owner) — hive-network-surface-2026-06-11 P-002 / brief B-03
  *   ↑ send
  *   sendCrossHive + a durable PG outbox (PgCrossHiveOutbox) ← store-and-forward
  *
@@ -27,20 +30,27 @@ import {
   sendCrossHive,
   flushCrossHiveOutbox,
   signCrossHiveEnvelope,
+  isRequestKind,
+  crossHiveReplyEventKey,
   InMemoryCrossHiveOutbox,
+  NULL_CROSS_HIVE_ASK_LEDGER,
+  type CrossHiveAskLedger,
   type CrossHiveTransport,
   type CrossHiveOutbox,
   type CrossHiveSigner,
   type CrossHiveRequestKind,
   type CrossHiveReplyKind,
+  type CrossHiveWireEnvelope,
   type SendResult,
 } from './cross-hive-transport';
+import { emitAwaitedEvent, type EmitAwaitedEventOpts } from './events/await/engine';
 import {
   makeLiveBoundaryPorts,
+  admitOutboundCrossHive,
   type CrossHiveBoundaryPorts,
   type CrossHiveGrant,
 } from './cross-hive-boundary';
-import { loadCrossHiveGrants } from './cross-hive-grants';
+import { loadCrossHiveGrants, loadOutboundCrossHiveGrants } from './cross-hive-grants';
 import { PgCrossHiveOutbox } from './cross-hive-outbox-pg';
 import { signWithHiveKey } from './identity/hive-keypair';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -53,19 +63,35 @@ export interface CrossHiveInboundReply {
   body: string;
 }
 
+/**
+ * The result of a send attempt. Extends {@link SendResult} with the default-deny
+ * outcome: an outbound REQUEST to a peer this Hive has no `out` grant for is `denied`
+ * (never enqueued, signed, or transmitted) rather than delivered/queued.
+ */
+export interface CrossHiveSendOutcome extends SendResult {
+  /** True when the egress grant check rejected the request before any send. */
+  denied?: boolean;
+  /** Human-readable reason (set when denied). */
+  reason?: string;
+}
+
 export interface CrossHiveBoundaryWiring {
   /** This Hive's pubkey (the dial address peers use to reach us). */
   readonly selfHivePubkey: string;
-  /** Send a request (ask | work-request) to a peer Hive — signed + store-and-forward. */
+  /**
+   * Send a request (ask | work-request) to a peer Hive — signed + store-and-forward.
+   * Default-deny: rejected with `{ denied: true }` unless the owner granted this Hive an
+   * `out` capability for the destination + kind (admitOutboundCrossHive).
+   */
   send(
     toHivePubkey: string,
     msg: { kind: CrossHiveRequestKind; subject: string; body: string; id?: string },
-  ): Promise<SendResult>;
+  ): Promise<CrossHiveSendOutcome>;
   /** Reply (answer | decline) to a peer Hive, correlated to its originating request. */
   reply(
     toHivePubkey: string,
     msg: { kind: CrossHiveReplyKind; subject: string; body: string; correlationId: string; id?: string },
-  ): Promise<SendResult>;
+  ): Promise<CrossHiveSendOutcome>;
   /** Retry the durable outbox (peer was offline). */
   flushOutbox(): Promise<{ delivered: number; pending: number }>;
   /** Tear down the transport. */
@@ -90,12 +116,32 @@ export interface WireCrossHiveBoundaryDeps {
   harness?: string;
   /** Load THIS Hive's admission grants. Default: loadCrossHiveGrants(ws, hiveSlug). */
   loadGrants?: () => Promise<readonly CrossHiveGrant[]>;
+  /**
+   * Load THIS Hive's OUTBOUND egress grants (the send-path default-deny policy).
+   * Default: loadOutboundCrossHiveGrants(ws, hiveSlug).
+   */
+  loadOutboundGrants?: () => Promise<readonly CrossHiveGrant[]>;
   /** Durable outbox. Default: PgCrossHiveOutbox(ws, hiveSlug) (or in-memory if PG unavailable). */
   outbox?: CrossHiveOutbox;
   /** Injected transport (tests). Default: makeSwarmCrossHiveTransport over `swarm`. */
   transport?: CrossHiveTransport;
-  /** Surface an inbound reply (answer/decline) to the originator. */
+  /**
+   * TEST-ONLY observer for inbound replies. The PRODUCTION reply path is durable:
+   * persist to the C-1 ask ledger → emit the C-4 event (cross-hive:answered|declined:
+   * <correlationId>) → coord notify/wake the asking owner. Do not build product
+   * behavior on this callback.
+   */
   onReply?: (reply: CrossHiveInboundReply) => void;
+  /**
+   * The C-1 ask ledger an inbound answer/decline persists into (hive-network-surface
+   * P-002). Default: NULL ledger (records nothing) until the PG store over
+   * `cross_hive_asks` lands and becomes the production default. The C-4 event fires
+   * ONLY on a real ledger transition — payload = the row — so a forged correlationId
+   * from a non-asked peer can never wake the Queen.
+   */
+  askLedger?: CrossHiveAskLedger;
+  /** Event emit port (production: emitAwaitedEvent). Tests inject a recorder. */
+  emitEvent?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
   /** Optional test PG client threaded to grants + outbox. */
   sql?: Sql;
 }
@@ -119,6 +165,9 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
   const loadGrants =
     deps.loadGrants ?? (() => loadCrossHiveGrants(deps.workspaceId, deps.hiveSlug, deps.sql));
 
+  const loadOutboundGrants =
+    deps.loadOutboundGrants ?? (() => loadOutboundCrossHiveGrants(deps.workspaceId, deps.hiveSlug, deps.sql));
+
   const requestPorts: CrossHiveBoundaryPorts =
     deps.requestPorts ??
     (() => {
@@ -134,7 +183,60 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       ? new PgCrossHiveOutbox(deps.workspaceId, deps.hiveSlug, deps.sql)
       : new InMemoryCrossHiveOutbox());
 
-  // Inbound: verify → admit (per loaded grants) → translate; surface replies.
+  const askLedger = deps.askLedger ?? NULL_CROSS_HIVE_ASK_LEDGER;
+  const emitEvent = deps.emitEvent ?? emitAwaitedEvent;
+
+  /**
+   * The durable reply path (hive-network-surface P-002, brief B-03): persist the
+   * answer/decline onto the originating OUT ask (C-1 transition), then fire the C-4
+   * event — waking any events:await-ing Queen (durable, survives her restart) and
+   * coord-notifying the asking owner when the row names one. Every failure is
+   * contained: a ledger/emit error must never poison the transport's inbound loop,
+   * and the ledger row (when written) stays the durable truth a `hive:asks` list
+   * recovers from even if the emit is lost.
+   */
+  const persistAndEmitReply = async (
+    env: CrossHiveWireEnvelope,
+    res: { replyKind: CrossHiveReplyKind; correlationId: string | null; subject: string; body: string },
+  ): Promise<void> => {
+    if (!res.correlationId) {
+      console.warn(`[cross-hive] reply from ${env.fromHivePubkey.slice(0, 8)}… has no correlationId — not persistable`);
+      return;
+    }
+    let result;
+    try {
+      result = await askLedger.recordReply({
+        correlationId: res.correlationId,
+        replyKind: res.replyKind,
+        replyBody: res.body,
+        peerPubkey: env.fromHivePubkey,
+      });
+    } catch (e) {
+      console.warn(`[cross-hive] ask-ledger recordReply failed for ${res.correlationId}: ${e instanceof Error ? e.message : e}`);
+      return;
+    }
+    if (result.outcome !== 'transitioned') {
+      // 'already-settled' = a dup delivery (the outbox redelivers after a crash mid-send)
+      // — the first arrival already emitted. 'not-found' = unsolicited / wrong peer / no
+      // ledger yet — emitting would let a forged correlationId wake the asking Queen.
+      return;
+    }
+    try {
+      await emitEvent({
+        key: crossHiveReplyEventKey(res.replyKind, res.correlationId),
+        payload: result.row,
+        summary: `cross-hive ${res.replyKind} from ${env.fromHivePubkey.slice(0, 8)}… — ${res.subject}`,
+        ...(result.row.askedBy ? { to: [result.row.askedBy] } : {}),
+        source: `cross-hive:${deps.hiveSlug}`,
+        workspaceId: deps.workspaceId,
+      });
+    } catch (e) {
+      console.warn(`[cross-hive] C-4 emit failed for ${res.correlationId} (row persisted — hive:asks remains the truth): ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  // Inbound: verify → admit (per loaded grants) → translate; replies persist to the
+  // ask ledger + fire the C-4 event (onReply is a test-only observer).
   transport.subscribe(async (env) => {
     const res = await receiveCrossHive(env, {
       selfHivePubkey: deps.hivePubkey,
@@ -142,6 +244,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       requestPorts,
     });
     if (res && 'kind' in res && res.kind === 'reply') {
+      await persistAndEmitReply(env, res);
       deps.onReply?.({
         replyKind: res.replyKind,
         correlationId: res.correlationId,
@@ -160,7 +263,19 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       body: string;
       correlationId?: string;
     },
-  ): Promise<SendResult> => {
+  ): Promise<CrossHiveSendOutcome> => {
+    // Egress default-deny: an outbound REQUEST needs an `out` grant for the destination
+    // Hive + kind. Replies (answer/decline) ride the originating request's correlation
+    // and are never grant-gated. Denial happens BEFORE any enqueue/sign/send.
+    if (isRequestKind(body.kind)) {
+      const admission = admitOutboundCrossHive(
+        { toHivePubkey, kind: body.kind },
+        { grants: await loadOutboundGrants() },
+      );
+      if (!admission.admitted) {
+        return { delivered: false, queued: false, denied: true, reason: admission.reason };
+      }
+    }
     const wire = await signCrossHiveEnvelope(
       {
         id: body.id,

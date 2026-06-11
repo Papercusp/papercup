@@ -76,6 +76,7 @@ const DEFAULT_FILTERS: PlanFilterState = {
   legacy: false,
   inbox: false,
   actionable: false,
+  scout: false,
 };
 
 /** Ground-truth bucket counts — exactly what the component computes. */

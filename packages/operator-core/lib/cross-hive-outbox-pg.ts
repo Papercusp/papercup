@@ -30,6 +30,18 @@ interface OutboxRow {
   sig: string;
 }
 
+/**
+ * A pending envelope WITH its delivery-attempt metadata — what the backoff-aware
+ * drain (cross-hive-outbox-drain.ts, hive-network-surface-2026-06-11 P-001)
+ * plans over. `attemptCount`/`lastAttemptAt` come from `noteAttempt`.
+ */
+export interface DetailedPendingEnvelope {
+  env: CrossHiveWireEnvelope;
+  attemptCount: number;
+  /** Epoch ms of the last failed attempt; 0 = never attempted. */
+  lastAttemptAt: number;
+}
+
 function rowToEnvelope(r: OutboxRow): CrossHiveWireEnvelope {
   const env: CrossHiveWireEnvelope = {
     id: r.id,
@@ -93,6 +105,28 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
       [this.workspaceId, this.hiveSlug],
     )) as unknown as OutboxRow[];
     return rows.map(rowToEnvelope);
+  }
+
+  /**
+   * Every still-undelivered envelope WITH attempt metadata, oldest-first — the
+   * read the backoff-aware drain plans over (`pending()` stays the lean
+   * CrossHiveOutbox-port read).
+   */
+  async pendingDetailed(): Promise<DetailedPendingEnvelope[]> {
+    const s = pg(this.sql);
+    const rows = (await s.unsafe(
+      `SELECT id, from_hive_pubkey, to_hive_pubkey, kind, subject, body, correlation_id, sig,
+              attempt_count, last_attempt_at
+         FROM harness_shared.cross_hive_outbox
+        WHERE workspace_id = $1 AND hive_slug = $2
+        ORDER BY created_at ASC, id ASC`,
+      [this.workspaceId, this.hiveSlug],
+    )) as unknown as Array<OutboxRow & { attempt_count: number; last_attempt_at: number | string }>;
+    return rows.map((r) => ({
+      env: rowToEnvelope(r),
+      attemptCount: Number(r.attempt_count),
+      lastAttemptAt: Number(r.last_attempt_at),
+    }));
   }
 
   /** Remove a delivered envelope (idempotent). */

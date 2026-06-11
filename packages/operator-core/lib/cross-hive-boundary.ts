@@ -85,6 +85,41 @@ export function admitCrossHiveEnvelope(env: CrossHiveEnvelope, opts: AdmitOpts):
   return { admitted: true, reason: 'admitted by capability grant' };
 }
 
+/** A pending OUTBOUND request — which peer Hive we want to send which kind to. */
+export interface OutboundCrossHiveRequest {
+  /** The peer Hive we are sending to (its directory pubkey). */
+  toHivePubkey: string;
+  kind: CrossHiveKind;
+}
+
+export interface OutboundAdmitOpts {
+  /** This Hive's owner-set OUTBOUND grants — which peer-Hives we may send which kinds TO. */
+  grants: readonly CrossHiveGrant[];
+}
+
+/**
+ * Decide whether an OUTBOUND cross-Hive request is permitted to leave this Hive. The
+ * egress twin of {@link admitCrossHiveEnvelope}: default-deny, allow-list. Rejects when
+ * there is no outbound grant for the destination Hive, or the grant does not cover the
+ * request's kind. Pure — the send path loads `grants` via `loadOutboundCrossHiveGrants`.
+ */
+export function admitOutboundCrossHive(
+  req: OutboundCrossHiveRequest,
+  opts: OutboundAdmitOpts,
+): CrossHiveAdmission {
+  const grant = opts.grants.find((g) => g.peerHivePubkey === req.toHivePubkey);
+  if (!grant) {
+    return {
+      admitted: false,
+      reason: `no outbound grant for Hive ${req.toHivePubkey} — the owner must grant it first`,
+    };
+  }
+  if (!grant.allowedKinds.includes(req.kind)) {
+    return { admitted: false, reason: `Hive ${req.toHivePubkey} is not granted outbound '${req.kind}'` };
+  }
+  return { admitted: true, reason: 'admitted by outbound capability grant' };
+}
+
 /**
  * Ports that translate an ADMITTED envelope into a B-side object via B's ORDINARY
  * substrate. Injected so the boundary logic is testable without PG and so the

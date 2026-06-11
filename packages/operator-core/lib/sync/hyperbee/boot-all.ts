@@ -345,6 +345,24 @@ export async function bootAllHarnessesForActiveWorkspace(
     })();
   }
 
+  // hive-network-surface-2026-06-11 P-001 (B-01): light the cross-Hive boundary
+  // for each directory-PUBLISHED Hive (private hives stay dark) + run the boot
+  // drain of its durable outbox. Same posture as the directory wire above —
+  // fully best-effort + fire-and-forget with its own catch; the boundary must
+  // NEVER affect harness boot. Re-runs reconcile idempotently (the periodic
+  // `system:cross-hive-outbox-drain` routine keeps later publish/visibility
+  // changes converging without a restart).
+  for (const wsId of workspaceIds) {
+    void (async () => {
+      try {
+        const { ensureCrossHiveBoundariesWired } = await import('../../cross-hive-boundary-boot');
+        await ensureCrossHiveBoundariesWired(wsId);
+      } catch {
+        /* best-effort; boot-all never fails on the boundary */
+      }
+    })();
+  }
+
   // hive-from-repo-hardening-2026-06-11 P-009: once-per-process registry
   // github-coords revalidation — re-fetch each coord-bearing project by its
   // IMMUTABLE github_repository_id and repair github_remote /

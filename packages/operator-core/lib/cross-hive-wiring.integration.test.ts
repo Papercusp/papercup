@@ -91,8 +91,8 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
     const A = hiveIdentity();
     const B = hiveIdentity();
 
-    // B's owner grants Hive A only the 'ask' kind — persisted in REAL PG.
-    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask'], db.sql);
+    // B's owner grants Hive A only the 'ask' kind INBOUND — persisted in REAL PG.
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask'], 'in', db.sql);
 
     const mesh = makeTransportMesh();
 
@@ -109,6 +109,8 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
       transport: mesh(A.pubkey), signer: A.signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],
+      // A's owner authorized OUTBOUND asks + work-requests to B (egress default-deny, B-05).
+      loadOutboundGrants: async () => [{ peerHivePubkey: B.pubkey, allowedKinds: ['ask', 'work-request'] }],
       outbox: new InMemoryCrossHiveOutbox(),
       onReply: (r) => aReplies.push(r),
     });
@@ -132,13 +134,13 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
     expect(admitted.workRequests).toHaveLength(0); // …but not admitted (no grant for the kind)
 
     // 3. After the owner WIDENS the grant to include work-request, the next one IS admitted.
-    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask', 'work-request'], db.sql);
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, ['ask', 'work-request'], 'in', db.sql);
     await aWiring.send(B.pubkey, { id: 'wr-2', kind: 'work-request', subject: 'do this now', body: 'task2' });
     expect(admitted.workRequests).toHaveLength(1);
     expect(admitted.workRequests[0]).toMatchObject({ fromHivePubkey: A.pubkey, kind: 'work-request' });
 
     // 4. After REVOKE, a further ask is rejected — admission re-reads the live grant each time.
-    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, [], db.sql); // empty kinds = revoke
+    await setCrossHiveGrant(WS, B_SLUG, A.pubkey, [], 'in', db.sql); // empty kinds = revoke
     await aWiring.send(B.pubkey, { id: 'ask-2', kind: 'ask', subject: 'again?', body: '...' });
     expect(admitted.asks).toHaveLength(1); // still just the first — the revoked ask is dropped
 

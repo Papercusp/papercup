@@ -108,6 +108,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const [fLegacy] = useQueryState('pLegacy', parseAsBoolean.withDefault(false));
   const [fInbox] = useQueryState('pInbox', parseAsBoolean.withDefault(false));
   const [fActionable] = useQueryState('pActionable', parseAsBoolean.withDefault(false));
+  const [fScout] = useQueryState('pScout', parseAsBoolean.withDefault(false));
   const [fSort] = useQueryState(
     'pSort',
     parseAsStringEnum<PlanSort>(PLAN_SORT_IDS).withDefault('default'),
@@ -120,7 +121,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const sorted = useMemo<PlanListRow[]>(() => {
     const filtered = applyPlanFilters(
       plans,
-      { date: fDate, owner: fOwner, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable },
+      { date: fDate, owner: fOwner, archived: fArchived, legacy: fLegacy, inbox: fInbox, actionable: fActionable, scout: fScout },
       query,
       searchHitSlugs,
     );
@@ -149,7 +150,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       return 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, fScout, fSort, query, searchHitSlugs, selectedKey, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -290,7 +291,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     // search box, the rest are the PlanFilters keys.
     const q = query.trim();
     const filtersActive =
-      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
+      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable || fScout;
     const msg = q
       ? `No plans match “${q}”.`
       : filtersActive
