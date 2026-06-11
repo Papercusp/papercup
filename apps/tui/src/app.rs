@@ -336,9 +336,11 @@ impl WakeReview {
 /// `pui mail-pane` / `pui work-pane`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentCtxMode {
-    /// The parent-authored brief that started the agent (spawned_agents.brief).
+    /// The prompt the agent runs on: a fleet spawn's RECORDED prompt_body
+    /// (with its brief led separately — the per-agent signal), or a live
+    /// render of the role persona for interactive agents (the queen).
     #[default]
-    Brief,
+    Prompt,
     /// Coord mail addressed to / sent by the agent (fleet:bee_mail).
     Mail,
     /// The agent's work items + declared plan + claims (fleet:assignments).

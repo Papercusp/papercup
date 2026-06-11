@@ -1810,8 +1810,13 @@ pub struct AgentCtxData {
     pub owner: Option<String>,
     /// Display label from the roster, when resolved.
     pub label: Option<String>,
-    /// Brief mode: the parent-authored brief from the nursery row
-    /// (fleet:tree → root.brief), plus the model/tier it launched at.
+    /// Prompt mode: the prompt the agent runs on. `prompt` is the full text —
+    /// a spawn's RECORDED prompt_body or a live role-persona render
+    /// (`source`: "recorded" | "rendered" | "none"); `brief` is the
+    /// parent-authored brief led separately (the per-agent signal), with the
+    /// model/tier the spawn launched at.
+    pub prompt: Option<String>,
+    pub source: Option<String>,
     pub brief: Option<String>,
     pub model: Option<String>,
     pub tier: Option<String>,

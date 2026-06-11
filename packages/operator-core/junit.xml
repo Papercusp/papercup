@@ -1,45 +1,61 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="20" failures="0" errors="0" time="0.027777009">
-    <testsuite name="lib/workspace-registry.test.ts" timestamp="2026-06-11T20:11:18.170Z" hostname="main-server-Precision-7865-Tower" tests="20" failures="0" errors="0" skipped="0" time="0.027777009">
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; readRegistry returns the registry shape" time="0.0034719">
+<testsuites name="vitest tests" tests="26" failures="0" errors="0" time="1.878834212">
+    <testsuite name="lib/fleet/nursery.integration.test.ts" timestamp="2026-06-11T20:29:38.151Z" hostname="main-server-Precision-7865-Tower" tests="6" failures="0" errors="0" skipped="0" time="0.613037186">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — transitive cancellation (D-003, real PG) &gt; cancels the whole active subtree, leaves terminal nodes untouched" time="0.05142305">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; activeWorkspaceId returns a non-empty string" time="0.000700534">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — transitive cancellation (D-003, real PG) &gt; releases the subtree work-item + plan-item claims immediately" time="0.041484763">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; workspaceById returns undefined for unknown id" time="0.000386026">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — transitive cancellation (D-003, real PG) &gt; does NOT release a feature claimed by someone other than the cancelled node&apos;s owner" time="0.036861907">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; isKnownWorkspace: true for the default id + any registered id, false otherwise" time="0.000454258">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — transitive cancellation (D-003, real PG) &gt; releases locks for every distinct active owner (not terminal ones) and notifies them" time="0.040983465">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; isKnownWorkspace: honors the PAPERCUSP_WORKSPACE_ID pin (EI-212 — a pinned process knows its own workspace)" time="0.000428378">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — transitive cancellation (D-003, real PG) &gt; is idempotent — re-cancelling a terminal subtree is a no-op" time="0.033846717">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; setCompanyId / companyIdFor round-trip" time="0.007937933">
+        <testcase classname="lib/fleet/nursery.integration.test.ts" name="nursery — completion gate (D-003, real PG) &gt; refuses to complete while a child lives; allows it once the subtree is terminal" time="0.049877586">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; setCompanyId throws on unknown workspace" time="0.001028097">
+    </testsuite>
+    <testsuite name="lib/fleet/pg-stores.integration.test.ts" timestamp="2026-06-11T20:29:38.152Z" hostname="main-server-Precision-7865-Tower" tests="12" failures="0" errors="0" skipped="0" time="0.55932082">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="recordSpawnPg / getSpawnPg &gt; inserts a node mapped to a SpawnNode with defaults" time="0.029299247">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — request-scoped precedence (per-window-workspace-context P-012) &gt; returns the request-scoped workspace inside runWithWorkspace, beating the process pin" time="0.000457053">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="recordSpawnPg / getSpawnPg &gt; returns null for an unknown spawn or wrong workspace" time="0.012299035">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — request-scoped precedence (per-window-workspace-context P-012) &gt; falls back to the PAPERCUSP_WORKSPACE_ID process pin outside any request" time="0.000248059">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="recordSpawnPg / getSpawnPg &gt; ON CONFLICT COALESCEs session_owner (keeps existing when new is null, updates when set)" time="0.01635178">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; warns when activeWorkspaceId falls to the global INSIDE a request scope" time="0.004974095">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="getSubtreePg (recursive) &gt; returns the whole subtree ordered by depth" time="0.019807201">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; does NOT warn outside any request scope (background / CLI)" time="0.000538571">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="getSubtreePg (recursive) &gt; excludes the root when includeRoot is false" time="0.019929978">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; does NOT warn when the request scope carries a workspace" time="0.000344647">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="getSubtreePg (recursive) &gt; is workspace-scoped" time="0.021129514">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; dedupes repeat fall-throughs from the same call site" time="0.001198446">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="openChildrenPg / directChildrenPg &gt; counts active descendants and follows past a terminal ancestor" time="0.022378956">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; prefers PAPERCUSP_WORKSPACES_ROOT when set (the desktop-remapped-HOME fix)" time="0.000323706">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="openChildrenPg / directChildrenPg &gt; directChildren returns only the immediate children" time="0.017771832">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; falls back to homedir()/.papercusp-workspaces when the env is unset (dev parity)" time="0.000217591">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="status transitions &gt; finishSpawnPg sets status, finished_at, and a duration" time="0.014522508">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; ignores an empty/whitespace env value" time="0.000216909">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="status transitions &gt; markRestartingPg flips eligible rows to restarting and clears finished_at" time="0.017767132">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; PAPERCUSP_WORKSPACE_ID pin wins — a dedicated single-workspace process, even under shared-operator" time="0.001324861">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="status transitions &gt; markRestartingPg([]) is a no-op" time="0.008035504">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; shared-operator model, no pin → EVERY registered workspace" time="0.00052286">
+        <testcase classname="lib/fleet/pg-stores.integration.test.ts" name="status transitions &gt; markFailedPg sets status failed + error message" time="0.015108519">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; dev / legacy (no shared-operator flag) → just the global active workspace" time="0.000468996">
+    </testsuite>
+    <testsuite name="lib/fleet/supervision.integration.test.ts" timestamp="2026-06-11T20:29:38.154Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.706476206">
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart-intensity governor (D-002, real PG) &gt; counts restarts in a sliding window and trips when count exceeds MaxR" time="0.046868698">
         </testcase>
-        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; shared-operator with an EMPTY registry degrades to the global active workspace" time="0.000619438">
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart-intensity governor (D-002, real PG) &gt; resets the window once it has lapsed (windowSec elapsed)" time="0.03676964">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart-intensity governor (D-002, real PG) &gt; returns null for an unknown spawn" time="0.02428153">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart strategies (D-002, real PG) &gt; one_for_one restarts only the crashed node" time="0.03144537">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart strategies (D-002, real PG) &gt; one_for_all restarts the crashed node + all active siblings" time="0.040832784">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — restart strategies (D-002, real PG) &gt; rest_for_one restarts the crashed node + siblings started after it" time="0.032211089">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — superviseCrash decision (D-002, real PG) &gt; within budget → marks the restart set as restarting" time="0.044385653">
+        </testcase>
+        <testcase classname="lib/fleet/supervision.integration.test.ts" name="supervision — superviseCrash decision (D-002, real PG) &gt; crash-loop (over budget) → tears the subtree down + escalates to a human" time="0.045978248">
         </testcase>
     </testsuite>
 </testsuites>

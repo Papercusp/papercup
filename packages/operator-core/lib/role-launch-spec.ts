@@ -287,7 +287,7 @@ export async function buildRoleLaunchSpec(
  *
  * Neither resolves → throw (the caller 400s: this role needs a harness).
  */
-function assembleWorkspaceRolePrompt(opts: {
+export function assembleWorkspaceRolePrompt(opts: {
   role: string;
   workspaceId: string;
   extras?: readonly string[];

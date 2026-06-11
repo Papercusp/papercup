@@ -94,11 +94,11 @@ async fn main() -> Result<()> {
         // wake-pane (EI-312): the dock's staged-wake board — every manual-mode
         // agent's pending wakes (queen first) with release / edit / skip and
         // the release-all / skip-all drains. Pinned to the pane-only Tab::Wake.
-        // brief-/mail-/work-pane (dock 4-pane split, owner ask 2026-06-11): one
-        // agent-context board each — the launch brief, the coord mail, the work
+        // prompt-/mail-/work-pane (dock 4-pane split, owner ask 2026-06-11): one
+        // agent-context board each — the prompt the agent runs on, the coord mail, the work
         // items + plan linkage. Scope arg like wake-pane (--queen | <owner>).
         Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane")
-        | Some("brief-pane") | Some("mail-pane") | Some("work-pane") => {}
+        | Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -111,13 +111,13 @@ async fn main() -> Result<()> {
         Some("dock-driver") => Some(app::Tab::Fleet),
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
-        Some("brief-pane") | Some("mail-pane") | Some("work-pane") => Some(app::Tab::AgentCtx),
+        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => Some(app::Tab::AgentCtx),
         _ => None,
     };
     let agent_ctx_mode = match subcommand.as_deref() {
         Some("mail-pane") => app::AgentCtxMode::Mail,
         Some("work-pane") => app::AgentCtxMode::Work,
-        _ => app::AgentCtxMode::Brief,
+        _ => app::AgentCtxMode::Prompt,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
     // swarm agent this instance watches, read-only. Required argv[2].
@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
         },
         // The agent-context panes share the wake-pane's scope grammar; their
         // bare default is the QUEEN (they sit in her dock column).
-        Some("brief-pane") | Some("mail-pane") | Some("work-pane") => {
+        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => {
             match std::env::args().nth(2).as_deref() {
                 Some("--queen") | None => app::WakeFilter::Queen,
                 Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
