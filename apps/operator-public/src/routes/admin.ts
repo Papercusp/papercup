@@ -29,9 +29,11 @@ import {
   getHarnessById,
   getReportById,
   listBannedPubkeys,
+  listPendingReview,
   listReports,
   markHarnessUnlisted,
   resolveReport,
+  setReviewStatus,
   unbanPublisherPubkey,
 } from '../db.ts';
 
@@ -133,6 +135,56 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
       harness_unlisted,
     });
     return c.json({ ok: true, status: resolvedStatus, harness_unlisted });
+  });
+
+  // GET /admin/pending — the pre-publication review queue
+  // (learning-packs-2026-06-11 P-019/P-020, D-007): policy-kind listings
+  // (learning-pack, blueprint) awaiting an operator decision, oldest first.
+  app.get('/admin/pending', async (c) => {
+    const op = await requireOperator(c);
+    if (op instanceof Response) return op;
+    const pending = await listPendingReview(c.env.DB);
+    return c.json({ pending });
+  });
+
+  // POST /admin/listings/:id/review — approve or reject a pending listing.
+  // The decision (+ reason) lands on the row; the submitter reads it from
+  // their own GET /:id view; approval makes the listing publicly visible.
+  app.post('/admin/listings/:id/review', async (c) => {
+    const op = await requireOperator(c);
+    if (op instanceof Response) return op;
+    const id = c.req.param('id');
+
+    let body: { decision?: string; reason?: string } = {};
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: 'invalid_json' }, 400);
+    }
+    if (body.decision !== 'approve' && body.decision !== 'reject') {
+      return c.json({ error: 'invalid_field', field: 'decision' }, 400);
+    }
+    if (body.reason != null && (typeof body.reason !== 'string' || body.reason.length > 1000)) {
+      return c.json({ error: 'invalid_field', field: 'reason' }, 400);
+    }
+
+    const row = await getHarnessById(c.env.DB, id);
+    if (!row || row.unlisted_at) return c.json({ error: 'not_found' }, 404);
+    if (row.review_status !== 'pending') {
+      return c.json({ error: 'not_pending', review_status: row.review_status }, 409);
+    }
+
+    const now = Date.now();
+    const status = body.decision === 'approve' ? ('approved' as const) : ('rejected' as const);
+    await setReviewStatus(c.env.DB, id, status, body.reason?.trim() || null, now);
+    await audit(c.env.DB, now, 'review_decided', {
+      id,
+      listing_kind: row.listing_kind,
+      decision: status,
+      operator_github_user_id: op.id,
+      publisher_github_user_id: row.publisher_github_user_id,
+    });
+    return c.json({ ok: true, id, review_status: status });
   });
 
   // POST /admin/harnesses/:id/unlist — proactive operator takedown.

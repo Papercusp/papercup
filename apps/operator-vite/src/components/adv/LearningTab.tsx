@@ -28,7 +28,7 @@
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain } from 'lucide-react';
@@ -37,6 +37,7 @@ import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/impro
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
+import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
@@ -982,6 +983,69 @@ function LearningsView() {
   const filtered =
     lpack === 'all' ? rows : lpack === 'organic' ? rows.filter((r) => !r.packId) : rows.filter((r) => r.packId === lpack);
 
+  // ── Pack management (P-009/P-010/P-013): install / mute / uninstall /
+  //    upgrade, with the conflict-review cards when the backend says
+  //    review_required. Transient action state → useState (nuqs exception).
+  const catalog = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
+    queryName: 'learningPacks.list',
+    args: {},
+    staleTime: 60_000,
+  });
+  const installedIds = new Set((snap?.packs ?? []).map((p) => p.packId));
+  const installable = (catalog.data ?? []).filter((p) => !installedIds.has(p.id));
+  const [addPack, setAddPack] = useState('');
+  const [busyPack, setBusyPack] = useState('');
+  const [packError, setPackError] = useState('');
+  const [reviewState, setReviewState] = useState<{
+    mode: 'install' | 'upgrade';
+    pack: string;
+    review: InstallReview;
+    choices: Record<string, InstallAction>;
+  } | null>(null);
+
+  const packPost = async (
+    path: 'install' | 'upgrade' | 'uninstall' | 'set-enabled',
+    body: Record<string, unknown>,
+    mode?: 'install' | 'upgrade',
+  ) => {
+    setPackError('');
+    setBusyPack(String(body.pack ?? ''));
+    try {
+      const res = await fetch(`/api/learning-packs/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hive, ...body }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        reason?: string;
+        review?: InstallReview;
+        error?: string;
+      };
+      if (data.reason === 'review_required' && data.review && mode) {
+        // Preselect the backend's defaults (clashes skip — D-003).
+        const choices: Record<string, InstallAction> = {};
+        for (const item of data.review.items) choices[item.itemId] = item.defaultAction;
+        setReviewState({ mode, pack: String(body.pack), review: data.review, choices });
+        return;
+      }
+      if (!res.ok || data.ok === false) setPackError(data.error ?? data.reason ?? `HTTP ${res.status}`);
+      setReviewState(null);
+    } catch (e) {
+      setPackError((e as Error).message ?? 'network error');
+    } finally {
+      setBusyPack('');
+      sync.invalidate();
+      catalog.invalidate();
+    }
+  };
+
+  const applyReview = () => {
+    if (!reviewState) return;
+    const resolutions = Object.entries(reviewState.choices).map(([itemId, action]) => ({ itemId, action }));
+    void packPost(reviewState.mode, { pack: reviewState.pack, resolutions });
+  };
+
   const forget = async (row: HiveLearningRowT) => {
     if (!window.confirm(`Remove this learning?\n\n${row.text.slice(0, 160)}`)) return;
     try {
@@ -1062,6 +1126,142 @@ function LearningsView() {
         ))}
         <Stat label="hive-learned" value={snap ? snap.organicCount : '—'} tone="good" hint="Conventions and gotchas this hive's agents (or you) recorded — not from a pack." />
       </div>
+
+      {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
+      {hive !== '' && (
+        <div className="pc-learning__flow" aria-label="Pack management" style={{ flexWrap: 'wrap' }}>
+          {(snap?.packs ?? []).map((p) => (
+            <span key={p.packId} className="pc-learning__flowchip" style={{ gap: 6 }}>
+              <strong>{p.packId}</strong>
+              {p.enabled === false ? <em title="Muted — rows stay stored but are not injected into agent turns">muted</em> : null}
+              <button
+                type="button"
+                style={actionBtn}
+                disabled={busyPack === p.packId}
+                title={p.enabled === false ? 'Resume injecting this pack' : 'Stop injecting this pack (rows stay stored)'}
+                onClick={() => void packPost('set-enabled', { pack: p.packId, enabled: p.enabled === false })}
+              >
+                {p.enabled === false ? 'unmute' : 'mute'}
+              </button>
+              <button
+                type="button"
+                style={actionBtn}
+                disabled={busyPack === p.packId}
+                title="Remove this pack's rows (your edited rows are kept)"
+                onClick={() => {
+                  if (window.confirm(`Uninstall ${p.packId}? Rows you edited are kept.`)) {
+                    void packPost('uninstall', { pack: p.packId });
+                  }
+                }}
+              >
+                uninstall
+              </button>
+              {p.updateAvailable ? (
+                <button
+                  type="button"
+                  style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                  disabled={busyPack === p.packId}
+                  title={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}
+                  onClick={() => void packPost('upgrade', { pack: p.packId }, 'upgrade')}
+                >
+                  v{p.availableVersion} available
+                </button>
+              ) : null}
+            </span>
+          ))}
+          {installable.length > 0 && (
+            <span className="pc-learning__flowchip" style={{ gap: 6 }}>
+              <select
+                aria-label="Add a learning pack"
+                value={addPack}
+                onChange={(e) => setAddPack(e.target.value)}
+                style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
+              >
+                <option value="">add a pack…</option>
+                {installable.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title} — {p.itemCount} learnings</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                style={actionBtn}
+                disabled={!addPack || busyPack !== ''}
+                onClick={() => void packPost('install', { pack: addPack }, 'install')}
+              >
+                install
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+      {packError ? <p className="pc-learning__empty" role="alert">Pack action failed: {packError}</p> : null}
+
+      {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
+      {rows.length > 80 && (
+        <p className="pc-learning__empty" style={{ color: 'var(--warn, #f59e0b)' }}>
+          This hive carries {rows.length} learnings across {(snap?.packs ?? []).length} pack
+          {(snap?.packs ?? []).length === 1 ? '' : 's'} — more than fits one turn&rsquo;s memory budget, so the least
+          turn-relevant are withheld. Consider pruning duplicates or muting a pack.
+        </p>
+      )}
+
+      {/* The conflict-review cards (P-010, D-003): incoming vs existing,
+          per-item action, defaults preselected — never a silent union. */}
+      {reviewState && (
+        <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: '12px 14px', margin: '10px 0' }} data-testid="pack-review">
+          <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>
+            Review: {reviewState.mode === 'upgrade' ? 'adopt new learnings from' : 'install'} {reviewState.pack} —{' '}
+            {reviewState.review.conflicts} conflict{reviewState.review.conflicts === 1 ? '' : 's'}, {reviewState.review.duplicates} duplicate
+            {reviewState.review.duplicates === 1 ? '' : 's'}, {reviewState.review.clean} clean
+          </p>
+          <p style={{ margin: '0 0 10px', fontSize: 11.5, color: 'var(--fg-mute)' }}>
+            Clean items install as-is. For each clash, pick what wins — your existing learnings outrank the incoming pack by default.
+          </p>
+          {reviewState.review.items.filter((i) => i.status !== 'clean').map((item) => (
+            <div key={item.itemId} style={{ borderTop: '1px solid var(--border)', padding: '8px 0', fontSize: 12 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 10.5, color: 'var(--fg-mute)', marginBottom: 2 }}>incoming ({item.status})</div>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{item.incoming}</div>
+                </div>
+                {item.existing && (
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontSize: 10.5, color: 'var(--fg-mute)', marginBottom: 2 }}>
+                      existing ({item.existing.organic ? 'hive-learned' : `pack: ${item.existing.packId ?? '?'}`})
+                    </div>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{item.existing.text}</div>
+                  </div>
+                )}
+              </div>
+              {item.summary ? <div style={{ marginTop: 4, color: 'var(--warn, #f59e0b)', fontSize: 11.5 }}>⚠ {item.summary}</div> : null}
+              <div style={{ display: 'flex', gap: 10, marginTop: 6, fontSize: 11.5 }}>
+                {(['skip', 'replace', 'keep-both'] as const).map((a) => (
+                  <label key={a} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name={`res-${item.itemId}`}
+                      checked={(reviewState.choices[item.itemId] ?? item.defaultAction) === a}
+                      onChange={() => setReviewState((s) => (s ? { ...s, choices: { ...s.choices, [item.itemId]: a } } : s))}
+                    />
+                    {a === 'skip' ? 'keep existing' : a === 'replace' ? 'take incoming' : 'keep both'}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+            <button type="button" style={actionBtn} onClick={() => setReviewState(null)}>cancel</button>
+            <button
+              type="button"
+              style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+              disabled={busyPack !== ''}
+              onClick={applyReview}
+            >
+              apply
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="pc-learning__sectionhead">
         <h2>Shared memory</h2>

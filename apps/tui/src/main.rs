@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         // pinned tab; it also drives the dock's reactive agent stack);
         // `watch-pane <owner>` is a read-only live view of ONE swarm agent
         // (dossier + activity + mail), one per active bee in the dock stack.
-        // The old main-pane (tab-subset) + voice-/apiary-/swarm-/bee-pane
+        // The old main-pane (tab-subset) + voice-/swarm-/bee-pane standalone
         // modes are GONE: tab surfaces live in the pui app, not zellij.
         // dock-driver (hive-agent-tabs P-004/D-009): flag-on the operator pane is
         // psu, so the reactive agent stack needs a dedicated driver pane — it runs

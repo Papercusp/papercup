@@ -49,6 +49,11 @@ export interface HivePackRollup {
   notPresent: number;
   /** Item count of the currently resolvable pack (absent when unresolvable). */
   packTotal?: number;
+  /** Decorated by the resolver (P-009): injection on/off for this hive. */
+  enabled?: boolean;
+  /** Decorated by the resolver (P-013): a newer pack version is adoptable. */
+  updateAvailable?: boolean;
+  availableVersion?: string;
 }
 
 export interface HiveLearningsSnapshot {

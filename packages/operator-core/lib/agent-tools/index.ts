@@ -83,6 +83,8 @@ import './hive/dissolve';
 import './hive/update';
 // cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:
 import './hive/cross_grant';
+// hive-network-surface-2026-06-11 P-005 (B-07) — owner beacon-publish consent:
+import './hive/beacon_consent';
 // hive-network-surface-2026-06-11 P-003 (B-04) — front-door cross-Hive ask tools:
 import './hive/ask';
 import './hive/request_work';

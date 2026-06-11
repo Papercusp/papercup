@@ -1532,18 +1532,37 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (!hive) return [{ hive: '', rows: [], packs: [], organicCount: 0 }];
       const { readHiveLearnings } = await import('./learning-hive-read');
       const { getMemoryBackend } = await import('../memory/backend');
-      const { loadLearningPack } = await import('../learning-packs/load-packs');
-      return [
-        await readHiveLearnings(hive, {
-          listPool: async (scope) => {
-            const backend = getMemoryBackend();
-            const avail = await backend.available();
-            if (!avail.ok) throw new Error(avail.reason);
-            return backend.list({ scope });
-          },
-          loadPack: (id) => loadLearningPack(id),
-        }),
-      ];
+      const { loadLearningPack, listLearningPacks } = await import('../learning-packs/load-packs');
+      const snap = await readHiveLearnings(hive, {
+        listPool: async (scope) => {
+          const backend = getMemoryBackend();
+          const avail = await backend.available();
+          if (!avail.ok) throw new Error(avail.reason);
+          return backend.list({ scope });
+        },
+        loadPack: (id) => loadLearningPack(id),
+      });
+      // Decorate the rollups with enabled state (P-009) + adoptable-version
+      // info (P-013) — best-effort; the bare snapshot still renders.
+      try {
+        const [{ disabledPacksFor }, { activeWorkspaceId }, catalog] = await Promise.all([
+          import('../learning-packs/manage'),
+          import('../workspace-registry'),
+          listLearningPacks(),
+        ]);
+        const disabled = new Set(await disabledPacksFor(activeWorkspaceId(), hive));
+        for (const p of snap.packs) {
+          p.enabled = !disabled.has(p.packId);
+          const avail = catalog.find((c) => c.id === p.packId);
+          if (avail) {
+            p.availableVersion = avail.version;
+            p.updateAvailable = !!p.packVersion && avail.version !== p.packVersion;
+          }
+        }
+      } catch {
+        /* decoration only */
+      }
+      return [snap];
     },
   },
 

@@ -41,6 +41,8 @@ import {
   listBannedPubkeySet,
   listHarnesses,
   markHarnessUnlisted,
+  normalizeListingKind,
+  REVIEW_POLICY_KINDS,
   setHarnessClaim,
   type ListingKind,
 } from '../db.ts';
@@ -150,8 +152,10 @@ function registerListingEndpoints(
     if (!kind) {
       const kindRaw = url.searchParams.get('kind');
       if (kindRaw != null && kindRaw !== '' && kindRaw !== 'all') {
-        if (!isListingKind(kindRaw)) return c.json({ error: 'invalid_field', field: 'kind' }, 400);
-        kind = kindRaw;
+        // normalizeListingKind keeps the pre-008 'pack' wire alias working.
+        const normalized = normalizeListingKind(kindRaw);
+        if (!normalized) return c.json({ error: 'invalid_field', field: 'kind' }, 400);
+        kind = normalized;
       }
     }
     const project_ref = url.searchParams.get('project') ?? undefined;
@@ -186,6 +190,18 @@ function registerListingEndpoints(
       const banned = await listBannedPubkeySet(c.env.DB);
       if (banned.has(row.publisher_device_pubkey)) return c.json({ error: 'not_found' }, 404);
     }
+    // Pre-publication review (learning-packs D-007): a pending/rejected
+    // listing is publicly invisible — only its PUBLISHER reads it (the
+    // "pending approval" state + a rejection's reason); operators use /admin.
+    if (row.review_status !== 'approved') {
+      let viewerId: number | null = null;
+      try {
+        viewerId = (await resolveGithubBearer(c.req.raw)).id;
+      } catch {
+        /* unauthenticated viewer */
+      }
+      if (viewerId !== row.publisher_github_user_id) return c.json({ error: 'not_found' }, 404);
+    }
     return c.json(row);
   });
 
@@ -217,16 +233,17 @@ function registerListingEndpoints(
       return c.json({ error: 'invalid_json' }, 400);
     }
 
-    // Resolve the kind: pinned on /harnesses; from body on /listings (default harness).
+    // Resolve the kind: pinned on /harnesses; from body on /listings (default
+    // harness). normalizeListingKind keeps the pre-008 'pack' alias working.
     let kind: ListingKind;
     if (fixedKind) {
       kind = fixedKind;
     } else if (body.listing_kind == null) {
       kind = 'harness';
-    } else if (isListingKind(body.listing_kind)) {
-      kind = body.listing_kind;
     } else {
-      return c.json({ error: 'invalid_field', field: 'listing_kind' }, 400);
+      const normalized = normalizeListingKind(body.listing_kind);
+      if (!normalized) return c.json({ error: 'invalid_field', field: 'listing_kind' }, 400);
+      kind = normalized;
     }
 
     // Common field validation (every kind is project-remote-backed in v1).
@@ -277,8 +294,8 @@ function registerListingEndpoints(
     // non-empty tool-name strings, stored as JSON TEXT.
     let providesToolsJson: string | null = null;
     if (body.provides_tools != null) {
-      if (kind !== 'plugin' && kind !== 'pack') {
-        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_pack_kind_only' }, 400);
+      if (kind !== 'plugin' && kind !== 'tool-pack') {
+        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_tool_pack_kind_only' }, 400);
       }
       const pt = body.provides_tools;
       if (!Array.isArray(pt) || pt.length === 0 || pt.length > PROVIDES_TOOLS_MAX_ENTRIES) {
@@ -388,10 +405,17 @@ function registerListingEndpoints(
       return c.json({ ok: true, id: existing.id, harness: existing, listing: existing, dedup: true });
     }
 
+    // Pre-publication review (learning-packs D-007): instruction-carrying
+    // kinds land PENDING — invisible to public browse until an operator
+    // approves. The response carries review_status so the publisher's client
+    // can say "pending approval" instead of "live".
+    const review_status = REVIEW_POLICY_KINDS.includes(kind) ? ('pending' as const) : ('approved' as const);
+
     const id = uuidv4();
     await insertHarness(c.env.DB, {
       id,
       listing_kind: kind,
+      review_status,
       project_ref: body.project_ref ?? null,
       listing_ref: kind === 'harness' ? null : (body.listing_ref ?? null),
       github_repository_id: body.github_repository_id,
@@ -417,9 +441,19 @@ function registerListingEndpoints(
       github_repository_id: body.github_repository_id,
       listing_ref: kind === 'harness' ? null : body.listing_ref,
       publisher_github_user_id: user.id,
+      review_status,
     });
     const listing = await getHarnessById(c.env.DB, id);
-    return c.json({ ok: true, id, harness: listing, listing });
+    return c.json({
+      ok: true,
+      id,
+      harness: listing,
+      listing,
+      review_status,
+      ...(review_status === 'pending'
+        ? { pending_review: true, hint: 'This listing kind requires operator approval before it is publicly visible. You will see it as pending; everyone else sees it once approved.' }
+        : {}),
+    });
   });
 
   // DELETE base/:id — unlist (publisher or claimant).

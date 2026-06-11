@@ -178,18 +178,6 @@ async function readAsksByPeer(
   return out;
 }
 
-/**
- * Outbound grants keyed by peer pubkey (B-05 adds `direction` to cross-hive
- * grants). Today grants are inbound-only, so outbound is empty until B-05 lands.
- */
-// UPSTREAM B-05: replace with the outbound-direction grant read.
-async function readOutboundGrants(
-  _workspaceId: string,
-  _hiveSlug: string,
-): Promise<Map<string, CrossHiveKind[]>> {
-  return new Map();
-}
-
 /** The foreign directory hives this peer has seen (non-private), best-effort. */
 function readDiscovered(): DiscoveredHive[] {
   try {
@@ -227,12 +215,15 @@ export async function buildNetworkBoard(
   const liveAgentsBySlug = liveAgentCountByHarness(fleetRows);
 
   const grantsByPeer = new Map<string, CrossHiveKind[]>();
-  let outboundGrantsByPeer = new Map<string, CrossHiveKind[]>();
+  const outboundGrantsByPeer = new Map<string, CrossHiveKind[]>();
   let asksByPeer = new Map<string, NetworkAsks>();
   if (homeSlug) {
-    const grants = await loadCrossHiveGrants(ws, homeSlug).catch(() => []);
-    for (const g of grants) grantsByPeer.set(g.peerHivePubkey, [...g.allowedKinds]);
-    outboundGrantsByPeer = await readOutboundGrants(ws, homeSlug);
+    // One read → both grant directions (B-05's loadDirectedCrossHiveGrants is the
+    // Network-board read path it documents): `in` = kinds we admit FROM a peer,
+    // `out` = kinds we may send TO them.
+    const directed = await loadDirectedCrossHiveGrants(ws, homeSlug).catch(() => ({ in: [], out: [] }));
+    for (const g of directed.in) grantsByPeer.set(g.peerHivePubkey, [...g.allowedKinds]);
+    for (const g of directed.out) outboundGrantsByPeer.set(g.peerHivePubkey, [...g.allowedKinds]);
     asksByPeer = await readAsksByPeer(ws, homeSlug);
   }
 

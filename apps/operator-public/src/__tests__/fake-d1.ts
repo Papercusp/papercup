@@ -70,6 +70,10 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     updated_at: 1,
     unlisted_at: null,
     unlisted_reason: null,
+    // migration 008 (learning-packs): pre-publication review fields.
+    review_status: 'approved',
+    reviewed_at: null,
+    review_reason: null,
     ...over,
   };
 }
@@ -87,13 +91,14 @@ export class FakeStore {
   execute(sql: string, binds: unknown[]): number {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
-      // Bind order matches insertHarness() in db.ts (migrations 004/006/007).
+      // Bind order matches insertHarness() in db.ts (migrations 004/006/007/008).
       const [
         id, listing_kind, project_ref, listing_ref,
         gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
         pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
         provides_tools,
         hive_pubkey, hive_title,
+        review_status,
         created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push(
@@ -117,11 +122,25 @@ export class FakeStore {
           provides_tools: provides_tools ?? null,
           hive_pubkey: hive_pubkey ?? null,
           hive_title: hive_title ?? null,
+          review_status: review_status ?? 'approved',
           created_at,
           updated_at,
         }),
       );
       return 1;
+    }
+    // setReviewStatus (migration 008 / learning-packs P-019).
+    if (upper.startsWith('UPDATE HARNESSES') && upper.includes('SET REVIEW_STATUS')) {
+      const [review_status, reviewed_at, review_reason, updated_at, id] = binds;
+      const row = this.tables.harnesses.find((r) => r.id === id);
+      if (row) {
+        row.review_status = review_status;
+        row.reviewed_at = reviewed_at;
+        row.review_reason = review_reason;
+        row.updated_at = updated_at;
+        return 1;
+      }
+      return 0;
     }
     if (upper.startsWith('UPDATE HARNESSES') && upper.includes('SET UNLISTED_AT')) {
       const [unlisted_at, unlisted_reason, updated_at, id] = binds;

@@ -118,16 +118,22 @@ async function main(): Promise<void> {
       workspaceId: 'xhive-e2e', hiveSlug: 'hive-b', hivePubkey: cfg.selfPubkey,
       transport, signer, requestPorts: recordingPorts,
       loadGrants: async () => grants, outbox: new InMemoryCrossHiveOutbox(),
+      askLedger: NULL_CROSS_HIVE_ASK_LEDGER, // $0 frame: never touch PG, even if reachable
     });
     out('XHIVE_READY');
   } else {
-    // A: send one ask to B and await the answer.
+    // A: send one ask to B and await the answer. The B-05 egress default-deny means
+    // A's own config must carry the `out` grant for (B, ask) — the frame's stand-in
+    // for the owner's hive:cross_grant.
+    const outboundGrants: CrossHiveGrant[] = [{ peerHivePubkey: cfg.peerPubkey, allowedKinds: ['ask'] }];
     const wiring = wireCrossHiveBoundary({
       workspaceId: 'xhive-e2e', hiveSlug: 'hive-a', hivePubkey: cfg.selfPubkey,
       transport, signer,
       requestPorts: { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } },
       loadGrants: async () => [],
+      loadOutboundGrants: async () => outboundGrants,
       outbox: new InMemoryCrossHiveOutbox(),
+      askLedger: NULL_CROSS_HIVE_ASK_LEDGER, // $0 frame: never touch PG, even if reachable
       onReply: (r) => {
         out(`XHIVE_REPLY ${JSON.stringify({ replyKind: r.replyKind, correlationId: r.correlationId, body: r.body })}`);
         void finish(0);

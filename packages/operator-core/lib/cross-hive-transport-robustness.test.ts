@@ -92,7 +92,7 @@ describe('verifyCrossHiveEnvelope — never throws on malformed input', () => {
   it('returns false when sig is missing/empty', async () => {
     const env = await signCrossHiveEnvelope(body(), A.signer);
     expect(verifyCrossHiveEnvelope({ ...env, sig: '' })).toBe(false);
-    expect(verifyCrossHiveEnvelope({ ...(env as object), sig: undefined } as CrossHiveWireEnvelope)).toBe(false);
+    expect(verifyCrossHiveEnvelope({ ...(env as object), sig: undefined } as unknown as CrossHiveWireEnvelope)).toBe(false);
   });
 });
 

@@ -156,6 +156,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__discovery:hives',
   'mcp__agentmcp__hive:cross_grant',
 
+  // hive-network-surface-2026-06-11 P-005 (B-07) — owner beacon-publish consent.
+  // The conversational twin of the desktop consent UX: enable/disable/read
+  // whether THIS Hive publishes a live status beacon to the directory
+  // (owner-consent, default-OFF). Federates to all of this Hive's Swarms.
+  'mcp__agentmcp__hive:beacon_consent',
+
   // hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board:
   // one row per other-hive context across the capability-tier ladder (this Swarm,
   // own other hives, federated peer Swarms, foreign directory hives + beacon +

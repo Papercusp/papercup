@@ -7,16 +7,36 @@
 
 import type { Env } from './env.ts';
 
-/** The storefront listing kinds (migrations 004 + 006 / D-005). The `snapshot`
- *  kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005): the Cupboard
- *  distributes recipes (blueprints), not binary tarballs. The D1 `tarball_*` columns
- *  (migration 005) remain in the schema as vestigial/nullable; no kind writes them. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack'] as const;
+/** The storefront listing kinds (migrations 004 + 006 + 008 / D-005). The
+ *  `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005);
+ *  the D1 `tarball_*` columns (migration 005) remain vestigial/nullable.
+ *  Migration 008 (learning-packs-2026-06-11 D-005): `pack` was RENAMED
+ *  `tool-pack` (a runtime-less code-tool pack) and `learning-pack` (a
+ *  distributable set of curated hive learnings) joined. `pack` stays accepted
+ *  on the wire as a normalized alias for older clients. */
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
+
+/** Wire-compat: normalize the pre-008 'pack' alias to 'tool-pack'. */
+export function normalizeListingKind(v: unknown): ListingKind | null {
+  if (v === 'pack') return 'tool-pack';
+  return isListingKind(v) ? v : null;
+}
+
+/**
+ * Pre-publication review policy (learning-packs D-007): the INSTRUCTION-
+ * CARRYING kinds — content injected into agent context (learning packs) or
+ * run as agent roles (blueprints) — land `pending` at publish and go public
+ * only on operator approval. Code kinds keep install-consent + reactive
+ * moderation.
+ */
+export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['learning-pack', 'blueprint'];
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 export interface HarnessRow {
   id: string;
@@ -63,6 +83,12 @@ export interface HarnessRow {
   updated_at: number;
   unlisted_at: number | null;
   unlisted_reason: string | null;
+  // Pre-publication review (migration 008 / learning-packs D-007). Policy
+  // kinds publish 'pending'; everything else (and every pre-008 row) is
+  // 'approved'. reviewed_at/review_reason carry the operator decision.
+  review_status: ReviewStatus;
+  reviewed_at: number | null;
+  review_reason: string | null;
 }
 
 export interface ReportRow {
@@ -105,6 +131,8 @@ export interface NewHarnessInput {
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */
   hive_title?: string | null;
+  /** Pre-publication review (migration 008): policy kinds publish 'pending'. */
+  review_status?: ReviewStatus;
   created_at: number;
 }
 
@@ -119,9 +147,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           publisher_device_pubkey, publisher_attestation_gist_id,
           provides_tools,
           hive_pubkey, hive_title,
+          review_status,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -143,10 +172,42 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.provides_tools ?? null,
       h.hive_pubkey ?? null,
       h.hive_title ?? null,
+      h.review_status ?? 'approved',
       h.created_at,
       h.created_at,
     )
     .run();
+}
+
+/** Operator decision on a pending listing (learning-packs P-019/P-020). */
+export async function setReviewStatus(
+  db: D1Database,
+  id: string,
+  status: Exclude<ReviewStatus, 'pending'>,
+  reason: string | null,
+  now: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE harnesses
+          SET review_status = ?, reviewed_at = ?, review_reason = ?, updated_at = ?
+        WHERE id = ?`,
+    )
+    .bind(status, now, reason, now, id)
+    .run();
+}
+
+/** The operator's pending-review queue, oldest first. */
+export async function listPendingReview(db: D1Database, limit = 100): Promise<HarnessRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM harnesses
+        WHERE review_status = 'pending' AND unlisted_at IS NULL
+        ORDER BY created_at ASC LIMIT ?`,
+    )
+    .bind(Math.min(Math.max(limit, 1), 200))
+    .all<HarnessRow>();
+  return res.results ?? [];
 }
 
 export async function getHarnessById(db: D1Database, id: string): Promise<HarnessRow | null> {
@@ -193,8 +254,11 @@ export interface ListOpts {
 
 export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<HarnessRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
-  // Static SQL avoids D1's prepared-statement string concat tax; we filter unlisted always.
-  const where: string[] = ['unlisted_at IS NULL'];
+  // Static SQL avoids D1's prepared-statement string concat tax; we filter
+  // unlisted always — and non-approved always (learning-packs D-007: pending/
+  // rejected policy-kind listings are invisible to public browse; the
+  // publisher reads their own via GET /:id with auth, operators via /admin).
+  const where: string[] = ['unlisted_at IS NULL', `review_status = 'approved'`];
   const binds: unknown[] = [];
   if (opts.kind) {
     where.push('listing_kind = ?');

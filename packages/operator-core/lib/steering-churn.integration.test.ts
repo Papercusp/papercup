@@ -35,13 +35,6 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
-// Strip role GRANTs (harness_app/harness_zero don't exist in a throwaway DB),
-// psql meta-commands, and bare BEGIN/COMMIT — mirrors work-items-priority's reader.
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
 
 const H = 'papercup';
 const WS = 'default';
@@ -51,8 +44,16 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('steering-churn');
+  // Create the runtime roles the migration GRANTs to (cluster-global on the shared
+  // testcontainer → idempotent) so we apply the migration UNFILTERED — RLS policies
+  // and grants included. This validates the WHOLE file applies cleanly the way
+  // boot-apply will, not just the table+trigger subset.
+  await db.sql.unsafe(`
+    DO $$ BEGIN CREATE ROLE harness_app;  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+  `).simple();
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(readMigration('232-steering-churn.sql')).simple();
+  await db.sql.unsafe(readFileSync(resolve(SQL_DIR, '232-steering-churn.sql'), 'utf8')).simple();
 });
 
 afterAll(async () => {
