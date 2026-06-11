@@ -94,6 +94,10 @@ export default defineConfig({
       // The browser bundle may import server modules through the generated
       // route tree; postgres-js touches Buffer at module eval and blanks the SPA.
       { find: /^postgres(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/postgres-browser.ts') },
+      // @dbos-inc/dbos-sdk is server-only; its telemetry CJS requires
+      // winston-transport at module scope, which only resolves by accident on
+      // hosts with a stray $HOME/node_modules (broke the macOS build VM).
+      { find: /^@dbos-inc\/dbos-sdk(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/dbos-browser.ts') },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

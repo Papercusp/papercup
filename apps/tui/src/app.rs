@@ -5482,6 +5482,8 @@ mod tests {
             summary: Some(summary.into()),
             source: Some("routinesTick".into()),
             created_at: "2026-06-09".into(),
+            count: 1,
+            last_seen_at: None,
         }
     }
 
@@ -5596,6 +5598,124 @@ mod tests {
         let rev = a.wake_review.as_ref().unwrap();
         assert!(!rev.loading && !rev.busy);
         assert_eq!(rev.error.as_deref(), Some("boom"));
+    }
+
+    // ─── The wake-pane board (EI-312) ───
+
+    fn board_group(agent: &str, wakes: Vec<crate::models::PendingWake>) -> crate::models::WakeGroup {
+        crate::models::WakeGroup {
+            agent: agent.into(),
+            label: agent.into(),
+            kind: Some("queen".into()),
+            wake_mode: Some("manual".into()),
+            pending: wakes,
+        }
+    }
+
+    fn app_on_wake_board() -> App {
+        let mut a = App::new();
+        a.tab = Tab::Wake;
+        a.update(Event::WakeBoard {
+            result: Ok((
+                vec![
+                    board_group("su-q", vec![pending_wake(27, "boot storm"), pending_wake(53, "tick")]),
+                    board_group("su-b", vec![pending_wake(60, "placement")]),
+                ],
+                Some("manual".into()),
+            )),
+        });
+        a
+    }
+
+    #[test]
+    fn wake_board_snapshot_paints_and_flat_selection_crosses_groups() {
+        let mut a = app_on_wake_board();
+        assert!(!a.wake_board.loading);
+        assert_eq!(a.wake_board.total(), 3);
+        assert_eq!(a.wake_board.global_mode.as_deref(), Some("manual"));
+        // Flat j/j walks into the SECOND group's wake.
+        a.update(key('j', KeyModifiers::NONE));
+        a.update(key('j', KeyModifiers::NONE));
+        let (g, pw) = a.wake_board.selected().expect("selected");
+        assert_eq!(g.agent, "su-b");
+        assert_eq!(pw.id, 60);
+        // Clamped at the end.
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.wake_board.sel, 2);
+    }
+
+    #[test]
+    fn wake_board_release_and_drain_verbs_fire_on_the_selected_agent() {
+        let mut a = app_on_wake_board();
+        // r releases the selected wake (the queen's first row).
+        let act = a.update(key('r', KeyModifiers::NONE));
+        assert_eq!(
+            act,
+            Action::WakeBoardAct {
+                agent: "su-q".into(),
+                verb: "release",
+                id: Some(27),
+                edited: None
+            }
+        );
+        assert!(a.wake_board.busy);
+        // Busy blocks a double-fire; the next snapshot clears it.
+        assert_eq!(a.update(key('s', KeyModifiers::NONE)), Action::Render);
+        a.update(Event::WakeBoard {
+            result: Ok((vec![board_group("su-q", vec![pending_wake(53, "tick")])], None)),
+        });
+        assert!(!a.wake_board.busy);
+        // R drains the selected agent's WHOLE queue as one coalesced wake.
+        let act = a.update(key('R', KeyModifiers::SHIFT));
+        assert_eq!(
+            act,
+            Action::WakeBoardAct {
+                agent: "su-q".into(),
+                verb: "release_all",
+                id: None,
+                edited: None
+            }
+        );
+        a.update(Event::WakeBoard { result: Ok((vec![], None)) });
+        // S on an empty board is a no-op (nothing selected).
+        assert_eq!(a.update(key('S', KeyModifiers::SHIFT)), Action::Render);
+    }
+
+    #[test]
+    fn wake_board_edit_seeds_types_and_releases_edited() {
+        let mut a = app_on_wake_board();
+        a.update(key('e', KeyModifiers::NONE));
+        assert_eq!(a.wake_board.edit.as_deref(), Some("boot storm"));
+        a.update(key('!', KeyModifiers::NONE));
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(
+            act,
+            Action::WakeBoardAct {
+                agent: "su-q".into(),
+                verb: "release",
+                id: Some(27),
+                edited: Some("boot storm!".into())
+            }
+        );
+        assert!(a.wake_board.edit.is_none());
+        // An act error lands inline and clears busy.
+        a.update(Event::WakeBoard { result: Err("nope".into()) });
+        assert!(!a.wake_board.busy);
+        assert_eq!(a.wake_board.error.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn wake_board_w_toggles_the_selected_agents_mode_and_g_refreshes() {
+        let mut a = app_on_wake_board();
+        let act = a.update(key('w', KeyModifiers::NONE));
+        assert_eq!(
+            act,
+            Action::SetWakeMode {
+                agent: "su-q".into(),
+                mode: "auto".into()
+            }
+        );
+        assert_eq!(a.update(key('g', KeyModifiers::NONE)), Action::FetchWakeBoard);
     }
 
     fn plan(slug: &str) -> PlanSummary {

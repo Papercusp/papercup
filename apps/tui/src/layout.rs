@@ -282,6 +282,17 @@ pub fn chat_dock_kdl(
     } else {
         String::new()
     };
+    // Wake-queue pane (EI-312, owner ask 2026-06-11): the staged-wake board —
+    // every manual-mode agent's pending wakes (queen first) with release /
+    // edit / skip + the release-all/skip-all drains, so a paused Queen's queue
+    // is reviewable from the dock without tools. Stacked with the agents like
+    // the colony driver. Flag-on only (the wake-mode gate's UI rides
+    // hive-agent-tabs, P-008/P-009).
+    let wake_pane_block = if hive_agent_tabs {
+        "\n        pane name=\"⏸ wakes\" {\n            command \"pui\"\n            args \"wake-pane\"\n        }"
+    } else {
+        ""
+    };
     format!(
         r#"// Papercusp chat dock — ONE full-width agent stack (zellij reserved for the
 // truly console-driven surface — owner ask, pui-dock-agent-stack-2026-06-07;
@@ -304,7 +315,7 @@ layout {{
         }}
         pane name="{brain_name}" {{
             command "{brain_cmd}"{args_line}
-        }}{driver_pane_block}
+        }}{driver_pane_block}{wake_pane_block}
     }}
     pane size=2 borderless=true {{
         plugin location="zellij:status-bar"
@@ -650,15 +661,20 @@ mod tests {
         assert!(!on.contains("args \"chat-pane\""));
         assert_eq!(on.matches("command \"psu\"").count(), 2); // sentinel + queen
         // P-004/D-009: flag-on the reactive driver relocates to a `pui dock-driver`
-        // pane (the chat-pane no longer drives), so exactly one pui command remains.
+        // pane (the chat-pane no longer drives); EI-312 adds the staged-wake
+        // board as a second pui pane (`pui wake-pane`).
         assert!(on.contains("args \"dock-driver\""));
-        assert_eq!(on.matches("command \"pui\"").count(), 1);
+        assert!(on.contains("args \"wake-pane\""));
+        assert!(on.contains("name=\"⏸ wakes\""));
+        assert_eq!(on.matches("command \"pui\"").count(), 2);
 
-        // Flag OFF → unchanged: the pui chat-pane widget drives the dock (no driver pane).
+        // Flag OFF → unchanged: the pui chat-pane widget drives the dock (no
+        // driver pane, no wake pane).
         let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
         assert!(off.contains("args \"chat-pane\""));
         assert!(!off.contains("--role=operator"));
         assert!(!off.contains("args \"dock-driver\""));
+        assert!(!off.contains("args \"wake-pane\""));
         assert_eq!(off.matches("command \"pui\"").count(), 1);
     }
 

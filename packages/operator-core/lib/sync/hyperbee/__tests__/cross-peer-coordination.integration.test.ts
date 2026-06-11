@@ -30,6 +30,15 @@
  *      OWN store, loud warning), the documented optimistic split-brain window is
  *      real (both stores can hold the same item until git-merge), and on heal the
  *      claim path routes `remote-authority` again.
+ *   7. THREE-PEER failover consistency + rejoin: with three Swarms federated, the
+ *      authority departs → BOTH survivors independently elect the SAME successor
+ *      (post-failover no-split-brain — inexpressible in a two-peer rig), a contended
+ *      claim between the survivors grants exactly one, and when the departed Swarm
+ *      REJOINS (fresh boot, same identity) all three re-converge on the original
+ *      argmin authority.
+ *   8. LEASE LIFECYCLE across peers: acquire (remote) → contention refused → release
+ *      (remote) → the other Swarm re-acquires — the full claim lease serializes at
+ *      the federated-elected authority over the real RPC wire.
  *
  * Proof boundary: REAL corestores/logs, REAL Hyperswarm/Noise over a local testnet
  * DHT, REAL announce signature verification, REAL presence projection → PG, REAL
@@ -68,7 +77,7 @@ import {
 } from '../../../authority/authority-op-registry';
 import { __resetRemotePeersCacheForTests } from '../../../authority/remote-peers-cache';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
-import type { AcquireResult, AcquireOpts } from '../../../work-item-claims';
+import type { AcquireResult, AcquireOpts, ReleaseClaimParams } from '../../../work-item-claims';
 
 // ── getOrgPg → the AUTHORITY's PG (the claim store's single serialization point).
 //    Only `acquireClaimLocal` (run on the authority) reads it; the presence
@@ -80,7 +89,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 const { registerWorkItemClaimAuthorityOps } = await import('../../../work-item-claim-authority-ops');
-const { WORK_ITEM_CLAIM_OP_KINDS, getClaim, acquireClaimLocal } = await import('../../../work-item-claims');
+const { WORK_ITEM_CLAIM_OP_KINDS, getClaim, acquireClaimLocal, releaseClaimLocal } = await import('../../../work-item-claims');
 
 const WORKSPACE_ID = 'ws-xpeer-coord';
 const HARNESS_SLUG = 'xpeer-coord';
@@ -670,6 +679,268 @@ describe('cross-peer coordination on a shared Hive — partition fail-open + hea
       expect(r3.value.ok).toBe(true);
       const healedHeld = await getClaim('default', HARNESS_SLUG, 'F-XPEER-PART-2');
       expect(healedHeld?.owner).toBe(client.owner);
+    },
+    60_000,
+  );
+});
+
+interface TrioNode {
+  id: ReturnType<typeof makeIdentity>;
+  db: FreshPgDb;
+  peer: PresencePeer;
+  machine: string;
+  self: { githubUserId: number; devicePubkey: string };
+}
+
+/** Three Swarms of one Hive federated over the real wire — every peer's roster holds
+ *  ALL THREE devices. The fixture for the post-failover-consistency assertions a
+ *  two-peer rig cannot express. Returns nodes + the testnet bootstrap (for rejoin). */
+async function federateThreePeerPresence() {
+  const seeds = [
+    { login: 'alice', userId: 42, kc: 'kc-alice', machine: 'machine-A', ts: 1000 },
+    { login: 'bob', userId: 7, kc: 'kc-bob', machine: 'machine-B', ts: 1001 },
+    { login: 'carol', userId: 99, kc: 'kc-carol', machine: 'machine-C', ts: 1002 },
+  ];
+  const testnet = await makeTestnet();
+  const nodes: TrioNode[] = [];
+  for (const s of seeds) {
+    const db = await createFreshPgDb(`xpeer3-${s.login}`);
+    cleanups.push(() => db.cleanup());
+    await db.sql.unsafe(SHARED_PRESENCE_DDL);
+    const id = makeIdentity(s.login, s.userId, s.kc);
+    nodes.push({ id, db, machine: s.machine, peer: undefined as never, self: { githubUserId: s.userId, devicePubkey: id.devicePubkey } });
+  }
+  const admitted = new Set(seeds.map((s) => s.userId));
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].peer = await bootPresencePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: `xpeer3-${seeds[i].login}-`,
+      identity: nodes[i].id,
+      sql: nodes[i].db.sql,
+      verify: (uid) => (admitted.has(uid) ? 'verified' : 'fail'),
+    });
+  }
+  for (let i = 0; i < nodes.length; i++) {
+    await nodes[i].peer.handle.append({
+      type: 'put',
+      table: 'presence',
+      hbKey: `${seeds[i].userId}/${seeds[i].machine}`,
+      value: presenceValue(seeds[i].userId, seeds[i].machine, nodes[i].id.devicePubkey),
+      ts: seeds[i].ts,
+      schema_version: 1,
+      writerPubkey: nodes[i].id.devicePubkey,
+    });
+  }
+  const allPubkeys = new Set(nodes.map((n) => n.id.devicePubkey));
+  const federated = await pollUntil(
+    async () => {
+      for (const n of nodes) await n.peer.handle.mergeNow();
+      for (const n of nodes) {
+        const devs = await devicePubkeysFor(n.db.sql);
+        for (const pk of allPubkeys) if (!devs.has(pk)) return undefined;
+      }
+      return true;
+    },
+    { timeoutMs: 30_000, intervalMs: 250 },
+  );
+  return { nodes, seeds, testnet, admitted, federated };
+}
+
+describe('cross-peer coordination on a shared Hive — THREE-peer failover consistency + rejoin (D-005)', () => {
+  it(
+    'authority departs → BOTH survivors elect the SAME successor (no split-brain), a contended claim grants exactly one; the departed Swarm rejoins → all three reconverge',
+    async () => {
+      const trio = await federateThreePeerPresence();
+      expect(trio.federated, 'three-way presence federation did not complete within the window').toBeTruthy();
+
+      const sorted = [...trio.nodes].sort((a, b) => (a.id.devicePubkey < b.id.devicePubkey ? -1 : 1));
+      const [orig, successor, third] = sorted;
+      const survivors = [successor, third];
+
+      // Stage 1 — fully connected: all THREE rosters elect the same argmin authority.
+      for (const n of trio.nodes) {
+        const a = await lockAuthorityForHive(HIVE_SLUG, electionDeps(n.db.sql, n.self));
+        const seen = a.isSelf ? n.id.devicePubkey : a.peer!.devicePubkey;
+        expect(seen).toBe(orig.id.devicePubkey);
+        expect(a.liveCount).toBe(3);
+      }
+
+      // Stage 2 — the authority Swarm departs.
+      await orig.peer.handle.close();
+
+      // Stage 3 — the survivors keep heartbeating at VIRTUAL_NOW; each fresh
+      // heartbeat must FEDERATE to the other survivor (their rosters, not ours).
+      const VIRTUAL_NOW = Date.now() + 601_000;
+      for (const s of survivors) {
+        const seed = trio.seeds.find((x) => x.userId === s.self.githubUserId)!;
+        await s.peer.handle.append({
+          type: 'put',
+          table: 'presence',
+          hbKey: `${seed.userId}/${seed.machine}`,
+          value: { ...presenceValue(seed.userId, seed.machine, s.id.devicePubkey), last_seen_at: VIRTUAL_NOW },
+          ts: 2000 + seed.userId,
+          schema_version: 1,
+          writerPubkey: s.id.devicePubkey,
+        });
+      }
+      const survivorsFresh = await pollUntil(
+        async () => {
+          for (const s of survivors) await s.peer.handle.mergeNow();
+          for (const s of survivors) {
+            const rows = await queryPresenceRowsForHive(s.db.sql as never, HIVE_SLUG);
+            for (const other of survivors) {
+              if (!rows.some((r) => r.device_pubkey === other.id.devicePubkey && r.last_seen_ms >= VIRTUAL_NOW)) return undefined;
+            }
+          }
+          return true;
+        },
+        { timeoutMs: 20_000, intervalMs: 200 },
+      );
+      expect(survivorsFresh, "the survivors' fresh heartbeats never mutually federated").toBeTruthy();
+
+      // Stage 4 — POST-FAILOVER CONSISTENCY: both survivors independently elect the
+      // SAME successor (the second-lowest pubkey) over their OWN federated rosters.
+      const elections = await Promise.all(
+        survivors.map((s) => lockAuthorityForHive(HIVE_SLUG, electionDeps(s.db.sql, s.self, () => VIRTUAL_NOW + 1))),
+      );
+      for (const e of elections) expect(e.liveCount).toBe(2);
+      const seenBySuccessor = elections[0].isSelf ? successor.id.devicePubkey : elections[0].peer!.devicePubkey;
+      const seenByThird = elections[1].isSelf ? third.id.devicePubkey : elections[1].peer!.devicePubkey;
+      expect(seenBySuccessor).toBe(successor.id.devicePubkey);
+      expect(seenByThird).toBe(successor.id.devicePubkey);
+      expect([elections[0].isSelf, elections[1].isSelf].filter(Boolean)).toHaveLength(1);
+
+      // Stage 5 — claims continue under the successor: both survivors contend for
+      // one item; the successor's store grants EXACTLY ONE.
+      await successor.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+      h.sql = successor.db.sql;
+      __resetAuthorityOpsForTests();
+      registerWorkItemClaimAuthorityOps();
+      const rpc = await startAuthorityRpcServer();
+      setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => rpc.addr() }));
+      cleanups.push(() => {
+        __resetPeerRpcTransportForTests();
+        __resetAuthorityOpsForTests();
+      });
+      const nowFn = () => VIRTUAL_NOW + 1;
+      const [rS, rT] = await Promise.all([
+        claimVia(successor.db.sql, successor.self, 'successor-swarm', 'F-XPEER3-1', nowFn),
+        claimVia(third.db.sql, third.self, 'third-swarm', 'F-XPEER3-1', nowFn),
+      ]);
+      expect([rS, rT].filter((r) => r.value.ok)).toHaveLength(1);
+      expect(rS.via).toBe('local-authority');
+      expect(rT.via).toBe('remote-authority');
+
+      // Stage 6 — REJOIN: the departed Swarm comes back (fresh boot, SAME identity)
+      // and heartbeats at VIRTUAL_NOW. Same-identity re-admission must hold.
+      const origSeed = trio.seeds.find((x) => x.userId === orig.self.githubUserId)!;
+      const rejoined = await bootPresencePeer({
+        testnetBootstrap: trio.testnet.bootstrap,
+        rootPrefix: `xpeer3-rejoin-${origSeed.login}-`,
+        identity: orig.id,
+        sql: orig.db.sql,
+        verify: (uid) => (trio.admitted.has(uid) ? 'verified' : 'fail'),
+      });
+      await rejoined.handle.append({
+        type: 'put',
+        table: 'presence',
+        hbKey: `${origSeed.userId}/${origSeed.machine}`,
+        value: { ...presenceValue(origSeed.userId, origSeed.machine, orig.id.devicePubkey), last_seen_at: VIRTUAL_NOW },
+        ts: 3000,
+        schema_version: 1,
+        writerPubkey: orig.id.devicePubkey,
+      });
+      const everyone = [{ ...orig, peer: rejoined }, ...survivors];
+      const reconverged = await pollUntil(
+        async () => {
+          for (const n of everyone) await n.peer.handle.mergeNow();
+          for (const n of everyone) {
+            const rows = await queryPresenceRowsForHive(n.db.sql as never, HIVE_SLUG);
+            for (const m of everyone) {
+              if (!rows.some((r) => r.device_pubkey === m.id.devicePubkey && r.last_seen_ms >= VIRTUAL_NOW)) return undefined;
+            }
+          }
+          return true;
+        },
+        { timeoutMs: 25_000, intervalMs: 250 },
+      );
+      expect(reconverged, "the rejoined Swarm's heartbeat never federated to all peers").toBeTruthy();
+
+      // Stage 7 — all three independently re-elect the ORIGINAL argmin authority.
+      for (const n of everyone) {
+        const a = await lockAuthorityForHive(HIVE_SLUG, electionDeps(n.db.sql, n.self, () => VIRTUAL_NOW + 1));
+        const seen = a.isSelf ? n.id.devicePubkey : a.peer!.devicePubkey;
+        expect(seen).toBe(orig.id.devicePubkey);
+        expect(a.liveCount).toBe(3);
+      }
+    },
+    90_000,
+  );
+});
+
+describe('cross-peer coordination on a shared Hive — claim lease lifecycle across peers', () => {
+  it(
+    'acquire (remote) → contention refused → release (remote) → the other Swarm re-acquires',
+    async () => {
+      const { dbA, dbB, idA, idB, federated } = await federateTwoPeerPresence();
+      expect(federated).toBeTruthy();
+
+      const authorityIsA = idA.devicePubkey < idB.devicePubkey;
+      const authority = authorityIsA ? { id: idA, db: dbA } : { id: idB, db: dbB };
+      const client = authorityIsA ? { id: idB, db: dbB } : { id: idA, db: dbA };
+      const selfAuthority = { githubUserId: authority.id.userId, devicePubkey: authority.id.devicePubkey };
+      const selfClient = { githubUserId: client.id.userId, devicePubkey: client.id.devicePubkey };
+
+      await authority.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+      h.sql = authority.db.sql; // every routed op serializes at the authority's store
+      __resetAuthorityOpsForTests();
+      registerWorkItemClaimAuthorityOps();
+      const rpc = await startAuthorityRpcServer();
+      setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => rpc.addr() }));
+      cleanups.push(() => {
+        __resetPeerRpcTransportForTests();
+        __resetAuthorityOpsForTests();
+      });
+
+      const ITEM = 'F-XPEER-LEASE-1';
+      // 1. The non-authority Swarm acquires over the real RPC wire.
+      const r1 = await claimVia(client.db.sql, selfClient, 'client-swarm', ITEM);
+      expect(r1.via).toBe('remote-authority');
+      expect(r1.value.ok).toBe(true);
+      const claimId = r1.value.ok ? r1.value.claim.claimId : '';
+
+      // 2. The authority Swarm contends while the lease is live → refused, and the
+      //    conflict faithfully names the cross-peer holder.
+      const r2 = await claimVia(authority.db.sql, selfAuthority, 'authority-swarm', ITEM);
+      expect(r2.via).toBe('local-authority');
+      expect(r2.value.ok).toBe(false);
+      if (!r2.value.ok) expect(r2.value.conflict.owner).toBe('client-swarm');
+
+      // 3. The holder RELEASES over the same routed authority leg.
+      const releasePayload: ReleaseClaimParams = {
+        workspaceId: 'default',
+        harnessSlug: HARNESS_SLUG,
+        workItemId: ITEM,
+        hiveSlug: HIVE_SLUG,
+        claimId,
+        owner: 'client-swarm',
+      };
+      const r3 = await routeToAuthorityForHive<boolean>(
+        HIVE_SLUG,
+        {
+          local: () => releaseClaimLocal(releasePayload),
+          remote: { kind: WORK_ITEM_CLAIM_OP_KINDS.release, payload: releasePayload, decode: (raw): boolean => raw as boolean },
+        },
+        electionDeps(client.db.sql, selfClient),
+      );
+      expect(r3.via).toBe('remote-authority');
+      expect(r3.value).toBe(true);
+
+      // 4. The lease is gone → the previously-refused Swarm now acquires.
+      const r4 = await claimVia(authority.db.sql, selfAuthority, 'authority-swarm', ITEM);
+      expect(r4.value.ok).toBe(true);
+      const held = await getClaim('default', HARNESS_SLUG, ITEM);
+      expect(held?.owner).toBe('authority-swarm');
     },
     60_000,
   );

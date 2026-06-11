@@ -37,6 +37,7 @@ mod voice;
 mod voice_convai;
 mod voice_stream;
 mod voice_ui;
+mod wake_board;
 mod workbench;
 
 use anyhow::Result;
@@ -89,7 +90,10 @@ async fn main() -> Result<()> {
         // dock-driver (hive-agent-tabs P-004/D-009): flag-on the operator pane is
         // psu, so the reactive agent stack needs a dedicated driver pane — it runs
         // the reactive loop + renders the Fleet roster as the dock controller.
-        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") => {}
+        // wake-pane (EI-312): the dock's staged-wake board — every manual-mode
+        // agent's pending wakes (queen first) with release / edit / skip and
+        // the release-all / skip-all drains. Pinned to the pane-only Tab::Wake.
+        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -100,6 +104,8 @@ async fn main() -> Result<()> {
         // dock-driver: render the Fleet roster (the dock controller) while driving
         // the reactive bee stack (hive-agent-tabs P-004/D-009).
         Some("dock-driver") => Some(app::Tab::Fleet),
+        // wake-pane: the staged-wake board (EI-312).
+        Some("wake-pane") => Some(app::Tab::Wake),
         _ => None,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
@@ -243,6 +249,10 @@ async fn run<B: Backend>(
         app.bee.set_selection(Some(owner.clone()), None);
         // The thinking feed: tail the bee's live stdout (offset-cursor poll).
         tokio::spawn(bee_output_loop(owner.clone(), tx.clone()));
+    }
+    // The wake-pane (EI-312): keep the staged-wake board fresh while pinned.
+    if pinned == Some(app::Tab::Wake) {
+        tokio::spawn(wake_board_loop(tx.clone()));
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -497,6 +507,22 @@ async fn run<B: Backend>(
                 // P-009: release (as-is or edited) / skip one staged wake, then
                 // re-list so the overlay refreshes.
                 tokio::spawn(wake_queue_act(agent, release, id, edited, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchWakeBoard => {
+                // EI-312: re-snapshot the fleet-wide staged-wake board.
+                tokio::spawn(fetch_wake_board(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::WakeBoardAct {
+                agent,
+                verb,
+                id,
+                edited,
+            } => {
+                // EI-312: act on the board (release/skip one, or drain all),
+                // then re-snapshot so the pane refreshes.
+                tokio::spawn(wake_board_act(agent, verb, id, edited, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::CreateFrameTabs { tabs } => {
@@ -2228,6 +2254,109 @@ async fn wake_queue_act(
                 result: Err(e),
             });
         }
+    }
+}
+
+/// EI-312: snapshot the fleet-wide staged-wake board — an agent-LESS
+/// `coord:wake-queue` list (every owner's queue, including stale owners the
+/// roster no longer carries) joined with the roster for labels/kinds, plus the
+/// GLOBAL default wake-mode (a fleet-wide pause reads differently from one
+/// paused agent) → `Event::WakeBoard`.
+async fn fetch_wake_board(tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => {
+            let pending = client
+                .run_tool("coord:wake-queue", serde_json::json!({ "action": "list" }))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|v| crate::client::parse_wake_queue_list(&v).map_err(|e| e.to_string()));
+            match pending {
+                Ok(pending) => {
+                    // Roster join is best-effort: a fetch error degrades to raw
+                    // owner-id labels, never an empty board.
+                    let roster = client.roster_typed().await.map(|(active, _)| active).unwrap_or_default();
+                    // The global default mode: coord:wake-mode with no agent.
+                    let global_mode = client
+                        .run_tool("coord:wake-mode", serde_json::json!({}))
+                        .await
+                        .ok()
+                        .and_then(|v| crate::client::run_tool_inner_json(&v).ok())
+                        .and_then(|inner| {
+                            inner
+                                .get("mode")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string)
+                        });
+                    Ok((crate::client::assemble_wake_board(pending, &roster), global_mode))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    let _ = tx.send(Event::WakeBoard { result });
+}
+
+/// EI-312: act on the wake board — verb is the coord:wake-queue action
+/// (release / skip take an id; release_all / skip_all drain the whole agent
+/// queue), then re-snapshot. An act error rides Event::WakeBoard (Err →
+/// shown inline in the pane).
+async fn wake_board_act(
+    agent: String,
+    verb: &'static str,
+    id: Option<i64>,
+    edited: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let res = match OperatorClient::from_discovery().await {
+        Ok(client) => {
+            let mut args = serde_json::json!({ "agent": agent, "action": verb });
+            if let Some(id) = id {
+                args["id"] = serde_json::Value::from(id);
+            }
+            if let Some(e) = edited {
+                args["edited"] = serde_json::Value::String(e);
+            }
+            client
+                .run_tool("coord:wake-queue", args)
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    let inner =
+                        crate::client::run_tool_inner_json(&v).map_err(|e| e.to_string())?;
+                    if inner.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                        Ok(())
+                    } else {
+                        Err(inner
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("wake-board act failed")
+                            .to_string())
+                    }
+                })
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    match res {
+        Ok(()) => fetch_wake_board(tx).await,
+        Err(e) => {
+            let _ = tx.send(Event::WakeBoard { result: Err(e) });
+        }
+    }
+}
+
+/// EI-312: the wake-pane's refresh loop — re-snapshot the board every ~3s.
+/// Justified poll (matches the dock's roster cadence): the queue mutates from
+/// many writers (stagePendingWake on any wake) and the pane is the only
+/// consumer; a push rail for pending_wakes isn't built yet.
+async fn wake_board_loop(tx: UnboundedSender<Event>) {
+    let mut ticker = tokio::time::interval(Duration::from_millis(3000));
+    loop {
+        ticker.tick().await;
+        if tx.is_closed() {
+            return;
+        }
+        fetch_wake_board(tx.clone()).await;
     }
 }
 

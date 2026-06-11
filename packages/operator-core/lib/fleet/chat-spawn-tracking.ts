@@ -84,6 +84,16 @@ export interface BeginChatSpawnTrackingInput {
   sql?: Db;
 }
 
+/**
+ * Hard deadline on the pre-stream nursery insert. "Best-effort" must mean
+ * BOUNDED: the messages route awaits this BEFORE opening the SSE response, so
+ * a slow/contended PG pool was holding the whole chat turn hostage (observed
+ * 15s+ route hangs under fleet load, 2026-06-11). On timeout the chat streams
+ * untracked — the same degraded mode as an insert error; a late-landing row
+ * stays 'running' and the reclaim sweep reaps it.
+ */
+const RECORD_SPAWN_DEADLINE_MS = 2_500;
+
 export async function beginChatSpawnTracking(
   input: BeginChatSpawnTrackingInput,
 ): Promise<ChatSpawnHandle | null> {
@@ -91,7 +101,7 @@ export async function beginChatSpawnTracking(
   let sql: Db;
   try {
     sql = input.sql ?? getOrgPg().sql;
-    await recordSpawnPg(sql, {
+    const insert = recordSpawnPg(sql, {
       spawnId,
       workspaceId: input.workspaceId,
       harnessSlug: input.harnessSlug,
@@ -105,6 +115,17 @@ export async function beginChatSpawnTracking(
       coordinationDomain: input.projectDir ? lockDomainForProjectDir(input.projectDir) : undefined,
       status: 'running',
     });
+    const inTime = await Promise.race([
+      insert.then(() => true),
+      new Promise<false>((r) => setTimeout(r, RECORD_SPAWN_DEADLINE_MS, false)),
+    ]);
+    if (!inTime) {
+      insert.catch(() => { /* late failure of an already-abandoned insert */ });
+      console.warn(
+        `[chat-spawn-tracking] recordSpawn exceeded ${RECORD_SPAWN_DEADLINE_MS}ms — chat ${input.chatId} streams untracked`,
+      );
+      return null;
+    }
   } catch (err) {
     console.warn(
       `[chat-spawn-tracking] recordSpawn failed — chat ${input.chatId} streams untracked: ${

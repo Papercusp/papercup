@@ -14,6 +14,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          # Private Papercusp/* submodules need a credential to clone — same
+          # SUBMODULES_PAT convention as test.yml; without it this job dies at
+          # checkout and the nightly runs zero tests.
+          token: ${{ secrets.SUBMODULES_PAT || github.token }}
 
       - uses: actions/setup-node@v4
         with:

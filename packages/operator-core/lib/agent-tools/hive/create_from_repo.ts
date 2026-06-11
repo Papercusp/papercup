@@ -25,7 +25,7 @@ export default defineTool({
   name: 'hive:create_from_repo',
   profile: 'engineer',
   description:
-    'Create a Hive FROM a GitHub URL: looks up the repo→Hive binding first (an existing Hive returns a JOIN OFFER with zero side effects), then clones the repo, detects + test-verifies its blueprint (generate-from-repo spine), stands up a Hive home (hive:create) with the clone as the first member harness (harness:create { hive }), stamps the upstream coords (fork-PR context), and auto-publishes per visibility — public (default) announces to the P2P directory + registers Cupboard binding rows; invite announces to the secret topic only; private performs zero external writes. Returns {ok, existing?} (join offer) or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
+    'Create a Hive FROM a GitHub URL: repo→Hive lookup first (an existing Hive returns a JOIN OFFER, zero side effects), then clone, blueprint detect + test-verify, Hive home + first member harness, upstream coords stamped, auto-publish per visibility (public = P2P directory + Cupboard; invite = secret topic only; private = zero external writes). Returns {ok, existing?} or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
   guidance: {
     when: 'Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
     notWhen:
@@ -57,6 +57,13 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Create-anyway past an existing hive/share for this repo (P-008): the result is flagged duplicateOf for the claim/supersede flow. Default false — an existing hive returns a join offer instead.'),
+    intoHive: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9-]*$/)
+      .optional()
+      .describe("P-009 into-hive mode: add the repo as a member of this EXISTING kind:'hive' home instead of standing up a new hive (no new identity/listing; the existing listing re-publishes with the new member)."),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
@@ -82,6 +89,7 @@ export default defineTool({
       ...(args.testTimeoutMs ? { testTimeoutMs: args.testTimeoutMs } : {}),
       ...(args.parentDir ? { parentDir: args.parentDir } : {}),
       ...(args.force !== undefined ? { force: args.force } : {}),
+      ...(args.intoHive ? { intoHive: args.intoHive } : {}),
       workspaceId,
     });
     return text(res as unknown as Record<string, unknown>);

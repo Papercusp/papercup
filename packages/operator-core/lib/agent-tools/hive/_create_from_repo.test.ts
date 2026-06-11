@@ -216,4 +216,45 @@ describe('createHiveFromRepo (P-006)', () => {
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     expect(r.publish).toMatchObject({ announced: false, error: 'cupboard exploded' });
   });
+
+  it('into-hive mode: no new home; member joins the existing hive; republish scoped to the new repo (P-009)', async () => {
+    const republishes: Record<string, unknown>[] = [];
+    const { deps, calls } = fakes({
+      loadRegistry: async () =>
+        ({ projects: [{ slug: 'myhive', path: '/h', harness_kind: 'hive' }] }) as never,
+      republish: (async (o: Record<string, unknown>) => {
+        republishes.push(o);
+        return { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } };
+      }) as never,
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'myhive', workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.created).toMatchObject({ hiveSlug: 'myhive', memberSlug: 'shop' });
+    expect(calls.hiveCreated).toEqual([]); // no new home
+    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'myhive', path: '/clones/shop' }]);
+    expect(calls.publishes).toEqual([]); // the NEW-hive publish path is not used
+    expect(republishes[0]).toMatchObject({ hiveSlug: 'myhive', onlyRepoIds: [100] });
+  });
+
+  it('into-hive mode fails fast on a non-hive scope (no clone)', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () => ({ projects: [{ slug: 'plain', path: '/p' }] }) as never,
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'plain', workspaceId: 'ws' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'hive_not_found' });
+    expect(calls.cloned).toEqual([]);
+  });
+
+  it('into-hive member-create failure removes only the clone (the existing home is untouched)', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () =>
+        ({ projects: [{ slug: 'myhive', path: '/h', harness_kind: 'hive' }] }) as never,
+      createMember: async () => ({ ok: false, error: 'nope' }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'myhive', workspaceId: 'ws' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'member_create_failed' });
+    expect(calls.removedHomes).toEqual([]);
+    expect(calls.removedDirs).toEqual(['/clones/shop']);
+  });
 });

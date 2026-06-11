@@ -1624,6 +1624,45 @@ pub fn parse_wake_queue_list(v: &serde_json::Value) -> Result<Vec<crate::models:
     serde_json::from_value(pending).with_context(|| "wake-queue: bad pending rows")
 }
 
+/// Assemble the fleet-wide wake board (the `pui wake-pane`, EI-312) from an
+/// agent-LESS `coord:wake-queue` list (every owner's staged wakes) + the live
+/// roster: one group per owner with a queue, labelled/kinded from the roster
+/// when present (a stale owner falls back to its raw id), queen-rank first.
+/// Pure — unit-tested.
+pub fn assemble_wake_board(
+    all_pending: Vec<crate::models::PendingWake>,
+    roster: &[crate::models::RosterEntry],
+) -> Vec<crate::models::WakeGroup> {
+    use crate::agent_pane_kind::AgentPaneKind;
+    let mut groups: Vec<crate::models::WakeGroup> = Vec::new();
+    for pw in all_pending {
+        if let Some(g) = groups.iter_mut().find(|g| g.agent == pw.owner_id) {
+            g.pending.push(pw);
+            continue;
+        }
+        let entry = roster.iter().find(|r| r.owner_id == pw.owner_id);
+        groups.push(crate::models::WakeGroup {
+            agent: pw.owner_id.clone(),
+            label: entry
+                .map(|r| r.label.clone())
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| pw.owner_id.clone()),
+            kind: entry.and_then(|r| r.agent_pane_kind.clone()),
+            wake_mode: entry.and_then(|r| r.wake_mode.clone()),
+            pending: vec![pw],
+        });
+    }
+    // Queen-rank first, then label — the queen's queue is what the dock pane
+    // exists for, so it leads even when other agents have older rows.
+    groups.sort_by(|a, b| {
+        let rank = |g: &crate::models::WakeGroup| {
+            AgentPaneKind::from_opt(&g.kind).map_or(u8::MAX, |k| k.group_rank())
+        };
+        rank(a).cmp(&rank(b)).then_with(|| a.label.cmp(&b.label))
+    });
+    groups
+}
+
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1683,6 +1722,59 @@ mod tests {
         assert_eq!(got[0].id, 7);
         assert_eq!(got[0].summary.as_deref(), Some("routine tick"));
         assert_eq!(got[1].summary, None);
+        // A pre-coalescing payload (no count field) defaults to count 1.
+        assert_eq!(got[0].count, 1);
+    }
+
+    #[test]
+    fn assemble_wake_board_groups_by_owner_queen_first_with_roster_join() {
+        // EI-312: three owners' wakes interleaved; the bee + queen are on the
+        // roster, the third owner is stale (gone from the roster).
+        let pw = |id: i64, owner: &str, summary: &str, count: i64| crate::models::PendingWake {
+            id,
+            owner_id: owner.into(),
+            summary: Some(summary.into()),
+            count,
+            ..Default::default()
+        };
+        let roster = vec![
+            crate::models::RosterEntry {
+                owner_id: "su-bee".into(),
+                label: "bee one".into(),
+                agent_pane_kind: Some("bee".into()),
+                wake_mode: Some("manual".into()),
+                ..Default::default()
+            },
+            crate::models::RosterEntry {
+                owner_id: "su-queen".into(),
+                label: "the queen".into(),
+                agent_pane_kind: Some("queen".into()),
+                wake_mode: Some("manual".into()),
+                ..Default::default()
+            },
+        ];
+        let groups = super::assemble_wake_board(
+            vec![
+                pw(1, "su-bee", "placement", 1),
+                pw(2, "su-gone", "orphaned tick", 2),
+                pw(3, "su-queen", "boot storm", 11),
+                pw(4, "su-queen", "cadence", 4),
+            ],
+            &roster,
+        );
+        // Queen rank leads; the stale owner (no kind) sorts last under its raw id.
+        assert_eq!(
+            groups.iter().map(|g| g.agent.as_str()).collect::<Vec<_>>(),
+            ["su-queen", "su-bee", "su-gone"]
+        );
+        assert_eq!(groups[0].label, "the queen");
+        assert_eq!(groups[0].kind.as_deref(), Some("queen"));
+        assert_eq!(groups[0].pending.iter().map(|w| w.id).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(groups[1].wake_mode.as_deref(), Some("manual"));
+        // Stale owner: raw-id label, no kind/mode — still fully reviewable.
+        assert_eq!(groups[2].label, "su-gone");
+        assert_eq!(groups[2].kind, None);
+        assert_eq!(groups[2].pending[0].count, 2);
     }
 
     #[test]

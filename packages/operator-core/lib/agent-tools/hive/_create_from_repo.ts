@@ -96,7 +96,10 @@ export type CreateHiveFromRepoResult =
       created: CreateHiveFromRepoCreated;
       /** Cupboard reachability at lookup time (D-004 degradation flag). */
       bindingUnverified: boolean;
-      publish: PublishCreatedHiveOutcome | { skipped: 'private' };
+      publish:
+        | PublishCreatedHiveOutcome
+        | { skipped: 'private' }
+        | { skipped: 'unpublished_hive' };
     };
 
 // ── Injectable seams (tests pass fakes; production uses the defaults) ─────────
@@ -277,16 +280,39 @@ export async function createHiveFromRepo(
   const repoId = found.coords.githubRepositoryId;
   const repoIsPrivate = found.coords.private;
 
-  // 2 — slugs (collision-resilient, OQ-1).
+  // 2 — slugs (collision-resilient, OQ-1) + into-hive validation (fail-fast,
+  //     before any clone side effect).
   const reg = await loadRegistry(opts.workspaceId);
   const taken = new Set(reg.projects.map((p) => p.slug));
   const base = kebab(opts.slug ?? parsed.repo);
   if (!base) return { ok: false, error: 'invalid_slug', message: `cannot derive a slug from '${parsed.repo}'` };
-  const slugs = deriveSlugs(base, taken);
-  if (!slugs) {
-    return { ok: false, error: 'slug_exhausted', message: `slugs ${base}..${base}-9 are all taken` };
+
+  let memberSlug: string;
+  let hiveSlug: string;
+  const intoHive = opts.intoHive;
+  if (intoHive) {
+    const home = reg.projects.find((p) => p.slug === intoHive);
+    if (!home || home.harness_kind !== 'hive') {
+      return {
+        ok: false,
+        error: 'hive_not_found',
+        message: `'${intoHive}' is not a kind:'hive' home in this workspace`,
+      };
+    }
+    const member = deriveSlugs(base, taken); // reuse the suffixing; we only need the member half
+    if (!member) {
+      return { ok: false, error: 'slug_exhausted', message: `slugs ${base}..${base}-9 are all taken` };
+    }
+    memberSlug = member.memberSlug;
+    hiveSlug = intoHive;
+  } else {
+    const slugs = deriveSlugs(base, taken);
+    if (!slugs) {
+      return { ok: false, error: 'slug_exhausted', message: `slugs ${base}..${base}-9 are all taken` };
+    }
+    memberSlug = slugs.memberSlug;
+    hiveSlug = slugs.hiveSlug;
   }
-  const { memberSlug, hiveSlug } = slugs;
 
   const cleanup: string[] = [];
 
@@ -313,16 +339,20 @@ export async function createHiveFromRepo(
     return fail('blueprint_failed', bp.error);
   }
 
-  // 5 — the Hive home (eager identity mint; transactional inside).
-  const hive: CreateHiveResult = await createHive({
-    slug: hiveSlug,
-    workspaceId: opts.workspaceId,
-    ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
-  });
-  if (!hive.ok) {
-    await rmDir(memberPath).catch(() => {});
-    cleanup.push('clone removed');
-    return fail(`hive_${hive.error ?? 'create_failed'}`, hive.message ?? 'hive create failed');
+  // 5 — the Hive home (eager identity mint; transactional inside). Skipped in
+  //     into-hive mode — the home already exists.
+  let hive: CreateHiveResult | null = null;
+  if (!intoHive) {
+    hive = await createHive({
+      slug: hiveSlug,
+      workspaceId: opts.workspaceId,
+      ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
+    });
+    if (!hive.ok) {
+      await rmDir(memberPath).catch(() => {});
+      cleanup.push('clone removed');
+      return fail(`hive_${hive.error ?? 'create_failed'}`, hive.message ?? 'hive create failed');
+    }
   }
 
   // 6 — the member, born INTO the hive (harness:create { hive } — D-010 producer).
@@ -333,10 +363,13 @@ export async function createHiveFromRepo(
     hive: hiveSlug,
   });
   if (!member.ok) {
-    await removeHiveHome(hiveSlug, opts.workspaceId).catch(() => {});
-    if (hive.path) await rmDir(hive.path).catch(() => {});
+    if (hive) {
+      await removeHiveHome(hiveSlug, opts.workspaceId).catch(() => {});
+      if (hive.path) await rmDir(hive.path).catch(() => {});
+      cleanup.push('hive home removed');
+    }
     await rmDir(memberPath).catch(() => {});
-    cleanup.push('hive home removed', 'clone removed');
+    cleanup.push('clone removed');
     return fail('member_create_failed', member.error ?? 'harness:create failed');
   }
 
@@ -359,8 +392,25 @@ export async function createHiveFromRepo(
   }, opts.workspaceId).catch(() => {});
 
   // 8 — publish per visibility (P-007). Best-effort: NEVER fails the create.
-  let publishOutcome: PublishCreatedHiveOutcome | { skipped: 'private' };
-  if (visibility === 'private') {
+  //     into-hive mode (P-009) re-publishes the EXISTING listing instead — new
+  //     member rows only; an unpublished/private hive stays untouched.
+  let publishOutcome:
+    | PublishCreatedHiveOutcome
+    | { skipped: 'private' }
+    | { skipped: 'unpublished_hive' };
+  if (intoHive) {
+    const republish = deps.republish ?? republishHiveAfterMemberAdd;
+    publishOutcome = await republish({
+      workspaceId: opts.workspaceId,
+      hiveSlug,
+      onlyRepoIds: repoId !== undefined ? [repoId] : [],
+      ...(repoIsPrivate !== undefined ? { repoIsPrivate } : {}),
+    }).catch((e) => ({
+      announced: false,
+      cupboard: { attempted: false as const },
+      error: e instanceof Error ? e.message : String(e),
+    }));
+  } else if (visibility === 'private') {
     publishOutcome = { skipped: 'private' }; // D-003: zero external writes
   } else {
     publishOutcome = await publish({

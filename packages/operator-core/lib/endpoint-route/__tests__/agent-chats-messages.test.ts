@@ -120,6 +120,20 @@ async function agentChatsMessagesHandler(
     readFeatureLockState: vi.fn(async () => null),
     rowToChat: (row: Record<string, unknown>) => row,
   }));
+  // EI-259 nursery tracking is PG-backed — stub it like every other PG seam
+  // here, or this unit test opens a LIVE org-pool connection pre-stream (the
+  // 2026-06-11 15s-timeout flap under fleet load). Its own coverage lives in
+  // fleet/chat-spawn-tracking tests.
+  vi.doMock('../../fleet/chat-spawn-tracking', async () => {
+    const actual = await vi.importActual<Record<string, unknown>>('../../fleet/chat-spawn-tracking');
+    return {
+      ...actual,
+      beginChatSpawnTracking: vi.fn(async () => ({
+        spawnId: 'agent_chats-test-spawn',
+        finish: vi.fn(async () => {}),
+      })),
+    };
+  });
   vi.doMock('@papercusp/db-org', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
     return {
@@ -146,6 +160,10 @@ async function agentChatsMessagesHandler(
 }
 
 describe('POST /harness/:slug/agent-chats/:chatId/messages — route handler', () => {
+  // Generous budgets on this one: the guard is "the stream CLOSES", not
+  // "the stream is fast" — under full-suite parallel load on a busy box the
+  // 5s drain + file-level 15s budget flaked while the test passes in ~2s
+  // isolated (2026-06-11, twice in consecutive test:affected runs).
   it('streams delta + terminal done and CLOSES the stream (round-10 guard)', async () => {
     const { handler, updates } = await agentChatsMessagesHandler(
       [
@@ -157,14 +175,14 @@ describe('POST /harness/:slug/agent-chats/:chatId/messages — route handler', (
     );
     const res = await handler(postReq({ content: 'hello' }), CHAT);
     expect(res.status).toBe(200);
-    const { text, closed } = await drainSse(res.body, 5000);
+    const { text, closed } = await drainSse(res.body, 20_000);
     expect(closed, 'agent_chats SSE stream must close after the turn').toBe(true);
     expect(text).toContain('event: delta');
     expect(text).toContain('Hi ');
     expect(text).toContain('event: done');
     // Both the user-turn and assistant-turn UPDATEs must have persisted.
     expect(updates.length).toBe(2);
-  });
+  }, 45_000);
 
   it('404s when the chat row does not exist', async () => {
     const { handler } = await agentChatsMessagesHandler([], null);

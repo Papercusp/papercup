@@ -341,6 +341,21 @@ const create = defineTool({
       provisioning = { ok: false, error: msg.slice(0, 300) };
     }
 
+    // P-010 (hive-from-github-url / D-007) — standalone-from-URL: a cloned repo
+    // gets a detection-generated blueprint so it is immediately runnable, like
+    // the from-repo hive path. Best-effort; opt out with generateBlueprint:false.
+    // runTests defaults FALSE in this HTTP path (no 2-min verify inline) —
+    // re-verify later via harness:generate-from-repo.
+    let blueprint: import('../../../harness/generate-blueprint-for-clone').GenerateBlueprintForCloneResult | undefined;
+    if (cloneInfo && body.generateBlueprint !== false) {
+      const { generateBlueprintForClone } = await import(
+        '../../../harness/generate-blueprint-for-clone'
+      );
+      blueprint = await generateBlueprintForClone(slug, path, {
+        runTests: body.runTests === true,
+      });
+    }
+
     return Response.json({
       ok: true,
       project: { slug, path },
@@ -361,6 +376,7 @@ const create = defineTool({
           }
         : {}),
       ...(initInfo ? { init: initInfo } : {}),
+      ...(blueprint ? { blueprint } : {}),
     });
   },
 });
@@ -423,6 +439,7 @@ const createHiveFromRepoRoute = defineTool({
       shallow?: boolean;
       runTests?: boolean;
       force?: boolean;
+      intoHive?: string;
     } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const githubUrl = String(body.githubUrl ?? '').trim();
@@ -442,11 +459,15 @@ const createHiveFromRepoRoute = defineTool({
       ...(body.shallow !== undefined ? { shallow: body.shallow === true } : {}),
       ...(body.runTests !== undefined ? { runTests: body.runTests !== false } : {}),
       ...(body.force !== undefined ? { force: body.force === true } : {}),
+      ...(typeof body.intoHive === 'string' && body.intoHive.trim()
+        ? { intoHive: body.intoHive.trim() }
+        : {}),
       workspaceId: activeWorkspaceId(),
     });
     if (!res.ok) {
       const status =
         res.error === 'invalid_url' || res.error === 'invalid_slug' ? 400 :
+        res.error === 'hive_not_found' ? 404 :
         res.error === 'slug_exhausted' || res.error.startsWith('clone_dest_exists') ? 409 :
         res.error === 'clone_auth_required' ? 401 :
         res.error === 'clone_not_found' ? 404 :

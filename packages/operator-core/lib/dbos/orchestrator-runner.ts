@@ -860,32 +860,38 @@ let _wired = false;
  */
 const realFeaturePassedDeps: FeaturePassedDeps = {
   loadSharedConfig: async ({ harnessSlug, workspaceId }) => {
+    // P-013 (hive-from-github-url): the gate is no longer shared.json-only —
+    // a hive member with registry coords (a URL-created harness) is upstream-
+    // bound too. A standalone private harness stays out (upstreamGateAllows).
     const project = await resolveProject(harnessSlug, workspaceId);
     if (!project) return null;
-    const { loadSharedConfigFromProjectDir } = await import('../harness/load-shared-config');
-    const cfg = loadSharedConfigFromProjectDir(project.path);
-    return cfg
-      ? { github_remote: cfg.github_remote, github_repository_id: cfg.github_repository_id }
-      : null;
+    const { resolveUpstreamRepoSource, upstreamGateAllows } = await import(
+      '../harness/upstream-repo-context'
+    );
+    const src = await resolveUpstreamRepoSource(project);
+    if (!src || !upstreamGateAllows(project, src)) return null;
+    return {
+      github_remote: src.github_remote,
+      github_repository_id: src.github_repository_id ?? 0,
+    };
   },
   resolveRepoContext: async ({ harnessSlug, workspaceId }) => {
     const project = await resolveProject(harnessSlug, workspaceId);
     if (!project) return null;
-    const { loadSharedConfigFromProjectDir } = await import('../harness/load-shared-config');
-    const cfg = loadSharedConfigFromProjectDir(project.path);
-    if (!cfg) return null;
-    const { parseGithubUrl } = await import('../harness/clone-github');
-    const parsed = parseGithubUrl(cfg.github_remote);
-    if (!parsed) return null;
+    const { resolveUpstreamRepoSource } = await import('../harness/upstream-repo-context');
+    const src = await resolveUpstreamRepoSource(project);
+    if (!src) return null;
     const { resolveLocalGithubIdentity } = await import('../identity/resolve-local-github-identity');
     const id = await resolveLocalGithubIdentity();
     if (id.kind !== 'ok') return null;
     return {
       repoPath: project.path,
-      baseBranch: 'main',
+      // P-013: the detected upstream default branch — 'main' only as the true
+      // last resort (the old hardcode mis-targeted master upstreams).
+      baseBranch: src.default_branch ?? 'main',
       token: id.token,
-      upstreamOwner: parsed.owner,
-      upstreamRepo: parsed.repo,
+      upstreamOwner: src.owner,
+      upstreamRepo: src.repo,
     };
   },
   getPermission: async ({ owner, repo }) => {

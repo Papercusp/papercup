@@ -157,6 +157,53 @@ describe('publishCreatedHive (P-007)', () => {
     expect(out.cupboard.errors?.[0]).toContain('gh_auth_required');
   });
 
+  it('republishHiveAfterMemberAdd: scoped rows for the new member only; existing rows untouched (P-009)', async () => {
+    const { deps, calls } = fakes({
+      getMeta: async () => ({
+        hiveId: 'shop-hive',
+        title: 'acme/shop',
+        description: '',
+        visibility: 'public' as const,
+        memberTopics: [],
+        createdAt: 1,
+      }),
+      loadRegistry: async () => ({
+        projects: [
+          ...members(),
+          {
+            slug: 'newrepo',
+            path: '/clones/newrepo',
+            hive_slug: 'shop-hive',
+            github_remote: 'https://github.com/acme/newrepo.git',
+            github_repository_id: 200,
+          },
+        ],
+      }),
+      deriveMemberRepos: async () => ['acme/shop#100', 'acme/newrepo#200'],
+    });
+    const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
+    const out = await republishHiveAfterMemberAdd(
+      { workspaceId: 'ws', hiveSlug: 'shop-hive', onlyRepoIds: [200] },
+      deps,
+    );
+    if ('skipped' in out) throw new Error('expected a publish outcome');
+    expect(out.announced).toBe(true);
+    // announce carries ALL member repos (content), but new rows are scoped
+    expect(calls.published[0].memberRepos).toEqual(['acme/shop#100', 'acme/newrepo#200']);
+    expect(calls.listings).toHaveLength(1);
+    expect(calls.listings[0]).toMatchObject({ github_repository_id: 200 });
+    expect(calls.localBindings).toHaveLength(1);
+    expect(calls.localBindings[0]).toMatchObject({ harness_slug: 'newrepo' });
+  });
+
+  it('republishHiveAfterMemberAdd: an unpublished/private hive is left untouched', async () => {
+    const { deps, calls } = fakes({ getMeta: async () => null });
+    const { republishHiveAfterMemberAdd } = await import('./hive-publish-from-repo');
+    const out = await republishHiveAfterMemberAdd({ workspaceId: 'ws', hiveSlug: 'x' }, deps);
+    expect(out).toEqual({ skipped: 'unpublished_hive' });
+    expect(calls.published).toEqual([]);
+  });
+
   it('saveMeta failure aborts with an error (nothing announced)', async () => {
     const { deps, calls } = fakes({
       saveMeta: async () => {
