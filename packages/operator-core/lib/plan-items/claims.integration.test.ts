@@ -16,7 +16,7 @@
  *   • release: owner+claim_id checked (wrong owner frees nothing); correct →
  *     row gone. releaseAllClaimsForOwner sweeps a session's set.
  *   • renewOwnerActivityClaims: renews ONLY the owner's non-expired
- *     activity-mode claims — availability untouched, lapsed not resurrected.
+ *     claims in BOTH modes (EI-295 residual) — lapsed not resurrected.
  *   • getClaim/listClaimsForPlan derive `expired`; sweepLapsedClaims deletes
  *     only lapsed rows (honoring the harness filter).
  *
