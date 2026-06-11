@@ -81,3 +81,62 @@ describe('shouldRunScoutCycle (P-008 cadence)', () => {
     expect(v).toEqual({ fire: true, reason: 'heartbeat' });
   });
 });
+
+describe('shouldRunScoutCycle — clock edges (scout-loop-test-plan P-005)', () => {
+  it('zero elapsed (tick lands on the same ms as the last run) withholds with the full floor', () => {
+    const v = shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: NOW }));
+    expect(v).toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 3600 });
+  });
+
+  it('a FUTURE lastRunAtMs (clock skew) withholds the idle path and extends retryAfter past the floor', () => {
+    // The wall clock stepped back 2 minutes: elapsed is negative — the gate must
+    // withhold (never fire on skew) and quote floor + skew, not crash or go negative.
+    const v = shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: NOW + 120_000 }));
+    expect(v).toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 3600 + 120 });
+  });
+
+  it('a future lastRunAtMs withholds the friction path too (friction floor + skew)', () => {
+    const v = shouldRunScoutCycle(state({ frictionSignals: 9, lastRunAtMs: NOW + 60_000 }));
+    expect(v).toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 900 + 60 });
+  });
+
+  it('fractional-second elapsed rounds retryAfterSec UP to a whole second (never 0)', () => {
+    // 3599.4s elapsed → 0.6s short of the floor → ceil → 1.
+    const v = shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: NOW - 3_599_400 }));
+    expect(v).toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 1 });
+  });
+
+  it('minIntervalSec: 0 disables the floor — idle fires on the same tick as the last run', () => {
+    const v = shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: NOW }), { minIntervalSec: 0 });
+    expect(v).toEqual({ fire: true, reason: 'idle-capacity' });
+  });
+
+  it('negative / NaN interval options fall back to the defaults (no negative floor)', () => {
+    const v = shouldRunScoutCycle(
+      state({ idleRatio: 1, lastRunAtMs: minutesAgo(30) }),
+      { minIntervalSec: -50, maxIntervalSec: Number.NaN },
+    );
+    expect(v).toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 30 * 60 });
+  });
+
+  it('a NaN idleRatio never idle-fires (fails safe to no-trigger inside the ceiling)', () => {
+    const v = shouldRunScoutCycle(state({ idleRatio: Number.NaN, lastRunAtMs: minutesAgo(120) }));
+    expect(v).toEqual({ fire: false, reason: 'no-trigger' });
+  });
+
+  it('the friction floor tracks a SHORTER minIntervalSec (default = min(minInterval, 900))', () => {
+    const opts = { minIntervalSec: 600 };
+    expect(shouldRunScoutCycle(state({ frictionSignals: 3, lastRunAtMs: NOW - 600_000 }), opts))
+      .toEqual({ fire: true, reason: 'friction-triggered' }); // 600s ≥ min(600, 900)
+    expect(shouldRunScoutCycle(state({ frictionSignals: 3, lastRunAtMs: NOW - 599_000 }), opts))
+      .toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 1 });
+  });
+
+  it('an explicit minFrictionIntervalSec LONGER than the normal floor is honored', () => {
+    const opts = { minFrictionIntervalSec: 7200 };
+    expect(shouldRunScoutCycle(state({ frictionSignals: 9, lastRunAtMs: minutesAgo(90) }), opts))
+      .toEqual({ fire: false, reason: 'min-interval', retryAfterSec: 30 * 60 }); // 90m < 120m friction floor
+    expect(shouldRunScoutCycle(state({ frictionSignals: 9, lastRunAtMs: minutesAgo(120) }), opts))
+      .toEqual({ fire: true, reason: 'friction-triggered' });
+  });
+});

@@ -105,6 +105,10 @@ const _ISSUE_STATUS_TABLE = {
   open:         { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',  text: '#fca5a5', label: 'Open' },
   acknowledged: { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)', text: '#fcd34d', label: 'Acknowledged' },
   fixing:       { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)', text: '#d8b4fe', label: 'Fixing' },
+  // `resolved` = fixed (the work_items issue-family state between fixing and
+  // closed) — emerald family like closed, lighter so the two read as
+  // related-but-distinct.
+  resolved:     { solid: '#34d399', bg: 'rgba(52,211,153,0.15)', text: '#a7f3d0', label: 'Resolved' },
   closed:       { solid: '#10b981', bg: 'rgba(16,185,129,0.15)', text: '#6ee7b7', label: 'Closed' },
   wontfix:      { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',   text: '#a1a1aa', label: 'Won’t fix' },
 } as const;
