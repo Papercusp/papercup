@@ -80,6 +80,15 @@ export interface PrReviewerSettingsResponse {
   viewer: { github_user_id: number; github_login: string } | null;
   /** Whether this viewer may write (true iff a viewer id resolved). */
   editable: boolean;
+  /**
+   * Hive-pr-rollup P-007 (D-002): when the viewer has NO settings row for this
+   * harness but DOES have the reviewer role on its hive HOME, the role bit is
+   * inherited read-time and this carries the home slug (provenance for the
+   * settings UI). null/absent = no inheritance applied. Only
+   * `pr_reviewer_role_enabled` inherits — auto_review/auto_merge stay
+   * explicit per harness. An explicit row (any value) always wins.
+   */
+  inheritedFrom?: string | null;
 }
 
 // ─── Pure helpers (unit-tested) ───────────────────────────────────
@@ -174,6 +183,25 @@ function dbRowToSettings(
   };
 }
 
+/**
+ * Resolve the hive HOME for `slug` when slug is a MEMBER of a multi-harness
+ * hive (P-007). Uses the cached lite payload's precomputed grouping (formal
+ * `hive_slug` + legacy fallback). Returns null for a standalone harness, the
+ * home itself, or on any failure (inheritance silently off). Exported for
+ * tests.
+ */
+export async function hiveHomeOf(slug: string): Promise<string | null> {
+  try {
+    const { buildProjectsLitePayload } = await import('../../../harness/projects-lite');
+    const { hives } = await buildProjectsLitePayload();
+    const group = hives.find((g) => g.members.some((m) => m.slug === slug));
+    const home = group?.root.slug ?? null;
+    return home && home !== slug ? home : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Shared identity resolution ───────────────────────────────────
 
 async function viewer(): Promise<{ id: number; login: string } | null> {
@@ -208,6 +236,7 @@ const getSettings = defineTool({
         github_user_id: githubUserId,
         now,
       });
+      let inheritedFrom: string | null = null;
       if (v) {
         const rows = (await sql`
           SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
@@ -218,6 +247,28 @@ const getSettings = defineTool({
            LIMIT 1
         `) as unknown as SettingsDbRow[];
         settingsRow = dbRowToSettings(rows[0], slug, v.id, now);
+        // P-007 (D-002): read-time, role-ONLY inheritance. No explicit row for
+        // this harness → fall back to the viewer's hive-HOME row for the role
+        // bit, so enabling the role once on the home covers every member
+        // (including members that join later — zero fan-out drift).
+        // auto_review/auto_merge never inherit (per-repo blast radius).
+        if (!rows[0]) {
+          const home = await hiveHomeOf(slug);
+          if (home) {
+            const homeRows = (await sql`
+              SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
+                FROM harness_shared.pr_reviewer_settings
+               WHERE workspace_id = ${workspaceId}
+                 AND harness_slug = ${home}
+                 AND github_user_id = ${v.id}
+               LIMIT 1
+            `) as unknown as SettingsDbRow[];
+            if (homeRows[0]?.pr_reviewer_role_enabled) {
+              settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
+              inheritedFrom = home;
+            }
+          }
+        }
       }
 
       // Trust list — the entries THIS viewer trusts on this harness. Join
@@ -283,6 +334,7 @@ const getSettings = defineTool({
         audit,
         viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
         editable: !!v,
+        inheritedFrom,
       };
       return Response.json(resp);
     } catch (e: unknown) {

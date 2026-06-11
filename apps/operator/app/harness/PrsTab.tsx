@@ -12,20 +12,53 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringLiteral, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
 import { GitPullRequest, RefreshCw, Settings } from 'lucide-react';
+import { useSyncQuery } from '@papercusp/sync';
+import { groupByHive, type HiveGroupProject } from '../adv/harnesses/harness-hive-groups';
 import { PrRow, type PrRowData } from './PrRow';
 import { PrReviewerSettings } from './PrReviewerSettings';
 
 const PR_FILTERS = ['all', 'mine', 'awaiting-me', 'approved', 'merged'] as const;
 type PrFilter = (typeof PR_FILTERS)[number];
 
+/** hive-pr-rollup P-006: list one harness's PRs, or the whole hive's. */
+const PR_SCOPES = ['harness', 'hive'] as const;
+
 interface Props {
   harnessSlug: string;
-  /** GitHub user id of the current viewer. */
+  /** GitHub user id of the current viewer. Omitted (the live dock mount) ⇒
+   *  resolved from the pr-reviewer-settings route (P-007). */
   viewerGithubId?: number;
   viewerLogin?: string;
-  /** Trust list for the viewer on this harness. */
+  /** Trust list for the viewer on this harness. Omitted ⇒ resolved. */
   trustedAuthorIds?: ReadonlySet<number>;
+  /** Review-gate override. Omitted ⇒ resolved (incl. the D-002 hive-home
+   *  inherited role). */
   reviewerRoleEnabled?: boolean;
+}
+
+const EMPTY_ID_SET: ReadonlySet<number> = new Set();
+
+/** The slice of the pr-reviewer-settings response the review gate needs. */
+interface ReviewGate {
+  viewerGithubId?: number;
+  trustedAuthorIds: ReadonlySet<number>;
+  reviewerRoleEnabled: boolean;
+}
+
+async function fetchReviewGate(harnessSlug: string): Promise<ReviewGate | null> {
+  const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/pr-reviewer-settings`);
+  if (!r.ok) return null;
+  const j = (await r.json().catch(() => null)) as {
+    settings?: { pr_reviewer_role_enabled?: boolean };
+    trustList?: Array<{ trusted_github_user_id: number }>;
+    viewer?: { github_user_id: number } | null;
+  } | null;
+  if (!j) return null;
+  return {
+    viewerGithubId: j.viewer?.github_user_id,
+    trustedAuthorIds: new Set((j.trustList ?? []).map((t) => t.trusted_github_user_id)),
+    reviewerRoleEnabled: !!j.settings?.pr_reviewer_role_enabled,
+  };
 }
 
 interface PrsResponse {
@@ -33,10 +66,14 @@ interface PrsResponse {
   pollingFailedAt?: string | null;
   /** #5: server couldn't resolve a GitHub remote for this harness. */
   noRemote?: boolean;
+  /** Hive scope only (P-005): the member slugs aggregated + per-member failures. */
+  members?: string[];
+  memberErrors?: Record<string, { pollingFailedAt?: string; noRemote?: boolean }>;
 }
 
-async function fetchPrs(harnessSlug: string): Promise<PrsResponse> {
-  const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/prs`);
+async function fetchPrs(harnessSlug: string, scope: 'harness' | 'hive'): Promise<PrsResponse> {
+  const qs = scope === 'hive' ? '?scope=hive' : '';
+  const r = await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/prs${qs}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json() as Promise<PrsResponse>;
 }
@@ -56,12 +93,18 @@ async function postApprove(harnessSlug: string, prNumber: number, merge: boolean
 export function PrsTab({
   harnessSlug,
   viewerGithubId,
-  trustedAuthorIds = new Set(),
-  reviewerRoleEnabled = false,
+  trustedAuthorIds,
+  reviewerRoleEnabled,
 }: Props) {
   const [filter, setFilter] = useQueryState(
     'prs_filter',
     parseAsStringLiteral(PR_FILTERS).withDefault('all'),
+  );
+  // hive-pr-rollup P-006: harness-vs-hive scope is user-meaningful URL state
+  // (deep-linkable, agent-driveable) → nuqs.
+  const [scope, setScope] = useQueryState(
+    'prs_scope',
+    parseAsStringLiteral(PR_SCOPES).withDefault('harness'),
   );
   // Modal-open is user-meaningful URL state (deep-linkable, agent-driveable)
   // → nuqs. The setting VALUES are server state, kept in the modal's useState.
@@ -74,35 +117,79 @@ export function PrsTab({
   const [error, setError] = useState<string | null>(null);
   const [pollingFailed, setPollingFailed] = useState(false);
   const [noRemote, setNoRemote] = useState(false);
+  const [memberErrors, setMemberErrors] = useState<
+    Record<string, { pollingFailedAt?: string; noRemote?: boolean }>
+  >({});
 
-  // Fetch RAW prs only — keyed solely on harnessSlug. The per-row `trusted` /
-  // `reviewerRoleEnabled` enrichment is intentionally NOT done here: folding it
-  // into `load` made `load` depend on `trustedAuthorIds`, whose default value
-  // (`new Set()`) is a fresh reference every render, so `useEffect([load])`
-  // re-fired on every render — an infinite reload loop that stormed
-  // /api/harness/<slug>/prs (observed: 194 requests from a single mount) and
-  // wedged the webview connection pool, leaving the panel stuck on "Loading…".
-  // Enrichment now lives in the `displayed` memo below, off the fetch path.
+  // P-007: the live dock mounts <PrsTab harnessSlug/> with NO viewer props, so
+  // the review gate (Approve buttons) was permanently off. Resolve it from the
+  // pr-reviewer-settings route — which also applies the D-002 hive-home role
+  // inheritance server-side. Props, when supplied, override. Keyed on
+  // primitives only (slug + settings-modal close) — see the render-loop note
+  // on `load` below. Failure degrades to read-only.
+  const [fetchedGate, setFetchedGate] = useState<ReviewGate | null>(null);
+  useEffect(() => {
+    if (settingsOpen) return; // refresh on close, after possible saves
+    let cancelled = false;
+    fetchReviewGate(harnessSlug)
+      .then((g) => {
+        if (!cancelled && g) setFetchedGate(g);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [harnessSlug, settingsOpen]);
+
+  const effViewerGithubId = viewerGithubId ?? fetchedGate?.viewerGithubId;
+  const effTrustedAuthorIds = trustedAuthorIds ?? fetchedGate?.trustedAuthorIds ?? EMPTY_ID_SET;
+  const effReviewerRoleEnabled = reviewerRoleEnabled ?? fetchedGate?.reviewerRoleEnabled ?? false;
+
+  // Whether this slug resolves into a hive with other members — gates the
+  // scope toggle. Rides the audited sync path (harnessProjects.lite, EI-206)
+  // the Harnesses tab already uses; NO new poller. Grouping recomputes via the
+  // same shared groupByHive the server grouping uses (P-021).
+  const liteQuery = useSyncQuery<HiveGroupProject>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+  });
+  const hiveAvailable = useMemo(() => {
+    const rows = liteQuery.data ?? [];
+    const group = groupByHive(rows).find((g) => g.members.some((m) => m.slug === harnessSlug));
+    return !!group && group.members.length > 1;
+  }, [liteQuery.data, harnessSlug]);
+
+  // Fetch RAW prs only — keyed solely on harnessSlug + scope (both primitive
+  // strings). The per-row `trusted` / `reviewerRoleEnabled` enrichment is
+  // intentionally NOT done here: folding it into `load` made `load` depend on
+  // `trustedAuthorIds`, whose default value (`new Set()`) is a fresh reference
+  // every render, so `useEffect([load])` re-fired on every render — an
+  // infinite reload loop that stormed /api/harness/<slug>/prs (observed: 194
+  // requests from a single mount) and wedged the webview connection pool,
+  // leaving the panel stuck on "Loading…". Enrichment now lives in the
+  // `displayed` memo below, off the fetch path.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetchPrs(harnessSlug);
+      const resp = await fetchPrs(harnessSlug, scope);
       setPrs(resp.prs);
       setPollingFailed(!!resp.pollingFailedAt);
       setNoRemote(!!resp.noRemote);
+      setMemberErrors(resp.memberErrors ?? {});
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [harnessSlug]);
+  }, [harnessSlug, scope]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const handleApprove = useCallback(async (prNumber: number, merge: boolean) => {
+  const handleApprove = useCallback(async (prNumber: number, merge: boolean, targetSlug?: string) => {
     try {
-      await postApprove(harnessSlug, prNumber, merge);
+      // Hive scope: the row's review must land on the MEMBER that owns the PR.
+      await postApprove(targetSlug ?? harnessSlug, prNumber, merge);
       toast.success(merge ? `Approved + merged PR #${prNumber}` : `Approved PR #${prNumber}`);
       void load();
     } catch (e) {
@@ -119,7 +206,7 @@ export function PrsTab({
       prs
         .filter((pr) => {
           if (filter === 'all') return pr.state !== 'gone';
-          if (filter === 'mine') return pr.author_github_id === viewerGithubId && pr.state === 'open';
+          if (filter === 'mine') return pr.author_github_id === effViewerGithubId && pr.state === 'open';
           if (filter === 'awaiting-me') return pr.review_decision === 'none' && pr.state === 'open';
           if (filter === 'approved') return pr.review_decision === 'approved';
           if (filter === 'merged') return pr.state === 'merged';
@@ -127,10 +214,10 @@ export function PrsTab({
         })
         .map((pr) => ({
           ...pr,
-          trusted: trustedAuthorIds.has(pr.author_github_id),
-          reviewerRoleEnabled,
+          trusted: effTrustedAuthorIds.has(pr.author_github_id),
+          reviewerRoleEnabled: effReviewerRoleEnabled,
         })),
-    [prs, filter, viewerGithubId, trustedAuthorIds, reviewerRoleEnabled],
+    [prs, filter, effViewerGithubId, effTrustedAuthorIds, effReviewerRoleEnabled],
   );
 
   return (
@@ -140,7 +227,33 @@ export function PrsTab({
           <GitPullRequest size={14} aria-hidden />
           Pull requests
           {pollingFailed && <span className="pc-adv-prs__warn">cannot reach GitHub</span>}
+          {scope === 'hive' && Object.keys(memberErrors).length > 0 && (
+            <span
+              className="pc-adv-prs__warn"
+              title={Object.entries(memberErrors)
+                .map(([m, e]) => `${m}: ${e.noRemote ? 'no GitHub remote' : 'cannot reach GitHub'}`)
+                .join('\n')}
+            >
+              {Object.keys(memberErrors).length} member{Object.keys(memberErrors).length === 1 ? '' : 's'} unreachable
+            </span>
+          )}
         </span>
+        {hiveAvailable && (
+          <div className="pc-adv-prs__scope" role="tablist" aria-label="PR scope">
+            {PR_SCOPES.map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="tab"
+                aria-selected={scope === s}
+                className={`pc-adv-prs__chip pc-adv-prs__chip--scope${scope === s ? ' is-active' : ''}`}
+                onClick={() => void setScope(s)}
+              >
+                {s === 'harness' ? 'this harness' : 'whole hive'}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="pc-adv-prs__filters" role="tablist" aria-label="PR filters">
           {PR_FILTERS.map((f) => (
             <button
@@ -187,10 +300,10 @@ export function PrsTab({
         ) : (
           displayed.map((pr) => (
             <PrRow
-              key={`${pr.remote}#${pr.number}`}
+              key={`${pr.member_slug ?? harnessSlug}:${pr.remote}#${pr.number}`}
               pr={pr}
-              onApprove={(n) => void handleApprove(n, false)}
-              onApproveAndMerge={(n) => void handleApprove(n, true)}
+              onApprove={(n) => void handleApprove(n, false, pr.member_slug)}
+              onApproveAndMerge={(n) => void handleApprove(n, true, pr.member_slug)}
             />
           ))
         )}
@@ -221,6 +334,8 @@ export function PrsTab({
           text-transform: capitalize;
           transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
         }
+        .pc-adv-prs__scope { display: inline-flex; gap: 4px; }
+        .pc-adv-prs__chip--scope { --chip-tint: #5eead4; }
         .pc-adv-prs__chip--all { --chip-tint: #7dd3fc; }
         .pc-adv-prs__chip--mine { --chip-tint: #38bdf8; }
         .pc-adv-prs__chip--awaiting-me { --chip-tint: #f59e0b; }

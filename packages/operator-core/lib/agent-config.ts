@@ -127,6 +127,8 @@ export function parseTiers(raw: unknown): ModelTier[] {
     const name = typeof (entry as ModelTier).name === 'string' ? (entry as ModelTier).name.trim() : '';
     const spec = typeof (entry as ModelTier).spec === 'string' ? (entry as ModelTier).spec.trim() : '';
     const backend = (entry as ModelTier).backend;
+    const rawWhen = (entry as ModelTier).when;
+    const when = typeof rawWhen === 'string' ? rawWhen.trim() : '';
     const key = name.toLowerCase();
     if (!name || !spec || seen.has(key) || !isValidModelSpec(spec)) continue;
     seen.add(key);
@@ -134,6 +136,9 @@ export function parseTiers(raw: unknown): ModelTier[] {
       name,
       spec,
       ...((AGENT_BACKENDS as readonly string[]).includes(backend as string) ? { backend } : {}),
+      // The queen-facing one-liner; capped so a pasted essay can't bloat
+      // every queen launch prompt.
+      ...(when ? { when: when.slice(0, 300) } : {}),
     });
   }
   return out;

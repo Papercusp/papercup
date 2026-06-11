@@ -49,6 +49,9 @@ export interface PrReviewerSettingsResponse {
   audit: AuditEntry[];
   viewer: { github_user_id: number; github_login: string } | null;
   editable: boolean;
+  /** P-007 (D-002): hive HOME slug the role bit was inherited from, when this
+   *  harness has no explicit row. Provenance display only. */
+  inheritedFrom?: string | null;
 }
 
 // ─── Pure helpers (unit-tested) ───────────────────────────────────
@@ -243,7 +246,11 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
             <section className="pc-prrs__sect">
               <Toggle
                 label="Enable PR-reviewer role"
-                hint="Master switch. When off, no auto-review or auto-merge fires."
+                hint={
+                  data?.inheritedFrom
+                    ? `Inherited from hive home '${data.inheritedFrom}' — flipping it here writes an explicit setting for this harness.`
+                    : 'Master switch. When off, no auto-review or auto-merge fires.'
+                }
                 checked={!!settings?.pr_reviewer_role_enabled}
                 disabled={!editable || saving}
                 onChange={(v) => void flip('pr_reviewer_role_enabled', v)}

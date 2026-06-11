@@ -48,7 +48,7 @@ export default defineTool({
     brief: z.string().max(2000).optional()
       .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060.'),
     tier: z.string().max(40).optional()
-      .describe('Model tier for THIS spawn, by name from the user-defined menu (default: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Pick by task: trivial/mechanical→quick; spec-bounded normal work→standard; ambiguous/architectural/repeat-failure→deep; security/migration/deploy-adjacent→max. Omit = the role\'s standing default.'),
+      .describe('Model tier for THIS spawn, by name from the user-defined menu — see the MODEL TIERS list in your Runtime context for the live names + the user\'s per-tier when-to-use guidance (default menu: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Omit = the role\'s standing default. An unknown name fails loud listing the valid menu.'),
     model: z.string().max(80).optional()
       .describe('Direct per-spawn model spec `<modelId>[:<effort>]` (e.g. "opus:high") — operator/human escape hatch that bypasses the tier menu (still recorded on the nursery row). Prefer `tier`. When both are set, model wins.'),
     extras: z.array(z.string().max(500)).max(16).optional()

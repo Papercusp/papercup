@@ -150,6 +150,18 @@ export async function buildRoleLaunchSpec(
   const featureId = input.featureId?.trim() || null;
   const harnessSlug = input.harnessSlug?.trim() || null;
 
+  // Placement deciders get the LIVE model-tier menu in their runtime context
+  // (queen-model-tier-selection-2026-06-11): the user's actual tier names,
+  // specs, and per-tier `when` guidance from /settings/agent — so the queen's
+  // rubric tracks the configured menu instead of a static default that goes
+  // stale the moment the user renames a tier. Best-effort (falls back to the
+  // committed default menu inside the helper).
+  let extras = input.extras;
+  if (input.role === 'queen' || input.role === 'operator') {
+    const { tierMenuRuntimeLines } = await import('./fleet/model-tiers');
+    extras = [...(input.extras ?? []), ...(await tierMenuRuntimeLines())];
+  }
+
   // Launch-mechanics identity (P-002): the per-session coord/lock owner +
   // forced native session id. Minted HERE (the one primitive) — not by each
   // caller — so the identity, the config-dir key, and the resume key are all
@@ -198,7 +210,7 @@ export async function buildRoleLaunchSpec(
       projectDir,
       mode: 'chat',
       featureId: featureId ?? undefined,
-      extras: input.extras,
+      extras,
       planContext: input.planContext,
       brief: input.brief,
       promptOverrideText,
@@ -218,7 +230,7 @@ export async function buildRoleLaunchSpec(
     const ws = assembleWorkspaceRolePrompt({
       role: input.role,
       workspaceId: input.workspaceId,
-      extras: input.extras,
+      extras,
       planContext: input.planContext,
       brief: input.brief,
     });

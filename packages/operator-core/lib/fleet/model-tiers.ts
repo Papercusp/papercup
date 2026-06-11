@@ -20,10 +20,7 @@
  * an error — only an unknown tier name rejects, since that's a bad input the
  * caller should fix, not a judgment to silently reinterpret.
  */
-import {
-  DEFAULT_MODEL_TIERS,
-  type ModelTier,
-} from '../agent-config-constants';
+import { DEFAULT_MODEL_TIERS, type ModelTier } from '../agent-config-constants';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 
 export interface TierResolution {
@@ -139,4 +136,46 @@ export function resolveTierSpec(opts: {
     ...(tiers[idx].backend ? { backend: tiers[idx].backend } : {}),
     ...(clamped ? { clamped, note } : {}),
   };
+}
+
+/**
+ * Render the LIVE tier menu as runtime-context lines for a placement
+ * decider's launch prompt (queen/operator) — the channel that keeps her
+ * rubric in sync with the user's ACTUAL menu (names, specs, and the
+ * user-authored per-tier `when` guidance from /settings/agent). Pure;
+ * `tierMenuRuntimeLines` below resolves the stored config.
+ */
+export function tierMenuLines(
+  tiers: readonly ModelTier[],
+  tierCeilings?: Record<string, string>,
+): string[] {
+  const menu = tiers.length > 0 ? tiers : DEFAULT_MODEL_TIERS;
+  const rows = menu
+    .map((t) => `  - ${t.name} (${t.spec})${t.when ? ` — ${t.when}` : ''}`)
+    .join('\n');
+  const ceilings = Object.entries(tierCeilings ?? {});
+  const lines = [
+    'MODEL TIERS (weakest → strongest) — pick one per spawn via fleet:spawn { tier }; ' +
+      'omit for the role default. Your pick is clamped to [role floor, role ceiling], ' +
+      'so a wrong tier never downgrades a role — but a too-cheap pick you could have ' +
+      'escalated is a silent quality failure; when in doubt, take the stronger.\n' + rows,
+  ];
+  if (ceilings.length > 0) {
+    lines.push(
+      `TIER CEILINGS (per role; picks above clamp down): ${ceilings.map(([r, t]) => `${r}≤${t}`).join(', ')}`,
+    );
+  }
+  return lines;
+}
+
+/** The stored-config tier menu as runtime-context lines. Best-effort: an
+    unreadable config falls back to the committed default menu. */
+export async function tierMenuRuntimeLines(): Promise<string[]> {
+  try {
+    const { readAgentConfig } = await import('../agent-config');
+    const cfg = await readAgentConfig();
+    return tierMenuLines(cfg.tiers ?? [], cfg.tierCeilings);
+  } catch {
+    return tierMenuLines([]);
+  }
 }

@@ -4,7 +4,12 @@
  * standalone/unknown-scope cases.
  */
 import { describe, test, expect, vi } from 'vitest';
-import { resolveProjectHiveMembership, enrichProjects } from './projects';
+import {
+  resolveProjectHiveMembership,
+  resolveSubHarnessHiveSlug,
+  enrichProjects,
+} from './projects';
+import { groupByHive } from '../../../harness/hive-groups';
 import type { ProjectEntry } from '../../../harness-registry';
 
 const PROJECTS = [
@@ -86,5 +91,77 @@ describe('enrichProjects — batched hasState probe (EI-64)', () => {
     expect(out).toEqual([]);
     expect(fetchHasState).toHaveBeenCalledTimes(1);
     expect(fetchHasState).toHaveBeenCalledWith([]);
+  });
+});
+
+/**
+ * resolveSubHarnessHiveSlug — the register-subs FORMAL membership resolver
+ * (EI-332 / hive-pr-rollup-and-subharness-membership P-001). Pins the three
+ * root shapes: hive home, hive member (home passes through), plain root.
+ */
+describe('resolveSubHarnessHiveSlug', () => {
+  test('a kind:hive home owns its subs directly', () => {
+    expect(resolveSubHarnessHiveSlug({ slug: 'acme', harness_kind: 'hive' })).toBe('acme');
+  });
+
+  test('a hive MEMBER root passes its home through (sub-of-a-member no longer orphans)', () => {
+    expect(
+      resolveSubHarnessHiveSlug({ slug: 'acme-web', harness_kind: 'coding', hive_slug: 'acme' }),
+    ).toBe('acme');
+  });
+
+  test('a plain root confers no formal membership (legacy parent_slug only)', () => {
+    expect(resolveSubHarnessHiveSlug({ slug: 'legacy-root' })).toBeNull();
+    expect(resolveSubHarnessHiveSlug({ slug: 'legacy-root', hive_slug: '  ' })).toBeNull();
+  });
+
+  test('a hive home with a stray hive_slug edge is still its own home', () => {
+    expect(
+      resolveSubHarnessHiveSlug({ slug: 'acme', harness_kind: 'hive', hive_slug: 'other' }),
+    ).toBe('acme');
+  });
+});
+
+/**
+ * Registered subs group as FORMAL hive members (P-003): entries shaped exactly
+ * as registerSubs writes them — hive_slug stamped, NO parent_slug edge in the
+ * fixture — must land under the hive home via groupByHive's formal precedence.
+ * Proves the grouping has no dependence on the legacy config.json fallback.
+ */
+describe('register-subs entries group formally via groupByHive', () => {
+  test('subs of a hive home group under it with parent_slug absent', () => {
+    const home = { slug: 'acme', harness_kind: 'hive' };
+    const subHive = resolveSubHarnessHiveSlug(home);
+    const projects = [
+      home,
+      // What registerSubs writes for each classified submodule (P-001):
+      { slug: 'acme/libs/sync', harness_kind: 'sub-harness', hive_slug: subHive! },
+      { slug: 'acme/libs/db', harness_kind: 'sub-harness', hive_slug: subHive! },
+      { slug: 'unrelated' },
+    ];
+    const groups = groupByHive(projects);
+    const acme = groups.find((g) => g.root.slug === 'acme');
+    expect(acme?.members.map((m) => m.slug)).toEqual(['acme', 'acme/libs/db', 'acme/libs/sync']);
+    expect(groups.find((g) => g.root.slug === 'unrelated')?.members.map((m) => m.slug)).toEqual([
+      'unrelated',
+    ]);
+  });
+
+  test('subs of a hive MEMBER group under the home, not the member (orphan fix)', () => {
+    const member = { slug: 'acme-web', harness_kind: 'coding', hive_slug: 'acme' };
+    const subHive = resolveSubHarnessHiveSlug(member);
+    const projects = [
+      { slug: 'acme', harness_kind: 'hive' },
+      member,
+      { slug: 'acme-web/libs/ui', harness_kind: 'sub-harness', hive_slug: subHive! },
+    ];
+    const groups = groupByHive(projects);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].root.slug).toBe('acme');
+    expect(groups[0].members.map((m) => m.slug)).toEqual([
+      'acme',
+      'acme-web',
+      'acme-web/libs/ui',
+    ]);
   });
 });

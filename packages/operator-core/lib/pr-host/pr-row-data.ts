@@ -22,4 +22,11 @@ export interface PrRowData {
   trusted: boolean;
   /** Whether pr_reviewer_role_enabled for this harness. */
   reviewerRoleEnabled: boolean;
+  /**
+   * The member harness this row came from, set ONLY by the hive-scoped
+   * listing (`GET /harness/:slug/prs?scope=hive` — hive-pr-rollup P-005).
+   * Review actions for the row must target this slug's routes. Absent on
+   * single-harness listings.
+   */
+  member_slug?: string;
 }

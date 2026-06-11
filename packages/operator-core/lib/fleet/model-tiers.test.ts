@@ -11,7 +11,7 @@
  *     default would be the EI-7 class of bug); clamps never error.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveTierSpec, roleDefaultSpec, specModelId } from './model-tiers';
+import { resolveTierSpec, roleDefaultSpec, specModelId, tierMenuLines } from './model-tiers';
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -143,5 +143,31 @@ describe('resolveTierSpec — user-defined menu', () => {
     const clamped = resolveTierSpec({ tier: 'eco', role: 'worker', tiers: withBackends });
     expect(clamped).toMatchObject({ ok: true, tier: 'normal', clamped: 'floor' });
     expect((clamped as { backend?: string }).backend).toBeUndefined();
+  });
+});
+
+describe('tierMenuLines — the queen-facing live menu (runtime context)', () => {
+  it('renders the user menu with names, specs, and the per-tier when guidance', () => {
+    const lines = tierMenuLines(
+      [
+        { name: 'eco', spec: 'haiku', when: 'cheap sweeps only' },
+        { name: 'turbo', spec: 'fable:xhigh', backend: 'claude-code', when: 'security work' },
+      ],
+      { bee: 'eco' },
+    );
+    const joined = lines.join('\n');
+    expect(joined).toContain('MODEL TIERS');
+    expect(joined).toContain('- eco (haiku) — cheap sweeps only');
+    expect(joined).toContain('- turbo (fable:xhigh) — security work');
+    expect(joined).toContain('TIER CEILINGS');
+    expect(joined).toContain('bee≤eco');
+  });
+
+  it('falls back to the default menu (with its default rubric) when no user menu exists', () => {
+    const joined = tierMenuLines([]).join('\n');
+    expect(joined).toContain('- quick (haiku)');
+    expect(joined).toContain('- max (opus:xhigh)');
+    expect(joined).toContain('trivial / mechanical');
+    expect(joined).not.toContain('TIER CEILINGS');
   });
 });

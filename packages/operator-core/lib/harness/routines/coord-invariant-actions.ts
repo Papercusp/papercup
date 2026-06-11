@@ -49,6 +49,7 @@ import {
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from '../../agent-tools/coordination/messages';
 import { listHandoffs } from '../../agent-tools/coordination/handoffs';
 import { listEscalations } from '../../agent-tools/coordination/escalations';
+import { sweepDeadOwnerPendingWakes } from '../../agent-tools/coordination/pending-wakes';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   ensureBootstrap,
@@ -516,6 +517,12 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
 
 registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => {
   const t: InvariantThresholds = { ...DEFAULT_THRESHOLDS, ...(ctx.payloadTemplate as Partial<InvariantThresholds> | null) };
+  // EI-314: GC staged wakes for ENDED sessions before measuring. A manual-mode
+  // queue for a gone owner can never be released (only the owner releases it), so
+  // it would trip the wake-queue invariant as pure debris and re-file forever.
+  // Sweeping first means the violation only fires for a LIVE agent's genuinely-
+  // stuck review queue. Best-effort — a sweep failure never aborts the pass.
+  await sweepDeadOwnerPendingWakes().catch(() => 0);
   const snap = await gatherSnapshot(t);
   const violations = evaluateInvariants(snap, t, Date.now());
   for (const v of violations) {

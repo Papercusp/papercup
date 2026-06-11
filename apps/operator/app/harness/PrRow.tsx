@@ -31,7 +31,7 @@ function ChecksBadge({ conclusion }: { conclusion: string | null }) {
   }
   if (conclusion === 'failure') {
     return (
-      <span style={{ color: COLORS.error, display: 'flex', alignItems: 'center', gap: 2, fontSize: 12 }}>
+      <span style={{ color: COLORS.dangerText, display: 'flex', alignItems: 'center', gap: 2, fontSize: 12 }}>
         <XCircle size={12} /> failed
       </span>
     );
@@ -56,7 +56,7 @@ function ReviewBadge({ decision }: { decision: PrRowData['review_decision'] }) {
     decision === 'approved'
       ? COLORS.success
       : decision === 'changes_requested'
-        ? COLORS.error
+        ? COLORS.dangerText
         : COLORS.textMuted;
   const label =
     decision === 'approved'
@@ -93,7 +93,7 @@ export function PrRow({ pr, onApprove, onApproveAndMerge }: Props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span
             style={{
-              fontFamily: FONTS.sans,
+              fontFamily: FONTS.ui,
               fontSize: 13,
               fontWeight: 500,
               color: COLORS.text,
@@ -122,10 +122,29 @@ export function PrRow({ pr, onApprove, onApproveAndMerge }: Props) {
             </span>
           )}
           {cannotReach && (
-            <span style={{ fontSize: 11, color: COLORS.error }}>PR gone</span>
+            <span style={{ fontSize: 11, color: COLORS.dangerText }}>PR gone</span>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+          {/* Hive-scoped rows (P-006): which member harness this PR belongs to. */}
+          {pr.member_slug && (
+            <span
+              style={{
+                fontSize: 11,
+                color: COLORS.textMuted,
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: RADIUS.sm,
+                padding: '0 6px',
+                maxWidth: 180,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={pr.member_slug}
+            >
+              {pr.member_slug}
+            </span>
+          )}
           <span style={{ fontSize: 12, color: COLORS.textMuted }}>@{pr.author_login}</span>
           <ChecksBadge conclusion={pr.check_conclusion} />
           <ReviewBadge decision={pr.review_decision} />

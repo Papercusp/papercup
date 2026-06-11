@@ -286,16 +286,18 @@ function RegisterSubsButton({ slug }: { slug: string }) {
             body: JSON.stringify({ rootSlug: slug }),
           });
           const data = (await r.json().catch(() => null)) as
-            | { ok?: boolean; discovered?: number; registered?: unknown[]; reconciled?: unknown[]; errors?: Array<{ slug: string; error: string }>; error?: string }
+            | { ok?: boolean; discovered?: number; membership?: { kind: 'hive_slug' | 'parent_slug'; value: string } | null; registered?: unknown[]; reconciled?: unknown[]; hiveReconciled?: string[]; errors?: Array<{ slug: string; error: string }>; error?: string }
             | null;
           if (!r.ok || !data?.ok) {
             toast.error(`register-subs failed: ${data?.error ?? `HTTP ${r.status}`}`);
             return;
           }
           const newCount = (data.registered ?? []).length;
-          const fixedCount = (data.reconciled ?? []).length;
+          const fixedCount = (data.reconciled ?? []).length + (data.hiveReconciled ?? []).length;
           const errCount = (data.errors ?? []).length;
-          const msg = `Discovered ${data.discovered ?? 0} submodules — ${newCount} new, ${fixedCount} reconciled${errCount ? `, ${errCount} errors` : ''}.`;
+          const hiveNote =
+            data.membership?.kind === 'hive_slug' ? ` Members of hive '${data.membership.value}'.` : '';
+          const msg = `Discovered ${data.discovered ?? 0} submodules — ${newCount} new, ${fixedCount} reconciled${errCount ? `, ${errCount} errors` : ''}.${hiveNote}`;
           if (errCount > 0) toast.error(msg);
           else if (newCount + fixedCount === 0) toast.success(`No new sub-harnesses (registry up-to-date).`, { duration: 2500 });
           else toast.success(msg, { duration: 3000 });

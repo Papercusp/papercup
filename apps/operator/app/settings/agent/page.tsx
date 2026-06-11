@@ -108,9 +108,11 @@ interface TierRow {
   name: string;
   spec: string;
   backend: '' | AgentBackend;
+  /** When the queen should pick this tier — injected into her launch prompt. */
+  when: string;
 }
 
-const tierToRow = (t: ModelTier): TierRow => ({ name: t.name, spec: t.spec, backend: t.backend ?? '' });
+const tierToRow = (t: ModelTier): TierRow => ({ name: t.name, spec: t.spec, backend: t.backend ?? '', when: t.when ?? '' });
 
 export default function AgentSettingsPage() {
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
@@ -236,7 +238,12 @@ export default function AgentSettingsPage() {
       const warn = aliasWarning(spec);
       if (warn) warnings.push(`tier "${name}": ${warn}`);
       seenNames.add(name.toLowerCase());
-      cleanedTiers.push({ name, spec, ...(row.backend ? { backend: row.backend } : {}) });
+      cleanedTiers.push({
+        name,
+        spec,
+        ...(row.backend ? { backend: row.backend } : {}),
+        ...(row.when.trim() ? { when: row.when.trim() } : {}),
+      });
     }
     // Store [] when the rows still equal the committed defaults — an untouched
     // menu keeps tracking future default changes instead of freezing a copy.
@@ -456,21 +463,22 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. Backend 'Inherit global' runs the tier on the backend above. Leave as-is to track the built-in menu."
+          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the queen — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. Leave as-is to track the built-in menu."
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
               <span style={{ width: 14 }} />
-              <span style={{ width: 120 }}>Tier</span>
-              <span style={{ width: 200 }}>Model spec</span>
-              <span>Backend</span>
+              <span style={{ width: 110 }}>Tier</span>
+              <span style={{ width: 170 }}>Model spec</span>
+              <span style={{ width: 130 }}>Backend</span>
+              <span>When to use (the queen&apos;s rubric)</span>
             </div>
             {tierRows.map((row, i) => (
               <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right' }}>{i + 1}</span>
                 <input
                   className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 120 }}
+                  style={{ fontSize: 13, padding: '2px 6px', width: 110 }}
                   placeholder="tier name"
                   aria-label={`Tier ${i + 1} name`}
                   value={row.name}
@@ -484,7 +492,7 @@ export default function AgentSettingsPage() {
                   style={{
                     fontSize: 13,
                     padding: '2px 6px',
-                    width: 200,
+                    width: 170,
                     fontFamily: 'monospace',
                     ...(row.spec.trim() && (!isValidModelSpec(row.spec.trim()) || aliasWarning(row.spec))
                       ? { borderColor: 'var(--warn, #b58900)' }
@@ -510,6 +518,17 @@ export default function AgentSettingsPage() {
                     ));
                   }}
                 />
+                <input
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', flex: 1, minWidth: 180 }}
+                  placeholder="when the queen should pick this tier"
+                  aria-label={`Tier ${i + 1} when-to-use guidance`}
+                  value={row.when}
+                  onChange={(e) => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, when: e.target.value } : r)));
+                  }}
+                />
                 <button
                   type="button"
                   className="pc-btn pc-btn-secondary"
@@ -530,7 +549,7 @@ export default function AgentSettingsPage() {
                 style={{ fontSize: 11, padding: '2px 8px' }}
                 onClick={() => {
                   setTiersCustomized(true);
-                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '' }]);
+                  setTierRows((prev) => [...prev, { name: '', spec: '', backend: '', when: '' }]);
                 }}
               >
                 + add tier

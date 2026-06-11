@@ -66,6 +66,11 @@ export interface ModelTier {
       (DEFAULT_BACKEND_CMDS) before the model spec is applied — so a tier can
       be e.g. quick-on-omp while deep stays on claude. */
   backend?: AgentBackend;
+  /** USER-AUTHORED guidance: when the queen should pick this tier (one
+      line, e.g. 'ambiguous or architectural work; repeat failures'). Injected
+      verbatim into the queen's launch prompt as her live tier menu — this is
+      the owner's instruction channel for per-tier judgment. */
+  when?: string;
 }
 
 /** Default agent command per backend — used when a per-tier backend swap
@@ -81,12 +86,14 @@ export const DEFAULT_BACKEND_CMDS: Record<AgentBackend, string> = {
  * The default tier menu when the user hasn't defined one — ordered WEAKEST →
  * STRONGEST (the order IS the strength ranking the floor/ceiling clamp uses).
  * Mirrors the fleet's implicit haiku/sonnet/opus tiering (ROLE_MODEL_DEFAULTS).
+ * The `when` lines are the default placement rubric — the user's own menu
+ * replaces them wholesale.
  */
 export const DEFAULT_MODEL_TIERS: readonly ModelTier[] = [
-  { name: 'quick', spec: 'haiku' },
-  { name: 'standard', spec: 'sonnet' },
-  { name: 'deep', spec: 'opus:high' },
-  { name: 'max', spec: 'opus:xhigh' },
+  { name: 'quick', spec: 'haiku', when: 'trivial / mechanical work (renames, single-file fixes, mechanical sweeps)' },
+  { name: 'standard', spec: 'sonnet', when: 'spec-bounded normal features and bugs — the usual pick; omitting tier is equivalent' },
+  { name: 'deep', spec: 'opus:high', when: 'ambiguous or architectural work, cross-cutting changes, repeat failures on a lower tier' },
+  { name: 'max', spec: 'opus:xhigh', when: 'security-sensitive, migration, or deploy-adjacent work where a mistake is expensive' },
 ] as const;
 
 /** Validate a `<modelId>[:<effort>]` spec string (loose on the model id —

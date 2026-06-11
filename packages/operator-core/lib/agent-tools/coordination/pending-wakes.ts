@@ -169,3 +169,34 @@ export async function clearPendingWakes(ownerId: string): Promise<number> {
   `;
   return (rows as unknown[]).length;
 }
+
+/**
+ * GC staged wakes whose owner is GONE (EI-314). A manual-mode staged wake is only
+ * ever released by the OWNER reviewing it (releasePendingWake / clearPendingWakes),
+ * so a wake staged for an ENDED session — whose owner no longer has a live presence
+ * heartbeat — can never be released and accumulates forever, tripping the
+ * wake-queue-depth/age invariant as pure debris.
+ *
+ * Drop wakes for owners with NO presence heartbeat within `liveGraceMin`, and only
+ * those rows older than the same grace (so a just-staged wake for an agent
+ * momentarily between heartbeat writes is never reaped). A LIVE paused agent
+ * (hive:pause → wake-mode manual, but the session is alive) keeps heartbeating, so
+ * its review queue is untouched — exactly the rows a human still intends to review.
+ *
+ * Returns the number of rows swept. Best-effort: the caller (the hourly monitor)
+ * swallows errors so a sweep failure never aborts the invariant pass.
+ */
+export async function sweepDeadOwnerPendingWakes(opts: { liveGraceMin?: number } = {}): Promise<number> {
+  const grace = Math.max(1, opts.liveGraceMin ?? 60);
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    DELETE FROM harness_shared.pending_wakes pw
+     WHERE pw.created_at < now() - make_interval(mins => ${grace})
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.coord_presence cp
+          WHERE cp.owner_id = pw.owner_id
+            AND cp.heartbeat_at > now() - make_interval(mins => ${grace})
+       )
+    RETURNING id`;
+  return (rows as unknown[]).length;
+}

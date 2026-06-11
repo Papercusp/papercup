@@ -86,6 +86,14 @@ describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', ()
     ]);
   });
 
+  it('keeps the per-tier when guidance, trimmed and capped', () => {
+    expect(parseTiers([{ name: 'eco', spec: 'haiku', when: '  cheap sweeps  ' }])).toEqual([
+      { name: 'eco', spec: 'haiku', when: 'cheap sweeps' },
+    ]);
+    const long = 'x'.repeat(500);
+    expect(parseTiers([{ name: 'eco', spec: 'haiku', when: long }])[0].when).toHaveLength(300);
+  });
+
   it('ceilings: keeps role→tier-name entries; drops names absent from a NON-EMPTY menu', () => {
     const tiers = [{ name: 'quick', spec: 'haiku' }, { name: 'deep', spec: 'opus' }];
     expect(parseTierCeilings({ bee: 'deep', worker: 'nope', '': 'deep', queen: 7 }, tiers)).toEqual({ bee: 'deep' });
