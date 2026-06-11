@@ -17,6 +17,7 @@ interface BackupsResponse {
   workspaceId: string;
   settings: BackupSettings;
   stats?: unknown;
+  kopia?: { ok: boolean; version?: string; reason?: string };
 }
 
 export function StepBackups() {
@@ -24,6 +25,7 @@ export function StepBackups() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [kopia, setKopia] = useState<BackupsResponse['kopia']>(undefined);
 
   useEffect(() => {
     void (async () => {
@@ -32,6 +34,7 @@ export function StepBackups() {
         if (!r.ok) throw new Error(`backups: ${r.status}`);
         const j = (await r.json()) as BackupsResponse;
         setSettings(j.settings);
+        setKopia(j.kopia);
       } catch (e: any) {
         setError(e?.message ?? String(e));
       } finally {
@@ -39,6 +42,8 @@ export function StepBackups() {
       }
     })();
   }, []);
+
+  const kopiaMissing = kopia !== undefined && !kopia.ok;
 
   const setEnabled = async (enabled: boolean) => {
     if (!settings) return;
@@ -73,18 +78,36 @@ export function StepBackups() {
         <li>Storage is local-only by default; no cloud upload unless you configure one.</li>
       </ul>
 
+      {kopiaMissing && (
+        <div className="pc-step__progress" data-status="missing" style={{ marginTop: 16 }}>
+          <div className="pc-step__progress-dot" />
+          <div className="pc-step__progress-text">
+            <strong>Kopia isn't installed in this runtime.</strong>
+            <span>
+              {kopia?.reason ?? 'The kopia binary was not found.'} Snapshots stay off until it's
+              installed; everything else keeps working. You can continue setup and revisit this
+              later in Settings → Backups.
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="pc-consent" style={{ marginTop: 16 }}>
         {loading && <span>Loading current setting…</span>}
         {!loading && settings && (
           <label className="pc-consent__toggle">
             <input
               type="checkbox"
-              checked={settings.enabled}
-              disabled={busy}
+              checked={settings.enabled && !kopiaMissing}
+              disabled={busy || kopiaMissing}
               onChange={(e) => void setEnabled(e.target.checked)}
             />
             <span>
-              {settings.enabled ? 'Backups enabled' : 'Backups disabled'}
+              {kopiaMissing
+                ? 'Backups unavailable (kopia not installed)'
+                : settings.enabled
+                  ? 'Backups enabled'
+                  : 'Backups disabled'}
               {busy && <em style={{ marginLeft: 8, opacity: 0.7 }}>saving…</em>}
             </span>
           </label>
