@@ -92,11 +92,13 @@ export function derivePlanChangeWarning(
 }
 
 /** The ctx subset `plans:resume` reads — the streaming/cancellation
- *  handles. The real `UnifiedToolContext` satisfies it structurally. */
+ *  handles plus the session harness scope (fed to `harnessScopedCtx`).
+ *  The real `UnifiedToolContext` satisfies it structurally. */
 type ResumeCtx = {
   emit: (name: string, data: unknown) => void;
   signal?: AbortSignal;
   uiClientId?: string | null;
+  harnessSlug?: string | null;
 };
 
 function notFound(field: string, value: unknown) {

@@ -38,13 +38,11 @@
  * module (getOrgPg / withWorkspace / issues-engineer / PgArchiveStore /
  * routed-ledger) hits the same real schema with NO module mocks.
  *
- * KNOWN PRODUCTION GAP (pinned below, not silently papered over): the router's
- * `RoutingDecision.addressesPatternRefs` is carried "so the scheduler's
- * recordRoutedIdea need not re-join", but `deriveProvenance` (cycle.ts) drops it
- * — `RoutedIdeaProvenance` has no refs field — so through the production tick
- * path `scout_routed_ideas.addresses_pattern_refs` is always NULL. The grounding
- * refs ARE asserted at the decision level here; the NULL column is asserted with
- * a pointer to this comment so a future fix flips the assertion knowingly.
+ * (Historical note: until 2026-06-11 `deriveProvenance` dropped the routing
+ * decision's `addressesPatternRefs` — `RoutedIdeaProvenance` had no refs field —
+ * so `scout_routed_ideas.addresses_pattern_refs` was always NULL through the
+ * production tick path. Fixed the same night this test pinned it: the refs now
+ * thread idea → provenance → ledger, asserted below at both levels.)
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -267,7 +265,9 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
       createPlanDraft: (args) =>
         createScoutPlanDraft({ ...args, harnessSlug: HARNESS, workspaceId: WS, date: PLAN_DATE }),
       archive,
-      limits: { maxIdeators: 3 },
+      // Small POSITIVE cap (EI-305: a 0 cap now halts before the first costed
+      // step) — proves the budget gate passes a full $0-spend fake-LLM cycle.
+      limits: { maxIdeators: 3, maxCostUsd: 0.05 },
       cycleId: CYCLE_ID,
       stateOfHiveReaders: fakeReaders,
       digestOptions: { nowMs: Date.parse('2026-06-10T00:00:00.000Z') },
@@ -291,6 +291,7 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
         harnessSlug: HARNESS,
         cycleId: CYCLE_ID,
         title: r.title,
+        addressesPatternRefs: r.addressesPatternRefs,
         workspaceId: WS,
       });
     }
@@ -321,8 +322,8 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
       expect(d.error).toBeUndefined();
       expect(d.routedRef).toBeTruthy();
       expect(d.followedHint).toBe(true); // the router followed each recombine routeHint
-      // Grounding refs survive idea → proposal → decision (asserted here because
-      // deriveProvenance drops them — see the header's KNOWN PRODUCTION GAP).
+      // Grounding refs survive idea → proposal → decision (and since the
+      // 2026-06-11 fix, on through provenance to the ledger — asserted below).
       expect(d.addressesPatternRefs).toEqual([PATTERN_REF]);
     }
   });
@@ -467,10 +468,9 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
       expect(Date.parse(row!.routedAt!)).toBeGreaterThan(0);
     }
 
-    // Column-level scoping + the KNOWN PRODUCTION GAP (see file header):
-    // addresses_pattern_refs is NULL through the production provenance path,
-    // because deriveProvenance drops the decision's refs. If you fix that gap,
-    // flip this assertion to expect [PATTERN_REF].
+    // Column-level scoping + the refs-threading fix (2026-06-11, see header):
+    // deriveProvenance now carries the idea's addressesPatternRefs through to
+    // the ledger, so the column lands populated through the production path.
     const raw = await db.adminSql<
       { idea_id: string; workspace_id: string; harness_slug: string; addresses_pattern_refs: string[] | null }[]
     >`
@@ -481,7 +481,7 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     for (const r of raw) {
       expect(r.workspace_id).toBe(WS);
       expect(r.harness_slug).toBe(HARNESS);
-      expect(r.addresses_pattern_refs).toBeNull();
+      expect(r.addresses_pattern_refs).toEqual([PATTERN_REF]);
     }
   });
 

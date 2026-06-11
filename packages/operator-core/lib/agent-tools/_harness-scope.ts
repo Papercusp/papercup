@@ -63,7 +63,7 @@ export type HarnessScope =
  */
 export function resolveHarnessScope(
   argHarness: string | null | undefined,
-  ctx: { harnessSlug?: string } | null | undefined,
+  ctx: { harnessSlug?: string | null } | null | undefined,
 ): HarnessScope {
   const arg = argHarness?.trim();
   if (arg) {
@@ -95,7 +95,7 @@ export const HARNESS_REQUIRED_DETAIL =
  * So the existing resolvers stay UNCHANGED; the gate lives here, in the
  * handler, exactly as the `docs:*` tools gate before `resolveAdapter`.
  */
-export function harnessScopedCtx<T extends { harnessSlug?: string }>(
+export function harnessScopedCtx<T extends { harnessSlug?: string | null }>(
   argHarness: string | null | undefined,
   ctx: T,
 ): T & { harnessSlug: string } {

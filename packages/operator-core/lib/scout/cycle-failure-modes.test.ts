@@ -447,6 +447,20 @@ describe('failure: budget exhaustion mid-cycle (limits.maxCostUsd)', () => {
     expect(r.stop).toBe('completed');
     expect(r.calls.map((c) => c.step)).toEqual(['ideate', 'critique', 'recombine']);
   });
+
+  it('a ZERO cap halts BEFORE the first costed step — no ideate spend at all (EI-305)', async () => {
+    // The strict `spent > cap` between-steps gate would pass a 0-spent/0-cap
+    // start, so the cycle has an explicit pre-ideate zero-cap guard.
+    const { deps, routeBatches } = makeSimpleDeps({ costUsd: 0.01, limits: { maxCostUsd: 0 } });
+
+    const r = await runScoutCycle(deps);
+
+    expect(r.stop).toBe('budget-exhausted');
+    expect(r.calls).toEqual([]); // not a single LLM call
+    expect(r.costUsd).toBe(0);
+    expect(r.ideas).toEqual([]);
+    expect(routeBatches).toHaveLength(0);
+  });
 });
 
 /* ────────────────────────────────────────────────────────────────────────

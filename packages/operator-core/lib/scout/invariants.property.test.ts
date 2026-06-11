@@ -294,20 +294,28 @@ describe('PROVENANCE (P-013 / D-009) — deriveProvenance properties', () => {
     fc.assert(
       fc.property(provenanceCaseArb, ({ ideas, decisions, cycleId }) => {
         const rows = deriveProvenance(decisions, ideas, cycleId);
-        const lensById = new Map(ideas.map((i) => [i.id, i.lens]));
+        const ideaById = new Map(ideas.map((i) => [i.id, i]));
         const expected = decisions
           .filter((d) => d.routedRef)
           .flatMap((d) =>
             d.sourceIdeaIds
-              .filter((id) => lensById.has(id))
-              .map((ideaId) => ({
-                ideaId,
-                lens: lensById.get(ideaId)!,
-                rail: d.rail,
-                routedRef: d.routedRef!,
-                ...(cycleId ? { cycleId } : {}),
-                ...(d.title ? { title: d.title } : {}),
-              })),
+              .filter((id) => ideaById.has(id))
+              .map((ideaId) => {
+                const idea = ideaById.get(ideaId)!;
+                return {
+                  ideaId,
+                  lens: idea.lens,
+                  rail: d.rail,
+                  routedRef: d.routedRef!,
+                  ...(cycleId ? { cycleId } : {}),
+                  ...(d.title ? { title: d.title } : {}),
+                  // 2026-06-11 refs threading: the idea's pattern refs ride
+                  // provenance to the ledger (P-013 attribution).
+                  ...(idea.addressesPatternRefs.length > 0
+                    ? { addressesPatternRefs: [...idea.addressesPatternRefs] }
+                    : {}),
+                };
+              }),
           );
         expect(rows).toEqual(expected); // no missing, no extra, no reordering
       }),

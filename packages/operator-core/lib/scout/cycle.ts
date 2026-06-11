@@ -172,7 +172,7 @@ export function deriveProvenance(
   ideas: readonly Idea[],
   cycleId?: string,
 ): RoutedIdeaProvenance[] {
-  const lensById = new Map(ideas.map((i) => [i.id, i.lens]));
+  const ideaById = new Map(ideas.map((i) => [i.id, i]));
   const out: RoutedIdeaProvenance[] = [];
   for (const d of routed) {
     if (!d.routedRef) continue;
@@ -180,15 +180,20 @@ export function deriveProvenance(
     // the real router always sets it, router.ts) yields no attribution rather than
     // crashing the whole cycle (matches the skip-non-attributable philosophy below).
     for (const ideaId of d.sourceIdeaIds ?? []) {
-      const lens = lensById.get(ideaId);
-      if (!lens) continue;
+      const idea = ideaById.get(ideaId);
+      if (!idea) continue;
       out.push({
         ideaId,
-        lens,
+        lens: idea.lens,
         rail: d.rail,
         routedRef: d.routedRef,
         ...(cycleId ? { cycleId } : {}),
         ...(d.title ? { title: d.title } : {}),
+        // The P-013 pattern-attribution key — without this the ledger's
+        // addresses_pattern_refs column is NULL through the tick path.
+        ...(idea.addressesPatternRefs.length > 0
+          ? { addressesPatternRefs: [...idea.addressesPatternRefs] }
+          : {}),
       });
     }
   }

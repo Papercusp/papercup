@@ -7,7 +7,7 @@
  * human in the loop).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { runScoutTick, type ScoutTickDeps, type ScoutCycleLike } from './scheduler';
+import { runScoutTick, buildScoutTickDeps, type ScoutTickDeps, type ScoutCycleLike } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutCadenceState } from './cadence';
 

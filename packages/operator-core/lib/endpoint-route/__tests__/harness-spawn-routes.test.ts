@@ -31,13 +31,13 @@ vi.mock('../../harness-core', () => ({
 vi.mock('../../harness-phases', () => ({ phasePhaseLabel: vi.fn((x: unknown) => x) }));
 vi.mock('../../harness-paths', () => ({ harnessPackageDir: vi.fn(() => '/harness-pkg') }));
 
-const buildInvokeOnce = vi.fn(() => ({
+const buildInvokeOnce = vi.fn((..._args: unknown[]) => ({
   command: 'node',
   args: ['invoke-once.js', '--role', 'worker'],
   env: { PAPERCUSP_TEST: '1' },
 }));
 vi.mock('../../harness-invoke-once', () => ({
-  buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...(a as [])),
+  buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...a),
 }));
 
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));

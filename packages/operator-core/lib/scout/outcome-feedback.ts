@@ -73,6 +73,12 @@ export interface RoutedIdeaProvenance {
   title?: string;
   /** ISO timestamp the idea was routed. */
   routedAt?: string;
+  /**
+   * The digest pattern refs the source idea addressed (Idea.addressesPatternRefs)
+   * — the P-013 pattern-attribution key, threaded by deriveProvenance so the
+   * scheduler's recordRoutedIdea persists it without a re-join.
+   */
+  addressesPatternRefs?: string[];
 }
 
 /** Per-lens outcome tally + the weight P-004 reads back. */
