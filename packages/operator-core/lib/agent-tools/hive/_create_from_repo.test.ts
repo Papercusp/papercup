@@ -218,6 +218,49 @@ describe('createHiveFromRepo (P-006)', () => {
     expect(calls.hiveCreated).toEqual(['shop-hive']);
   });
 
+  it('records REAL step transitions against the progressId (P-008 hardening)', async () => {
+    const recorded: string[] = [];
+    const { deps } = fakes({
+      recordStep: (id, step, status) => {
+        recorded.push(`${id}:${step}:${status}`);
+      },
+    });
+    await createHiveFromRepo({ githubUrl: URL, progressId: 'pid-1', workspaceId: 'ws' }, deps);
+    expect(recorded).toEqual([
+      'pid-1:lookup:running',
+      'pid-1:lookup:done',
+      'pid-1:clone:running',
+      'pid-1:clone:done',
+      'pid-1:detect:running',
+      'pid-1:detect:done',
+      'pid-1:create:running',
+      'pid-1:create:done',
+      'pid-1:publish:running',
+      'pid-1:publish:done',
+    ]);
+  });
+
+  it('progress: a clone failure settles clone:error; no progressId = zero recording', async () => {
+    const recorded: string[] = [];
+    const { deps } = fakes({
+      clone: async () => ({ code: 'not_found' as const, message: 'nope' }),
+      recordStep: (_id, step, status) => {
+        recorded.push(`${step}:${status}`);
+      },
+    });
+    await createHiveFromRepo({ githubUrl: URL, progressId: 'pid-2', workspaceId: 'ws' }, deps);
+    expect(recorded).toEqual(['lookup:running', 'lookup:done', 'clone:running', 'clone:error']);
+
+    recorded.length = 0;
+    const { deps: deps2 } = fakes({
+      recordStep: (_id, step, status) => {
+        recorded.push(`${step}:${status}`);
+      },
+    });
+    await createHiveFromRepo({ githubUrl: URL, slug: 'shop-noprog', workspaceId: 'ws' }, deps2);
+    expect(recorded).toEqual([]);
+  });
+
   it('publish failure NEVER fails the create', async () => {
     const { deps } = fakes({
       publish: async () => {

@@ -251,6 +251,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // hiveFromRepo.progress — REAL step transitions for the long create-from-URL
+  // (hive-from-repo-hardening P-008). The composition records to the in-process
+  // store + invalidates this name per step; the form subscribes with its
+  // client-minted progressId BEFORE submitting. Transient UX rows, not state.
+  'hiveFromRepo.progress': {
+    argsSchema: z.object({ progressId: z.string().min(1).max(64) }),
+    resolve: async (args) => {
+      const { progressId } = args as { progressId: string };
+      const { getFromRepoProgress } = await import('../harness/from-repo-progress');
+      return getFromRepoProgress(progressId) as unknown[];
+    },
+  },
+
   'harnessTextArtifact.byHarness': {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {

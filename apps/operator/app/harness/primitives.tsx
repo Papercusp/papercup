@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Archive,
   Bug,
+  Check,
   CheckCircle,
   Circle,
   Eye,
@@ -119,12 +120,15 @@ export const SEVERITY_ICON: Record<IssueSeverityKey, LucideIcon> = {
   nit: Circle,
 };
 
-// Issue status → icon (open=Circle, ack=Eye, fixing=Hammer, closed=CheckCircle,
-// wontfix=XCircle). Same fallback discipline as SEVERITY_ICON.
+// Issue status → icon (open=Circle, ack=Eye, fixing=Hammer, resolved=Check,
+// closed=CheckCircle, wontfix=XCircle). Same fallback discipline as
+// SEVERITY_ICON. (`resolved` was missing since the work_items issue-family
+// added it to ISSUE_STATUS — it silently hit the Circle fallback.)
 export const ISSUE_STATUS_ICON: Record<IssueStatusKey, LucideIcon> = {
   open: Circle,
   acknowledged: Eye,
   fixing: Hammer,
+  resolved: Check,
   closed: CheckCircle,
   wontfix: XCircle,
 };

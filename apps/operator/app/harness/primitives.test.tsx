@@ -16,12 +16,15 @@ import {
   SeverityPill,
   IssueStatusPill,
   StatusPill,
+  KindPill,
   IdPill,
   RolePill,
   SEVERITY_ICON,
   ISSUE_STATUS_ICON,
+  STATUS_ICON,
+  KIND_ICON,
 } from './primitives';
-import { getRoleStyle, SEVERITY, ISSUE_STATUS, STATUS } from './theme';
+import { getRoleStyle, SEVERITY, ISSUE_STATUS, STATUS, WORK_ITEM_KIND } from './theme';
 
 afterEach(() => cleanup());
 
@@ -34,14 +37,31 @@ describe('SEVERITY_ICON / ISSUE_STATUS_ICON maps', () => {
 
   it('cover exactly the canonical issue-status keys', () => {
     expect(Object.keys(ISSUE_STATUS_ICON).sort()).toEqual(
-      ['acknowledged', 'closed', 'fixing', 'open', 'wontfix'].sort(),
+      ['acknowledged', 'resolved', 'closed', 'fixing', 'open', 'wontfix'].sort(),
+    );
+  });
+
+  it('STATUS_ICON covers exactly the coding-harness status keys', () => {
+    expect(Object.keys(STATUS_ICON).sort()).toEqual(
+      ['todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed', 'deprecated'].sort(),
+    );
+  });
+
+  it('KIND_ICON covers exactly the canonical work-item kinds', () => {
+    expect(Object.keys(KIND_ICON).sort()).toEqual(
+      ['feature', 'research-task', 'chunk', 'bug', 'change', 'task'].sort(),
     );
   });
 
   it('every map entry is a renderable lucide component', () => {
     // lucide icons are forwardRef components (typeof 'object'), so assert by
     // rendering each entry produces a real <svg> rather than checking typeof.
-    for (const Icon of [...Object.values(SEVERITY_ICON), ...Object.values(ISSUE_STATUS_ICON)]) {
+    for (const Icon of [
+      ...Object.values(SEVERITY_ICON),
+      ...Object.values(ISSUE_STATUS_ICON),
+      ...Object.values(STATUS_ICON),
+      ...Object.values(KIND_ICON),
+    ]) {
       const { container, unmount } = render(<Icon aria-hidden />);
       expect(container.querySelector('svg')).not.toBeNull();
       unmount();
@@ -71,7 +91,7 @@ describe('SeverityPill', () => {
     const { container } = render(<SeverityPill severity="another-unknown" />);
     expect(container.querySelector('svg')).not.toBeNull();
     // Proxy fallback supplies the neutral "Unknown" label rather than throwing.
-    expect(screen.getAllByText(SEVERITY.this_key_is_unknown.label).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0);
   });
 
   it('xs size still renders icon + label', () => {
@@ -90,7 +110,8 @@ describe('IssueStatusPill', () => {
 
   it('renders a fallback (Unknown label) for an UNKNOWN status without crashing', () => {
     expect(() => render(<IssueStatusPill status="nonexistent-status" />)).not.toThrow();
-    expect(screen.getByText(ISSUE_STATUS.nonexistent_status.label)).toBeTruthy();
+    // Proxy fallback supplies the neutral "Unknown" label rather than throwing.
+    expect(screen.getByText('Unknown')).toBeTruthy();
   });
 
   it('hides the label when showLabel=false', () => {
@@ -123,6 +144,48 @@ describe('StatusPill', () => {
     // status not in the coding-harness machine (e.g. parent-harness statuses).
     expect(() => render(<StatusPill status={'proposed' as never} />)).not.toThrow();
     expect(screen.getByText('Unknown')).toBeTruthy();
+  });
+
+  it('variant="chip" renders an icon chip (svg, no dot) with the status label', () => {
+    const { container } = render(<StatusPill status="in_progress" variant="chip" />);
+    expect(screen.getByText(STATUS.in_progress.label)).toBeTruthy();
+    expect(container.querySelector('svg')).not.toBeNull();
+  });
+
+  it('variant="chip" with an unknown status falls back to the Circle icon (no crash)', () => {
+    expect(() => render(<StatusPill status={'proposed' as never} variant="chip" />)).not.toThrow();
+  });
+});
+
+describe('IssueStatusPill (chip variant)', () => {
+  it('renders an icon chip with the status label', () => {
+    const { container } = render(<IssueStatusPill status="fixing" variant="chip" />);
+    expect(screen.getByText(ISSUE_STATUS.fixing.label)).toBeTruthy();
+    expect(container.querySelector('svg')).not.toBeNull();
+  });
+
+  it('unknown status renders the fallback icon + Unknown label without crashing', () => {
+    expect(() => render(<IssueStatusPill status="bogus" variant="chip" />)).not.toThrow();
+  });
+});
+
+describe('KindPill', () => {
+  it('renders icon + canonical label for a known kind', () => {
+    const { container } = render(<KindPill kind="bug" />);
+    expect(screen.getByText(WORK_ITEM_KIND.bug.label)).toBeTruthy();
+    expect(container.querySelector('svg')).not.toBeNull();
+  });
+
+  it('keeps the RAW kind name (not "Unknown") for an unrecognized kind', () => {
+    expect(() => render(<KindPill kind="experiment" />)).not.toThrow();
+    expect(screen.getByText('experiment')).toBeTruthy();
+    expect(screen.queryByText('Unknown')).toBeNull();
+  });
+
+  it('hides the label when showLabel=false but still renders the icon', () => {
+    const { container } = render(<KindPill kind="feature" showLabel={false} />);
+    expect(screen.queryByText(WORK_ITEM_KIND.feature.label)).toBeNull();
+    expect(container.querySelector('svg')).not.toBeNull();
   });
 });
 

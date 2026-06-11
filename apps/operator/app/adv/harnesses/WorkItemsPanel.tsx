@@ -116,7 +116,9 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Kind',
       width: 1.2,
       toCopyText: (r) => r.kind,
-      render: ({ row }) => <span style={KIND_CHIP}>{row.kind}</span>,
+      // Canonical kind chip (WORK_ITEM_KIND table) — same chip recipe as the
+      // Sev column so the table's pill columns read as one visual language.
+      render: ({ row }) => <KindPill kind={row.kind} size="xs" />,
     },
     {
       key: 'title',
@@ -135,11 +137,12 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       // Canonical status pills (app/harness/theme.ts tables — the same coloring
       // FeatureList/IssuesList use). Family picks the table; unknown states fall
       // back to the tables' neutral meta, so plain text never regresses to bare.
+      // chip variant = the SeverityPill look, matching the Kind + Sev columns.
       render: ({ row }) =>
         row.family === 'issue' ? (
-          <IssueStatusPill status={row.state} size="xs" />
+          <IssueStatusPill status={row.state} size="xs" variant="chip" />
         ) : (
-          <StatusPill status={row.state as HarnessStatus} size="xs" />
+          <StatusPill status={row.state as HarnessStatus} size="xs" variant="chip" />
         ),
     },
     {

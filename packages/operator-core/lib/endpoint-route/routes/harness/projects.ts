@@ -473,6 +473,7 @@ const createHiveFromRepoRoute = defineTool({
       runTests?: boolean;
       force?: boolean;
       intoHive?: string;
+      progressId?: string;
     } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const githubUrl = String(body.githubUrl ?? '').trim();
@@ -495,6 +496,10 @@ const createHiveFromRepoRoute = defineTool({
       ...(body.force !== undefined ? { force: body.force === true } : {}),
       ...(typeof body.intoHive === 'string' && body.intoHive.trim()
         ? { intoHive: body.intoHive.trim() }
+        : {}),
+      // P-008: real step progress over the sync channel (client-minted id).
+      ...(typeof body.progressId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.progressId)
+        ? { progressId: body.progressId }
         : {}),
       workspaceId: activeWorkspaceId(),
     });

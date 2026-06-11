@@ -33,6 +33,10 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 // Pure parser leaf — SPA-bundle-safe (same import EntryHarnessLinkForm uses).
 import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-link-types';
+// P-008 (hardening): REAL step progress over the sync channel. Outside a
+// SyncProvider the hook degrades to {data: undefined} — the optimistic strip
+// below remains the fallback, so no provider = exactly the old behavior.
+import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
 
 // ── Client-side GitHub URL validation ──────────────────────────────────────
@@ -326,6 +330,9 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const [joinSummary, setJoinSummary] = useState<{ ok: number; total: number; firstSlug?: string } | null>(null);
   // P-006: "Copied ✓" feedback on the invite-artifact copy button — transient UI.
   const [inviteCopied, setInviteCopied] = useState(false);
+  // P-008: client-minted progress id — subscribed BEFORE the submit so no
+  // step event is missed. Re-minted per submit attempt.
+  const [progressId, setProgressId] = useState('');
 
   const parsed = parseGithubUrlClient(url);
   const derivedSlug = parsed ? deriveSlugFromRepo(parsed.repo) : '';
@@ -367,6 +374,27 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     advance();
   };
 
+  // P-008 — REAL step rows from the backend (the from-repo composition records
+  // every transition; each write invalidates this query over SSE). While rows
+  // exist they OVERRIDE the optimistic cursor: real data wins, and the timer
+  // stops the moment the first real row lands.
+  const { data: progressRows } = useSyncQuery<{ step: StripStepId; status: StripStatus }>({
+    queryName: 'hiveFromRepo.progress',
+    args: { progressId },
+    enabled: phase === 'running' && mode !== 'standalone' && progressId.length > 0,
+  });
+  useEffect(() => {
+    if (phase !== 'running' || !progressRows || progressRows.length === 0) return;
+    clearTimer(); // real transitions take over from the optimistic schedule
+    setStepStatuses((prev) => {
+      const next: Partial<Record<StripStepId, StripStatus>> = { ...prev };
+      for (const s of activeSteps) next[s] = next[s] === 'running' ? 'pending' : next[s];
+      for (const row of progressRows) next[row.step] = row.status;
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- activeSteps derives from mode (stable while running)
+  }, [progressRows, phase]);
+
   const settleError = (steps: StripStepId[], code: string | undefined) => {
     clearTimer();
     const failedAt = stepForErrorCode(code);
@@ -399,6 +427,14 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     }
     setUrlError('');
     setError('');
+    // P-008: mint the progress id BEFORE submitting so the subscription is
+    // live for the first step event (crypto.randomUUID exists in every target
+    // runtime; the date-random fallback is jsdom-paranoia only).
+    const pid =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `p-${Math.random().toString(36).slice(2, 14)}`;
+    setProgressId(pid);
     setPhase('running');
     const steps = stepsForMode(mode);
     startOptimistic(steps);
@@ -439,6 +475,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
           ...(verifyTests ? { runTests: true } : {}),
           ...(opts?.force ? { force: true } : {}),
+          progressId: pid, // P-008: real step progress over the sync channel
         }),
       });
       const body: FromRepoResponse = await res.json().catch(() => ({}));

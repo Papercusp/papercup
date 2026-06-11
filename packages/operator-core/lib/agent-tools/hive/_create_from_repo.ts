@@ -306,8 +306,10 @@ export async function createHiveFromRepo(
   mark('lookup', 'running');
   const found = await lookup(opts.githubUrl);
   if (found.kind === 'invalid_url') {
+    mark('lookup', 'error');
     return { ok: false, error: 'invalid_url', message: found.message };
   }
+  mark('lookup', 'done');
   let duplicateOf: CreateHiveFromRepoCreated['duplicateOf'];
   if (found.kind === 'hive' || found.kind === 'legacy_shared_harness') {
     if (!opts.force) return { ok: true, existing: found };
@@ -361,10 +363,13 @@ export async function createHiveFromRepo(
   const cleanup: string[] = [];
 
   // 3 — clone the member checkout.
+  mark('clone', 'running');
   const cloned = await clone(opts.githubUrl, { ...(opts.shallow !== undefined ? { shallow: opts.shallow } : {}) });
   if (isCloneError(cloned)) {
+    mark('clone', 'error');
     return { ok: false, error: `clone_${cloned.code}`, message: cloned.message };
   }
+  mark('clone', 'done');
   const memberPath = (cloned as CloneResult).path;
   const defaultBranch = (cloned as CloneResult).defaultBranch;
 
@@ -373,15 +378,19 @@ export async function createHiveFromRepo(
   };
 
   // 4 — the member blueprint (test-verified detection, or the repo's own).
+  mark('detect', 'running');
   const bp = await buildBlueprint(memberSlug, memberPath, {
     runTests,
     ...(opts.testTimeoutMs ? { testTimeoutMs: opts.testTimeoutMs } : {}),
   });
   if (!bp.ok) {
+    mark('detect', 'error');
     await rmDir(memberPath).catch(() => {});
     cleanup.push('clone removed');
     return fail('blueprint_failed', bp.error);
   }
+  mark('detect', 'done');
+  mark('create', 'running');
 
   // 5 — the Hive home (eager identity mint; transactional inside). Skipped in
   //     into-hive mode — the home already exists.
@@ -393,6 +402,7 @@ export async function createHiveFromRepo(
       ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
     });
     if (!hive.ok) {
+      mark('create', 'error');
       await rmDir(memberPath).catch(() => {});
       cleanup.push('clone removed');
       return fail(`hive_${hive.error ?? 'create_failed'}`, hive.message ?? 'hive create failed');
@@ -407,6 +417,7 @@ export async function createHiveFromRepo(
     hive: hiveSlug,
   });
   if (!member.ok) {
+    mark('create', 'error');
     if (hive) {
       await removeHiveHome(hiveSlug, opts.workspaceId).catch(() => {});
       if (hive.path) await rmDir(hive.path).catch(() => {});
@@ -416,6 +427,7 @@ export async function createHiveFromRepo(
     cleanup.push('clone removed');
     return fail('member_create_failed', member.error ?? 'harness:create failed');
   }
+  mark('create', 'done');
 
   // 7 — stamp the upstream coords on the member entry (P-002): the fork-PR
   //     context + the member_repos announce derivation both read these.
@@ -442,6 +454,7 @@ export async function createHiveFromRepo(
     | PublishCreatedHiveOutcome
     | { skipped: 'private' }
     | { skipped: 'unpublished_hive' };
+  mark('publish', visibility === 'private' && !intoHive ? 'skipped' : 'running');
   if (intoHive) {
     const republish = deps.republish ?? republishHiveAfterMemberAdd;
     publishOutcome = await republish({
@@ -469,6 +482,15 @@ export async function createHiveFromRepo(
       cupboard: { attempted: false as const },
       error: e instanceof Error ? e.message : String(e),
     }));
+  }
+
+  if (!(visibility === 'private' && !intoHive)) {
+    mark(
+      'publish',
+      'skipped' in publishOutcome || ('announced' in publishOutcome && !publishOutcome.announced && publishOutcome.error)
+        ? 'skipped'
+        : 'done',
+    );
   }
 
   return {
