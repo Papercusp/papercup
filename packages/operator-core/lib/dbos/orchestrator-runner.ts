@@ -195,6 +195,21 @@ export async function spawnInvokeOnce(
       /* fall back to the child reading .papercusp/config.json */
     }
   }
+  // EI-286 leg (b): point the child's MCP config at THIS host, not the default.
+  // spawn-mcp resolves its operator URL as PAPERCUSP_OPERATOR_URL ?? :3070/:3055
+  // by NODE_ENV — so an agent spawned by the staging host (:3170) handshook the
+  // GREEN host's MCP instead (P-071 smoke: the Queen's tools never appeared in a
+  // 56s turn; version skew + the wrong host's load). Every spawn now inherits
+  // its spawner's own base unless the caller already pinned one.
+  if (!resolvedExtraEnv.PAPERCUSP_OPERATOR_URL && !process.env.PAPERCUSP_OPERATOR_URL) {
+    const port = process.env.PAPERCUSP_HONO_PORT;
+    if (port) {
+      resolvedExtraEnv = {
+        ...resolvedExtraEnv,
+        PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}/api/sse`,
+      };
+    }
+  }
   // P-002 (hive-frame-desktops-live-view): on a desktop-enabled frame the
   // bootstrap stood up one Xvfb display per agent slot and advertised the pool
   // via PAPERCUSP_DESKTOP_DISPLAYS/_DISPLAY_BASE — lease one for this agent so

@@ -44,26 +44,45 @@ export function resetPosthogConfigForTest(): void {
  *
  * Triggered as a side effect from flag-bus.ts on first import.
  */
-let watcherInstalled = false;
+// Watcher state pinned to globalThis per perf rule A18: under tsx this module
+// can be instantiated twice (CJS + ESM specifier space), and a module-scoped
+// flag then installs one fs.watch handle per instance on the same directory
+// (observed live: 2× watchers per operator process, EI-255 census). ONE shared
+// watcher fires every instance's invalidator, so each copy's `cached` +
+// onConfigChange still work.
+interface PosthogWatcherState {
+  installed: boolean;
+  invalidators: Array<() => void>;
+}
+const __watcherKey = Symbol.for('papercusp.posthogConfigWatcher');
+const __watcherState: PosthogWatcherState = (() => {
+  const g = globalThis as typeof globalThis & { [__watcherKey]?: PosthogWatcherState };
+  if (!g[__watcherKey]) g[__watcherKey] = { installed: false, invalidators: [] };
+  return g[__watcherKey]!;
+})();
 let onConfigChange: (() => void) | null = null;
+// THIS module instance's invalidator — registered once at module init.
+__watcherState.invalidators.push(() => {
+  cached = null;
+  if (onConfigChange) onConfigChange();
+});
 
 export function setOnConfigChange(fn: () => void): void {
   onConfigChange = fn;
 }
 
 export function watchPosthogConfig(): void {
-  if (watcherInstalled) return;
-  watcherInstalled = true;
+  if (__watcherState.installed) return;
+  __watcherState.installed = true;
   const discoveryPath = path.join(os.homedir(), '.papercusp', 'posthog.json');
   const dir = path.dirname(discoveryPath);
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.watch(dir, (_event, filename) => {
       if (filename !== 'posthog.json') return;
-      cached = null;
-      if (onConfigChange) {
+      for (const invalidate of __watcherState.invalidators) {
         try {
-          onConfigChange();
+          invalidate();
         } catch {
           // never let the watcher die on a handler error
         }

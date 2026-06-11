@@ -16,7 +16,13 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 
-const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+// Mirror playwright.config.ts's BASE_URL derivation — honoring OPERATOR_E2E_PORT
+// keeps this spec on the SAME server the config's webServer boots. A hardcoded
+// :3055 silently targeted the standing dev server whenever a fresh rig ran on
+// another port (EI-208 forensics, 2026-06-10).
+const baseURL =
+  process.env.OPERATOR_E2E_BASE_URL ??
+  `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? 3055}`;
 // Resolve a harness slug that actually exists in the e2e workspace. The old
 // hardcoded 'sheets' isn't provisioned in the default workspace, so the
 // /harness/$slug loader notFound()s (then redirects). Prefer an explicit

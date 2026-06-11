@@ -19,13 +19,15 @@
  * Oracle families covered here: delivery (exactly-once, per-surface order,
  * EVENT immutability), isolation (workspace scoping over the wire),
  * durability (watermark survives a store restart; heal converges without
- * double-application). Mutual exclusion lives in the rig's own claim tests
- * (brief 11) and locks suites; LIVENESS across instances is a KNOWN GAP —
- * nothing fires a recipient's inbox-wake when a REMOTE-origin coord row
- * projects into its PG (no emitAwaitedEvent/inboxWakeKey reference anywhere
- * in lib/sync/**), so cross-instance deliver-and-wake does not wake an idle
- * peer today. That gap is filed (EI) + logged in the coverage matrix — this
- * suite pins delivery/durability, not the missing wake.
+ * double-application), and LIVENESS (EI-279, fixed 2026-06-11): a sender's
+ * persisted wake intent (body.wake — coord:send {wake:true}) now fires the
+ * recipients' inbox-wake fan on the RECEIVING instance when the remote-origin
+ * row freshly inserts (coord-message projection), so an idle peer homed on
+ * the other cell is re-invoked instead of sleeping until its next natural
+ * turn. The fan itself (wakeRecipients → emitAwaitedEvent pump) is unit-
+ * proven elsewhere and mocked here; this suite pins the cross-instance
+ * trigger contract over the REAL CDC + DHT chain. Mutual exclusion lives in
+ * the rig's own claim tests (brief 11) and locks suites.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -35,6 +37,19 @@ import type postgres from 'postgres';
 import { PgWatermarkStore, ensureCoordWatermarksTable } from '@papercusp/coordination/watermark-store';
 import { bootCompositionRig, type CompositionRig, type SwarmCell } from './composition-rig';
 import { buildCoordMessageProjection } from '../sync/hyperbee/projections/coord-message';
+
+// EI-279: the coord-message projection's federated deliver-and-wake fan
+// dynamically imports wakeRecipients — mock the pump hop (unit-proven in
+// inbox-wake.test.ts) so this suite asserts the cross-instance TRIGGER.
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: vi.fn(async (recipients: readonly string[]) => ({
+    targets: [...recipients],
+    keys: [],
+    woken: 1,
+    staged: 0,
+  })),
+}));
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -191,6 +206,33 @@ describe('P-005 — coord verb lifecycle between two cells over the real DHT', (
     const bMsgIds = (await rows(b, 'messages')).map((r) => r.msg_id)
       .filter((m) => ['m-1', 'm-1b'].includes(m));
     expect(bMsgIds).toEqual(['m-1', 'm-1b']);
+  }, 120_000);
+
+  it('EI-279 liveness: a wake-intent send on A fires the inbox-wake fan ON B after federation — once, and never again on re-converge', async () => {
+    const { a } = rig.cells;
+    vi.mocked(wakeRecipients).mockClear();
+
+    // A coord:send {wake:true}-shaped row: the wake intent rides the envelope.
+    await append(a, {
+      surface: 'messages', msgId: 'wake-x', writer: 'su-A',
+      body: { msg_id: 'wake-x', from: 'su-A', to: ['su-B'], summary: 'wake the remote bee', wake: true },
+    });
+    let conv = await rig.converge();
+    expect(conv.fixedPoint).toBe(true);
+
+    // Exactly ONE fan fire — on B's apply of the remote-origin fresh insert
+    // (A's own-log replay is skipOwnOps-skipped, so A never re-fans locally).
+    expect(wakeRecipients).toHaveBeenCalledExactlyOnceWith(['su-B'], {
+      summary: 'wake the remote bee',
+      source: 'su-A',
+      workspaceId: WS,
+    });
+
+    // Re-converge (at-least-once re-apply territory) → the row UPDATEs, the
+    // fresh-INSERT gate holds, no duplicate wake turn.
+    conv = await rig.converge();
+    expect(conv.fixedPoint).toBe(true);
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
   }, 120_000);
 
   it('partition (no converge) → heal: everything arrives exactly once; a re-converge is a fixed point (no double-application)', async () => {

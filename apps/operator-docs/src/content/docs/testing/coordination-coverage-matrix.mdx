@@ -175,7 +175,7 @@ File: `shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (4 te
 | partition (convergence withheld) → heal: every message exactly once, batch order kept; a re-converge is a FIXED POINT (EI-117 no-double-application class) | ❌ | 🔴 |
 | watermark commit on REMOTE-fed rows survives a store restart; resume strictly past the cursor sees exactly the new traffic | ❌ | 🔴 |
 | workspace isolation across the wire (another workspace's rows never surface in WS reads on the peer) | ❌ | 🔴 |
-| cross-instance deliver-and-WAKE (remote-origin message fires the recipient's local inbox-wake) | ❌ | ⚪ accepted gap — EI-279 (logged below) |
+| cross-instance deliver-and-WAKE (remote-origin message fires the recipient's local inbox-wake) | ❌ | 🔴 EI-279 fixed 2026-06-11: `coord:send {wake:true}` persists `body.wake`, which federates; the coord-message projection fans `wakeRecipients` on a FRESH remote-origin insert (once per msg_id — re-applies/replays never re-wake). Trigger contract pinned here (P-005 'EI-279 liveness' cell) + `coord-message-federation.integration.test.ts` (fan-once, no-intent/local-origin no-ops, fail-soft) |
 
 ### Swarm-path chaos — real Hyperswarm under churn (C2)
 
@@ -199,6 +199,8 @@ File: `work-item-claims-concurrency.integration.test.ts` (7 tests, real PG).
 | lease ttl expiry → reclaimable (claim_id rotates) | 🟢 | ✅ |
 | heartbeat extends lease; foreign heartbeat no-op | 🟢 | ✅ |
 | fail-open reconcile under partition (deterministic) | 🟢 pure | ✅ partition-heal |
+| **caller-standing gate (EI-284)**: a REVOKED swarm's acquire/heartbeat RPC is refused (`refused:'caller_revoked'` / `reason:'caller_revoked'`); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004) | ❌ revoked swarm stole leases + blocked live swarms | 🔴 `work-item-claim-authority-ops.test.ts` (6 gate cells) + the flipped `shared-hive-loop/revoked-swarm.integration.test.ts` |
+| caller-standing residual: the RPC envelope is UNAUTHENTICATED — `holderPubkey` is self-reported, so the gate is defense-in-depth against well-behaved-but-revoked peers, not spoofing | — | ⚪ on EI-284's thread (authenticated-envelope follow-on) |
 
 ### Multi-session concurrency E2E (C3) — the capstone
 
@@ -252,15 +254,6 @@ Both legs verified green on this box (claude 2.1.169, codex).
 ## Accepted gaps (logged — not silent)
 
 <Aside type="note" title="Accepted gaps">
-- **Cross-instance deliver-and-wake (EI-279).** Coord messages federate
-  correctly (the P-005 two-cell suite), and same-instance `coord:send
-  {wake:true}` wakes through the real engine (`wake-on-message.integration.test.ts`)
-  — but NOTHING fires the recipient's inbox-wake when a REMOTE-origin
-  message projects into its PG (no `emitAwaitedEvent` reference anywhere in
-  `lib/sync/**`). An idle agent on instance B sleeps through a directed
-  wake-send from instance A. Filed as EI-279 with the suggested fix
-  (projection afterWrite emits the local inbox-wake key); the two-cell rig is
-  the regression home once it lands.
 - **Production peer ADDRESSING for the authority remote leg.** The HTTP
   transport is boot-registered and the whole file-lock chain is proven over a
   real wire, but `shared_presence` carries identity, not a network address — so
