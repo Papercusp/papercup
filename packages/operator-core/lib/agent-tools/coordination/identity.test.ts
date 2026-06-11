@@ -53,3 +53,63 @@ describe('resolveAgentIdentity — fleet:spawn child (THE UMBILICAL)', () => {
     expect(() => resolveAgentIdentity({ uiClientId: '' })).toThrow(/cannot be attributed/);
   });
 });
+
+describe('resolveAgentIdentity — verified signed spawn without client= (invoke-route agents, D-002 option c)', () => {
+  it('attributes a VERIFIED signed spawn with no client= to the stable harness slug', () => {
+    // The shape the MCP handler builds for an invoke-route agent (promote/
+    // scoper/expert): sig verified, harness present, NO client= → no uiClientId.
+    const id = resolveAgentIdentity({
+      sigVerifiedSpawn: true,
+      harnessSlug: 'restart',
+      workspaceId: 'ws-1',
+    });
+    expect(id.ownerId).toBe('harness:restart');
+    expect(id.ownerLabel).toBe('harness · restart');
+    expect(id.source).toBe('signed-spawn');
+    expect(id.workspaceId).toBe('ws-1');
+    expect(id.userId).toBeNull();
+  });
+
+  it('grants NOTHING to an unverified spawn ctx — unsigned soft-allow still hard-errors', () => {
+    expect(() =>
+      resolveAgentIdentity({ harnessSlug: 'restart', workspaceId: 'ws-1' }),
+    ).toThrow(/cannot be attributed/);
+    expect(() =>
+      resolveAgentIdentity({ sigVerifiedSpawn: false, harnessSlug: 'restart' }),
+    ).toThrow(/cannot be attributed/);
+  });
+
+  it('never mints an identity for the unscoped `*` harness session', () => {
+    expect(() =>
+      resolveAgentIdentity({ sigVerifiedSpawn: true, harnessSlug: '*' }),
+    ).toThrow(/cannot be attributed/);
+  });
+
+  it('a client=-carrying fleet:spawn child still wins over the harness attribution', () => {
+    const id = resolveAgentIdentity({
+      uiClientId: 's-1780000000000-deadbeef',
+      sigVerifiedSpawn: true,
+      harnessSlug: 'papercup',
+    });
+    expect(id.ownerId).toBe('s-1780000000000-deadbeef');
+    expect(id.source).toBe('fleet-spawn');
+  });
+
+  it('su / power / principal branches are unchanged by the new fields (no escalation)', () => {
+    const su = resolveAgentIdentity({
+      isSuperuser: true,
+      uiClientId: 'su-x',
+      sigVerifiedSpawn: true,
+      harnessSlug: 'papercup',
+    });
+    expect(su.source).toBe('omp-hook-session');
+    expect(su.ownerId).toBe('su-x');
+    const pr = resolveAgentIdentity({
+      principal: { kind: 'system', slug: 'autoloop', workspaceId: 'w' },
+      sigVerifiedSpawn: true,
+      harnessSlug: 'papercup',
+    });
+    expect(pr.source).toBe('principal');
+    expect(pr.ownerId).toBe('autoloop');
+  });
+});

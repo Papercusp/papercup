@@ -102,6 +102,14 @@ export interface BuiltSpawnContext {
   parentSpawnId: string | null;
   uiClientId: string | null;
   /**
+   * True when this ctx's spawn-URL HMAC was VERIFIED (branch 2 below) — never
+   * set on the unsigned soft-warn path. resolveAgentIdentity's 'signed-spawn'
+   * branch keys on it to attribute client=-less invoke-route agents to the
+   * stable harness slug (promote-policy-and-waves-2026-05-30 D-002, owner
+   * option (c): least privilege — no su/power grant, never spawnId/runId).
+   */
+  sigVerifiedSpawn?: boolean;
+  /**
    * Plan-run conversation id, from `?plan_run=<uuid>` on the MCP URL.
    * Set by the plan-agent runner (plan-agent-launch-2026-05-21, P-011)
    * so `plans:*` write verbs attribute revisions to the launched run.
@@ -345,6 +353,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     url.searchParams.has('spawn') ||
     url.searchParams.has('workspace');
 
+  let sigVerified = false;
   if (hasSig || hasExp) {
     const v = await verifySpawnParams(url);
     if (!v.ok) {
@@ -365,6 +374,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       );
       return { kind: 'failed', reason: `spawn_sig_${v.reason}` };
     }
+    sigVerified = true;
   } else if (requireSig && claimsSpawn) {
     await logVerificationFailure({
       reason: 'missing_sig_required_mode',
@@ -404,6 +414,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         parentSpawnId: parsed.parentSpawnId,
         uiClientId: parsed.uiClientId,
         planRunSessionId,
+        sigVerifiedSpawn: sigVerified,
       },
     };
   } catch (err) {
@@ -553,6 +564,7 @@ async function buildMcpToolContext(
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
     uiClientId: spawn.uiClientId,
+    sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,

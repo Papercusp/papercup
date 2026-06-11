@@ -55,6 +55,14 @@ export interface ResolveIdentityCtx {
   userId?: string | null;
   /** Bearer principal — present for in-process / role-gated callers. */
   principal?: { kind?: string; slug: string; workspaceId: string } | null;
+  /** Harness slug from the spawn URL — read ONLY by the signed-spawn branch. */
+  harnessSlug?: string | null;
+  /**
+   * True when the transport VERIFIED the spawn URL's HMAC (never set for
+   * unsigned soft-allowed URLs) — see _mcp-handler.ts branch (2). Keys the
+   * signed-spawn attribution for client=-less invoke-route agents.
+   */
+  sigVerifiedSpawn?: boolean;
 }
 
 export type IdentitySource =
@@ -68,7 +76,11 @@ export type IdentitySource =
   | 'principal'
   /** Role-gated fleet:spawn child — ownerId is the operator's durable `s-…`
    *  spawnId, baked as the signed MCP URL's `client=` param. */
-  | 'fleet-spawn';
+  | 'fleet-spawn'
+  /** Verified signed spawn WITHOUT a client= owner id (invoke-route agents:
+   *  promote/scoper/expert) — attributed to the stable harness slug
+   *  (promote-policy-and-waves-2026-05-30 D-002, owner option (c)). */
+  | 'signed-spawn';
 
 export interface AgentIdentity {
   /** Stable per-agent id. Power-user: auth_session_id ("pus-<uuid>"). */
@@ -198,10 +210,32 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     };
   }
 
+  // ── Verified signed spawn WITHOUT client= (invoke-route agents) ──────
+  // promote-policy-and-waves D-002 (owner, 2026-06-10), option (c): a spawn
+  // whose URL HMAC VERIFIED but carries no client= owner id attributes to the
+  // STABLE harness slug — least privilege (no su/power grant) and never the
+  // per-call spawnId/runId (the header rule above). Concurrent agents on one
+  // harness deliberately share this id: the slug is the stable unit. The
+  // `harness:` prefix keeps it distinct from an in-process principal's bare
+  // slug ownerId, so an invoke-route agent and the operator's own in-process
+  // calls never conflate. The unscoped '*' session mints nothing — a
+  // workspace-level signed session has no harness to attribute to.
+  if (ctx.sigVerifiedSpawn && ctx.harnessSlug && ctx.harnessSlug !== '*') {
+    return {
+      ownerId: `harness:${ctx.harnessSlug}`,
+      ownerLabel: `harness · ${ctx.harnessSlug}`,
+      source: 'signed-spawn',
+      workspaceId: ctx.workspaceId ?? null,
+      userId: null,
+    };
+  }
+
   throw new Error(
     'resolveAgentIdentity: context carries no power-user / superuser / ' +
-      'principal / fleet-spawn identity — the caller cannot be attributed ' +
-      '(a fleet:spawn child must carry its `s-…` spawnId as the signed MCP ' +
-      'URL’s client= param — see fleet/operator-spawn.ts + spawn-mcp.ts)',
+      'principal / fleet-spawn / signed-spawn identity — the caller cannot ' +
+      'be attributed (a fleet:spawn child must carry its `s-…` spawnId as ' +
+      'the signed MCP URL’s client= param — see fleet/operator-spawn.ts + ' +
+      'spawn-mcp.ts; an invoke-route agent must connect over a VERIFIED ' +
+      'signed spawn URL with harness=)',
   );
 }
