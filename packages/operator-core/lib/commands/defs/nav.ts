@@ -27,7 +27,7 @@ const navigate: CommandDef<z.infer<typeof NavigateArgs>> = {
   promptDescription:
     'Routes the user to the given path. Use for "take me to settings" / "go to the ' +
     'sheets harness". Common paths: /harness, /settings/voice, /settings/api-keys, ' +
-    '/marketplace, /installed/harnesses.',
+    '/cupboard, /installed/harnesses.',
   schema: NavigateArgs,
   agents: ['oracle', 'operator', 'shortcut'],
   browser: 'required',
@@ -42,7 +42,7 @@ const Empty = z.object({}).strict();
 
 const FIXED_NAVS: Array<{ id: string; path: string; title: string; icon: string; keywords: string }> = [
   { id: 'nav.papercusp', path: '/harness', title: 'Go to Harness', icon: '⌖', keywords: 'harness dashboard' },
-  { id: 'nav.marketplace', path: '/marketplace', title: 'Go to Marketplace', icon: '⌖', keywords: 'marketplace plugins templates' },
+  { id: 'nav.cupboard', path: '/cupboard', title: 'Go to Cupboard', icon: '⌖', keywords: 'cupboard marketplace plugins templates' },
   { id: 'nav.installed-harnesses', path: '/installed/harnesses', title: 'Go to Installed harnesses', icon: '⌖', keywords: 'installed harnesses' },
   { id: 'nav.settings', path: '/settings', title: 'Go to Settings', icon: '⌖', keywords: 'settings' },
   { id: 'nav.settings-voice', path: '/settings/voice', title: 'Go to Voice settings', icon: '⌖', keywords: 'voice settings elevenlabs' },

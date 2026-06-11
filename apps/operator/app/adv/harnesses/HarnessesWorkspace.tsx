@@ -12,6 +12,7 @@ import HiveMemberRail from './HiveMemberRail';
 import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
+import { Tooltip } from '../../harness/Tooltip';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
 import { groupByHive, type HiveGroup } from './harness-hive-groups';
 import './adv-dock.css';
@@ -243,14 +244,15 @@ export default function HarnessesWorkspace() {
       )}
 
       {!allMode && slug && (
-        <button
-          type="button"
-          className="pc-adv-harnesses__create-fab"
-          title={`Add a ${t('harness', { lower: true })} to this ${hiveLabel.toLowerCase()}`}
-          onClick={() => setCreateOpen(true)}
-        >
-          <Plus size={16} aria-hidden /> New {t('harness', { lower: true })}
-        </button>
+        <Tooltip label={`Add a ${t('harness', { lower: true })} to this ${hiveLabel.toLowerCase()}`}>
+          <button
+            type="button"
+            className="pc-adv-harnesses__create-fab"
+            onClick={() => setCreateOpen(true)}
+          >
+            <Plus size={16} aria-hidden /> New {t('harness', { lower: true })}
+          </button>
+        </Tooltip>
       )}
 
       <CreateHarnessPicker
@@ -290,7 +292,7 @@ export default function HarnessesWorkspace() {
           justify-content: center;
           gap: 14px;
           padding: 24px;
-          color: rgba(220, 214, 248, 0.6);
+          color: var(--fg-mute, #7f9bb4);
           font-size: 13px;
           text-align: center;
         }
@@ -300,7 +302,7 @@ export default function HarnessesWorkspace() {
           gap: 6px;
           padding: 8px 14px;
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-          color: #e7f7ff;
+          color: var(--fg, #e7f7ff);
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
           border-radius: 6px;
           font-size: 13px;
@@ -319,14 +321,15 @@ export default function HarnessesWorkspace() {
           gap: 6px;
           padding: 8px 14px;
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 70%);
-          color: #e7f7ff;
+          color: var(--fg, #e7f7ff);
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
           border-radius: 999px;
           font-size: 12px;
           font-weight: 700;
           letter-spacing: 0.02em;
           cursor: pointer;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.32);
+          /* Flat per the design spec (HR9) — no raised drop-shadow; the
+             .pc-advshell__body backstop strips one anyway. */
           z-index: 5;
         }
         .pc-adv-harnesses__create-fab:hover {

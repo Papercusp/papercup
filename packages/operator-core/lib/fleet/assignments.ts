@@ -16,6 +16,7 @@
  * they unit-test without PG.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 
 /** A presence row whose workspace is '*' belongs to every workspace's fleet. */
 const GLOBAL_WORKSPACE = '*';
@@ -94,7 +95,16 @@ export async function listFleetAssignments(
     SELECT * FROM harness_shared.fleet_assignment
     WHERE ${
       opts.workspaceId != null
-        ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id = ${GLOBAL_WORKSPACE})`
+        ? // EI-295: the view UNIONs rows from TWO scoping domains — presence
+          // stamps the AGENT's workspace (e.g. 'papercusp-workspace'), while
+          // plan-item claims stamp the PLAN-STORE scope (resolvePlanScope →
+          // DEFAULT_WORKSPACE_ID for operator-scope plans). Filtering the
+          // union by the presence workspace alone silently dropped EVERY
+          // claim row, so fleet:assignments / the Queen's placement reads /
+          // the claim-discipline watcher all ran on claims:0 fleet-wide.
+          // Accept the plan-store default alongside the caller's workspace
+          // until the workspace axes are unified (federation lane).
+          sql`(workspace_id = ${opts.workspaceId} OR workspace_id = ${GLOBAL_WORKSPACE} OR workspace_id = ${DEFAULT_WORKSPACE_ID})`
         : sql`TRUE`
     }
       AND ${opts.agent ? sql`(agent_id = ${opts.agent} OR agent_name = ${opts.agent})` : sql`TRUE`}

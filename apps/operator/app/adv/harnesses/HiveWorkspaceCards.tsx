@@ -138,15 +138,15 @@ function CardStyles() {
         align-items: center;
         gap: 6px;
         padding: 8px 14px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 80%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
         color: #e7f7ff;
-        border: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 55%);
+        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
         border-radius: 6px;
         font-size: 13px;
         font-weight: 600;
         cursor: pointer;
       }
-      .pc-hive-cards__create:hover { background: color-mix(in oklab, var(--accent, #a78bfa), transparent 65%); }
+      .pc-hive-cards__create:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%); }
       .pc-hive-cards__grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
@@ -156,9 +156,9 @@ function CardStyles() {
       .pc-hive-cards__card {
         display: flex;
         flex-direction: column;
-        border: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 80%);
+        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
         border-radius: 10px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 93%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 93%);
         overflow: hidden;
       }
       .pc-hive-cards__card-head {
@@ -166,17 +166,17 @@ function CardStyles() {
         align-items: center;
         gap: 8px;
         padding: 10px 12px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 86%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
         border: none;
-        border-bottom: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 84%);
+        border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
         color: #f3eeff;
         font-size: 13.5px;
         font-weight: 700;
         text-align: left;
         cursor: pointer;
       }
-      .pc-hive-cards__card-head:hover { background: color-mix(in oklab, var(--accent, #a78bfa), transparent 76%); }
-      .pc-hive-cards__card-icon { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #a78bfa), white 18%); }
+      .pc-hive-cards__card-head:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 76%); }
+      .pc-hive-cards__card-icon { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #38bdf8), white 18%); }
       .pc-hive-cards__card-name {
         flex: 1 1 auto;
         min-width: 0;
@@ -191,7 +191,7 @@ function CardStyles() {
         font-weight: 700;
         padding: 1px 7px;
         border-radius: 999px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 70%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 70%);
         color: #e7f7ff;
         font-variant-numeric: tabular-nums;
       }
@@ -218,7 +218,7 @@ function CardStyles() {
         cursor: pointer;
       }
       .pc-hive-cards__member:hover {
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 84%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
         color: #e7f7ff;
       }
       .pc-hive-cards__dot {
@@ -240,7 +240,7 @@ function CardStyles() {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-cards__root { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #a78bfa), white 20%); }
+      .pc-hive-cards__root { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #38bdf8), white 20%); }
       .pc-hive-cards__kind {
         flex: 0 0 auto;
         font-size: 9.5px;

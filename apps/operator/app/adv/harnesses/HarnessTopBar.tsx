@@ -212,10 +212,13 @@ export default function HarnessTopBar({ slug }: Props) {
         .pc-adv-stat .h-stat-value:not(.good):not(.warn):not(.bad):not(.info) {
           color: var(--stat-accent);
         }
+        /* Per-stat accents: passed/cost carry real status semantics → the
+           --good/--warn tokens; lanes/health are decorative category colors
+           (no semantic token exists — same exemption as the tab-strip accents). */
         .pc-adv-stat--pulse  { --stat-accent: var(--accent, #38bdf8); }
         .pc-adv-stat--lanes  { --stat-accent: #a855f7; }
-        .pc-adv-stat--passed { --stat-accent: #10b981; }
-        .pc-adv-stat--cost   { --stat-accent: #f59e0b; }
+        .pc-adv-stat--passed { --stat-accent: var(--good, #34d399); }
+        .pc-adv-stat--cost   { --stat-accent: var(--warn, #fbbf24); }
         .pc-adv-stat--health { --stat-accent: #f472b6; }
 
         .pc-adv-topbar__loading {
@@ -315,7 +318,7 @@ function RegisterSubsButton({ slug }: { slug: string }) {
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 60%);
           border-radius: 999px;
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-          color: #e7f7ff;
+          color: var(--fg, #e7f7ff);
           font-size: 11px;
           font-weight: 700;
           letter-spacing: 0.02em;

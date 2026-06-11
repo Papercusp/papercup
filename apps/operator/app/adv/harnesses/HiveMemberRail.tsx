@@ -24,6 +24,7 @@
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { ChevronLeft, ChevronRight, Home, Share2 } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
+import { Tooltip } from '../../harness/Tooltip';
 import type { HiveMember } from './harness-axis';
 
 export interface HiveMemberRailProps {
@@ -67,15 +68,16 @@ export default function HiveMemberRail({
         data-collapsed="true"
         aria-label={`${hiveLabel} ${membersLabel.toLowerCase()}`}
       >
-        <button
-          type="button"
-          className="pc-hive-rail__expand"
-          title={`Show ${membersLabel.toLowerCase()} (${members.length})`}
-          onClick={() => void setOpen(true)}
-        >
-          <ChevronRight size={14} aria-hidden />
-          <span className="pc-hive-rail__count">{members.length}</span>
-        </button>
+        <Tooltip label={`Show ${membersLabel.toLowerCase()} (${members.length})`}>
+          <button
+            type="button"
+            className="pc-hive-rail__expand"
+            onClick={() => void setOpen(true)}
+          >
+            <ChevronRight size={14} aria-hidden />
+            <span className="pc-hive-rail__count">{members.length}</span>
+          </button>
+        </Tooltip>
         <RailStyles />
       </aside>
     );
@@ -93,14 +95,16 @@ export default function HiveMemberRail({
           {membersLabel}
           <span className="pc-hive-rail__title-count">{members.length}</span>
         </span>
-        <button
-          type="button"
-          className="pc-hive-rail__collapse"
-          title={`Hide ${membersLabel.toLowerCase()}`}
-          onClick={() => void setOpen(false)}
-        >
-          <ChevronLeft size={14} aria-hidden />
-        </button>
+        <Tooltip label={`Hide ${membersLabel.toLowerCase()}`}>
+          <button
+            type="button"
+            className="pc-hive-rail__collapse"
+            aria-label={`Hide ${membersLabel.toLowerCase()}`}
+            onClick={() => void setOpen(false)}
+          >
+            <ChevronLeft size={14} aria-hidden />
+          </button>
+        </Tooltip>
       </div>
       <ul className="pc-hive-rail__list" role="list">
         {members.map((m) => {
@@ -158,8 +162,8 @@ function RailStyles() {
         min-width: 0;
         display: flex;
         flex-direction: column;
-        border-right: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 82%);
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 94%);
+        border-right: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 82%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 94%);
         overflow: hidden;
       }
       .pc-hive-rail--collapsed {
@@ -176,10 +180,10 @@ function RailStyles() {
         width: 100%;
         background: transparent;
         border: none;
-        color: color-mix(in oklab, var(--accent, #a78bfa), white 12%);
+        color: var(--accent-strong, #7dd3fc);
         cursor: pointer;
       }
-      .pc-hive-rail__expand:hover { color: #e7f7ff; }
+      .pc-hive-rail__expand:hover { color: var(--fg, #e7f7ff); }
       .pc-hive-rail__count {
         font-size: 11px;
         font-weight: 700;
@@ -190,7 +194,7 @@ function RailStyles() {
         align-items: center;
         justify-content: space-between;
         padding: 8px 10px;
-        border-bottom: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 86%);
+        border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
       }
       .pc-hive-rail__title {
         display: inline-flex;
@@ -200,27 +204,27 @@ function RailStyles() {
         font-weight: 760;
         letter-spacing: 0.03em;
         text-transform: uppercase;
-        color: color-mix(in oklab, var(--accent, #a78bfa), white 22%);
+        color: var(--accent-strong, #7dd3fc);
       }
       .pc-hive-rail__title-count {
         font-size: 10px;
         font-weight: 700;
         padding: 1px 6px;
         border-radius: 999px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 78%);
-        color: #e7f7ff;
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
       .pc-hive-rail__collapse {
         display: inline-flex;
         background: transparent;
         border: none;
-        color: rgba(220, 214, 248, 0.55);
+        color: var(--fg-mute, #7f9bb4);
         cursor: pointer;
         padding: 2px;
         border-radius: 4px;
       }
-      .pc-hive-rail__collapse:hover { color: #e7f7ff; }
+      .pc-hive-rail__collapse:hover { color: var(--fg, #e7f7ff); }
       .pc-hive-rail__list {
         list-style: none;
         margin: 0;
@@ -240,19 +244,19 @@ function RailStyles() {
         background: transparent;
         border: 1px solid transparent;
         border-radius: 6px;
-        color: rgba(220, 214, 248, 0.82);
+        color: var(--fg-dim, #b9d4e8);
         font-size: 12.5px;
         text-align: left;
         cursor: pointer;
       }
       .pc-hive-rail__item:hover {
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 86%);
-        color: #e7f7ff;
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
+        color: var(--fg, #e7f7ff);
       }
       .pc-hive-rail__item.is-active {
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 74%);
-        border-color: color-mix(in oklab, var(--accent, #a78bfa), transparent 52%);
-        color: #f3eeff;
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 74%);
+        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 52%);
+        color: var(--fg, #e7f7ff);
         font-weight: 650;
       }
       .pc-hive-rail__dot {
@@ -260,12 +264,12 @@ function RailStyles() {
         width: 7px;
         height: 7px;
         border-radius: 999px;
-        background: rgba(220, 214, 248, 0.28);
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        background: color-mix(in srgb, var(--fg-dim, #b9d4e8), transparent 72%);
+        box-shadow: inset 0 0 0 1px var(--bg-3, rgba(255, 255, 255, 0.075));
       }
       .pc-hive-rail__dot.is-live {
-        background: #4ade80;
-        box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+        background: var(--good, #34d399);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--good, #34d399), transparent 40%);
       }
       .pc-hive-rail__name {
         flex: 1 1 auto;
@@ -274,7 +278,7 @@ function RailStyles() {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-rail__root { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #a78bfa), white 20%); }
+      .pc-hive-rail__root { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
       .pc-hive-rail__kind {
         flex: 0 0 auto;
         font-size: 9.5px;
@@ -283,10 +287,10 @@ function RailStyles() {
         letter-spacing: 0.02em;
         padding: 1px 5px;
         border-radius: 4px;
-        background: rgba(255, 255, 255, 0.07);
-        color: rgba(220, 214, 248, 0.7);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        color: var(--fg-mute, #7f9bb4);
       }
-      .pc-hive-rail__shared { flex: 0 0 auto; color: #7dd3fc; }
+      .pc-hive-rail__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
     `}</style>
   );
 }

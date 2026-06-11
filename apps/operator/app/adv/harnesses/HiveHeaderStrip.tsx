@@ -109,8 +109,8 @@ function HeaderStyles() {
         justify-content: space-between;
         gap: 12px;
         padding: 7px 12px;
-        border-bottom: 1px solid color-mix(in oklab, var(--accent, #a78bfa), transparent 84%);
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 95%);
+        border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 95%);
       }
       .pc-hive-header__id {
         display: inline-flex;
@@ -121,7 +121,7 @@ function HeaderStyles() {
       .pc-hive-header__name {
         font-size: 13px;
         font-weight: 680;
-        color: #f3eeff;
+        color: var(--fg, #e7f7ff);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -134,10 +134,10 @@ function HeaderStyles() {
         letter-spacing: 0.02em;
         padding: 1px 7px;
         border-radius: 999px;
-        background: color-mix(in oklab, var(--accent, #a78bfa), transparent 78%);
-        color: #e7f7ff;
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        color: var(--fg, #e7f7ff);
       }
-      .pc-hive-header__shared { flex: 0 0 auto; color: #7dd3fc; }
+      .pc-hive-header__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
       .pc-hive-header__deploy {
         flex: 0 0 auto;
         display: inline-flex;
@@ -145,7 +145,7 @@ function HeaderStyles() {
         gap: 3px;
         font-size: 10px;
         font-weight: 650;
-        color: #86efac;
+        color: var(--good, #34d399);
       }
       .pc-hive-header__stats {
         display: inline-flex;
@@ -159,10 +159,10 @@ function HeaderStyles() {
         gap: 4px;
         font-size: 11.5px;
         font-weight: 600;
-        color: rgba(220, 214, 248, 0.85);
+        color: var(--fg-dim, #b9d4e8);
         font-variant-numeric: tabular-nums;
       }
-      .pc-hive-header__stat--muted { color: rgba(220, 214, 248, 0.55); font-weight: 500; }
+      .pc-hive-header__stat--muted { color: var(--fg-mute, #7f9bb4); font-weight: 500; }
     `}</style>
   );
 }

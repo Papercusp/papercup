@@ -84,7 +84,7 @@ export default function ProfilePage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d: Profile = await r.json();
       setUpdatedAt(d.updated_at ?? null);
-      toast.success('saved to ~/.papercusp/profile.json');
+      toast.success('Profile saved');
     } catch (e: any) {
       toast.error(`save failed: ${e?.message ?? e}`);
     }
