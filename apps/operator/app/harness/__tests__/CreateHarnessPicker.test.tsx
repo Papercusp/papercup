@@ -99,6 +99,8 @@ describe('P-012a — picker step', () => {
     // the secondary "I have a link" affordance replaces it.
     expect(screen.queryByText('Harness link')).toBeNull();
     screen.getByText(/I have a harness link/);
+    // Hardening P-006: the invitee door sits beside it.
+    screen.getByText(/I have a hive invite/);
   });
 
   it('renders the legacy 4 cards when HIVE_FROM_GITHUB_URL is off', () => {
@@ -109,6 +111,7 @@ describe('P-012a — picker step', () => {
     screen.getByText('GitHub URL');
     screen.getByText('Harness link');
     expect(screen.queryByText(/I have a harness link/)).toBeNull();
+    expect(screen.queryByText(/I have a hive invite/)).toBeNull();
   });
 
   it('flag on: the GitHub URL card carries the hive framing description', () => {
@@ -315,6 +318,81 @@ describe('P-012 (hive-from-github-url) — GitHub URL entry routing', () => {
     await user.click(screen.getByText('GitHub URL'));
     const addBtn = screen.getByRole('button', { name: 'Add to acme' });
     expect(addBtn.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+// ── hive-from-repo-hardening P-006 — the hive-invite door (invitee side) ────
+
+describe('P-006 (hive-from-repo-hardening) — I have a hive invite', () => {
+  const INVITE_LINK = `papercusp://hive?secret=${'deadbeef'.repeat(4)}&title=Acme+Shop`;
+
+  it('the affordance opens the join form', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText(/I have a hive invite/));
+    screen.getByRole('heading', { name: 'Join a hive by invite' });
+    screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…');
+  });
+
+  it('joining POSTs the artifact to /api/discovery/join-invite and shows the success copy', async () => {
+    const user = userEvent.setup();
+    const { onOpenChange } = renderPicker();
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/api/discovery/join-invite')) {
+        return new Response(JSON.stringify({ ok: true, joined: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    await user.click(screen.getByText(/I have a hive invite/));
+    await user.type(
+      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      INVITE_LINK,
+    );
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+
+    await waitFor(() => screen.getByTestId('hive-invite-joined'));
+    expect(screen.getByTestId('hive-invite-joined').textContent).toContain(
+      'Joined the invite directory — the hive will appear in the Hives panel shortly.',
+    );
+    const call = mockFetch.mock.calls.find((c) => String(c[0]).includes('/api/discovery/join-invite'));
+    expect(JSON.parse((call?.[1] as RequestInit).body as string)).toEqual({ link: INVITE_LINK });
+
+    // Joining creates no harness — Done just closes the picker.
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('a malformed link errors inline without POSTing (the route parser runs client-side too)', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText(/I have a hive invite/));
+    await user.type(
+      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      'not-an-invite-link',
+    );
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+
+    const alert = await waitFor(() => screen.getByRole('alert'));
+    expect(alert.textContent).toContain('doesn’t look like a hive invite link');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('directory_unavailable (gh-unauthed box) maps to the gh-auth copy', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: false, code: 'directory_unavailable' }), { status: 503 }),
+    );
+    await user.click(screen.getByText(/I have a hive invite/));
+    await user.type(
+      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      INVITE_LINK,
+    );
+    await user.click(screen.getByRole('button', { name: 'Join' }));
+
+    const alert = await waitFor(() => screen.getByRole('alert'));
+    expect(alert.textContent).toContain('gh auth login');
   });
 });
 

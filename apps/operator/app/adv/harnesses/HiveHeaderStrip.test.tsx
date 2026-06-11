@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import HiveHeaderStrip from './HiveHeaderStrip';
 
 vi.mock('@/lib/useLexicon', () => ({
@@ -86,7 +87,7 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
     expect(calls[0][2]).toBeUndefined();
   });
 
-  it('invite flip mints a client-side secret and surfaces it once', async () => {
+  it('invite flip mints a client-side secret and surfaces the FULL invite link (P-006/D-006)', async () => {
     const user = (await import('@testing-library/user-event')).default.setup();
     let gotSecret: string | undefined;
     render(
@@ -103,7 +104,57 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
     await user.click(screen.getByRole('button', { name: 'invite-only' }));
     await screen.findByTestId('hive-visibility-outcome');
     expect(gotSecret).toMatch(/^[0-9a-f]{48}$/);
-    expect(screen.getByTestId('hive-visibility-outcome').textContent).toContain('secret:');
+    // The full artifact is shown — a parseable secret-only link (the pubkey
+    // isn't known client-side) carrying the EXACT minted secret + the slug.
+    const link = screen.getByTestId('hive-invite-link').textContent!;
+    expect(parseHiveInviteLink(link)).toEqual({ secret: gotSecret, title: 'acme-hive' });
+  });
+
+  it('the invite-link copy button puts the full artifact on the clipboard (P-006)', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async () => ({ ok: true, announced: true })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'invite-only' }));
+    const link = (await screen.findByTestId('hive-invite-link')).textContent!;
+    await user.click(screen.getByTestId('hive-invite-link-copy'));
+    expect(await window.navigator.clipboard.readText()).toBe(link);
+    await screen.findByText('copied ✓');
+  });
+
+  it('a failed invite flip surfaces the error and hands out NO link', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async () => ({ ok: false, error: 'directory down' })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'invite-only' }));
+    await screen.findByText('failed: directory down');
+    expect(screen.queryByTestId('hive-invite-link')).toBeNull();
+  });
+
+  it('public/withdraw flips hand out no invite link', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async () => ({ ok: true, announced: true })}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'publish' }));
+    await screen.findByText('announced');
+    expect(screen.queryByTestId('hive-invite-link')).toBeNull();
   });
 
   it('withdraw reports withdrawn; failures surface inline', async () => {

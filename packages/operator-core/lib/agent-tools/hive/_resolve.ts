@@ -71,6 +71,12 @@ export interface HiveDescriptor {
    * the owning Swarm's keychain.
    */
   pubkey?: string;
+  /**
+   * P-007 (hive-from-repo-hardening D-007): a joiner-side VIEW of someone
+   * else's hive — local grouping only; no identity, no listing, never
+   * announces. Absent for owned hives.
+   */
+  remote?: true;
   deployment: DeploymentConfig;
   deployed: boolean;
   wake: HiveWakeView;
@@ -118,6 +124,7 @@ export function describeHive(
     kind: HIVE_KIND,
     ...(hiveId ? { hiveId } : {}),
     ...(pubkey ? { pubkey } : {}),
+    ...(p.remote_hive ? { remote: true as const } : {}),
     deployment: p.deployment ?? { target: 'local' },
     deployed: Boolean(p.deploymentFrame),
     wake,

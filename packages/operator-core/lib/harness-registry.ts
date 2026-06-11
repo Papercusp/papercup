@@ -35,6 +35,14 @@ export interface ProjectEntry {
    * gh/local, or stays local-only).
    */
   hive_slug?: string;
+  /**
+   * Joiner-side hive VIEW (hive-from-repo-hardening-2026-06-11 P-007/D-007):
+   * a `harness_kind:'hive'` entry materialized when this peer JOINED someone
+   * else's hive — grouping/rail/strip UX only. NO identity mint, NO owned
+   * directory meta, NEVER announces; ownership stays with the creator. The
+   * federation gate already returns null for it (no hives row/identity).
+   */
+  remote_hive?: boolean;
   // ── Upstream GitHub coordinates (hive-from-github-url-2026-06-11 P-002) ──
   // Written at registration time by the projects-route githubUrl path and
   // hive:create_from_repo. Consumed by the hive directory announce derivation

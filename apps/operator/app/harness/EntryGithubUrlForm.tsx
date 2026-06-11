@@ -651,6 +651,18 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     }
     const { result, publish, bindingUnverified } = created;
     const intoExisting = mode === 'into-hive';
+    // P-006 (D-006): the full invite-link artifact is the headline; the bare
+    // secret only renders when the backend didn't format a link (older outcome).
+    const inviteArtifact = publish?.inviteLink ?? publish?.inviteSecret;
+    const copyInvite = async () => {
+      if (!inviteArtifact) return;
+      try {
+        await navigator.clipboard.writeText(inviteArtifact);
+        setInviteCopied(true);
+      } catch {
+        /* clipboard unavailable — the artifact text stays selectable */
+      }
+    };
     return (
       <div>
         <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>
@@ -677,11 +689,25 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             )}
           </div>
         </InfoCard>
-        {publish?.inviteSecret && (
+        {inviteArtifact && (
           <div style={{ background: 'var(--bg-2)', border: '1px solid var(--accent)', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
-            <p style={{ margin: '0 0 6px', fontSize: 12.5, fontWeight: 600 }}>Invite secret</p>
-            <code data-testid="invite-secret" style={{ display: 'block', fontSize: 12, wordBreak: 'break-all' }}>{publish.inviteSecret}</code>
-            <Hint>Share this with people you invite — it is not shown again.</Hint>
+            <p style={{ margin: '0 0 6px', fontSize: 12.5, fontWeight: 600 }}>
+              {publish?.inviteLink ? 'Invite link' : 'Invite secret'}
+            </p>
+            {publish?.inviteLink ? (
+              <code data-testid="invite-link" style={{ display: 'block', fontSize: 12, wordBreak: 'break-all' }}>{publish.inviteLink}</code>
+            ) : (
+              <code data-testid="invite-secret" style={{ display: 'block', fontSize: 12, wordBreak: 'break-all' }}>{publish?.inviteSecret}</code>
+            )}
+            <div style={{ marginTop: 8 }}>
+              <button type="button" data-testid="invite-copy" onClick={() => void copyInvite()} style={secondaryBtn}>
+                {inviteCopied ? 'Copied ✓' : publish?.inviteLink ? 'Copy invite link' : 'Copy secret'}
+              </button>
+            </div>
+            <Hint>
+              Share this with people you invite — it is not shown again.
+              {publish?.inviteLink ? ' Invitees paste it under “I have a hive invite”.' : ''}
+            </Hint>
           </div>
         )}
         {result.duplicateOf && (

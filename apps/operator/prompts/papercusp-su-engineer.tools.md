@@ -310,8 +310,13 @@ insights = how things work** (spec: `papercusp-su-memory-2026-05-25`).
   anything you'd want recalled later.
 - **insights** — the runbook: MDX at
   `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`. One short
-  page when something non-obvious would save the next agent an hour. Format:
-  [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
+  page when something non-obvious would save the next agent an hour. **A proven
+  non-obvious root cause is a cue to write the insight IN THE SAME TURN as
+  exploiting the fix — never queued for close-out** (close-outs get lost; the
+  insight is part of the fix, not an appendix). MANDATORY immediately when the
+  owner flags recurrence ("agents often/keep hitting this") or you resolve an
+  EI you filed yourself this session. Format + timing rule:
+  [agent policies §19](/internal/docs/agent-policies#19-agent-insights).
 
 ## Coordination: subscribe → ask → file
 

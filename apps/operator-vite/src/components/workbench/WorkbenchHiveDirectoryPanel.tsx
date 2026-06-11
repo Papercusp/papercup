@@ -76,20 +76,32 @@ export function WorkbenchHiveDirectoryPanel(): React.ReactElement {
     if (hive.memberLinks.length === 0) return;
     setJoining(hive.hiveId);
     setJoinMsg((m) => ({ ...m, [hive.hiveId]: 'Joining…' }));
-    let ok = 0;
-    for (let i = 0; i < hive.memberLinks.length; i++) {
-      try {
-        const res = await fetch('/api/harness/join-link', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug: `${hive.hiveId}-${i}`, harnessLinkUrl: hive.memberLinks[i] }),
-        });
-        if (res.ok) ok += 1;
-      } catch {
-        /* per-link best-effort */
-      }
+    // P-007 (hive-from-repo-hardening D-007): join the HIVE, not N loose
+    // harnesses — one composed call that runs every member join AND
+    // materializes the local hive view (grouping/rail/strip on our side).
+    try {
+      const res = await fetch('/api/discovery/join-hive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hiveId: hive.hiveId, title: hive.title, memberLinks: hive.memberLinks }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        hiveSlug?: string;
+        members?: { ok: boolean }[];
+        error?: string;
+      };
+      const okCount = body.members?.filter((m) => m.ok).length ?? 0;
+      setJoinMsg((m) => ({
+        ...m,
+        [hive.hiveId]:
+          res.ok && body.ok
+            ? `Joined hive '${body.hiveSlug}' — ${okCount}/${hive.memberLinks.length} member(s)`
+            : `Join failed: ${body.error ?? `HTTP ${res.status}`}${okCount ? ` (${okCount} member(s) joined)` : ''}`,
+      }));
+    } catch (e) {
+      setJoinMsg((m) => ({ ...m, [hive.hiveId]: `Join failed: ${e instanceof Error ? e.message : e}` }));
     }
-    setJoinMsg((m) => ({ ...m, [hive.hiveId]: `Joined ${ok}/${hive.memberLinks.length} harness(es)` }));
     setJoining(null);
   }, []);
 

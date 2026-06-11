@@ -25,6 +25,8 @@
 
 import { useState } from 'react';
 import { Share2, Users, Cloud } from 'lucide-react';
+// Pure formatter leaf — SPA-bundle-safe (the harness-link-types rule).
+import { formatHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { useLexicon } from '@/lib/useLexicon';
 
 export interface HiveHeaderMember {
@@ -98,7 +100,11 @@ export default function HiveHeaderStrip({
     busy: boolean;
     outcome?: { ok: boolean; announced?: boolean; withdrawn?: boolean; error?: string };
     inviteSecret?: string;
+    /** P-006 (D-006): the full shareable artifact. Secret-only here — this
+     *  surface mints client-side and doesn't know the hive pubkey. */
+    inviteLink?: string;
   }>({ busy: false });
+  const [inviteCopied, setInviteCopied] = useState(false);
   if (!hiveSlug) return null;
 
   async function applyVisibility(v: 'public' | 'invite' | 'private'): Promise<void> {
@@ -110,8 +116,19 @@ export default function HiveHeaderStrip({
             .join('')
         : undefined;
     setFlip({ busy: true });
+    setInviteCopied(false);
     const outcome = await setVisibility(hiveSlug, v, inviteSecret);
-    setFlip({ busy: false, outcome, ...(outcome.ok && inviteSecret ? { inviteSecret } : {}) });
+    setFlip({
+      busy: false,
+      outcome,
+      ...(outcome.ok && inviteSecret
+        ? {
+            inviteSecret,
+            // P-006: hand out the ARTIFACT, not the bare secret.
+            inviteLink: formatHiveInviteLink({ secret: inviteSecret, title: hiveSlug }),
+          }
+        : {}),
+    });
   }
 
   const hiveLabel = t('pot');
@@ -194,11 +211,7 @@ export default function HiveHeaderStrip({
               withdraw
             </button>
             {flip.outcome && (
-              <span
-                className="pc-hive-header__stat--muted"
-                data-testid="hive-visibility-outcome"
-                title={flip.inviteSecret ? `Invite secret: ${flip.inviteSecret}` : undefined}
-              >
+              <span className="pc-hive-header__stat--muted" data-testid="hive-visibility-outcome">
                 {flip.outcome.ok
                   ? flip.outcome.withdrawn
                     ? 'withdrawn'
@@ -206,7 +219,29 @@ export default function HiveHeaderStrip({
                       ? 'announced'
                       : 'saved'
                   : `failed: ${flip.outcome.error ?? 'error'}`}
-                {flip.inviteSecret ? ` · secret: ${flip.inviteSecret.slice(0, 8)}… (hover)` : ''}
+              </span>
+            )}
+            {/* P-006 (D-006): the invite flip hands out the FULL shareable
+                artifact (secret-only — the pubkey isn't known client-side). */}
+            {flip.inviteLink && (
+              <span className="pc-hive-header__invite" title={flip.inviteLink}>
+                <code data-testid="hive-invite-link" className="pc-hive-header__invite-code">
+                  {flip.inviteLink}
+                </code>
+                <button
+                  type="button"
+                  className="pc-hive-header__viz-btn"
+                  data-testid="hive-invite-link-copy"
+                  title="Copy the invite link — it is not shown again"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(flip.inviteLink!)
+                      .then(() => setInviteCopied(true))
+                      .catch(() => {});
+                  }}
+                >
+                  {inviteCopied ? 'copied ✓' : 'copy link'}
+                </button>
               </span>
             )}
           </span>
@@ -302,6 +337,20 @@ function HeaderStyles() {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 88%);
       }
       .pc-hive-header__viz-btn:disabled { opacity: 0.5; cursor: default; }
+      .pc-hive-header__invite {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+      }
+      .pc-hive-header__invite-code {
+        font-size: 10.5px;
+        color: var(--fg-dim, #b9d4e8);
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
     `}</style>
   );
 }

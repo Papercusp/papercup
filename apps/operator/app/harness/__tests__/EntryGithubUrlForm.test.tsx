@@ -248,6 +248,41 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0].visibility).toBe('invite');
   });
 
+  it('shows + copies the FULL invite link when present, instead of the bare secret (hardening P-006)', async () => {
+    const user = userEvent.setup();
+    const inviteLink = `papercusp://hive?pubkey=${encodeURIComponent('B'.repeat(43) + '=')}&secret=${'ab12'.repeat(8)}&title=web-hive`;
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: {
+          ok: true,
+          created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' },
+          bindingUnverified: false,
+          publish: {
+            announced: true,
+            inviteSecret: 'ab12'.repeat(8),
+            inviteLink,
+            cupboard: { attempted: false, skipped: 'invite' },
+          },
+        },
+      },
+    });
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('radio', { name: /Invite/ }));
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+
+    await waitFor(() => screen.getByTestId('invite-link'));
+    // The full artifact is shown; the bare-secret fallback is NOT rendered.
+    expect(screen.getByTestId('invite-link').textContent).toBe(inviteLink);
+    expect(screen.queryByTestId('invite-secret')).toBeNull();
+
+    // Copy puts the FULL artifact on the clipboard and confirms.
+    await user.click(screen.getByTestId('invite-copy'));
+    expect(await window.navigator.clipboard.readText()).toBe(inviteLink);
+    await screen.findByText('Copied ✓');
+  });
+
   it('shows the duplicateOf warning when force-created past an existing hive', async () => {
     const user = userEvent.setup();
     respondByUrl({

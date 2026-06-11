@@ -24,6 +24,8 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { Modal } from './Modal';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
+// Pure parser leaf — SPA-bundle-safe (the harness-link-types rule).
+import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { useFlag } from '@/lib/flag-hooks';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { EntryGithubUrlForm } from './EntryGithubUrlForm';
@@ -39,6 +41,7 @@ const ENTRY_STEPS = [
   'new-hive',
   'github-url',
   'harness-link',
+  'hive-invite',
   'share-offer',
 ] as const;
 type EntryStep = (typeof ENTRY_STEPS)[number];
@@ -133,7 +136,7 @@ function BackBtn({ onBack }: { onBack: () => void }) {
   );
 }
 
-function SubmitRow({ busy, label, onBack }: { busy: boolean; label: string; onBack: () => void }) {
+function SubmitRow({ busy, label, busyLabel = 'Creating…', onBack }: { busy: boolean; label: string; busyLabel?: string; onBack: () => void }) {
   return (
     <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
       <button
@@ -149,7 +152,7 @@ function SubmitRow({ busy, label, onBack }: { busy: boolean; label: string; onBa
         disabled={busy}
         style={{ padding: '7px 16px', fontSize: 13, background: 'var(--accent)', border: '1px solid var(--accent)', color: 'var(--accent-ink, #051827)', borderRadius: 5, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.5 : 1, fontWeight: 600 }}
       >
-        {busy ? 'Creating…' : label}
+        {busy ? busyLabel : label}
       </button>
     </div>
   );
@@ -372,6 +375,111 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
         <HintText>Lowercase, hyphens OK. The home harness slug for the new {hiveLabel.toLowerCase()}.</HintText>
       </Label>
       <SubmitRow busy={busy} label={`Create ${hiveLabel.toLowerCase()}`} onBack={onBack} />
+    </form>
+  );
+}
+
+// ── Hive-invite join form (hive-from-repo-hardening P-006 / D-006) ─────────
+
+/**
+ * The INVITEE side of a `papercusp://hive?...` invite artifact: paste the
+ * link → POST /api/discovery/join-invite → the loopback route joins the
+ * invite-scoped directory topic, so the hive's announce lands in the Hives
+ * panel. No clone, no harness — joining the directory is the whole action.
+ */
+function HiveInviteForm({
+  onBack,
+  onDone,
+  hiveLabel,
+}: {
+  onBack: () => void;
+  onDone: () => void;
+  hiveLabel: string;
+}) {
+  const hiveLower = hiveLabel.toLowerCase();
+  const [link, setLink] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [joined, setJoined] = useState(false);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = link.trim();
+    // Same strict parser the route runs — instant feedback, zero round-trip.
+    if (!parseHiveInviteLink(trimmed)) {
+      setError(`That doesn’t look like a ${hiveLower} invite link — expected papercusp://hive?secret=…`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/discovery/join-invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: trimmed }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+      if (!res.ok) {
+        setError(
+          body.code === 'directory_unavailable'
+            ? `The ${hiveLower} directory isn’t available on this machine — run \`gh auth login\` in your terminal, then retry.`
+            : body.code === 'invalid_link'
+              ? `That doesn’t look like a ${hiveLower} invite link — expected papercusp://hive?secret=…`
+              : body.error || `HTTP ${res.status}`,
+        );
+        setBusy(false);
+        return;
+      }
+      setJoined(true);
+    } catch (err: unknown) {
+      setError((err as Error).message ?? 'Network error');
+      setBusy(false);
+    }
+  };
+
+  if (joined) {
+    return (
+      <div>
+        <h2 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 600 }}>✓ Invite accepted</h2>
+        <p data-testid="hive-invite-joined" style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
+          Joined the invite directory — the {hiveLower} will appear in the {hiveLabel}s panel shortly.
+        </p>
+        <div style={{ textAlign: 'right' }}>
+          <button
+            type="button"
+            onClick={onDone}
+            style={{ padding: '7px 16px', fontSize: 13, background: 'var(--accent)', border: '1px solid var(--accent)', color: 'var(--accent-ink, #051827)', borderRadius: 5, cursor: 'pointer', fontWeight: 600 }}
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={(e) => void handleSubmit(e)}>
+      <BackBtn onBack={onBack} />
+      <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Join a {hiveLower} by invite</h2>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
+        Paste the invite link you were given. It subscribes this machine to the {hiveLower}&rsquo;s
+        invite-only directory listing — the {hiveLower} shows up in the {hiveLabel}s panel, where you can
+        join its member harnesses.
+      </p>
+      {error && <ErrorBanner message={error} />}
+      <Label>
+        <FieldLabel>Invite link</FieldLabel>
+        <textarea
+          value={link}
+          onChange={(e) => { setLink(e.target.value); setError(null); }}
+          placeholder="papercusp://hive?pubkey=…&secret=…&title=…"
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono, monospace)' }}
+          autoFocus
+        />
+        <HintText>The full papercusp://hive?… link — the bare secret alone won&rsquo;t work.</HintText>
+      </Label>
+      <SubmitRow busy={busy} label="Join" busyLabel="Joining…" onBack={onBack} />
     </form>
   );
 }
@@ -606,15 +714,25 @@ function PickerStep({
           </div>
           {/* Entry-4 demotion (hive-from-github-url D-001/P-012): with the
               GitHub-URL door live, the harness-link card becomes a secondary
-              "I have a link" affordance — same flow, lower billing. */}
+              "I have a link" affordance — same flow, lower billing. Beside it,
+              the invitee door for a hive invite artifact (hardening P-006). */}
           {section.heading === 'Shared' && githubUrlEnabled && (
-            <button
-              type="button"
-              onClick={() => onSelect('harness-link')}
-              style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, marginTop: 10, textDecoration: 'underline' }}
-            >
-              I have a harness link (papercusp://…) →
-            </button>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 10 }}>
+              <button
+                type="button"
+                onClick={() => onSelect('harness-link')}
+                style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+              >
+                I have a harness link (papercusp://…) →
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelect('hive-invite')}
+                style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, textDecoration: 'underline' }}
+              >
+                I have a {hiveLabel.toLowerCase()} invite →
+              </button>
+            </div>
           )}
         </div>
       ))}
@@ -744,6 +862,11 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
               handleClose();
             }}
           />
+        )}
+        {/* P-006 (hive-from-repo-hardening): the invitee side — joining the
+            invite directory creates no harness, so Done just closes. */}
+        {step === 'hive-invite' && (
+          <HiveInviteForm onBack={goBack} onDone={handleClose} hiveLabel={hiveLabel} />
         )}
         {showShareOffer && createdSlug && (
           <ShareOfferStep

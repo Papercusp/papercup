@@ -336,7 +336,11 @@ recalled later — coord rows are timestamped events, not knowledge.
 **insights — procedural memory** (the runbook): MDX at
 `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`,
 PR-reviewed. Write one short page when you hit something non-obvious that
-would save the next agent an hour. Short factual rules go in mem0;
+would save the next agent an hour — **in the SAME TURN the root cause is
+proven, never queued for close-out** (close-outs get lost; the insight is
+part of the fix). MANDATORY immediately when the owner flags recurrence
+("agents often/keep hitting this") or you resolve an EI you filed yourself
+this session (agent policies §19). Short factual rules go in mem0;
 ephemeral state in coord. Spec: `papercusp-su-memory-2026-05-25`.
 
 ## Coordination: subscribe → ask → file

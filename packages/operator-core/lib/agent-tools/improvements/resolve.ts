@@ -45,6 +45,23 @@ export default defineTool({
       commit: args.commit,
       by: id.ownerId,
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    // Discovery-time insight trip-wire (EI-328, policies §19 same-turn rule):
+    // a fixed improvement is the moment the root cause is PROVEN — the one
+    // reliable boundary to ask "does the next agent need this written down?".
+    // Mirrors work_items:complete's reflect step; mechanical nudges fire where
+    // advisory prose doesn't (the lock-hook lesson).
+    const out =
+      args.outcome === 'fixed'
+        ? {
+            ...result,
+            insightCheck:
+              'Was the root cause non-obvious, or did anyone call this failure recurring ' +
+              '("agents often/keep hitting this")? Then write the agent-insight NOW, in this ' +
+              'same turn — apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx, ' +
+              'format + timing rule in agent policies §19. The insight is part of the fix, ' +
+              'not an appendix. If the fix is self-explanatory in code, skip — say so and move on.',
+          }
+        : result;
+    return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
   },
 });
