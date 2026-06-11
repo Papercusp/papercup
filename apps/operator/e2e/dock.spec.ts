@@ -23,21 +23,31 @@ import { test, expect, type Page } from '@playwright/test';
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
   `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? 3055}`;
-// Resolve a harness slug that actually exists in the e2e workspace. The old
-// hardcoded 'sheets' isn't provisioned in the default workspace, so the
-// /harness/$slug loader notFound()s (then redirects). Prefer an explicit
-// DOCK_E2E_SLUG, else `papercup` (the workspace's stable anchor project),
-// else the first project. Do NOT prefer test-looking fixtures: on the shared
-// dev stack those slugs (cloud-e2e-smoke, e2e-imp-sync1, …) are created and
-// destroyed by OTHER suites mid-run, so the loader 404s intermittently.
-// Resolved in beforeAll because /projects/lite is workspace-scoped at runtime.
+// Resolve a harness slug that exists in THE WORKSPACE THE PAGE WILL USE.
+// A fresh Playwright profile has no desktop-injected __PAPERCUSP_WS__ and no
+// `?ws=` param, so getBrowserWorkspaceId() falls back to 'default' and every
+// in-page fetch stamps `x-papercusp-workspace: default`. Resolving the slug
+// here WITHOUT that header reads a DIFFERENT workspace's registry (the
+// process-global one), so the loader 404s on a slug the page's workspace
+// doesn't contain — the 2026-06-10 dock flap. Match the page: same header.
+// Prefer an explicit DOCK_E2E_SLUG; do NOT prefer test-looking fixtures: on
+// the shared dev stack those slugs (cloud-e2e-smoke, e2e-imp-sync1, …) are
+// created and destroyed by OTHER suites mid-run, so the loader 404s
+// intermittently.
+const PAGE_WORKSPACE = 'default';
 let SLUG = process.env.DOCK_E2E_SLUG ?? '';
 
 test.beforeAll(async ({ request }) => {
   if (SLUG) return;
-  const r = await request.get(`${baseURL}/api/harness/projects/lite`);
+  const r = await request.get(`${baseURL}/api/harness/projects/lite`, {
+    headers: { 'x-papercusp-workspace': PAGE_WORKSPACE },
+  });
   const projects: Array<{ slug: string }> = (await r.json()).projects ?? [];
-  SLUG = projects.find((p) => p.slug === 'papercup')?.slug ?? projects[0]?.slug ?? 'papercup';
+  SLUG =
+    projects.find((p) => p.slug === 'papercup')?.slug ??
+    projects.find((p) => !/e2e|smoke|test/.test(p.slug))?.slug ??
+    projects[0]?.slug ??
+    'papercup';
 });
 
 async function gotoDock(page: Page) {

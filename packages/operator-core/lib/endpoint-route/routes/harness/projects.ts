@@ -20,17 +20,25 @@ import {
 import { harnessDir } from '../../../harness-core';
 import { groupByHive, HIVE_KIND, type HiveGroupProject } from '../../../harness/hive-groups';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 // SSR self-fetch site for /harness/<slug>/page.tsx — every page render
 // fans through here. On dev, Turbopack's per-request route re-eval flaps
 // it 14ms-2.3s; under page-load contention the cold path lands at the
 // 2s end and dominates TTFB. Cached.
+//
+// KEYED BY WORKSPACE: the payload is workspace-dependent (loadHarnessRegistry
+// resolves the request-scoped workspace via the x-papercusp-workspace ALS), so
+// a single global entry let one window's payload serve ANOTHER workspace's
+// callers for up to the TTL — a default-workspace window intermittently saw
+// papercusp-workspace's project list and vice versa (dock.spec 404 flap,
+// 2026-06-10 forensics).
 interface LiteCacheEntry {
   ts: number;
   payload: unknown;
 }
 const __liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
-type LiteGlobals = typeof globalThis & { [__liteKey]?: LiteCacheEntry };
+type LiteGlobals = typeof globalThis & { [__liteKey]?: Map<string, LiteCacheEntry> };
 const LITE_TTL_MS = 1000;
 
 const lite = defineTool({
@@ -40,7 +48,8 @@ const lite = defineTool({
   async handler() {
     const g = globalThis as LiteGlobals;
     const now = Date.now();
-    const hit = g[__liteKey];
+    const ws = activeWorkspaceId();
+    const hit = g[__liteKey]?.get(ws);
     if (hit && now - hit.ts < LITE_TTL_MS) {
       return Response.json(hit.payload as object);
     }
@@ -82,7 +91,7 @@ const lite = defineTool({
     // `hive_slug`, with `parent_slug` legacy fallback (D-002/D-008 seam).
     const hives = groupByHive(projects as unknown as HiveGroupProject[]);
     const payload = { projects, hives };
-    g[__liteKey] = { ts: Date.now(), payload };
+    (g[__liteKey] ??= new Map()).set(ws, { ts: Date.now(), payload });
     return Response.json(payload);
   },
 });

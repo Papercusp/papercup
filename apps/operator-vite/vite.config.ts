@@ -24,6 +24,10 @@ const enableHmr = isDesktopHmrEnabled(process.env);
 // `adv-build-churn-retain-chunks-2026-06-03`.
 const isWatchBuild = process.argv.includes('--watch');
 
+// Operator API host the dev server proxies to. Overridable so an e2e rig can
+// target the staging operator (:3170) — see the proxy block below.
+const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
+
 const noViteClientPlugin: Plugin = {
   name: 'papercusp-no-vite-client',
   configureServer(server) {
@@ -121,9 +125,12 @@ export default defineConfig({
     // engineer explicitly wants hot module replacement for a local UI tweak.
     hmr: enableHmr ? undefined : false,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:3070', ws: true, changeOrigin: true },
-      '/internal/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
-      '/docs': { target: 'http://127.0.0.1:3070', changeOrigin: true },
+      // PAPERCUSP_API_TARGET points the /api proxy at a different operator —
+      // e.g. the staging host (:3170) when an e2e rig must exercise staging-tree
+      // server code instead of the green :3070 deployment. Default unchanged.
+      '/api': { target: apiTarget, ws: true, changeOrigin: true },
+      '/internal/docs': { target: apiTarget, changeOrigin: true },
+      '/docs': { target: apiTarget, changeOrigin: true },
     },
   },
   plugins: [
