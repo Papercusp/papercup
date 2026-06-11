@@ -15,10 +15,12 @@ import { resolveAgentIdentity } from './identity';
 
 describe('resolveAgentIdentity — fleet:spawn child (THE UMBILICAL)', () => {
   it('attributes a role-gated signed spawn ctx to its `s-…` client id (was: threw → MUTE bee)', () => {
-    // The shape the MCP handler builds for a fleet:spawn bee: a verified signed
-    // spawn ctx, no superuser/power-user/principal, `client=s-…` → uiClientId.
+    // The shape the MCP handler builds for a fleet:spawn bee: a VERIFIED signed
+    // spawn ctx (sigVerifiedSpawn = the HMAC checked, covering the client=
+    // param), no superuser/power-user/principal, `client=s-…` → uiClientId.
     const id = resolveAgentIdentity({
       uiClientId: 's-1780000000000-deadbeef',
+      sigVerifiedSpawn: true,
       isSuperuser: false,
       isPowerUser: false,
       workspaceId: 'ws-1',
@@ -27,6 +29,21 @@ describe('resolveAgentIdentity — fleet:spawn child (THE UMBILICAL)', () => {
     expect(id.source).toBe('fleet-spawn');
     expect(id.workspaceId).toBe('ws-1');
     expect(id.ownerLabel).toMatch(/^bee · /);
+  });
+
+  it('EI-318: a bare UNVERIFIED client= (the public HTTP catch-all) is NOT an identity — it hard-errors', () => {
+    // The exact forge vector: a loopback `curl /api/agent-tools/...?client=<id>`
+    // reaches the resolver with uiClientId set but sigVerifiedSpawn unset (the
+    // HTTP catch-all never verifies the spawn HMAC). Trusting it let a degraded
+    // bee attribute claims to its run-id (EI-311). Now it is rejected, so the
+    // write fails loud instead of impersonating an agent.
+    expect(() =>
+      resolveAgentIdentity({ uiClientId: 'opspawn-1781159617676-c9a28a', workspaceId: 'ws-1' }),
+    ).toThrow(/cannot be attributed/);
+    // Explicit false is rejected the same as absent.
+    expect(() =>
+      resolveAgentIdentity({ uiClientId: 's-forged', sigVerifiedSpawn: false }),
+    ).toThrow(/cannot be attributed/);
   });
 
   it('a superuser ctx still wins over the fleet-spawn fallback', () => {

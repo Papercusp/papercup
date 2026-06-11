@@ -192,7 +192,7 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
 
   // ── Role-gated fleet:spawn child (THE UMBILICAL) ────────────────────
   // A fleet:spawn bee connects over a SIGNED (not superuser, not power-user,
-  // no bearer principal) MCP URL. fleet/operator-spawn now bakes the operator's
+  // no bearer principal) MCP URL. fleet/operator-spawn bakes the operator's
   // durable `s-…` spawnId as the URL's `client=` param (HMAC-signed; in the
   // allowlist), so parseRequestContext lands it in ctx.uiClientId. THAT is the
   // child's stable coord owner — the same id recorded as the spawned_agents row's
@@ -200,7 +200,17 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
   // release target all line up. Before this branch the resolver threw here and
   // every coord:send / plans:set-status / improvements:capture from a bee failed
   // (the "MUTE bee" voice gap): file edits landed, but the child couldn't speak.
-  if (uiClientId) {
+  //
+  // EI-318: this client= is only an IDENTITY when the transport VERIFIED it —
+  // `sigVerifiedSpawn` means the MCP handler checked the spawn URL's HMAC (which
+  // covers the allow-listed `client` param). The public HTTP catch-all
+  // (/api/agent-tools/*, auth:'public') reads a bare `?client=` query param and
+  // NEVER sets this flag, so a loopback `curl …?client=opspawn-…` could
+  // previously forge ANY agent's coord/work-item writes (the EI-311 identity
+  // fork — a degraded bee curled the operator with its run-id and the claim
+  // stuck under the wrong owner). Without verification we fall through to the
+  // hard error below: an unattributable write is REJECTED, never impersonated.
+  if (uiClientId && ctx.sigVerifiedSpawn) {
     return {
       ownerId: uiClientId,
       ownerLabel: `bee · ${shortId(uiClientId)}`,
@@ -234,8 +244,9 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     'resolveAgentIdentity: context carries no power-user / superuser / ' +
       'principal / fleet-spawn / signed-spawn identity — the caller cannot ' +
       'be attributed (a fleet:spawn child must carry its `s-…` spawnId as ' +
-      'the signed MCP URL’s client= param — see fleet/operator-spawn.ts + ' +
-      'spawn-mcp.ts; an invoke-route agent must connect over a VERIFIED ' +
-      'signed spawn URL with harness=)',
+      'the signed MCP URL’s client= param, VERIFIED — a bare unverified ' +
+      'client= over the public HTTP path is NOT an identity, EI-318; see ' +
+      'fleet/operator-spawn.ts + spawn-mcp.ts; an invoke-route agent must ' +
+      'connect over a VERIFIED signed spawn URL with harness=)',
   );
 }
