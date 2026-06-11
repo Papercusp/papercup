@@ -5,6 +5,19 @@ URL: /internal/docs/spec/project-sharing
 
 import { Aside } from '@astrojs/starlight/components';
 
+The snapshot system this page specifies was retired
+(`retire-snapshots-instance-spec-2026-06-09`; surface preserved at
+`_retired/snapshot-system/`), and **per-harness sharing as a Comb/Cupboard
+product surface was retired too** (plan
+`comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the
+`share/finalize` + `binding/resolve` + harness `cupboard/publish` routes, and
+the storefront's per-harness Join are gone. Sharing now happens at the **Hive**
+level — `discovery:set_hive` publishes a hive to the P2P directory, the Comb
+indexes its member repos (`hive_pubkey` rows), and joiners join the hive
+(`shared-hive-federation-2026-06-08`, `hive-from-github-url-2026-06-11`).
+`kind='harness'` Cupboard rows remain as the repo→Hive lookup index only.
+Successor product work: `comb-hive-native-sharing-2026-06-11`.
+
 **Snapshots** — sharing a working harness instance (template + state) so
 other developers can fork and continue it. **Local capture + restore**
 shipped (`libs/papercusp-export-state/`; the snapshot endpoint routes

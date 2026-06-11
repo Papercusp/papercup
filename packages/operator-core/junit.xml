@@ -1,15 +1,45 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuites name="vitest tests" tests="5" failures="0" errors="0" time="0.042074025">
-    <testsuite name="lib/ensure-omp-su-cache.test.ts" timestamp="2026-06-11T20:10:21.733Z" hostname="main-server-Precision-7865-Tower" tests="5" failures="0" errors="0" skipped="0" time="0.042074025">
-        <testcase classname="lib/ensure-omp-su-cache.test.ts" name="ensureOmpSuInstalled — single-flight cache &gt; single-flights concurrent + repeat calls — the heavy work runs exactly once" time="0.019955297">
+<testsuites name="vitest tests" tests="20" failures="0" errors="0" time="0.027777009">
+    <testsuite name="lib/workspace-registry.test.ts" timestamp="2026-06-11T20:11:18.170Z" hostname="main-server-Precision-7865-Tower" tests="20" failures="0" errors="0" skipped="0" time="0.027777009">
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; readRegistry returns the registry shape" time="0.0034719">
         </testcase>
-        <testcase classname="lib/ensure-omp-su-cache.test.ts" name="ensureOmpSuInstalled — single-flight cache &gt; HOLDS the cache on rejection — a failing run is not retried by the next call" time="0.006306983">
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; activeWorkspaceId returns a non-empty string" time="0.000700534">
         </testcase>
-        <testcase classname="lib/ensure-omp-su-cache.test.ts" name="ensureOmpSuInstalled — platform guard &gt; non-Linux: early-returns without bootstrapping or shelling out" time="0.004029339">
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; workspaceById returns undefined for unknown id" time="0.000386026">
         </testcase>
-        <testcase classname="lib/ensure-omp-su-cache.test.ts" name="ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts &gt; fires the 5 `omp config set` shellouts (omp on PATH) with the hindsight keys" time="0.005010456">
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; isKnownWorkspace: true for the default id + any registered id, false otherwise" time="0.000454258">
         </testcase>
-        <testcase classname="lib/ensure-omp-su-cache.test.ts" name="ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts &gt; honors PAPERCUSP_HINDSIGHT_API_URL for the hindsight.apiUrl shellout" time="0.004974917">
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; isKnownWorkspace: honors the PAPERCUSP_WORKSPACE_ID pin (EI-212 — a pinned process knows its own workspace)" time="0.000428378">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; setCompanyId / companyIdFor round-trip" time="0.007937933">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="workspace-registry &gt; setCompanyId throws on unknown workspace" time="0.001028097">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — request-scoped precedence (per-window-workspace-context P-012) &gt; returns the request-scoped workspace inside runWithWorkspace, beating the process pin" time="0.000457053">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — request-scoped precedence (per-window-workspace-context P-012) &gt; falls back to the PAPERCUSP_WORKSPACE_ID process pin outside any request" time="0.000248059">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; warns when activeWorkspaceId falls to the global INSIDE a request scope" time="0.004974095">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; does NOT warn outside any request scope (background / CLI)" time="0.000538571">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; does NOT warn when the request scope carries a workspace" time="0.000344647">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="activeWorkspaceId — P-021 in-request global-fallback diagnostic &gt; dedupes repeat fall-throughs from the same call site" time="0.001198446">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; prefers PAPERCUSP_WORKSPACES_ROOT when set (the desktop-remapped-HOME fix)" time="0.000323706">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; falls back to homedir()/.papercusp-workspaces when the env is unset (dev parity)" time="0.000217591">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="workspacesRoot &gt; ignores an empty/whitespace env value" time="0.000216909">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; PAPERCUSP_WORKSPACE_ID pin wins — a dedicated single-workspace process, even under shared-operator" time="0.001324861">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; shared-operator model, no pin → EVERY registered workspace" time="0.00052286">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; dev / legacy (no shared-operator flag) → just the global active workspace" time="0.000468996">
+        </testcase>
+        <testcase classname="lib/workspace-registry.test.ts" name="backgroundWorkspaceIds — which workspaces a background job covers (P-020) &gt; shared-operator with an EMPTY registry degrades to the global active workspace" time="0.000619438">
         </testcase>
     </testsuite>
 </testsuites>

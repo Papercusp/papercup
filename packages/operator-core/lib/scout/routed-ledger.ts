@@ -102,6 +102,12 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       title = EXCLUDED.title,
       addresses_pattern_refs = EXCLUDED.addresses_pattern_refs,
       routed_at = EXCLUDED.routed_at`;
+  // Push the Learning tab's Scout view (learning.scout reads this ledger).
+  // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
+  // statically depends on the SSE layer; a missing SSE bus is a no-op.
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.scout'))
+    .catch(() => {});
 }
 
 /** Read routed-idea provenance for (workspace[, harness][, cycle]), newest-first. */

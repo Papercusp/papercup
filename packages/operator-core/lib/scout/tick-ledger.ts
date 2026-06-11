@@ -62,6 +62,12 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
       (${ws}, ${input.installSlug ?? null}, ${input.status}, ${input.gate ?? null},
        ${input.ideasGenerated ?? 0}, ${input.ideasRouted ?? 0}, ${input.ideasDeduped ?? 0},
        ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb)`;
+  // Push the Learning tab's Scout view (learning.scout shows the last tick).
+  // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
+  // statically depends on the SSE layer; a missing SSE bus is a no-op.
+  void import('../sync-sse')
+    .then((m) => m.notifySyncInvalidate('learning.scout'))
+    .catch(() => {});
 }
 
 /**

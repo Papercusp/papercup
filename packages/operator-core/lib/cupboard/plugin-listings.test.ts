@@ -32,9 +32,16 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   fetchMock.mockReset();
   global.fetch = fetchMock as unknown as typeof fetch;
+  // Belt-and-suspenders for the module mock above: another cupboard test file
+  // that also `vi.mock('./base-url')` can, under a shared worker, defeat this
+  // file's mock (the real resolveCupboardBaseUrl then runs and returns the
+  // default cupboard.papercusp.com) — green alone, red when batched. Pinning
+  // the env the REAL resolver reads makes the assertion hold either way.
+  vi.stubEnv('PAPERCUSP_CUPBOARD_URL', 'https://cupboard.test');
 });
 afterEach(() => {
   global.fetch = originalFetch;
+  vi.unstubAllEnvs();
 });
 
 function listingsBody(results: Array<{ listing_kind?: string; listing_ref?: string | null; title?: string | null }>) {

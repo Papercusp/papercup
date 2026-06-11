@@ -873,6 +873,38 @@ The desktop webview loads **`:3070`, which serves a static pre-built `operator-v
 
 This is why a freshly-added route can read `404` on `:3070` even though it’s correctly registered and the build is green — it’s live only after the host restarts.
 
+# CI runner reds: the dev-box-parity failure classes (and the provisioning recipe)
+
+> The GitHub nightly's first real executions failed ~50 files across FIVE distinct environment-dependence classes, none of them regressions: transitive default-:5432 PG pools, the ~/autonomous-harness symlink convention, binaries assumed on PATH (kopia/omp), per-box state files (workspace registry), and shared-tree commit skew. Diagnosis order + the dev-box-parity PG recipe (scripts/ci-provision-pg.mjs) that cleared the dominant class.
+
+## The mistake this prevents
+
+[Section titled “The mistake this prevents”](#the-mistake-this-prevents)
+
+A “unit”-tier suite that is green on every dev box can still be **environment- dependent, not hermetic** — the box silently provides PG on `:5432`, a `~` symlink, binaries on PATH, and state files. The first time CI actually executed the suites (WI-123, 2026-06-11), \~50 files failed across five classes and **zero of them were code regressions**. Without the taxonomy below, each red looks like a mysterious individual failure and burns an investigation hour; with it, one glance at the error signature names the class.
+
+## The five failure classes (by error signature)
+
+[Section titled “The five failure classes (by error signature)”](#the-five-failure-classes-by-error-signature)
+
+1. **`ECONNREFUSED ::1:5432 / 127.0.0.1:5432` across many unrelated files** — NOT tests connecting to PG. App code they import opens a pool against the default `postgresql://…@localhost:5432/papercusp` (`libs/papercusp/libs/db/src/connection.ts` resolution chain: env → discovery file → native fallback). Per-test reclassification is impractical because the dependency is transitive (module-load side effects in dozens of imported modules). **Fix: give the runner a dev-box-parity PG** (below).
+2. **`MEMORY_MAP references roles that don't exist on disk`** killing a dozen endpoint-route suites — `harnessPackageDir()` used to resolve env → `~/autonomous-harness` (a dev-box symlink convention) → nothing, so `getKnownRoles()` returned zero roles on any fresh clone. Fixed with an in-repo fallback (`packages/operator-core/lib/harness-paths.ts`); if a path-shaped “X doesn’t exist” error appears only in CI, suspect a home-dir convention the repo assumes.
+3. **`spawn <binary> ENOENT` / spies called 0 times** — tests that drive a real binary (kopia) or whose source does pure-Node PATH scanning the mocks no longer intercept (omp, after audit P-080 removed the `command -v` shellout). Fix: module-load probe + `describe.skipIf(!available)` for genuinely-binary-driving suites; plant stub binaries in a temp PATH dir for suites that are supposed to be fully mocked.
+4. **Per-box state files** — e.g. `unknown workspace default`: the workspace registry (`~/.papercusp-workspaces/registry.json`) exists on every dev box, never on a runner, and `activeWorkspaceId()` falls back to an unregistered `'default'`. Fix: the test registers what it needs and cleans up.
+5. **Shared-tree commit skew** — git-sync sweeps peers’ *in-flight* work into the nightly’s checkout, so a red can be a peer’s half-landed change (e.g. `column "model_spec" … does not exist` from a code-INSERT landing before its test-fixture DDL). Check whether it’s red **locally at HEAD** before treating it as a CI problem; if it is, it’s a lane question, not an env question.
+
+## The dev-box-parity PG recipe
+
+[Section titled “The dev-box-parity PG recipe”](#the-dev-box-parity-pg-recipe)
+
+`scripts/ci-provision-pg.mjs` + a `pgvector/pgvector:pg16` service on `5432:5432` in `test-nightly.yml` / `test.yml`. The script mirrors the fresh-migrate strict gate exactly: the 3 framework roles (`harness_app`/`harness_admin`/`harness_zero`), the `papercusp` DB, the 3 baseline extensions (`pgcrypto`/`pg_trgm`/`vector`), then `applyPendingMigrations` from `embedded-postgres-server/src/migration-runner.js` — the REAL boot-path runner, fail-loud, idempotent (\~4s, 122 files). **No test env vars are set**: suites reach the service through the documented native-`:5432` default fallback, exactly like a dev box, and the testcontainers integration tier is untouched. An empty-but-schema-complete DB was proven sufficient (153/153 across 6 previously-failing suites) — the class needs schema, not seeded data.
+
+## Diagnosing a new CI-only red
+
+[Section titled “Diagnosing a new CI-only red”](#diagnosing-a-new-ci-only-red)
+
+Run it locally at HEAD first. Green locally → diff the environments in this order: PG reachable? path conventions (`~` symlinks, env)? binaries on PATH? state files under `~`? checkout SHA vs your HEAD? One of the five almost always names it. Full forensics: WI-123’s thread.
+
 # claude-code headless permission model (what --allowed-tools / --permission-mode actually do)
 
 > Verified vs claude 2.1.158 — --allowed-tools is NOT a whitelist by itself; only --permission-mode dontAsk makes it one, and even then gating is non-uniform (CronCreate/EnterWorktree bypass it). --disallowed-tools is the hard block. How the fleet spawn is locked down.
@@ -7685,6 +7717,40 @@ Some modules naturally span. `contributor-file-types.ts` is **both** a wire type
 Tip
 
 A category-1 (wire) module with no structural predicate isn’t a wire type — it’s a type alias. Add the predicate. Reading “what the wire sends” is the contract; if you trust the wire, you don’t need the type. The predicate is the load-bearing piece.
+
+# Per-user REST routes must use getSessionUserOrDefault, not a strict 401
+
+> The desktop webview usually carries NO session cookie, so a /user/* route gating on getSessionUser + 401 silently blanks its UI (the settings memory page showed "No memories stored yet." over a 1,700-row store). Per-user data routes fall back to the seeded default user.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+The settings memory page (`/settings/user/memory`) rendered **“No memories stored yet.”** while the canonical store held \~1,700 memories. Every server piece checked out individually: the `userMemory.list` sync resolver returned all rows, `listUserMemories()` worked when invoked directly, the SPA bundle contained the current page code, and replaying the page’s requests with a session cookie pulled from `harness_shared.user_sessions` succeeded.
+
+## The root cause
+
+[Section titled “The root cause”](#the-root-cause)
+
+The page bootstraps from `GET /api/user/memory/backend` to learn the session `userId`, and only enables its `useSyncQuery` once it has one (`apps/operator/app/settings/user/memory/page.tsx` — `enabled: !!userId`). That route — and the whole ported `routes/user/*` family — gated on the **strict** `getSessionUser(req.headers)` and returned `401 {error: 'unauthenticated'}` when no cookie was present.
+
+But **the desktop webview typically sends no session cookie at all.** The tell, in PG: thousands of `Mozilla/*` rows in `harness_shared.user_sessions` whose `last_seen_at ≈ created_at` (each used once at login, never again), and none touched during hours of active app use. The rest of the app never notices because the sync transports (`/api/zero-harness/rest-query[-batch]`) don’t use session auth — only per-user surfaces break, and they break as *silent emptiness*, not as an error: the page’s one-shot `refreshMeta()` got a 401, left `userId` null, and rendered the empty state over a full store.
+
+The platform’s documented semantics for these routes is the seeded-`default`-user fallback — `getSessionUserOrDefault`’s own docstring says it exists for “routes that always need a user\_id for per-user data (memory, preferences)”, `/api/auth/me` documents “the getSessionUserOrDefault semantics every memory tool relies on”, and all `memory:*` MCP tools use it. The endpoint-system port (auth-tier Wave 1) replaced that with the strict 401 gate and even pinned it in `__tests__/user.test.ts` as “the shared invariant” — codifying the regression.
+
+## The fix (2026-06-11)
+
+[Section titled “The fix (2026-06-11)”](#the-fix-2026-06-11)
+
+`packages/operator-core/lib/endpoint-route/routes/user/{memory, memory-feedback, memory-audit, memory-reembed, search, preferences}.ts` now resolve `getSessionUserOrDefault(req.headers)` — a real session cookie still wins; no cookie falls back to the `default` user instead of 401. The route-level `auth:` tier (`public`/`loopback`) remains the actual exposure gate. `__tests__/user.test.ts` asserts the fallback semantics.
+
+## The rules
+
+[Section titled “The rules”](#the-rules)
+
+* **A `/user/*` data route that 401s on a missing session is almost certainly wrong on this platform** — the desktop webview is effectively cookie-less. Use `getSessionUserOrDefault(req.headers)`; reserve strict `getSessionUser` for flows that genuinely need a *real* logged-in identity (e.g. PATCH /auth/me display-name).
+* **When porting a route, port its auth semantics, not just its handler.** The legacy Next routes had the fallback; the port’s “shared 401 invariant” looked like discipline but was a behavior change.
+* **Diagnosing “UI shows empty but the store is full”:** check whether the page gates its data query on a session-auth’d bootstrap fetch, then check `harness_shared.user_sessions` for the used-once-then-never pattern before suspecting the resolver, the sync transport, or the bundle.
 
 # Vditor Lute renderers — the WalkSkipChildren selective-override pattern
 
@@ -35396,6 +35462,10 @@ This matches VS Code’s `extensionDependencies` + `extensionPack` semantics. Th
 | `apps/papercusp/content/docs/implementation/plugins.mdx`               | New “Plugin marketplace impl status” page                            | open (parallel to marketplace.mdx) |
 
 # 15. Snapshots — share working harness state via marketplace (v1.2)
+
+2026-06-11: per-harness sharing is RETIRED — the Hive is the sharing unit
+
+The snapshot system this page specifies was retired (`retire-snapshots-instance-spec-2026-06-09`; surface preserved at `_retired/snapshot-system/`), and **per-harness sharing as a Comb/Cupboard product surface was retired too** (plan `comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the `share/finalize` + `binding/resolve` + harness `cupboard/publish` routes, and the storefront’s per-harness Join are gone. Sharing now happens at the **Hive** level — `discovery:set_hive` publishes a hive to the P2P directory, the Comb indexes its member repos (`hive_pubkey` rows), and joiners join the hive (`shared-hive-federation-2026-06-08`, `hive-from-github-url-2026-06-11`). `kind='harness'` Cupboard rows remain as the repo→Hive lookup index only. Successor product work: `comb-hive-native-sharing-2026-06-11`.
 
 Status: shipped — but the cross-machine transport is the Cupboard, NOT Gitea/Cosign
 

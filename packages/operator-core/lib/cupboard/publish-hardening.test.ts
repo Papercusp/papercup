@@ -50,9 +50,13 @@ beforeEach(() => {
   vi.mocked(cupboardPublish.resolvePublisherAttestation).mockResolvedValue(null as never);
   fetchMock.mockReset();
   global.fetch = fetchMock as unknown as typeof fetch;
+  // Hermetic base URL even if the `vi.mock('./base-url')` above is defeated by a
+  // sibling cupboard test file under a shared worker (see plugin-listings.test).
+  vi.stubEnv('PAPERCUSP_CUPBOARD_URL', 'https://cupboard.test');
 });
 afterEach(() => {
   global.fetch = originalFetch;
+  vi.unstubAllEnvs();
 });
 
 describe('publishListingToCupboard — non-harness kind 404 does NOT fall back to /harnesses', () => {

@@ -6,7 +6,10 @@
  * (app/cupboard/__tests__/CupboardClient.test.tsx) can't:
  *   - the kind filter tabs render and drive the `?kind=` query the proxy forwards
  *   - clicking a kind tab re-fetches + filters the grid to that kind
- *   - each card's primary action is the kind's action (Join/Fork/Install)
+ *   - each card's primary action is the listing's action (View Hive for a
+ *     hive-bound harness row, none for a legacy one — per-harness join is
+ *     retired, comb-retire-per-harness-sharing-2026-06-11 — Fork/Install
+ *     for blueprint/plugin/pack)
  *
  * Hermetic: `/api/cupboard/listings` is stubbed (and honors the `kind` query
  * param) so the test does not need a live Cupboard worker. Drives the
@@ -31,13 +34,17 @@ interface Listing {
   listing_ref: string | null;
   last_activity_at: number | null;
   publisher_permission: string | null;
+  hive_pubkey?: string | null;
+  hive_title?: string | null;
 }
 
 const LISTINGS: Listing[] = [
   {
+    // Hive-bound member-repo row (worker mig 007): action = View Hive.
     id: 'h1', listing_kind: 'harness', title: 'Demo harness', description: 'A shared harness',
     claim_status: 'unclaimed', github_owner: 'o', github_name: 'h', github_url: 'https://github.com/o/h',
-    topic_hex: 'a'.repeat(64), project_ref: null, listing_ref: null, last_activity_at: null, publisher_permission: 'write',
+    topic_hex: 'a'.repeat(64), project_ref: 'o/h', listing_ref: null, last_activity_at: null, publisher_permission: 'write',
+    hive_pubkey: 'A'.repeat(43) + '=', hive_title: 'Demo Hive',
   },
   {
     id: 'b1', listing_kind: 'blueprint', title: 'Web App blueprint', description: 'A blueprint stream',
@@ -93,10 +100,10 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
 
     // All kinds visible initially: 4 cards, one per kind.
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(4);
-    // Action buttons reflect each kind's action.
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="join"]')).toHaveCount(1);    // harness
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(1);    // blueprint
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(2); // plugin + pack
+    // Action buttons reflect each listing's action.
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="view-hive"]')).toHaveCount(1); // hive-bound harness row
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(1);      // blueprint
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(2);   // plugin + pack
 
     // Filter to Blueprints → one blueprint card, action = fork.
     await page.getByTestId('cupboard-kind-tab-blueprint').click();
@@ -110,9 +117,10 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'plugin');
     await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'install');
 
-    // Back to Harnesses → join.
+    // Back to Harnesses → the hive-bound row's action is View Hive (per-harness
+    // join is retired; a legacy row without hive_pubkey would have NO button).
     await page.getByTestId('cupboard-kind-tab-harness').click();
-    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'join');
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'view-hive');
   });
 
   test('per-Hive rollup groups a project\'s facets together (D-005)', async ({ page }) => {

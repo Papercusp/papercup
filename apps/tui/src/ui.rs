@@ -3519,6 +3519,111 @@ mod tests {
     }
 
     #[test]
+    fn notifs_history_renders_in_pinned_and_watch_panes() {
+        // Owner report 2026-06-11: in the zellij dock the alert toast flashed
+        // but 'N' opened an overlay that never drew — the pinned/watch render
+        // paths skipped draw_notifs. Pin both paths.
+        let mut app = App::new();
+        app.pinned = Some(crate::app::Tab::Wake);
+        app.tab = crate::app::Tab::Wake;
+        app.show_notifs = true;
+        app.notifs = vec![ui_notif("error", "bee crashed", None)];
+        let text = render(&app, 90, 16);
+        assert!(text.contains("Notifications (1)"), "pinned pane must render the history: {text}");
+        assert!(text.contains("bee crashed"));
+
+        let mut w = App::new();
+        w.watch = Some("s-123".into());
+        w.show_notifs = true;
+        w.notifs = vec![ui_notif("high", "needs you now", None)];
+        let wt = render(&w, 90, 16);
+        assert!(wt.contains("Notifications (1)"), "watch pane must render the history: {wt}");
+    }
+
+    #[test]
+    fn toast_title_advertises_the_history_key() {
+        let mut app = App::new();
+        app.pinned = Some(crate::app::Tab::Wake);
+        app.tab = crate::app::Tab::Wake;
+        app.toast = Some(ui_notif("high", "Decide P-009", None));
+        let text = render(&app, 90, 12);
+        assert!(text.contains("N history"), "toast must advertise N: {text}");
+    }
+
+    #[test]
+    fn agent_ctx_panes_render_brief_mail_work() {
+        use crate::app::AgentCtxMode;
+        let mut app = App::new();
+        app.pinned = Some(crate::app::Tab::AgentCtx);
+        app.tab = crate::app::Tab::AgentCtx;
+
+        // Brief mode: the launch brief + model/tier header.
+        app.agent_ctx_mode = AgentCtxMode::Brief;
+        app.agent_ctx = Some(Ok(crate::models::AgentCtxData {
+            owner: Some("s-17".into()),
+            label: Some("bee-7".into()),
+            brief: Some("Watch for the flaky sync test".into()),
+            model: Some("opus:high".into()),
+            tier: Some("deep".into()),
+            ..Default::default()
+        }));
+        let text = render(&app, 80, 12);
+        assert!(text.contains("brief"));
+        assert!(text.contains("bee-7"));
+        assert!(text.contains("Watch for the flaky sync test"));
+        assert!(text.contains("opus:high"));
+        assert!(text.contains("deep"));
+
+        // Mail mode.
+        app.agent_ctx_mode = AgentCtxMode::Mail;
+        app.agent_ctx = Some(Ok(crate::models::AgentCtxData {
+            owner: Some("s-17".into()),
+            mail: Some(crate::models::BeeMailPayload {
+                owner_id: "s-17".into(),
+                inbox: crate::models::BeeMailSide {
+                    total: 1,
+                    entries: vec![crate::models::BeeMailEntry {
+                        kind: "message".into(),
+                        from: Some("queen".into()),
+                        summary: Some("pick up WI-9".into()),
+                        ..Default::default()
+                    }],
+                },
+                outbox: crate::models::BeeMailSide::default(),
+            }),
+            ..Default::default()
+        }));
+        let text = render(&app, 80, 12);
+        assert!(text.contains("inbox (1)"));
+        assert!(text.contains("pick up WI-9"));
+
+        // Work mode: items + plan linkage.
+        app.agent_ctx_mode = AgentCtxMode::Work;
+        app.agent_ctx = Some(Ok(crate::models::AgentCtxData {
+            owner: Some("s-17".into()),
+            assignment: Some(crate::models::BeeAssignment {
+                agent_id: "s-17".into(),
+                intent: "fixing the sync test".into(),
+                declared_plan_slug: Some("sync-fix-2026".into()),
+                queued: vec![crate::models::BeeWorkItem {
+                    id: "WI-9".into(),
+                    title: "deflake sync".into(),
+                    status: Some("claimed".into()),
+                    rank: Some(1),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        let text = render(&app, 80, 12);
+        assert!(text.contains("work items (1)"));
+        assert!(text.contains("WI-9"));
+        assert!(text.contains("sync-fix-2026"));
+        assert!(text.contains("fixing the sync test"));
+    }
+
+    #[test]
     fn error_shows_in_status_bar() {
         let mut app = App::new();
         app.last_error = Some("backend down".into());

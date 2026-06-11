@@ -79,6 +79,20 @@ describe('workspace-registry', () => {
 
   it('setCompanyId / companyIdFor round-trip', () => {
     const id = activeWorkspaceId();
+    // On a box with no registry (fresh clone / CI runner — WI-123) the
+    // active id falls back to 'default', which is unregistered and makes
+    // setCompanyId throw "unknown workspace". Register it ourselves so the
+    // round-trip is hermetic; afterEach's backup-restore undoes this on dev
+    // boxes, and a registry created from nothing is removed below.
+    const hadRegistry = existsSync(REGISTRY_PATH);
+    const reg = readRegistry();
+    if (!reg.workspaces.some((w) => w.id === id)) {
+      mkdirSync(REGISTRY_DIR, { recursive: true });
+      writeFileSync(
+        REGISTRY_PATH,
+        JSON.stringify({ ...reg, workspaces: [...reg.workspaces, { id, name: id, createdAt: Date.now() }] }, null, 2),
+      );
+    }
     const tag = 'test-co-' + Date.now();
     try {
       setCompanyId(id, tag);
@@ -87,6 +101,7 @@ describe('workspace-registry', () => {
       expect(companyIdFor(id)).toBeNull();
     } finally {
       // best-effort cleanup; afterEach restores backup
+      if (!hadRegistry) rmSync(REGISTRY_PATH, { force: true });
     }
   });
 
