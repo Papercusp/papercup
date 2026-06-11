@@ -184,6 +184,9 @@ export function OperatorActionLog({
   const [listRef] = useAutoAnimate<HTMLUListElement>();
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
+    // Relative-time refresh ("Nm ago" labels) — pure UI timer, no fetch;
+    // the documented UI-timer exception (audit P-058). Data itself is
+    // push-driven via userActions.byHarness in useUserActions.
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);

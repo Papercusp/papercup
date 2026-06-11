@@ -75,7 +75,12 @@ export function BootHistoryTableClient(
     void run();
     let timer: ReturnType<typeof setInterval> | null = null;
     if (refreshIntervalMs > 0) {
-      timer = setInterval(() => void run(), refreshIntervalMs);
+      // Documented polling exception (audit P-058): admin boot-history
+      // aggregate with no sync queryName/invalidation source. Paused while
+      // the tab is hidden.
+      timer = setInterval(() => {
+        if (typeof document === 'undefined' || document.visibilityState !== 'hidden') void run();
+      }, refreshIntervalMs);
     }
     return () => {
       cancelled = true;

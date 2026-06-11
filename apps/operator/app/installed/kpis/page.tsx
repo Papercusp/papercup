@@ -139,7 +139,12 @@ export default function KPIsPage() {
 
   useEffect(() => {
     void refresh();
-    const id = setInterval(refresh, 30_000);
+    // Documented polling exception (audit P-058): cross-harness KPI
+    // aggregate endpoint with no sync queryName. 30s while visible;
+    // paused when hidden.
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh();
+    }, 30_000);
     return () => clearInterval(id);
   }, [refresh]);
 

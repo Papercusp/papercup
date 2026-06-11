@@ -61,7 +61,11 @@ export function SubstrateSummaryCardClient(
     void run();
     let timer: ReturnType<typeof setInterval> | null = null;
     if (refreshIntervalMs > 0) {
-      timer = setInterval(() => void run(), refreshIntervalMs);
+      // Documented polling exception (audit P-058): live substrate status
+      // probe — no sync invalidation source. Paused while the tab is hidden.
+      timer = setInterval(() => {
+        if (typeof document === 'undefined' || document.visibilityState !== 'hidden') void run();
+      }, refreshIntervalMs);
     }
     return () => {
       cancelled = true;

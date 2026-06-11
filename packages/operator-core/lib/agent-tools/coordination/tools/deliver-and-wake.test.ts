@@ -90,6 +90,20 @@ vi.mock('../conversations', () => ({
     thread_id: 'thread-1',
   })),
 }));
+// The wake-MODE gate + staging leg also reach live PG, and their failure mode is
+// NOT a throw: on a dev box with a reachable org PG, a `manual` resolution (e.g.
+// a hive:pause global default, or another suite's wake-mode rows) routes the
+// wake into stagePendingWake — which WROTE this suite's synthetic owners into
+// the PRODUCTION harness_shared.pending_wakes table (caught live by the
+// coord-invariant-monitor as EI-275, 21 debris rows). Unit tests must never
+// depend on the box's live wake-mode state: pin mode to `auto` and make staging
+// a spy.
+vi.mock('../wake-mode', () => ({
+  resolveWakeMode: vi.fn(async () => 'auto'),
+}));
+vi.mock('../pending-wakes', () => ({
+  stagePendingWake: vi.fn(async () => ({ id: 1 })),
+}));
 
 import coordSend from './send';
 import messageAgent from './message-agent';

@@ -1,6 +1,6 @@
 ---
 rel_path: "briefs/owner-decision-queue-2026-06-10.md"
-updated_at: 1781138642329
+updated_at: 1781139520619
 _body: "content"
 ---
 
@@ -9,10 +9,11 @@ _body: "content"
 Every needs-human / owner-gated item fleet-wide, one line each: the decision, the
 recommended default, what it unblocks. Cross-checked against `plans:items
 { needsHuman: true }` + the brief-15 §D roster + the garden-sweep findings.
-**Rev 3 (late evening):** all 15 brief lanes now report complete — added the
-closeout asks from briefs 11 + 12 (the last two), folded brief 12's runbook
-asks into §A with their concrete costs, and added the schedule-these-EIs line.
-Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
+**Rev 4 (night):** added EI-284 (revoked-swarm lease authority gap, brief 11
+delta) + the revoke scenario rider on the Hetzner replay; EI-280 RESOLVED
+(mig 221, su-2f603); audit-plan revision sweep 95→176 verified CLEAN (no lost
+completion notes, no remaining status regressions). Rev 3 added briefs 11+12
+closeout asks; rev 2 added briefs 05/10/14 + resolved conversations P-001.
 
 ## A. Credentials / keys / spend (flag, don't hunt)
 
@@ -32,10 +33,11 @@ Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
 5. **Brief 12's three prepared runs (runbooks at
    `briefs/brief12-owner-runbooks-2026-06-10.md`):** (a) shared-hive P-008/
    P-009 real-metal loop + chaos on Hetzner, ~€0.60, hermetic prerequisite now
-   GREEN per brief 11; (b) coord P-010 two-box verb sweep using main-server as
-   box B, $0; (c) holepunch P-014 voice-mesh bench (cross-region needs the
-   Latitude quota raise). Recommend: approve (a) + (b) — cheap, high-signal;
-   (c) when the quota ask lands.
+   GREEN per brief 11 — brief 11 asks that the replay INCLUDE the new
+   revoked-swarm scenario (their P-011 rung, ties to EI-284); (b) coord P-010
+   two-box verb sweep using main-server as box B, $0; (c) holepunch P-014
+   voice-mesh bench (cross-region needs the Latitude quota raise). Recommend:
+   approve (a) + (b) — cheap, high-signal; (c) when the quota ask lands.
 6. **search-core-rerank — provision `ZEROENTROPY_API_KEY`** (wiring is a no-op
    without it). Recommend: provision if rerank is wanted now; else close the
    plan as dormant-by-design. Unblocks cross-encoder rerank at 3 search sites.
@@ -63,7 +65,7 @@ Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
     P-004 sweep + the apiary `runBattery` repoint wait on this fork (+ su-b19a0's
     live gen-0 run finishing).
 11. **shared-hive-loop D-003 — flip the loop's code flag defaults ON.** Brief
-    11 closed Phase 1 fully green (45 tests) with env armed but code defaults
+    11 closed Phase 1 fully green (46 tests) with env armed but code defaults
     still OFF. Recommend: flip per the default-ON policy — the hermetic rig is
     the regression net.
 12. **audit P-069 — flags default audit vs the alpha default-ON policy**
@@ -91,10 +93,13 @@ Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
     mid-run — the adoption semantics are defined + tested), and (b) the
     queen-home setting + wake-seam gate as the split-brain Queen guard.
     Recommend: approve both as small scheduled work.
-17. **EI-266 — replica authority routing (brief 11 / D-009):** the replica
-    store is local-only, so cross-swarm redundancy quorums can't meet.
-    Decision: schedule the authority-routing fix or accept single-swarm
-    redundancy for now. Recommend: schedule.
+17. **Authority-layer pair — EI-266 + EI-284 (brief 11, MAJOR):** (a) EI-266 —
+    the replica store is local-only, so cross-swarm redundancy quorums can't
+    meet (D-009 authority routing); (b) EI-284 — authority claim ops never
+    check caller hive standing, so a REVOKED swarm still wins leases over RPC
+    and blocks live swarms until lapse (probe assertion in the suite flips
+    green when fixed; shared-hive P-011 is needs-human on this). Same surface —
+    recommend: schedule as ONE authority-hardening work item.
 18. **coord-e2e P-002 residual — the watermark same-ts cursor-skip hazard.**
     Brief 10 pinned it with a test; the structural fix is widening the cursor
     to (ts, msg_id) — an ordering-contract change, owner call. Recommend:
@@ -136,8 +141,7 @@ Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
     invisible to spawned_agents), EI-279 (cross-instance deliver-and-wake never
     wakes the remote peer — matrix accepted-gap), EI-281/EI-261 (LLM transport
     prefers an expired omp token + the dead :3456 meridian router; workaround
-    `AGENT_BACKEND=claude-code` is memory'd), EI-280 (artifacts RLS legacy-row
-    backfill migration — live data already repaired on this box).
+    `AGENT_BACKEND=claude-code` is memory'd). EI-284 is item 17.
 28. **app-wide-test-coverage** — flip shipped, or keep active as the standing
     campaign anchor (D-003 watch list: papergrid, pubsub-substrate, the 06-09
     harness components, post-churn re-audit). Recommend: keep as anchor.
@@ -190,9 +194,21 @@ Rev 2 added briefs 05/10/14's asks + resolved conversations P-001.
   token-usage-reduction P-013 (calendar-gated) · su-b19a0's live gen-0 run.
 - su-S11 scored run (brief 12's coord P-011): time-gated on the Claude-Max
   window reset, not an owner decision — it self-unblocks.
+- Brief 15-A (su-0e3fd): local-hive P-071 Queen-placement live smoke in
+  progress — a Queen wake fired but no session launched; they're debugging the
+  hive wake launch path. If a real launch-path bug falls out, expect one more
+  EI here.
 
 ## Resolved (formal close only)
 
+- **EI-280 — RESOLVED by su-2f603:** mig 221 backfill applied live + BOTH
+  ongoing blank-row sources fixed (text-artifacts.ts never stamped;
+  admin-dispatch COALESCE minted '' on every psu save). 4 regression legs on
+  real-PG RLS. The 11 stranded artifact rows had already been hand-repaired.
+- **Audit-plan revert sweep (315b1's ask) — CLEAN:** revisions 95→176 analyzed
+  (82 items per revision, both item formats): zero completion notes lost, zero
+  remaining terminal-status regressions. The only damage was the two status
+  tokens 315b1 already re-flipped (revs 173/174).
 - **conversations-tab-simplify P-001 — RATIFIED** by the owner interactively
   2026-06-10 (all of D-009); brief 13 (su-b6c7f) is executing the post-gate
   items. Was item 14 in rev 1 of this queue.

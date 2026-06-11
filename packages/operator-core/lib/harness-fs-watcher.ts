@@ -69,6 +69,7 @@ const hph = generated.harnessPhasesInHarnessShared;
 const hgl = generated.harnessGitLogInHarnessShared;
 const hba = generated.harnessBranchActionsInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
+import { sweepLeakedFsWatchers } from './fs-watcher-leak-sweep';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
 import { notifySyncInvalidate } from './sync-sse';
@@ -911,6 +912,15 @@ function classifyAndDispatch(
 }
 
 async function reconcileAll(state: WatcherState): Promise<void> {
+  // EI-255: close fs.watch handles orphaned by the Node start()-throw leak
+  // (chokidar racing a vanished path swallows the throw; the handle stays in
+  // V8 global handles forever). Keeps the watcher population flat instead of
+  // accumulating ~150 dead triples a minute under git-sync/agent churn.
+  const sweep = sweepLeakedFsWatchers();
+  if (sweep.closed > 0) {
+    console.log(`[harness-fs-watcher] closed ${sweep.closed} leaked fs.watch handle(s) (EI-255)`);
+  }
+
   // Re-read the registry so newly-added harnesses get picked up.
   const reg = await loadHarnessRegistry();
   const newProjects = reg.projects ?? [];

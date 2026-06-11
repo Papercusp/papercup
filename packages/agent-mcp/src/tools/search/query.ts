@@ -197,12 +197,54 @@ export default defineTool({
       );
     }
 
-    // `messages` has never had a search block — surface the gap honestly
-    // when a caller asks for it EXPLICITLY instead of silently returning
-    // nothing (noticed during audit P-048; jsonb/messages FTS is the
-    // deferred v1.5 noted in the header).
-    if (args.kinds?.includes('messages')) {
-      degradedReasons.push('messages_not_implemented');
+    if (wantKind('messages')) {
+      await searchKind(
+        'messages',
+        hits,
+        degradedReasons,
+        async () => {
+          // messages_consolidated has no stored `_search` column (013 covers
+          // the other kinds) — an inline tsvector still ranks correctly and
+          // the corpus is small (hundreds of rows); revisit with a generated
+          // column + GIN if it ever grows hot (EI-282).
+          const rows = await ctx.tx<
+            Array<{ harness_slug: string; id: string; subject: string | null; body: string | null; rank: number }>
+          >`
+            SELECT harness_slug, id, subject, body,
+                   ts_rank_cd(
+                     to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, '')),
+                     plainto_tsquery('english', ${args.query})
+                   ) AS rank
+              FROM harness_shared.messages_consolidated
+             WHERE to_tsvector('english', coalesce(subject, '') || ' ' || coalesce(body, ''))
+                   @@ plainto_tsquery('english', ${args.query})
+             ORDER BY rank DESC
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({
+            kind: 'messages',
+            id: `${r.harness_slug}/${r.id}`,
+            snippet: r.subject || (r.body ?? '').slice(0, 100),
+            score: Number(r.rank),
+          }));
+        },
+        async () => {
+          const rows = await ctx.tx<
+            Array<{ harness_slug: string; id: string; subject: string | null; body: string | null }>
+          >`
+            SELECT harness_slug, id, subject, body
+              FROM harness_shared.messages_consolidated
+             WHERE subject ILIKE ${q} OR body ILIKE ${q}
+             LIMIT ${args.limit}
+          `;
+          return rows.map((r) => ({
+            kind: 'messages',
+            id: `${r.harness_slug}/${r.id}`,
+            snippet: r.subject || (r.body ?? '').slice(0, 100),
+            score: 1,
+          }));
+        },
+      );
     }
 
     // Sort across kinds by score descending so highest-confidence hits land first.
