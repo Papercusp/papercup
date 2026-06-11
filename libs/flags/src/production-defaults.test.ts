@@ -26,7 +26,6 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // ── Cut-for-V1 surfaces (types.test.ts pins these off too) ─────────────
   FLAGS.CLOUDFLARE_PUBLISH, // cut for V1 — publish surface not shipping
   FLAGS.ORACLE, // cut for V1
-  FLAGS.RUST_PORT_UI, // cut for V1
   FLAGS.HARNESS_PHASES, // cut for V1
   FLAGS.DESIGN, // cut for V1
   FLAGS.TESTING, // cut for V1

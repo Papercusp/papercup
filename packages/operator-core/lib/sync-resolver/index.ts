@@ -981,6 +981,46 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // fleetAssignments.byHarness — "who's working here?" for the Progress tab's
+  // Agents panel (progress-tab-agents-convergence-2026-06-11 P-001/P-002): the
+  // fleet:assignments assembly (presence + plan-item claims + work-item claims,
+  // claim-primary, with each agent's ordered work-list) filtered to one harness,
+  // each agent stamped with its AgentPaneKind so the desktop shares the colony
+  // tab's glyph vocabulary (♛/🐝/🛡/📋/🛠). Role context joins from adv_sessions
+  // (queen/sentinel/planner kinds are role-keyed; su falls out of the ownerId
+  // prefix). Invalidated via the table bridge from coord_presence /
+  // feature_claims / claim_audit / spawned_agents.
+  'fleetAssignments.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string() }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const [{ listFleetAssignments, groupByAgent }, { listAdvSessions }, { classifyAgentPane }] =
+        await Promise.all([
+          import('../fleet/assignments'),
+          import('../adv-sessions'),
+          import('@papercusp/agent-mcp'),
+        ]);
+      const rows = await listFleetAssignments({ harness: harnessSlug });
+      const roleByOwner = new Map<string, string | null>();
+      try {
+        for (const s of await listAdvSessions(200)) {
+          if (s.coordOwnerId && !roleByOwner.has(s.coordOwnerId)) {
+            roleByOwner.set(s.coordOwnerId, s.role ?? null);
+          }
+        }
+      } catch {
+        /* role enrichment is best-effort — ownerId-only classification still works */
+      }
+      return groupByAgent(rows).map((a) => {
+        const pane = classifyAgentPane({
+          role: roleByOwner.get(a.agentId) ?? null,
+          ownerId: a.agentId,
+        });
+        return { ...a, agentPaneKind: pane.kind, driveMode: pane.driveMode } as unknown;
+      });
+    },
+  },
+
   // featuresConsolidated.bySlug — features for a harness, latest first.
   //   zql.featuresConsolidated.where(harnessSlug).orderBy('updatedTs', 'desc')
   'featuresConsolidated.bySlug': {

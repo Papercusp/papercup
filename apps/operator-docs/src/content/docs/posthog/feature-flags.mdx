@@ -18,7 +18,6 @@ The canonical set lives in `FLAGS` in `libs/flags/src/types.ts`:
 |---|---|---|---|
 | `papercusp-cloudflare-publish` | `FLAGS.CLOUDFLARE_PUBLISH` | `false` | Publish-to-Cloudflare flow. |
 | `papercusp-oracle` | `FLAGS.ORACLE` | `false` | Always-on tutorial Oracle dock + all `/api/oracle/*` Hono endpoints (404 when off). |
-| `papercusp-rust-port-ui` | `FLAGS.RUST_PORT_UI` | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today. |
 | `papercusp-harness-phases` | `FLAGS.HARNESS_PHASES` | `false` | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints. |
 | `papercusp-design` | `FLAGS.DESIGN` | `false` | In-harness "design" tab + `/design` route + `/api/design/*` routes. |
 | `papercusp-testing` | `FLAGS.TESTING` | `false` | Testing-only surfaces: the `pi` tab + the "add plugin" button. |

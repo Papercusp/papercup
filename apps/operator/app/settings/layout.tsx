@@ -125,7 +125,6 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.ORACLE]: oracleEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
-    [FLAGS.RUST_PORT_UI]: true,
     [FLAGS.HARNESS_PHASES]: true,
   };
 

@@ -47,7 +47,6 @@ describe('flag registry invariants', () => {
     const cutForV1: FlagKey[] = [
       FLAGS.CLOUDFLARE_PUBLISH,
       FLAGS.ORACLE,
-      FLAGS.RUST_PORT_UI,
       FLAGS.HARNESS_PHASES,
       FLAGS.DESIGN,
       FLAGS.TESTING,

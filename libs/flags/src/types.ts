@@ -10,7 +10,6 @@ export const FLAGS = {
   // distribution lives in the (ungated) Cupboard.
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   ORACLE: "papercusp-oracle",
-  RUST_PORT_UI: "papercusp-rust-port-ui",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
   TESTING: "papercusp-testing",
@@ -88,7 +87,6 @@ export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.ORACLE]: false,
-  [FLAGS.RUST_PORT_UI]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,

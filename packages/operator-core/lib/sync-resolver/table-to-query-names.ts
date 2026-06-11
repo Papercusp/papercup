@@ -115,7 +115,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
+    'fleetAssignments.byHarness',
   ],
+  // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
+  // fleet_assignment view = presence + plan-item claims + work-item claims.
+  // coord_presence fires on heartbeats too — the 90s (name,args) dedupe window
+  // bounds the refetch rate; claim flips are what actually matter.
+  'harness_shared.coord_presence': ['fleetAssignments.byHarness'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness'],
+  'harness_shared.claim_audit': ['fleetAssignments.byHarness'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────

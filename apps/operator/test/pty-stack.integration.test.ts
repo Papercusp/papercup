@@ -98,7 +98,11 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ cols: 80, rows: 24 }),
     }).then((r) => r.json());
-    expect(resolved.command).toMatch(/omp|bash/);
+    // The command is the HARNESS'S configured terminal CLI (omp, bash,
+    // claude, …) — asserting a specific binary couples the contract test to
+    // box config. Structural contract only: non-empty command + cwd + args/env.
+    expect(typeof resolved.command).toBe('string');
+    expect(resolved.command.length).toBeGreaterThan(0);
     expect(resolved.cwd).toMatch(/\//);
     expect(Array.isArray(resolved.args)).toBe(true);
     expect(typeof resolved.env).toBe('object');
@@ -155,7 +159,9 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
       if (isBinary && Buffer.from(data as ArrayBuffer).toString('utf8').includes('AFTER_ACK')) saw = true;
     });
     ws.send(Buffer.from('echo AFTER_ACK\r'));
-    await new Promise((r) => setTimeout(r, 600));
+    // Poll instead of one fixed sleep: the spawned CLI's startup (clear-screen,
+    // banner) can delay the echo past a 600ms window on a busy box.
+    for (let i = 0; i < 30 && !saw; i++) await new Promise((r) => setTimeout(r, 200));
     expect(saw).toBe(true);
     ws.close();
     await fetch(`${OPERATOR}/api/harness/${SLUG}/pty/${spawn.id}/kill`, { method: 'POST' });
