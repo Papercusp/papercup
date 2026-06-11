@@ -541,9 +541,17 @@ import './lexicon/active_pack';
 // wake on its subscribed events.
 import { registerHiveWakeRules } from '../hive/wake';
 import { backgroundWorkspaceIds } from '../workspace-registry';
+// EI-312 leg 1: these module-scope effects are HOST-BOOT work, but the import
+// graph runs them in EVERY process that loads this module — each vitest worker
+// of a test run executed a "host boot" hive-watchdog check against the live DB
+// (11 staged watchdog wakes per `test:affected`). Gate on the EI-126 rule:
+// only a primary operator host runs background machinery; never tests.
+import { backgroundWorkersEnabled } from '../background-workers';
 try {
-  for (const ws of backgroundWorkspaceIds()) {
-    void registerHiveWakeRules(ws).catch(() => {});
+  if (backgroundWorkersEnabled()) {
+    for (const ws of backgroundWorkspaceIds()) {
+      void registerHiveWakeRules(ws).catch(() => {});
+    }
   }
 } catch {
   /* never block boot */
@@ -553,17 +561,20 @@ try {
 // (crash recovery): a STARTED hive whose host died mid-turn never ran the
 // turn-end hook, so it may sit started with no wake armed forever. Arm the
 // watchdog fallback for each such hive. Fail-soft; never blocks boot.
+// Gated like the wake-rule registration above (EI-312 leg 1).
 import { hiveBootCheck } from '../hive/watchdog';
 try {
-  void hiveBootCheck()
-    .then((results) => {
-      for (const r of results) {
-        if (r.outcome === 'armed' || r.outcome === 'staged') {
-          console.warn(`[hive-watchdog] boot ${r.outcome} a fallback wake: ${r.reason}`);
+  if (backgroundWorkersEnabled()) {
+    void hiveBootCheck()
+      .then((results) => {
+        for (const r of results) {
+          if (r.outcome === 'armed' || r.outcome === 'staged') {
+            console.warn(`[hive-watchdog] boot ${r.outcome} a fallback wake: ${r.reason}`);
+          }
         }
-      }
-    })
-    .catch(() => {});
+      })
+      .catch(() => {});
+  }
 } catch {
   /* never block boot */
 }

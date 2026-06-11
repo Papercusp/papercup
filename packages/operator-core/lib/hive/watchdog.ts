@@ -220,6 +220,15 @@ export async function armFallbackHiveWake(opts: {
         await recordFire({ workspaceId, installSlug, source, reason, wakeAt: null, demand: opts.demand });
         return { outcome: 'skipped', reason };
       }
+      // EI-312 leg 1: a staged wake arms NO time wake, so without this check
+      // the `live.armed` idempotence above never engages in manual mode — every
+      // seam (boot, 30s tick, turn-end) staged ANOTHER watchdog wake forever.
+      // A watchdog wake already sitting in the owner's review queue IS the
+      // armed state; mirror the auto-mode "already armed" skip (no fire record).
+      const { hasPendingWakeFromSource } = await import('../agent-tools/coordination/pending-wakes');
+      if (await hasPendingWakeFromSource(owner, 'hive-watchdog:').catch(() => false)) {
+        return { outcome: 'skipped', reason: 'a watchdog wake is already staged for review' };
+      }
       const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
       await wakeRecipients([owner], {
         summary: kickoff,

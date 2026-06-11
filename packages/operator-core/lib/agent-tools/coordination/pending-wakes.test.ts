@@ -10,6 +10,7 @@ import {
   countPendingWakes,
   releasePendingWake,
   clearPendingWakes,
+  hasPendingWakeFromSource,
 } from './pending-wakes';
 
 // A fake `sql` backing an in-memory pending_wakes table, routing by query text.
@@ -60,6 +61,14 @@ function fakeStore() {
       const i = rows.findIndex((r) => r.id === vals[0]);
       if (i >= 0) rows.splice(i, 1);
       return Promise.resolve([]);
+    }
+    // hasPendingWakeFromSource: owner + source-prefix LIKE existence probe.
+    if (q.includes('LIKE')) {
+      const prefix = String(vals[1]).replace(/%$/, '');
+      const hit = rows.some(
+        (r) => r.owner_id === vals[0] && String(r.source ?? '').startsWith(prefix),
+      );
+      return Promise.resolve(hit ? [{ '?column?': 1 }] : []);
     }
     // SELECT list — owner-filtered when a value is bound, the whole table
     // (list-all, owner-then-id order) when none is.
@@ -144,6 +153,15 @@ describe('pending-wakes staging coalescing (EI-312)', () => {
       ['s-1', 'b'],
       ['s-2', 'theirs'],
     ]);
+  });
+
+  it('hasPendingWakeFromSource matches owner + source prefix only (the watchdog idempotence probe, EI-312)', async () => {
+    await stagePendingWake({ ownerId: 's-1', summary: 'boot', source: 'hive-watchdog:boot' });
+    await stagePendingWake({ ownerId: 's-2', summary: 'tick', source: 'system:wake-brain' });
+
+    expect(await hasPendingWakeFromSource('s-1', 'hive-watchdog:')).toBe(true);
+    expect(await hasPendingWakeFromSource('s-2', 'hive-watchdog:')).toBe(false); // other source
+    expect(await hasPendingWakeFromSource('s-3', 'hive-watchdog:')).toBe(false); // other owner
   });
 
   it('clearPendingWakes drains one owner only and reports rows dropped', async () => {

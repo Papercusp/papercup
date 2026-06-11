@@ -29,6 +29,7 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.VOICE_CHANNELS]: 'Voice channels (desktop)',
   [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
   [FLAGS.OPEN_SIGNUP]: 'Open signup',
+  [FLAGS.ENDPOINT_AUTH_TIERS]: 'Endpoint auth tiers',
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
@@ -49,6 +50,8 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
     'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
   [FLAGS.OPEN_SIGNUP]:
     'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
+  [FLAGS.ENDPOINT_AUTH_TIERS]:
+    'Enforce loopback-tier routes at the dispatch chokepoint (auth-tier Wave 1: mutating routes reject non-loopback hosts). Off = emergency revert to pre-rollout behavior.',
 };
 
 type LoadState =

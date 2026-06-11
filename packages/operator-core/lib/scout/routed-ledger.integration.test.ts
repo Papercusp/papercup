@@ -114,4 +114,22 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     expect(byId.get('i4')!.outcome).toBe('pending');
     expect(byId.get('i1')!.outcome_checked_at).toBeTruthy();
   });
+
+  it('refreshScoutOutcomes ALSO lands the per-lens weight rows (the upsert is best-effort — a serialization throw is swallowed, so assert the rows, not just no-error)', async () => {
+    // Regression: the unnest(${jsArray}::text[]) form threw bytes.js
+    // "Received an instance of Array" under the getOrgPg client — caught LIVE
+    // in the 2026-06-11 cadence rehearsal because the swallow made it
+    // invisible to this suite's no-error pass. Fixed via jsonb_to_recordset
+    // over one ::text::jsonb param; this test pins the rows actually landing.
+    await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+    const weightRows = await db.adminSql<{ lens: string; wins: number; decided: number; weight: string | number }[]>`
+      SELECT lens, wins, decided, weight
+        FROM harness_shared.scout_lens_weights
+       WHERE workspace_id = ${WS}
+       ORDER BY lens`;
+    expect(weightRows.length).toBeGreaterThan(0);
+    const total = weightRows.reduce((s, r) => s + Number(r.weight), 0);
+    expect(total).toBeCloseTo(1, 6); // normalized shares
+    for (const r of weightRows) expect(r.decided).toBeGreaterThanOrEqual(0);
+  });
 });

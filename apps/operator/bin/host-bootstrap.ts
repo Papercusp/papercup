@@ -21,6 +21,7 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
+import { backgroundWorkersEnabled } from '@papercusp/operator-core/lib/background-workers';
 import { startClaudeCredentialSync } from '@papercusp/operator-core/lib/claude-credential-sync';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -308,10 +309,9 @@ export function runBootstrap(): void {
   // PAPERCUSP_HONO_PORT=3170 and is request-only by design (the release operator
   // on :3070 owns the shared-DB background machinery). Production ships the
   // desktop app with no :3170, so this branch defaults ON there — correct.
-  const backgroundWorkers =
-    process.env.PAPERCUSP_BACKGROUND_WORKERS != null
-      ? process.env.PAPERCUSP_BACKGROUND_WORKERS !== '0'
-      : process.env.PAPERCUSP_HONO_PORT !== '3170';
+  // EI-312 leg 1: the rule moved to the ONE shared evaluation so the
+  // module-scope boot effects in agent-tools/index.ts gate on the same thing.
+  const backgroundWorkers = backgroundWorkersEnabled();
   if (!backgroundWorkers) {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',

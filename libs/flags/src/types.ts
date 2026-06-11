@@ -94,6 +94,12 @@ export const FLAGS = {
   // when the paste-time lookup hits, or clone standalone (D-007). OFF = the
   // legacy coming-soon stub renders instead. Backend (P-006..P-010) is ungated.
   HIVE_FROM_GITHUB_URL: "papercusp-hive-from-github-url",
+  // auth-tier-rollout Wave 1 (audit D-007/D-009, owner-approved 2026-06-10):
+  // when ON, routes declared `auth: 'loopback'` are enforced at the dispatch
+  // chokepoint — non-loopback Host → 403. OFF is the emergency revert lever
+  // (routes fall back to public behavior); PAPERCUSP_ALLOW_REMOTE_ADMIN=1
+  // remains the per-host deliberate remote-admin opt-out.
+  ENDPOINT_AUTH_TIERS: "papercusp-endpoint-auth-tiers",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -148,6 +154,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the backend (P-006..P-010) shipped tested; the picker entry goes live with
   // it. OFF = the GitHub-URL card reverts to the coming-soon stub.
   [FLAGS.HIVE_FROM_GITHUB_URL]: true,
+  // ON by default (owner-approved Wave-1 rollout 2026-06-10): loopback-tier
+  // enforcement at the route dispatch chokepoint. OFF = emergency revert.
+  [FLAGS.ENDPOINT_AUTH_TIERS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

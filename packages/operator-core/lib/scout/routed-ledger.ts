@@ -170,15 +170,17 @@ export async function upsertScoutLensWeights(
   if (rows.length === 0) return;
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const lenses = rows.map((r) => r.lens as string);
-  const wins = rows.map((r) => r.wins);
-  const decided = rows.map((r) => r.decided);
-  const weights = rows.map((r) => r.weight);
+  // JS-array params don't serialize under the getOrgPg postgres-js client
+  // (bytes.js "Received an instance of Array" — same class as the sql.json
+  // jsonb quirk). Ship one JSON text param and explode it server-side.
+  const payload = JSON.stringify(
+    rows.map((r) => ({ lens: r.lens as string, wins: r.wins, decided: r.decided, weight: r.weight })),
+  );
   await sql`
     INSERT INTO harness_shared.scout_lens_weights (workspace_id, lens, wins, decided, weight, updated_at)
-    SELECT ${ws}, u.lens, u.wins, u.decided, u.weight, now()
-      FROM unnest(${lenses}::text[], ${wins}::int[], ${decided}::int[], ${weights}::numeric[])
-           AS u(lens, wins, decided, weight)
+    SELECT ${ws}, x.lens, x.wins, x.decided, x.weight, now()
+      FROM jsonb_to_recordset(${payload}::text::jsonb)
+           AS x(lens text, wins int, decided int, weight numeric)
     ON CONFLICT (workspace_id, lens) DO UPDATE SET
       wins = EXCLUDED.wins,
       decided = EXCLUDED.decided,

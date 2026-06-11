@@ -41,10 +41,11 @@ vi.mock('../agent-tools/coordination/inbox-wake', () => ({
 }));
 
 // Fake PG: route by statement text. Collects INSERTs into `fires` for P-012
-// assertions; serves the demand + mid-turn + recent-fires reads.
+// assertions; serves the demand + mid-turn + recent-fires + staged-wake reads.
 const fires: Array<unknown[]> = [];
 let demandRow = { todo_items: 0, started_plans: 0 };
 let midTurnRows: unknown[] = [];
+let pendingWakeRows: unknown[] = []; // EI-312 leg 1: pre-staged watchdog wakes
 const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
   const text = Array.isArray(strings) ? strings.join('?') : String(strings);
   if (/INSERT INTO harness_shared\.hive_watchdog_fires/i.test(text)) {
@@ -53,6 +54,7 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
   }
   if (/todo_items/i.test(text)) return Promise.resolve([demandRow]);
   if (/adv_sessions/i.test(text)) return Promise.resolve(midTurnRows);
+  if (/FROM harness_shared\.pending_wakes/i.test(text)) return Promise.resolve(pendingWakeRows);
   if (/count\(\*\)::int AS n/i.test(text)) return Promise.resolve([{ n: fires.length }]);
   return Promise.resolve([]);
 };
@@ -83,6 +85,7 @@ beforeEach(() => {
   fires.length = 0;
   demandRow = { todo_items: 0, started_plans: 0 };
   midTurnRows = [];
+  pendingWakeRows = [];
   getHiveStarted.mockResolvedValue(true);
   listStartedHives.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
   getDefaultWakeMode.mockResolvedValue('auto');
@@ -169,6 +172,22 @@ describe('armFallbackHiveWake (D-004: a default sleep, never an immediate re-inv
     expect(res.outcome).toBe('skipped');
     expect(declareHiveTimeWake).not.toHaveBeenCalled();
     expect(fires).toHaveLength(1);
+  });
+
+  it('manual wake-mode is IDEMPOTENT: a watchdog wake already staged → skip, no re-stage, no fire record (EI-312 leg 1)', async () => {
+    // A staged wake arms no time wake, so live.armed never engages in manual
+    // mode — this check is the manual-mode mirror of "a wake is already armed".
+    // Without it every seam (boot, 30s tick, turn-end) staged ANOTHER wake
+    // forever (the 230-fires-in-8h storm).
+    getDefaultWakeMode.mockResolvedValue('manual');
+    resolveBrainOwner.mockResolvedValue('s-brain');
+    pendingWakeRows = [{ '?column?': 1 }]; // owner already has a hive-watchdog:* staged wake
+    const res = await armFallbackHiveWake({ workspaceId: WS, installSlug: SLUG, source: 'boot', reason: 'r' });
+    expect(res.outcome).toBe('skipped');
+    expect(res.reason).toMatch(/already staged/);
+    expect(wakeRecipients).not.toHaveBeenCalled();
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
+    expect(fires).toHaveLength(0);
   });
 });
 

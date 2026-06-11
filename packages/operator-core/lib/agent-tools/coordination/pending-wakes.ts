@@ -135,6 +135,26 @@ export async function countAllPendingWakes(): Promise<Map<string, number>> {
   return out;
 }
 
+/**
+ * Does the owner already have a staged wake from a source with this prefix?
+ * The watchdog's manual-mode idempotence check (EI-312 leg 1): while a
+ * watchdog wake sits staged for owner review, the liveness invariant is
+ * satisfied — re-checking seams must skip, not stage again (mirrors the
+ * auto-mode "a wake is already armed" skip).
+ */
+export async function hasPendingWakeFromSource(
+  ownerId: string,
+  sourcePrefix: string,
+): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT 1 FROM harness_shared.pending_wakes
+    WHERE owner_id = ${ownerId} AND source LIKE ${sourcePrefix + '%'}
+    LIMIT 1
+  `;
+  return (rows as unknown[]).length > 0;
+}
+
 /** Drop one staged wake (after the owner releases / skips it). */
 export async function releasePendingWake(id: number): Promise<void> {
   const { sql } = getOrgPg();
