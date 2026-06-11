@@ -60,16 +60,18 @@ describe('spawnInvokeOnce', () => {
     expect(r.output).toBe('DONE'); // the timestamp line is filtered out
   });
 
-  // EI-286 leg (b): a child spawned by a non-default host (PAPERCUSP_HONO_PORT
-  // set, e.g. staging :3170) must get its spawner's own MCP base — without this,
-  // spawn-mcp defaulted the child to :3070/:3055 and the P-071 Queen handshook
-  // the WRONG host (tools never appeared in her turn).
-  it('threads the spawning host PAPERCUSP_OPERATOR_URL into the child extraEnv', async () => {
+  // EI-286 leg (b): a child spawned by a port-aware host (PAPERCUSP_HONO_PORT
+  // set, e.g. staging :3170) must get its SPAWNER's MCP base — the child
+  // inherits process.env, where .env.local pins PAPERCUSP_OPERATOR_URL to the
+  // green :3070, so without the override the P-071 Queen handshook the WRONG
+  // host (stale role catalog; placement tools never appeared).
+  it('pins the child MCP base to the spawning host, overriding the inherited host env', async () => {
     vi.stubEnv('PAPERCUSP_HONO_PORT', '3170');
-    vi.stubEnv('PAPERCUSP_OPERATOR_URL', '');
+    // The poison case: the HOST's own env points elsewhere (.env.local).
+    vi.stubEnv('PAPERCUSP_OPERATOR_URL', 'http://localhost:3070/api/mcp');
     H.cmd = node('process.stdout.write("ok")');
     await spawnInvokeOnce(process.cwd(), 'queen', [], {});
-    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3170/api/sse');
+    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3170/api/mcp');
     vi.unstubAllEnvs();
   });
 
@@ -78,9 +80,9 @@ describe('spawnInvokeOnce', () => {
     vi.stubEnv('PAPERCUSP_OPERATOR_URL', '');
     H.cmd = node('process.stdout.write("ok")');
     await spawnInvokeOnce(process.cwd(), 'queen', [], {
-      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9999/api/sse',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9999/api/mcp',
     });
-    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9999/api/sse');
+    expect(H.inputs.at(-1)?.extraEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9999/api/mcp');
     vi.unstubAllEnvs();
   });
 

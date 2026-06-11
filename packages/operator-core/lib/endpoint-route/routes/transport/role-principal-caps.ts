@@ -67,6 +67,27 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'plans:read',
     'routines:write',
   ],
+  // The QUEEN — the hive's placement-specialist decider (local-hive D-001:
+  // "the operator specialized"), so her caps mirror the operator's. They cover
+  // her whole placement loop: fleet:spawn + work_items:set_priority/reorder
+  // (work_items:write), fleet:drain + coord:send{wake} + events:emit
+  // (coord:write), fleet:assignments (work_items:read), survey reads
+  // (curation:read, activity:read), hive:declare-wake (routines:write).
+  // EI-286 follow-up — third and final missing grant: the blueprint declared
+  // the role, but neither AGENT_ROLES/COORD_ROLES (fixed earlier) nor this cap
+  // map knew it, so a role=queen launch saw an EMPTY capability-gated catalog.
+  queen: [
+    'harness:read',
+    'harness:write',
+    'work_items:read',
+    'work_items:write',
+    'curation:read',
+    'activity:read',
+    'coord:read',
+    'coord:write',
+    'plans:read',
+    'routines:write',
+  ],
   // The generic Hive worker (local-hive-orchestration D-003 / P-011; expanded by
   // bee-capability-expansion-2026-06-08): a plain implementation agent the Queen
   // places ranked work + a brief onto. A BROAD but deliberately NON-operator cap

@@ -78,6 +78,11 @@ export default function FleetRateControl() {
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const editing = useRef(false);
+  // Escape-cancel marker. Escape calls setDraft(null) and then blur(), but
+  // blur() dispatches its event SYNCHRONOUSLY — commit() runs with the stale
+  // pre-cancel `draft` closure and would PUT the value Escape meant to throw
+  // away. The ref is read at commit time, so the cancel actually cancels.
+  const cancelled = useRef(false);
 
   useEffect(() => {
     let cancel = false;
@@ -101,6 +106,11 @@ export default function FleetRateControl() {
 
   const commit = async () => {
     editing.current = false;
+    if (cancelled.current) {
+      cancelled.current = false;
+      setDraft(null);
+      return;
+    }
     if (draft === null) return;
     const next = parseMaxDraft(draft);
     setDraft(null);
@@ -169,6 +179,7 @@ export default function FleetRateControl() {
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
             if (e.key === 'Escape') {
+              cancelled.current = true;
               setDraft(null);
               editing.current = false;
               (e.target as HTMLInputElement).blur();
