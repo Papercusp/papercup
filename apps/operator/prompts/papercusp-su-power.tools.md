@@ -118,11 +118,14 @@ feature-scoped messages, e.g. `messages:send`).
 
 **Plugins** are loaded per workspace, namespaced `<plugin>.<verb>` —
 discover the live set with `agent_tools:list` or `plugins:runtime_status`.
-Status (verify before relying): **repomix** and **fetch-plus** work;
-**firecrawl** (heavy web research) needs `FIRECRAWL_API_KEY` or its tools
-return "not configured"; **gitnexus** (code-graph queries) needs its binary
-on PATH **and** `gitnexus analyze <repo>` run per repo — currently
-spawn-fails, so treat it as down until that's fixed.
+Status (verify before relying): **repomix**, **fetch-plus**, and
+**gitnexus** work (gitnexus needs `gitnexus analyze <repo>` run per repo to
+have anything indexed); **firecrawl** (heavy web research) needs
+`FIRECRAWL_API_KEY` or its tools return "not configured". An `unknown_tool`
+on a plugin tool right after a deploy used to mean the post-restart
+empty-registry window (fixed by the boot warm — see the
+`plugin-tools-empty-registry-window` insight); retry once before declaring
+a plugin down.
 
 ## Working in the shared dev environment
 

@@ -2,18 +2,25 @@
 
 /**
  * Agent backend settings — pick which CLI (claude-code or omp) the
- * operator + harness drive, override the binary if needed, and set
- * per-role model defaults.
+ * operator + harness drive, override the binary if needed, set per-role
+ * model defaults, and define the model-tier menu per-task picks resolve
+ * against (queen-model-tier-selection-2026-06-11).
  *
- * Persisted to <papercuspRoot>/agent/config.json. Changes take effect
- * for in-process spawns immediately (the API route mirrors into
- * process.env). Headless orchestrator invocations from a terminal don't
- * inherit; users have to set $AGENT_BACKEND themselves there.
+ * PER-FIELD AUTO-SAVE (owner ask 2026-06-11): every control persists
+ * automatically (debounced) — there is no Save button. This is the canonical
+ * macOS-System-Preferences settings shape (design libraries §form-patterns;
+ * voice/backups/operator are the sibling sites). Invalid rows (bad model
+ * spec, duplicate tier name) are EXCLUDED from the saved config and flagged
+ * inline — they never block the rest of the page from saving.
+ *
+ * Persisted via POST /api/agent-config (PG operator_agent_config). Changes
+ * take effect for in-process spawns immediately (the route mirrors into
+ * process.env; empty values restore the host's boot env — EI-337).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { z } from 'zod';
-import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { useDebouncedSave } from '../../harness/useDebouncedSave';
+import { FormField } from '@/lib/forms';
 import { Select } from '../../harness/Select';
 import {
   AGENT_BACKENDS,
@@ -34,17 +41,10 @@ const BACKEND_CHOICE_OPTIONS = [
 /** Local select value: a concrete backend, or 'inherit' = omit from the map. */
 type SurfaceChoice = 'inherit' | AgentBackend;
 
-const ConfigSchema = z.object({
-  backend: z.enum(['auto', 'claude-code', 'omp', 'codex']),
-  cmd: z.string().optional().default(''),
-  // Per-role models stored as a JSON-string textarea so users can
-  // copy/paste between machines. Validated on submit.
-  modelsJson: z.string().optional().default(''),
-});
-type ConfigFormData = z.infer<typeof ConfigSchema>;
+type GlobalBackend = 'auto' | AgentBackend;
 
 interface AgentConfig {
-  backend: 'auto' | 'claude-code' | 'omp' | 'codex';
+  backend: GlobalBackend;
   cmd: string;
   models: Record<string, string>;
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
@@ -60,7 +60,7 @@ interface DetectedBinaries {
 interface ConfigSnapshot {
   config: AgentConfig;
   binaries: DetectedBinaries;
-  effectiveBackend: 'claude-code' | 'omp' | 'codex';
+  effectiveBackend: AgentBackend;
   envOverrides: { AGENT_BACKEND: string | null; AGENT_CMD: string | null; CLAUDE_CMD: string | null };
 }
 
@@ -78,6 +78,30 @@ const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator',
     queen's per-task tier pick applies (others can be added via the JSON). */
 const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
 
+/** The claude CLI's bare model aliases (verified against the installed CLI
+    2026-06-11: `claude -p --model <x>` — `fable5`/`opush` are rejected).
+    Used for a SOFT typo warning only: full ids (claude-opus-4-8), provider
+    ids (anthropic/…, gpt-5.5) and other backends' ids are always allowed. */
+const KNOWN_CLAUDE_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'fable']);
+
+/** Model-id half of a `<modelId>[:<effort>]` spec. */
+function specId(spec: string): string {
+  const lastColon = spec.lastIndexOf(':');
+  if (lastColon <= 0) return spec;
+  const suffix = spec.slice(lastColon + 1);
+  return ['low', 'medium', 'high', 'xhigh', 'max'].includes(suffix) ? spec.slice(0, lastColon) : spec;
+}
+
+/** Soft typo check: a bare lowercase word that isn't a known claude alias is
+    almost always a misspelling (opush, fable5). Anything with -, /, or . is
+    a full/provider id and never flagged. */
+function aliasWarning(spec: string): string | null {
+  const id = specId(spec.trim());
+  if (!/^[a-z][a-z0-9]*$/.test(id)) return null;
+  if (KNOWN_CLAUDE_ALIASES.has(id)) return null;
+  return `"${id}" is not a known claude alias (haiku · sonnet · opus · fable) — full model ids like claude-opus-4-8 are also fine`;
+}
+
 /** Mid-edit tier rows (drafts, so plain useState like the other form fields).
     `backend: ''` = inherit the global agent command. */
 interface TierRow {
@@ -93,6 +117,9 @@ export default function AgentSettingsPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [backend, setBackend] = useState<GlobalBackend>('omp');
+  const [cmd, setCmd] = useState('');
+  const [modelsJson, setModelsJson] = useState('');
   // Per-surface backend overrides. 'inherit' means "omit from the map" (use
   // the global backend above). Mid-edit draft, so plain useState rather than
   // nuqs — it's wiped on reload from the fetched config like the other fields.
@@ -100,8 +127,7 @@ export default function AgentSettingsPage() {
     () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
   );
   // Per-surface model overrides (OQ3 companion to surfaceBackends). '' = inherit
-  // the surface's own default model. Needed when a surface's backend differs
-  // from the global one and the default model id won't resolve there.
+  // the surface's own default model.
   const [surfaceModels, setSurfaceModels] = useState<Record<SurfaceKey, string>>(
     () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
   );
@@ -113,10 +139,12 @@ export default function AgentSettingsPage() {
   // Per-role ceiling: '' = no ceiling (strongest tier allowed).
   const [tierCeilings, setTierCeilings] = useState<Record<string, string>>({});
 
-  const { register, submit, reset, isSubmitting, watch } = useFormWith(ConfigSchema, {
-    defaultValues: { backend: 'omp', cmd: '', modelsJson: '' },
-  });
-  const watchBackend = watch('backend');
+  // Auto-save plumbing: the last server-acknowledged config (stringified) —
+  // hydration echoes and no-op edits compare equal and skip the POST.
+  const lastSavedRef = useRef<string | null>(null);
+  // Last VALID parsed models map — an in-progress (invalid) JSON edit keeps
+  // saving the previous valid map instead of blocking the page.
+  const lastValidModelsRef = useRef<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
@@ -124,24 +152,17 @@ export default function AgentSettingsPage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = (await r.json()) as ConfigSnapshot;
       setSnapshot(d);
-      reset({
-        backend: d.config.backend,
-        cmd: d.config.cmd,
-        modelsJson: Object.keys(d.config.models).length > 0
-          ? JSON.stringify(d.config.models, null, 2)
-          : '',
-      });
+      setBackend(d.config.backend);
+      setCmd(d.config.cmd);
+      lastValidModelsRef.current = d.config.models ?? {};
+      setModelsJson(Object.keys(d.config.models).length > 0 ? JSON.stringify(d.config.models, null, 2) : '');
       const fetched = d.config.backends ?? {};
       setSurfaceBackends(
-        Object.fromEntries(
-          SURFACE_KEYS.map((k) => [k, fetched[k] ?? 'inherit']),
-        ) as Record<SurfaceKey, SurfaceChoice>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, fetched[k] ?? 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
       );
       const fetchedModels = d.config.surfaceModels ?? {};
       setSurfaceModels(
-        Object.fromEntries(
-          SURFACE_KEYS.map((k) => [k, fetchedModels[k] ?? '']),
-        ) as Record<SurfaceKey, string>,
+        Object.fromEntries(SURFACE_KEYS.map((k) => [k, fetchedModels[k] ?? ''])) as Record<SurfaceKey, string>,
       );
       const fetchedTiers = d.config.tiers ?? [];
       setTiersCustomized(fetchedTiers.length > 0);
@@ -152,31 +173,39 @@ export default function AgentSettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [reset]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
-  const onSubmit = async (data: ConfigFormData) => {
-    let models: Record<string, string> = {};
-    if (data.modelsJson && data.modelsJson.trim()) {
+  // ── Assemble the persistable config + inline problems ──────────────────────
+  // Invalid pieces are EXCLUDED from the save (and flagged inline) so one bad
+  // row never blocks the rest of the page from persisting.
+  const { persistable, problems, warnings } = useMemo(() => {
+    const problems: string[] = [];
+    const warnings: string[] = [];
+
+    let models = lastValidModelsRef.current;
+    if (modelsJson.trim()) {
       try {
-        const parsed = JSON.parse(data.modelsJson);
+        const parsed = JSON.parse(modelsJson) as unknown;
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('models must be a JSON object of { role: model }');
+          throw new Error('must be a JSON object of { role: model }');
         }
+        const next: Record<string, string> = {};
         for (const [k, v] of Object.entries(parsed)) {
-          if (typeof k !== 'string' || typeof v !== 'string') {
-            throw new Error(`invalid models entry: ${k} = ${typeof v}`);
-          }
-          models[k] = v;
+          if (typeof v !== 'string') throw new Error(`"${k}" must map to a string model id`);
+          next[k] = v;
         }
+        models = next;
+        lastValidModelsRef.current = next;
       } catch (err) {
-        toast.error(`models JSON: ${(err as Error).message}`);
-        return;
+        problems.push(`per-role models JSON not saved: ${(err as Error).message}`);
       }
+    } else {
+      models = {};
+      lastValidModelsRef.current = {};
     }
-    // Only surfaces set to a concrete backend go in the map; 'inherit' ones
-    // are omitted so they fall back to the global backend.
+
     const backends: Partial<Record<SurfaceKey, AgentBackend>> = {};
     const surfaceModelsOut: Partial<Record<SurfaceKey, string>> = {};
     for (const k of SURFACE_KEYS) {
@@ -185,54 +214,85 @@ export default function AgentSettingsPage() {
       const m = surfaceModels[k]?.trim();
       if (m) surfaceModelsOut[k] = m;
     }
-    // Tier menu: validate, then store [] when the rows still equal the
-    // committed defaults — an untouched menu keeps tracking future default
-    // changes instead of freezing today's copy.
+
     const cleanedTiers: ModelTier[] = [];
     const seenNames = new Set<string>();
-    for (const row of tierRows) {
+    for (const [i, row] of tierRows.entries()) {
       const name = row.name.trim();
       const spec = row.spec.trim();
-      if (!name && !spec) continue; // blank row — ignore
+      if (!name && !spec) continue; // blank row — ignored
       if (!name || !spec) {
-        toast.error(`tier row needs both a name and a model spec (got name="${name}" spec="${spec}")`);
-        return;
+        problems.push(`tier row ${i + 1} not saved: needs both a name and a model spec`);
+        continue;
       }
       if (seenNames.has(name.toLowerCase())) {
-        toast.error(`duplicate tier name "${name}"`);
-        return;
+        problems.push(`tier row ${i + 1} not saved: duplicate name "${name}"`);
+        continue;
       }
       if (!isValidModelSpec(spec)) {
-        toast.error(`tier "${name}": invalid model spec "${spec}" (shape: <modelId>[:<effort>], no spaces)`);
-        return;
+        problems.push(`tier "${name}" not saved: invalid spec "${spec}" (shape: <modelId>[:<effort>], no spaces)`);
+        continue;
       }
+      const warn = aliasWarning(spec);
+      if (warn) warnings.push(`tier "${name}": ${warn}`);
       seenNames.add(name.toLowerCase());
       cleanedTiers.push({ name, spec, ...(row.backend ? { backend: row.backend } : {}) });
     }
+    // Store [] when the rows still equal the committed defaults — an untouched
+    // menu keeps tracking future default changes instead of freezing a copy.
     const isDefaultMenu = JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
     const tiersOut = isDefaultMenu ? [] : cleanedTiers;
+
     const ceilingsOut: Record<string, string> = {};
     for (const [role, tier] of Object.entries(tierCeilings)) {
       if (!tier) continue;
       if (!seenNames.has(tier.toLowerCase())) {
-        toast.error(`ceiling for "${role}" names unknown tier "${tier}"`);
-        return;
+        problems.push(`ceiling for "${role}" not saved: names unknown tier "${tier}"`);
+        continue;
       }
       ceilingsOut[role] = tier;
     }
-    try {
+
+    const persistable: AgentConfig = {
+      backend,
+      cmd,
+      models,
+      backends,
+      surfaceModels: surfaceModelsOut,
+      tiers: tiersOut,
+      tierCeilings: ceilingsOut,
+    };
+    return { persistable, problems, warnings };
+  }, [backend, cmd, modelsJson, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
+
+  const hydrated = !loading && snapshot != null;
+  const { saving, lastSavedAt } = useDebouncedSave(
+    hydrated ? persistable : null,
+    async (v) => {
+      if (v == null) return;
+      const body = JSON.stringify(v);
+      // Hydration echo / no-op edit — nothing changed since the last ack.
+      if (lastSavedRef.current === body) return;
       const r = await fetch('/api/agent-config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends, surfaceModels: surfaceModelsOut, tiers: tiersOut, tierCeilings: ceilingsOut }),
+        body,
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      toast.success('Saved. In-process spawns now use the new backend.');
-      await load();
-    } catch (err) {
-      toast.error(`save failed: ${(err as Error).message}`);
+      lastSavedRef.current = body;
+    },
+    {
+      ms: 600,
+      onError: (err) => toast.error(`auto-save failed: ${(err as Error).message}`),
+    },
+  );
+  // Seed the no-op guard with the server's view once hydrated.
+  useEffect(() => {
+    if (hydrated && lastSavedRef.current == null) {
+      lastSavedRef.current = JSON.stringify(persistable);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   const runTest = async () => {
     setTesting(true);
@@ -250,14 +310,24 @@ export default function AgentSettingsPage() {
     }
   };
 
-  if (loading) return <div><h1>Agent backend</h1><p className="pc-settings-loading">Loading…</p></div>;
-  if (!snapshot) return <div><h1>Agent backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
+  if (loading) return <div><h1>AI backend</h1><p className="pc-settings-loading">Loading…</p></div>;
+  if (!snapshot) return <div><h1>AI backend</h1><p style={{ color: 'var(--bad)' }}>Failed to load config.</p></div>;
 
   const { binaries, effectiveBackend, envOverrides } = snapshot;
+  const defaultCmd = backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p';
 
   return (
     <div>
-      <h1>Agent backend</h1>
+      <h1 style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        AI backend
+        <span style={{ fontSize: 12, fontWeight: 400, color: saving ? 'var(--accent)' : 'var(--fg-mute)' }}>
+          {saving
+            ? 'Saving…'
+            : lastSavedAt
+              ? `✓ Saved ${lastSavedAt.toLocaleTimeString()}`
+              : 'Changes save automatically'}
+        </span>
+      </h1>
       <p className="pc-settings-intro">
         Which agent CLI the operator and harness drive. Two backends are
         supported: <code>claude-code</code> (Anthropic <code>claude</code>)
@@ -266,8 +336,20 @@ export default function AgentSettingsPage() {
           target="_blank"
           rel="noreferrer"
           style={{ color: 'var(--accent)' }}
-        >oh-my-pi</a>) — the multi-provider option.
+        >oh-my-pi</a>) — the multi-provider option. Every change on this page
+        saves automatically.
       </p>
+
+      {(problems.length > 0 || warnings.length > 0) && (
+        <section className="pc-card" style={{ padding: 12, marginTop: 12, borderColor: problems.length > 0 ? 'var(--bad)' : 'var(--warn, #b58900)' }}>
+          {problems.map((p, i) => (
+            <div key={`p${i}`} style={{ fontSize: 12, color: 'var(--bad)' }}>✗ {p}</div>
+          ))}
+          {warnings.map((w, i) => (
+            <div key={`w${i}`} style={{ fontSize: 12, color: 'var(--warn, #b58900)' }}>⚠ {w}</div>
+          ))}
+        </section>
+      )}
 
       {/* Detected binaries — read-only system status */}
       <section className="pc-card" style={{ padding: 16, marginTop: 16 }}>
@@ -305,8 +387,7 @@ export default function AgentSettingsPage() {
         </p>
       </section>
 
-      {/* Form */}
-      <form onSubmit={submit(onSubmit)} style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FormField
           label="Backend (sets AGENT_BACKEND)"
           description="The CLI the orchestrator + harness drive. 'omp' is the default (routes through Meridian + Claude Max). 'claude-code' uses the local `claude` CLI. 'codex' uses the local `codex` CLI (ChatGPT OAuth). 'auto' infers from the binary name and falls back to omp."
@@ -314,7 +395,13 @@ export default function AgentSettingsPage() {
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {(['auto', 'claude-code', 'omp', 'codex'] as const).map((b) => (
               <label key={b} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
-                <input type="radio" value={b} {...register('backend')} />
+                <input
+                  type="radio"
+                  name="backend"
+                  value={b}
+                  checked={backend === b}
+                  onChange={() => setBackend(b)}
+                />
                 <code>{b}</code>
                 {b === 'omp' && !binaries.omp && (
                   <span style={{ color: 'var(--bad)', fontSize: 11 }}>(binary not found)</span>
@@ -329,47 +416,27 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Custom command (sets AGENT_CMD)"
-          description={`Overrides the default binary + flags. Equivalent to setting the AGENT_CMD env var. Leave empty for "${watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p'}".`}
+          description={`Overrides the default binary + flags. Equivalent to setting the AGENT_CMD env var. Leave empty for "${defaultCmd}" (or the host environment's own value).`}
         >
           <input
             type="text"
-            placeholder={watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p --dangerously-skip-permissions'}
+            placeholder={backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p --dangerously-skip-permissions'}
             className="pc-input"
-            {...register('cmd')}
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
           />
           <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className="pc-btn pc-btn-secondary"
-              style={{ fontSize: 11, padding: '2px 8px' }}
-              onClick={() => reset({ ...watch(), cmd: 'omp -p' })}
-            >
-              omp -p
-            </button>
-            <button
-              type="button"
-              className="pc-btn pc-btn-secondary"
-              style={{ fontSize: 11, padding: '2px 8px' }}
-              onClick={() => reset({ ...watch(), cmd: 'claude -p' })}
-            >
-              claude -p
-            </button>
-            <button
-              type="button"
-              className="pc-btn pc-btn-secondary"
-              style={{ fontSize: 11, padding: '2px 8px' }}
-              onClick={() => reset({ ...watch(), cmd: 'claude -p --dangerously-skip-permissions' })}
-            >
-              claude -p (skip perms)
-            </button>
-            <button
-              type="button"
-              className="pc-btn pc-btn-secondary"
-              style={{ fontSize: 11, padding: '2px 8px' }}
-              onClick={() => reset({ ...watch(), cmd: '' })}
-            >
-              clear
-            </button>
+            {(['omp -p', 'claude -p', 'claude -p --dangerously-skip-permissions', ''] as const).map((preset) => (
+              <button
+                key={preset || 'clear'}
+                type="button"
+                className="pc-btn pc-btn-secondary"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => setCmd(preset)}
+              >
+                {preset === '' ? 'clear' : preset === 'claude -p --dangerously-skip-permissions' ? 'claude -p (skip perms)' : preset}
+              </button>
+            ))}
           </div>
         </FormField>
 
@@ -382,13 +449,14 @@ export default function AgentSettingsPage() {
             placeholder='{\n  "worker": "haiku",\n  "reviewer": "opus"\n}'
             className="pc-input"
             style={{ fontFamily: 'monospace', fontSize: 12 }}
-            {...register('modelsJson')}
+            value={modelsJson}
+            onChange={(e) => setModelsJson(e.target.value)}
           />
         </FormField>
 
         <FormField
           label="Model tiers (weakest → strongest)"
-          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Backend 'Inherit global' runs the tier on the backend above; picking one swaps that spawn onto that CLI. Leave as-is to track the built-in menu."
+          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. Backend 'Inherit global' runs the tier on the backend above. Leave as-is to track the built-in menu."
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: 'var(--fg-mute)' }}>
@@ -413,7 +481,15 @@ export default function AgentSettingsPage() {
                 />
                 <input
                   className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 200, fontFamily: 'monospace' }}
+                  style={{
+                    fontSize: 13,
+                    padding: '2px 6px',
+                    width: 200,
+                    fontFamily: 'monospace',
+                    ...(row.spec.trim() && (!isValidModelSpec(row.spec.trim()) || aliasWarning(row.spec))
+                      ? { borderColor: 'var(--warn, #b58900)' }
+                      : {}),
+                  }}
                   placeholder="model[:effort], e.g. opus:high"
                   aria-label={`Tier ${i + 1} model spec`}
                   value={row.spec}
@@ -551,7 +627,6 @@ export default function AgentSettingsPage() {
         </FormField>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          <SubmitButton pending={isSubmitting}>Save</SubmitButton>
           <button
             type="button"
             className="pc-btn"
@@ -561,7 +636,7 @@ export default function AgentSettingsPage() {
             {testing ? 'Testing…' : 'Test current backend'}
           </button>
         </div>
-      </form>
+      </div>
 
       {/* Test result panel */}
       {testResult && (
@@ -599,8 +674,8 @@ export default function AgentSettingsPage() {
           page — it reads <code>$AGENT_BACKEND</code>/<code>$AGENT_CMD</code>{' '}
           from the shell instead. Either set them before invoking:
         </p>
-        <pre className="pc-code" style={{ marginTop: 8 }}>{`export AGENT_BACKEND=${watchBackend === 'auto' ? 'omp' : watchBackend}
-export AGENT_CMD='${watchBackend === 'omp' ? 'omp -p' : watchBackend === 'codex' ? 'codex exec' : 'claude -p'}'`}</pre>
+        <pre className="pc-code" style={{ marginTop: 8 }}>{`export AGENT_BACKEND=${backend === 'auto' ? 'omp' : backend}
+export AGENT_CMD='${defaultCmd}'`}</pre>
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: 0 }}>
           …or rely on the binary auto-inference (the orchestrator detects{' '}
           <code>omp</code>/<code>pi</code> in the command name).

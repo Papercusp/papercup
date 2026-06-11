@@ -11,7 +11,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { judgeRedundancyGroup } from '../../work-item-redundancy';
+import { judgeRedundancyGroup, resolveReplicaHiveSlug } from '../../work-item-redundancy';
+import { activeWorkspaceId } from '../../workspace-registry';
 import type { JudgeLlmCall } from '../../gym/primitives';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
@@ -59,8 +60,10 @@ export default defineTool({
       return json({ ok: false, error: `judge llmCall unavailable: ${e instanceof Error ? e.message : String(e)}` });
     }
     try {
+      const workspaceId = activeWorkspaceId();
+      const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
       const res = await judgeRedundancyGroup(
-        { harness: args.harness, workItemId: args.id, intent: args.intent, projectContext: args.projectContext, rubric: args.rubric },
+        { workspaceId, harness: args.harness, hiveSlug, workItemId: args.id, intent: args.intent, projectContext: args.projectContext, rubric: args.rubric },
         { llmCall },
       );
       if (!res.ok) {

@@ -32,6 +32,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { getWorkItem, setWorkItemState } from './work-items';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
+import { hiveHomeSlugForHarness } from './hive-federation';
 import {
   judgeGymRun,
   rubricFromBlueprintGym,
@@ -61,6 +62,21 @@ export const WORK_ITEM_REPLICA_OP_KINDS = {
 function replicaScopeOf(opts: { hiveSlug?: string | null; harnessSlug?: string; harness?: string }): string {
   const harness = opts.harnessSlug ?? opts.harness ?? '';
   return opts.hiveSlug && opts.hiveSlug.length > 0 ? opts.hiveSlug : harness;
+}
+
+/**
+ * Resolve the Hive home slug for a harness so a replica op routes to the per-HIVE
+ * authority (EI-266) — the caller (a tool) threads this into the store opts,
+ * mirroring how work-item-claim-lease-wiring resolves it for the claim lease. Any
+ * resolution failure (not part of a Hive / lookup error) → null = harness-scoped
+ * fallback (single-box correct). Best-effort: never throws.
+ */
+export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: string): Promise<string | null> {
+  try {
+    return await hiveHomeSlugForHarness(workspaceId, harnessSlug);
+  } catch {
+    return null;
+  }
 }
 
 /** The owner's master switch for BOINC redundancy (P-014). Default OFF — mirrors

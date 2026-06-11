@@ -142,6 +142,22 @@ export function runBootstrap(): void {
       console.warn('[plugin-mount] unexpected rejection:', e);
     });
 
+  // Eagerly warm the plugin host so plugin-contributed tools (repomix.pack,
+  // gitnexus.*, design-phase.*) are in the projected-tool registry from boot.
+  // Registration is otherwise lazy — it runs inside getPluginHost() on the
+  // first plugin-dependent request — and this host restarts on every deploy,
+  // so the fleet's first post-deploy plugin tool call landed in the
+  // empty-registry window and failed `unknown_tool` (that window is how
+  // gitnexus got misdiagnosed as down — plugin-system-hive-port-2026-06-11
+  // P-012). Fire-and-forget: discovery errors stay visible via
+  // plugins:runtime_status, and a failure here must not block boot.
+  import('@papercusp/operator-core/lib/plugin-host-runtime')
+    .then(({ getPluginHost }) => getPluginHost())
+    .then((s) => {
+      console.log(`[plugin-host] warmed at boot: loaded=${s.loaded.length} errors=${s.loadErrors.length}`);
+    })
+    .catch((e) => console.warn('[plugin-host] boot warm failed (non-fatal):', e));
+
   // The legacy in-process AutoLoop ticker is RETIRED (autoloop-pot-operator-
   // rebuild P-010 / D-009) — scheduled decider fires ride the durable routines
   // engine (blueprint triggers.schedule → system:blueprint-run).

@@ -7,7 +7,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { getItemRedundancy, listReplicas, workItemRedundancyEnabled } from '../../work-item-redundancy';
+import { getItemRedundancy, listReplicas, resolveReplicaHiveSlug, workItemRedundancyEnabled } from '../../work-item-redundancy';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -33,7 +34,9 @@ export default defineTool({
     if (redundancy == null) {
       return json({ ok: false, error: `work-item ${args.id} not found in harness ${args.harness}` });
     }
-    const replicas = await listReplicas(args.id, { harness: args.harness });
+    const workspaceId = activeWorkspaceId();
+    const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
+    const replicas = await listReplicas(args.id, { harness: args.harness, workspaceId, hiveSlug });
     const completeCount = replicas.filter((r) => r.status === 'complete').length;
     return json({
       ok: true,

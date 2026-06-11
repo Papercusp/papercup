@@ -12,7 +12,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { claimReplicaSlot } from '../../work-item-redundancy';
+import { claimReplicaSlot, resolveReplicaHiveSlug } from '../../work-item-redundancy';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
 
@@ -40,8 +41,12 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const owner = args.owner ?? ident.ownerId;
+    const workspaceId = activeWorkspaceId();
+    const hiveSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
     const res = await claimReplicaSlot({
+      workspaceId,
       harnessSlug: args.harness,
+      hiveSlug,
       workItemId: args.id,
       owner,
       ownerLabel: ident.ownerLabel ?? null,

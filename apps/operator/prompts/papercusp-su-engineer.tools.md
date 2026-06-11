@@ -118,10 +118,10 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   Reach for it on *any* UI/design work — check tokens + the component registry
   before hand-rolling UI.
 - **`repomix.pack`** — pack a repo (subset) into one LLM-friendly document for
-  a holistic view. (⚠ Plugin tools — this, `design-phase.*`, `fetch_plus.*` —
-  surface only on a **workspace-scoped** session
-  (`?superuser=1&workspace=<slug>`); the default unscoped psu session lists
-  none of them — EI-38.)
+  a holistic view. (Plugin tools — this, `design-phase.*`, `fetch_plus.*`,
+  `gitnexus.*` — surface on every su session since the plugin-host boot warm;
+  EI-38's "workspace-scoped only" was the post-restart empty-registry window
+  in disguise — see the `plugin-tools-empty-registry-window` insight.)
 - **`work_items:list { assignedBy, kind:'task' }` + `coord:presence`** = "my
   background agents"; completions push to your `coord:inbox` — no poll.
 - **`blueprint:catalog` → `extend`/`validate` → `harness:create`** — discovery
@@ -134,9 +134,12 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway PID.
 
 **Plugins** are per-workspace, namespaced `<plugin>.<verb>`; discover via
-`agent_tools:list` / `plugins:runtime_status`. repomix + fetch-plus work;
-firecrawl needs `FIRECRAWL_API_KEY`; gitnexus currently spawn-fails — treat as
-down. `papercusp-su` does **not** give you filesystem access (use Read/Write/
+`agent_tools:list` / `plugins:runtime_status`. repomix, fetch-plus, and
+gitnexus work; firecrawl needs `FIRECRAWL_API_KEY`. An `unknown_tool` on a
+plugin tool right after a deploy used to mean the post-restart empty-registry
+window (fixed by the boot warm — see the
+`plugin-tools-empty-registry-window` insight); retry once before declaring a
+plugin down. `papercusp-su` does **not** give you filesystem access (use Read/Write/
 Edit), long-lived bidirectional channels, or dev-server lifecycle
 (`processes:kill` only signals a PID).
 

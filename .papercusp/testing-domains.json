@@ -1457,11 +1457,13 @@
         },
         {
           "id": "claim-authority",
-          "label": "Work-item claim authority",
-          "description": "The Hive-scoped work-item claim arbitration seam (single-peer local authority + the Track-B swap-in registry), the authority-side acquire/heartbeat/release op routing, and the claim STORE itself: lease lifecycle, concurrency races, and the two-instance store split.",
+          "label": "Work-item claim + replica authority",
+          "description": "The Hive-scoped work-item arbitration seams (single-peer local authority + the Track-B swap-in registry) and their stores: (1) the CLAIM lease — acquire/heartbeat/release op routing, lease lifecycle, concurrency races, two-instance split; and (2) the BOINC REDUNDANCY replica store (EI-266) — the per-Hive replica-authority seam + the claim-slot/heartbeat/release/record-result/list/judge op routing that homes the N replicas of a high-stakes item in ONE store so cross-swarm replicas meet, plus the replica lease/steal/record/judge store behavior.",
           "globs": [
             "packages/operator-core/lib/work-item-claim-authority*.test.ts",
-            "packages/operator-core/lib/work-item-claims*.test.ts"
+            "packages/operator-core/lib/work-item-claims*.test.ts",
+            "packages/operator-core/lib/work-item-replica-authority*.test.ts",
+            "packages/operator-core/lib/work-item-redundancy*.test.ts"
           ]
         },
         {

@@ -8,12 +8,22 @@
  * through Hono, instrumentation.ts boot path, and the cross-process
  * resume semantics.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { WebSocket } from 'ws';
 
 const OPERATOR = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
 const WS_BASE = process.env.PAPERCUSP_PTY_WS_BASE ?? 'ws://127.0.0.1:3056';
-const SLUG = process.env.PAPERCUSP_TEST_SLUG ?? 'sheets';
+// Resolved in beforeAll: PAPERCUSP_TEST_SLUG, else the first registered
+// project. The old hardcoded 'sheets' default failed RED on every box where
+// that fixture harness doesn't exist — spawn returned {error:"unknown
+// harness slug"} and spawn.id was undefined (EI-292).
+let SLUG = process.env.PAPERCUSP_TEST_SLUG ?? '';
+
+// Spawn a plain bash pty. The route's default command is the harness's
+// configured terminal CLI (an AGENT session — claude/omp — on the dev box):
+// the test must not burn one per case, and a TUI's startup repaints make the
+// `echo …` round-trip flaky. bash gives deterministic shell echo semantics.
+const SPAWN_BODY = JSON.stringify({ command: 'bash', args: [], cols: 80, rows: 24 });
 
 async function operatorAlive(): Promise<boolean> {
   try {
@@ -25,6 +35,14 @@ async function operatorAlive(): Promise<boolean> {
 }
 
 describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => {
+  beforeAll(async () => {
+    if (SLUG) return;
+    const d = await fetch(`${OPERATOR}/api/harness/projects`)
+      .then((r) => r.json())
+      .catch(() => null);
+    SLUG = (d as { projects?: Array<{ slug?: string }> } | null)?.projects?.[0]?.slug ?? 'papercup';
+  });
+
   it('operator is reachable', async () => {
     const alive = await operatorAlive();
     expect(alive).toBe(true);
@@ -35,7 +53,7 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
     const spawn = await fetch(`${OPERATOR}/api/harness/${SLUG}/pty/spawn`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cols: 80, rows: 24 }),
+      body: SPAWN_BODY,
     }).then((r) => r.json());
     expect(spawn.id).toMatch(/^[a-f0-9-]{36}$/);
     expect(spawn.pid).toBeGreaterThan(0);
@@ -96,7 +114,7 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
     const resolved = await fetch(`${OPERATOR}/api/harness/${SLUG}/pty/resolve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cols: 80, rows: 24 }),
+      body: SPAWN_BODY,
     }).then((r) => r.json());
     // The command is the HARNESS'S configured terminal CLI (omp, bash,
     // claude, …) — asserting a specific binary couples the contract test to
@@ -118,7 +136,7 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
     const spawn = await fetch(`${OPERATOR}/api/harness/${SLUG}/pty/spawn`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cols: 80, rows: 24 }),
+      body: SPAWN_BODY,
     }).then((r) => r.json());
     const ws = new WebSocket(`${WS_BASE}/pty/${spawn.id}`, {
       headers: { Origin: 'http://evil.example.com' },
@@ -139,7 +157,7 @@ describe.skipIf(!process.env.RUN_PTY_INTEGRATION)('pty stack end-to-end', () => 
     const spawn = await fetch(`${OPERATOR}/api/harness/${SLUG}/pty/spawn`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cols: 80, rows: 24 }),
+      body: SPAWN_BODY,
     }).then((r) => r.json());
     const ws = new WebSocket(`${WS_BASE}/pty/${spawn.id}`, {
       headers: { Origin: 'http://localhost:3055' },
