@@ -13,20 +13,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getPlanRun, readPlanRunTranscript } from './runs';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   runId: z.coerce
@@ -64,7 +52,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

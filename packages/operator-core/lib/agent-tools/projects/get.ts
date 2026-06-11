@@ -6,20 +6,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getProjectDetail } from '../../projects-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'projects:get',
@@ -32,7 +20,7 @@ export default defineTool({
   description: 'Fetch a single project detail (spec, feature counts, last spec revision summary). Returns null when not found.',
   capability: 'projects:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     id: z.string().min(1),

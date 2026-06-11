@@ -10,20 +10,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { findFuzzyDuplicate, FUZZY_THRESHOLD } from '../../operator-fuzzy-dedup';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:dedup_check',
@@ -35,7 +23,7 @@ export default defineTool({
     notWhen: `For listing existing scans, use \`operator:scans_list\`.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     candidate: z.string().min(1),
     existing: z.array(z.object({ id: z.string().min(1), title: z.string().min(1) })),

@@ -27,25 +27,13 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
 import { getRepoRoot } from './source';
 import { getPlanRun, markPlanRunResumed } from './runs';
 import { executePlanAgentTurn } from './turn';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   // z.coerce on numerics + a string-`"true"|"false"` coerce on `await`

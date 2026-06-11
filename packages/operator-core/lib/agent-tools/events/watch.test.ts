@@ -5,7 +5,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (def: unknown) => def }));
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (def: unknown) => def,
+  SU_ROLES: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator'],
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-watcher', ownerLabel: 'w', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));

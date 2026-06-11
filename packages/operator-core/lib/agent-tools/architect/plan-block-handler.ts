@@ -10,14 +10,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { handleHttpToolRequest } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
-
-const SU_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 /* ── Block parser ─────────────────────────────────────────────────── */
 

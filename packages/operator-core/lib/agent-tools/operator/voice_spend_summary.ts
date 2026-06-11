@@ -14,24 +14,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { loadVoicePrefs } from '../../voice-prefs';
 import { loadSttSpend } from '../../stt-spend';
 import { loadSpend as loadTtsSpend } from '../../tts-spend';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 function currentYm(): string {
   const d = new Date();
@@ -87,7 +75,7 @@ export default defineTool({
     notWhen: `For operator daily budget across all surfaces, use \`operator:budget\`. voice_spend_summary is the voice slice.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     scope: z.enum(['el', 'stt', 'tts', 'all']).default('all'),
   }),

@@ -97,22 +97,28 @@ export function promptsDir(): string {
   return fromRoot;
 }
 
-/** Roles supported. Mirrors AGENT_ROLES in the plugin SDK; kept local
- *  so this module doesn't drag a workspace-aware role enum into a prompt
- *  layer. Update both when the canonical list changes. */
-export type Role =
-  | 'operator'
-  | 'oracle'
-  | 'worker'
-  | 'validator'
-  | 'scoper'
-  | 'reviewer'
-  | 'debugger'
-  | 'architect'
-  | 'documenter'
-  | 'curator'
+/** The roles with prompt sources under apps/operator/prompts/ — the subset
+ *  of AGENT_ROLES this assembler can build prompts for. Pinned to the
+ *  canonical set via `satisfies` (audit P-072): renaming/removing a role in
+ *  agent-mcp's role-config breaks compilation HERE instead of silently
+ *  orphaning its prompt files. Type-only dependency — no runtime import
+ *  reaches the prompt layer. */
+export const PROMPT_ROLES = [
+  'operator',
+  'oracle',
+  'worker',
+  'validator',
+  'scoper',
+  'reviewer',
+  'debugger',
+  'architect',
+  'documenter',
+  'curator',
   // G2 user-protection gate (P-006): read-only adversarial judgment role.
-  | 'auditor';
+  'auditor',
+] as const satisfies readonly import('@papercusp/agent-mcp').BuiltinAgentRole[];
+
+export type Role = (typeof PROMPT_ROLES)[number];
 
 export interface AssembledSection {
   name:

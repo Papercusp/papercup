@@ -19,24 +19,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { subscribeTopic } from '../coordination/topics';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const DEFAULT_TIMEOUT_SEC = 4 * 60 * 60; // 4h (one-shot wake default)
 const MAX_TIMEOUT_SEC = 7 * 24 * 60 * 60; // 7d

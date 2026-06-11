@@ -8,20 +8,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { loadHarnessMarkdownIndex } from '../../harness-markdown-index';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'harness:markdown_index',
@@ -33,7 +21,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     const index = await loadHarnessMarkdownIndex();

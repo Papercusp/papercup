@@ -22,13 +22,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -44,7 +39,7 @@ export default defineTool({
     notWhen: 'For showing a question + choices in the chat, use `chat:ask_choice` (renders inline buttons). For asking the operator brain to delegate work, use `<spawn>` — `ui:dispatch` is for UI side effects, not work delegation.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Target tab. Defaults to ctx.uiClientId. */
     client_id: z.string().optional(),

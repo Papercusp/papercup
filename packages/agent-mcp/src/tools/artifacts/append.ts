@@ -10,18 +10,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
+import { SU_WRITE_ROLES } from '../../role-config';
 
 // NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
 // entry gated nothing (audit P-047).
-const WRITE_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 function normalizeRelPath(rel: string): string {
   return rel.replace(/^\.papercusp\//, '');
@@ -36,7 +28,7 @@ export default defineTool({
     notWhen: 'For replacing the whole file, use `artifacts:save`. For ephemeral within-turn notes, just hold them in your reply.',
   },
   requirePrincipal: false,
-  agentRoles: [...WRITE_ROLES],
+  agentRoles: [...SU_WRITE_ROLES],
   rolesQuota: {
     worker: { perChunk: 50 },
     architect: { perRun: 200 },

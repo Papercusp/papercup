@@ -6,21 +6,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { phasePath } from '../../harness-phases';
 import { loadHarnessRegistry } from '../../harness-registry';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'harness:phase_path',
@@ -32,7 +20,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     phase: z.enum(['staging', 'testing', 'production']),

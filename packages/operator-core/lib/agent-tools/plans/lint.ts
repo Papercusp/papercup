@@ -23,7 +23,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -32,18 +32,6 @@ import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
 import { parsePromotePolicy } from './promote-policy';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan. Omit for all plans.'),
@@ -400,7 +388,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

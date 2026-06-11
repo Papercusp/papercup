@@ -8,20 +8,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { createChat } from '../../agent-chats-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'agent_chats:create',
@@ -34,7 +22,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:send_message` immediately (step 2 of the dispatch flow), then `ui:dispatch` with `/harness/<slug>?chat=<chatId>` so the user can watch the conversation.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 5 }, operator: { perRun: 50 } },
   args: z.object({
     slug: z.string().min(1),

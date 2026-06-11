@@ -7,14 +7,9 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { deriveRepoPassword } from '../../backup';
 import { activeWorkspaceId, workspacesRoot } from '../../workspace-registry';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
@@ -28,7 +23,7 @@ export default defineTool({
     notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     fromSnapshotId: z.string().min(1),
     toSnapshotId: z.string().min(1),

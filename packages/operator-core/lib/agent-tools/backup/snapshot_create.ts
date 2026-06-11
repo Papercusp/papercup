@@ -9,16 +9,11 @@
 
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { workspaceBackupFor } from '../../backup';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { dbosBackupActive } from '../../dbos/dbos-flags';
 import { dbosStarted } from '../../dbos/bootstrap';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 export default defineTool({
   name: 'backup:snapshot_create',
@@ -32,7 +27,7 @@ export default defineTool({
     notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     reason: z.enum([
       'pre_destructive', 'post_run', 'plugin_install', 'secret_change', 'manual',

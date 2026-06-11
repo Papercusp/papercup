@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   maskKey,
   readCartesiaKey,
@@ -20,18 +20,6 @@ import {
   readOpenAiKey,
   readPicovoiceKey,
 } from '../../voice-credentials';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:credentials_status',
@@ -43,7 +31,7 @@ export default defineTool({
     notWhen: `For SETTING credentials, use the /settings UI directly — agents shouldn't paste secrets.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     const [el, openai, cartesia, deepgram, picovoice, google] = await Promise.all([

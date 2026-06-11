@@ -10,16 +10,11 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listReactionRules, reactionGraph } from '../../events';
 import type { Condition } from '@papercusp/rules';
 import type { ToolInvocationEvent } from '../../events';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 /** Describe a rule's `when` without leaking a non-serializable predicate. */
 function describeCondition(when: Condition<ToolInvocationEvent> | undefined): {
@@ -49,7 +44,7 @@ export default defineTool({
     notWhen: 'To register a rule, use the events registry API in code (registerReactionRule) or a tool\'s `emits` field — there is no runtime "add a rule" tool by design (rules are curated code). For the live worker activity stream use `activity:recent`.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Only rules triggered by this tool name (e.g. 'coord:handoff'). */
     on: z.string().max(256).optional(),

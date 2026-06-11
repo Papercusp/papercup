@@ -6,24 +6,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { SuLocksCoordinator } from './coordinator';
 
 const DEFAULT_TTL_SEC = 1200;
 const MAX_TTL_SEC = 3600;
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'locks:heartbeat',

@@ -88,19 +88,30 @@ describe('buildFrameBootstrap', () => {
     expect(script).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 
-  it('embedded-pg step sources the harness_admin password per-frame, not the baked dev literal (audit P-031)', () => {
+  it('embedded-pg step sources ALL role passwords per-frame, not the baked dev literals (audit P-031)', () => {
     const { script } = buildFrameBootstrap({ harnessSlug: 'h', environment: baseEnv });
-    // No repo-public SUPERUSER password on a provisioned frame:
+    // No repo-public role password on a provisioned frame:
     expect(script).not.toContain("PASSWORD 'harness_admin_pwd'");
+    expect(script).not.toContain("PASSWORD 'harness_app_pwd'");
+    expect(script).not.toContain("PASSWORD 'harness_zero_pwd'");
     expect(script).not.toContain('harness_admin:harness_admin_pwd@');
+    expect(script).not.toContain('harness_app:harness_app_pwd@');
     // Env override → random per-frame fallback, ALTER re-keys on re-bootstrap:
     expect(script).toContain('PAPERCUSP_FRAME_PG_PASSWORD');
+    expect(script).toContain('PAPERCUSP_FRAME_PG_APP_PASSWORD');
+    expect(script).toContain('PAPERCUSP_FRAME_PG_ZERO_PASSWORD');
     expect(script).toContain('openssl rand -hex 24');
     expect(script).toContain('ALTER ROLE harness_admin WITH LOGIN SUPERUSER PASSWORD');
-    // DSN carries the variable, and persists 0600 for relaunches:
+    expect(script).toContain('ALTER ROLE harness_app WITH LOGIN PASSWORD');
+    expect(script).toContain('ALTER ROLE harness_zero WITH LOGIN PASSWORD');
+    // DSNs carry the variables; the app DSN is exported for getOrgPgApp's
+    // env-first resolution (its fallback literal no longer matches):
     expect(script).toContain('postgresql://harness_admin:$HARNESS_ADMIN_PWD@localhost:5432/papercusp');
+    expect(script).toContain('export HARNESS_DATABASE_URL="postgresql://harness_app:$HARNESS_APP_PWD@localhost:5432/papercusp"');
+    // Both DSNs persist 0600 for relaunches:
     expect(script).toContain('frame-pg.env');
     expect(script).toContain('install -m 0600');
+    expect(script).toContain('DATABASE_URL=%s\\nHARNESS_DATABASE_URL=%s\\n');
   });
 
   it('embeddedPg:false and orchestratorOnFrame:false drop those sections', () => {

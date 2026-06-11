@@ -1904,7 +1904,8 @@ function AdvConvStyles() {
         background: color-mix(in oklab, var(--good, #22c55e), transparent 64%);
       }
 
-      /* View tabs */
+      /* View tabs — 6 tabs can outgrow narrow widths: the tablist scrolls
+         horizontally, never wraps to a second header row. */
       .pc-advconv__viewtabs {
         position: relative;
         z-index: 1;
@@ -1918,8 +1919,14 @@ function AdvConvStyles() {
         border-radius: 0;
         background: transparent;
         box-shadow: none;
+        max-width: 100%;
+        min-width: 0;
+        overflow-x: auto;
+        scrollbar-width: thin;
       }
       .pc-advconv__viewtab {
+        flex: 0 0 auto;
+        white-space: nowrap;
         display: inline-flex;
         align-items: center;
         justify-content: center;

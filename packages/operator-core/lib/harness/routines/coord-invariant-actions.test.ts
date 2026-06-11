@@ -11,6 +11,7 @@ import {
   evaluateProbe,
   runProbeCycle,
   evaluateInvariants,
+  planSharedHiveCapture,
   DEFAULT_THRESHOLDS,
   PROBE_A,
   PROBE_B,
@@ -153,5 +154,31 @@ describe('registration', () => {
   it('both system actions are registered by the module side-effect', () => {
     expect(getSystemAction('coord-probe-canary')).toBeTypeOf('function');
     expect(getSystemAction('coord-invariant-monitor')).toBeTypeOf('function');
+  });
+});
+
+describe('planSharedHiveCapture (shared-hive-loop P-012/P-013 leg)', () => {
+  it('maps every incident kind to a STABLE dedup title + severity', () => {
+    const detail = { whatever: true };
+    expect(planSharedHiveCapture({ kind: 'double-completion', title: 'noisy: F-123 by pk-abc…', detail }, 'h1')).toEqual({
+      title: 'shared-hive invariant: cross-swarm double completion in h1',
+      severity: 'major',
+    });
+    expect(planSharedHiveCapture({ kind: 'outbox-health', title: 'depth 12345 > 10000', detail }, 'h1')).toEqual({
+      title: 'shared-hive invariant: substrate outbox depth/age breach',
+      severity: 'major',
+    });
+    expect(planSharedHiveCapture({ kind: 'presence-ghost', title: 'ghost pk-xyz… holds 3', detail }, 'h1')).toEqual({
+      title: 'shared-hive invariant: presence ghost anchoring live leases in h1',
+      severity: 'minor',
+    });
+    expect(planSharedHiveCapture({ kind: 'orphaned-taken-by', title: '2 cleared', detail }, 'h1')).toEqual({
+      title: 'shared-hive invariant: orphaned taken_by swept in h1',
+      severity: 'minor',
+    });
+    // The volatile per-incident text never leaks into the dedup title.
+    expect(planSharedHiveCapture({ kind: 'double-completion', title: 'F-999 other noise', detail }, 'h1').title).toBe(
+      planSharedHiveCapture({ kind: 'double-completion', title: 'F-123 different noise', detail }, 'h1').title,
+    );
   });
 });

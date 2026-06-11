@@ -6,21 +6,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { evaluateFireGate, getAutoLoopState } from '../../autoloop';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'autoloop:status',
@@ -33,7 +21,7 @@ export default defineTool({
   description: 'Read autoloop_state rows (last_fired_at, last_status, consecutive_errors) for a harness slug.',
   capability: 'autoloop:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),

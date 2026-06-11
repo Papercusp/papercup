@@ -9,13 +9,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 export default defineTool({
   name: 'ui:list_clients',
@@ -28,7 +23,7 @@ export default defineTool({
     chaining: 'Pair with `ui:get_state` to see what each tab is on, then `ui:dispatch` to act.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Filter by workspace id. Omit to get all visible clients. */
     workspace: z.string().optional(),

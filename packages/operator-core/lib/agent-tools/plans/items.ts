@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listPlanRows, getPlanRow, type PlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -83,18 +83,6 @@ function planItemsForRow(row: PlanRow): PlanItem[] {
   return parsePlan(row.content).items;
 }
 
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
-
 const argsSchema = z.object({
   slug: z
     .string()
@@ -141,7 +129,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

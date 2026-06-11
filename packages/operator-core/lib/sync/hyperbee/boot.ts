@@ -778,6 +778,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function drainAdmissionQueue(): Promise<void> {
     while (admissionQueue.length > 0) {
       const frame = admissionQueue.shift()!;
+      // Revocation can land BETWEEN enqueue and drain (the queue defers the
+      // admission); admitting then would resurrect a revoked peer. The decider
+      // checked `revoked` at announce time — re-check at drain time.
+      if (revoked.has(frame.device_pubkey)) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_rejected',
+          `revoked-before-drain ${peerLabel(frame.log_core_key)}`,
+        );
+        continue;
+      }
       try {
         // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can
         // find and drop the right admitted log (admitted is keyed by
@@ -814,32 +826,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
-  // The merge gate. `inflightMerge` non-null = a pass chain is running. A
-  // mergeNow() arriving during it requests a re-run and returns the SAME
-  // promise — the chain keeps passing until no re-run is pending, so every
-  // caller observes its requested work (e.g. a queued admission) complete
-  // before its await resolves.
-  let inflightMerge: Promise<number> | null = null;
-  let mergeAgainRequested = false;
+  // The merge gate — one RUNNING pass + at most one PENDING follower.
+  // A mergeNow() during a running pass coalesces onto the single follower,
+  // which STARTS after the current pass finishes — so every caller's promise
+  // resolves after a pass that began after its call (a queued admission is
+  // always drained by then). BOUNDED on purpose: an earlier shape re-ran the
+  // running chain while any re-run flag was set, so a steady caller stream
+  // (the 1s poll under connection churn, where passes exceed 1s) re-armed it
+  // forever and awaiters never resolved — peers stopped converging.
+  let runningMerge: Promise<number> | null = null;
+  let pendingMerge: Promise<number> | null = null;
   function mergeNow(): Promise<number> {
     if (stopped) return Promise.resolve(0);
-    if (inflightMerge) {
-      mergeAgainRequested = true;
-      return inflightMerge;
+    if (!runningMerge) {
+      runningMerge = mergeOnePass().finally(() => {
+        runningMerge = null;
+      });
+      return runningMerge;
     }
-    inflightMerge = (async () => {
-      try {
-        let total = 0;
-        do {
-          mergeAgainRequested = false;
-          total += await mergeOnePass();
-        } while (mergeAgainRequested && !stopped);
-        return total;
-      } finally {
-        inflightMerge = null;
-      }
-    })();
-    return inflightMerge;
+    if (!pendingMerge) {
+      pendingMerge = runningMerge
+        .catch(() => 0)
+        .then(() => {
+          // The running pass's finally has already cleared runningMerge, so
+          // this re-entry starts the follower pass (or coalesces anew).
+          pendingMerge = null;
+          return mergeNow();
+        });
+    }
+    return pendingMerge;
   }
 
   /** One serialized merge pass. Only ever called from mergeNow's gate. */

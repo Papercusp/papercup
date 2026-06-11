@@ -17,15 +17,10 @@
 import { z } from 'zod';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
-
-const SU_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 // Fixed advisory-lock key for migration-number allocation — serialises
 // concurrent db:next-migration calls across connections/processes.

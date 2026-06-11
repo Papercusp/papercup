@@ -188,6 +188,18 @@ describe('AdvConversationsTab — simplified design', () => {
     }
   });
 
+  // D-007/D-010 (OQ-4): when the 6-tab row outgrows the header width the
+  // tablist scrolls horizontally — it must never wrap to a second row.
+  it('keeps the view tablist single-row with horizontal overflow scroll', () => {
+    render(<AdvConversationsTab />);
+    const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    const tablistRule = styles.match(/\.pc-advconv__viewtabs\s*{[^}]*}/)?.[0] ?? '';
+    expect(tablistRule).toContain('overflow-x: auto');
+    expect(tablistRule).not.toContain('flex-wrap');
+    const tabRule = styles.match(/\.pc-advconv__viewtab\s*{[^}]*}/)?.[0] ?? '';
+    expect(tabRule).toContain('flex: 0 0 auto');
+  });
+
   it('shows Activity log as the secondary view with grouped filters', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);

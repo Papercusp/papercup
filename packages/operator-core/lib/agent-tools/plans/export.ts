@@ -19,15 +19,10 @@
 import { z } from 'zod';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getPlanRow, listPlanRows } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -55,7 +50,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

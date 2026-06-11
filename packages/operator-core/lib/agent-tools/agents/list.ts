@@ -5,20 +5,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listAgentsAcrossWorkspace } from '../../agents-list';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'agents:list',
@@ -31,7 +19,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:create` once you\'ve picked the role to dispatch to.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     slug: z.string().optional(),
     limit: z.number().int().positive().max(100).optional(),

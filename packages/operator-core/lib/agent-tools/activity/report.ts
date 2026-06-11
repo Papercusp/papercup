@@ -22,15 +22,10 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { recordActivity, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../../activity-pg-store';
 import { armInboxWake, cancelInboxWake } from '../../events/await/inbox-wake-arm';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends '▶ session started' (SessionStart) and '■ session ended'
@@ -61,7 +56,7 @@ export default defineTool({
     notWhen: 'To READ the activity stream use `activity:recent` (or the /api/activity/stream SSE). To coordinate with peers use `coord:send`. To drive a pui use `tui:dispatch`.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** The reporting worker's coordination identity (PAPERCUSP_SID). */
     owner: z.string().min(1).max(256).optional(),

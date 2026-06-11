@@ -39,6 +39,13 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { captureImprovement } from '../improvements/capture-core';
+import { lockAuthorityForHive } from '../../authority/lock-authority';
+import {
+  runSharedHiveMonitorPass,
+  type LeaseHolderRow,
+  type MonitorIncident,
+  type PresenceRow,
+} from '../../shared-hive-loop/fleet-monitors';
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from '../../agent-tools/coordination/messages';
 import { listHandoffs } from '../../agent-tools/coordination/handoffs';
 import { listEscalations } from '../../agent-tools/coordination/escalations';
@@ -418,6 +425,95 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
   return snap;
 }
 
+// ── shared-hive-loop P-012/P-013: the multi-swarm dispatch checks ───────────
+// (shared-hive-loop-e2e-testing-2026-06-10; plugs into THIS home per both
+// briefs — checks live in shared-hive-loop/fleet-monitors.ts, proven on the
+// hermetic 2-swarm rig. Scope discovery: every harness with work_item_claims
+// rows in this workspace — i.e. exactly where the distributed lease layer is
+// actually in use; zero rows ⇒ the leg is a no-op.)
+
+/** Stable dedup titles per incident kind (a persisting incident re-files into
+ *  its open improvement instead of flooding). */
+export function planSharedHiveCapture(
+  incident: MonitorIncident,
+  harness: string,
+): { title: string; severity: 'critical' | 'major' | 'minor' | 'nit' } {
+  switch (incident.kind) {
+    case 'double-completion':
+      return { title: `shared-hive invariant: cross-swarm double completion in ${harness}`, severity: 'major' };
+    case 'outbox-health':
+      return { title: 'shared-hive invariant: substrate outbox depth/age breach', severity: 'major' };
+    case 'presence-ghost':
+      return { title: `shared-hive invariant: presence ghost anchoring live leases in ${harness}`, severity: 'minor' };
+    case 'orphaned-taken-by':
+      return { title: `shared-hive invariant: orphaned taken_by swept in ${harness}`, severity: 'minor' };
+  }
+}
+
+async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
+  const { sql } = getOrgPg();
+  const scopes = await sql<{ harness_slug: string; hive_slug: string | null }[]>`
+    SELECT DISTINCT harness_slug, hive_slug FROM harness_shared.work_item_claims
+     WHERE workspace_id = ${ctx.workspaceId}`;
+  for (const scope of scopes) {
+    try {
+      // The orphan sweep runs only on the elected authority for the scope
+      // (sweepOrphanedTakenBy's contract); resolution failure ⇒ scan-only.
+      let isAuthority = false;
+      try {
+        isAuthority = (await lockAuthorityForHive(scope.hive_slug ?? scope.harness_slug)).isSelf;
+      } catch {
+        isAuthority = false;
+      }
+      let presence: PresenceRow[] = [];
+      let liveLeases: LeaseHolderRow[] = [];
+      try {
+        const rows = await sql<{ device_pubkey: string; last_seen_ms: string }[]>`
+          SELECT device_pubkey, (extract(epoch FROM last_seen_at) * 1000)::bigint::text AS last_seen_ms
+            FROM harness_shared.shared_presence
+           WHERE workspace_id = ${ctx.workspaceId}
+             AND ${scope.hive_slug ? sql`hive_slug = ${scope.hive_slug}` : sql`TRUE`}`;
+        presence = rows.map((r) => ({ devicePubkey: r.device_pubkey, lastSeenMs: Number(r.last_seen_ms) }));
+        const leases = await sql<{ work_item_id: string; holder_pubkey: string | null; expires_ms: string }[]>`
+          SELECT work_item_id, holder_pubkey, (extract(epoch FROM expires_ts) * 1000)::bigint::text AS expires_ms
+            FROM harness_shared.work_item_claims
+           WHERE workspace_id = ${ctx.workspaceId} AND harness_slug = ${scope.harness_slug}`;
+        liveLeases = leases.map((l) => ({
+          workItemId: l.work_item_id,
+          holderPubkey: l.holder_pubkey,
+          expiresTsMs: Number(l.expires_ms),
+        }));
+      } catch {
+        /* presence/lease legs degraded — the PG scans below still run */
+      }
+      await runSharedHiveMonitorPass({
+        sql,
+        workspaceId: ctx.workspaceId,
+        harness: scope.harness_slug,
+        isAuthority,
+        presence,
+        liveLeases,
+        fileIncident: async (incident) => {
+          const plan = planSharedHiveCapture(incident, scope.harness_slug);
+          await captureImprovement({
+            title: plan.title,
+            kind: 'bug',
+            severity: plan.severity,
+            dedupScope: 'open',
+            foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
+            subTopic: 'shared-hive',
+            body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: lib/shared-hive-loop/fleet-monitors.ts.)`,
+          }).catch(() => {
+            /* a capture failure must not abort the remaining incidents */
+          });
+        },
+      });
+    } catch {
+      /* one scope's failure never aborts the others */
+    }
+  }
+}
+
 registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => {
   const t: InvariantThresholds = { ...DEFAULT_THRESHOLDS, ...(ctx.payloadTemplate as Partial<InvariantThresholds> | null) };
   const snap = await gatherSnapshot(t);
@@ -435,4 +531,7 @@ registerSystemAction('coord-invariant-monitor', async (ctx: SystemActionCtx) => 
       /* a capture failure must not abort the remaining violations */
     });
   }
+  // The shared-hive-loop leg (P-012/P-013 of that plan) — isolated like every
+  // other check: its failure degrades the leg, never the fire.
+  await runSharedHiveLeg(ctx).catch(() => {});
 });

@@ -12,22 +12,10 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { hasCapability, type CapabilityCheckContext } from '@papercusp/plugin-loader';
 import { getPluginHost } from '../../plugin-host-runtime';
 import { getGrantsForPluginInHarness } from '../../plugin-grants';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export interface TuiPaneContribution {
   pluginName: string;
@@ -105,7 +93,7 @@ export default defineTool({
     'List the capability-gated tui-pane UI contributions for a harness (pluginName, slug, label, command, cwd). The pui opens these in a zellij pane.',
   capability: 'plugins:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harness: z.string().min(1).describe('Harness slug to resolve tui-pane contributions for.'),
   }),

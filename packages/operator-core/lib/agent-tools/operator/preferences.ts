@@ -7,24 +7,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   appendPreferenceEntry,
   listPreferenceEntries,
   removePreferenceEntry,
 } from '../../operator-preferences';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:preferences',
@@ -36,7 +24,7 @@ export default defineTool({
     notWhen: `For VOICE prefs specifically, use \`operator:voice_prefs\`. For workspace-level config, use \`multi_workspace\`/\`papercusp:list_workspaces\`.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { architect: { perRun: 30 }, operator: { perRun: 100 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('list') }),

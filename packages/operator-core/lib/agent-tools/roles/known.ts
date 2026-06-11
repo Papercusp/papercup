@@ -6,21 +6,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getKnownRoles } from '../../known-roles';
 import { roleConsumes } from '../../role-registry';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'roles:known',
@@ -32,7 +20,7 @@ export default defineTool({
   description: 'Static well-known role-id allowlist (kernel set; plugin-registered roles extend this).',
   capability: 'roles:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     // Enrich each known role id with its launch-context needs so the psu

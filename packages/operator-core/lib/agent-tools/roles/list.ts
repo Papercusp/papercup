@@ -6,20 +6,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listRoles } from '../../role-registry';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'roles:list',
@@ -32,7 +20,7 @@ export default defineTool({
   description: 'List role manifests (id, source, fires-on, etc.) for a harness, or globally when no harness given.',
   capability: 'roles:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),

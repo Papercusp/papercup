@@ -24,7 +24,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
@@ -33,18 +33,6 @@ import { insertPlanRun } from './runs';
 import { executePlanAgentTurn } from './turn';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   harness: harnessArg,

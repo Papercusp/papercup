@@ -328,10 +328,16 @@ function buildCellApply(
   sql: postgres.Sql,
   ownLogKeyHex: string,
   opts: { workspaceId: string; harnessSlug: string },
+  extraProjections?: CompositionRigOpts['extraProjections'],
 ): (op: OpEnvelope) => Promise<boolean> {
   const popts = { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, sql };
   const scoped = new Map<string, TableProjection<unknown>>();
-  for (const p of [buildHarnessFeaturesProjection(popts), buildIssuesProjection(popts)] as TableProjection<unknown>[]) {
+  const projections = [
+    buildHarnessFeaturesProjection(popts),
+    buildIssuesProjection(popts),
+    ...(extraProjections ? extraProjections(popts) : []),
+  ] as TableProjection<unknown>[];
+  for (const p of projections) {
     scoped.set(p.tableTag, p);
   }
   const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
@@ -385,6 +391,17 @@ export interface CompositionRigOpts {
   /** Authority RPC timeout — short so a dead/partitioned authority fails open fast. */
   rpcTimeoutMs?: number;
   log?: (m: string) => void;
+  /**
+   * Extra per-cell DDL run after `setupCellSchema` — for tests federating
+   * surfaces beyond the work-item family (e.g. coord-e2e P-005 adds the
+   * coord_event_log + its migration-147 capture triggers per cell).
+   */
+  extraCellSetup?: (sql: postgres.Sql, opts: { workspaceId: string; harnessSlug: string }) => Promise<void>;
+  /**
+   * Extra projections registered into each cell's apply chain alongside the
+   * feature/issue ones (same `popts` contract as the production builders).
+   */
+  extraProjections?: (popts: { workspaceId: string; harnessSlug: string; sql: postgres.Sql }) => TableProjection<unknown>[];
 }
 
 export class CompositionRig {
@@ -417,8 +434,12 @@ export class CompositionRig {
     this.claimTtlSec = opts.claimTtlSec ?? 300;
     this.rpcTimeoutMs = opts.rpcTimeoutMs ?? 1_500;
     this.log = opts.log ?? (() => {});
+    this.extraCellSetup = opts.extraCellSetup;
+    this.extraProjections = opts.extraProjections;
   }
   private readonly rpcTimeoutMs: number;
+  private readonly extraCellSetup?: CompositionRigOpts['extraCellSetup'];
+  private readonly extraProjections?: CompositionRigOpts['extraProjections'];
 
   advanceClock(ms: number): void {
     this.clockOffsetMs += ms;
@@ -443,6 +464,10 @@ export class CompositionRig {
     const schemaOpts = { workspaceId: this.workspaceId, harnessSlug: this.harnessSlug };
     await setupCellSchema(dbA.sql, schemaOpts);
     await setupCellSchema(dbB.sql, schemaOpts);
+    if (this.extraCellSetup) {
+      await this.extraCellSetup(dbA.sql, schemaOpts);
+      await this.extraCellSetup(dbB.sql, schemaOpts);
+    }
 
     const testnet = await createTestnet(3);
     this.cleanups.push(async () => {
@@ -497,7 +522,7 @@ export class CompositionRig {
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
       applyOverride: (op) => {
-        applyA ??= buildCellApply(dbA.sql, handleA!.ownLog.keyHex, schemaOpts);
+        applyA ??= buildCellApply(dbA.sql, handleA!.ownLog.keyHex, schemaOpts, this.extraProjections);
         return applyA(op);
       },
       mergePollMs: 0,
@@ -518,7 +543,7 @@ export class CompositionRig {
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
       applyOverride: (op) => {
-        applyB ??= buildCellApply(dbB.sql, handleB!.ownLog.keyHex, schemaOpts);
+        applyB ??= buildCellApply(dbB.sql, handleB!.ownLog.keyHex, schemaOpts, this.extraProjections);
         return applyB(op);
       },
       mergePollMs: 0,

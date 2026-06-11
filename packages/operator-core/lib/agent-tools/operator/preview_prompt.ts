@@ -10,20 +10,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildOperatorPrompt } from '../../operator-prompt';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:preview_prompt',
@@ -35,7 +23,7 @@ export default defineTool({
     notWhen: `Production code shouldn't depend on this; it's diagnostic only.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     request: z.string(),
     userId: z.string().optional(),

@@ -6,20 +6,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listChats } from '../../agent-chats-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'agent_chats:list',
@@ -32,7 +20,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:get` for detail on one chat, or `ui:dispatch` with `/harness/<slug>?chat=<chatId>` to take the user to it.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     slug: z.string().min(1),
     includeArchived: z.boolean().optional(),

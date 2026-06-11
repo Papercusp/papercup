@@ -11,20 +11,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readOmpConfig, setOmpConfig, unsetOmpConfig } from '../../omp-config';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'omp:config',
@@ -36,7 +24,7 @@ export default defineTool({
   description: 'Read or update the local omp CLI config tree (get / set { key, value } / unset { key }).',
   capability: 'omp:write',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

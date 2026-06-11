@@ -19,21 +19,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { openEscalation, resolveEscalation as resolveEscalationRecord } from '../coordination/escalations';
 import { resolveAgentIdentity } from '../coordination/identity';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const MAX_OPTIONS = 6;
 const MAX_QUESTION_LEN = 500;
@@ -80,7 +68,7 @@ export default defineTool({
     notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max).',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   // Available in both text and voice. Voice users hear fallbackText
   // (announce-only) by default; opt in to spoken answering via

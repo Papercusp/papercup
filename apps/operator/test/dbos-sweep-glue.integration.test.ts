@@ -341,8 +341,19 @@ describe('dispatchOneHarness — the DBOS sweep glue (P-011/P-013)', () => {
 
     // A bad admin url makes the frontier read throw inside dispatchOneHarness; the
     // per-harness try/catch must isolate it (a bad slug can't sink the whole sweep).
-    const r = await loop.dispatchOneHarness(slug, WS, 'postgresql://nobody:nobody@127.0.0.1:1/none');
-    expect(r).toEqual({ harness: slug, started: [] });
+    // Since audit P-035 the catch WARNS instead of swallowing silently (a dropped
+    // schema must not look like "no work") — expect the warn explicitly.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await loop.dispatchOneHarness(slug, WS, 'postgresql://nobody:nobody@127.0.0.1:1/none');
+      expect(r).toEqual({ harness: slug, started: [] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`[dbos-dispatch] ${slug} tick failed (non-fatal):`),
+        expect.anything(),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   }, 60_000);
 });
 

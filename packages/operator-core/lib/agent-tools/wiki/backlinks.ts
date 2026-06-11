@@ -4,20 +4,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { findWikiBacklinks } from '../../wiki-backlinks';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'wiki:backlinks',
@@ -29,7 +17,7 @@ export default defineTool({
   description: 'Find markdown files that reference [[target]] across the workspace. Returns { target, harness, hits[] }.',
   capability: 'wiki:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     target: z.string().min(1),
     harness: z.string().optional(),

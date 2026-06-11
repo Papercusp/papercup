@@ -14,20 +14,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { SLUG_RE, slugRequires } from './_slug-requires';
+import { SU_ROLES } from '../../role-config';
 
 // NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
 // entry gated nothing (audit P-047).
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 function normalizeRelPath(rel: string): string {
   return rel.replace(/^\.papercusp\//, '');
@@ -43,7 +33,7 @@ export default defineTool({
     chaining: 'Pair with `artifacts:save` to round-trip, `artifacts:append` to add to an existing one.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     slug: z.string().min(1).regex(SLUG_RE).optional(),
     rel_path: z.string().min(1),

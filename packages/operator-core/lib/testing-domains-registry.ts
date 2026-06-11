@@ -1110,6 +1110,13 @@ defineTestDomain({
       globs: ['packages/operator-core/lib/work-item-claim-authority*.test.ts'],
     },
     {
+      id: 'loop-composition',
+      label: 'Multi-swarm loop composition (hermetic 2-swarm rig)',
+      description:
+        'The shared-hive autonomous LOOP as a system (shared-hive-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Queen steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Queen D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12\'s coord verb-lifecycle two-cell suite rides the same rig.',
+      globs: ['packages/operator-core/lib/shared-hive-loop/**/*.test.ts'],
+    },
+    {
       id: 'tools',
       label: 'Hive agent tools',
       description: 'The agent-facing hive lifecycle tools: hive:create / hive:add-member, discovery:hives, and harness create→hive-membership wiring.',

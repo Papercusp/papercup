@@ -25,7 +25,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { getPresence } from '../coordination/presence';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
@@ -76,18 +76,6 @@ const WAIT_CEILING_MS = 30_000;
  *  display so it isn't blocked silently. Independent of the wake
  *  mechanism; fires regardless of why the await woke. */
 const PROGRESS_TICK_MS = 10_000;
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 interface BusyJson {
   path: string;

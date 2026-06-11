@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -23,24 +23,7 @@ import { resolvePlanScope } from './source';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
 
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-  // THE UMBILICAL (local-hive): a fleet:spawn bee flips the status of the plan
-  // item it's working (todo→wip→done) as part of its umbilical back to the Queen.
-  // plans:set-status only mutates ONE item's status line (not plan-level launch/
-  // pause/edit — those stay SU-only), so admitting the bee here is the right, narrow
-  // grant. Paired with the resolveAgentIdentity fleet-spawn branch (identity.ts) so
-  // the bee both passes this role gate AND resolves a coord owner for the write.
-  'bee',
-] as const;
+const SU_BEE_ROLES = [...SU_ROLES, 'bee'] as const;
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -145,7 +128,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_BEE_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

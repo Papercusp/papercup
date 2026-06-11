@@ -181,10 +181,11 @@ describe('planFinalization — declarative recipe (unify-launches P-007)', () =>
 
 describe('reconcileDoneStatus (validator omitted the validating→passed write)', () => {
   function fakeDbc(initialStatus: string | undefined) {
-    const state = { status: initialStatus, updates: 0 };
+    const state = { status: initialStatus, updates: 0, sqls: [] as string[] };
     return {
       state,
       prepare(sql: string) {
+        state.sqls.push(sql);
         return {
           get: () => (state.status === undefined ? undefined : { status: state.status }),
           run: () => {
@@ -207,6 +208,19 @@ describe('reconcileDoneStatus (validator omitted the validating→passed write)'
     expect(flipped).toBe(true);
     expect(dbc.state.status).toBe('passed');
     expect(logs.some((m) => m.includes('reconciled validating→passed'))).toBe(true);
+  });
+
+  test('queries the consolidated relation, never the dropped per-harness harness_features (EI-213)', async () => {
+    const { reconcileDoneStatus } = await import('./orchestrator-finalize');
+    const dbc = fakeDbc('validating');
+    await reconcileDoneStatus('h', 'F-001', dbc);
+    expect(dbc.state.sqls.length).toBeGreaterThan(0);
+    for (const sql of dbc.state.sqls) {
+      // The unqualified relation was dropped by the work-items unification —
+      // every read/write must hit harness_shared.harness_features_consolidated.
+      expect(sql).toMatch(/harness_shared\.harness_features_consolidated/);
+      expect(sql).not.toMatch(/(?<!harness_shared\.)\bFROM harness_features\b/i);
+    }
   });
 
   test('any other status is untouched — a hallucinated DONE can never force-pass', async () => {

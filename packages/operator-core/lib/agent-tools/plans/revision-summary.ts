@@ -24,22 +24,10 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHaiku } from '../../haiku';
 import { getPlanRevisionById, setPlanRevisionRationale } from './revisions';
 import { readPlanRunTranscript, TRANSCRIPT_MAX_LIMIT } from './runs';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 /** Longest a stored rationale may be — a one-line digest entry, not a
  *  paragraph. */

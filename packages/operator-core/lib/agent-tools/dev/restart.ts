@@ -17,7 +17,7 @@
 
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
@@ -26,11 +26,6 @@ import type { ResourceHolder } from '../locks/su-lock-store';
 const RESTART_CMD = 'systemctl --user restart papercup-dev-api.service';
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
-
-const SU_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],

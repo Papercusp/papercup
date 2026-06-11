@@ -19,13 +19,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -41,7 +36,7 @@ export default defineTool({
     notWhen: 'For the browser/desktop UI use `ui:dispatch`. For showing a question + choices use `chat:ask_choice`. For delegating work use `<spawn>` — tui:dispatch is UI control, not work delegation.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Target pui instance (its workbench owner key). */
     client_id: z.string().min(1).max(256),

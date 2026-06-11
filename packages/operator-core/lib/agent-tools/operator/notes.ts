@@ -12,20 +12,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { appendOperatorNote, readOperatorNotes } from '../../operator-notes';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:notes',
@@ -37,7 +25,7 @@ export default defineTool({
     notWhen: `For cross-agent memory, use \`memory:search\` / \`memory:remember\`. Notes is operator-only, user-editable.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({

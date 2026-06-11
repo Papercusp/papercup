@@ -10,24 +10,12 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   RATE_LIMIT_MAX_CEILING,
   readRateLimitConfig,
   writeRateLimitConfig,
 } from '../../rate-limit-config';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:rate_limit_config',
@@ -41,7 +29,7 @@ export default defineTool({
     chaining: 'After a set, dev:rate_governor_status shows the new cap take effect (fleet.cap / fleet.effective).',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

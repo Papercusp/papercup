@@ -16,19 +16,7 @@
 
 import { z } from 'zod';
 import { operatorApiBase } from '../../operator-api-base';
-import { defineTool } from '@papercusp/agent-mcp';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 export default defineTool({
   name: 'agent_chats:send_message',
@@ -41,7 +29,7 @@ export default defineTool({
     chaining: 'Follow `agent_chats:create` (or `agent_chats:list` if resuming). Then `ui:dispatch` to take the user to the chat.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
     slug: z.string().min(1),

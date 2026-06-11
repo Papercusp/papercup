@@ -16,7 +16,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { readPlanBySlug } from './source';
 import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
@@ -27,18 +27,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-  'promote', // the promote agent reads its plan's `## Promote` policy via plans:get
-] as const;
+const ALL_ROLES = [...SU_ROLES, 'promote'] as const;
 
 const argsSchema = z.object({
   harness: harnessArg,

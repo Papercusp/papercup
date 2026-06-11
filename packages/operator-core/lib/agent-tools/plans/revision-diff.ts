@@ -21,23 +21,11 @@
 
 import { createPatch } from 'diff';
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { resolvePlanScope } from './source';
 import { getPlanRevisionPairById, type PlanRevisionPair } from './revisions';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   // z.coerce so the same schema accepts a numeric MCP arg AND a
@@ -81,7 +69,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

@@ -7,20 +7,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { archiveChat } from '../../agent-chats-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'agent_chats:archive',
@@ -32,7 +20,7 @@ export default defineTool({
   description: 'Archive (soft-delete) a chat session by id.',
   capability: 'agent_chats:write',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { worker: { perChunk: 5 }, operator: { perRun: 50 } },
   args: z.object({
     slug: z.string().min(1),

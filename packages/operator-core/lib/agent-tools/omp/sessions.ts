@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   getOmpSessionState,
   listOmpSessions,
@@ -16,18 +16,6 @@ import {
   searchOmpSessions,
 } from '../../omp-sessions';
 import { setAdvSessionOmpThreadId } from '../../adv-sessions';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const RefShape = {
   sessionId: z.string().min(1).optional(),
@@ -45,7 +33,7 @@ export default defineTool({
   description: 'List, search, read, and summarize local OMP session JSONL files.',
   capability: 'omp:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 100 }, debugger: { perRun: 100 } },
   args: z.discriminatedUnion('op', [
     z.object({

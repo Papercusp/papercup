@@ -4,25 +4,13 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace, generated } from '@papercusp/db-org';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { desc } from 'drizzle-orm';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const v = generated.operatorDecisionsInHarnessShared;
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:decisions',
@@ -34,7 +22,7 @@ export default defineTool({
     notWhen: `For action audit (user-action style), use \`actions:recent\` or \`operator:audit\`. decisions is the operator-policy view.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     limit: z.number().int().positive().max(500).optional(),
   }),

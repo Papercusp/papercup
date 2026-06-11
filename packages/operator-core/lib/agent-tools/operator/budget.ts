@@ -5,20 +5,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { checkBudget, setBudget } from '../../operator-budget';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:budget',
@@ -30,7 +18,7 @@ export default defineTool({
     notWhen: `For voice-specific spend, use \`operator:voice_spend_summary\`. For raising the cap, use /settings/operator.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

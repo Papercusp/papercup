@@ -12,18 +12,14 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { rerankProseHits } from './rerank';
 
 const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator',
-  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
-  'sentinel', // the fleet watcher searches to investigate (unify-launch-mechanics D-004)
-] as const;
+const ALL_ROLES = [...SU_ROLES, 'sentinel'] as const;
 
 export default defineTool({
   name: 'search:fulltext',

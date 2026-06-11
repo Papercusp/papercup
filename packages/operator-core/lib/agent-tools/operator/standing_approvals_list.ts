@@ -7,23 +7,11 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   readCandidates,
   refreshCandidates,
 } from '../../operator-standing-candidates';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:standing_approvals_list',
@@ -35,7 +23,7 @@ export default defineTool({
     notWhen: `For one-off pending reviews, use \`harness:pending_reviews\`. Standing approvals are session-persistent autoaccepts.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     const candidates = await refreshCandidates().catch(async () => await readCandidates());

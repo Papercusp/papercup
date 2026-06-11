@@ -7,20 +7,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listToasts } from '../../toast-log-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'notifications:recent',
@@ -32,7 +20,7 @@ export default defineTool({
     notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     level: z.enum(['default', 'info', 'success', 'warning', 'error', 'loading', 'all']).optional(),
     limit: z.number().int().positive().max(500).optional(),

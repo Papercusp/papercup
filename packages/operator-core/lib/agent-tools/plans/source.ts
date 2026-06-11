@@ -359,12 +359,14 @@ export async function getPlanRow(
   return rows[0] ? rowFromDb(rows[0]) : null;
 }
 
-/** All plan rows for a harness (PG), live + optionally archived. */
+/** All plan rows for a harness (PG), live + optionally archived. The archived
+ *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
 export async function listPlanRows(
   opts: PlanSourceOpts & { includeArchived?: boolean } = {},
 ): Promise<PlanRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
+    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
     return tx<PlanDbRow[]>`
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, supersedes, superseded_by,
@@ -372,10 +374,112 @@ export async function listPlanRows(
              archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       ${archivedFilter}
        ORDER BY plan_slug ASC
     `;
   });
-  return rows.filter((r) => opts.includeArchived || !r.archived).map(rowFromDb);
+  return rows.map(rowFromDb);
+}
+
+/** A plan row WITHOUT the content blob — the derived/frontmatter projection
+ *  columns only. What `plans:list` renders from (audit P-042). */
+export type PlanIndexRow = Omit<PlanRow, 'content'>;
+
+/**
+ * Index-only listing: every projection column, never the content blob, with
+ * the archived/status filters pushed into SQL and an optional LIMIT
+ * (audit P-042 — EI-98/EI-174/EI-175 were `plans:list` loading + parsing
+ * every body per request). Rows arrive parse-free; a consumer needing item
+ * statuses reads the Stage-3 `items` jsonb already on the row.
+ */
+export async function listPlanIndexRows(
+  opts: PlanSourceOpts & { includeArchived?: boolean; status?: string; limit?: number } = {},
+): Promise<PlanIndexRow[]> {
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+    const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+    const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+    return tx<Array<Omit<PlanDbRow, 'content'>>>`
+      SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
+             title, status, created, updated, owner, supersedes, superseded_by,
+             op_status, op_started_at, op_updated_at, current_wave, op_priority,
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       ${archivedFilter}
+       ${statusFilter}
+       ORDER BY plan_slug ASC
+       ${limitClause}
+    `;
+  });
+  return rows.map((r) => {
+    const { content: _content, ...rest } = rowFromDb({ ...r, content: '' } as PlanDbRow);
+    return rest;
+  });
+}
+
+/**
+ * Batched content fetch for a small, known slug set — the targeted fallback
+ * for index rows whose Stage-3 `items` projection is empty (a federated
+ * remote row whose projection didn't fill, audit P-042). One query, only
+ * the named rows' blobs.
+ */
+export async function getPlanContentsBySlugs(
+  slugs: string[],
+  opts: PlanSourceOpts = {},
+): Promise<Map<string, string>> {
+  if (slugs.length === 0) return new Map();
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<Array<{ plan_slug: string; content: string }>>`
+      SELECT plan_slug, content
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ANY(${slugs}::text[])
+    `;
+  });
+  return new Map(rows.map((r) => [r.plan_slug, r.content]));
+}
+
+/** Escape LIKE/ILIKE wildcards in a user token so it matches literally. */
+function escapeLike(token: string): string {
+  return token.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
+/**
+ * SQL candidate prefilter for `plans:search` (audit P-042): only rows whose
+ * content contains ≥1 query token (case-insensitive) come back — every
+ * search scope (title/now/items/decisions/prose) is a substring of the
+ * content blob, so a plan with zero token hits can never score and is
+ * lossless to exclude. `limit` caps the candidate set; `truncated` reports
+ * when the cap bit (no silent caps).
+ */
+export async function listPlanRowsMatchingAnyToken(
+  tokens: string[],
+  opts: PlanSourceOpts & { includeArchived?: boolean; limit?: number } = {},
+): Promise<{ rows: PlanRow[]; truncated: boolean }> {
+  if (tokens.length === 0) return { rows: [], truncated: false };
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const limit = opts.limit && opts.limit > 0 ? opts.limit : 200;
+  const patterns = tokens.map((t) => `%${escapeLike(t)}%`);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
+    return tx<PlanDbRow[]>`
+      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+             title, status, created, updated, owner, supersedes, superseded_by,
+             op_status, op_started_at, op_updated_at, current_wave, op_priority,
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       ${archivedFilter}
+         AND content ILIKE ANY(${patterns}::text[])
+       ORDER BY plan_slug ASC
+       LIMIT ${limit + 1}
+    `;
+  });
+  const truncated = rows.length > limit;
+  return { rows: (truncated ? rows.slice(0, limit) : rows).map(rowFromDb), truncated };
 }
 
 /**

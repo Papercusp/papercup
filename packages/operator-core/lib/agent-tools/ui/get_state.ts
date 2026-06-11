@@ -8,13 +8,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-
-const ALL_ROLES = [
-  'scoper', 'architect', 'worker', 'validator', 'reviewer',
-  'debugger', 'operator', 'documenter', 'curator',
-] as const;
 
 function parseUrl(raw: string): { pathname: string; params: Record<string, string>; hash: string | null } {
   try {
@@ -37,7 +32,7 @@ export default defineTool({
     notWhen: 'Tool calls ARE idempotent — `panel_open` when already open is fine. Don\'t pre-check just to skip a call; the persona rule is "always call". Use `ui:get_state` only when you need to BRANCH on what the user is looking at.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Defaults to ctx.uiClientId. Required if the agent wasn't spawned from a tab. */
     client_id: z.string().optional(),

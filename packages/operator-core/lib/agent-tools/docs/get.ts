@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   genericFsAdapter,
   getDocs,
@@ -17,18 +17,6 @@ import {
 import { loadHarnessRegistry } from '../../harness-registry';
 import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 function wrapWithPreamble(base: DocSource): DocSource {
   return {
@@ -133,7 +121,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },

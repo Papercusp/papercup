@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import {
   buildOutline,
   genericFsAdapter,
@@ -27,18 +27,6 @@ import {
 import { loadHarnessRegistry } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, resolveHarnessScope } from '../_harness-scope';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const cache = new RunCache<OutlinePayload>();
 
@@ -113,7 +101,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: z.object({
     harness: z

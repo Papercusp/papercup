@@ -6,21 +6,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readMultiWorkspaceSnapshot } from '../../operator-multi-workspace';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'operator:multi_workspace',
@@ -35,7 +23,7 @@ export default defineTool({
     notWhen: `For the CURRENT workspace's harnesses, use \`harness:list\`. multi_workspace is the workspace enumerator.`,
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({}),
   async handler() {
     const snapshot = await readMultiWorkspaceSnapshot(activeWorkspaceId());

@@ -321,19 +321,31 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       // password on re-runs).
       'sudo -u postgres psql -qc "CREATE ROLE harness_admin LOGIN SUPERUSER" || true',
       'sudo -u postgres psql -qc "ALTER ROLE harness_admin WITH LOGIN SUPERUSER PASSWORD \'$HARNESS_ADMIN_PWD\'"',
-      `sudo -u postgres psql -qc "CREATE ROLE harness_app LOGIN PASSWORD 'harness_app_pwd'" || true`,
-      `sudo -u postgres psql -qc "CREATE ROLE harness_zero LOGIN PASSWORD 'harness_zero_pwd'" || true`,
+      // harness_app (the RLS-subject role getOrgPgApp dispatches on) gets the
+      // same per-frame treatment; its DSN is exported as HARNESS_DATABASE_URL
+      // below — without that export connection.ts would fall back to the
+      // baked dev literal and every workspace-scoped tool call would fail.
+      'HARNESS_APP_PWD="${PAPERCUSP_FRAME_PG_APP_PASSWORD:-$(openssl rand -hex 24)}"',
+      'sudo -u postgres psql -qc "CREATE ROLE harness_app LOGIN" || true',
+      'sudo -u postgres psql -qc "ALTER ROLE harness_app WITH LOGIN PASSWORD \'$HARNESS_APP_PWD\'"',
+      // harness_zero belongs to the RETIRED Zero/web path — nothing on a
+      // frame ever logs in as it, but ~40 migrations GRANT to the role so it
+      // must exist. Random throwaway password, no DSN exported anywhere.
+      'HARNESS_ZERO_PWD="${PAPERCUSP_FRAME_PG_ZERO_PASSWORD:-$(openssl rand -hex 24)}"',
+      'sudo -u postgres psql -qc "CREATE ROLE harness_zero LOGIN" || true',
+      'sudo -u postgres psql -qc "ALTER ROLE harness_zero WITH LOGIN PASSWORD \'$HARNESS_ZERO_PWD\'"',
       'sudo -u postgres createdb -O harness_admin papercusp || true',
       // Export for every later step (single bootstrap shell): the operator + the
       // invoke-once pg-bootstrap read this DSN. No ~/.papercusp/embedded-pg.json is
       // written, so the operator's discovery cleanly falls through to DATABASE_URL.
       'export DATABASE_URL="postgresql://harness_admin:$HARNESS_ADMIN_PWD@localhost:5432/papercusp"',
       'export PAPERCUSP_DATABASE_URL="$DATABASE_URL"',
-      // Persist the DSN (0600) for manual relaunches after the bootstrap
-      // shell exits — the connection.ts dev-fallback literal will NOT match
+      'export HARNESS_DATABASE_URL="postgresql://harness_app:$HARNESS_APP_PWD@localhost:5432/papercusp"',
+      // Persist the DSNs (0600) for manual relaunches after the bootstrap
+      // shell exits — the connection.ts dev-fallback literals will NOT match
       // a provisioned frame anymore.
       'install -m 0600 /dev/null "$HOME/.papercusp/frame-pg.env" 2>/dev/null || { mkdir -p "$HOME/.papercusp" && install -m 0600 /dev/null "$HOME/.papercusp/frame-pg.env"; }',
-      'printf "DATABASE_URL=%s\\n" "$DATABASE_URL" > "$HOME/.papercusp/frame-pg.env"',
+      'printf "DATABASE_URL=%s\\nHARNESS_DATABASE_URL=%s\\n" "$DATABASE_URL" "$HARNESS_DATABASE_URL" > "$HOME/.papercusp/frame-pg.env"',
       `cd ${shq(`${root}/runtime`)}`,
       'export PAPERCUSP_PG_SQL_DIR=libs/papercusp/libs/db/sql',
       // Extensions + all migrations + spawn-signing-key premint (fails the script on error).

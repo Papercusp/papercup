@@ -7,20 +7,8 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listProjectSpecRevisions } from '../../projects-data';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 export default defineTool({
   name: 'projects:spec_revisions',
@@ -33,7 +21,7 @@ export default defineTool({
   description: 'List spec-revision summaries for a project (newest-first; full spec body lives on projects:spec_revision).',
   capability: 'projects:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     projectId: z.string().min(1),

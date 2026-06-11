@@ -27,7 +27,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { readAllPlans } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -41,18 +41,6 @@ import { planItemsToAttention, reportTurnsToAttention } from '../../attention/so
 import { buildAttentionGroups } from '../../attention/group';
 import { applyTriage, groupByTier, type AttentionItem } from '../../attention/types';
 import { readTriageByWorkspace } from '../../attention/triage-store';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const argsSchema = z.object({
   harnessSlug: z
@@ -76,7 +64,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

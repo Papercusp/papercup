@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withPlanLock } from './with-plan-lock';
 import { listPlanFiles } from './source';
 import { hashPlanContent } from './content-hash';
@@ -34,18 +34,6 @@ import {
   type BackfillRevisionInput,
 } from './revisions';
 import type { ResolveIdentityCtx } from '../coordination/identity';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 /** `git log --follow` returns at most this many commits per plan —
  *  the helper's hard ceiling. No plan approaches it. */

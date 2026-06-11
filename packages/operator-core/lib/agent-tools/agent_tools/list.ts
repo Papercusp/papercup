@@ -11,19 +11,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, listAllProjectedTools } from '@papercusp/agent-mcp';
-
-const ALL_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
+import { defineTool, listAllProjectedTools, SU_ROLES } from '@papercusp/agent-mcp';
 
 export default defineTool({
   name: 'agent_tools:list',
@@ -35,7 +23,7 @@ export default defineTool({
     notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
   },
   requirePrincipal: false,
-  agentRoles: [...ALL_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     /** Optional substring/regex match on tool name. */
     filter: z.string().optional(),

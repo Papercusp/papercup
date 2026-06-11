@@ -205,6 +205,7 @@ function makeMcpStub(
   return {
     defineTool: (cfg: unknown) => cfg,
     handleHttpToolRequest,
+    SU_ROLES: ['scoper', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'operator', 'documenter', 'curator'],
   };
 }
 

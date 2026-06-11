@@ -63,6 +63,12 @@ import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
 } from './tool-allowlist';
+import {
+  validIdempotencyKey,
+  lookupStoredMcpResult,
+  storeMcpResult,
+  type StoredMcpResult,
+} from './_mcp-result-replay';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
@@ -730,7 +736,7 @@ const handler = createMcpHandler(
           params: {
             name: string;
             arguments?: Record<string, unknown>;
-            _meta?: { progressToken?: string | number; format?: string };
+            _meta?: { progressToken?: string | number; format?: string; idempotencyKey?: string };
           };
         },
         extra: unknown,
@@ -738,6 +744,12 @@ const handler = createMcpHandler(
         const toolName = req.params.name;
         const args = req.params.arguments ?? {};
         const progressToken = req.params._meta?.progressToken;
+        // Write idempotency / result replay (audit P-046 / EI-68): a caller
+        // that passes `_meta.idempotencyKey` gets its result persisted under
+        // that key; re-calling with the SAME key replays the stored outcome
+        // instead of re-executing — so a write whose response died on a
+        // dropped connection is recoverable, not re-fired. Opt-in per call.
+        const idempotencyKey = validIdempotencyKey(req.params._meta?.idempotencyKey);
         // Result-format negotiation (P-009): per-call `_meta.format` wins over a
         // connection-level `?format=` on the MCP URL (how a client declares
         // compact/json once at setup). Absent ⇒ the transport default (compact).
@@ -817,6 +829,32 @@ const handler = createMcpHandler(
             spawnRes.ctx.isPowerUser && args && typeof args === 'object' && 'workspace' in args
               ? { ...args, workspace: spawnRes.ctx.workspaceId }
               : args;
+          // Replay lookup (P-046 / EI-68) — placed after the profile gate so a
+          // replay grants nothing a fresh call wouldn't. Keys are scoped to the
+          // caller's STABLE identity: uiClientId (the per-session SID for
+          // SU/power sessions, where spawnId is per-request) falling back to
+          // spawnId (stable for signed orchestrator spawns). Best-effort: a
+          // store outage degrades to normal execution, never an error.
+          const replayOwnerKey = spawnRes.ctx.uiClientId ?? spawnRes.ctx.spawnId;
+          if (idempotencyKey) {
+            try {
+              const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
+              if (stored) {
+                return stored as {
+                  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+                  isError?: boolean;
+                  _meta?: Record<string, unknown>;
+                  structuredContent?: unknown;
+                };
+              }
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[mcp-replay] lookup failed for ${toolName} (key=${idempotencyKey}): ` +
+                  (err instanceof Error ? err.message : String(err)),
+              );
+            }
+          }
           // Superuser per-call workspace scoping (EI-30) — the inverse of the
           // power-user clamp. An unscoped superuser session (workspaceId '*')
           // that passes a concrete `workspace` arg dispatches under THAT
@@ -842,15 +880,43 @@ const handler = createMcpHandler(
           // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
           // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
           // legacy branch below returns) at this host boundary.
-          const runDispatch = (ctx: UnifiedToolContext) =>
-            dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, ctx, PROJECTED_DEPS) as Promise<{
+          const runDispatch = async (ctx: UnifiedToolContext) => {
+            const result = (await dispatchProjectedToolToMcp(
+              projected,
+              toolName,
+              dispatchArgs,
+              ctx,
+              PROJECTED_DEPS,
+            )) as {
               content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
               isError?: boolean;
               // Format tag + envelope (P-006) and lossless structuredContent (P-010)
               // — forwarded to the MCP SDK's tools/call result so clients see them.
               _meta?: Record<string, unknown>;
               structuredContent?: unknown;
-            }>;
+            };
+            // Persist the outcome BEFORE the response hits the (possibly
+            // already-closed) stream — the whole point of P-046/EI-68: the
+            // result must survive the transport. Best-effort.
+            if (idempotencyKey) {
+              try {
+                await storeMcpResult({
+                  ownerKey: replayOwnerKey,
+                  idempotencyKey,
+                  toolName,
+                  workspaceId: dispatchSpawnCtx.workspaceId,
+                  result: result as StoredMcpResult,
+                });
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
+                    (err instanceof Error ? err.message : String(err)),
+                );
+              }
+            }
+            return result;
+          };
           // Establish the request-scoped workspace ALS for the duration of the
           // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
           // — harness resolution, not just the PG GUC `withWorkspace` sets — see

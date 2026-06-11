@@ -14,7 +14,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
@@ -22,18 +22,6 @@ import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { parsePlan } from './parser';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-
-const SU_ROLES = [
-  'scoper',
-  'architect',
-  'worker',
-  'validator',
-  'reviewer',
-  'debugger',
-  'operator',
-  'documenter',
-  'curator',
-] as const;
 
 const MAX_CHUNK_CHARS = 24_000;
 const DRAFT_ID = /^[a-zA-Z0-9_-]{8,80}$/;
