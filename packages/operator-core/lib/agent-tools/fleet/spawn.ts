@@ -21,7 +21,7 @@ export default defineTool({
   description:
     'Spawn one agent of a role into a registered harness (project). Returns a spawn_id immediately; the run is tracked durably in the nursery — watch it with fleet:tree, stop it with fleet:cancel. role="worker" requires chunk.',
   guidance: {
-    when: 'The user asks to launch an agent on a piece of work — "spawn a validator in <harness>", "put a worker on <feature>", "have a scoper break down X". The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later.',
+    when: 'The user asks to launch an agent on a piece of work — "spawn a validator in <harness>", "put a worker on <feature>", "have a scoper break down X". The spawn is fire-and-forget: acknowledge the launch and check fleet:tree later. Pick a `tier` per task (quick/standard/deep/max — see the arg rubric); omit it for routine work at the role default.',
     notWhen: 'For answering a question you already know — spawning is for new work, not lookups. For the durable feature pipeline, file a work_item and let the harness autoloop dispatch it.',
     chaining: 'fleet:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
@@ -47,6 +47,10 @@ export default defineTool({
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
     brief: z.string().max(2000).optional()
       .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060.'),
+    tier: z.string().max(40).optional()
+      .describe('Model tier for THIS spawn, by name from the user-defined menu (default: quick < standard < deep < max). Resolved to a model spec clamped to [role default floor, role ceiling] — a tier can escalate a role, never downgrade it. Pick by task: trivial/mechanical→quick; spec-bounded normal work→standard; ambiguous/architectural/repeat-failure→deep; security/migration/deploy-adjacent→max. Omit = the role\'s standing default.'),
+    model: z.string().max(80).optional()
+      .describe('Direct per-spawn model spec `<modelId>[:<effort>]` (e.g. "opus:high") — operator/human escape hatch that bypasses the tier menu (still recorded on the nursery row). Prefer `tier`. When both are set, model wins.'),
     extras: z.array(z.string().max(500)).max(16).optional()
       .describe('Extra KEY=value args passed to the child invoke.'),
     workspace: z.string().max(120).optional(),
@@ -82,6 +86,10 @@ export default defineTool({
       featureId: args.feature ?? null,
       chunkId: args.chunk ?? null,
       brief: args.brief ?? null,
+      // The queen's model lever is tier NAMES only (propose/dispose split) —
+      // a raw model spec from role=queen is ignored in favor of her tier.
+      tier: args.tier ?? null,
+      modelSpec: ctx.role === 'queen' ? null : args.model ?? null,
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',

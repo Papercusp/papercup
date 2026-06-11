@@ -260,7 +260,9 @@ export async function spawnInvokeOnce(
     // P-019: on a frame launched under a bound account, key the bucket to that account so its
     // separate subscription tracks its separate rate limits (and its pauses carry the account
     // id, driving the Queen's scale-out). Unset locally ⇒ the global bucket.
-    const { backend, model } = resolveSpawnBackendModel(role);
+    // PAPERCUSP_SPAWN_MODEL (per-spawn escalation) shifts the child onto a different
+    // model class — key the bucket to the model it ACTUALLY runs.
+    const { backend, model } = resolveSpawnBackendModel(role, extraEnv.PAPERCUSP_SPAWN_MODEL);
     const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
     // The back-edge EI-86 closes: classify the child's outcome and, on an account-wide stop
     // (429 / overload / usage-cap), PENALIZE the shared governor so the AIMD + the rate

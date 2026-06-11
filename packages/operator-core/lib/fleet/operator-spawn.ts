@@ -196,6 +196,18 @@ export interface OperatorSpawnInput {
   chunkId?: string | null;
   /** Queen-authored brief: the situational overlay the bee is MISSING. P-060. */
   brief?: string | null;
+  /**
+   * Per-spawn model escalation (queen-model-tier-selection-2026-06-11).
+   * `tier` names an entry in the user-defined tier menu (AgentConfig.tiers,
+   * default quick/standard/deep/max) — resolved + clamped to [role floor,
+   * role ceiling] by resolveTierSpec. `modelSpec` is a direct
+   * `<modelId>[:<effort>]` spec (operator/human escape hatch — NOT exposed to
+   * the queen, whose lever is tier names only). When both are set, the
+   * explicit spec wins. Unset → the role's standing resolution
+   * (AGENT_MODELS → ROLE_MODEL_DEFAULTS → CLI default) applies unchanged.
+   */
+  tier?: string | null;
+  modelSpec?: string | null;
   /** Extra KEY=value positional args for the child invoke. */
   extras?: string[];
   /** Optional per-spawn invoke timeout override (ms), threaded to
@@ -377,6 +389,32 @@ export async function spawnAgentInHarness(
     return fail('spawn rejected: role="worker" requires a chunk id (spawn a scoper first to chunk the feature)');
   }
 
+  // Per-spawn model resolution (queen-model-tier-selection-2026-06-11): an
+  // explicit spec wins; otherwise a tier name resolves against the user's
+  // menu, clamped to [role floor, role ceiling]. Resolved BEFORE admission so
+  // the spec/tier land on the nursery row (the queen's pick vs. the task's
+  // outcome is the trust telemetry). An unknown tier fails loud — a typo'd
+  // tier silently running at the default would be the EI-7 class of bug.
+  let spawnModelSpec: string | null = (input.modelSpec ?? '').trim() || null;
+  let spawnModelTier: string | null = null;
+  if (!spawnModelSpec && input.tier && input.tier.trim()) {
+    const [{ resolveTierSpec }, { readAgentConfig }] = await Promise.all([
+      import('./model-tiers'),
+      import('../agent-config'),
+    ]);
+    const cfg = await readAgentConfig().catch(() => null);
+    const resolved = resolveTierSpec({
+      tier: input.tier,
+      role,
+      tiers: cfg?.tiers,
+      tierCeilings: cfg?.tierCeilings,
+    });
+    if (!resolved.ok) return fail(`spawn rejected: ${resolved.error}`);
+    spawnModelSpec = resolved.spec;
+    spawnModelTier = resolved.tier;
+    if (resolved.note) console.log(`[operator-spawn] ${resolved.note}`);
+  }
+
   // Harness resolution. Explicit slug wins; with no slug, a single-harness
   // workspace has an unambiguous default. Anything else fails loud.
   let slug = (input.harness ?? '').trim();
@@ -436,6 +474,8 @@ export async function spawnAgentInHarness(
           chunkId: input.chunkId ?? null,
           planSlug: input.planSlug ?? null,
           itemId: input.itemId ?? null,
+          modelSpec: spawnModelSpec,
+          modelTier: spawnModelTier,
           // The child's coord/lock owner is its spawnId — the link
           // fleet:cancel uses to release its locks/claims transitively.
           sessionOwner: spawnId,
@@ -485,7 +525,7 @@ export async function spawnAgentInHarness(
   // AGENT_CMD/AGENT_MODELS for the role); omp resumes by thread id + codex by
   // rollout, so they mint none. The UPDATE is best-effort — a not-yet-migrated DB
   // (session_id from mig 203) must never break a spawn.
-  const { backend } = resolveSpawnBackendModel(role);
+  const { backend } = resolveSpawnBackendModel(role, spawnModelSpec ?? undefined);
   const forceSessionId = backend === 'claude-code' ? randomUUID() : undefined;
   if (forceSessionId) {
     try {
@@ -524,6 +564,13 @@ export async function spawnAgentInHarness(
   // comment naming assembleRolePrompt was the mis-wiring the plan flagged.)
   if (input.brief) {
     extraEnv.QUEEN_BRIEF = input.brief;
+  }
+  // Per-spawn model escalation: buildInvokeOnce reads this to apply `--model`/
+  // `--effort` to THIS child's command (outranking AGENT_MODELS + the committed
+  // default), and the child's own invoke.ts resolveModel consults it first —
+  // covering the aiBackend agentCmd-swap path the command-level append can't reach.
+  if (spawnModelSpec) {
+    extraEnv.PAPERCUSP_SPAWN_MODEL = spawnModelSpec;
   }
 
   // P-012 (hive-inference-gateway): when the INFERENCE_GATEWAY flag is ON (default OFF),
