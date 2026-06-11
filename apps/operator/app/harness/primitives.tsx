@@ -4,31 +4,93 @@ import { CSSProperties, ReactNode } from 'react';
 import {
   AlertOctagon,
   AlertTriangle,
+  Archive,
+  Bug,
   CheckCircle,
   Circle,
   Eye,
+  FileDiff,
+  FlaskConical,
   Hammer,
   Info,
+  ListChecks,
+  Puzzle,
+  Sparkles,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
 import {
   COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, getRoleStyle,
-  SEVERITY, ISSUE_STATUS, type IssueSeverityKey, type IssueStatusKey,
+  SEVERITY, ISSUE_STATUS, WORK_ITEM_KIND,
+  type IssueSeverityKey, type IssueStatusKey, type StatusMeta, type WorkItemKindKey,
 } from './theme';
 import { Tooltip } from './Tooltip';
 
-/** Dot + label — Linear's status badge pattern. */
+/**
+ * Shared chip-pill geometry — the SeverityPill recipe (tinted rounded-full
+ * chip, icon + bold uppercase label). SeverityPill renders it directly;
+ * Status / IssueStatus pills opt in via variant="chip" and KindPill always
+ * uses it, so surfaces like the Work-items table can speak one visual
+ * language across all their pill columns.
+ */
+function ChipPill({
+  meta,
+  Icon,
+  size,
+  showLabel,
+  labelOverride,
+}: {
+  meta: StatusMeta;
+  Icon: LucideIcon;
+  size: 'xs' | 'sm';
+  showLabel: boolean;
+  labelOverride?: string;
+}) {
+  const iconSize = size === 'xs' ? 10 : 11;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '1px 8px', borderRadius: 999,
+      fontSize: size === 'xs' ? 10 : SIZES.xs,
+      fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+      color: meta.text, background: meta.bg, whiteSpace: 'nowrap',
+    }}>
+      <Icon size={iconSize} aria-hidden />
+      {showLabel && <span>{labelOverride ?? meta.label}</span>}
+    </span>
+  );
+}
+
+// Feature/harness status → icon, for the chip variant of StatusPill. Same
+// `?? Circle` fallback discipline as SEVERITY_ICON so an unknown status can't
+// render `<undefined/>` and crash the row subtree.
+export const STATUS_ICON: Record<HarnessStatus, LucideIcon> = {
+  todo: Circle,
+  in_progress: Hammer,
+  validating: Eye,
+  failing: XCircle,
+  blocked: AlertTriangle,
+  passed: CheckCircle,
+  deprecated: Archive,
+};
+
+/** Dot + label — Linear's status badge pattern. variant="chip" renders the
+ * SeverityPill-style tinted chip instead (icon + uppercase label). */
 export function StatusPill({
   status,
   size = 'sm',
   showLabel = true,
+  variant = 'dot',
 }: {
   status: HarnessStatus;
   size?: 'xs' | 'sm';
   showLabel?: boolean;
+  variant?: 'dot' | 'chip';
 }) {
   const s = STATUS[status];
+  if (variant === 'chip') {
+    return <ChipPill meta={s} Icon={STATUS_ICON[status] ?? Circle} size={size} showLabel={showLabel} />;
+  }
   const dotSize = size === 'xs' ? 6 : 8;
   return (
     <span style={{
@@ -79,32 +141,33 @@ export function SeverityPill({
 }) {
   const s = SEVERITY[severity as IssueSeverityKey];
   const Icon = SEVERITY_ICON[severity as IssueSeverityKey] ?? Circle;
-  const iconSize = size === 'xs' ? 10 : 11;
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '1px 8px', borderRadius: 999,
-      fontSize: size === 'xs' ? 10 : SIZES.xs,
-      fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-      color: s.text, background: s.bg, whiteSpace: 'nowrap',
-    }}>
-      <Icon size={iconSize} aria-hidden />
-      {showLabel && <span>{s.label}</span>}
-    </span>
-  );
+  return <ChipPill meta={s} Icon={Icon} size={size} showLabel={showLabel} />;
 }
 
-/** Issue status badge — dot + label, colored from the canonical ISSUE_STATUS table. */
+/** Issue status badge — dot + label, colored from the canonical ISSUE_STATUS
+ * table. variant="chip" renders the SeverityPill-style tinted chip instead. */
 export function IssueStatusPill({
   status,
   size = 'sm',
   showLabel = true,
+  variant = 'dot',
 }: {
   status: string;
   size?: 'xs' | 'sm';
   showLabel?: boolean;
+  variant?: 'dot' | 'chip';
 }) {
   const s = ISSUE_STATUS[status as IssueStatusKey];
+  if (variant === 'chip') {
+    return (
+      <ChipPill
+        meta={s}
+        Icon={ISSUE_STATUS_ICON[status as IssueStatusKey] ?? Circle}
+        size={size}
+        showLabel={showLabel}
+      />
+    );
+  }
   const dotSize = size === 'xs' ? 6 : 8;
   return (
     <span style={{
@@ -119,6 +182,34 @@ export function IssueStatusPill({
       {showLabel && <span>{s.label}</span>}
     </span>
   );
+}
+
+// Work-item kind → icon. Same fallback discipline as SEVERITY_ICON.
+export const KIND_ICON: Record<WorkItemKindKey, LucideIcon> = {
+  feature: Sparkles,
+  'research-task': FlaskConical,
+  chunk: Puzzle,
+  bug: Bug,
+  change: FileDiff,
+  task: ListChecks,
+};
+
+/** Work-item kind badge — icon + label chip, colored from the canonical
+ * WORK_ITEM_KIND table (same recipe as SeverityPill). An unknown kind keeps
+ * its raw name (neutral grey chip) instead of reading "Unknown". */
+export function KindPill({
+  kind,
+  size = 'sm',
+  showLabel = true,
+}: {
+  kind: string;
+  size?: 'xs' | 'sm';
+  showLabel?: boolean;
+}) {
+  const s = WORK_ITEM_KIND[kind as WorkItemKindKey];
+  const Icon = KIND_ICON[kind as WorkItemKindKey] ?? Circle;
+  const labelOverride = kind in WORK_ITEM_KIND ? undefined : kind;
+  return <ChipPill meta={s} Icon={Icon} size={size} showLabel={showLabel} labelOverride={labelOverride} />;
 }
 
 /** Short monospace ID pill — copyable. */

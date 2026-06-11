@@ -7,7 +7,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
-import { IssueStatusPill, SeverityPill, StatusPill } from '../../harness/primitives';
+import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
@@ -51,19 +51,6 @@ const CELL_TRUNCATE: CSSProperties = {
   display: 'block',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-
-// Small kind chip — same recipe as the member-rail/workspace-card kind chips.
-const KIND_CHIP: CSSProperties = {
-  fontSize: 9.5,
-  fontWeight: 700,
-  textTransform: 'uppercase',
-  letterSpacing: '0.02em',
-  padding: '1px 5px',
-  borderRadius: 4,
-  background: 'var(--bg-3, rgba(255, 255, 255, 0.075))',
-  color: 'var(--fg-mute, #7f9bb4)',
   whiteSpace: 'nowrap',
 };
 

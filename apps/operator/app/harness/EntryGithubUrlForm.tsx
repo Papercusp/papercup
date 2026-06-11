@@ -473,7 +473,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     }
   };
 
-  // ── Join an existing hive (the WorkbenchHiveDirectoryPanel mechanics) ────
+  // ── Join an existing hive (P-007 hardening: join the HIVE, not N loose
+  //    harnesses — one composed call that also materializes the local hive
+  //    view so the rail/grouping work on our side. The legacy shared-harness
+  //    offer keeps the single-link join-link path — it has no hive to view.) ─
 
   const join = async () => {
     if (!offer) return;
@@ -485,17 +488,44 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           : [];
     if (links.length === 0) return;
     setPhase('joining');
+
+    if (offer.kind === 'hive') {
+      try {
+        const res = await fetch('/api/discovery/join-hive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hiveId: offer.hive?.hiveId ?? 'hive',
+            ...(offer.hive?.title ? { title: offer.hive.title } : {}),
+            memberLinks: links,
+          }),
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          hiveSlug?: string;
+          members?: { ok: boolean }[];
+        };
+        const ok = body.members?.filter((m) => m.ok).length ?? 0;
+        setJoinSummary({
+          ok,
+          total: links.length,
+          ...(body.hiveSlug ? { firstSlug: body.hiveSlug } : {}),
+        });
+      } catch {
+        setJoinSummary({ ok: 0, total: links.length });
+      }
+      setPhase('joined');
+      return;
+    }
+
+    // Legacy shared-harness binding — the original single-link path.
     let ok = 0;
     let firstSlug: string | undefined;
     for (let i = 0; i < links.length; i++) {
-      // Per-repo slug from the link's own github coords (falls back to an
-      // indexed hive id — the directory panel's scheme).
       const parsedLink = parseHarnessLink(links[i]);
       const slug = parsedLink.ok
         ? deriveSlugFromRepo(parsedLink.payload.github_repo)
-        : offer.kind === 'hive'
-          ? `${offer.hive?.hiveId ?? 'hive'}-${i}`
-          : offer.binding?.harnessSlug || `joined-${i}`;
+        : offer.binding?.harnessSlug || `joined-${i}`;
       try {
         const res = await fetch('/api/harness/join-link', {
           method: 'POST',
@@ -507,7 +537,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           if (!firstSlug) firstSlug = slug;
         }
       } catch {
-        /* per-link best-effort, same as the directory panel */
+        /* per-link best-effort */
       }
     }
     setJoinSummary({ ok, total: links.length, ...(firstSlug ? { firstSlug } : {}) });

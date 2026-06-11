@@ -79,6 +79,13 @@ export interface CreateHiveFromRepoOpts {
    * member's repo coords (+ its Cupboard/local rows only, for public hives).
    */
   intoHive?: string;
+  /**
+   * P-008 (hardening): client-minted progress id — the composition records
+   * real step transitions against it (from-repo-progress store → the sync
+   * channel), replacing the form's optimistic-only strip. Optional;
+   * best-effort throughout.
+   */
+  progressId?: string;
   workspaceId: string;
 }
 
@@ -141,6 +148,12 @@ export interface CreateHiveFromRepoDeps {
   /** Remove a half-created hive home (reverse of createHiveHarness). Best-effort. */
   removeHiveHome?: (slug: string, workspaceId: string) => Promise<void>;
   rmDir?: (path: string) => Promise<void>;
+  /** P-008 step recorder (default: the from-repo-progress store). */
+  recordStep?: (
+    progressId: string,
+    step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish',
+    status: 'running' | 'done' | 'error' | 'skipped',
+  ) => void;
 }
 
 async function defaultBuildBlueprint(
@@ -262,11 +275,35 @@ export async function createHiveFromRepo(
   // D-001 (hardening): verify-by-running is OPT-IN for pasted URLs.
   const runTests = opts.runTests === true;
 
+  // P-008: real step transitions, recorded best-effort against the client's
+  // progressId (no-op without one). A helper so call-sites stay one-liners.
+  const recordStep =
+    deps.recordStep ??
+    ((id: string, step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish', status: 'running' | 'done' | 'error' | 'skipped') => {
+      void import('../../harness/from-repo-progress')
+        .then((m) => m.recordFromRepoStep(id, step, status))
+        .catch(() => {});
+    });
+  const pid = opts.progressId ?? '';
+  const mark = (
+    step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish',
+    status: 'running' | 'done' | 'error' | 'skipped',
+  ): void => {
+    if (pid) {
+      try {
+        recordStep(pid, step, status);
+      } catch {
+        /* progress is UX, never load-bearing */
+      }
+    }
+  };
+
   const parsed = parseGithubUrl(opts.githubUrl);
   if (!parsed) return { ok: false, error: 'invalid_url', message: `not a GitHub URL: ${opts.githubUrl}` };
 
   // 1 — paste-time lookup (P-005). An existing Hive/legacy share → join offer,
   //     ZERO side effects.
+  mark('lookup', 'running');
   const found = await lookup(opts.githubUrl);
   if (found.kind === 'invalid_url') {
     return { ok: false, error: 'invalid_url', message: found.message };

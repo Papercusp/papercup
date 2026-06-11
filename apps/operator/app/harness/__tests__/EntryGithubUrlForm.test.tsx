@@ -366,11 +366,14 @@ describe('join offer (existing hive)', () => {
     },
   });
 
-  it('renders the confirm card and joins via /api/harness/join-link per member link', async () => {
+  it('renders the confirm card and joins the HIVE via /api/discovery/join-hive (P-007 hardening)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/hives/from-repo': { status: 200, body: existingHive([memberLink('web', 1), memberLink('api', 2)]) },
-      '/api/harness/join-link': { status: 200, body: { ok: true, state: {} } },
+      '/api/discovery/join-hive': {
+        status: 200,
+        body: { ok: true, hiveSlug: 'acme-web', members: [{ ok: true }, { ok: true }] },
+      },
     });
     const { onCreated } = renderForm();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
@@ -384,14 +387,19 @@ describe('join offer (existing hive)', () => {
     await user.click(screen.getByRole('button', { name: 'Join hive' }));
     await waitFor(() => screen.getByText(/Joined 2\/2 member harnesses/));
 
-    // One join-link POST per member link, slug derived from each link's repo.
-    const joins = postedBodies('/api/harness/join-link');
-    expect(joins).toHaveLength(2);
-    expect(joins[0]).toMatchObject({ slug: 'web', harnessLinkUrl: memberLink('web', 1) });
-    expect(joins[1]).toMatchObject({ slug: 'api', harnessLinkUrl: memberLink('api', 2) });
+    // ONE composed call carrying every member link — the route runs the
+    // per-link joins AND materializes the local remote-hive view (D-007).
+    const joins = postedBodies('/api/discovery/join-hive');
+    expect(joins).toHaveLength(1);
+    expect(joins[0]).toMatchObject({
+      hiveId: 'hive-1', // the offer's hiveId, passed through verbatim
+      memberLinks: [memberLink('web', 1), memberLink('api', 2)],
+    });
+    expect(postedBodies('/api/harness/join-link')).toHaveLength(0);
 
     await user.click(screen.getByRole('button', { name: 'Done' }));
-    expect(onCreated).toHaveBeenCalledWith('web');
+    // onCreated gets the materialized VIEW slug — the focused scope.
+    expect(onCreated).toHaveBeenCalledWith('acme-web');
   });
 
   it('no member links → "isn’t joinable yet" + Create-anyway resubmits with force', async () => {

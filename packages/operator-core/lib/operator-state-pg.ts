@@ -66,6 +66,9 @@ type StateTable =
   | 'operator_voice_channels'
   // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
   | 'hive_directory_cache'
+  // hive-from-repo-hardening P-005 — withdrawal-tombstone watermarks (same
+  // operator-state row mechanics as the cache; no new migration needed):
+  | 'hive_directory_tombstones'
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
   | 'operator_account_pool'
   // Migration 216 — PG-backed runtime flag overrides (audit P-070, EI-76):

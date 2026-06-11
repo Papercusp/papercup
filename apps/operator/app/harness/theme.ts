@@ -121,6 +121,28 @@ export const ISSUE_STATUS = new Proxy(_ISSUE_STATUS_TABLE as Record<string, Stat
 
 export type IssueStatusKey = keyof typeof _ISSUE_STATUS_TABLE;
 
+// Unified work_items `kind` coloring — feature-family {feature, research-task,
+// chunk} + issue-family {bug, change, task} (unify-work-items D-001). The
+// SINGLE source for kind chips (<KindPill> in primitives.tsx), same hue
+// discipline + Proxy fallback as SEVERITY / ISSUE_STATUS above so the
+// Work-items table's pill columns speak one visual language.
+const _WORK_ITEM_KIND_TABLE = {
+  feature:         { solid: '#3b82f6', bg: 'rgba(59,130,246,0.15)',  text: '#93c5fd', label: 'Feature' },
+  'research-task': { solid: '#a855f7', bg: 'rgba(168,85,247,0.15)',  text: '#d8b4fe', label: 'Research' },
+  chunk:           { solid: '#14b8a6', bg: 'rgba(20,184,166,0.15)',  text: '#5eead4', label: 'Chunk' },
+  bug:             { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',   text: '#fca5a5', label: 'Bug' },
+  change:          { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',  text: '#fcd34d', label: 'Change' },
+  task:            { solid: '#94a3b8', bg: 'rgba(148,163,184,0.14)', text: '#cbd5e1', label: 'Task' },
+} as const;
+
+export const WORK_ITEM_KIND = new Proxy(_WORK_ITEM_KIND_TABLE as Record<string, StatusMeta>, {
+  get(target, prop: string) {
+    return (target as any)[prop] ?? _STATUS_META_FALLBACK;
+  },
+}) as typeof _WORK_ITEM_KIND_TABLE;
+
+export type WorkItemKindKey = keyof typeof _WORK_ITEM_KIND_TABLE;
+
 /**
  * Canonical role color/label overrides. Roles not listed here get a
  * stable color derived from their name (see getRoleStyle below) — adding
