@@ -490,7 +490,8 @@ const createHiveFromRepoRoute = defineTool({
       ...(typeof body.slug === 'string' && body.slug.trim() ? { slug: body.slug.trim() } : {}),
       visibility,
       ...(body.shallow !== undefined ? { shallow: body.shallow === true } : {}),
-      ...(body.runTests !== undefined ? { runTests: body.runTests !== false } : {}),
+      // D-001 (hardening): test-verify EXECUTES repo code — explicit true only.
+      ...(body.runTests === true ? { runTests: true } : {}),
       ...(body.force !== undefined ? { force: body.force === true } : {}),
       ...(typeof body.intoHive === 'string' && body.intoHive.trim()
         ? { intoHive: body.intoHive.trim() }

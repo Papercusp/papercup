@@ -36,7 +36,6 @@ mod ui;
 mod voice;
 mod voice_convai;
 mod voice_stream;
-mod agent_pane;
 mod voice_ui;
 mod wake_board;
 mod workbench;
@@ -94,11 +93,7 @@ async fn main() -> Result<()> {
         // wake-pane (EI-312): the dock's staged-wake board — every manual-mode
         // agent's pending wakes (queen first) with release / edit / skip and
         // the release-all / skip-all drains. Pinned to the pane-only Tab::Wake.
-        // agent-pane (owner ask 2026-06-11): ONE pane split [agent chat | agent
-        // wakes], pui-rendered (the colony-tab single-pane-internal-split shape).
-        // Pinned to the pane-only Tab::Agent; scope from argv[2] (--queen|<owner>).
-        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane")
-        | Some("agent-pane") => {}
+        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -111,8 +106,6 @@ async fn main() -> Result<()> {
         Some("dock-driver") => Some(app::Tab::Fleet),
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
-        // agent-pane: one pane split [chat | wakes] (owner ask 2026-06-11).
-        Some("agent-pane") => Some(app::Tab::Agent),
         _ => None,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
@@ -131,10 +124,8 @@ async fn main() -> Result<()> {
     // board; `wake-pane --queen` = the live queen's queue (resolved from the
     // roster each refresh — her owner id isn't known at layout time); `wake-pane
     // <owner-id>` = one explicit agent's queue.
-    // agent-pane shares the same scope grammar (its wakes half is filtered to
-    // the agent): `agent-pane --queen` | `agent-pane <owner>`.
     let wake_filter: app::WakeFilter = match subcommand.as_deref() {
-        Some("wake-pane") | Some("agent-pane") => match std::env::args().nth(2).as_deref() {
+        Some("wake-pane") => match std::env::args().nth(2).as_deref() {
             Some("--queen") => app::WakeFilter::Queen,
             Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
             _ => app::WakeFilter::All,
@@ -272,10 +263,9 @@ async fn run<B: Backend>(
         // The thinking feed: tail the bee's live stdout (offset-cursor poll).
         tokio::spawn(bee_output_loop(owner.clone(), tx.clone()));
     }
-    // The wake-pane (EI-312) + the agent-pane's wakes half (owner ask
-    // 2026-06-11): keep the staged-wake board fresh while either is pinned.
+    // The wake-pane (EI-312): keep the staged-wake board fresh while pinned.
     app.wake_filter = wake_filter.clone();
-    if pinned == Some(app::Tab::Wake) || pinned == Some(app::Tab::Agent) {
+    if pinned == Some(app::Tab::Wake) {
         tokio::spawn(wake_board_loop(wake_filter, tx.clone()));
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij

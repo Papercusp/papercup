@@ -53,7 +53,13 @@ export interface CreateHiveFromRepoOpts {
   /** D-002: default 'public' (auto-publish). 'private' = zero external writes (D-003). */
   visibility?: HiveVisibility;
   shallow?: boolean;
-  /** Run the detected test command once to verify it (D-023). Default true. */
+  /**
+   * Run the detected test command once to verify it. Default FALSE on this
+   * paste-a-URL path (hardening D-001): the command comes from a repo the
+   * operator may have never seen — running it is arbitrary code execution.
+   * Explicit opt-in only; `harness:generate-from-repo` (a local repo you
+   * already trust) keeps its own default-true.
+   */
   runTests?: boolean;
   testTimeoutMs?: number;
   /** Parent dir for the HIVE HOME folder (default ~/.papercusp/hives). */
@@ -253,7 +259,8 @@ export async function createHiveFromRepo(
   const rmDir = deps.rmDir ?? (async (p: string) => rm(p, { recursive: true, force: true }));
 
   const visibility: HiveVisibility = opts.visibility ?? 'public';
-  const runTests = opts.runTests !== false;
+  // D-001 (hardening): verify-by-running is OPT-IN for pasted URLs.
+  const runTests = opts.runTests === true;
 
   const parsed = parseGithubUrl(opts.githubUrl);
   if (!parsed) return { ok: false, error: 'invalid_url', message: `not a GitHub URL: ${opts.githubUrl}` };

@@ -792,43 +792,10 @@ pub enum Tab {
     /// agent's pending wakes, queen first, with release / edit / skip and the
     /// release-all/skip-all drains. PANE-ONLY: not in `ALL` (no tab-strip slot,
     /// no switch key) — it renders solely as the dock's pinned `pui wake-pane`.
+    /// (A one-pane `agent-pane` [chat | wakes] variant was tried + REVERTED
+    /// 2026-06-11 — owner directive: dock agent chats are LIVE TUIs, never
+    /// pui-rendered substitutes; pui panes are for data boards like this one.)
     Wake,
-    /// Agent — ONE pane that pui internally splits into [agent chat | agent
-    /// wakes] (owner ask 2026-06-11): the same single-pane-internal-split shape
-    /// as the colony tab (roster | dossier), so an agent's chat and its staged
-    /// wake queue live side by side in one pane rather than two zellij panes.
-    /// PANE-ONLY (the dock's `pui agent-pane --queen|<owner>`). The `wake_filter`
-    /// scopes the wakes half to the agent; `agent_focus` routes keys to the half
-    /// you're driving (Tab toggles).
-    Agent,
-}
-
-/// The [`Tab::Agent`] pane's view (owner ask 2026-06-11) — like the colony
-/// tab, `Tab` ZOOMS a section fullscreen rather than switching focus. It cycles
-/// Split → ChatFull → WakesFull → Split. Keys route to whatever is active: the
-/// chat composer in Split + ChatFull (chat is the primary surface), the wake
-/// board's review keys in WakesFull.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentView {
-    /// Both halves visible: [chat | wakes]. Chat takes keys; wakes is a live
-    /// read-only review (zoom it to act on it).
-    #[default]
-    Split,
-    /// Chat fullscreen (more room to type/read); chat takes keys.
-    ChatFull,
-    /// Wake board fullscreen; the board's review keys (j/k · r/e/s · R/S) drive it.
-    WakesFull,
-}
-
-impl AgentView {
-    /// `Tab`'s cycle: Split → ChatFull → WakesFull → Split.
-    fn next(self) -> Self {
-        match self {
-            AgentView::Split => AgentView::ChatFull,
-            AgentView::ChatFull => AgentView::WakesFull,
-            AgentView::WakesFull => AgentView::Split,
-        }
-    }
 }
 
 impl Tab {
@@ -874,7 +841,6 @@ impl Tab {
             Tab::Voice => "Voice",
             Tab::Hives => "Hives",
             Tab::Wake => "Wakes",
-            Tab::Agent => "Agent",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -922,7 +888,6 @@ impl Tab {
             // Pane-only (not in ALL) — unreachable from the strip; the char is
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
-            Tab::Agent => 'A',
         }
     }
     pub fn index(self) -> usize {
@@ -1187,8 +1152,6 @@ pub struct App {
     /// fleet-wide "⏸ wakes" pane; Queen/Owner for a per-agent pane. Set once
     /// from argv at launch; the refresh loop + `g` refetch both honor it.
     pub wake_filter: WakeFilter,
-    /// The [`Tab::Agent`] pane's view: Tab zooms a section fullscreen (cycle).
-    pub agent_view: AgentView,
     /// The last P-011 regroup target sent to the companion — the spam guard:
     /// the same mis-ordered topology snapshot never refires the same repair.
     pub last_regroup: Option<Vec<u32>>,
@@ -1478,7 +1441,6 @@ impl App {
                 ..WakeBoard::default()
             },
             wake_filter: WakeFilter::default(),
-            agent_view: AgentView::default(),
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
@@ -3245,43 +3207,6 @@ impl App {
         }
     }
 
-    /// The agent-pane keymap (owner ask 2026-06-11): one pane split [chat |
-    /// wakes], where `Tab` ZOOMS a section fullscreen (like the colony tab),
-    /// cycling Split → ChatFull → WakesFull → Split. Keys route to whatever is
-    /// active — the chat composer (type + Enter to send, like the Operator tab)
-    /// in Split/ChatFull, the wake board's review keys in WakesFull.
-    fn agent_pane_key(&mut self, code: KeyCode) -> Action {
-        if code == KeyCode::Tab {
-            self.agent_view = self.agent_view.next();
-            return Action::Render;
-        }
-        match self.agent_view {
-            AgentView::WakesFull => self.wake_board_key(code),
-            AgentView::Split | AgentView::ChatFull => match code {
-                KeyCode::Enter => {
-                    if self.chat_streaming {
-                        return Action::Render; // a turn is in flight — wait for it
-                    }
-                    let text = self.chat_input.trim().to_string();
-                    if text.is_empty() {
-                        return Action::Render;
-                    }
-                    self.chat_input.clear();
-                    self.begin_user_send(&text);
-                    Action::SendChat(text)
-                }
-                KeyCode::Backspace => {
-                    self.chat_input.pop();
-                    Action::Render
-                }
-                KeyCode::Char(c) => {
-                    self.chat_input.push(c);
-                    Action::Render
-                }
-                _ => Action::None,
-            },
-        }
-    }
 
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
@@ -4133,12 +4058,6 @@ impl App {
         // there is no tab strip to navigate in a pinned dock pane.
         if self.tab == Tab::Wake {
             return self.wake_board_key(code);
-        }
-        // The pinned agent-pane (owner ask 2026-06-11): one pane, two halves —
-        // chat | wakes. Tab toggles which half drives the keymap; keys then go
-        // to the chat composer or the wake board.
-        if self.tab == Tab::Agent {
-            return self.agent_pane_key(code);
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.
@@ -5349,8 +5268,8 @@ impl App {
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
-            // and the Wake board + Agent pane own their own keys.
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::Agent => return,
+            // and the Wake board owns its own j/k in wake_board_key.
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
         };
         if len == 0 {
             return;
@@ -5378,7 +5297,7 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::Agent => return,
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -5918,40 +5837,6 @@ mod tests {
             }
         );
         assert_eq!(a.update(key('g', KeyModifiers::NONE)), Action::FetchWakeBoard);
-    }
-
-    #[test]
-    fn agent_pane_tab_zooms_sections_and_routes_keys_to_the_active_one() {
-        let mut a = App::new();
-        a.tab = Tab::Agent;
-        a.update(Event::WakeBoard {
-            result: Ok((vec![board_group("su-q", vec![pending_wake(7, "boot")])], None)),
-        });
-        // Default Split: chat is the active surface — printable keys type into it.
-        assert_eq!(a.agent_view, AgentView::Split);
-        a.update(key('h', KeyModifiers::NONE));
-        a.update(key('i', KeyModifiers::NONE));
-        assert_eq!(a.chat_input, "hi");
-        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert_eq!(act, Action::SendChat("hi".into()));
-        // Tab → ChatFull: still chat keys, just zoomed.
-        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.agent_view, AgentView::ChatFull);
-        a.update(key('x', KeyModifiers::NONE));
-        assert_eq!(a.chat_input, "x");
-        // Tab → WakesFull: now the board's review keys drive it; 'r' releases.
-        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.agent_view, AgentView::WakesFull);
-        a.chat_input.clear();
-        let act = a.update(key('r', KeyModifiers::NONE));
-        assert_eq!(
-            act,
-            Action::WakeBoardAct { agent: "su-q".into(), verb: "release", id: Some(7), edited: None }
-        );
-        assert_eq!(a.chat_input, ""); // the keystroke did NOT reach the composer
-        // Tab → back to Split (the cycle wraps).
-        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.agent_view, AgentView::Split);
     }
 
     #[test]

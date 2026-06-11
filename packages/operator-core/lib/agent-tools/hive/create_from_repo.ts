@@ -50,7 +50,7 @@ export default defineTool({
       .default('public')
       .describe('D-002 auto-publish: public (default) = directory + Cupboard; invite = secret-topic announce only; private = zero external writes (publish later via discovery:set_hive).'),
     shallow: z.boolean().optional().describe('Shallow clone (--depth 1) for large repos.'),
-    runTests: z.boolean().default(true).describe('Run the detected test command once to verify it (D-023).'),
+    runTests: z.boolean().default(false).describe('OPT-IN: run the detected test command once to verify it — this EXECUTES CODE from the pasted repo (hardening D-001). Default false; verify after create via harness:generate-from-repo on the clone if preferred.'),
     testTimeoutMs: z.number().int().positive().optional().describe('Budget for the test-verify run (default 120s).'),
     parentDir: z.string().min(1).optional().describe('Parent dir for the HIVE HOME folder (default ~/.papercusp/hives).'),
     force: z
