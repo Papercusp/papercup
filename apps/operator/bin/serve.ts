@@ -348,6 +348,15 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   if (!process.env.HARNESS_DATABASE_URL) {
     process.env.HARNESS_DATABASE_URL = pg.urls.app;
   }
+  // Stamp the env to match REALITY for env-keyed consumers. Embedded is
+  // serve's default, so the desktop launcher often doesn't set the flag —
+  // but setup-status's probePostgres branches on PAPERCUSP_USE_EMBEDDED_PG
+  // === '1' and otherwise probes native :5432, painting the wizard's
+  // database step red while embedded PG is healthy (found live on Windows
+  // 2026-06-11). PG_PORT likewise: the launcher's value is a HINT; record
+  // the port actually bound.
+  process.env.PAPERCUSP_USE_EMBEDDED_PG = '1';
+  process.env.PAPERCUSP_PG_PORT = String(pg.port);
 
   // Write the embedded-pg discovery file (the latent-bug fix). The generic
   // resolver reads the `url` field; extra fields are diagnostics.
