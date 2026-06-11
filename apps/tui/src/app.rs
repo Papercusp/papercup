@@ -793,6 +793,24 @@ pub enum Tab {
     /// release-all/skip-all drains. PANE-ONLY: not in `ALL` (no tab-strip slot,
     /// no switch key) — it renders solely as the dock's pinned `pui wake-pane`.
     Wake,
+    /// Agent — ONE pane that pui internally splits into [agent chat | agent
+    /// wakes] (owner ask 2026-06-11): the same single-pane-internal-split shape
+    /// as the colony tab (roster | dossier), so an agent's chat and its staged
+    /// wake queue live side by side in one pane rather than two zellij panes.
+    /// PANE-ONLY (the dock's `pui agent-pane --queen|<owner>`). The `wake_filter`
+    /// scopes the wakes half to the agent; `agent_focus` routes keys to the half
+    /// you're driving (Tab toggles).
+    Agent,
+}
+
+/// Which half of the [`Tab::Agent`] pane has keyboard focus (owner ask
+/// 2026-06-11). Tab toggles; the chat composer takes keys when Chat, the wake
+/// board's review keys when Wakes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentHalf {
+    #[default]
+    Chat,
+    Wakes,
 }
 
 impl Tab {
@@ -838,6 +856,7 @@ impl Tab {
             Tab::Voice => "Voice",
             Tab::Hives => "Hives",
             Tab::Wake => "Wakes",
+            Tab::Agent => "Agent",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -885,6 +904,7 @@ impl Tab {
             // Pane-only (not in ALL) — unreachable from the strip; the char is
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
+            Tab::Agent => 'A',
         }
     }
     pub fn index(self) -> usize {
@@ -1149,6 +1169,8 @@ pub struct App {
     /// fleet-wide "⏸ wakes" pane; Queen/Owner for a per-agent pane. Set once
     /// from argv at launch; the refresh loop + `g` refetch both honor it.
     pub wake_filter: WakeFilter,
+    /// Which half of the [`Tab::Agent`] pane has keyboard focus (Tab toggles).
+    pub agent_focus: AgentHalf,
     /// The last P-011 regroup target sent to the companion — the spam guard:
     /// the same mis-ordered topology snapshot never refires the same repair.
     pub last_regroup: Option<Vec<u32>>,
@@ -1438,6 +1460,7 @@ impl App {
                 ..WakeBoard::default()
             },
             wake_filter: WakeFilter::default(),
+            agent_focus: AgentHalf::default(),
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
@@ -3204,6 +3227,46 @@ impl App {
         }
     }
 
+    /// The agent-pane keymap (owner ask 2026-06-11): one pane split [chat |
+    /// wakes]. `Tab` toggles which half is focused; keys then route to that
+    /// half — the chat composer (type + Enter to send, like the Operator tab)
+    /// when Chat, the wake board's review keys when Wakes.
+    fn agent_pane_key(&mut self, code: KeyCode) -> Action {
+        if code == KeyCode::Tab {
+            self.agent_focus = match self.agent_focus {
+                AgentHalf::Chat => AgentHalf::Wakes,
+                AgentHalf::Wakes => AgentHalf::Chat,
+            };
+            return Action::Render;
+        }
+        match self.agent_focus {
+            AgentHalf::Wakes => self.wake_board_key(code),
+            AgentHalf::Chat => match code {
+                KeyCode::Enter => {
+                    if self.chat_streaming {
+                        return Action::Render; // a turn is in flight — wait for it
+                    }
+                    let text = self.chat_input.trim().to_string();
+                    if text.is_empty() {
+                        return Action::Render;
+                    }
+                    self.chat_input.clear();
+                    self.begin_user_send(&text);
+                    Action::SendChat(text)
+                }
+                KeyCode::Backspace => {
+                    self.chat_input.pop();
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.chat_input.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            },
+        }
+    }
+
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
     /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
@@ -4054,6 +4117,12 @@ impl App {
         // there is no tab strip to navigate in a pinned dock pane.
         if self.tab == Tab::Wake {
             return self.wake_board_key(code);
+        }
+        // The pinned agent-pane (owner ask 2026-06-11): one pane, two halves —
+        // chat | wakes. Tab toggles which half drives the keymap; keys then go
+        // to the chat composer or the wake board.
+        if self.tab == Tab::Agent {
+            return self.agent_pane_key(code);
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.
@@ -5264,8 +5333,8 @@ impl App {
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
-            // and the Wake board owns its own j/k in wake_board_key.
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
+            // and the Wake board + Agent pane own their own keys.
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::Agent => return,
         };
         if len == 0 {
             return;
@@ -5293,7 +5362,7 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::Agent => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -5833,6 +5902,37 @@ mod tests {
             }
         );
         assert_eq!(a.update(key('g', KeyModifiers::NONE)), Action::FetchWakeBoard);
+    }
+
+    #[test]
+    fn agent_pane_tab_toggles_focus_and_routes_keys_to_the_right_half() {
+        let mut a = App::new();
+        a.tab = Tab::Agent;
+        a.update(Event::WakeBoard {
+            result: Ok((vec![board_group("su-q", vec![pending_wake(7, "boot")])], None)),
+        });
+        // Default focus is Chat: printable keys land in the chat composer.
+        assert_eq!(a.agent_focus, AgentHalf::Chat);
+        a.update(key('h', KeyModifiers::NONE));
+        a.update(key('i', KeyModifiers::NONE));
+        assert_eq!(a.chat_input, "hi");
+        // Enter on a non-empty draft sends it (chat half).
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(act, Action::SendChat("hi".into()));
+        assert_eq!(a.chat_input, "");
+        // Tab flips focus to the wakes half.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.agent_focus, AgentHalf::Wakes);
+        // Now 'r' is a wake-board release, NOT a chat keystroke.
+        let act = a.update(key('r', KeyModifiers::NONE));
+        assert_eq!(
+            act,
+            Action::WakeBoardAct { agent: "su-q".into(), verb: "release", id: Some(7), edited: None }
+        );
+        assert_eq!(a.chat_input, ""); // the keystroke did NOT reach the composer
+        // Tab flips back to chat.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.agent_focus, AgentHalf::Chat);
     }
 
     #[test]

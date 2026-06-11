@@ -175,6 +175,9 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Hives => crate::hives::draw_hives(f, app, body),
         // Pane-only (EI-312): the pinned `pui wake-pane` staged-wake board.
         Tab::Wake => crate::wake_board::draw_wake_board(f, app, body),
+        // Pane-only (owner ask 2026-06-11): the pinned `pui agent-pane` — one
+        // pane split [chat | wakes].
+        Tab::Agent => crate::agent_pane::draw_agent_pane(f, app, body),
     }
 }
 
@@ -1570,7 +1573,7 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the bottom-anchored scroll offset is exact; `chat_scroll` counts lines UP from
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
-fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+pub(crate) fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])

@@ -105,9 +105,15 @@ async function gotoHarnessesTab(page: Page, search: string): Promise<boolean> {
     .catch(() => false);
 }
 
-/** Open the create picker from the tab's "New" FAB. Returns the fork tablist. */
+/**
+ * Open the create picker. EI-319: the bottom-right "New harness" FAB this spec
+ * originally drove was REMOVED (HarnessesWorkspace: "the bottom-right 'New
+ * harness' FAB is removed — deprecated"); the live opener is the shell
+ * header's "New" button (title 'Create or add a new harness') — the same
+ * opener adv-hive-from-github-url.spec.ts drives. Returns the fork tablist.
+ */
 async function openPicker(page: Page) {
-  await page.getByRole('button', { name: /new harness/i }).first().click();
+  await page.getByTitle('Create or add a new harness').click();
   const fork = page.getByRole('tablist', { name: 'Creation mode' });
   await expect(fork).toBeVisible({ timeout: 10_000 });
   return fork;

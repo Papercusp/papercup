@@ -295,30 +295,25 @@ pub fn chat_dock_kdl(
     };
     // The dock body between the tab-bar and status-bar. Two shapes:
     //
-    // Flag ON (owner ask 2026-06-11): the QUEEN gets an INLINE chat|wakes split
-    // at the top — her brain pane beside her own staged-wake board
-    // (`wake-pane --queen`) — so her queue lives alongside her chat, not as a
-    // separate stack entry. zellij stacks can't nest a split (a stacked group
-    // holds single panes), so the queen lives OUTSIDE the stack to get a true
-    // side-by-side split. Below her: the agent STACK — the sentinel (ElevenLabs
+    // Flag ON (owner ask 2026-06-11): the QUEEN is ONE pane that PUI internally
+    // splits into [chat | wakes] (`pui agent-pane --queen`) — the same
+    // single-pane-internal-split shape as the colony tab (roster | dossier), so
+    // her chat and her staged wake queue sit side by side in one pane rather
+    // than two zellij panes (zellij can't split a stacked member, and the split
+    // belongs to pui). Below her: the agent STACK — the sentinel (ElevenLabs
     // voice) chat, the dock-driver (which reactively appends one `claude
     // --resume` pane per live bee), and the fleet-wide wake board. Bees review
-    // their wakes via that fleet pane for now (per-bee inline needs companion
-    // split support — staged follow-up).
+    // their wakes via that fleet pane for now (a per-bee `pui agent-pane <owner>`
+    // is the same one-pane shape — staged follow-up once the queen lands).
     //
     // Flag OFF: the classic single stack — the pui chat-pane (operator chat +
     // reactive driver) over the brain. Unchanged.
     let dock_body = if hive_agent_tabs {
         format!(
             r#"    pane split_direction="horizontal" {{
-        pane name="♛ queen" split_direction="vertical" size="46%" {{
-            pane name="{brain_name}" {{
-                command "{brain_cmd}"{args_line}
-            }}
-            pane name="♛⏸ wakes" size="38%" {{
-                command "pui"
-                args "wake-pane" "--queen"
-            }}
+        pane name="♛ queen" size="46%" {{
+            command "pui"
+            args "agent-pane" "--queen"
         }}
         pane name="chat" stacked=true {{
             pane name="{operator_name}" focus=true expanded=true {{
@@ -340,15 +335,16 @@ pub fn chat_dock_kdl(
         )
     };
     format!(
-        r#"// Papercusp chat dock (owner ask 2026-06-11): flag-on, the QUEEN is an inline
-// chat|wakes split at the top (her brain beside her staged-wake board); below
-// her, the agent STACK — the operator (ElevenLabs voice) sentinel chat, the
-// dock-driver that reactively appends one `claude --resume` pane per live bee,
-// and the fleet-wide wake board. Alt+↑/↓ (or clicking a title bar) scrolls the
-// stack through ALL active agents. Flag-off is the classic single stack (pui
-// chat-pane over the brain). Tab-style pui surfaces (Hives · Voice · Swarm …)
-// live in the pui app's own tab strip, NOT in zellij. Pane display names route
-// through the lexicon.
+        r#"// Papercusp chat dock (owner ask 2026-06-11): flag-on, the QUEEN is ONE pane
+// (`pui agent-pane --queen`) that pui internally splits into [chat | wakes] —
+// the same single-pane-internal-split shape as the colony tab (roster | dossier);
+// Tab switches which half takes keys. Below her, the agent STACK — the operator
+// (ElevenLabs voice) sentinel chat, the dock-driver that reactively appends one
+// `claude --resume` pane per live bee, and the fleet-wide wake board. Alt+↑/↓ (or
+// clicking a title bar) scrolls the stack through ALL active agents. Flag-off is
+// the classic single stack (pui chat-pane over the brain). Tab-style pui surfaces
+// (Hives · Voice · Swarm …) live in the pui app's own tab strip, NOT in zellij.
+// Pane display names route through the lexicon.
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
@@ -688,35 +684,35 @@ mod tests {
     #[test]
     fn chat_dock_hive_agent_tabs_makes_sentinel_a_psu_session() {
         // hive-agent-tabs P-003: flag ON → the operator/Sentinel pane is a real
-        // psu/Claude TUI (`psu --role operator`), NOT the `pui chat-pane` widget,
-        // so it renders like the Queen. Two psu commands now (Sentinel + brain).
+        // psu/Claude TUI (`psu --role operator`), NOT the `pui chat-pane` widget.
         let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
         // Fully-scoped, no-picker launch (owner ask): the role is auto-selected.
         assert!(on.contains("args \"--no-picker\" \"--agent=claude\" \"--role=operator\""));
         assert!(on.contains("--role=operator")); // `=` form — psu drops `--role operator`
         assert!(!on.contains("args \"--role\" \"operator\"")); // never the dropped space form
         assert!(!on.contains("args \"chat-pane\""));
-        assert_eq!(on.matches("command \"psu\"").count(), 2); // sentinel + queen
-        // P-004/D-009: flag-on the reactive driver relocates to a `pui dock-driver`
-        // pane; EI-312 + owner ask 2026-06-11: the QUEEN is an INLINE chat|wakes
-        // split (her brain beside `wake-pane --queen`), and the fleet-wide board
-        // ("⏸ wakes") is a stack member.
+        // owner ask 2026-06-11: the QUEEN is now ONE `pui agent-pane --queen`
+        // pane that pui internally splits [chat | wakes] (the colony-tab shape),
+        // NOT a `psu --brain` TUI beside a separate wake pane. So only the
+        // sentinel is a psu command now.
+        assert_eq!(on.matches("command \"psu\"").count(), 1); // sentinel only
+        assert!(on.contains("args \"agent-pane\" \"--queen\""));
+        assert!(on.contains("name=\"♛ queen\""));
+        // The OLD two-pane queen split is gone (no per-queen wake-pane / glyph).
+        assert!(!on.contains("args \"wake-pane\" \"--queen\""));
+        assert!(!on.contains("name=\"♛⏸ wakes\""));
+        // P-004/D-009: the reactive driver + the fleet-wide wake board remain
+        // stack members.
         assert!(on.contains("args \"dock-driver\""));
-        assert!(on.contains("args \"wake-pane\" \"--queen\""));
-        assert!(on.contains("name=\"♛⏸ wakes\""));
-        assert!(on.contains("args \"wake-pane\"\n"));
+        assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
-        assert_eq!(on.matches("command \"pui\"").count(), 3); // driver + queen-wakes + fleet-wakes
-        // The queen is a real split: a `♛ queen` container holding the brain pane
-        // + her wake board, OUTSIDE the agent `chat` stack (zellij can't nest a
-        // split in a stack). The queen container precedes the stack.
-        assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
-        let queen_at = on.find("name=\"♛ queen\"").expect("queen container");
-        let queen_wakes_at = on.find("♛⏸ wakes").expect("queen wake pane");
+        assert_eq!(on.matches("command \"pui\"").count(), 3); // agent-pane + driver + fleet-wakes
+        // The queen pane sits OUTSIDE the agent `chat` stack (top of the
+        // horizontal split) and precedes it.
+        let queen_at = on.find("name=\"♛ queen\"").expect("queen pane");
         let stack_at = on.find("name=\"chat\" stacked=true").expect("chat stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
-        assert!(queen_at < queen_wakes_at, "brain precedes her wakes in the split");
-        assert!(queen_wakes_at < stack_at, "the queen split precedes the agent stack");
+        assert!(queen_at < stack_at, "the queen pane precedes the agent stack");
         assert!(stack_at < driver_at, "the driver is inside the stack");
 
         // Flag OFF → unchanged: the classic single stack — pui chat-pane over the
@@ -736,7 +732,9 @@ mod tests {
         // (zellij has no per-pane color, D-008). Flag-off → bare names (unchanged).
         let on = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), true);
         assert!(on.contains("name=\"🛡 operator\""), "sentinel glyph missing: {on}");
-        assert!(on.contains("name=\"♛ brain\""), "queen glyph missing");
+        // owner ask 2026-06-11: the queen pane is the single `pui agent-pane
+        // --queen` named "♛ queen" (was the "♛ brain" psu pane).
+        assert!(on.contains("name=\"♛ queen\""), "queen glyph missing: {on}");
         let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
         assert!(off.contains("name=\"operator\""));
         assert!(!off.contains("🛡") && !off.contains("♛"));
