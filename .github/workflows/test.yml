@@ -14,6 +14,25 @@ jobs:
     name: Affected tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      # Dev-box-parity PG (WI-123): ~30 "unit"-tier suites transitively open a
+      # pool against the default localhost:5432/papercusp (connection.ts
+      # resolution chain) — they pass on any box with a provisioned native
+      # :5432 and ECONNREFUSE here without one. pgvector image because the
+      # baseline schema has vector(N) columns (same image as the
+      # testcontainers integration tier).
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +55,15 @@ jobs:
 
       - name: Doctor (Docker + node)
         run: node scripts/test-doctor.mjs
+
+      # Bring the PG service to schema head with the real boot-path migration
+      # runner (roles + extensions + 000-baseline + sql/*.sql) so suites that
+      # transitively resolve the default :5432/papercusp URL find the same
+      # environment the dev box / green-checkpoint tree provide. ~4s.
+      - name: Provision papercusp PG (dev-box parity)
+        env:
+          CI_PG_SUPERUSER_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: node scripts/ci-provision-pg.mjs
 
       - name: Cache testcontainers Docker layer
         uses: actions/cache@v4

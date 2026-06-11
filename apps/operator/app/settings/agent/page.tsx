@@ -14,7 +14,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
-import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@papercusp/operator-core/lib/agent-config-constants';
+import {
+  DEFAULT_MODEL_TIERS,
+  SURFACE_KEYS,
+  isValidModelSpec,
+  type AgentBackend,
+  type ModelTier,
+  type SurfaceKey,
+} from '@papercusp/operator-core/lib/agent-config-constants';
 
 /** Local select value: a concrete backend, or 'inherit' = omit from the map. */
 type SurfaceChoice = 'inherit' | AgentBackend;
@@ -34,6 +41,8 @@ interface AgentConfig {
   models: Record<string, string>;
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
   surfaceModels?: Partial<Record<SurfaceKey, string>>;
+  tiers?: ModelTier[];
+  tierCeilings?: Record<string, string>;
 }
 interface DetectedBinaries {
   claude: string | null;
@@ -57,6 +66,16 @@ interface TestResult {
 
 const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator', 'reviewer', 'debugger', 'curator', 'documenter', 'architect', 'planner'];
 
+/** Roles offered a tier-ceiling row — the spawn-heavy fleet roles where the
+    queen's per-task tier pick applies (others can be added via the JSON). */
+const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
+
+/** Mid-edit tier rows (drafts, so plain useState like the other form fields). */
+interface TierRow {
+  name: string;
+  spec: string;
+}
+
 export default function AgentSettingsPage() {
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -74,6 +93,13 @@ export default function AgentSettingsPage() {
   const [surfaceModels, setSurfaceModels] = useState<Record<SurfaceKey, string>>(
     () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
   );
+  // Model-tier menu rows, ordered weakest → strongest (the order IS the
+  // strength ranking the spawn clamp uses). Empty list = the committed
+  // defaults apply at resolution time; the editor seeds them for visibility.
+  const [tierRows, setTierRows] = useState<TierRow[]>([...DEFAULT_MODEL_TIERS]);
+  const [tiersCustomized, setTiersCustomized] = useState(false);
+  // Per-role ceiling: '' = no ceiling (strongest tier allowed).
+  const [tierCeilings, setTierCeilings] = useState<Record<string, string>>({});
 
   const { register, submit, reset, isSubmitting, watch } = useFormWith(ConfigSchema, {
     defaultValues: { backend: 'omp', cmd: '', modelsJson: '' },
@@ -105,6 +131,10 @@ export default function AgentSettingsPage() {
           SURFACE_KEYS.map((k) => [k, fetchedModels[k] ?? '']),
         ) as Record<SurfaceKey, string>,
       );
+      const fetchedTiers = d.config.tiers ?? [];
+      setTiersCustomized(fetchedTiers.length > 0);
+      setTierRows(fetchedTiers.length > 0 ? fetchedTiers : [...DEFAULT_MODEL_TIERS]);
+      setTierCeilings(d.config.tierCeilings ?? {});
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     } finally {
@@ -143,11 +173,46 @@ export default function AgentSettingsPage() {
       const m = surfaceModels[k]?.trim();
       if (m) surfaceModelsOut[k] = m;
     }
+    // Tier menu: validate, then store [] when the rows still equal the
+    // committed defaults — an untouched menu keeps tracking future default
+    // changes instead of freezing today's copy.
+    const cleanedTiers: ModelTier[] = [];
+    const seenNames = new Set<string>();
+    for (const row of tierRows) {
+      const name = row.name.trim();
+      const spec = row.spec.trim();
+      if (!name && !spec) continue; // blank row — ignore
+      if (!name || !spec) {
+        toast.error(`tier row needs both a name and a model spec (got name="${name}" spec="${spec}")`);
+        return;
+      }
+      if (seenNames.has(name.toLowerCase())) {
+        toast.error(`duplicate tier name "${name}"`);
+        return;
+      }
+      if (!isValidModelSpec(spec)) {
+        toast.error(`tier "${name}": invalid model spec "${spec}" (shape: <modelId>[:<effort>], no spaces)`);
+        return;
+      }
+      seenNames.add(name.toLowerCase());
+      cleanedTiers.push({ name, spec });
+    }
+    const isDefaultMenu = JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
+    const tiersOut = isDefaultMenu ? [] : cleanedTiers;
+    const ceilingsOut: Record<string, string> = {};
+    for (const [role, tier] of Object.entries(tierCeilings)) {
+      if (!tier) continue;
+      if (!seenNames.has(tier.toLowerCase())) {
+        toast.error(`ceiling for "${role}" names unknown tier "${tier}"`);
+        return;
+      }
+      ceilingsOut[role] = tier;
+    }
     try {
       const r = await fetch('/api/agent-config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends, surfaceModels: surfaceModelsOut }),
+        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends, surfaceModels: surfaceModelsOut, tiers: tiersOut, tierCeilings: ceilingsOut }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success('Saved. In-process spawns now use the new backend.');
@@ -307,6 +372,110 @@ export default function AgentSettingsPage() {
             style={{ fontFamily: 'monospace', fontSize: 12 }}
             {...register('modelsJson')}
           />
+        </FormField>
+
+        <FormField
+          label="Model tiers (weakest → strongest)"
+          description="The effort-level menu per-task model picks resolve against: the queen passes a tier name on fleet:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Leave as-is to track the built-in menu."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {tierRows.map((row, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right' }}>{i + 1}</span>
+                <input
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', width: 120 }}
+                  placeholder="tier name"
+                  value={row.name}
+                  onChange={(e) => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)));
+                  }}
+                />
+                <input
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', width: 200, fontFamily: 'monospace' }}
+                  placeholder="model[:effort], e.g. opus:high"
+                  value={row.spec}
+                  onChange={(e) => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, spec: e.target.value } : r)));
+                  }}
+                />
+                <button
+                  type="button"
+                  className="pc-btn pc-btn-secondary"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={() => {
+                    setTiersCustomized(true);
+                    setTierRows((prev) => prev.filter((_, j) => j !== i));
+                  }}
+                >
+                  remove
+                </button>
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className="pc-btn pc-btn-secondary"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => {
+                  setTiersCustomized(true);
+                  setTierRows((prev) => [...prev, { name: '', spec: '' }]);
+                }}
+              >
+                + add tier
+              </button>
+              <button
+                type="button"
+                className="pc-btn pc-btn-secondary"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => {
+                  setTiersCustomized(false);
+                  setTierRows([...DEFAULT_MODEL_TIERS]);
+                }}
+              >
+                reset to defaults
+              </button>
+              {!tiersCustomized && (
+                <span style={{ fontSize: 11, color: 'var(--fg-mute)', alignSelf: 'center' }}>
+                  built-in menu (not stored — tracks future defaults)
+                </span>
+              )}
+            </div>
+          </div>
+        </FormField>
+
+        <FormField
+          label="Per-role tier ceilings"
+          description="The strongest tier a per-task pick may run that role at — the budget envelope. Empty = the strongest tier is allowed. The floor is not configured: it derives from the role's default model above."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {CEILING_ROLES.map((role) => (
+              <label key={role} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                <code style={{ minWidth: 110 }}>{role}</code>
+                <select
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', width: 'auto' }}
+                  value={tierCeilings[role] ?? ''}
+                  onChange={(e) =>
+                    setTierCeilings((prev) => {
+                      const next = { ...prev };
+                      if (e.target.value) next[role] = e.target.value;
+                      else delete next[role];
+                      return next;
+                    })
+                  }
+                >
+                  <option value="">No ceiling</option>
+                  {tierRows.filter((t) => t.name.trim()).map((t) => (
+                    <option key={t.name} value={t.name}>{t.name}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
         </FormField>
 
         <FormField

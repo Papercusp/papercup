@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveBackend, parseSurfaceModels, parseBackends, type AgentConfig } from './agent-config';
+import { effectiveBackend, parseSurfaceModels, parseBackends, parseTiers, parseTierCeilings, type AgentConfig } from './agent-config';
 
 function cfg(partial: Partial<AgentConfig>): AgentConfig {
   return { backend: 'auto', cmd: '', models: {}, ...partial };
@@ -55,5 +55,32 @@ describe('parseBackends (drift guard for the SurfaceKey set)', () => {
 
   it("drops 'auto' / unknown backends + unknown surfaces", () => {
     expect(parseBackends({ operator: 'auto', nope: 'omp', scanner: 'gemini' })).toEqual({});
+  });
+});
+
+describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', () => {
+  it('keeps valid { name, spec } entries in order; drops dupes (case-insensitive), bad specs, junk', () => {
+    expect(parseTiers([
+      { name: 'quick', spec: 'haiku' },
+      { name: 'deep', spec: 'opus:high' },
+      { name: 'Quick', spec: 'sonnet' },          // dup name (case-insensitive)
+      { name: 'bad', spec: 'has space' },          // invalid spec
+      { name: '', spec: 'sonnet' },                // empty name
+      { name: 'x' },                               // missing spec
+      'junk',
+    ])).toEqual([
+      { name: 'quick', spec: 'haiku' },
+      { name: 'deep', spec: 'opus:high' },
+    ]);
+    expect(parseTiers(undefined)).toEqual([]);
+    expect(parseTiers({ not: 'array' })).toEqual([]);
+  });
+
+  it('ceilings: keeps role→tier-name entries; drops names absent from a NON-EMPTY menu', () => {
+    const tiers = [{ name: 'quick', spec: 'haiku' }, { name: 'deep', spec: 'opus' }];
+    expect(parseTierCeilings({ bee: 'deep', worker: 'nope', '': 'deep', queen: 7 }, tiers)).toEqual({ bee: 'deep' });
+    // empty menu → names can't be checked; kept as-is (resolution ignores unknowns anyway)
+    expect(parseTierCeilings({ bee: 'whatever' }, [])).toEqual({ bee: 'whatever' });
+    expect(parseTierCeilings(null, tiers)).toEqual({});
   });
 });

@@ -100,6 +100,13 @@ export const FLAGS = {
   // (routes fall back to public behavior); PAPERCUSP_ALLOW_REMOTE_ADMIN=1
   // remains the per-host deliberate remote-admin opt-out.
   ENDPOINT_AUTH_TIERS: "papercusp-endpoint-auth-tiers",
+  // queen-model-tier-selection-2026-06-11 (P-005): when ON, the Queen's
+  // fleet:spawn `tier` picks are honored (resolved + clamped to [role floor,
+  // role ceiling]). OFF = the kill-switch: a queen-supplied tier is ignored
+  // and her spawns run at the role's standing default. Human/operator tier
+  // and model args are honored regardless — this gates only the Queen's
+  // autonomous escalation lever.
+  QUEEN_TIER_SELECTION: "papercusp-queen-tier-selection",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -157,6 +164,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // ON by default (owner-approved Wave-1 rollout 2026-06-10): loopback-tier
   // enforcement at the route dispatch chokepoint. OFF = emergency revert.
   [FLAGS.ENDPOINT_AUTH_TIERS]: true,
+  // ON by default (alpha flags-default-on policy): the queen's tier picks are
+  // floor/ceiling-clamped, so the safety envelope holds with the flag on; OFF
+  // is the kill-switch if her judgment misfires.
+  [FLAGS.QUEEN_TIER_SELECTION]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -273,6 +273,52 @@ stuff
     expect(out).toContain('### D-002 — Fresh');
   });
 
+  it('targets the canonical ## Decisions when a suffixed heading ALSO precedes it (EI-141 exact repro)', () => {
+    // The decentralized-dispatch-scaling repro: a stray `## Decisions (settled)`
+    // sits ABOVE the canonical `## Decisions`. The append must land in the
+    // canonical section (which the plans:get parser reads), never the suffixed
+    // first-match — otherwise the decision is silently invisible.
+    const doc = `---
+title: t
+slug: t
+status: draft
+---
+
+# t
+
+## Decisions (settled)
+
+### D-001 — old settled decision
+Date: 2026-05-01
+settled body
+
+## Decisions
+
+### D-002 — a live decision
+Date: 2026-05-10
+live body
+
+## Next steps
+
+stuff
+`;
+    const out = appendDecisionToBody(doc, 'D-003', 'Fresh', 'Fresh body.', '2026-05-20', []);
+    // The suffixed section is untouched…
+    const settledSection = out.slice(
+      out.indexOf('## Decisions (settled)'),
+      out.indexOf('## Decisions\n'),
+    );
+    expect(settledSection).not.toContain('D-003');
+    // …and the new decision lands inside the canonical ## Decisions section
+    // (between its heading and the following ## Next steps).
+    const canonicalStart = out.indexOf('## Decisions\n');
+    const nextSection = out.indexOf('## Next steps');
+    const canonicalSection = out.slice(canonicalStart, nextSection);
+    expect(canonicalSection).toContain('### D-003 — Fresh');
+    // No duplicate canonical heading was created.
+    expect(out.match(/^## Decisions$/gm)).toHaveLength(1);
+  });
+
   it('still matches a numbered Decisions heading ("## 5. Decisions")', () => {
     const doc = `---
 title: t

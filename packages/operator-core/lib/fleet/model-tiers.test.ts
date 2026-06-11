@@ -1,0 +1,127 @@
+/**
+ * Coverage for resolveTierSpec — the tier-name → model-spec resolution with
+ * [role floor, role ceiling] clamping (queen-model-tier-selection-2026-06-11
+ * P-002). The load-bearing semantics:
+ *   - floor derives from the role's resolved default (AGENT_MODELS →
+ *     ROLE_MODEL_DEFAULTS): a tier can escalate a role, never downgrade it
+ *     below what it runs with no tier at all (EI-7/EI-286);
+ *   - ceiling is the user's per-role envelope; floor outranks a ceiling
+ *     configured below it;
+ *   - unknown tier name fails loud (a typo'd tier silently running at the
+ *     default would be the EI-7 class of bug); clamps never error.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveTierSpec, roleDefaultSpec, specModelId } from './model-tiers';
+
+afterEach(() => vi.unstubAllEnvs());
+
+describe('specModelId', () => {
+  it('strips a known effort suffix, keeps a non-effort colon suffix', () => {
+    expect(specModelId('opus:xhigh')).toBe('opus');
+    expect(specModelId('sonnet')).toBe('sonnet');
+    expect(specModelId('vendor/model:7b')).toBe('vendor/model:7b');
+  });
+});
+
+describe('roleDefaultSpec — the floor input', () => {
+  it('AGENT_MODELS entry wins; committed default is the fallback; neither → empty', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'sonnet' }));
+    expect(roleDefaultSpec('bee')).toBe('sonnet');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(roleDefaultSpec('bee')).toBe('haiku');
+    expect(roleDefaultSpec('release-manager')).toBe('opus:xhigh');
+    expect(roleDefaultSpec('merge-resolver')).toBe('');
+  });
+});
+
+describe('resolveTierSpec — default menu (quick < standard < deep < max)', () => {
+  it('resolves a tier for a role at/below it (no clamp)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'deep', role: 'worker' });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:high', tier: 'deep' });
+    expect((r as { clamped?: string }).clamped).toBeUndefined();
+  });
+
+  it('tier names are case-insensitive', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveTierSpec({ tier: 'MAX', role: 'bee' })).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'max' });
+  });
+
+  it('unknown tier fails LOUD, listing the valid menu', () => {
+    const r = resolveTierSpec({ tier: 'turbo', role: 'bee' });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain('quick, standard, deep, max');
+  });
+
+  it('FLOOR: a pick below the role default clamps UP (worker default sonnet, pick quick → standard)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'quick', role: 'worker' });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'floor' });
+  });
+
+  it('FLOOR follows an AGENT_MODELS escalation (bee pinned to opus → quick clamps to deep)', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ bee: 'opus' }));
+    const r = resolveTierSpec({ tier: 'quick', role: 'bee' });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:high', tier: 'deep', clamped: 'floor' });
+  });
+
+  it('a role with no resolvable default (no floor) takes any tier unclamped', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'quick', role: 'merge-resolver' });
+    expect(r).toMatchObject({ ok: true, spec: 'haiku', tier: 'quick' });
+  });
+
+  it('CEILING: a pick above the role ceiling clamps DOWN', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'standard' } });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'ceiling' });
+  });
+
+  it('FLOOR outranks a ceiling configured BELOW the role default (never a downgrade)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // worker default = sonnet (standard); ceiling says quick; pick max.
+    const r = resolveTierSpec({ tier: 'max', role: 'worker', tierCeilings: { worker: 'quick' } });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet', tier: 'standard', clamped: 'floor' });
+  });
+
+  it('an unknown ceiling name is ignored (config bug ≠ runtime failure)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'max', role: 'bee', tierCeilings: { bee: 'nope' } });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'max' });
+  });
+});
+
+describe('resolveTierSpec — user-defined menu', () => {
+  const tiers = [
+    { name: 'eco', spec: 'haiku' },
+    { name: 'normal', spec: 'sonnet:high' },
+    { name: 'turbo', spec: 'claude-opus-4-8:max' },
+  ];
+
+  it('resolves against the custom menu (the default names are gone)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveTierSpec({ tier: 'turbo', role: 'bee', tiers })).toMatchObject({
+      ok: true, spec: 'claude-opus-4-8:max', tier: 'turbo',
+    });
+    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers }).ok).toBe(false);
+  });
+
+  it('floor matches by MODEL ID within the custom menu (worker default sonnet → normal)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'eco', role: 'worker', tiers });
+    expect(r).toMatchObject({ ok: true, spec: 'sonnet:high', tier: 'normal', clamped: 'floor' });
+  });
+
+  it('a role default whose model id is NOT in the menu yields no floor (no clamp)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // release-manager default opus:xhigh — no opus tier in this menu.
+    const noOpus = [{ name: 'eco', spec: 'haiku' }, { name: 'normal', spec: 'sonnet' }];
+    const r = resolveTierSpec({ tier: 'eco', role: 'release-manager', tiers: noOpus });
+    expect(r).toMatchObject({ ok: true, spec: 'haiku', tier: 'eco' });
+  });
+
+  it('an empty tiers array falls back to the default menu', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveTierSpec({ tier: 'standard', role: 'bee', tiers: [] })).toMatchObject({ ok: true, spec: 'sonnet' });
+  });
+});

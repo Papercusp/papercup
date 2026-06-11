@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="153" failures="0" errors="0" time="1.884111917">
+    <testsuite name="lib/endpoint-route/__tests__/adv-roster-route.test.ts" timestamp="2026-06-11T19:06:51.975Z" hostname="main-server-Precision-7865-Tower" tests="7" failures="0" errors="0" skipped="0" time="1.570205674">
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster &gt; returns the { active, ended, orphanedClaims } envelope" time="1.559488362">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster &gt; dedupes an ended terminal whose owner is still live in the active roster" time="0.001685879">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster &gt; scopes to the requested workspace; &quot;all&quot;/none → null (every workspace)" time="0.003261126">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster &gt; honors a valid endedLimit and ignores a bad one (falls back to 50)" time="0.001771884">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster/agent &gt; 400s with owner_required when no owner is given" time="0.00075991">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster/agent &gt; returns the dossier for the requested owner" time="0.001163706">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/adv-roster-route.test.ts" name="GET /adv/roster/agent &gt; trims whitespace around the owner param" time="0.000613549">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/endpoint-route/__tests__/auth-posture.test.ts" timestamp="2026-06-11T19:06:51.976Z" hostname="main-server-Precision-7865-Tower" tests="20" failures="0" errors="0" skipped="0" time="0.009697373">
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /dev/ has the expected tier" time="0.002729505">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /credentials has the expected tier" time="0.000386693">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /publish-credentials has the expected tier" time="0.000271141">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /agent-tokens/ has the expected tier" time="0.000315636">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /provision/ has the expected tier" time="0.000245802">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /internal/ has the expected tier" time="0.000193502">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /tui/ has the expected tier" time="0.000212037">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; every route under /admin/ has the expected tier" time="0.000238869">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; GET /oauth/start must remain public" time="0.000355633">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; GET /oauth/callback must remain public" time="0.00023418">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; GET /desktop/version must remain public" time="0.000148295">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; OPTIONS /desktop/version must remain public" time="0.000121293">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; GET /desktop/preflight must remain public" time="0.000168815">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; OPTIONS /desktop/preflight must remain public" time="0.000126994">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; GET /desktop/git-pipeline must remain public" time="0.000117897">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; OPTIONS /desktop/git-pipeline must remain public" time="0.000276441">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="D3 auth posture &gt; oauth/verify-paste is gated (browser-posted by a logged-in user)" time="0.000548895">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="auth-tier Wave 1 — no public mutating routes (standing gate) &gt; every mutating HTTP route declares a non-public tier unless owner-allowlisted" time="0.000460385">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="auth-tier Wave 1 — no public mutating routes (standing gate) &gt; the owner allowlist is not stale (every entry still exists and is still public)" time="0.000713481">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/auth-posture.test.ts" name="auth-tier Wave 1 — no public mutating routes (standing gate) &gt; loopback-tier coverage is substantial (the Wave-1 flip actually landed)" time="0.000236634">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/endpoint-route/__tests__/openapi.test.ts" timestamp="2026-06-11T19:06:51.980Z" hostname="main-server-Precision-7865-Tower" tests="12" failures="0" errors="0" skipped="0" time="0.029193194">
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; emits the path under /api with the route method" time="0.002558927">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; converts Hono path params to OpenAPI {brace} form + emits path parameters" time="0.000806951">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; public route → empty security; gated route → bearerAuth" time="0.00067632">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; POST with input → requestBody + a components schema" time="0.000502455">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; GET with input → query parameters, no requestBody" time="0.000439584">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; tags the operation x-papercusp-projection: route" time="0.000219031">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="routeToOpenApiFragment &gt; emits the standard error responses" time="0.000365993">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="allRouteFragments &gt; emits one fragment per registered route" time="0.015834655">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="allRouteFragments &gt; every operationId is unique" time="0.002787636">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="device tagging (E10) &gt; tags a device-authed route with papercusp:device" time="0.000339182">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="device tagging (E10) &gt; omits the tag on a route that admits no device principal" time="0.000225343">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/openapi.test.ts" name="device tagging (E10) &gt; the device-authed /api/device/* routes carry papercusp:device" time="0.002911133">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/endpoint-route/__tests__/route-stack.test.ts" timestamp="2026-06-11T19:06:51.981Z" hostname="main-server-Precision-7865-Tower" tests="19" failures="0" errors="0" skipped="0" time="0.139156957">
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="route-stack — step order &gt; runs auth → input → invoke" time="0.003311363">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="route-stack — step order &gt; is frozen" time="0.00048962">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step &gt; public route skips requirePrincipal and runs the handler" time="0.00792112">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step &gt; gated route calls requirePrincipal and runs the handler on success" time="0.001352159">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step &gt; gated route returns the PrincipalCheckError status on denial" time="0.00176463">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step — loopback tier (auth-tier rollout Wave 1) &gt; admits a loopback-host request without requirePrincipal" time="0.001094724">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step — loopback tier (auth-tier rollout Wave 1) &gt; rejects a non-loopback Host with 403 before the handler" time="0.000752897">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step — loopback tier (auth-tier rollout Wave 1) &gt; flag OFF reverts to public behavior (the emergency lever)" time="0.000565337">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="auth step — loopback tier (auth-tier rollout Wave 1) &gt; PAPERCUSP_ALLOW_REMOTE_ADMIN=1 admits a remote host (deliberate opt-out)" time="0.000618128">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="input step &gt; parses a valid POST body" time="0.00276343">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="input step &gt; rejects an invalid POST body with 400" time="0.001213381">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="input step &gt; rejects non-JSON body with 400" time="0.000735272">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="input step &gt; parses GET input from the query string" time="0.00078613">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="input step &gt; handler gets undefined input when no schema declared" time="0.00054662">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="invoke step &gt; a thrown handler error becomes a 500 envelope" time="0.000424827">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="invoke step &gt; a handler exceeding timeoutSec becomes a 408" time="0.101043923">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="invoke step &gt; passes path params through ctx.params" time="0.001020421">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="invoke step &gt; timeoutSec: null disables the watchdog (long-lived SSE routes, EI-110)" time="0.003137238">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/route-stack.test.ts" name="registerAllRoutes — duplicate guard &gt; throws on a duplicate method+path" time="0.007499029">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" timestamp="2026-06-11T19:06:51.984Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.014658736">
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; emits notifications/papercusp/event for an arbitrary named event" time="0.005472164">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; emit(&quot;progress&quot;, …) ALSO fires notifications/progress (spec-compliance)" time="0.001283335">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; Uint8Array data is base64-enveloped, not JSON-stringified to numeric keys" time="0.001627998">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; notifications/progress is SKIPPED when data is Uint8Array (no spec interpretation)" time="0.000846607">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; emit is a no-op when client did not supply a progressToken" time="0.000953411">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; emit is a no-op when sendNotification is undefined" time="0.001394981">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; MCP_SERVER_CAPABILITIES declares the Papercusp typed-events extension (P4.8)" time="0.000366494">
+        </testcase>
+        <testcase classname="lib/endpoint-route/__tests__/transport-mcp-notifications.test.ts" name="MCP emit → notifications &gt; ctx.progress(pct, msg) routes through emit(&quot;progress&quot;, …) — alias parity" time="0.001154077">
+        </testcase>
+    </testsuite>
+    <testsuite name="lib/harness/improvements/watchdog.test.ts" timestamp="2026-06-11T19:06:51.985Z" hostname="main-server-Precision-7865-Tower" tests="87" failures="0" errors="0" skipped="0" time="0.121199983">
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; caps captures per tick, highest severity first" time="0.003376728">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; dedupes by source+key within a tick" time="0.001046311">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; same key from DIFFERENT sources are distinct signals" time="0.000419947">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; default cap is 3" time="0.000547822">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; PER-SOURCE cap stops a red-test backlog from starving a tool-error signal (P-009 — the memory:search starvation)" time="0.001040629">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; fills leftover budget rather than wasting it when ONE source dominates (no competition)" time="0.000384209">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planWatchdogCaptures — pure anti-flood planning (close-loop D-003) &gt; deferred-escalation: a recently-deferred minor signal outranks a fresh major one (P-009)" time="0.000350885">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; isImprovementLoopTool matches improvements:* and system:improvement-* only" time="0.000472588">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; a synthetic improvements:capture error row is not turned into a signal; an unrelated tool still is" time="0.000417983">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; STRUCTURAL fires at a LOW bar (≥2) — the memory:search/remember miss is now caught (P-008)" time="0.000535599">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; STRUCTURAL also fires on a high error-RATE below the count bar (decouples from volume → kills self-masking)" time="0.000264168">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; a single structural error does NOT fire (one-off noise is gated)" time="0.000171009">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; TRANSIENT is volume-gated; ≥50 escalates to major" time="0.000222308">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tool-error sweep excludes the loop’s own tools (watchdog-robustness P-006) &gt; CALLER/DX errors route to kind=change at low severity, only on a sustained pattern (≥10)" time="0.000327739">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="classifyToolError — by error_code, with a legacy error_message fallback (P-008 / D-009) &gt; classifies by the first-class error_code when present (the P-007 path)" time="0.000415488">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="classifyToolError — by error_code, with a legacy error_message fallback (P-008 / D-009) &gt; falls back to status + message for legacy rows (error_code NULL, pre-P-007 deploy)" time="0.000323672">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; migration-drift: fires critical when migrations are unapplied, silent when in sync" time="0.000365201">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; migration-drift: a thrown check degrades to no signal (never aborts the tick)" time="0.000290669">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; routine-failure: only routines with a non-empty last_error become signals (e.g. a wedged git-sync)" time="0.000307221">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; stuck-plan: one signal per stuck plan, keyed by harness+plan" time="0.000217979">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; unresolved-escalation: one signal per unaddressed escalation" time="0.000221255">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="P-010 blind-source collectors (watchdog-robustness) &gt; fire-circuit-open: one signal per backed-off (slug, role) fire path" time="0.000236474">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010) &gt; stalled-feature: ONE aggregate signal per harness, sample ids + oldest age in the body" time="0.000461838">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010) &gt; stalled-feature: no rows → no signal" time="0.000142023">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010) &gt; orphaned-spawn: lingering past-reclaim running rows collapse to ONE signal with samples" time="0.000547803">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010) &gt; escalation-spike: silent below threshold, ONE signal with per-harness breakdown at/above it" time="0.000449163">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="red-test path normalization — one identity per broken test &gt; strips the green-checkpoint (and any sibling-tree) prefix to the repo-relative path" time="0.000243127">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="red-test path normalization — one identity per broken test &gt; drops synthetic fixture tests (loop probes, not bugs)" time="0.000136513">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="red-test path normalization — one identity per broken test &gt; MERGES the canonical + checkpoint rows of the SAME test into ONE signal (the EI-36/EI-143 dup)" time="0.00039024">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="watchdog COVERAGE self-test — the original miss is caught end-to-end (P-012) &gt; DETECTION: the memory:search workspace_required shape classifies as structural and fires at the LOW bar" time="0.000234951">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="watchdog COVERAGE self-test — the original miss is caught end-to-end (P-012) &gt; ANTI-STARVATION: a structural tool-error signal lands end-to-end despite a 5× red-test backlog" time="0.040183598">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="collectServiceDownSignals &gt; captures only DOWN + present services" time="0.000531291">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="service-down freshness gate (watchdog-robustness P-004) &gt; isServiceHealthStale: never-probed (null) is stale; fresh is not; beyond the window is" time="0.000237346">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="service-down freshness gate (watchdog-robustness P-004) &gt; a FRESH snapshot yields the down signals as before" time="0.000376734">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="service-down freshness gate (watchdog-robustness P-004) &gt; a STALE snapshot yields NO signals + a stale-service-health note" time="0.000321608">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="service-down freshness gate (watchdog-robustness P-004) &gt; a NEVER-populated snapshot (at=null) skips with a &quot;never populated&quot; note" time="0.000255391">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="service-down freshness gate (watchdog-robustness P-004) &gt; default window is 2× the 60s probe interval" time="0.000173263">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; captures each planned signal as kind=bug with dedupScope open + the paths" time="0.002510213">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; counts declined open-duplicates instead of re-filing (cross-tick dedup)" time="0.001557793">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; respects the per-tick cap (deferred surfaces in the result)" time="0.014318461">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; a single capture failure does not abort the tick" time="0.005245459">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; (P-011) accepts pluggable per-target collectors" time="0.001863831">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — captures through the shared core &gt; (P-011) collector failures are caught + logged but do not abort the tick" time="0.002995365">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — tick record (watchdog-robustness P-001) &gt; writes one tick record with status, captured ids, and per-collector statuses" time="0.002275512">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — tick record (watchdog-robustness P-001) &gt; records the installSlug when given" time="0.00112412">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — tick record (watchdog-robustness P-001) &gt; a tick-record failure does NOT abort the tick (best-effort bookkeeping)" time="0.001535921">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; escalates a collector failing this tick + the (need-1) prior ticks" time="0.000245041">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; does NOT escalate before the streak is reached" time="0.000183913">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; a recovered (ok) prior tick breaks the streak" time="0.000282613">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; a skipped prior tick (no sweep) breaks the streak" time="0.000152302">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; a collector healthy this tick never escalates" time="0.000146502">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="planSelfEscalations — the watchdog watches itself (watchdog-robustness P-002) &gt; failStreakToEscalate=1 escalates on the first failing tick" time="0.000139678">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — self-escalation through the shared core (P-002) &gt; files exactly one kind=bug self-escalation when a collector hits the fail streak" time="0.001723351">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — self-escalation through the shared core (P-002) &gt; does NOT self-escalate before the streak (no prior failing ticks)" time="0.001445788">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — self-escalation through the shared core (P-002) &gt; an OPEN-duplicate self-escalation is not re-filed (dedup across ticks)" time="0.001193713">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — self-escalation through the shared core (P-002) &gt; a healthy tick does not read recent ticks or self-escalate" time="0.001255352">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — self-escalation through the shared core (P-002) &gt; caps self-escalations per tick (maxSelfEscalationsPerTick)" time="0.001586398">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — cross-host lock (watchdog-robustness P-003) &gt; runs the tick (and captures) when it HOLDS the lock" time="0.000449594">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — cross-host lock (watchdog-robustness P-003) &gt; SKIPS the tick (zero captures) + records a skipped tick when another host holds the lock" time="0.000471135">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — cross-host lock (watchdog-robustness P-003) &gt; default lock FAILS OPEN when the DB is unavailable (runs fn unlocked, never double-runs)" time="0.001279068">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — cross-host lock (watchdog-robustness P-003) &gt; default lock propagates a fn error without double-running it" time="0.002722641">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; drops a signal whose key matches an OPEN improvement (already filed)" time="0.000318112">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; drops a resolved-dup signal whose evidence pre-dates the resolution (D-002 — not a regression)" time="0.000254188">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; re-files a resolved dup when the evidence POST-dates the resolution (real regression)" time="0.000199042">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; a live-state signal (no latestAt) with only resolved dups re-files (the problem exists NOW)" time="0.000174295">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; an OPEN match wins over resolved matches (knownOpen, never staleResolved)" time="0.000183141">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005) &gt; no matching key → fresh" time="0.00016649">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — key pre-filter frees the capture budget (audit P-004) &gt; known-open signals never consume capture slots; the fresh one lands; the record carries the keys" time="0.001499832">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — key pre-filter frees the capture budget (audit P-004) &gt; captures carry watchdogKey + evidenceAt (the next tick pre-filters on them)" time="0.001149258">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — key pre-filter frees the capture budget (audit P-004) &gt; stale-resolved signals are dropped pre-plan and recorded (audit P-005)" time="0.001684557">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="runWatchdogTick — key pre-filter frees the capture budget (audit P-004) &gt; a key-dup read failure degrades to the old behavior (everything planned, title net catches dups)" time="0.001643668">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="expiredLeaseSignalsFromRows — recency window (audit P-006) &gt; counts only leases expired within the window; ancient ones no longer fire forever" time="0.000788875">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="expiredLeaseSignalsFromRows — recency window (audit P-006) &gt; fires at the threshold within the window, with latestAt = the newest expiry" time="0.000350574">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="expiredLeaseSignalsFromRows — recency window (audit P-006) &gt; boundary: a lease expired exactly at the window edge counts; one just past it does not" time="0.000388617">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007) &gt; a failure recorded within the gate fires, with latestAt from mtime_ms" time="0.000313121">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007) &gt; a weeks-old failing smoke does NOT fire (no more monthly re-files forever)" time="0.000172672">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007) &gt; a row with NO mtime is treated as stale (cannot show the failure is current)" time="0.000138015">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="smokeFailSignalsFromRows — recency gate via mtime_ms (audit P-007) &gt; boundary: exactly at the gate fires; one ms past it does not" time="0.000232688">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="failed-spawn dominant-class identity (audit P-008) &gt; classifySpawnError buckets the common failure shapes" time="0.000572009">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="failed-spawn dominant-class identity (audit P-008) &gt; keys by the DOMINANT class with the full breakdown in the body + latestAt" time="0.000436228">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="failed-spawn dominant-class identity (audit P-008) &gt; below the threshold → no signal" time="0.000121273">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="tick prune — retention is best-effort (audit P-009) &gt; prune runs after the tick with the retention default and an error never aborts the tick" time="0.00202423">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="deferred boost survives a skipped tick (audit P-011) &gt; the contended deferred-keys read asks for the last RAN tick, not the last tick" time="0.001003088">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="watchdogOptionsFromPayload — routine-tunable bars (audit P-012) &gt; extracts whitelisted numeric keys, coercing numeric strings" time="0.00024981">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="watchdogOptionsFromPayload — routine-tunable bars (audit P-012) &gt; null/undefined payload → empty options" time="0.000132644">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="latestAt plumbing (audit P-005) &gt; red-test merge keeps the NEWEST failure timestamp across trees" time="0.000215323">
+        </testcase>
+        <testcase classname="lib/harness/improvements/watchdog.test.ts" name="latestAt plumbing (audit P-005) &gt; tool-error signals carry latestAt from the newest failure row" time="0.000150058">
+        </testcase>
+    </testsuite>
+</testsuites>

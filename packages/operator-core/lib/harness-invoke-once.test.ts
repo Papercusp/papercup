@@ -263,6 +263,38 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
   });
 });
 
+describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-model-tier-selection P-001)', () => {
+  it('the override outranks the AGENT_MODELS entry AND the committed default', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'haiku' }));
+    expect(applyRoleModel('claude -p', 'worker', 'opus:high')).toBe('claude -p --model opus --effort high');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p', 'release-manager', 'sonnet')).toBe('claude -p --model sonnet');
+  });
+
+  it('an empty/whitespace override falls through to the normal chain', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(applyRoleModel('claude -p', 'worker', '')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'worker', '  ')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p', 'worker', undefined)).toBe('claude -p --model sonnet');
+  });
+
+  it('buildInvokeOnce reads extraEnv.PAPERCUSP_SPAWN_MODEL into the role command', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const env = buildInvokeOnce(spec({ role: 'worker', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'opus:xhigh' } })).env;
+    expect(env.AGENT_CMD).toBe('claude -p --model opus --effort xhigh');
+    expect(env.CLAUDE).toBe('claude -p --model opus --effort xhigh');
+    // and the env var itself rides to the child for invoke.ts resolveModel
+    expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
+  });
+
+  it('resolveSpawnBackendModel keys the governor bucket to the override model', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p');
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('bee', 'opus:high')).toEqual({ backend: 'claude-code', model: 'opus' });
+  });
+});
+
 describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn (RB-012)', () => {
   beforeEach(() => {
     // Hermetic baseline: the dev box's .env.local carries a real AGENT_MODELS
