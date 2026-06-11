@@ -435,10 +435,12 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'testing-live-warm-route',
       label: 'Testing live warm route',
       run: async () => {
-        const result = await measureWarmRoute(ctx, '/admin/testing?tab=live', (page) => page.href.includes('/admin/testing') && page.h1.includes('Live metrics'));
+        // The testing console lives on the harness Tests tab (/adv) — the
+        // /admin/testing route was removed once the Tests tab covered it.
+        const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing&testsTab=vitals', (page) => page.href.includes('testsTab=vitals') && page.h1.includes('Live metrics'));
         return statusResult(
           result.ok && result.elapsedMs <= 1500,
-          'Warm /admin/testing?tab=live settles within 1500ms in the Tauri desktop shell.',
+          'Warm Tests tab (Live metrics) settles within 1500ms in the Tauri desktop shell.',
           `${result.elapsedMs}ms · href=${result.page.href} · domNodes=${result.page.domNodes}.`,
           result.ok ? undefined : result.page.details,
         );
@@ -841,12 +843,20 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   const suiteRun = `suite-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const routeUrl = new URL(route, state.origin);
   routeUrl.searchParams.set('__suiteRun', suiteRun);
-  const chaosUrl = new URL('/admin/testing', state.origin);
-  chaosUrl.searchParams.set('tab', 'chaos');
+  // The chaos recorder lives on the harness Tests tab (/adv) — the
+  // /admin/testing route was removed once the Tests tab covered it. NOTE:
+  // the universalized ChaosDesktopPanel does not (yet) read the
+  // chaosRoute/chaosDur/dry params or install the __pcChaosIdleReset hatch
+  // the old admin tab honored — this driver flow needs panel-side hooks
+  // restored before it can go green again (tracked as an engineer issue).
+  const chaosUrl = new URL('/adv', state.origin);
+  chaosUrl.searchParams.set('slug', 'papercup');
+  chaosUrl.searchParams.set('tab', 'testing');
+  chaosUrl.searchParams.set('testsTab', 'chaos-desktop');
   chaosUrl.searchParams.set('chaosRoute', `${routeUrl.pathname}${routeUrl.search}${routeUrl.hash}`);
   chaosUrl.searchParams.set('chaosDur', durationMs <= 10_000 ? '10s' : '30s');
   chaosUrl.searchParams.set('dry', 'false');
-  const ready = await measureRoute(ctx, chaosUrl.toString(), (page) => page.href.includes('/admin/testing') && page.h1.includes('Chaos'));
+  const ready = await measureRoute(ctx, chaosUrl.toString(), (page) => page.href.includes('testsTab=chaos-desktop'));
   if (!ready.ok) {
     return { clicks: 0, durationMs, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
   }

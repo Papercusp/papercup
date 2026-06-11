@@ -7,6 +7,10 @@ import RoutesTab from './_components/RoutesTab';
 import PackagedBuildTab from './_components/PackagedBuildTab';
 import TestRunsTab from './_components/TestRunsTab';
 import MemoryTab from './_components/MemoryTab';
+// Panel-helper styles (.pc-test-tab-header / cards / tables) travel with the
+// panels themselves — every host of these tabs (the /adv harness Tests tab)
+// gets them without needing a route-level import.
+import './testing.css';
 
 // Base URL the browser-chaos run drives — the BUILT operator SPA on :3070 (the
 // port the desktop webview loads). NOT :3055: that's the Vite HMR dev server,

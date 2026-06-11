@@ -21,6 +21,39 @@
       ]
     },
     {
+      "id": "chaos-desktop",
+      "label": "Chaos (desktop)",
+      "description": "In-app perf-recorder clicker that drives the Tauri shell looking for crashes.",
+      "tier": "universal",
+      "sections": [
+        {
+          "id": "host",
+          "label": "Recorder host",
+          "globs": [
+            "apps/operator/app/admin/testing/_lib/chaos-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ai-explore",
+      "label": "AI Explore",
+      "description": "Stagehand LLM walk over admin routes.",
+      "tier": "universal",
+      "sections": [
+        {
+          "id": "prompts",
+          "label": "Prompts",
+          "runners": [
+            {
+              "kind": "admin-suite",
+              "suiteId": "ai-explore-prompts"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "routes",
       "label": "Routes",
       "description": "Endpoint test surface — the project’s HTTP/RPC route tests.",
@@ -46,39 +79,6 @@
           "label": "Observers",
           "globs": [
             "apps/operator/app/admin/testing/_lib/vitals-*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "chaos-desktop",
-      "label": "Chaos (desktop)",
-      "description": "In-app perf-recorder clicker that drives the Tauri shell looking for crashes.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "host",
-          "label": "Recorder host",
-          "globs": [
-            "apps/operator/app/admin/testing/_lib/chaos-*.test.ts"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "ai-explore",
-      "label": "AI Explore",
-      "description": "Stagehand LLM walk over admin routes.",
-      "tier": "project",
-      "sections": [
-        {
-          "id": "prompts",
-          "label": "Prompts",
-          "runners": [
-            {
-              "kind": "admin-suite",
-              "suiteId": "ai-explore-prompts"
-            }
           ]
         }
       ]
@@ -1519,6 +1519,105 @@
             "packages/operator-core/lib/agent-tools/hive/**/*.test.ts",
             "packages/operator-core/lib/agent-tools/discovery/hives.test.ts",
             "packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p2p-perf",
+      "label": "P2P Perf",
+      "description": "Hyperbee-substrate performance suite: merge/decode benches, multi-process replication + churn, netem WAN sim, real-frame tier.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "infra",
+          "label": "Suite infra",
+          "description": "Corpus determinism, comparator math, meter envelope, and the CI-locked EI-79 idle-tick invariant (merge-scaling.test.ts).",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/perf/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "tier1",
+          "label": "Tier 1 (local)",
+          "description": "Loopback benches: merge cost / decode throughput / replication latency+ceiling / churn. Every scenario asserts the loop-lag SLO (p95 < 100ms).",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "smoke"
+              ],
+              "label": "tier1 smoke (~3 min)"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "ci"
+              ],
+              "label": "tier1 ci profile (~15 min)"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier1",
+                "--profile",
+                "full"
+              ],
+              "label": "tier1 full sweep (long)"
+            }
+          ]
+        },
+        {
+          "id": "tier2",
+          "label": "Tier 2 (netem WAN)",
+          "description": "Simulated WAN: unprivileged userns + veth + tc netem (RTT/jitter/loss matrix + the UDX loss curve). Skips on hosts without userns.",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier2",
+                "--profile",
+                "smoke"
+              ],
+              "label": "tier2 netem smoke"
+            },
+            {
+              "kind": "node",
+              "cmd": "npx",
+              "args": [
+                "tsx",
+                "packages/operator-core/lib/sync/hyperbee/perf/runner.ts",
+                "--tier2",
+                "--profile",
+                "full"
+              ],
+              "label": "tier2 netem full matrix"
+            }
+          ]
+        },
+        {
+          "id": "tier3",
+          "label": "Tier 3 (real frames)",
+          "description": "Latitude/Hetzner real-machine measurements (NAT/holepunch, real-WAN DHT, cross-region replication). Cred-gated: $0 and skipped without LATITUDE_API_KEY.",
+          "globs": [
+            "packages/operator-core/lib/deployment/**/p2p-perf*.test.ts",
+            "packages/operator-core/lib/deployment/p2p-perf-tier3/**/*.test.ts"
           ]
         }
       ]

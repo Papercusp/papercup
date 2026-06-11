@@ -8,7 +8,7 @@ import {
   ACCEPTANCE_DOMAIN_ID,
 } from '@papercusp/operator-core/lib/harness-testing-registry';
 import { type TestDomain } from '@papercusp/operator-core/lib/testing-domains';
-import { TESTING_CUSTOM_TABS } from '@/app/admin/testing/testing-custom-tabs';
+import { TESTING_CUSTOM_TABS, UNIVERSAL_TESTING_TABS } from '@/app/admin/testing/testing-custom-tabs';
 import { makeHarnessTestingDataSource } from './harness-testing-data-source';
 import AcceptancePanel from './AcceptancePanel';
 
@@ -57,7 +57,14 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
 
   const domains = declared?.domains ?? harnessTestingRegistry;
   const tierLabels = declared?.tierLabels ?? HARNESS_TESTING_TIER_LABELS;
-  const tabs = useMemo(() => tabsFromRegistry(domains), [domains]);
+  // The universal PANEL tabs (live-web, chaos-web, …) are config-not-data —
+  // a domains contract only declares file/runner domains, so append any panel
+  // tab it doesn't already carry (their components ship in TESTING_CUSTOM_TABS).
+  const tabs = useMemo(() => {
+    const declared = tabsFromRegistry(domains);
+    const ids = new Set(declared.map((t) => t.id));
+    return [...declared, ...UNIVERSAL_TESTING_TABS.filter((t) => !ids.has(t.id))];
+  }, [domains]);
   const dataSource = useMemo(() => makeHarnessTestingDataSource(slug, 'staging'), [slug]);
   // Reuse the SAME bespoke panels as /admin, plus the harness Acceptance panel.
   const customTabs = useMemo(

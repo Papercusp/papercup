@@ -33,12 +33,14 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(REPO_ROOT, '.papercusp', 'testing-domains.json');
 
 // The harness Tests tab's "Universal" tier = the portable/built-in domains.
-// Everything else renders under "This Harness".
-const UNIVERSAL_IDS = new Set(['test-runs', 'live', 'chaos', 'ai', 'routes']);
+// Everything else renders under "This Harness". (live-web/chaos-web are
+// panel-only universal tabs with no registry domain — the Tests tab appends
+// them client-side from UNIVERSAL_TESTING_TABS, so they never appear here.)
+const UNIVERSAL_IDS = new Set(['test-runs', 'chaos-desktop', 'ai-explore', 'routes']);
 
 // Display order: universal group first (fixed order), then the rest in
 // registry order, then acceptance last.
-const UNIVERSAL_ORDER = ['test-runs', 'live', 'chaos', 'ai', 'routes'];
+const UNIVERSAL_ORDER = ['test-runs', 'chaos-desktop', 'ai-explore', 'routes'];
 
 const byId = new Map<string, TestDomain>(adminRegistry.map((d) => [d.id, d]));
 

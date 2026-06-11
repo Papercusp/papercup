@@ -11,7 +11,6 @@ import * as Tabs from '@radix-ui/react-tabs';
 const TABS = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
-  { href: '/admin/testing', label: 'Testing' },
   { href: '/admin/dbos', label: 'DBOS' },
   { href: '/admin/coordination', label: 'Coordination' },
 ] as const;

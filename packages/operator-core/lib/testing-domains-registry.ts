@@ -1265,6 +1265,8 @@ const PAPERCUSP_IDS = [
   'hive',
   // The cross-Hive (shared-hive) federation substrate as a cohesive subsystem view.
   'shared-hive',
+  // The hyperbee-substrate performance suite (bench runners; files overlap dogfood by design).
+  'p2p-perf',
   // The adversarial coordination test suite as a cohesive cross-subsystem view.
   'coordination-suite',
 ] as const;

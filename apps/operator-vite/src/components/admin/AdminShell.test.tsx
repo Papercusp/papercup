@@ -46,7 +46,6 @@ const TAB_HREFS = [
   '/admin/run',
   '/admin/features',
   '/admin/git',
-  '/admin/testing',
   '/admin/dogfood-substrate',
   '/admin/dbos',
   '/admin/coordination',
@@ -94,7 +93,7 @@ describe('AdminShell', () => {
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual(TAB_HREFS);
 
     // Static (non-lexicon) labels render verbatim.
-    for (const label of ['Run', 'Features', 'Git', 'Testing', 'Substrate', 'DBOS', 'Coordination']) {
+    for (const label of ['Run', 'Features', 'Git', 'Substrate', 'DBOS', 'Coordination']) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
   });
@@ -112,14 +111,14 @@ describe('AdminShell', () => {
   });
 
   it('keeps the parent tab selected on child routes (prefix match)', () => {
-    mockPathname = '/admin/testing/file-history';
+    mockPathname = '/admin/git/pipeline';
     render(
       <AdminShell>
         <div />
       </AdminShell>,
     );
 
-    expect(screen.getByRole('tab', { name: 'Testing', selected: true })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Git', selected: true })).toBeTruthy();
     expect(selectedTabs()).toHaveLength(1);
   });
 

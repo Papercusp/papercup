@@ -69,7 +69,7 @@ describe('testing-domains-registry', () => {
     }
   });
 
-  it('ui suite exposes the desktop stability regression tests in /admin/testing', () => {
+  it('ui suite exposes the desktop stability regression tests in the Tests tab', () => {
     const plans = domains.find((d) => d.id === 'plans');
     expect(plans).toBeDefined();
     const ui = plans!.sections.find((s) => s.id === 'ui');
