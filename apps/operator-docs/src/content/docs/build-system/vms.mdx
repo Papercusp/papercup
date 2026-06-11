@@ -130,11 +130,21 @@ Inside the Mac VM, `sudo` password is `aviweiss`. Windows VM has no sudo concept
 ### Mac VM
 
 ```sh
-cd ~/macos-vm/OSX-KVM
-nohup bash boot-sonoma.sh > /tmp/macvm-boot.log 2>&1 &
+systemctl --user start papercup-vm-mac.service     # the supported path
 ```
 
-Or click **Start macOS VM** in `/admin` (idempotent — exits 0 if already running). ~60–120s to SSH-ready.
+The unit runs **`boot-sonoma-durable.sh`** (32 GB RAM, `Type=forking` +
+`PIDFile=qemu.pid`, QMP control socket at `OSX-KVM/qmp.sock`, logs in
+`OSX-KVM/logs/qemu-current.log`, graceful QMP `system_powerdown` on stop).
+~60–120s to SSH-ready.
+
+⚠ Do **not** launch `boot-sonoma.sh` for routine boots — it is the
+*installer-media* variant (16 GB, attaches `BaseSystem.img`, currently a
+macOS Tahoe installer) and was the cause of the 2026-06-11 service
+crash-loop split-brain. If SSH is dead and the service can't bind SPICE
+`:5930`, an orphaned qemu probably holds the ports and may be parked at the
+OpenCore boot picker — recover it via QMP, never `pkill`:
+[mac-vm-qmp-recovery](/internal/docs/agent-insights/mac-vm-qmp-recovery).
 
 To view the desktop: `remote-viewer spice://127.0.0.1:5930`.
 

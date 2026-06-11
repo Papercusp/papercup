@@ -43,22 +43,23 @@ echo "=== build + audit complete"`,
     id: 'build-mac-prod',
     label: 'Mac Prod Build',
     section: 'building',
-    description: 'Builds the macOS .dmg inside the Mac VM (~/papercupai/papercusp-desktop). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.',
+    description: 'Rsyncs the canonical tree into the Mac VM (~/papercup-build-mac) and builds the UNIVERSAL .dmg via bin/mac-vm-build.sh (term shim + sidecar + tauri). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.',
     command: `set -e
+echo "=== rsync tree → VM:papercup-build-mac/papercup"
+rsync -az --delete --exclude .git --exclude node_modules --exclude target --exclude .turbo --exclude .next -e "ssh -i /home/marsh-office/.ssh/papercup-vm-mac -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" ${PAPERCUP_REPO}/ aviweiss@127.0.0.1:papercup-build-mac/papercup/
+if [ -f /home/marsh-office/.papercusp/signing/papercusp.key ]; then
+  scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /home/marsh-office/.papercusp/signing/papercusp.key aviweiss@127.0.0.1:.papercusp-updater.key
+fi
 echo "=== mac build via ${SSH_MAC}"
 ${SSH_MAC} 'bash -lc "set -e
-   export NVM_DIR=\\$HOME/.nvm
-   [ -s \\$NVM_DIR/nvm.sh ] && . \\$NVM_DIR/nvm.sh
-   nvm use 22 >/dev/null
-   cd ~/papercupai/papercusp-desktop
-   echo === node \\$(node --version) npm \\$(npm --version)
-   NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps 2>&1 | tail -20
-   NODE_OPTIONS=--max-old-space-size=8192 npm run build 2>&1 | tail -200
-   ls -la src-tauri/target/release/bundle/dmg/"' 2>&1
+   cd ~/papercup-build-mac/papercup/papercusp-desktop
+   NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps 2>&1 | tail -5
+   export TAURI_SIGNING_PRIVATE_KEY_PATH=\\$HOME/.papercusp-updater.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=
+   bash bin/mac-vm-build.sh 2>&1 | tail -200"' 2>&1
 echo "=== scp dmg back"
-scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'aviweiss@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/dmg/Papercusp_0.0.1_x86_64.dmg' /home/marsh-office/
+scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'aviweiss@127.0.0.1:papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg' /home/marsh-office/
 echo "=== audit"
-${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x86_64.dmg
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_*_universal.dmg
 echo "=== mac build + audit complete"`,
   },
   {
@@ -187,7 +188,7 @@ ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
     label: 'Start macOS VM',
     section: 'simulators',
     description: 'Boots the macOS VM (QEMU + SPICE on :5930). ~60–120s to be SSH-ready. Skip if it\'s already up.',
-    command: `if pgrep -f "qemu.*mac_hdd_ng" >/dev/null; then echo "==> macOS VM already running (pid $(pgrep -f 'qemu.*mac_hdd_ng'))"; exit 0; fi; cd $HOME/macos-vm/OSX-KVM && nohup bash boot-sonoma.sh >/tmp/macvm-boot.log 2>&1 & disown; echo "==> boot pid $!"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing /tmp/macvm-boot.log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F /tmp/macvm-boot.log`,
+    command: `if pgrep -f "qemu.*mac_hdd_ng" >/dev/null; then echo "==> macOS VM already running (pid $(pgrep -f 'qemu.*mac_hdd_ng'))"; exit 0; fi; systemctl --user start papercup-vm-mac.service && echo "==> started papercup-vm-mac.service (boot-sonoma-durable.sh)"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing qemu log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F $HOME/macos-vm/OSX-KVM/logs/qemu-current.log`,
   },
   {
     id: 'launch-ios-simulator',
