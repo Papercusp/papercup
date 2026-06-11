@@ -13,9 +13,31 @@
  * request-only by design) — and NEVER under vitest (tests must not poke the
  * live wake system, whatever the box's env says).
  */
-export function backgroundWorkersEnabled(): boolean {
-  if (process.env.VITEST) return false;
-  return process.env.PAPERCUSP_BACKGROUND_WORKERS != null
-    ? process.env.PAPERCUSP_BACKGROUND_WORKERS !== '0'
-    : process.env.PAPERCUSP_HONO_PORT !== '3170';
+export function backgroundWorkersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.VITEST) return false;
+  return env.PAPERCUSP_BACKGROUND_WORKERS != null
+    ? env.PAPERCUSP_BACKGROUND_WORKERS !== '0'
+    : env.PAPERCUSP_HONO_PORT !== '3170';
+}
+
+/**
+ * Whether THIS process should arm the in-process REACTION MATCHER — project the
+ * persisted hive-wake subscriptions into the in-memory reaction registry so a tool
+ * invoked HERE fires its demand-wake reaction in-process (EI-307).
+ *
+ * This is REQUEST-SERVING work, NOT a background loop: no tick, no drain, no
+ * resource cost beyond one PG read at boot, and it must be live on EVERY operator
+ * host that serves tool calls — INCLUDING the dev-box staging operator
+ * (PAPERCUSP_HONO_PORT=3170). `backgroundWorkersEnabled()` deliberately turns the
+ * loops OFF on :3170 (request-only by design); bundling the matcher projection into
+ * that gate is exactly the EI-307 bug — a `work_items:create` landing on :3170
+ * matched no rule (staging's matcher was never armed) so the hive demand-wake
+ * silently dropped. The matcher therefore arms wherever requests are served:
+ * everywhere except tests (a vitest worker must not poke the live wake system) and
+ * an explicit full-disable (PAPERCUSP_BACKGROUND_WORKERS=0).
+ */
+export function reactionMatcherShouldArm(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.VITEST) return false;
+  if (env.PAPERCUSP_BACKGROUND_WORKERS === '0') return false;
+  return true;
 }

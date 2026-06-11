@@ -544,14 +544,17 @@ import './lexicon/active_pack';
 // wake on its subscribed events.
 import { registerHiveWakeRules } from '../hive/wake';
 import { backgroundWorkspaceIds } from '../workspace-registry';
-// EI-312 leg 1: these module-scope effects are HOST-BOOT work, but the import
-// graph runs them in EVERY process that loads this module — each vitest worker
-// of a test run executed a "host boot" hive-watchdog check against the live DB
-// (11 staged watchdog wakes per `test:affected`). Gate on the EI-126 rule:
-// only a primary operator host runs background machinery; never tests.
-import { backgroundWorkersEnabled } from '../background-workers';
+// EI-307: projecting the persisted hive-wake subscriptions into the in-memory
+// reaction matcher is REQUEST-SERVING work, not a background loop — it must run on
+// every operator host that serves tool calls, INCLUDING staging (:3170), so a tool
+// invoked there fires its demand-wake reaction in-process. `backgroundWorkersEnabled`
+// turns the loops off on :3170 (request-only), and gating the matcher on it was the
+// bug (staging matched no rule → demand wakes silently dropped). `reactionMatcherShouldArm`
+// arms green + staging; still excludes vitest (EI-312 leg 1: a worker must not poke the
+// live wake system) + explicit full-disable.
+import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../background-workers';
 try {
-  if (backgroundWorkersEnabled()) {
+  if (reactionMatcherShouldArm()) {
     for (const ws of backgroundWorkspaceIds()) {
       void registerHiveWakeRules(ws).catch(() => {});
     }

@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -178,6 +179,8 @@ beforeAll(async () => {
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();
   await rootSql.unsafe(readMigration('128-harness-plans-normalize.sql')).simple();
+  // The declare-wake frontier guard (wake-frontier-guard.ts) reads this table.
+  await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   h.sql = rootSql;
   // Deliberately NOT arming the default subscriptions — every rule in this test
   // comes from the Pot's own hive:declare-wake call (the declared path).
