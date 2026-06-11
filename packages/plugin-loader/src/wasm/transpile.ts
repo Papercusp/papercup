@@ -28,7 +28,7 @@
  * fine since contents are byte-identical for the same input hash).
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 
@@ -98,8 +98,12 @@ export async function transpileWasm(
   }
 
   // Cache miss. Write to a temp dir alongside the cache, then rename.
-  // Same-parent rename is atomic on Linux/macOS.
-  const tmpDir = `${cacheDir}.tmp-${process.pid}-${Date.now()}`;
+  // Same-parent rename is atomic on Linux/macOS. The random suffix is
+  // load-bearing: pid+Date.now() alone COLLIDES for two concurrent calls in
+  // the same process within one millisecond — they then share a tmp dir and
+  // the winner's rename yanks it out from under the loser mid-transpile
+  // (caught on the 2-core CI runner, WI-123 round 6).
+  const tmpDir = `${cacheDir}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   await fs.mkdir(tmpDir, { recursive: true });
   let entryRelPath: string;
   try {

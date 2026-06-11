@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="8" failures="0" errors="0" time="0.028969935">
+    <testsuite name="src/wasm/transpile.test.ts" timestamp="2026-06-11T23:33:21.645Z" hostname="main-server-Precision-7865-Tower" tests="8" failures="0" errors="0" skipped="0" time="0.028969935">
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; first call invokes the transpiler + writes cache + marker" time="0.008673548">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; second call hits cache, does NOT re-invoke transpiler" time="0.002929894">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; different wasm contents → different cache directories" time="0.004184996">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; corrupt cache (marker exists but entry missing) → re-transpiles" time="0.002927329">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler error propagates AND cleans up partial cache" time="0.002727183">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; transpiler returning a non-existent entryRelPath is rejected" time="0.001479174">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; marker contains the entry&apos;s relative path" time="0.002186159">
+        </testcase>
+        <testcase classname="src/wasm/transpile.test.ts" name="transpileWasm &gt; concurrent calls with same wasm both succeed (one wins the rename)" time="0.002297895">
+        </testcase>
+    </testsuite>
+</testsuites>

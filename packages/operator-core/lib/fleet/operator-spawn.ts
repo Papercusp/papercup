@@ -617,7 +617,7 @@ export async function spawnAgentInHarness(
         workspaceId: input.workspaceId,
         status: finalStatus,
         exitCode: r.exitCode,
-        errorMessage: r.exitCode === 0 ? null : (r.stderr || '').slice(-2000) || null,
+        errorMessage: (r.stderr || '').slice(-2000) || null,
         outputTail: (r.output || '').slice(-2000) || null,
       });
     })

@@ -19,6 +19,13 @@ state lives here so call sites stay tight.
   no design-system kit).
 - **`SubmitButton`** — disabled-while-submitting button. Takes a `pending`
   bool (usually `isSubmitting` from `useFormWith`).
+- **`DraftInput` / `DraftTextarea`** — commit-on-blur text inputs for
+  **per-field auto-save pages** (the `useDebouncedSave` pattern, not RHF).
+  Typing stays in a local draft; `onCommit(value)` fires on blur/Enter only
+  when the optional `validate(draft)` passes — so a mid-typed or invalid
+  value never reaches the page state that auto-saves. Escape reverts. On an
+  auto-save page, a plain `<input value onChange>` persists every keystroke
+  — always wrap free-text fields in these.
 - **`makeAjvResolver(schema)`** — for the per-plugin config editor and any
   other surface whose schema is JSON Schema, not Zod. Pre-registers
   `ajv-formats`. Used with vanilla `useForm`, not `useFormWith`.

@@ -339,7 +339,26 @@ export function VoiceSettings({ initial }: { initial: VoiceConfig }) {
 }
 ```
 
-*Canonical sites:* `/settings/voice`, `/settings/backups`, `/settings/operator`, `/settings/personalization`.
+*Canonical sites:* `/settings/voice`, `/settings/backups`, `/settings/operator`, `/settings/personalization`, `/settings/agent`.
+
+**Free-text fields on an auto-save page MUST commit on blur, not per keystroke.**
+Use `DraftInput` / `DraftTextarea` from `@/lib/forms` for any text input or
+textarea: typing stays in a local draft and `onCommit` fires on blur/Enter only
+after the optional `validate(draft)` passes. A plain `<input value onChange>`
+here persists every keystroke — mid-typed values ("fab", "opus:") go live, and
+a transiently invalid value can clobber the stored setting. Atomic controls
+(selects, radios, checkboxes, buttons) keep committing immediately.
+
+**Validation must HOLD, never DROP.** When a cross-field check fails at
+save-assembly time (duplicate name, incomplete row), substitute that section's
+**last server-acknowledged value** and flag the problem inline — never exclude
+the invalid piece from the saved body. Excluding deletes it from the store, and
+the page looks fine until a reload re-hydrates the gutted config (the
+/settings/agent wipe bug, 2026-06-11; see
+`apps/operator/app/settings/agent/assemble-config.ts` for the canonical
+hold-last-valid implementation). `useDebouncedSave` flushes a pending save on
+unmount/pagehide — pass `keepalive: true` in the persist fetch so it survives
+a reload.
 
 **HR1/HR2/HR3/HR6 still apply.** The wrappers (`<Modal>`, `<Checkbox>`, `<Select>`, `<Collapsible>`) are still required — you're only opting out of RHF's centralized form-state model, not the harness primitives.
 

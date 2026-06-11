@@ -138,6 +138,24 @@ describe('spawnAgentInHarness — happy path', () => {
       errorMessage: 'boom',
     }));
   });
+
+  it('an exit-0 child with non-empty stderr persists stderr as errorMessage (WI-111 — session-limit diagnostic)', async () => {
+    // Root cause of the 3.5-day archaeology: the session-limit message ("You've hit
+    // your session limit") reaches the parent as stderr on an exit-0 process. The old
+    // path dropped it (`exitCode === 0 ? null`), leaving error_message blank and the
+    // cause invisible in fleet:tree / the Brew tab.
+    const sessionMsg = "You've hit your session limit · resets 7:30pm (America/New_York)";
+    vi.mocked(spawnInvokeOnce).mockResolvedValue({ output: '', exitCode: 0, stderr: sessionMsg });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    await flush();
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId,
+      status: 'done',
+      exitCode: 0,
+      errorMessage: sessionMsg,
+    }));
+  });
 });
 
 describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-007)', () => {

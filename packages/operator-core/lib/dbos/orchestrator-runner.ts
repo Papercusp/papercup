@@ -393,6 +393,12 @@ function runChild(
             ? `\n--- stdout tail (${role}) ---\n${stdout.length > 2000 ? stdout.slice(-2000) : stdout}`
             : '';
         console.error(`[dbos-invoke] role=${role} exited ${exitCode} with empty stderr (stdout ${stdout.length} chars)${dbg}`);
+      } else if (stderr.trim()) {
+        // Exit 0 with non-empty stderr: surface it so the operator log shows why
+        // the bee vanished (e.g. "You've hit your session limit"). Without this,
+        // exit-0 runs are completely silent even when the stderr carries the cause.
+        const stderrHead = stderr.trim().slice(0, 500);
+        console.warn(`[dbos-invoke] role=${role} exited 0 with stderr (${stderr.length} chars): ${stderrHead}`);
       }
       resolve({ output: extractAgentOutput(stdout), exitCode, stderr, timedOut });
     });

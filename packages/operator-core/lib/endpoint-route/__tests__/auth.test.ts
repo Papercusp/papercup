@@ -178,9 +178,10 @@ describe('POST /auth/signup', () => {
 describe('POST /auth/change-password', () => {
   const app = appWith(authChangePassword as AnyRoute);
 
-  it('returns 401 with no session', async () => {
+  it('falls back to the default user with no session (cookie-less desktop)', async () => {
     const res = await app.request('/auth/change-password', json({ current: 'a', next: 'b' }));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(changePassword).toHaveBeenCalledWith('u1', 'a', 'b');
   });
 
   it('re-issues a session cookie on success', async () => {
@@ -207,9 +208,10 @@ describe('GET + PATCH /auth/me', () => {
     expect(await res.json()).toMatchObject({ autoLogin: true });
   });
 
-  it('PATCH rejects with 401 when unauthenticated', async () => {
+  it('PATCH falls back to the default user when unauthenticated (cookie-less desktop)', async () => {
     const res = await app.request('/auth/me', { ...json({ display_name: 'New' }), method: 'PATCH' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(updateDisplayName).toHaveBeenCalledWith('u1', 'New');
   });
 
   it('PATCH updates the display name', async () => {
