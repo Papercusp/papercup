@@ -25,6 +25,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Wrench, Plug, Box, AlertTriangle, RefreshCw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
+import { CupboardErrorState } from './CupboardErrorState';
 
 export type ToolStatusFilter = 'all' | 'available' | 'installable';
 
@@ -250,7 +251,7 @@ export function ToolsSection({
       )}
 
       {error && !loading && (
-        <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: SIZES.md, padding: 12, border: '1px solid color-mix(in srgb, var(--danger), transparent 70%)', borderRadius: RADIUS.lg, background: 'var(--error-bg)' }}>{error}</div>
+        <CupboardErrorState raw={error} what="tools" onRetry={() => void fetchTools()} />
       )}
 
       {!loading && !error && payload && payload.tools.length === 0 && (

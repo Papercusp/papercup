@@ -43,6 +43,7 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
+import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import { useLexicon } from '@/lib/useLexicon';
 
@@ -437,23 +438,9 @@ export default function CupboardClient() {
         />
       ) : (
         <>
-      {/* Error */}
+      {/* Error — friendly copy + inline Retry (EI-215) */}
       {error && !loading && (
-        <div
-          style={{
-            color: 'var(--danger)',
-            fontSize: 12,
-            marginBottom: SIZES.md,
-            padding: 12,
-            border: '1px solid color-mix(in srgb, var(--danger), transparent 70%)',
-            borderRadius: RADIUS.lg,
-            background: 'var(--error-bg)',
-          }}
-        >
-          {error === 'HTTP 503' || error.includes('fetch')
-            ? 'Cupboard server unreachable. Is PAPERCUSP_CUPBOARD_URL configured?'
-            : error}
-        </div>
+        <CupboardErrorState raw={error} what="listings" onRetry={() => void fetchListings()} />
       )}
 
       {/* Results — empty state (kind-aware in flat mode, Hive-aware in rollup mode) */}

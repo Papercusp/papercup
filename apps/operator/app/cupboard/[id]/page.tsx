@@ -23,7 +23,7 @@
  *     consumed.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import {
   Shield, ExternalLink, Users, Clock, GitBranch,
@@ -40,6 +40,7 @@ import {
   LISTING_ACTION_LABEL,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
+import { CupboardErrorState } from '../CupboardErrorState';
 import { toast } from 'sonner';
 
 function ActionIcon({ kind, size = 14 }: { kind: ListingKind; size?: number }) {
@@ -61,15 +62,18 @@ export default function CupboardDetailPage() {
   // install) — render-lifecycle state, not URL state.
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
+  const fetchListing = useCallback(() => {
     if (!id) return;
     setLoading(true);
+    setError(null);
     fetch(`/api/cupboard/listings/${id}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { listing: HarnessListing }) => { setListing(data.listing); })
       .catch((err: unknown) => { setError(String(err)); })
       .finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => { fetchListing(); }, [fetchListing]);
 
   const handleAction = () => {
     if (!listing) return;
@@ -194,9 +198,15 @@ export default function CupboardDetailPage() {
         <button onClick={() => router.back()} style={backBtnStyle}>
           <ArrowLeft size={13} /> Back
         </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--danger)', marginTop: SIZES.md }}>
-          <AlertTriangle size={14} />
-          {error ?? 'Listing not found.'}
+        <div style={{ marginTop: SIZES.md }}>
+          {error ? (
+            <CupboardErrorState raw={error} what="this listing" onRetry={fetchListing} />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--danger)' }}>
+              <AlertTriangle size={14} />
+              Listing not found.
+            </div>
+          )}
         </div>
       </div>
     );

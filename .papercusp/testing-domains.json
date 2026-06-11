@@ -1460,8 +1460,8 @@
         },
         {
           "id": "coordination",
-          "label": "Cross-peer coordination (presence→authority→claim)",
-          "description": "Coordination across the shared Hive end-to-end: two REAL peers federate presence over the wire → the federated roster drives a CONSISTENT (no-split-brain) Hive authority election → both Swarms contend for one work-item and the federated-presence-elected authority grants EXACTLY ONE (cross-peer exactly-once). Closes the gap the injected-roster authority/claim suites leave open.",
+          "label": "Cross-peer coordination (presence→authority→claim→failover/partition)",
+          "description": "Coordination across the shared Hive end-to-end: two REAL peers federate presence over the wire → the federated roster drives a CONSISTENT (no-split-brain) Hive authority election → both Swarms contend for one work-item and the federated-presence-elected authority grants EXACTLY ONE (cross-peer exactly-once). Plus the topology-change legs over the same real federated roster: the authority Swarm DEPARTS → staleness deposes it and the survivor elects itself (D-005 failover by definition) with claims continuing locally; and a PARTITION (authority fresh in roster, RPC severed) → the non-authority fails open LOUDLY into its own store (D-004, the documented optimistic split-brain window), then routes remote-authority again on heal. Closes the gap the injected-roster authority/claim suites leave open.",
           "globs": [
             "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination.integration.test.ts"
           ]

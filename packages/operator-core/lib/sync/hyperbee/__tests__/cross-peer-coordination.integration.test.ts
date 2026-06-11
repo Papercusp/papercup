@@ -269,10 +269,16 @@ async function devicePubkeysFor(sql: postgres.Sql): Promise<Set<string>> {
   return new Set(rows.map((r) => r.device_pubkey));
 }
 
-/** Election deps that read THIS peer's federated `shared_presence` (not an injected roster). */
-function electionDeps(sql: postgres.Sql, self: { githubUserId: number; devicePubkey: string }): LockAuthorityDeps {
+/** Election deps that read THIS peer's federated `shared_presence` (not an injected roster).
+ *  `nowFn` is injectable so the failover test can move the clock past `staleMs` without
+ *  sleeping — the roster itself stays the REAL federated one. */
+function electionDeps(
+  sql: postgres.Sql,
+  self: { githubUserId: number; devicePubkey: string },
+  nowFn: () => number = () => Date.now(),
+): LockAuthorityDeps {
   return {
-    now: () => Date.now(),
+    now: nowFn,
     staleMs: 600_000,
     resolveSelf: async () => self,
     fetchHivePresenceRows: (hiveSlug: string) => queryPresenceRowsForHive(sql as never, hiveSlug),
@@ -464,5 +470,207 @@ describe('cross-peer coordination on a shared Hive — claim arbitration over th
       expect(clientResult.via).toBe('remote-authority');
     },
     45_000,
+  );
+});
+
+/** Spin an in-process authority RPC endpoint over `handleAuthorityRpc`, returning a
+ *  handle the partition test can sever (close) and heal (relisten on a new port). */
+async function startAuthorityRpcServer(): Promise<{ addr: () => string; sever: () => Promise<void>; heal: () => Promise<void> }> {
+  let server: Server | undefined;
+  let port = 0;
+  const listen = async () => {
+    server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', async () => {
+        const env = JSON.parse(raw) as AuthorityRpcEnvelope;
+        const result = await handleAuthorityRpc(env);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
+    port = (server!.address() as { port: number }).port;
+  };
+  const sever = async () => {
+    server?.closeAllConnections();
+    await new Promise<void>((r) => server!.close(() => r()));
+    server = undefined;
+  };
+  await listen();
+  cleanups.push(async () => {
+    if (server) await sever();
+  });
+  // The address keeps resolving after sever — the point: the peer is KNOWN but
+  // unreachable (a partition), so the transport maps the refusal to
+  // PeerUnreachableError and routing fails open per D-004.
+  return { addr: () => `http://127.0.0.1:${port}`, sever, heal: listen };
+}
+
+function claimVia(
+  sql: postgres.Sql,
+  self: { githubUserId: number; devicePubkey: string },
+  owner: string,
+  workItemId: string,
+  nowFn?: () => number,
+) {
+  const payload: AcquireOpts = {
+    workspaceId: 'default',
+    harnessSlug: HARNESS_SLUG,
+    workItemId,
+    hiveSlug: HIVE_SLUG,
+    owner,
+    holderPubkey: self.devicePubkey,
+  };
+  return routeToAuthorityForHive<AcquireResult>(
+    HIVE_SLUG,
+    {
+      local: (): Promise<AcquireResult> => acquireClaimLocal(payload),
+      remote: { kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload, decode: (raw): AcquireResult => raw as AcquireResult },
+    },
+    electionDeps(sql, self, nowFn),
+  );
+}
+
+describe('cross-peer coordination on a shared Hive — authority departure (failover by staleness, D-005)', () => {
+  it(
+    'the elected authority Swarm departs → its federated presence ages out and the SURVIVOR elects itself; a new claim grants locally',
+    async () => {
+      const { dbA, dbB, idA, idB, peerA, peerB, federated } = await federateTwoPeerPresence();
+      expect(federated).toBeTruthy();
+
+      const authorityIsA = idA.devicePubkey < idB.devicePubkey;
+      const departed = authorityIsA ? { peer: peerA, id: idA } : { peer: peerB, id: idB };
+      const survivor = authorityIsA
+        ? { peer: peerB, id: idB, db: dbB, machine: 'machine-B' as const }
+        : { peer: peerA, id: idA, db: dbA, machine: 'machine-A' as const };
+
+      // The authority Swarm genuinely goes away (stops announcing + merging).
+      await departed.peer.handle.close();
+
+      // HYSTERESIS: socket death alone does NOT depose the authority — within the
+      // staleness window the survivor still names the departed Swarm (this is the
+      // designed anti-flap window, not a bug).
+      const selfSurvivor = { githubUserId: survivor.id.userId, devicePubkey: survivor.id.devicePubkey };
+      const preStale = await lockAuthorityForHive(HIVE_SLUG, electionDeps(survivor.db.sql, selfSurvivor));
+      expect(preStale.isSelf).toBe(false);
+      expect(preStale.peer?.devicePubkey).toBe(departed.id.devicePubkey);
+
+      // The survivor keeps heartbeating: re-announce its presence at VIRTUAL_NOW
+      // (a fresh last_seen_at on its own peer-log → its own projected roster). The
+      // departed Swarm's row keeps its old last_seen_at and ages out.
+      const VIRTUAL_NOW = Date.now() + 601_000;
+      await survivor.peer.handle.append({
+        type: 'put',
+        table: 'presence',
+        hbKey: `${survivor.id.userId}/${survivor.machine}`,
+        value: { ...presenceValue(survivor.id.userId, survivor.machine, survivor.id.devicePubkey), last_seen_at: VIRTUAL_NOW },
+        ts: 2000,
+        schema_version: 1,
+        writerPubkey: survivor.id.devicePubkey,
+      });
+      const heartbeatLanded = await pollUntil(
+        async () => {
+          await survivor.peer.handle.mergeNow();
+          const rows = await queryPresenceRowsForHive(survivor.db.sql as never, HIVE_SLUG);
+          return rows.some((r) => r.device_pubkey === survivor.id.devicePubkey && r.last_seen_ms >= VIRTUAL_NOW) || undefined;
+        },
+        { timeoutMs: 15_000, intervalMs: 200 },
+      );
+      expect(heartbeatLanded, "the survivor's fresh heartbeat never landed in its own roster").toBeTruthy();
+
+      // FAILOVER BY DEFINITION (D-005): at VIRTUAL_NOW the departed Swarm's row is
+      // past staleMs; the survivor — over the SAME federated roster — now IS the
+      // authority, with the dead Swarm out of the live set. No election round-trip.
+      const postStale = await lockAuthorityForHive(HIVE_SLUG, electionDeps(survivor.db.sql, selfSurvivor, () => VIRTUAL_NOW + 1));
+      expect(postStale.isSelf, 'the survivor must elect ITSELF once the departed authority is stale').toBe(true);
+      expect(postStale.liveCount).toBe(1);
+
+      // Claims continue: the survivor hosts the claim store and grants locally.
+      await survivor.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+      h.sql = survivor.db.sql;
+      __resetAuthorityOpsForTests();
+      registerWorkItemClaimAuthorityOps();
+      cleanups.push(() => __resetAuthorityOpsForTests());
+
+      const r = await claimVia(survivor.db.sql, selfSurvivor, 'survivor', 'F-XPEER-FAILOVER-1', () => VIRTUAL_NOW + 1);
+      expect(r.via).toBe('local-authority');
+      expect(r.value.ok).toBe(true);
+      const held = await getClaim('default', HARNESS_SLUG, 'F-XPEER-FAILOVER-1');
+      expect(held?.owner).toBe('survivor');
+    },
+    60_000,
+  );
+});
+
+describe('cross-peer coordination on a shared Hive — partition fail-open + heal (D-004)', () => {
+  it(
+    'a partitioned non-authority Swarm FAILS OPEN (loud warning, local-advisory grant in its OWN store); on heal it routes remote again',
+    async () => {
+      const { dbA, dbB, idA, idB, federated } = await federateTwoPeerPresence();
+      expect(federated).toBeTruthy();
+
+      const authorityIsA = idA.devicePubkey < idB.devicePubkey;
+      const authority = authorityIsA ? { id: idA, db: dbA, owner: 'authority-swarm' } : { id: idB, db: dbB, owner: 'authority-swarm' };
+      const client = authorityIsA ? { id: idB, db: dbB, owner: 'client-swarm' } : { id: idA, db: dbA, owner: 'client-swarm' };
+      const selfClient = { githubUserId: client.id.userId, devicePubkey: client.id.devicePubkey };
+      const selfAuthority = { githubUserId: authority.id.userId, devicePubkey: authority.id.devicePubkey };
+
+      // Per-machine stores, like real embedded-pg: each Swarm has its OWN claim table.
+      await authority.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+      await client.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+
+      __resetAuthorityOpsForTests();
+      registerWorkItemClaimAuthorityOps();
+      const rpc = await startAuthorityRpcServer();
+      setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => rpc.addr() }));
+      cleanups.push(() => {
+        __resetPeerRpcTransportForTests();
+        __resetAuthorityOpsForTests();
+      });
+
+      // Pre-partition sanity: the wire works — the client's claim lands at the
+      // authority over RPC. (getOrgPg → h.sql models each machine's OWN embedded
+      // store; the RPC handler runs in the authority's "machine", so bind it there.)
+      h.sql = authority.db.sql;
+      const r0 = await claimVia(client.db.sql, selfClient, client.owner, 'F-XPEER-PART-0');
+      expect(r0.via).toBe('remote-authority');
+      expect(r0.value.ok).toBe(true);
+
+      // ── PARTITION: presence stays FRESH (the authority is still in the client's
+      // federated roster — this is a network split, not a departure), but the RPC
+      // leg is severed.
+      await rpc.sever();
+
+      h.sql = client.db.sql; // the claimant's own machine-local store
+      const r1 = await claimVia(client.db.sql, selfClient, client.owner, 'F-XPEER-PART-1');
+      // D-004: fail open, loudly — never block on an unreachable peer.
+      expect(r1.via).toBe('fail-open');
+      expect(r1.value.ok).toBe(true);
+      expect(r1.warning, 'fail-open must surface a loud warning').toMatch(/unreachable/);
+      const clientHeld = await getClaim('default', HARNESS_SLUG, 'F-XPEER-PART-1');
+      expect(clientHeld?.owner).toBe(client.owner);
+
+      // The documented optimistic window IS real: during the split the authority can
+      // grant the SAME item in its own store — two grants exist until git-merge
+      // reconciles. Asserted deliberately: this is the D-004 trade, not a bug.
+      h.sql = authority.db.sql;
+      const r2 = await claimVia(authority.db.sql, selfAuthority, authority.owner, 'F-XPEER-PART-1');
+      expect(r2.via).toBe('local-authority');
+      expect(r2.value.ok).toBe(true);
+      const authorityHeld = await getClaim('default', HARNESS_SLUG, 'F-XPEER-PART-1');
+      expect(authorityHeld?.owner).toBe(authority.owner);
+      expect(clientHeld?.owner).not.toBe(authorityHeld?.owner);
+
+      // ── HEAL: the RPC leg returns → the client's next claim routes to the
+      // authority again (serialized at one point; no lingering fail-open).
+      await rpc.heal();
+      const r3 = await claimVia(client.db.sql, selfClient, client.owner, 'F-XPEER-PART-2');
+      expect(r3.via).toBe('remote-authority');
+      expect(r3.value.ok).toBe(true);
+      const healedHeld = await getClaim('default', HARNESS_SLUG, 'F-XPEER-PART-2');
+      expect(healedHeld?.owner).toBe(client.owner);
+    },
+    60_000,
   );
 });
