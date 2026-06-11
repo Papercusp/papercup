@@ -43,6 +43,7 @@ import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import ChatPanel from '@/app/harness/ChatPanel';
 import '@/app/admin/coordination/coordination.css';
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -1343,23 +1344,40 @@ function AgentChatsView() {
                 <span>${((detail.total_cost_usd_cents ?? 0) / 100).toFixed(2)} · {(detail.total_input_tokens ?? 0) + (detail.total_output_tokens ?? 0)} tok</span>
               </div>
             </header>
-            <ol className="pc-coord__thread pc-advconv__transcript">
-              {(detail.transcript ?? []).map((t, i) => (
-                <li key={i} className={`pc-advconv__turn pc-advconv__turn--${t.role ?? 'unknown'}`}>
-                  <span className="pc-advconv__postmeta">
-                    <strong>{t.role ?? 'unknown'}</strong>
-                    {t.ts ? <span>{fmtTs(t.ts)}</span> : null}
-                  </span>
-                  <p>{turnText(t.content)}</p>
-                </li>
-              ))}
-              {(detail.transcript ?? []).length === 0 && (
-                <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
-                  <strong>Empty transcript</strong>
-                  <span>This chat session has no recorded turns.</span>
-                </li>
-              )}
-            </ol>
+            {detail.archived_at == null && detail.harness_slug ? (
+              // WI-125: a LIVE chat is interactive here — the real <ChatPanel>
+              // (transcript + streaming composer + archive), the same audited
+              // send path the dock chat slots use. Archived chats keep the
+              // read-only transcript below.
+              <div className="pc-advconv__livechat" data-testid="advconv-live-chat">
+                <ChatPanel
+                  slug={detail.harness_slug}
+                  chatId={detail.id}
+                  onArchive={() => {
+                    void setSel(null);
+                    void reload();
+                  }}
+                />
+              </div>
+            ) : (
+              <ol className="pc-coord__thread pc-advconv__transcript">
+                {(detail.transcript ?? []).map((t, i) => (
+                  <li key={i} className={`pc-advconv__turn pc-advconv__turn--${t.role ?? 'unknown'}`}>
+                    <span className="pc-advconv__postmeta">
+                      <strong>{t.role ?? 'unknown'}</strong>
+                      {t.ts ? <span>{fmtTs(t.ts)}</span> : null}
+                    </span>
+                    <p>{turnText(t.content)}</p>
+                  </li>
+                ))}
+                {(detail.transcript ?? []).length === 0 && (
+                  <li className="pc-coord__empty pc-advconv__empty pc-advconv__empty--thread">
+                    <strong>Empty transcript</strong>
+                    <span>This chat session has no recorded turns.</span>
+                  </li>
+                )}
+              </ol>
+            )}
           </article>
         )}
       </section>
@@ -2084,6 +2102,21 @@ function AdvConvStyles() {
       /* Agent-chat transcript — role-differentiated turns */
       .pc-advconv__transcript {
         gap: 9px;
+      }
+      /* WI-125 live-chat embed: <ChatPanel> sizes itself with flex, so the
+         wrapper must hand it a definite box (same WebKitGTK height-collapse
+         gotcha as the dock — see HarnessesDock). */
+      .pc-advconv__livechat {
+        display: flex;
+        height: min(64vh, 680px);
+        min-height: 320px;
+        border: 1px solid var(--advconv-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .pc-advconv__livechat > * {
+        flex: 1;
+        min-width: 0;
       }
       .pc-advconv__turn p {
         margin: 4px 0 0;

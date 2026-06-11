@@ -18,10 +18,10 @@
  *      recombine → parseProposal null → the D-006 gate drops the group → all groups
  *                  dropped ⇒ stop 'no-proposals', route never runs.
  *    Spend on a malformed call is still recorded (it counts toward the budget).
- *  - There is NO empty-digest guard: a fresh-hive (zero-pattern) digest still runs
- *    the ideator roster (LLM spend); the cycle exits 'no-ideas' only because nothing
- *    parseable comes back. If the model ideates anyway, refs are stripped (ungrounded)
- *    and the cycle proceeds.
+ *  - Empty-digest guard (EI-303): a fresh-hive (zero-pattern) digest early-exits
+ *    'empty-digest' BEFORE the ideator roster — zero LLM calls, zero spend. A
+ *    near-empty digest (≥1 pattern in any lane) still runs the full cycle; refs
+ *    the model invents are stripped (ungrounded) and the cycle proceeds.
  *  - Zero survivors → stop 'no-survivors' with zero recombine/route spend.
  *  - Budget (D-010): checked BETWEEN steps with strict `spent() > cap` — spend equal
  *    to the cap proceeds; the halt lands before the next LLM-spending step.
@@ -113,6 +113,14 @@ const TRUNCATED_FENCED_PROPOSAL = '```json\n{"framing": "half a propo';
 
 const EMPTY_DIGEST: CorpusDigest = {
   recurringFriction: [],
+  timeTokenSinks: [],
+  chronicDeferrals: [],
+  capabilityGaps: [],
+};
+
+/** One lone pattern — enough substrate that the EI-303 guard must NOT trip. */
+const NEAR_EMPTY_DIGEST: CorpusDigest = {
+  recurringFriction: [{ summary: 'one lone friction pattern', ref: 'wi:F-001' }],
   timeTokenSinks: [],
   chronicDeferrals: [],
   capabilityGaps: [],
@@ -324,23 +332,18 @@ describe('failure: malformed LLM JSON per stage (real step implementations)', ()
  * ──────────────────────────────────────────────────────────────────────── */
 
 describe('failure: empty (fresh-hive) corpus digest', () => {
-  it('has NO empty-digest guard: the ideator roster still runs (and spends), then exits no-ideas well-formed', async () => {
-    // No scripted responders: the fallback returns {items:[]} — a well-formed
-    // non-ideas envelope — so the real parser yields zero ideas.
+  it('EI-303 guard: early-exits empty-digest BEFORE the ideator roster — zero calls, zero spend', async () => {
     const { deps, fake, recorded } = makeRealStepDeps({ digest: EMPTY_DIGEST });
 
     const r = await runScoutCycle(deps);
 
-    // Ideation DID happen over the empty digest — the cycle does not skip it.
-    expect(fake.count()).toBe(4);
-    expect(r.calls.every((c) => c.step === 'ideate')).toBe(true);
-    expect(r.costUsd).toBeCloseTo(0.04, 5);
-    // The ideators were told the substrate is empty (lenses.ts renderDigest).
-    for (const call of fake.calls) {
-      expect(call.opts.messages[0].content).toContain('(no meta-patterns surfaced this cycle)');
-    }
+    // The roster never ran — an empty substrate grounds nothing, so there is
+    // nothing to pay for (a fresh/quiet hive used to pay all 4 lenses here).
+    expect(fake.count()).toBe(0);
+    expect(r.calls).toEqual([]);
+    expect(r.costUsd).toBe(0);
     // …and the result is a well-formed early exit.
-    expect(r.stop).toBe('no-ideas');
+    expect(r.stop).toBe('empty-digest');
     expect(r.digest).toEqual(EMPTY_DIGEST);
     expect(r.ideas).toEqual([]);
     expect(r.scored).toEqual([]);
@@ -351,11 +354,23 @@ describe('failure: empty (fresh-hive) corpus digest', () => {
     expect(recorded.routeBatches).toHaveLength(0);
   });
 
-  it('if the model ideates anyway over an empty digest, refs are stripped (ungrounded) and the cycle proceeds', async () => {
+  it('headline/generatedAt alone do not count as substrate — the guard still trips', async () => {
+    const { deps, fake } = makeRealStepDeps({
+      digest: { ...EMPTY_DIGEST, headline: 'a quiet hive', generatedAt: '2026-06-11T00:00:00Z' },
+    });
+
+    const r = await runScoutCycle(deps);
+
+    expect(r.stop).toBe('empty-digest');
+    expect(fake.count()).toBe(0);
+    expect(r.costUsd).toBe(0);
+  });
+
+  it('a NEAR-empty digest (one pattern) is not gated; invented refs are stripped (ungrounded) and the cycle proceeds', async () => {
     const { deps } = makeRealStepDeps({
-      digest: EMPTY_DIGEST,
+      digest: NEAR_EMPTY_DIGEST,
       responders: [
-        jsonAt(isIdeate, VALID_IDEAS), // cites a ref that does NOT exist in the empty digest
+        jsonAt(isIdeate, VALID_IDEAS), // cites a ref that does NOT exist in this digest
         jsonAt(isCritique, KEEP_CRITIC),
         jsonAt(isRecombine, VALID_PROPOSAL),
       ],
@@ -364,10 +379,10 @@ describe('failure: empty (fresh-hive) corpus digest', () => {
     const r = await runScoutCycle(deps);
 
     expect(r.ideas).toHaveLength(4);
-    // Grounding intersection with an empty ref set: every citation stripped, no crash.
+    // Grounding intersection with a ref set the citation is absent from: stripped, no crash.
     expect(r.ideas.every((i) => i.addressesPatternRefs.length === 0)).toBe(true);
     expect(r.proposals.every((p) => p.addressesPatternRefs.length === 0)).toBe(true);
-    expect(r.stop).toBe('completed'); // an empty digest is NOT an early exit by itself
+    expect(r.stop).toBe('completed'); // one pattern is enough substrate — no early exit
   });
 });
 

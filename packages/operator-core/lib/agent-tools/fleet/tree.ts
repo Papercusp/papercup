@@ -55,6 +55,10 @@ export default defineTool({
               feature: n.featureId,
               plan_item: n.itemId,
               restart_strategy: n.restartStrategy,
+              // Per-spawn model escalation observability (what the queen picked
+              // vs. how the task went) — omitted when no override applied.
+              ...(n.modelSpec ? { model: n.modelSpec } : {}),
+              ...(n.modelTier ? { tier: n.modelTier } : {}),
             })),
           }),
         },

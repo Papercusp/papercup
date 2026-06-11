@@ -102,6 +102,55 @@ describe('AddPanelCatalog', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  // WI-125: 'adv:chat' is a multi-instance slot type — a BUSY slot (bound to a
+  // chatId) must not block opening another; only a FREE slot re-focuses.
+  it('a BUSY chat slot does not block opening another chat panel', () => {
+    panelRegistry.register('adv:chat', Stub, { title: 'Chat' });
+    const fakeApi = makeFakeApi();
+    (fakeApi as unknown as { panels: unknown[] }).panels = [
+      {
+        id: 'chat-busy',
+        component: 'adv:chat',
+        title: 'worker · WI-1',
+        params: { harnessSlug: 'sheets', chatId: 'c-1' },
+        group: null,
+        api: { setActive: vi.fn() },
+      },
+    ];
+    bindDockApi(fakeApi);
+    render(<AddPanelCatalog defaultSlug="sheets" />);
+    fireEvent.click(screen.getByLabelText('Add panel'));
+    // busy slot → not marked "already open"
+    expect(screen.queryByLabelText('already open')).toBeNull();
+    fireEvent.click(screen.getByText('Chat'));
+    // a NEW panel opens instead of stealing focus to the busy chat
+    expect((fakeApi as unknown as { addPanel: { mock: { calls: unknown[][] } } }).addPanel).toHaveBeenCalled();
+  });
+
+  it('a FREE chat slot is focused instead of duplicated', () => {
+    panelRegistry.register('adv:chat', Stub, { title: 'Chat' });
+    const fakeApi = makeFakeApi();
+    const setActive = vi.fn();
+    (fakeApi as unknown as { panels: unknown[] }).panels = [
+      {
+        id: 'chat-free',
+        component: 'adv:chat',
+        title: 'Chat',
+        params: { harnessSlug: 'sheets' },
+        group: null,
+        api: { setActive },
+      },
+    ];
+    (fakeApi as unknown as { getPanel: unknown }).getPanel = vi.fn((id: string) => ({ id, api: { setActive } }));
+    bindDockApi(fakeApi);
+    render(<AddPanelCatalog defaultSlug="sheets" />);
+    fireEvent.click(screen.getByLabelText('Add panel'));
+    expect(screen.getByLabelText('already open')).toBeTruthy();
+    fireEvent.click(screen.getByText('Chat'));
+    expect(setActive).toHaveBeenCalled();
+    expect((fakeApi as unknown as { addPanel: { mock: { calls: unknown[][] } } }).addPanel).not.toHaveBeenCalled();
+  });
+
   it('re-renders when registry changes (plugin late-register)', async () => {
     render(<AddPanelCatalog />);
     fireEvent.click(screen.getByLabelText('Add panel'));

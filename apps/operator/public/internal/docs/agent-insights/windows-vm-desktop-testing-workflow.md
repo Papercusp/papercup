@@ -1,0 +1,97 @@
+# Windows-VM desktop testing — the working recipe and its sharp edges
+URL: /internal/docs/agent-insights/windows-vm-desktop-testing-workflow
+
+How to build, install, launch, observe and tear down the Windows desktop app in the local QEMU Windows 11 VM — schtasks launch, bk.log observation, wsl --exec (never `wsl --`), UNC discovery, and the WSL signal boundary.
+
+## What
+
+The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`)
+is built and tested entirely on the local QEMU Windows 11 VM. The working
+recipe, assembled over \~14 fix iterations on 2026-06-11, with every sharp
+edge that cost an hour:
+
+## The recipe
+
+* **Boot the VM**: `~/windows-vm/boot-windows.sh` (detach it — a killed
+  parent session takes QEMU down with it; `setsid … & disown` or a
+  user-level systemd unit). SSH: `ssh -i ~/.ssh/papercup-vm-win -p 2223
+  user@127.0.0.1`. SPICE viewer on `:5931` for pixels.
+* **Build**: `papercusp-desktop/bin/build-windows-on-vm.sh` does the whole
+  lane — pack (D-006 exclusions live in its tar step) → scp → clean extract →
+  `npm install` + `npx tauri build --bundles nsis` under vcvars64 → collect →
+  **host-side** `tauri signer sign`. The in-VM build is deliberately keyless
+  and exits 1 with "A public key has been found, but no private key" AFTER
+  the bundle finishes — that exact failure is the sanctioned outcome
+  (Windows cannot hold an empty env var, so an empty-passphrase key makes
+  tauri-cli hang on an ssh stdin prompt forever).
+* **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList /S -Wait`.
+* **Launch with logs**: `schtasks /run /tn papercusp-e2e` — an
+  *Interactive-only* scheduled task running `papercusp-launch.cmd`, which
+  redirects the app's stdout+stderr to `C:\Users\user\papercusp-bk.log`.
+  This is the ONLY way to get the GUI app's output on Windows; launching
+  over a bare ssh session puts the app in the wrong session (no webview)
+  and captures nothing. `papercusp-e2e-direct` launches without the log
+  redirect.
+* **Observe**: tail `papercusp-bk.log` for the chain
+  `pg: listening` → `migrations` → `[serve] listening` → `wrote operator.json`.
+  Operator health from inside the VM:
+  `Invoke-WebRequest http://127.0.0.1:<port>/api/health`.
+* **Reach into the runtime**:
+  `wsl -d papercup-runtime --user papercup --exec <cmd>` over ssh. Append
+  `| tr -d '\r\0'` host-side — wsl.exe emits UTF-16 (it ignores `WSL_UTF8=1`
+  in some paths; the desktop decodes by sniffing, you must too).
+
+## The sharp edges (each one cost real time)
+
+1. **`wsl --exec`, NEVER `wsl --`** — the bare `--` separator re-joins
+   everything after it into one string and runs it through the distro's
+   default shell, shredding multi-word args. A `bash -c '<multiline
+   script>'` arrives re-tokenized and executes garbage. `--exec` preserves
+   the argument vector. (Bit the wizard's Install Agent Runtime button via
+   pty.rs, found live.)
+2. **No Windows console signal crosses the WSL boundary.** The serve child
+   on Windows is only the wsl.exe *relay*; `CTRL_BREAK_EVENT` from a
+   console-less GUI app reaches nobody, so the old shutdown hard-killed the
+   relay and embedded PG needed WAL recovery every boot. Graceful shutdown
+   must SIGTERM the **Linux pid** (from the distro-side `operator.json`)
+   through `wsl.exe --exec kill -TERM <pid>` (`kill_sidecar` in main.rs does
+   this now).
+3. **WSLENV `HOME/p` does not survive WSL session init** — passwd re-sets
+   HOME after the merge. Serve state lands under `/home/papercup`; the
+   Windows side discovers it via `\\wsl.localhost\papercup-runtime\home\papercup`.
+4. **Embedded PG cannot live on DrvFs** (`/mnt/c/...`) — a 0700 data dir is
+   impossible without the metadata mount option; PG data goes on ext4 inside
+   the distro (D-007). Consequence: `wsl --unregister` deletes the database.
+5. **NSIS datablock caps at \~2 GiB** — the full payload dies in makensis
+   with "error mmapping datablock". Windows v1 ships without
+   `sidecar/code-server` and `sidecar/bin/omp` (D-006), compression zlib via
+   `tauri.windows.conf.json`.
+6. **Job objects kill `app.restart()`** — an installer-spawned app (NSIS
+   "run after install") lives in a job; the relaunched child dies with the
+   parent. Post-onboarding restart spawns with
+   `CREATE_BREAKAWAY_FROM_JOB` (D-010).
+7. **WebView2 maps custom protocols onto `http://<scheme>.localhost`** — the
+   raw `papercusp://localhost` form silently no-ops on navigate (D-008).
+8. **Stale serve lockfile + Linux pid-reuse** — after `wsl --shutdown` or a
+   host reboot, low Linux pids recycle and can defeat a naive pid-alive
+   check; serve's lock liveness check matches the owner's cmdline too.
+9. **`schtasks` tasks are session-bound**: `Logon Mode: Interactive only` —
+   the auto-logged-in console session must exist (it does on this VM).
+   `taskkill` without `/F` often cannot close the app (WM\_CLOSE refused);
+   use `taskkill /PID <pid>` first to exercise the graceful path, `/T /F`
+   for teardown.
+
+## Where the artifacts live
+
+* VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration
+  dir; `papercup-build-release` = the clean lane dir).
+* Collected host-side: `papercusp-desktop/src-tauri/target/windows-vm/bundle/nsis/`.
+* Installed app: `C:\Users\User\AppData\Local\Papercusp\`.
+* Boot log: `C:\Users\user\papercusp-bk.log`.
+
+## Why this is the shape it is
+
+D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the
+full rationale (build-on-VM, bundle-the-rootfs, NSIS-only, unsigned alpha,
+ext4 PG, payload trims, navigate-after-discovery, statics-pre-operator,
+breakaway restart).

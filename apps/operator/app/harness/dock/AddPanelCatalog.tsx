@@ -82,6 +82,7 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:overview': 'Overview',
   'adv:contributors': 'Contributors',
   'adv:insights': 'Insights',
+  'adv:chat': 'Chat',
 };
 
 // Per-type icon for at-a-glance scanning. Every lookup falls back to a
@@ -106,6 +107,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'view:harness-overview': LayoutDashboard,
   'view:dashboard-overview': LayoutDashboard,
   'data:chat': MessageSquare,
+  'adv:chat': MessageSquare,
   'view:docs': BookOpen,
   'view:design': Palette,
   'view:proposals': Lightbulb,
@@ -113,6 +115,11 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'view:insights': TrendingUp,
   'view:config': SlidersHorizontal,
 };
+
+// Multi-instance slot types (chat): several can coexist, so a BUSY slot
+// (one already bound to a chatId) must not block opening another. Only a
+// FREE slot (no chatId yet) counts as "already open" and gets re-focused.
+const MULTI_INSTANCE_FREE_PARAM = new Map<string, string>([['adv:chat', 'chatId']]);
 
 const STUB_TYPES = new Set([
   'view:dashboard-overview',
@@ -170,7 +177,11 @@ export function AddPanelCatalog({
     void registryTick;
     const m = new Map<string, string>();
     try {
-      for (const p of listPanels()) if (!m.has(p.type)) m.set(p.type, p.id);
+      for (const p of listPanels()) {
+        const freeParam = MULTI_INSTANCE_FREE_PARAM.get(p.type);
+        if (freeParam && p.params[freeParam]) continue; // busy slot — never blocks a new instance
+        if (!m.has(p.type)) m.set(p.type, p.id);
+      }
     } catch {
       /* dock not hydrated yet */
     }

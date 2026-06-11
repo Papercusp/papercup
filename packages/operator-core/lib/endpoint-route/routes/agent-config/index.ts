@@ -9,7 +9,7 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseSurfaceModels, type AgentConfig } from '../../../agent-config';
+import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseSurfaceModels, parseTiers, parseTierCeilings, type AgentConfig } from '../../../agent-config';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -59,6 +59,8 @@ export default [
             : {},
         backends: parseBackends(body.backends),
         surfaceModels: parseSurfaceModels(body.surfaceModels),
+        tiers: parseTiers(body.tiers),
+        tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
       };
       await writeAgentConfig(next);
       return Response.json({

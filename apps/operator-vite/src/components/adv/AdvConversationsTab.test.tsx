@@ -130,6 +130,15 @@ let mockResult: Record<string, unknown> = {
 };
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => mockResult }));
 
+// WI-125: a LIVE agent chat embeds the real interactive <ChatPanel>; stub it so
+// these tests assert the tab's live-vs-archived routing, not ChatPanel itself
+// (it has its own data needs + suite).
+vi.mock('@/app/harness/ChatPanel', () => ({
+  default: ({ slug, chatId }: { slug: string; chatId: string }) => (
+    <div data-testid="chat-panel-stub">{`live-chat:${slug}:${chatId}`}</div>
+  ),
+}));
+
 import AdvConversationsTab from './AdvConversationsTab';
 
 beforeEach(() => {
@@ -388,7 +397,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByText(/6 turns/i)).toBeTruthy();
   });
 
-  it('Agent chats view renders the selected transcript turns', async () => {
+  it('Agent chats view renders an ARCHIVED transcript read-only (no composer)', async () => {
     nuqsState.conv = 'agentchats';
     nuqsState.chat = 'chat-1';
     stubComms({
@@ -401,6 +410,7 @@ describe('AdvConversationsTab — unified communication views', () => {
           feature_id: 'F-042',
           title: 'implement the auth refactor',
           created_at: Date.now(),
+          archived_at: Date.now(),
           total_input_tokens: 0,
           total_output_tokens: 0,
           total_cost_usd_cents: 0,
@@ -414,6 +424,65 @@ describe('AdvConversationsTab — unified communication views', () => {
     render(<AdvConversationsTab />);
     expect(await screen.findByText('start the refactor')).toBeTruthy();
     expect(screen.getByText('on it — opening the module')).toBeTruthy();
+    // archived → no interactive panel
+    expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
+  });
+
+  // WI-125: the conversations tab is no longer a read-only transcript browser —
+  // a LIVE chat embeds the interactive ChatPanel (transcript + composer).
+  it('Agent chats view embeds the interactive ChatPanel for a LIVE chat', async () => {
+    nuqsState.conv = 'agentchats';
+    nuqsState.chat = 'chat-1';
+    stubComms({
+      '/comms/agent-chats/list': { items: [] },
+      '/comms/agent-chats/get': {
+        chat: {
+          id: 'chat-1',
+          harness_slug: 'papercup',
+          role: 'worker',
+          feature_id: 'F-042',
+          title: 'implement the auth refactor',
+          created_at: Date.now(),
+          archived_at: null,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost_usd_cents: 0,
+          transcript: [{ ts: new Date().toISOString(), role: 'user', content: 'start the refactor' }],
+        },
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByTestId('advconv-live-chat')).toBeTruthy();
+    // the real ChatPanel (stubbed) gets the harness + chat id
+    expect(screen.getByText('live-chat:papercup:chat-1')).toBeTruthy();
+    // the read-only transcript is replaced by the live panel
+    expect(screen.queryByText('start the refactor')).toBeNull();
+  });
+
+  it('a live chat WITHOUT a harness slug falls back to the read-only transcript', async () => {
+    nuqsState.conv = 'agentchats';
+    nuqsState.chat = 'chat-2';
+    stubComms({
+      '/comms/agent-chats/list': { items: [] },
+      '/comms/agent-chats/get': {
+        chat: {
+          id: 'chat-2',
+          harness_slug: null,
+          role: 'worker',
+          feature_id: null,
+          title: 'workspace chat',
+          created_at: Date.now(),
+          archived_at: null,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_cost_usd_cents: 0,
+          transcript: [{ ts: new Date().toISOString(), role: 'user', content: 'hello there' }],
+        },
+      },
+    });
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('hello there')).toBeTruthy();
+    expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
   });
 
   it('Messages view lists work-item agent messages', async () => {

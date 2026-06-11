@@ -15,6 +15,7 @@
  * active, a banner makes that visible to the user too.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './PiPanel.css';
 import { useConfirmDialog } from './useConfirmDialog';
 import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';

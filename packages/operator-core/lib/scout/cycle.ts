@@ -117,10 +117,26 @@ export interface ScoutCycleDeps extends ScoutCyclePorts {
 /** Why the cycle stopped — `completed` is the full pass; the rest are early exits. */
 export type ScoutCycleStop =
   | 'completed'
+  | 'empty-digest'
   | 'no-ideas'
   | 'no-survivors'
   | 'no-proposals'
   | 'budget-exhausted';
+
+/**
+ * EI-303: a digest with zero meta-patterns in every lane is an empty substrate —
+ * nothing exists to ground an idea in, so running the ideator roster over it is
+ * pure spend (a fresh/quiet hive paid the full 4-lens roster just to exit
+ * 'no-ideas'). `headline`/`generatedAt` don't count; only patterns ground ideas.
+ */
+export function digestIsEmpty(digest: CorpusDigest): boolean {
+  return (
+    digest.recurringFriction.length === 0 &&
+    digest.timeTokenSinks.length === 0 &&
+    digest.chronicDeferrals.length === 0 &&
+    digest.capabilityGaps.length === 0
+  );
+}
 
 /**
  * The full result of one Scout cycle. Carries every intermediate stage so the
@@ -265,6 +281,12 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   // 0-spent/0-cap start would pass.)
   if (deps.limits?.maxCostUsd != null && deps.limits.maxCostUsd <= 0) {
     return finish('budget-exhausted', { digest });
+  }
+
+  // EI-303: an empty (fresh/quiet-hive) digest grounds nothing — exit before
+  // paying the ideator roster.
+  if (digestIsEmpty(digest)) {
+    return finish('empty-digest', { digest });
   }
 
   // 2. Divergent generation (P-004).

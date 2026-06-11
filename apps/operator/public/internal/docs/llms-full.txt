@@ -2353,6 +2353,51 @@ Old tests imported `{ GET, POST }` from `./route` and called them with a fake `N
 
 `apps/operator/scripts/endpoint-route-progress.mjs --check` exits non-zero if any raw `route.ts` exists under `app/api/**` outside the `[[...route]]` host-seam floor. That catches a re-introduced route regardless of contents — strictly better than a contents-matching ESLint rule. Wire it into CI next to `tsc`.
 
+# Exit 144 — pkill -f kills your own Bash tool shell
+
+> A Bash tool call that contains `pkill -f "<pattern>"` dies with exit 144 when the pattern appears anywhere in the script text — the tool runs the script with its full text in argv, so pkill matches and kills its own shell. Misdiagnosed on 2026-06-11 as "the box wall-clock-SIGTERMs every vite/playwright launch", which stalled e2e verification for a whole session and forced a needless handoff.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A Bash tool call exits **144** with partial output — everything up to a `pkill -f "<pattern>"` line ran, nothing after it did. Repeats 100% of the time for that script, on any agent client (Claude Code, psu, OMP), regardless of box load or free memory.
+
+The seductive misread: “the environment is killing my long-running launches.” On 2026-06-11 an agent (su-1656a) burned 5+ retries and handed off two e2e specs as “un-verifiable on this box — every `npx vite` / `npx playwright` launch is wall-clock-SIGTERM’d (exit 144), 104G free so not OOM.” The launches were fine. Every rig script began (and ended) with `pkill -f "vite --port 3155"`.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The Bash tool executes your script as `bash -c '<entire script text>'` — the full script, **including the pkill pattern itself**, is in that process’s command line. `pkill -f` matches against full command lines, so it matches *your own shell* and kills it. Exit 144, command truncated at the pkill line.
+
+The tell that it’s self-inflicted, not environmental: side effects *before* the pkill landed; side effects *after* it (including `>` log truncation on a later line) never happened. In the e2e saga the vite log still held the previous night’s content — the leading pkill killed the shell before the redirect ever executed.
+
+## Fix — kill by PID, never by pattern
+
+[Section titled “Fix — kill by PID, never by pattern”](#fix--kill-by-pid-never-by-pattern)
+
+```bash
+# free a port: resolve the holder's PID, kill by number
+P=$(ss -ltnp 2>/dev/null | sed -n 's/.*:3155 .*pid=\([0-9]*\).*/\1/p' | head -1)
+[ -n "$P" ] && kill "$P"
+
+
+# tear down something you launched: you have $!
+setsid npx vite --port 3155 --strictPort >/tmp/rig.log 2>&1 &
+VPID=$!
+# ... use it ...
+kill -- -$VPID 2>/dev/null || kill $VPID
+```
+
+Acceptable alternatives: `pgrep -x <binary>` (exact name match, no -f), or `pgrep -f` → inspect the PID list → `kill <pids>` (pgrep doesn’t kill, so matching yourself is harmless). Never `pkill -f` / `pkill -9 -f` from a tool call. The same rule protects peers: name-pattern kills on the shared box have previously taken out the owner’s live desktop and peer Xvfb instances.
+
+## Wider lesson
+
+[Section titled “Wider lesson”](#wider-lesson)
+
+A 100%-reproducible “environment kills my process” with partial script output is a *self-kill* until proven otherwise. Check exactly which line stopped producing effects before blaming the box — and grep your own script for `pkill`/`kill` patterns that could match the script text itself. This class has now hit at least four sessions (desktop-kill incident, su-6c28e, su-69643, su-1656a’s e2e saga).
+
 # Reading failed-tool-call history (forensics)
 
 > Where the history of failed tool calls lives (dev:telemetry + harness_shared.tool_invocations), how to classify the failures, and why the restart-window connection-refused mode is invisible in that table.
@@ -8006,6 +8051,56 @@ build-desktop-sidecar.sh + @embedded-postgres
 Tip
 
 Teardown is scoped to the run’s `$WORK` mktemp dir, never a broad `pkill -f papercusp-desktop`; the host-side testnet DHT node carries `$WORK` on its argv so the scoped cleanup catches it (the one-box smokes used to leak it). The `--dht=testnet` host node binds `0.0.0.0` and *advertises* the bridge IP so the VMs can reach it; a loopback-only `127.0.0.1` testnet would be unreachable.
+
+# Windows-VM desktop testing — the working recipe and its sharp edges
+
+> How to build, install, launch, observe and tear down the Windows desktop app in the local QEMU Windows 11 VM — schtasks launch, bk.log observation, wsl --exec (never `wsl --`), UNC discovery, and the WSL signal boundary.
+
+## What
+
+[Section titled “What”](#what)
+
+The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) is built and tested entirely on the local QEMU Windows 11 VM. The working recipe, assembled over \~14 fix iterations on 2026-06-11, with every sharp edge that cost an hour:
+
+## The recipe
+
+[Section titled “The recipe”](#the-recipe)
+
+* **Boot the VM**: `~/windows-vm/boot-windows.sh` (detach it — a killed parent session takes QEMU down with it; `setsid … & disown` or a user-level systemd unit). SSH: `ssh -i ~/.ssh/papercup-vm-win -p 2223 user@127.0.0.1`. SPICE viewer on `:5931` for pixels.
+* **Build**: `papercusp-desktop/bin/build-windows-on-vm.sh` does the whole lane — pack (D-006 exclusions live in its tar step) → scp → clean extract → `npm install` + `npx tauri build --bundles nsis` under vcvars64 → collect → **host-side** `tauri signer sign`. The in-VM build is deliberately keyless and exits 1 with “A public key has been found, but no private key” AFTER the bundle finishes — that exact failure is the sanctioned outcome (Windows cannot hold an empty env var, so an empty-passphrase key makes tauri-cli hang on an ssh stdin prompt forever).
+* **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList /S -Wait`.
+* **Launch with logs**: `schtasks /run /tn papercusp-e2e` — an *Interactive-only* scheduled task running `papercusp-launch.cmd`, which redirects the app’s stdout+stderr to `C:\Users\user\papercusp-bk.log`. This is the ONLY way to get the GUI app’s output on Windows; launching over a bare ssh session puts the app in the wrong session (no webview) and captures nothing. `papercusp-e2e-direct` launches without the log redirect.
+* **Observe**: tail `papercusp-bk.log` for the chain `pg: listening` → `migrations` → `[serve] listening` → `wrote operator.json`. Operator health from inside the VM: `Invoke-WebRequest http://127.0.0.1:<port>/api/health`.
+* **Reach into the runtime**: `wsl -d papercup-runtime --user papercup --exec <cmd>` over ssh. Append `| tr -d '\r\0'` host-side — wsl.exe emits UTF-16 (it ignores `WSL_UTF8=1` in some paths; the desktop decodes by sniffing, you must too).
+
+## The sharp edges (each one cost real time)
+
+[Section titled “The sharp edges (each one cost real time)”](#the-sharp-edges-each-one-cost-real-time)
+
+1. **`wsl --exec`, NEVER `wsl --`** — the bare `--` separator re-joins everything after it into one string and runs it through the distro’s default shell, shredding multi-word args. A `bash -c '<multiline script>'` arrives re-tokenized and executes garbage. `--exec` preserves the argument vector. (Bit the wizard’s Install Agent Runtime button via pty.rs, found live.)
+2. **No Windows console signal crosses the WSL boundary.** The serve child on Windows is only the wsl.exe *relay*; `CTRL_BREAK_EVENT` from a console-less GUI app reaches nobody, so the old shutdown hard-killed the relay and embedded PG needed WAL recovery every boot. Graceful shutdown must SIGTERM the **Linux pid** (from the distro-side `operator.json`) through `wsl.exe --exec kill -TERM <pid>` (`kill_sidecar` in main.rs does this now).
+3. **WSLENV `HOME/p` does not survive WSL session init** — passwd re-sets HOME after the merge. Serve state lands under `/home/papercup`; the Windows side discovers it via `\\wsl.localhost\papercup-runtime\home\papercup`.
+4. **Embedded PG cannot live on DrvFs** (`/mnt/c/...`) — a 0700 data dir is impossible without the metadata mount option; PG data goes on ext4 inside the distro (D-007). Consequence: `wsl --unregister` deletes the database.
+5. **NSIS datablock caps at \~2 GiB** — the full payload dies in makensis with “error mmapping datablock”. Windows v1 ships without `sidecar/code-server` and `sidecar/bin/omp` (D-006), compression zlib via `tauri.windows.conf.json`.
+6. **Job objects kill `app.restart()`** — an installer-spawned app (NSIS “run after install”) lives in a job; the relaunched child dies with the parent. Post-onboarding restart spawns with `CREATE_BREAKAWAY_FROM_JOB` (D-010).
+7. **WebView2 maps custom protocols onto `http://<scheme>.localhost`** — the raw `papercusp://localhost` form silently no-ops on navigate (D-008).
+8. **Stale serve lockfile + Linux pid-reuse** — after `wsl --shutdown` or a host reboot, low Linux pids recycle and can defeat a naive pid-alive check; serve’s lock liveness check matches the owner’s cmdline too.
+9. **`schtasks` tasks are session-bound**: `Logon Mode: Interactive only` — the auto-logged-in console session must exist (it does on this VM). `taskkill` without `/F` often cannot close the app (WM\_CLOSE refused); use `taskkill /PID <pid>` first to exercise the graceful path, `/T /F` for teardown.
+
+## Where the artifacts live
+
+[Section titled “Where the artifacts live”](#where-the-artifacts-live)
+
+* VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration dir; `papercup-build-release` = the clean lane dir).
+* Collected host-side: `papercusp-desktop/src-tauri/target/windows-vm/bundle/nsis/`.
+* Installed app: `C:\Users\User\AppData\Local\Papercusp\`.
+* Boot log: `C:\Users\user\papercusp-bk.log`.
+
+## Why this is the shape it is
+
+[Section titled “Why this is the shape it is”](#why-this-is-the-shape-it-is)
+
+D-001..D-010 on `windows-desktop-release-readiness-2026-06-11` carry the full rationale (build-on-VM, bundle-the-rootfs, NSIS-only, unsigned alpha, ext4 PG, payload trims, navigate-after-discovery, statics-pre-operator, breakaway restart).
 
 # The PAPERCUSP_WORKSPACE_ID pin silently rebinds every workspace
 

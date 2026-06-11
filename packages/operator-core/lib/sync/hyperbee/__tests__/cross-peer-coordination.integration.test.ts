@@ -394,7 +394,7 @@ describe('cross-peer coordination on a shared Hive — THREE-peer failover consi
     'authority departs → BOTH survivors elect the SAME successor (no split-brain), a contended claim grants exactly one; the departed Swarm rejoins → all three reconverge',
     async () => {
       const trio = await federatePeerSet(3);
-      expect(trio.federated, 'three-way presence federation did not complete within the window').toBeTruthy();
+      expect(trio.federated, `three-way presence federation did not complete — missing: ${trio.lastMissing}`).toBeTruthy();
 
       const sorted = [...trio.nodes].sort((a, b) => (a.id.devicePubkey < b.id.devicePubkey ? -1 : 1));
       const [orig, successor, third] = sorted;
