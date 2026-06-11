@@ -35,6 +35,20 @@ export interface ProjectEntry {
    * gh/local, or stays local-only).
    */
   hive_slug?: string;
+  // ── Upstream GitHub coordinates (hive-from-github-url-2026-06-11 P-002) ──
+  // Written at registration time by the projects-route githubUrl path and
+  // hive:create_from_repo. Consumed by the hive directory announce derivation
+  // (member_repos) and the fork-PR repo-context fallback (orchestrator-runner
+  // resolveRepoContext). Absent ⇒ repo origin unknown (registered from a local
+  // path) — consumers fall back to .papercusp/shared.json / git remote parsing.
+  /** Normalized HTTPS clone URL of the upstream repo. */
+  github_remote?: string;
+  /** GitHub's immutable numeric repository id (needs API auth at registration —
+   *  best-effort; the binding layer keys on this when present). */
+  github_repository_id?: number;
+  /** Upstream default branch (API-authoritative when available, else the fresh
+   *  clone's HEAD). Fork-PRs target this instead of assuming 'main'. */
+  github_default_branch?: string;
   /**
    * Where this harness's execution plane runs (`cloud-deployment-layer-2026-06-06`
    * P-003). A sibling to the blueprint (D-001), supplied at instantiation and

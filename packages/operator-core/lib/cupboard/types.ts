@@ -233,6 +233,24 @@ export interface HarnessListing {
   project_ref?: string | null;
   /** Within-project discriminator (blueprint stream / plugin/pack slug). */
   listing_ref?: string | null;
+
+  // ── Repo→Hive binding fields (Cupboard worker migration 007 /
+  // hive-from-github-url-2026-06-11 P-004, D-004 HYBRID ratified per D-008).
+  // The Cupboard is the uniqueness + off-network index for PUBLIC hives: one
+  // row per member repo, all carrying the same `hive_pubkey`, so pasting ANY
+  // member repo's URL finds the owning Hive. The signed directory announce
+  // stays the CONTENT authority — these are lookup keys, not truth. ──
+  /**
+   * The owning Hive's raw 32-byte Ed25519 public key, base64 — the SAME
+   * encoding as the hive directory announce (`HiveAnnounceBody.hive_pubkey`).
+   * Absent/null ⇒ pre-hive listing or a plain shared-harness binding.
+   */
+  hive_pubkey?: string | null;
+  /**
+   * Denormalized display title of the owning Hive, for off-network browse.
+   * The directory announce wins on conflict; null/absent when unknown.
+   */
+  hive_title?: string | null;
   /**
    * Pack model (worker migration 006): JSON-encoded string[] of the MCP tool
    * names the unit registers when installed (kinds plugin|pack only). The
@@ -362,6 +380,16 @@ export interface CreateRepoBindingInput {
   title: string;
   description: string;
   harness_link: string;
+  /**
+   * Owning Hive's identity for a repo→Hive binding row (worker migration 007 /
+   * hive-from-github-url D-004 HYBRID): raw 32-byte Ed25519 pubkey, base64 —
+   * same encoding as the hive directory. One binding row per member repo of a
+   * public hive, all carrying the same `hive_pubkey`. Omit for a plain
+   * shared-harness binding.
+   */
+  hive_pubkey?: string;
+  /** Denormalized Hive display title (directory announce stays authoritative). */
+  hive_title?: string;
   /** OAuth token from `gh auth token` — server re-verifies repo
    * access before accepting the binding. */
   oauth_token: string;
@@ -549,6 +577,9 @@ export function isHarnessListing(input: unknown): input is HarnessListing {
   if (r.publisher_attestation_gist_id != null && typeof r.publisher_attestation_gist_id !== 'string') {
     return false;
   }
+  // Repo→Hive binding fields (migration 007 / D-004 HYBRID) — also optional.
+  if (r.hive_pubkey != null && typeof r.hive_pubkey !== 'string') return false;
+  if (r.hive_title != null && typeof r.hive_title !== 'string') return false;
   if (
     typeof r.claim_status !== 'string' ||
     !(CUPBOARD_CLAIM_STATUSES as readonly string[]).includes(r.claim_status)

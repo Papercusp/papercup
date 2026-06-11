@@ -10,6 +10,7 @@ import {
   cloneGithubRepo,
   defaultClonesDir,
   isCloneError,
+  readCloneDefaultBranch,
 } from './clone-github';
 
 const execFileP = promisify(execFile);
@@ -247,4 +248,61 @@ describe('cloneGithubRepo — local bare-repo integration', () => {
     const dest = join(cleanupClonesDir, 'no-such-repo-67890');
     expect(existsSync(dest)).toBe(false);
   }, 40_000);
+});
+
+describe('readCloneDefaultBranch (P-002 hive-from-github-url)', () => {
+  let branchWorkDir: string;
+
+  beforeAll(async () => {
+    branchWorkDir = await mkdtemp(join(tmpdir(), 'clone-default-branch-'));
+  });
+
+  afterAll(async () => {
+    await rm(branchWorkDir, { recursive: true, force: true });
+  });
+
+  it('reads the checked-out branch of a repo (non-main default)', async () => {
+    const repo = join(branchWorkDir, 'trunk-repo');
+    await mkdir(repo, { recursive: true });
+    await execFileP('git', ['init', '-q', '-b', 'trunk'], { cwd: repo });
+    await writeFile(join(repo, 'README.md'), '# x\n');
+    await execFileP('git', ['add', '.'], { cwd: repo });
+    await execFileP(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+      { cwd: repo },
+    );
+    expect(await readCloneDefaultBranch(repo)).toBe('trunk');
+  });
+
+  it('reads the default branch of a fresh clone (the upstream HEAD)', async () => {
+    const upstream = join(branchWorkDir, 'upstream-repo');
+    await mkdir(upstream, { recursive: true });
+    await execFileP('git', ['init', '-q', '-b', 'master'], { cwd: upstream });
+    await writeFile(join(upstream, 'a.txt'), 'a\n');
+    await execFileP('git', ['add', '.'], { cwd: upstream });
+    await execFileP(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+      { cwd: upstream },
+    );
+    const dest = join(branchWorkDir, 'clone-of-upstream');
+    await execFileP('git', ['clone', '-q', upstream, dest]);
+    expect(await readCloneDefaultBranch(dest)).toBe('master');
+  });
+
+  it('returns null for a non-repo directory', async () => {
+    const plain = join(branchWorkDir, 'not-a-repo');
+    await mkdir(plain, { recursive: true });
+    expect(await readCloneDefaultBranch(plain)).toBeNull();
+  });
+
+  it('returns null for an empty repo (unborn HEAD still names a branch — symbolic-ref succeeds)', async () => {
+    // Documenting actual behavior: an empty repo's HEAD is a symbolic ref to the
+    // unborn default branch, so symbolic-ref SUCCEEDS and returns that name.
+    const empty = join(branchWorkDir, 'empty-repo');
+    await mkdir(empty, { recursive: true });
+    await execFileP('git', ['init', '-q', '-b', 'main'], { cwd: empty });
+    expect(await readCloneDefaultBranch(empty)).toBe('main');
+  });
 });

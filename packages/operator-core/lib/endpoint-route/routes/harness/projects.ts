@@ -181,6 +181,14 @@ const create = defineTool({
     //                                then falls through to the path flow.
     let path: string;
     let cloneInfo: { url: string; owner: string; repo: string } | null = null;
+    // P-002 (hive-from-github-url-2026-06-11): upstream coords persisted on the
+    // registry entry so the directory announce derivation (member_repos) and the
+    // fork-PR repo-context fallback can read them later.
+    let githubCoords: {
+      github_remote: string;
+      github_repository_id?: number;
+      github_default_branch?: string;
+    } | null = null;
     let initInfo: { parentDir: string; folderName: string; initialized: boolean } | null = null;
 
     const githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
@@ -233,6 +241,25 @@ const create = defineTool({
         owner: cloneResult.parsed.owner,
         repo: cloneResult.parsed.repo,
       };
+      githubCoords = {
+        github_remote: cloneResult.parsed.cloneUrl,
+        ...(cloneResult.defaultBranch ? { github_default_branch: cloneResult.defaultBranch } : {}),
+      };
+      // Best-effort API enrichment: the immutable repo id + the authoritative
+      // default branch need gh auth; an unauthenticated public clone still
+      // registers with the clone-derived branch only.
+      try {
+        const { getOctokit } = await import('../../../identity/octokit-client');
+        const octokit = await getOctokit();
+        if (octokit) {
+          const { data } = await octokit.rest.repos.get({
+            owner: cloneResult.parsed.owner,
+            repo: cloneResult.parsed.repo,
+          });
+          githubCoords.github_repository_id = data.id;
+          if (data.default_branch) githubCoords.github_default_branch = data.default_branch;
+        }
+      } catch { /* best-effort — registration proceeds without API coords */ }
     } else if (rawPath) {
       path = resolve(rawPath);
       if (!existsSync(path)) {
@@ -256,8 +283,12 @@ const create = defineTool({
         dupRace = true;
         return cur;
       }
-      const entry =
-        membership?.kind === 'hive_slug' ? { slug, path, hive_slug: membership.value } : { slug, path };
+      const entry = {
+        slug,
+        path,
+        ...(membership?.kind === 'hive_slug' ? { hive_slug: membership.value } : {}),
+        ...(githubCoords ?? {}),
+      };
       return { ...cur, projects: [...cur.projects, entry] };
     });
     if (dupRace) {
@@ -316,7 +347,19 @@ const create = defineTool({
       provisioning,
       ...(membership ? { membership: { hive: membership.value, edge: membership.kind } } : {}),
       ...(migratedConfigFields.length > 0 ? { migratedConfig: migratedConfigFields } : {}),
-      ...(cloneInfo ? { clone: cloneInfo } : {}),
+      ...(cloneInfo
+        ? {
+            clone: {
+              ...cloneInfo,
+              ...(githubCoords?.github_repository_id !== undefined
+                ? { repoId: githubCoords.github_repository_id }
+                : {}),
+              ...(githubCoords?.github_default_branch
+                ? { defaultBranch: githubCoords.github_default_branch }
+                : {}),
+            },
+          }
+        : {}),
       ...(initInfo ? { init: initInfo } : {}),
     });
   },

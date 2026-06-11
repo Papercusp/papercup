@@ -43,6 +43,13 @@ export interface HarnessRow {
   // only; NULL elsewhere and for pre-006 listings. The operator's tool→provider
   // resolver reads it to answer "which Cupboard unit provides tool X?".
   provides_tools: string | null;
+  // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
+  // the owning Hive's raw-32-byte-base64 Ed25519 pubkey (same encoding as the
+  // hive directory announce) + a denormalized display title. One row per
+  // member repo of a public hive, all carrying the same hive_pubkey. NULL =
+  // pre-hive listing or a plain shared-harness binding.
+  hive_pubkey: string | null;
+  hive_title: string | null;
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
   claimant_github_user_id: number | null;
   claimant_github_login: string | null;
@@ -94,6 +101,10 @@ export interface NewHarnessInput {
   publisher_attestation_gist_id?: string | null;
   /** Pack model (migration 006): JSON string[] of provided tool names; plugin|pack only. */
   provides_tools?: string | null;
+  /** Repo→Hive binding (migration 007): owning Hive's raw-32-byte-base64 Ed25519 pubkey. */
+  hive_pubkey?: string | null;
+  /** Denormalized Hive display title (directory announce stays authoritative). */
+  hive_title?: string | null;
   created_at: number;
 }
 

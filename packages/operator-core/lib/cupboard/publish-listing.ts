@@ -35,6 +35,15 @@ export interface CupboardListingInput {
   /** Required only for kind='harness' (the Hypercore join topic). */
   topic_hex?: string;
   /**
+   * Repo→Hive binding (worker migration 007 / hive-from-github-url P-004,
+   * D-004 HYBRID): the owning Hive's raw 32-byte Ed25519 pubkey, base64 (same
+   * encoding as the hive directory announce). One row per member repo of a
+   * public hive, all carrying the same pubkey. Omit for non-hive listings.
+   */
+  hive_pubkey?: string;
+  /** Denormalized Hive display title (the directory announce stays the content authority). */
+  hive_title?: string;
+  /**
    * Pack model (worker migration 006 / tool-distribution-granularity): the MCP
    * tool names the unit registers when installed. Kinds plugin|pack only — the
    * worker 400s it elsewhere. Powers the Cupboard's tool→provider discovery.

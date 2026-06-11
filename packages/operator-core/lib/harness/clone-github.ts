@@ -114,6 +114,31 @@ export interface CloneResult {
   path: string;
   /** Parsed URL parts. */
   parsed: ParsedGithubUrl;
+  /**
+   * The upstream's default branch, read from the fresh clone's HEAD
+   * (hive-from-github-url P-002). Absent when unreadable (empty repo,
+   * detached HEAD) — callers treat it as best-effort.
+   */
+  defaultBranch?: string;
+}
+
+/**
+ * Read the default branch of a clone — `git symbolic-ref --short HEAD` in the
+ * repo dir. A fresh clone's HEAD is the remote's default branch (true for
+ * shallow clones too). Returns null when unreadable (detached HEAD, empty
+ * repo, not a repo) — best-effort by design.
+ */
+export async function readCloneDefaultBranch(repoPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP('git', ['symbolic-ref', '--short', 'HEAD'], {
+      cwd: repoPath,
+      timeout: 10_000,
+    });
+    const branch = String(stdout).trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
 }
 
 export interface CloneError {
@@ -211,7 +236,8 @@ export async function cloneGithubRepo(
       // creds or we surface auth_required immediately.
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });
-    return { path: dest, parsed };
+    const defaultBranch = await readCloneDefaultBranch(dest);
+    return { path: dest, parsed, ...(defaultBranch ? { defaultBranch } : {}) };
   } catch (e: unknown) {
     // execFile error shape: { code: number, stdout, stderr, killed, signal, message }
     const err = e as { code?: unknown; stderr?: string; message?: string };
