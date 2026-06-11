@@ -220,10 +220,16 @@ describe('release', () => {
 });
 
 describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
-  it('renews only the owner\'s live ACTIVITY claims; availability + lapsed + other owners untouched', async () => {
+  // EI-295 residual (2026-06-11): BOTH liveness modes renew on the owner's
+  // turn — no explicit availability-heartbeat path exists yet, so this
+  // renewal is the only thing keeping a turn-active owner's availability
+  // lane alive. The mode-specific assertions live in
+  // activity-claim-renewal.integration.test.ts; this case pins the
+  // boundary conditions (lapsed + other-owner untouched).
+  it('renews the owner\'s live claims (both modes); lapsed + other owners untouched', async () => {
     await acquire({ itemId: 'P-020', livenessMode: 'activity' });
     await acquire({ itemId: 'P-021', livenessMode: 'activity' });
-    await acquire({ itemId: 'P-022' }); // availability
+    await acquire({ itemId: 'P-022' }); // availability — renews too (EI-295)
     await acquire({ itemId: 'P-023', livenessMode: 'activity', owner: 'su-bob' });
     await lapse('P-021'); // an already-lapsed activity claim must NOT resurrect
 
@@ -239,11 +245,11 @@ describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
     const before = await leaseMs();
     await new Promise((r) => setTimeout(r, 10)); // ensure the renewed lease lands strictly later
     const renewed = await claims.renewOwnerActivityClaims(WS, 'su-alice');
-    expect(renewed.sort()).toEqual(['P-020']);
+    expect(renewed.sort()).toEqual(['P-020', 'P-022']);
 
     const after = await leaseMs();
     expect(after.get('P-020')!).toBeGreaterThan(before.get('P-020')!); // pushed out
-    expect(after.get('P-022')).toBe(before.get('P-022')); // availability untouched
+    expect(after.get('P-022')!).toBeGreaterThan(before.get('P-022')!); // availability lane kept alive
     expect(after.get('P-023')).toBe(before.get('P-023')); // other owner untouched
     const lapsed = await claims.getClaim(WS, HARNESS, PLAN, 'P-021');
     expect(lapsed?.expired).toBe(true); // not resurrected

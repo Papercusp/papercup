@@ -342,6 +342,10 @@ export async function renewOwnerActivityClaims(workspaceId: string, owner: strin
            last_activity_ts = clock_timestamp()
      WHERE (workspace_id = ${workspaceId} OR workspace_id = ${DEFAULT_WORKSPACE_ID})
        AND owner = ${owner}
+       -- BOTH liveness modes renew here (EI-295 residual): no explicit
+       -- availability-heartbeat path exists yet, so the per-turn renewal is
+       -- the ONLY thing keeping a turn-active owner's availability lane from
+       -- lapsing mid-session (activity-claim-renewal.integration.test.ts).
        AND expires_ts > clock_timestamp()
     RETURNING item_id
   `;
