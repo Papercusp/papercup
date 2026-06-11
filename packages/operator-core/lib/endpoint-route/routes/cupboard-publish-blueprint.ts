@@ -22,7 +22,7 @@
  *                  blueprints live in a private monorepo, so the content repo
  *                  is always explicit)
  *
- * `auth: 'public'` — loopback-only via the operator's Host-header gate.
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';

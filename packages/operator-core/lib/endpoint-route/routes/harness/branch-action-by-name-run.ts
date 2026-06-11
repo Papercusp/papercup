@@ -4,7 +4,7 @@
  * Path-based variant of action-run (simple, name in URL).
  *
  * Ported from app/api/harness/[slug]/branch/[branch]/action/[name]/run/route.ts.
- * `auth: 'public'`. (Awaits loadHarnessRegistry — original was missing the await;
+ * `auth: 'loopback'` (auth-tier Wave 1). (Awaits loadHarnessRegistry — original was missing the await;
  * preserving the bug would break the route entirely.)
  */
 import { loadHarnessRegistry } from '../../../harness-registry';

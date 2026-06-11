@@ -6,7 +6,7 @@
  * is incomplete; `?force=1` overrides.
  *
  * Ported from app/api/harness/[slug]/branch/[branch]/action-run/route.ts.
- * `auth: 'public'`.
+ * `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { phasePath } from '../../../harness-phases';

@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/spawn-pi — provision a pi:<session-id> principal.
- * Ported from app/api/agent-mcp/spawn-pi/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/spawn-pi/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { randomBytes } from 'node:crypto';
 import { startPiSession } from '@papercusp/agent-mcp/provisioning';

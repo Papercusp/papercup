@@ -5,7 +5,7 @@
  * Session-auth + 30 RPS (shared with /card-response).
  *
  * Ported from app/api/operator/conversations/[id]/silence-nudge/route.ts.
- * `auth: 'public'` — session check inline.
+ * `auth: 'loopback'` (auth-tier Wave 1) — session check inline.
  */
 import { z } from 'zod';
 import { openRun, registerCard } from '@papercusp/agent-mcp';

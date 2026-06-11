@@ -34,7 +34,6 @@ import { launchRun } from '../../../harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
 import { recordAdvSession, markAdvSessionEnded } from '../../../adv-sessions';
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 import { operatorApiBase } from '../../../operator-api-base';
 
 const launch = defineTool({
@@ -269,8 +268,8 @@ const invoke = defineTool({
       }
     }
 
-    // This route is operator-initiated + loopback-gated (requireLoopbackOr403
-    // above), so the spawned agent connects to the agent-mcp via the
+    // This route is operator-initiated + loopback-gated (auth: 'loopback',
+    // enforced at the route-stack authStep), so the spawned agent connects to the agent-mcp via the
     // `?superuser=1` door — giving it the isSuperuser identity that
     // resolveAgentIdentity-gated coord tools (plans:promote, coord:*) require.
     // A plain signed-spawn ctx has no principal, so those tools 4xx. The bearer

@@ -46,32 +46,35 @@ describe('prompt-studio source whitelist (P-011 security boundary)', () => {
 });
 
 describe('prompt-studio routes — loopback authz boundary (security regression)', () => {
-  // Every handler reads/rewrites the SOURCES of every agent's system prompt, so each must
-  // reject a non-loopback caller (requireLoopbackOr403). Guards the HIGH finding: auth:'public'
-  // is the codebase norm; loopback is the perimeter — don't let any route silently lose it.
-  type RouteObj = { handler: (req: Request, ctx: unknown) => Promise<Response> };
-  const routes = promptStudioRoutes as RouteObj[];
-  const hit = async (r: RouteObj, host: string) => {
-    const res = (await r.handler(
-      new Request(`http://${host}/api/prompt-studio/x`, { method: 'POST', body: '{}' }) as never,
-      {} as never,
-    )) as Response;
-    return { status: res.status, body: (await res.json().catch(() => null)) as { error?: string } | null };
-  };
+  // Every handler reads/rewrites the SOURCES of every agent's system prompt, so each
+  // must reject a non-loopback caller. The perimeter moved from an in-handler
+  // requireLoopbackOr403 call to the DECLARED `auth: 'loopback'` tier (auth-tier
+  // Wave 1), enforced by the route-stack authStep — so this guard now pins BOTH:
+  // the declaration on every route, and the mounted stack actually rejecting a
+  // remote Host. Don't let any route silently lose the tier.
+  type RouteDef = { method: string; path: string; auth: unknown };
+  const routes = promptStudioRoutes as unknown as RouteDef[];
 
-  it('403s a non-loopback caller on EVERY route', async () => {
+  it("declares auth: 'loopback' on EVERY route", () => {
     expect(routes.length).toBe(4);
     for (const r of routes) {
-      const { status, body } = await hit(r, 'evil.example.com');
-      expect(status).toBe(403);
-      expect(body?.error).toBe('loopback_only');
+      expect(r.auth, `${r.method} ${r.path} must stay loopback-tier`).toBe('loopback');
     }
   });
 
-  it('lets a loopback caller past the guard on every route (not 403)', async () => {
+  it('the mounted stack 403s a non-loopback caller on every route', async () => {
+    const { Hono } = await import('hono');
+    const { registerRoute } = await import('../define-route');
+    const app = new Hono();
+    for (const r of routes) registerRoute(app, r as never);
     for (const r of routes) {
-      const { status } = await hit(r, '127.0.0.1');
-      expect(status).not.toBe(403);
+      const init = r.method === 'GET' ? undefined : {
+        method: r.method, body: '{}', headers: { 'content-type': 'application/json' },
+      };
+      const res = await app.request(`http://evil.example.com${r.path}`, init);
+      expect(res.status, `${r.method} ${r.path}`).toBe(403);
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      expect(body?.error).toBe('loopback_only');
     }
   });
 });

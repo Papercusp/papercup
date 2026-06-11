@@ -1,6 +1,6 @@
 /**
  * POST /api/elevenlabs/post-call — ElevenLabs post-call webhook receiver.
- * Ported from app/api/elevenlabs/post-call/route.ts. `auth: 'public'` —
+ * Ported from app/api/elevenlabs/post-call/route.ts. `auth: 'loopback'` (auth-tier Wave 1) —
  * authenticated by its own HMAC-SHA256 signature check.
  */
 import crypto from 'node:crypto';

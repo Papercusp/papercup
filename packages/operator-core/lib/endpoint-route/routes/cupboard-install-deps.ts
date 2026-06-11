@@ -15,7 +15,7 @@
  *   - blueprint   an inline blueprint object (alternative to blueprintId)
  *   - harness + acceptCapabilities → grant installed units' caps for that harness
  *
- * `auth: 'public'` — loopback-only via the operator's Host-header gate, like the
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate, like the
  * sibling cupboard routes.
  */
 import { defineTool } from '@papercusp/agent-mcp';

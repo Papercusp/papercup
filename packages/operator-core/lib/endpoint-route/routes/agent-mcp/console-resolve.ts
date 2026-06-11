@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/console/resolve — returns ConsoleEnvelope for native term.
- * Ported from app/api/agent-mcp/console/resolve/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/console/resolve/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';

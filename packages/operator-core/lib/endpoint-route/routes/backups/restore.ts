@@ -1,7 +1,7 @@
 /**
  * POST /api/backups/restore — restore-to-clone (or in_place with safety snap).
  *
- * Ported from app/api/backups/restore/route.ts. `auth: 'public'`.
+ * Ported from app/api/backups/restore/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 import { workspaceBackupFor } from '../../../backup';

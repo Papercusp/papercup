@@ -61,7 +61,10 @@ function jsonConfigRoutes(opts: {
   const put = defineTool({
     method: 'PUT',
     path: opts.routePath,
-    auth: 'public',
+    // Mutating config write → loopback per the Wave-1 rule (auth-tier
+    // rollout; the generator's regex scan missed this factory's non-literal
+    // path — the posture test's registry gate is what caught it).
+    auth: 'loopback',
     async handler(req, ctx) {
       const slug = ctx.params.slug as string;
       const project = await resolvePhasedProject(slug, phaseFromReq(req));

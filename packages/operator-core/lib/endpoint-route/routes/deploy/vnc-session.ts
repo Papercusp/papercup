@@ -12,13 +12,12 @@
  * (loopback bind is the perimeter; see auth.ts header + auth/me), so a strict
  * session gate 401s the shipping desktop. The resolved user (real session or
  * the single-user `default`) feeds the audit `actor`. Belt-and-braces: the
- * loopback perimeter is also asserted in-handler (`requireLoopbackOr403`) —
- * this route mints input-takeover tickets, so a listener-bind
- * misconfiguration must never expose it off-box.
+ * loopback perimeter is also declared as `auth: 'loopback'` (enforced at the
+ * route-stack authStep) — this route mints input-takeover tickets, so a
+ * listener-bind misconfiguration must never expose it off-box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../../auth';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   createVncSession,

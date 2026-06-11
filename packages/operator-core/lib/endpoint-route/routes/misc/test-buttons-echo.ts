@@ -2,7 +2,7 @@
  * POST /api/test-buttons/echo — demo endpoint for the @scope/test-buttons
  * plugin; SSE-echoes the round-trip back to the user's xterm.
  *
- * Ported from app/api/test-buttons/echo/route.ts. `auth: 'public'`.
+ * Ported from app/api/test-buttons/echo/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  * The handler returns the streaming `sseResponse` directly — the
  * route-stack passes it through unchanged. sampleRate 0: streaming
  * demo endpoint, no telemetry value.

@@ -7,7 +7,7 @@
  * memories forward. ~30-60s for OpenAI, ~2-5min for local on a 500-mem
  * collection.
  *
- * Ported from app/api/user/memory/reembed/route.ts. `auth: 'public'`,
+ * Ported from app/api/user/memory/reembed/route.ts. `auth: 'loopback'` (auth-tier Wave 1),
  * `timeoutSec: 600` to match the Next maxDuration.
  */
 import { getSessionUser } from '../../../auth';

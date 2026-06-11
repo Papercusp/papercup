@@ -1,7 +1,7 @@
 /**
  * POST /api/backups/maintenance — kopia maintenance run.
  *
- * Ported from app/api/backups/maintenance/route.ts. `auth: 'public'`.
+ * Ported from app/api/backups/maintenance/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 import { workspaceBackupFor } from '../../../backup';

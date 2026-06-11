@@ -1,6 +1,6 @@
 /**
  * POST /api/plugins/uninstall — papercusp plugin uninstall + runtime reset.
- * Ported from app/api/plugins/uninstall/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/uninstall/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { spawn } from 'node:child_process';
 import { triggerSnapshotEvent } from '../../../backup';

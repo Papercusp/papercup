@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-cartesia-test — Cartesia TTS connection test.
- * Ported from app/api/agent-mcp/operator-cartesia-test/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-cartesia-test/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { readCartesiaKey } from '../../../voice-credentials';
 import { testCartesiaConnection } from '../../../voice-engines/cartesia';

@@ -6,7 +6,7 @@
  * `discovery:hives` MCP tool (P-005) — same verified, un-muted discovered set —
  * but as a cookie-less loopback GET the panel can fetch directly.
  *
- * `auth: 'public'` with an in-handler loopback assertion, exactly like
+ * `auth: 'loopback'` (auth-tier Wave 1) with an in-handler loopback assertion, exactly like
  * /api/deploy/frames: the desktop webview is cookie-less (the loopback bind is
  * the perimeter), and the discovered set is best-effort gossip (D-002 — listing
  * grants nothing; joining runs the full admission flow).

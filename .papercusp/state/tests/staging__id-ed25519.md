@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781154375356
-mtime_ms: 1781154375374
+last_run_ts: 1781172264482
+mtime_ms: 1781172264502
 name: "Ed25519 keychain signing"
-payload: {"file":"packages/operator-core/lib/identity/ed25519.test.ts","kind":"contract","name":"Ed25519 keychain signing","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781154375356,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-014"],"durationMs":0,"planItemIds":["P-014"]}
+payload: {"file":"packages/operator-core/lib/identity/ed25519.test.ts","kind":"contract","name":"Ed25519 keychain signing","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781172264482,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-014"],"durationMs":0,"planItemIds":["P-014"]}
 phase: "staging"
 status: "passing"
 test_id: "id-ed25519"

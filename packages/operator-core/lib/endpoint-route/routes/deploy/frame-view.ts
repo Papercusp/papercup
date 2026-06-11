@@ -8,7 +8,7 @@
  *   `thumb`  — { slug, display, jpegBase64, capturedAtMs, role?, leaseSinceMs? }
  *   `status` — { slug, state: polling|no-frame|error, frameId?, host?, displays?, error? }
  *
- * `auth: 'public'` with NO session gate — the desktop webview is cookie-less
+ * `auth: 'loopback'` (auth-tier Wave 1) with NO session gate — the desktop webview is cookie-less
  * (loopback bind is the perimeter; see auth.ts header + auth/me's default-user
  * fallback). A strict getSessionUser gate here 401'd every stream in the
  * shipping desktop and blanked the Frames tab.

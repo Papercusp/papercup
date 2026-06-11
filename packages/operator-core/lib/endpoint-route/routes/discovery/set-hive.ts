@@ -6,8 +6,8 @@
  * the full publish set. This is what the hive header strip's flip control
  * drives.
  *
- * `auth: 'public'` + loopback guard, exactly like GET /discovery/hives — the
- * desktop webview is cookie-less; the loopback bind is the perimeter.
+ * `auth: 'loopback'` (auth-tier Wave 1), exactly like GET /discovery/hives —
+ * the desktop webview is cookie-less; the loopback tier is the perimeter.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isHiveVisibility } from '../../../sync/hyperbee/hive-announce';
@@ -15,7 +15,7 @@ import { isHiveVisibility } from '../../../sync/hyperbee/hive-announce';
 export default defineTool({
   method: 'POST',
   path: '/discovery/set-hive',
-  auth: 'public',
+  auth: 'loopback',
   // Cupboard rows / unlist round-trips can exceed the default route budget.
   timeoutSec: 120,
   async handler(req) {

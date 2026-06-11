@@ -154,25 +154,45 @@ export default function HiveHeaderStrip({
           </span>
         )}
         {hiveKind === 'hive' && (
-          <span className="pc-hive-header__stat" data-testid="hive-visibility-flip">
-            <select
-              aria-label="Directory visibility"
+          <span
+            className="pc-hive-header__stat"
+            data-testid="hive-visibility-flip"
+            role="group"
+            aria-label="Directory visibility"
+          >
+            {/* Flat action pills, not a <select> (design HR3 — and this is an
+                action menu, not a value selection: nothing persists in the
+                control). Same applyVisibility seam as the select it replaced. */}
+            <span className="pc-hive-header__viz-label">
+              {flip.busy ? 'publishing…' : 'directory:'}
+            </span>
+            <button
+              type="button"
+              className="pc-hive-header__viz-btn"
               disabled={flip.busy}
-              defaultValue=""
-              onChange={(e) => {
-                const v = e.target.value as 'public' | 'invite' | 'private' | '';
-                e.target.value = '';
-                if (v) void applyVisibility(v);
-              }}
-              className="pc-hive-header__viz"
+              title="Publish to the directory (public)"
+              onClick={() => void applyVisibility('public')}
             >
-              <option value="" disabled>
-                {flip.busy ? 'publishing…' : 'directory…'}
-              </option>
-              <option value="public">Publish (public)</option>
-              <option value="invite">Publish (invite-only)</option>
-              <option value="private">Withdraw (private)</option>
-            </select>
+              publish
+            </button>
+            <button
+              type="button"
+              className="pc-hive-header__viz-btn"
+              disabled={flip.busy}
+              title="Publish invite-only (mints a one-time invite secret)"
+              onClick={() => void applyVisibility('invite')}
+            >
+              invite-only
+            </button>
+            <button
+              type="button"
+              className="pc-hive-header__viz-btn"
+              disabled={flip.busy}
+              title="Withdraw from the directory (private)"
+              onClick={() => void applyVisibility('private')}
+            >
+              withdraw
+            </button>
             {flip.outcome && (
               <span
                 className="pc-hive-header__stat--muted"
@@ -261,14 +281,27 @@ function HeaderStyles() {
         font-variant-numeric: tabular-nums;
       }
       .pc-hive-header__stat--muted { color: var(--fg-mute, #7f9bb4); font-weight: 500; }
-      .pc-hive-header__viz {
-        font-size: 11px;
-        background: transparent;
-        color: var(--fg-dim, #b9d4e8);
-        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
-        border-radius: 6px;
-        padding: 1px 4px;
+      .pc-hive-header__viz-label {
+        font-size: 10.5px;
+        font-weight: 500;
+        color: var(--fg-mute, #7f9bb4);
       }
+      .pc-hive-header__viz-btn {
+        padding: 1px 8px;
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--fg-dim, #b9d4e8);
+        background: transparent;
+        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .pc-hive-header__viz-btn:hover:not(:disabled) {
+        color: var(--fg, #e7f7ff);
+        border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 88%);
+      }
+      .pc-hive-header__viz-btn:disabled { opacity: 0.5; cursor: default; }
     `}</style>
   );
 }

@@ -39,6 +39,17 @@
  *   8. LEASE LIFECYCLE across peers: acquire (remote) → contention refused → release
  *      (remote) → the other Swarm re-acquires — the full claim lease serializes at
  *      the federated-elected authority over the real RPC wire.
+ *   9. FILE-LOCK routing over the federated roster: the production `routeFileLockOp`
+ *      (the locks:acquire/release cutover seam) resolves its Hive scope and routes
+ *      lock.acquire/release to the federated-presence-elected authority over the real
+ *      RPC wire — grant, cross-wire busy contention (holder faithfully named), and
+ *      cross-wire release. STOOD-IN here: the lock store behind the coordinator (the
+ *      real-PG store leg is file-lock-authority-e2e's proof).
+ *  10. WAKE DELIVERY over the real wire: a coord-message op with `body.wake` appended
+ *      on A federates over the actual Hyperswarm wire; B's REAL coord-message
+ *      projection applies it origin='remote' and fires the deliver-and-wake fan
+ *      EXACTLY ONCE (A's own local apply never fans) — the end-to-end the
+ *      coord-message-federation suite chains by hand.
  *
  * Proof boundary: REAL corestores/logs, REAL Hyperswarm/Noise over a local testnet
  * DHT, REAL announce signature verification, REAL presence projection → PG, REAL
@@ -78,6 +89,29 @@ import {
 import { __resetRemotePeersCacheForTests } from '../../../authority/remote-peers-cache';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import type { AcquireResult, AcquireOpts, ReleaseClaimParams } from '../../../work-item-claims';
+import { routeFileLockOp, type FileLockRoutingDeps } from '../../../authority/file-lock-routing';
+import {
+  registerFileLockAuthorityOps,
+  FILE_LOCK_OP_KINDS,
+  type FileLockAcquireParams,
+  type FileLockAcquireResult,
+  type FileLockCoordinator,
+  type FileLockReleaseParams,
+} from '../../../authority/file-lock-authority-ops';
+import { buildCoordMessageProjection, type CoordMessageRow } from '../projections/coord-message';
+
+// EI-279: the coord-message projection's deliver-and-wake fan dynamically imports
+// wakeRecipients — mock it so the real-wire wake test asserts the fan contract
+// without the real await-event pump (same stand-in as coord-message-federation).
+vi.mock('../../../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: vi.fn(async (recipients: readonly string[]) => ({
+    targets: [...recipients],
+    keys: [],
+    woken: 1,
+    staged: 0,
+  })),
+}));
+import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
 
 // ── getOrgPg → the AUTHORITY's PG (the claim store's single serialization point).
 //    Only `acquireClaimLocal` (run on the authority) reads it; the presence
@@ -111,6 +145,16 @@ const SHARED_PRESENCE_DDL = `
     fed_ts         bigint,
     PRIMARY KEY (workspace_id, harness_slug, github_user_id, machine_label)
   )`;
+// The 000-baseline coord_event_log + the migration-150 federation columns/index,
+// exactly as the coord-message-federation suite stands them up.
+const COORD_EVENT_LOG_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
+    id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
+    writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
+    harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text,
+    fed_ts bigint);
+  CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)
+    WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL`;
 const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
@@ -208,11 +252,15 @@ async function pollUntil<T>(
   }
 }
 
-/** A per-peer apply that routes `table:'presence'` ops through the REAL presence
- *  projection bound to THIS peer's `sql` (writes its federated `shared_presence`). */
-function buildPresenceApply(sql: postgres.Sql, ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
-  const proj = buildPresenceProjection({ sql, workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG }) as TableProjection<unknown>;
-  const scoped = new Map<string, TableProjection<unknown>>([[proj.tableTag, proj]]);
+/** A per-peer apply that routes federated ops through the REAL projections bound to
+ *  THIS peer's `sql`: `presence` (the roster) and `coord-messages` (the
+ *  wake-carrying rail) — each peer projects into its OWN throwaway PG. */
+function buildPeerApply(sql: postgres.Sql, ownLogKeyHex: string): (op: OpEnvelope) => Promise<boolean> {
+  const projections = [
+    buildPresenceProjection({ sql, workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG }) as TableProjection<unknown>,
+    buildCoordMessageProjection({ sql, workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG }) as TableProjection<unknown>,
+  ];
+  const scoped = new Map<string, TableProjection<unknown>>(projections.map((p) => [p.tableTag, p]));
   const lookup: ProjectionLookup = (tag) => scoped.get(tag) ?? null;
   return (op: OpEnvelope) => applyOpVia(lookup, op, { ownLogKeyHex });
 }
@@ -240,7 +288,7 @@ async function bootPresencePeer(opts: {
     swarmOverride: makeSwarm(opts.testnetBootstrap),
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
     applyOverride: (op) => {
-      apply ??= buildPresenceApply(opts.sql, handle!.ownLog.keyHex);
+      apply ??= buildPeerApply(opts.sql, handle!.ownLog.keyHex);
       return apply(op);
     },
     mergePollMs: 0,
@@ -306,6 +354,8 @@ async function federateTwoPeerPresence() {
   cleanups.push(() => dbB.cleanup());
   await dbA.sql.unsafe(SHARED_PRESENCE_DDL);
   await dbB.sql.unsafe(SHARED_PRESENCE_DDL);
+  await dbA.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await dbB.sql.unsafe(COORD_EVENT_LOG_DDL);
 
   const testnet = await makeTestnet();
   const idA = makeIdentity('alice', 42, 'kc-alice');
@@ -941,6 +991,200 @@ describe('cross-peer coordination on a shared Hive — claim lease lifecycle acr
       expect(r4.value.ok).toBe(true);
       const held = await getClaim('default', HARNESS_SLUG, ITEM);
       expect(held?.owner).toBe('authority-swarm');
+    },
+    60_000,
+  );
+});
+
+describe('cross-peer coordination on a shared Hive — file-lock ops route over the federated roster (P-009)', () => {
+  it(
+    "a non-authority Swarm's lock.acquire routes to the federated-elected HIVE authority over the wire: grant → cross-wire busy → cross-wire release",
+    async () => {
+      const { dbA, dbB, idA, idB, federated } = await federateTwoPeerPresence();
+      expect(federated).toBeTruthy();
+
+      const authorityIsA = idA.devicePubkey < idB.devicePubkey;
+      const authority = authorityIsA ? { id: idA, db: dbA } : { id: idB, db: dbB };
+      const client = authorityIsA ? { id: idB, db: dbB } : { id: idA, db: dbA };
+      const selfAuthority = { githubUserId: authority.id.userId, devicePubkey: authority.id.devicePubkey };
+      const selfClient = { githubUserId: client.id.userId, devicePubkey: client.id.devicePubkey };
+
+      // The authority "machine" hosts a minimal in-memory FileLockCoordinator behind
+      // the REAL registered handlers (the FileLockCoordinator seam is the documented
+      // test-injection point; the real-PG store leg is file-lock-authority-e2e's proof).
+      const heldLocks = new Map<string, { owner: string; lockId: string }>();
+      const coordinator: FileLockCoordinator = {
+        acquire: async (p) => {
+          const busy = p.paths
+            .filter((path) => heldLocks.has(path) && heldLocks.get(path)!.owner !== p.owner)
+            .map((path) => ({ path, owner: heldLocks.get(path)!.owner }));
+          if (busy.length) return { ok: false, busy };
+          const lockId = `lock-${p.owner}`;
+          for (const path of p.paths) heldLocks.set(path, { owner: p.owner, lockId });
+          return { ok: true, lockId, expiresTs: new Date(Date.now() + p.ttlSec * 1000).toISOString() };
+        },
+        release: async (p) => {
+          const released: string[] = [];
+          for (const [path, l] of heldLocks) {
+            if (l.owner === p.owner && (!p.lockId || l.lockId === p.lockId)) {
+              heldLocks.delete(path);
+              released.push(path);
+            }
+          }
+          return { ok: true, released };
+        },
+        queue: async () => [],
+      };
+      __resetAuthorityOpsForTests();
+      registerFileLockAuthorityOps(coordinator);
+      const rpc = await startAuthorityRpcServer();
+      setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => rpc.addr() }));
+      cleanups.push(() => {
+        __resetPeerRpcTransportForTests();
+        __resetAuthorityOpsForTests();
+      });
+
+      const DOMAIN = '/repo/xpeer-shared-checkout';
+      const PATH = 'libs/contended.ts';
+      // The PRODUCTION routing entry (the locks:acquire/release cutover seam), with its
+      // domain→harness→Hive resolution injected and the election reading the caller's
+      // OWN federated roster. skipRemotePeersFastPath forces the full authority path
+      // (the cache layer has its own suite).
+      const routingDeps = (sql: postgres.Sql, self: { githubUserId: number; devicePubkey: string }): FileLockRoutingDeps => ({
+        ...electionDeps(sql, self),
+        domainToHarnessSlug: () => HARNESS_SLUG,
+        harnessToHiveSlug: () => HIVE_SLUG,
+        skipRemotePeersFastPath: true,
+      });
+      const lockAcquire = (who: { sql: postgres.Sql; self: { githubUserId: number; devicePubkey: string } }, owner: string) => {
+        const payload: FileLockAcquireParams = {
+          owner,
+          paths: [PATH],
+          intent: `xpeer file-lock test (${owner})`,
+          ttlSec: 600,
+          coordinationDomain: DOMAIN,
+        };
+        return routeFileLockOp<FileLockAcquireResult>(
+          DOMAIN,
+          {
+            local: () => coordinator.acquire(payload),
+            remote: { kind: FILE_LOCK_OP_KINDS.acquire, payload, decode: (raw): FileLockAcquireResult => raw as FileLockAcquireResult },
+          },
+          routingDeps(who.sql, who.self),
+        );
+      };
+
+      // 1. The non-authority Swarm acquires → routed over the REAL wire, granted.
+      const g1 = await lockAcquire({ sql: client.db.sql, self: selfClient }, 'client-agent');
+      expect(g1.via).toBe('remote-authority');
+      expect(g1.value.ok).toBe(true);
+      const grantedLockId = g1.value.lockId!;
+
+      // 2. The authority Swarm contends for the SAME path → busy, with the cross-peer
+      //    holder faithfully named (the per-edit hook's "who holds this" answer).
+      const g2 = await lockAcquire({ sql: authority.db.sql, self: selfAuthority }, 'authority-agent');
+      expect(g2.via).toBe('local-authority');
+      expect(g2.value.ok).toBe(false);
+      expect(g2.value.busy).toEqual([{ path: PATH, owner: 'client-agent' }]);
+
+      // 3. The holder releases over the same routed leg → the path frees.
+      const releasePayload: FileLockReleaseParams = { owner: 'client-agent', lockId: grantedLockId, coordinationDomain: DOMAIN };
+      const rel = await routeFileLockOp<{ ok: boolean; released?: string[] }>(
+        DOMAIN,
+        {
+          local: () => coordinator.release(releasePayload),
+          remote: {
+            kind: FILE_LOCK_OP_KINDS.release,
+            payload: releasePayload,
+            decode: (raw): { ok: boolean; released?: string[] } => raw as { ok: boolean; released?: string[] },
+          },
+        },
+        routingDeps(client.db.sql, selfClient),
+      );
+      expect(rel.via).toBe('remote-authority');
+      expect(rel.value.ok).toBe(true);
+      expect(rel.value.released).toEqual([PATH]);
+
+      // 4. The previously-busy Swarm now acquires.
+      const g3 = await lockAcquire({ sql: authority.db.sql, self: selfAuthority }, 'authority-agent');
+      expect(g3.value.ok).toBe(true);
+    },
+    60_000,
+  );
+});
+
+describe('cross-peer coordination on a shared Hive — deliver-and-wake over the real wire (EI-279)', () => {
+  it(
+    "a coord-message with body.wake federates A→B over the actual swarm; B's projection applies it origin='remote' and fires the wake fan EXACTLY once",
+    async () => {
+      const { dbA, dbB, idA, peerA, peerB, federated } = await federateTwoPeerPresence();
+      expect(federated).toBeTruthy();
+      vi.mocked(wakeRecipients).mockClear();
+
+      // A "sends" a deliver-and-wake message — both legs of the production send:
+      // (1) the local PG write coord:send performs (origin='local'), then (2) the
+      // op the substrate-outbox capture→reshape chain appends on A's OWN peer-log.
+      const MSG_ID = 'wake-e2e-1';
+      const row: CoordMessageRow = {
+        harness_slug: HARNESS_SLUG,
+        msg_id: MSG_ID,
+        surface: 'messages',
+        writer_key: 'su-A',
+        body: {
+          ts: '2026-06-11T00:00:00Z',
+          msg_id: MSG_ID,
+          from: 'su-A',
+          to: ['su-B'],
+          kind: 'message',
+          summary: 'cross-peer wake ping',
+          wake: true,
+        },
+        ts: 1_700_000_000_000,
+      };
+      await dbA.sql`
+        INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, origin)
+        VALUES (${WORKSPACE_ID}, 'messages', 'su-A', ${MSG_ID}, ${dbA.sql.json(row.body)}, ${HARNESS_SLUG}, 'local')
+      `;
+      await peerA.handle.append({
+        type: 'put',
+        table: 'coord-messages',
+        hbKey: MSG_ID,
+        value: row,
+        ts: 5000,
+        schema_version: 1,
+        writerPubkey: idA.devicePubkey,
+      });
+
+      // The op crosses the REAL wire and B's REAL projection lands it origin='remote'.
+      const onB = await pollUntil(
+        async () => {
+          await peerA.handle.mergeNow(); // A applies its own op (origin='local')
+          await peerB.handle.mergeNow(); // B merges A's log → the remote apply under test
+          const rows = await dbB.sql<Array<{ origin: string; summary: string }>>`
+            SELECT origin, body->>'summary' AS summary FROM harness_shared.coord_event_log WHERE msg_id = ${MSG_ID}
+          `;
+          return rows.length ? rows[0] : undefined;
+        },
+        { timeoutMs: 20_000, intervalMs: 250 },
+      );
+      expect(onB, 'the wake message never federated to peer B').toBeTruthy();
+      expect(onB!.origin).toBe('remote');
+      expect(onB!.summary).toBe('cross-peer wake ping');
+
+      // The deliver-and-wake fan fired on B EXACTLY once, for the envelope's
+      // recipients — and A's own (origin='local') apply never fanned, so the
+      // TOTAL across both peers is one.
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(wakeRecipients).mock.calls[0][0]).toEqual(['su-B']);
+
+      // A's own store holds exactly ONE copy, still origin='local': the EI-117 echo
+      // breaker (skipOwnOps) must NOT re-apply A's own log op over its original write
+      // — a broken breaker would flip it to 'remote' (and double-fan, caught above).
+      const onARows = await dbA.sql<Array<{ origin: string }>>`
+        SELECT origin FROM harness_shared.coord_event_log WHERE msg_id = ${MSG_ID}
+      `;
+      expect(onARows).toHaveLength(1);
+      expect(onARows[0].origin).toBe('local');
     },
     60_000,
   );

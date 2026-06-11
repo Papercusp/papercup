@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-openai-test — OpenAI TTS connection test.
- * Ported from app/api/agent-mcp/operator-openai-test/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-openai-test/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { readOpenAiKey } from '../../../voice-credentials';
 import { testOpenAiConnection } from '../../../voice-engines/openai';

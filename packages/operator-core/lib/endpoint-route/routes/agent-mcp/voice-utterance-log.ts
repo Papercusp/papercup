@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/voice-utterance-log — voice utterance audit log.
- * Ported from app/api/agent-mcp/voice-utterance-log/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/voice-utterance-log/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { logVoiceUtterance, type VoiceUtteranceLogInput } from '../../../voice-utterance-log';
 import { defineTool } from '@papercusp/agent-mcp';

@@ -10,7 +10,7 @@
  *   - githubUrl   OR install a repo directly (listingRef = plugin subdir/slug)
  *   - harness + acceptCapabilities → grant the manifest's caps for that harness
  *
- * `auth: 'public'` — loopback-only via the operator's Host-header gate, like the
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate, like the
  * sibling cupboard routes. The Cupboard ships UNGATED (no MARKETPLACE flag).
  */
 import { defineTool } from '@papercusp/agent-mcp';

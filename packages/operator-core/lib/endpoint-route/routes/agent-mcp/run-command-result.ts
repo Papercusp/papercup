@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/run-command/result — leader tab posts command result back.
- * Ported from app/api/agent-mcp/run-command/result/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/run-command/result/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { resolveRequest } from '../../../commands/session-registry';
 import type { CommandResult } from '../../../commands/types';

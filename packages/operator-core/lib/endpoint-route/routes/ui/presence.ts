@@ -1,7 +1,7 @@
 /**
  * POST /api/ui/presence — tab presence heartbeat upsert.
  *
- * Ported from app/api/ui/presence/route.ts. `auth: 'public'` —
+ * Ported from app/api/ui/presence/route.ts. `auth: 'loopback'` (auth-tier Wave 1) —
  * loopback check inline (preserves exact 403 'loopback_required' shape).
  */
 import { z } from 'zod';

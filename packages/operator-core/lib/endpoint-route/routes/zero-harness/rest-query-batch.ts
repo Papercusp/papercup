@@ -3,7 +3,7 @@
  *
  * Positional results. Single failure yields { error } in its slot.
  *
- * Ported from app/api/zero-harness/rest-query-batch/route.ts. `auth: 'public'`.
+ * Ported from app/api/zero-harness/rest-query-batch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { gzipSync } from 'node:zlib';
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';

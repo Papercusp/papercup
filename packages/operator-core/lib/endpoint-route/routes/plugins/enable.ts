@@ -1,6 +1,6 @@
 /**
  * POST /api/plugins/enable — papercusp plugin enable/disable across harnesses.
- * Ported from app/api/plugins/enable/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/enable/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';

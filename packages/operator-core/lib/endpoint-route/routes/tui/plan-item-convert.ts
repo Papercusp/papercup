@@ -15,7 +15,7 @@
  * becomes the claim's ownerId via ctx.uiClientId, so "who holds this item"
  * in plan-item-states lines up with the TUI user who clicked.
  *
- * `auth: 'public'` mirrors the sibling /api/tui/* routes, and like them the
+ * `auth: 'loopback'` (auth-tier Wave 1) mirrors the sibling /api/tui/* routes, and like them the
  * handler explicitly gates on `isLoopbackRequest` (403 otherwise) — REQUIRED
  * here, not just convention: this route mints a wildcard-capability principal
  * with gateBypass from a body-supplied `owner`, so it must never be reachable

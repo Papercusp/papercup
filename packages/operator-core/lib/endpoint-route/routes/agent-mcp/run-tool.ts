@@ -7,7 +7,7 @@
  * `lib/capabilities/invoke.ts`.
  *
  * Body: { name: string, args?: object, confirmed?: boolean }.
- * `auth: 'public'` follows the sibling agent-mcp routes; the loopback gate +
+ * `auth: 'loopback'` (auth-tier Wave 1) follows the sibling agent-mcp routes; the loopback gate +
  * the dispatch stack are the actual boundary.
  */
 import { defineTool } from '@papercusp/agent-mcp';

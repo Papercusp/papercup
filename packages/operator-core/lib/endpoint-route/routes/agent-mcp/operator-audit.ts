@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-audit — single lifecycle audit event.
- * Ported from app/api/agent-mcp/operator-audit/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-audit/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { writeOperatorAudit, type OperatorAuditKind, type ActorMethod } from '../../../operator-audit';
 import { defineTool } from '@papercusp/agent-mcp';

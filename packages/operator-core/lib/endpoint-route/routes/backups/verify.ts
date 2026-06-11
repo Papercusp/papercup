@@ -1,7 +1,7 @@
 /**
  * POST /api/backups/verify — kopia snapshot verify.
  *
- * Ported from app/api/backups/verify/route.ts. `auth: 'public'`.
+ * Ported from app/api/backups/verify/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { workspaceBackupFor } from '../../../backup';
 import { activeWorkspaceId } from '../../../workspace-registry';

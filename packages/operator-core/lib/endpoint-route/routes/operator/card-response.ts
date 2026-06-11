@@ -4,7 +4,7 @@
  * Resolves a pending ctx.askUser card. Session-auth + 30 RPS per user.
  *
  * Ported from app/api/operator/conversations/[id]/card-response/route.ts.
- * `auth: 'public'` — session check inline.
+ * `auth: 'loopback'` (auth-tier Wave 1) — session check inline.
  */
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { getSessionUser } from '../../../auth';

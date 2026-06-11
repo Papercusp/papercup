@@ -8,7 +8,7 @@
  * trust = capability-gate + install-consent), so with no advisory source
  * configured this returns `clean` (no doomed fetch). The http seam is kept for a
  * real advisory source set via `PAPERCUSP_MARKETPLACE_URL` (self-host / future).
- * `auth: 'public'`.
+ * `auth: 'loopback'` (auth-tier Wave 1).
  */
 import {
   checkPinnedVersionAdvisories,

@@ -8,7 +8,7 @@
  * TUI can't reach this box's localhost voicemode service directly — the
  * operator proxies. Same upstream the browser PTT path POSTs WAV blobs to:
  * voicemode Whisper's OpenAI-compatible `/v1/audio/transcriptions`.
- * `auth: 'public'` like the sibling operator voice routes.
+ * `auth: 'loopback'` (auth-tier Wave 1) like the sibling operator voice routes.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { VOICEMODE_URL, decodeAudioBase64, normalizeAudioFormat } from './operator-voice-proxy-helpers';

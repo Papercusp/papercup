@@ -1,7 +1,7 @@
 /**
  * POST /api/backups/rollback — undo a previous promote.
  *
- * Ported from app/api/backups/rollback/route.ts. `auth: 'public'`.
+ * Ported from app/api/backups/rollback/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 import { durableRollbackPromote } from '../../../backup/durable-ops';

@@ -1,6 +1,6 @@
 /**
  * POST /api/plugins/invoke — direct plugin-action invocation.
- * Ported from app/api/plugins/invoke/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/invoke/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

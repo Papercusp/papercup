@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-nudge — dedup-arbitrated spoken nudges.
- * Ported from app/api/agent-mcp/operator-nudge/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-nudge/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { maybeFireNudge, type NudgeKind } from '../../../voice-nudges';
 import { defineTool } from '@papercusp/agent-mcp';

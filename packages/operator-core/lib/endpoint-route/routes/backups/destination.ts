@@ -3,7 +3,7 @@
  * POST /api/backups/destination/test — dry-run sync to verify connectivity.
  *
  * Ported from app/api/backups/destination/route.ts + app/api/backups/destination/test/route.ts.
- * `auth: 'public'`.
+ * `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 import { workspaceBackupFor } from '../../../backup';

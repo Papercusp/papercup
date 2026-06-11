@@ -11,7 +11,7 @@
  * (speechSynthesis — meaningless outside a browser) falls back to kokoro
  * when kokoro's health check passes, else `{ ok:false, error:'no server-side
  * tts engine available' }`. Keys for the cloud engines stay server-side.
- * `auth: 'public'` like the sibling operator voice routes.
+ * `auth: 'loopback'` (auth-tier Wave 1) like the sibling operator voice routes.
  */
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import { loadVoicePrefs, type VoicePrefs } from '../../../voice-prefs';

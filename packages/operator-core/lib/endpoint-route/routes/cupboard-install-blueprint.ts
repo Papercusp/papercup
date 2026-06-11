@@ -16,7 +16,7 @@
  *                    deps that are resolvable from the Cupboard (D-001's
  *                    consent-gated plugin fetch)
  *
- * `auth: 'public'` — loopback-only via the operator's Host-header gate, like
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate, like
  * the sibling cupboard routes.
  */
 import { spawn } from 'node:child_process';

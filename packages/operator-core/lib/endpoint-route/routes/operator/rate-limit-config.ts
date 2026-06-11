@@ -6,7 +6,7 @@
  * top-bar `<FleetRateControl>` reads config + live cap/eff/in-flight + usage in one
  * round-trip. PUT validates 1..RATE_LIMIT_MAX_CEILING, persists to PG (migration 161),
  * and propagates LIVE via the in-process bus (governor gate + dispatcher honor it with
- * zero restart). `auth: 'public'` (loopback-gated like the sibling operator routes).
+ * zero restart). `auth: 'loopback'` (auth-tier Wave 1) (loopback-gated like the sibling operator routes).
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import {

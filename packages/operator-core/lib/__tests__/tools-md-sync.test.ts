@@ -28,6 +28,9 @@ const KNOWN_ROLES = [
   'reviewer', 'debugger', 'architect', 'documenter', 'curator',
   // G2 user-protection gate (P-006): read-only adversarial judgment role.
   'auditor',
+  // The Hive's generic worker (EI-317: bee.tools.md carries the deferred-MCP
+  // loading recipe — keep its tool mentions in the bee surface).
+  'bee',
 ];
 
 const CHAT_SURFACES = [
@@ -48,6 +51,8 @@ const NON_CHAT_ROLES = [
   'debugger', 'architect', 'documenter', 'curator',
   // G2 user-protection gate (P-006): read-only; empty tool catalog (no exec).
   'auditor',
+  // The Hive's generic worker (EI-317).
+  'bee',
 ];
 
 // ─── helpers ─────────────────────────────────────────────────────────

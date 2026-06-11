@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/end-pi — end a pi session.
- * Ported from app/api/agent-mcp/end-pi/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/end-pi/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { endPiSession } from '@papercusp/agent-mcp/provisioning';
 import { activeWorkspaceId } from '../../../workspace-registry';

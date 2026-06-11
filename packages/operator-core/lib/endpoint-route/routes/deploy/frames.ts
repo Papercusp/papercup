@@ -6,7 +6,7 @@
  * (`hive-frame-desktops-live-view-2026-06-06` P-006). Registry-backed: a frame
  * appears here exactly while its handle is persisted (deploy → teardown).
  *
- * `auth: 'public'` with NO session gate — the desktop webview is cookie-less
+ * `auth: 'loopback'` (auth-tier Wave 1) with NO session gate — the desktop webview is cookie-less
  * (loopback bind is the perimeter; see auth.ts header + auth/me). Same trust
  * class as the other workspace-global reads the /adv tabs hit
  * (`/harness/projects/lite`). A strict getSessionUser gate here 401s the

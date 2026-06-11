@@ -6,7 +6,7 @@
  * shell uses the `workspaces_switch` Tauri command instead (it also kills
  * the sidecar + embedded-postgres-server first).
  *
- * Ported from app/api/workspaces/switch/route.ts. `auth: 'public'`.
+ * Ported from app/api/workspaces/switch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { existsSync, promises as fs } from 'node:fs';
 import { workspacesRoot } from '../../../workspace-registry';

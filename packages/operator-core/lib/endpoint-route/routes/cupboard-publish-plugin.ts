@@ -20,7 +20,7 @@
  *   - github_url      override the repo (else resolved from the installed unit's git origin)
  *   - provides_tools  override the declared MCP tool names (else manifest-derived)
  *
- * `auth: 'public'` — loopback-only via the operator's Host-header gate.
+ * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { findInstalledPlugin } from '../../cupboard/plugin-listings';

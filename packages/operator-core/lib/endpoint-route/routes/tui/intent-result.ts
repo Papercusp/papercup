@@ -1,6 +1,6 @@
 /**
  * POST /api/tui/intents/:id/result — the pui dispatcher posts an intent result
- * back. The TUI analogue of /api/ui/intents/:id/result. `auth: 'public'` —
+ * back. The TUI analogue of /api/ui/intents/:id/result. `auth: 'loopback'` (auth-tier Wave 1) —
  * loopback-gated inline.
  */
 import { z } from 'zod';

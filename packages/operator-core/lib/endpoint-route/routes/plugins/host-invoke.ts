@@ -1,7 +1,7 @@
 /**
  * POST /api/plugins/host/invoke — host-mediated RPC for iframe plugin surfaces.
  * Tries WASM/daemon dispatcher first; falls back to JS plugin invoke path.
- * Ported from app/api/plugins/host/invoke/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/host/invoke/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { invokePluginAction, callWasmAction } from '../../../plugin-host-runtime';
 import { papercuspRoot } from '../../../papercusp-root';

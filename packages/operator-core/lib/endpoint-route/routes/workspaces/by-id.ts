@@ -1,6 +1,6 @@
 /**
  * PATCH / DELETE /api/workspaces/:id — rename / remove a workspace.
- * Ported from app/api/workspaces/[id]/route.ts. `auth: 'public'`.
+ * Ported from app/api/workspaces/[id]/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { existsSync, promises as fs } from 'node:fs';
 import { workspacesRoot } from '../../../workspace-registry';

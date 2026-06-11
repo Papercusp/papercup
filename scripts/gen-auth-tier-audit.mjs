@@ -78,6 +78,7 @@ function scanFile(abs) {
 }
 
 function classify(r) {
+  if (r.auth === 'loopback') return { tier: 'loopback', wave: 'DONE', why: 'declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11)' };
   if (r.auth !== 'public') return { tier: r.auth, wave: '-', why: 'already non-public (trust-gated or principal-required default)' };
   if (r.fileGated) return { tier: 'loopback', wave: 'W1a', why: 'hand-gated today — declarative conversion, zero behavior change' };
   const remote = REMOTE_SURFACES.find((s) => s.re.test(r.path));

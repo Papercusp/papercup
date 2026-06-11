@@ -79,7 +79,7 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
         }}
       />,
     );
-    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'public');
+    await user.click(screen.getByRole('button', { name: 'publish' }));
     await screen.findByText('announced');
     expect(calls[0][0]).toBe('acme-hive');
     expect(calls[0][1]).toBe('public');
@@ -100,7 +100,7 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
         }}
       />,
     );
-    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'invite');
+    await user.click(screen.getByRole('button', { name: 'invite-only' }));
     await screen.findByTestId('hive-visibility-outcome');
     expect(gotSecret).toMatch(/^[0-9a-f]{48}$/);
     expect(screen.getByTestId('hive-visibility-outcome').textContent).toContain('secret:');
@@ -116,7 +116,7 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
         setVisibility={async () => ({ ok: true, withdrawn: true })}
       />,
     );
-    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'private');
+    await user.click(screen.getByRole('button', { name: 'withdraw' }));
     await screen.findByText('withdrawn');
   });
 });

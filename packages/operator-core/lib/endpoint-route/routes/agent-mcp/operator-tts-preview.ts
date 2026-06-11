@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-tts-preview — per-engine TTS preview synthesis.
- * Ported from app/api/agent-mcp/operator-tts-preview/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-tts-preview/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import { defineTool } from '@papercusp/agent-mcp';

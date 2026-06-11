@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/provision — provision system:operator + system:oracle principals.
- * Ported from app/api/agent-mcp/provision/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/provision/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { provisionSystemPrincipal } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '../../../papercusp-root';

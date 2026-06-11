@@ -3,7 +3,7 @@
  *
  * Atomic preset apply.
  *
- * Ported from app/api/flags/preset/route.ts. `auth: 'public'`.
+ * Ported from app/api/flags/preset/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';

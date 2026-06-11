@@ -1,7 +1,7 @@
 /**
  * POST /api/agent-mcp/operator-dispatch — server-side card dispatch proxy.
  * Forwards to /api/admin/execute-action with the operator bearer attached.
- * Ported from app/api/agent-mcp/operator-dispatch/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-dispatch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { activeWorkspaceId } from '../../../workspace-registry';

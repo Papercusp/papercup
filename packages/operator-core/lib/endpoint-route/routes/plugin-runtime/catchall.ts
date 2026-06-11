@@ -6,7 +6,7 @@
  * service.method with body.args. MissingCapabilityError → 403.
  *
  * Ported from app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts.
- * `auth: 'public'`.
+ * `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';

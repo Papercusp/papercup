@@ -16,11 +16,11 @@
  * project-guide splice), so an editor sees the real assembled prompt before saving.
  *
  * SECURITY — two boundaries: (1) the id→filename WHITELIST prevents path traversal (no
- * user-controlled path segments); (2) AUTHORIZATION is the `requireLoopbackOr403` guard on
- * EVERY handler — these routes read/rewrite the SOURCES of every agent's system prompt, so
- * they are loopback-only (`auth: 'public'` is the codebase norm; the loopback bind + the
- * guard are the perimeter, exactly like the sibling /adv + /harness mutate routes). The
- * whitelist alone is NOT the authz boundary — do not drop the guard. Writes land in the
+ * user-controlled path segments); (2) AUTHORIZATION is the declared `auth: 'loopback'`
+ * tier on EVERY route (auth-tier Wave 1) — these routes read/rewrite the SOURCES of every
+ * agent's system prompt, so they are loopback-only, enforced at the dispatch chokepoint
+ * (route-stack authStep), exactly like the sibling /adv + /harness mutate routes. The
+ * whitelist alone is NOT the authz boundary — do not drop the tier. Writes land in the
  * operator app root's `prompts/` dir — on
  * a STAGING-tree host that means git-sync → green-checkpoint → deploy carries them (the
  * P-011 gate: edits ride the staging→deploy pipeline; the live :3070 render reads the
@@ -32,7 +32,6 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../loopback-guard';
 import { gateApiRoute } from '../../require-flag';
 import { FLAGS } from '@papercusp/flags';
 

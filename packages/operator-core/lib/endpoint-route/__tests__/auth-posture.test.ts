@@ -56,14 +56,27 @@ const RULES: ReadonlyArray<{
   },
   { prefix: '/provision/', expect: VT },
   { prefix: '/internal/', expect: {} },
-  // The /api/tui/* workbench routes are intentionally `auth:'public'` — same
-  // posture as the sibling /api/coord/* routes (loopback-protected by the host
-  // bind, owner-scoped by an explicit `owner` arg; the intent-result/stream
-  // routes additionally gate on `isLoopbackRequest` inline). This pins that
-  // posture so a /tui/ route can't silently drift off public. Behaviour of the
-  // handlers themselves is covered by `tui-routes.test.ts`. (Decision recorded
-  // in the route's doc-comment + BRIEF-test-coverage-fu-tui-routes.)
-  { prefix: '/tui/', expect: 'public' },
+  // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by
+  // the host bind, owner-scoped by an explicit `owner` arg; the intent-result/
+  // stream routes additionally gate on `isLoopbackRequest` inline). The
+  // MUTATING routes were hardened public → 'loopback' (auth-tier rollout,
+  // 2026-06-11: the box is tunnel-exposed, so TUI writes must not ride the
+  // public tier). This pins BOTH postures so neither drifts. Handler behavior
+  // is covered by `tui-routes.test.ts`.
+  {
+    prefix: '/tui/',
+    expect: 'public',
+    exceptions: [
+      { method: 'PUT',    path: '/tui/view-state',    auth: 'loopback' },
+      { method: 'PUT',    path: '/tui/layouts',       auth: 'loopback' },
+      { method: 'DELETE', path: '/tui/layouts/:name', auth: 'loopback' },
+      { method: 'PUT',    path: '/tui/crews',         auth: 'loopback' },
+      { method: 'DELETE', path: '/tui/crews/:name',   auth: 'loopback' },
+      { method: 'POST',   path: '/tui/intents/:id/result',  auth: 'loopback' },
+      { method: 'POST',   path: '/tui/plan-item-convert',   auth: 'loopback' },
+      { method: 'POST',   path: '/tui/plan-item-release',   auth: 'loopback' },
+    ],
+  },
   {
     prefix: '/admin/',
     expect: VT,
@@ -132,5 +145,81 @@ describe('D3 auth posture', () => {
     const def = ALL_ROUTES.find((r) => r.method === 'POST' && r.path === '/oauth/verify-paste');
     expect(def).toBeDefined();
     expect(def!.auth).toEqual(VT);
+  });
+});
+
+/**
+ * Auth-tier Wave 1 (audit D-007/D-009, owner-approved 2026-06-10; landed
+ * 2026-06-11 on WI-99): mutating routes are loopback-or-better, enforced at
+ * the route-stack chokepoint. This registry gate is the standing P-038-style
+ * lint — a NEW mutating route shipped as `auth: 'public'` fails here unless
+ * the owner has confirmed it as a named remote exception (the OWNER rows of
+ * apps/operator/docs/auth-tier-rollout-2026-06-10.md).
+ */
+describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () => {
+  const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+  /** The owner-confirmed `public!` mutating exceptions (review 2026-06-11). */
+  const OWNER_PUBLIC: ReadonlySet<string> = new Set([
+    'POST /auth/change-password',
+    'POST /auth/login',
+    'POST /auth/logout',
+    'PATCH /auth/me',
+    // Signup is additionally gated in-handler: first-account bootstrap, then
+    // the OPEN_SIGNUP flag (default OFF).
+    'POST /auth/signup',
+    'DELETE /device/desktop/devices/:deviceId',
+    'POST /device/desktop/mint-pair-token',
+    'POST /device/pair',
+    'POST /elevenlabs/webhook',
+    'POST /flags/webhook',
+  ]);
+  /**
+   * Own-auth TRANSPORT surfaces — `auth: 'public'` at the route layer is the
+   * design, not a gap: each enforces bearer/principal auth in its own
+   * dispatch (the composite resolver / mcpHandler), and remote reachability
+   * is intentional (the phone calls built-in tools cross-origin through the
+   * tunnel; remote MCP rides /:transport). NOT part of the owner-ratified
+   * 16-row table — flagged for owner review on WI-99; do not grow this set
+   * without the same own-auth story.
+   */
+  const OWN_AUTH_TRANSPORTS: ReadonlySet<string> = new Set([
+    'POST /agent-tools/*',
+    'PUT /agent-tools/*',
+    'PATCH /agent-tools/*',
+    'DELETE /agent-tools/*',
+    'POST /plugins/*',
+    'PUT /plugins/*',
+    'PATCH /plugins/*',
+    'DELETE /plugins/*',
+    'POST /:transport',
+    'DELETE /:transport',
+  ]);
+
+  it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {
+    const offenders = ALL_ROUTES
+      .filter((r) => MUTATING.has(r.method))
+      .filter((r) => (r.auth as unknown) === 'public')
+      .map((r) => `${r.method} ${r.path}`)
+      .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_TRANSPORTS.has(key));
+    expect(
+      offenders,
+      `PUBLIC mutating route(s) — declare auth: 'loopback' (the Wave-1 rule) or get ` +
+      `explicit owner sign-off and add the route to OWNER_PUBLIC here AND to the ` +
+      `REMOTE_SURFACES list in scripts/gen-auth-tier-audit.mjs:\n  ${offenders.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('the owner allowlist is not stale (every entry still exists and is still public)', () => {
+    for (const key of OWNER_PUBLIC) {
+      const [method, path] = key.split(' ');
+      const def = ALL_ROUTES.find((r) => r.method === method && r.path === path);
+      expect(def, `${key} is allowlisted but no longer registered`).toBeDefined();
+      expect(def!.auth, `${key} is allowlisted but no longer public — remove it`).toBe('public');
+    }
+  });
+
+  it('loopback-tier coverage is substantial (the Wave-1 flip actually landed)', () => {
+    const loopback = ALL_ROUTES.filter((r) => (r.auth as unknown) === 'loopback');
+    expect(loopback.length).toBeGreaterThan(200);
   });
 });

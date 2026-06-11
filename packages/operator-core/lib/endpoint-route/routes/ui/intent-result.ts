@@ -1,7 +1,7 @@
 /**
  * POST /api/ui/intents/:id/result — browser dispatcher posts result back.
  *
- * Ported from app/api/ui/intents/[id]/result/route.ts. `auth: 'public'` —
+ * Ported from app/api/ui/intents/[id]/result/route.ts. `auth: 'loopback'` (auth-tier Wave 1) —
  * loopback inline.
  */
 import { z } from 'zod';

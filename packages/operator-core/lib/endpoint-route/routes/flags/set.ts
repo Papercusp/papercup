@@ -8,7 +8,7 @@
  * toggling on dev boxes with no PostHog and no process restart.
  * Used by the /admin/features UI.
  *
- * Ported from app/api/flags/set/route.ts. `auth: 'public'`.
+ * Ported from app/api/flags/set/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 

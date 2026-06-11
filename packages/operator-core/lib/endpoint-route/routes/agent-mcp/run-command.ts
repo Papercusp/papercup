@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/run-command — Action Registry cross-process bridge.
- * Ported from app/api/agent-mcp/run-command/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/run-command/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { randomUUID } from 'node:crypto';
 import { activeWorkspaceId } from '../../../workspace-registry';

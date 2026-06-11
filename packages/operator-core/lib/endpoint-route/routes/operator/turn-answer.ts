@@ -5,7 +5,7 @@
  * the bespoke-card-improvements migration. Atomic answered-mark + user-turn
  * append in one PG transaction.
  *
- * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'public'`.
+ * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { notifySyncInvalidate } from '../../../sync-sse';

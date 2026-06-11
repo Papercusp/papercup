@@ -2,7 +2,7 @@
  * POST /api/agent-mcp/operator-converse — SSE stream of operator's next turn.
  * Thin shim into the operator:converse tool; resolves session user from
  * cookies (the one HTTP-only step), budget pre-flight, forwards the rest.
- * Ported from app/api/agent-mcp/operator-converse/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-converse/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { sseResponse } from '@papercusp/sse';
 import {

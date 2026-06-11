@@ -1,6 +1,6 @@
 /**
  * POST /api/agent-mcp/operator-elevenlabs-test — ElevenLabs connection test.
- * Ported from app/api/agent-mcp/operator-elevenlabs-test/route.ts. `auth: 'public'`.
+ * Ported from app/api/agent-mcp/operator-elevenlabs-test/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { readElevenLabsKey } from '../../../voice-credentials';
 import { testElevenLabsConnection } from '../../../voice-engines/elevenlabs';

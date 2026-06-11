@@ -1,7 +1,7 @@
 /**
  * POST /api/backups/promote — promote a restored clone to live.
  *
- * Ported from app/api/backups/promote/route.ts. `auth: 'public'`.
+ * Ported from app/api/backups/promote/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { z } from 'zod';
 import { triggerSnapshotEvent } from '../../../backup';

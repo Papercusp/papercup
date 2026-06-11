@@ -1,7 +1,7 @@
 /**
  * POST /api/plugins/host/query — read-only PG query for iframe plugin surfaces.
  * SELECT-only; search_path scoped to plugin_<name>.
- * Ported from app/api/plugins/host/query/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/host/query/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';

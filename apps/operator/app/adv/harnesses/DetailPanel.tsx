@@ -232,26 +232,50 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     return <IssueDetail slug={slug} issue={issue} onSelect={onSelect} onBack={onBack} patchIssue={patchIssue} />;
   }
   if (workItem) {
-    return <WorkItemDetail workItem={workItem} onSelect={onSelect} onBack={onBack} />;
+    return <WorkItemDetail slug={slug} workItem={workItem} onSelect={onSelect} onBack={onBack} />;
   }
   return null;
 }
 
 /**
- * WorkItemDetail — read-only detail for a unified WI-* work item (the rows the
+ * WorkItemDetail — detail for a unified WI-* work item (the rows the
  * WorkItemsPanel grid serves). Issue-family items (bug/change/task) have no
  * legacy I-* row, so this is their only detail view; mutation verbs stay on
- * the agent surface (`work_items:*`) for now.
+ * the agent surface (`work_items:*`) for now — EXCEPT Chat (EI-290): the
+ * legacy Features-tab per-item steer surface, same `openFeatureChat` →
+ * OPEN_CHAT_EVENT → dock chat panel path the F-* detail uses.
  */
 function WorkItemDetail({
+  slug,
   workItem,
   onSelect,
   onBack,
 }: {
+  slug: string;
   workItem: WorkItemRow;
   onSelect: (id: string) => void;
   onBack?: () => void;
 }) {
+  const [openingChat, setOpeningChat] = useState(false);
+  const openChat = async () => {
+    setOpeningChat(true);
+    try {
+      const res = await openFeatureChat({
+        slug,
+        role: 'worker',
+        featureId: workItem.id,
+        title: workItem.title,
+        mode: 'discuss',
+      });
+      if (res && typeof res === 'object' && 'error' in res) {
+        throw new Error(String((res as { error: unknown }).error));
+      }
+    } catch (e) {
+      toast.error('Open chat failed', { description: String(e) });
+    } finally {
+      setOpeningChat(false);
+    }
+  };
   // Field values use the same canonical renderings as the WorkItemsPanel grid:
   // the kind chip, the family-aware status pill, and the severity pill.
   const fields: Array<[string, React.ReactNode]> = [
@@ -318,6 +342,14 @@ function WorkItemDetail({
             Open feature detail <ArrowUpRight size={12} />
           </button>
         ) : null}
+        <div className="pc-adv-detail__section">
+          <h3>Actions</h3>
+          <div className="pc-adv-detail__actions">
+            <button type="button" data-testid="wi-detail-chat" disabled={openingChat} onClick={() => void openChat()}>
+              <MessageCircle size={13} aria-hidden /> Chat
+            </button>
+          </div>
+        </div>
       </div>
       {/* WorkItemDetail historically omitted this — every WI-* detail rendered
           with ZERO panel CSS (run-together label/value spans). */}

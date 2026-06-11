@@ -22,7 +22,7 @@
  * resolves *their* claim — releasing an item whose lease a peer holds is the
  * same polite no-op it is for agents (the peer's lease lapses by TTL).
  *
- * `auth: 'public'` + explicit `isLoopbackRequest` gate — REQUIRED, not just
+ * `auth: 'loopback'` (auth-tier Wave 1) + explicit `isLoopbackRequest` gate — REQUIRED, not just
  * convention: like the convert route this mints a wildcard-capability
  * principal from a body-supplied `owner`, so it must never be reachable
  * off-box even if the host bind changes.
