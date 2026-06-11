@@ -35,6 +35,11 @@
  * stripping the `.changed` suffix).
  */
 export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> = {
+  // The harness registry is one JSONB row per workspace (mig 025); its
+  // trigger (mig 222) is what defeats the bus's 90s source-side dedupe for
+  // back-to-back registry changes (EI-206 — a create followed by a delete
+  // inside the window left open harness lists stale).
+  'harness_shared.harness_registry': ['harnessProjects.lite'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],

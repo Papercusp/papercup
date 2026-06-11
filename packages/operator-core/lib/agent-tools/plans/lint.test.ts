@@ -264,3 +264,77 @@ describe('plans:lint — checkbox-style item lines (EI-251)', () => {
     expect(codes(report.warnings)).not.toContain('checkbox_item_syntax');
   });
 });
+
+/**
+ * EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
+ * "human greenlights a phase", "Owner: provide creds") are invisible to every
+ * inbox surface — only a `needs-human` ITEM is queryable. `owner_ask_not_needs_human`
+ * warns when the Now block phrases an owner/human action-gate but no
+ * `needs-human` item encodes it.
+ */
+describe('plans:lint — owner_ask_not_needs_human (EI-44)', () => {
+  const planDoc = (opts: { nowState?: string; nowNext?: string; itemStatus?: string }) =>
+    `---\n` +
+    `title: T\n` +
+    `slug: owner-ask-lint-test\n` +
+    `status: active\n` +
+    `created: 2026-06-11\n` +
+    `---\n\n` +
+    `# T\n\n` +
+    `## Now\n\n**State:** ${opts.nowState ?? 'building'}\n\n**Next:** ${opts.nowNext ?? 'do y'}\n\n` +
+    `## Phase 1\n\n- **P-001** \`${opts.itemStatus ?? 'todo'}\` do a thing\n\n` +
+    `## Decisions\n\n### D-001 — a decision\nBody.\n`;
+  const lintDoc = async (raw: string) => lintParsed(parsePlan(raw), 'owner-ask-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('owner_ask_not_needs_human');
+
+  it('warns on the "Owner:" label form with no needs-human item', async () => {
+    const r = await lintDoc(planDoc({ nowState: 'Blocked. Owner: decide D-002 before phase 3.' }));
+    expect(has(r)).toBe(true);
+    expect(codes(r.errors)).not.toContain('owner_ask_not_needs_human'); // warning, never error
+  });
+
+  it('warns on the verb idiom "human greenlights a phase" (no colon)', async () => {
+    const r = await lintDoc(planDoc({ nowNext: 'wait until a human greenlights a phase, then ship.' }));
+    expect(has(r)).toBe(true);
+  });
+
+  it('warns on "Owner: provide … creds"', async () => {
+    const r = await lintDoc(planDoc({ nowState: 'Owner: provide FCM/APNS creds to unblock push.' }));
+    expect(has(r)).toBe(true);
+  });
+
+  it('matches "**Owner:**" with markdown emphasis (stripped first)', async () => {
+    const r = await lintDoc(planDoc({ nowState: '**Owner:** sign-off needed before deploy.' }));
+    expect(has(r)).toBe(true);
+  });
+
+  it('warns on "blocked on the owner"', async () => {
+    const r = await lintDoc(planDoc({ nowState: 'Everything else is done; blocked on the owner.' }));
+    expect(has(r)).toBe(true);
+  });
+
+  it('does NOT warn when a needs-human item already encodes the ask', async () => {
+    const r = await lintDoc(
+      planDoc({ nowState: 'Owner: decide D-002 before phase 3.', itemStatus: 'needs-human' }),
+    );
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on a generic mention of the owner with no action gate', async () => {
+    const r = await lintDoc(
+      planDoc({ nowState: 'The owner only discovers these by reading every Now line, which is slow.' }),
+    );
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on a generic mention of a human reading the plan', async () => {
+    const r = await lintDoc(planDoc({ nowState: 'A human reads the Now line first on cold resume.' }));
+    expect(has(r)).toBe(false);
+  });
+
+  it('does NOT warn on an ordinary Now block with no owner/human mention', async () => {
+    const r = await lintDoc(planDoc({ nowState: 'building phase 2', nowNext: 'wire the resolver' }));
+    expect(has(r)).toBe(false);
+  });
+});

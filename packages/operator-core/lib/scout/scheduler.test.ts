@@ -202,3 +202,114 @@ describe('runScoutTick — tick observability (P-034)', () => {
     expect(r.fired).toBe(true);
   });
 });
+
+describe('runScoutTick — gate ordering + uncovered exits (scout-loop-test-plan P-005)', () => {
+  it('checks the cadence gate BEFORE the fire-gate: a withheld tick never consults the circuit', async () => {
+    const fireGate = vi.fn(async () => ({ allow: false as const }));
+    const { deps } = makeDeps({ fireGate, state: { idleRatio: 0, frictionSignals: 0, lastRunAtMs: NOW - 1000 } });
+    const r = await runScoutTick(deps);
+    expect(r.reason).toBe('min-interval');
+    expect(fireGate).not.toHaveBeenCalled();
+  });
+
+  it('mints the default cycle id from the cadence-state clock (scout-<nowMs>)', async () => {
+    const { deps } = makeDeps();
+    delete (deps as Partial<ScoutTickDeps>).newCycleId;
+    const r = await runScoutTick(deps);
+    expect(r.cycleId).toBe(`scout-${NOW}`);
+  });
+
+  it('reports cycle-error (attempt+error) when provenance persistence fails after a good cycle', async () => {
+    const { deps, calls } = makeDeps({ persistRouted: async () => { throw new Error('pg down'); } });
+    const r = await runScoutTick(deps);
+    expect(r.fired).toBe(false);
+    expect(r.reason).toBe('cycle-error');
+    expect(r.error).toContain('pg down');
+    expect(calls.fire).toEqual(['attempt', 'error']);
+    expect(calls.ticks[0].status).toBe('error');
+  });
+
+  it('invalid budget overrides resolve to the defaults before reaching the cycle', async () => {
+    const { deps, calls } = makeDeps();
+    await runScoutTick(deps, { budget: { maxCostUsd: -3, maxIdeators: 0 } });
+    expect(calls.ranBudget).toBe(1.0); // DEFAULT_SCOUT_BUDGET.maxCostUsd, not -3
+  });
+
+  it('tolerates a cycle result with no provenance field (defensive ?? [])', async () => {
+    const { deps, calls } = makeDeps({ runCycle: async () => ({} as ScoutCycleLike) });
+    const r = await runScoutTick(deps);
+    expect(r.fired).toBe(true);
+    expect(r.routedCount).toBe(0);
+    expect(calls.persisted).toBe(0);
+  });
+});
+
+describe('runScoutTick — double-fire / overlapping ticks (scout-loop-test-plan P-005)', () => {
+  /**
+   * Shared-state deps mirroring the PRODUCTION clock seam: autoloop recordFire
+   * sets last_fired_at = now() on EVERY outcome (attempt/ok/error), and
+   * readCadenceState reads it back as lastRunAtMs on the next tick. The only
+   * re-fire protection runScoutTick has is that read-back through the cadence
+   * min-interval floor.
+   */
+  function sharedClockDeps() {
+    const shared = { lastRunAtMs: null as number | null };
+    const calls = { cycles: 0, fire: [] as string[], ticks: [] as ScoutTickRecord[] };
+    const deps: ScoutTickDeps = {
+      readCadenceState: async () => ({
+        idleRatio: 1,
+        frictionSignals: 0,
+        lastRunAtMs: shared.lastRunAtMs,
+        nowMs: NOW,
+      }),
+      runCycle: async () => {
+        calls.cycles += 1;
+        return { provenance: [] };
+      },
+      persistRouted: async () => {},
+      recordFire: async (o) => {
+        calls.fire.push(o);
+        shared.lastRunAtMs = NOW; // autoloop: last_fired_at = now()
+      },
+      recordTick: async (rec) => {
+        calls.ticks.push(rec);
+      },
+      newCycleId: () => 'cyc-dbl',
+    };
+    return { deps, calls };
+  }
+
+  it('SEQUENTIAL ticks are idempotent: the second tick is gated by the min-interval floor', async () => {
+    const { deps, calls } = sharedClockDeps();
+    const first = await runScoutTick(deps);
+    const second = await runScoutTick(deps);
+    expect(first.fired).toBe(true);
+    expect(second.fired).toBe(false);
+    expect(second.reason).toBe('min-interval');
+    expect(calls.cycles).toBe(1); // exactly one cycle across both ticks
+  });
+
+  it('FINDING: two OVERLAPPING ticks BOTH run a full cycle — runScoutTick has NO concurrency guard', async () => {
+    // ── This test DOCUMENTS A DEFECT; it does not bless the behavior. ─────────
+    // runScoutTick is check-then-act with no claim step: each tick snapshots
+    // cadence state (readCadenceState) before either records its 'attempt', so
+    // both see the stale lastRunAtMs and both pass the min-interval floor.
+    // Nothing downstream catches it either:
+    //   - tick-ledger.ts is a best-effort observability INSERT, not a guard;
+    //   - the autoloop fire-gate (evaluateFireGate) only gates on consecutive
+    //     ERRORS — for a healthy role it always allows, and its check is not
+    //     atomic with recordFire('attempt') anyway.
+    // The interleaving below is deterministic (both readCadenceState snapshots
+    // are taken synchronously before either tick's first await resumes), so this
+    // is the guaranteed behavior of overlapping invocations, not a flaky race.
+    // If a single-flight/claim guard is ever added, this assertion flips to
+    // cycles === 1 — update the double-fire verdict in the P-005 plan with it.
+    const { deps, calls } = sharedClockDeps();
+    const [a, b] = await Promise.all([runScoutTick(deps), runScoutTick(deps)]);
+    expect(a.fired).toBe(true);
+    expect(b.fired).toBe(true); // ← the double-run
+    expect(calls.cycles).toBe(2); // two full cycle executions from overlapping ticks
+    expect(calls.fire.filter((o) => o === 'attempt')).toHaveLength(2);
+    expect(calls.ticks.filter((t) => t.status === 'ran')).toHaveLength(2);
+  });
+});

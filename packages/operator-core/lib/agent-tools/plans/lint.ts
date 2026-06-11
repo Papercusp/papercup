@@ -185,6 +185,51 @@ export async function lintParsed(
     }
   }
 
+  // EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
+  // "human greenlights a phase", "Owner: provide FCM/APNS creds") are invisible
+  // to every inbox surface — only a `needs-human` ITEM is queryable by
+  // plans:items {needsHuman:true} and projected into the attention feed. An
+  // audit of 100 non-shipped plans found ~12 owner asks that lived ONLY as Now
+  // prose, so the owner could discover them only by reading every Now line.
+  // When the Now block phrases an owner/human action-gate but the plan carries
+  // NO `needs-human` item, the ask is stranded: warn, nudging conversion to a
+  // needs-human item (plans:set-status status=needs-human) so it reaches the
+  // human inbox.
+  //
+  // WARNING, never error (plan lints advise rather than gate — CLAUDE.md).
+  // Scoped to the `## Now` block and — for the verb idioms — bound to an action
+  // verb in close proximity so a generic mention ("the owner only discovers
+  // them by reading the Now line", "the human reads the Now line") can't
+  // false-positive. Mirrors the EI-154 supersession guard. Emphasis is stripped
+  // first so "**Owner:** decide" still matches.
+  if (parsed.now) {
+    const nowText = parsed.now.raw.replace(/[*_`]/g, '');
+    const ownerGatePatterns: RegExp[] = [
+      // Label form — the literal "Owner:" / "human:" signals the issue named.
+      /\bowner\s*:/i,
+      /\bhuman\s*:/i,
+      // Verb idioms with no colon ("human greenlights a phase", "owner to
+      // decide"): bind owner/human to an action verb within ~40 chars.
+      /\bowner\b[^.\n]{0,40}?\b(?:decide|decision|provide|approve|approval|sign-?off|signs?\s+off|greenlight|greenlights|must|needs?\s+to)\b/i,
+      /\bhuman\b[^.\n]{0,40}?\b(?:greenlight|greenlights|approve|approval|sign-?off|signs?\s+off|decide|decision|must)\b/i,
+      /\b(?:awaiting|blocked\s+on|blocked\s+by|gated\s+on|waiting\s+on|waiting\s+for)\s+(?:the\s+|an?\s+)?(?:owner|human)\b/i,
+    ];
+    const hasOwnerGateProse = ownerGatePatterns.some((re) => re.test(nowText));
+    const hasNeedsHumanItem = parsed.items.some((it) => it.storedStatus === 'needs-human');
+    if (hasOwnerGateProse && !hasNeedsHumanItem) {
+      report.warnings.push({
+        level: 'warning',
+        code: 'owner_ask_not_needs_human',
+        message:
+          'The `## Now` block phrases an owner/human action-gate (e.g. "Owner: decide…", "human greenlights…") ' +
+          'but the plan has no `needs-human` item — so the ask is invisible to every inbox surface ' +
+          '(only `needs-human` items reach plans:items {needsHuman:true} and the attention feed). ' +
+          'Encode it as a needs-human item with plans:set-status status=needs-human (or plans:add-item) ' +
+          'so it reaches the owner inbox instead of being buried in Now prose.',
+      });
+    }
+  }
+
   for (const w of parsed.parseWarnings) {
     report.errors.push({ level: 'error', code: 'parse_warning', message: w });
   }

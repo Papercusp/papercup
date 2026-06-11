@@ -21,8 +21,7 @@
  * fire-and-forget 404 is exactly the failure mode this module removes.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -34,6 +33,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { gatewaySpawnEnv } from '../inference-gateway/spawn-env';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
+import { lockDomainForProjectDir } from '../agent-tools/locks/coordination-domain';
 import { recordSpawn, finishSpawn } from './spawn-tree';
 import type { Db } from './pg-stores';
 import {
@@ -229,25 +229,6 @@ export interface OperatorSpawnResult {
   /** True when idempotencyKey matched an existing spawn — `spawnId` is that
    *  original spawn; no new agent was launched (P-017/EI-73). */
   deduped?: boolean;
-}
-
-/** Walk up to the nearest `.git` ancestor (mirrors locks/coordination-domain.ts). */
-function findRepoRoot(start: string): string {
-  let dir = start;
-  for (let i = 0; i < 16; i++) {
-    if (existsSync(join(dir, '.git'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return start;
-}
-
-/** The child's file-lock coordination domain: realpath repo root of its project. */
-function lockDomainFor(projectDir: string): string {
-  const override = process.env.PAPERCUSP_LOCK_DOMAIN;
-  if (override && override.trim()) return override.trim();
-  try { return realpathSync(findRepoRoot(projectDir)); } catch { return findRepoRoot(projectDir); }
 }
 
 function newSpawnId(): string {
@@ -457,7 +438,7 @@ export async function spawnAgentInHarness(
           // The child's coord/lock owner is its spawnId — the link
           // fleet:cancel uses to release its locks/claims transitively.
           sessionOwner: spawnId,
-          coordinationDomain: lockDomainFor(project.path),
+          coordinationDomain: lockDomainForProjectDir(project.path),
           status: 'running',
         }),
     }));

@@ -37,6 +37,23 @@ function findRepoRoot(start: string): string {
   return start;
 }
 
+/**
+ * The lock coordination domain for an arbitrary project dir — the canonical
+ * (realpath) repo root containing it. Used by spawn paths that launch agents
+ * into a managed harness's checkout (operator-spawn, agent-chat runs), where
+ * the domain is a property of the CHILD's repo, not the operator's.
+ */
+export function lockDomainForProjectDir(projectDir: string): string {
+  const override = process.env.PAPERCUSP_LOCK_DOMAIN;
+  if (override && override.trim()) return override.trim();
+  const root = findRepoRoot(projectDir);
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
+}
+
 /** The lock coordination domain for the operator (cached). */
 export function lockCoordinationDomain(): string {
   if (_domain) return _domain;
