@@ -228,6 +228,13 @@ async function setupFeatureSchema(sql: postgres.Sql): Promise<void> {
       taken_by            TEXT,
       taken_at            TIMESTAMPTZ,
       expires_at          TIMESTAMPTZ,
+      -- Work-item dispatch columns (unify-work-items D-013) — the projection's
+      -- writeToPg inserts these unconditionally, so the mirror must carry them.
+      item_kind           TEXT NOT NULL DEFAULT 'feature',
+      feature_order       INT,
+      swarm_affinity      TEXT,
+      redundancy          INT,
+      payload             JSONB,
       author_pubkey       TEXT,
       origin              TEXT NOT NULL DEFAULT 'local',
       fed_ts              BIGINT,

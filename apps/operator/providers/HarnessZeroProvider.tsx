@@ -36,7 +36,15 @@ import { SyncProvider } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
-const DEFAULT_POLL_INTERVAL_MS = 5_000;
+// Drift-repair tick, NOT a freshness source (EI-278). Under SSE, freshness
+// comes from invalidate-driven refetches; this interval only repairs pushes
+// lost to an SSE blip or a table missing its bridge entry. It was 5_000 —
+// which made every subscribed query REST-refetch every 5s on top of SSE
+// (~3.2 fetches/s sustained on /adv; the dominant workload behind the
+// 16GB webview OOM). Worst-case staleness for an unbridged table is now
+// this interval. The POLLING transport (degraded mode) keeps its own fast
+// cadence — there polling IS the freshness source.
+const DEFAULT_POLL_INTERVAL_MS = 180_000;
 
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
