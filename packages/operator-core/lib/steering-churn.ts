@@ -285,3 +285,24 @@ export async function sweepSteeringChurn(
   }
   return { checked: candidates.length, escalated };
 }
+
+/** Retention horizon for ledger rows — far beyond any detection window. */
+export const STEERING_CHURN_RETENTION_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Bound the append-only ledger: drop steer events older than the retention
+ * horizon (>> the detection window, so this never elides anything a check or
+ * sweep would read). Single Queen steers accumulate here forever otherwise.
+ * Called from the periodic sweep tick (kept separate from `sweepSteeringChurn`,
+ * which is `now`-parameterized for tests). Returns the row count deleted.
+ */
+export async function pruneSteeringChurnEvents(
+  opts: { now?: number; retentionMs?: number; sql?: Sql } = {},
+): Promise<number> {
+  const now = opts.now ?? Date.now();
+  const retentionMs = opts.retentionMs ?? STEERING_CHURN_RETENTION_MS;
+  const sql = opts.sql ?? getOrgPg().sql;
+  const cutoff = now - retentionMs;
+  const deleted = await sql`DELETE FROM harness_shared.steering_churn_events WHERE ts < ${cutoff}`;
+  return deleted.count ?? 0;
+}

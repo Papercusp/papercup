@@ -71,6 +71,35 @@ export interface SeedPackResult {
 /** Write concurrency — bounded so a 30-item seed doesn't stampede the embedder. */
 const SEED_CONCURRENCY = 4;
 
+/**
+ * Write ONE pack item into a hive pool — the single canonical row shape,
+ * shared by creation-time seeding (below) and the install/upgrade verbs
+ * (./manage). Returns the new ids.
+ */
+export async function rememberPackItem(opts: {
+  workspaceId: string;
+  hiveSlug: string;
+  pack: LearningPack;
+  item: LearningPack['items'][number];
+  createdBy?: string;
+}): Promise<string[]> {
+  const backend = getMemoryBackend();
+  const { ids } = await backend.remember(memoryTextOf(opts.item), {
+    scope: hiveScopeKey(opts.hiveSlug),
+    kind: opts.item.kind,
+    verbatim: true,
+    metadata: {
+      scope: 'hive',
+      hive_slug: opts.hiveSlug,
+      workspace_id: opts.workspaceId,
+      created_by: opts.createdBy ?? 'system',
+      applies_to: opts.item.appliesTo,
+      ...provenanceOf(opts.pack, opts.item),
+    },
+  });
+  return ids;
+}
+
 export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackResult> {
   const { pack } = input;
   const base = {

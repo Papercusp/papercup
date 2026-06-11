@@ -128,6 +128,16 @@ describe('voice relay (blind-relay over an isolated DHT testnet)', () => {
 
       // The relay leg was genuinely built: both peers attached sessions and
       // the blind-relay matched them into a pairing with forwarding streams.
+      // Poll before asserting: the relay's counters update asynchronously to
+      // the audio path, and on a loaded 2-core CI runner the second session's
+      // accept can lag the moment frames already flow (WI-123 round 5 read
+      // accepted=1 here while audio passed). Same time-tolerance the rest of
+      // the test gives discovery and frame arrival; the assertions are
+      // unchanged.
+      await until(() => {
+        const s = relay.stats() as Stats;
+        return s.sessions.accepted >= 2 && s.pairings.matched >= 1 && s.streams.opened >= 2;
+      }, 20_000, 'relay stats reflect both sessions');
       const stats = relay.stats() as Stats;
       expect(stats.sessions.accepted).toBeGreaterThanOrEqual(2);
       expect(stats.pairings.matched).toBeGreaterThanOrEqual(1);

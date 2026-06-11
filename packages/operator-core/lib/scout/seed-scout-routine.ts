@@ -21,10 +21,13 @@ import { activeWorkspaceId } from '../workspace-registry';
 const SLUG = process.env.SCOUT_ROUTINE_SLUG ?? 'papercup';
 /** Heartbeat cron — every 30 min. The handler's gate decides whether to actually run. */
 const CRON = '0 */30 * * * *';
-/** Cadence + budget overrides the handler reads from payload_template (else gate/budget defaults). */
+/** Cadence + budget overrides the handler reads from payload_template (else gate/budget defaults).
+ *  maxCostUsd must comfortably exceed the ideator stage's cost (~$1.25 at 6 opus
+ *  ideators, 2026-06-11) — budget checks run BETWEEN stages, so a cap the ideators
+ *  alone exhaust burns the whole spend while routing nothing (owner-set $3, 2026-06-11). */
 const PAYLOAD = {
   cadence: { minIntervalSec: 3600, idleThreshold: 0.5, frictionThreshold: 3 },
-  budget: { maxCostUsd: 1.0, maxIdeators: 6, maxCriticsPerIdea: 2 },
+  budget: { maxCostUsd: 3.0, maxIdeators: 6, maxCriticsPerIdea: 2 },
 };
 
 async function main(): Promise<void> {

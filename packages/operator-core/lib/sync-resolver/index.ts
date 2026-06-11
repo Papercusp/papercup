@@ -1517,6 +1517,55 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.hive — one hive's shared learnings pool (learning-packs P-008) ──
+  //
+  // Rows + per-pack rollups + organic count for `hive:<args.hive>`, pack
+  // provenance annotated (pristine/modified vs the resolvable pack). Returns a
+  // 1-element array (client reads data[0]); store-unreachable degrades to the
+  // `unavailable` snapshot, never a 500. Invalidated by seed/install/uninstall
+  // (`learning.hive`) + the generic memory mutations fire `userMemory.list`,
+  // so the view also refreshes on its manual reload.
+  'learning.hive': {
+    argsSchema: z.object({ hive: z.string().max(120).optional() }),
+    resolve: async (args) => {
+      const hive = typeof (args as { hive?: unknown })?.hive === 'string' ? (args as { hive: string }).hive : '';
+      if (!hive) return [{ hive: '', rows: [], packs: [], organicCount: 0 }];
+      const { readHiveLearnings } = await import('./learning-hive-read');
+      const { getMemoryBackend } = await import('../memory/backend');
+      const { loadLearningPack } = await import('../learning-packs/load-packs');
+      return [
+        await readHiveLearnings(hive, {
+          listPool: async (scope) => {
+            const backend = getMemoryBackend();
+            const avail = await backend.available();
+            if (!avail.ok) throw new Error(avail.reason);
+            return backend.list({ scope });
+          },
+          loadPack: (id) => loadLearningPack(id),
+        }),
+      ];
+    },
+  },
+
+  // ── learning.hiveList — the workspace's hives for the Learnings view picker ──
+  //
+  // kind:'hive' registry entries (slug only — display strings resolve client
+  // side). Cheap operator-state read; failure degrades to [].
+  'learning.hiveList': {
+    resolve: async () => {
+      try {
+        const { loadHarnessRegistry } = await import('../harness-registry');
+        const reg = await loadHarnessRegistry();
+        return reg.projects
+          .filter((p) => p.harness_kind === 'hive')
+          .map((p) => ({ slug: p.slug, remote: p.remote_hive === true }));
+      } catch (err) {
+        console.warn('[learning.hiveList] registry read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   // ── learningPacks.list — the pack catalog (learning-packs-2026-06-11 P-006) ──
   //
   // Resolvable learning packs across the builtin + installed roots (builtin

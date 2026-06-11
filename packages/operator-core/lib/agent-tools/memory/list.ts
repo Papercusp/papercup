@@ -43,6 +43,8 @@ export default defineTool({
   args: z.object({
     kind: z.enum(KINDS).optional(),
     harness_slug: z.string().optional(),
+    hive_slug: z.string().optional()
+      .describe("Also list the Hive's shared pool (seeded learnings + recorded conventions — learning-packs P-004)."),
   }),
   async handler(args) {
     const user = await getSessionUserOrDefault();
@@ -54,10 +56,14 @@ export default defineTool({
       };
     }
 
-    // User pool + (when requested) one harness pool. Kind filtering and
-    // the per-pool fan-out are the backend's concern.
+    // User pool + (when requested) one harness pool + one hive pool. Kind
+    // filtering and the per-pool fan-out are the backend's concern.
     const entries = await backend.list({
-      scope: [user.id, ...(args.harness_slug ? [`harness:${args.harness_slug}`] : [])],
+      scope: [
+        user.id,
+        ...(args.harness_slug ? [`harness:${args.harness_slug}`] : []),
+        ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
+      ],
       kind: args.kind,
     });
 

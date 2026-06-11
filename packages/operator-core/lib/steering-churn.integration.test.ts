@@ -28,6 +28,7 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import {
   checkAndEscalateSteeringChurn,
+  pruneSteeringChurnEvents,
   sweepSteeringChurn,
   type SteeringChurnEscalator,
 } from './steering-churn';
@@ -238,5 +239,22 @@ describe('sweepSteeringChurn', () => {
     expect(r.checked).toBe(1); // only F-6 has >= 2 distinct writers
     expect(r.escalated).toBe(1);
     expect(escalatedIds).toEqual(['F-6']);
+  });
+});
+
+describe('pruneSteeringChurnEvents', () => {
+  it('drops ledger rows older than the retention horizon, keeping recent ones', async () => {
+    await seedFeature('F-8');
+    // ts here are epoch-ms; "now" is the real wall clock, so 1000/2000 are ancient.
+    await steer('F-8', 1, 'local', 1000);
+    await steer('F-8', 2, 'local', 2000);
+    const recentTs = Date.now();
+    await steer('F-8', 3, 'local', recentTs);
+
+    const deleted = await pruneSteeringChurnEvents({ retentionMs: 60_000, sql: db.sql });
+    expect(deleted).toBe(2);
+    const rows = await ledgerRows('F-8');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].feature_order).toBe(3);
   });
 });

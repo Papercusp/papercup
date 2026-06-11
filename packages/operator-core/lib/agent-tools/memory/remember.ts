@@ -89,6 +89,8 @@ export default defineTool({
     kind: z.enum(KINDS),
     harness_slug: z.string().optional()
       .describe('Scope to a specific harness (project). Anyone with access to that harness will see this memory in their recall. Omit for a personal (per-user) fact.'),
+    hive_slug: z.string().optional()
+      .describe("Scope to a Hive's SHARED pool (learning-packs P-004) — every agent in every member harness of that hive recalls it. Use for discovered project conventions (test command, build path, design system) the whole hive should inherit. Mutually exclusive with harness_slug."),
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
     workspace: z.string().optional()
@@ -103,9 +105,19 @@ export default defineTool({
         content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
+    if (args.harness_slug && args.hive_slug) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'harness_slug and hive_slug are mutually exclusive — pick the pool the fact belongs to.' }) }],
+      };
+    }
     let scopeKey: string;
-    let scope: 'user' | 'harness';
-    if (args.harness_slug) {
+    let scope: 'user' | 'harness' | 'hive';
+    if (args.hive_slug) {
+      // learning-packs P-004: the Hive's shared pool — recalled by every agent
+      // in every member harness (injection resolves member→hive).
+      scopeKey = `hive:${args.hive_slug}`;
+      scope = 'hive';
+    } else if (args.harness_slug) {
       scopeKey = `harness:${args.harness_slug}`;
       scope = 'harness';
     } else {
@@ -124,6 +136,7 @@ export default defineTool({
       display_name: user.display_name,
     };
     if (args.harness_slug) metadata.harness_slug = args.harness_slug;
+    if (args.hive_slug) metadata.hive_slug = args.hive_slug;
 
     // Phase 4 P-015: extract structural anchors from the body so Layer 1
     // (P-019) can later validate them with zero LLM cost. Anchors are

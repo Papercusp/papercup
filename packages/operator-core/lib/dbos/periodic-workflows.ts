@@ -255,11 +255,12 @@ DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: 
 // never locally steered). At N=1 every steer is local → one writer → no churn.
 async function steeringChurnSweepTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    const { sweepSteeringChurn } = await import('../steering-churn');
+    const { sweepSteeringChurn, pruneSteeringChurnEvents } = await import('../steering-churn');
     const r = await sweepSteeringChurn();
     if (r.escalated > 0) {
       console.warn(`[steering-churn] swept ${r.checked} churned item(s); escalated ${r.escalated} to the owner`);
     }
+    await pruneSteeringChurnEvents();
   }, { name: 'steering-churn-sweep' });
 }
 const steeringChurnSweepWorkflow = DBOS.registerWorkflow(steeringChurnSweepTick, {

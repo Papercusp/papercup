@@ -36,8 +36,9 @@ import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
+import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 
-const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge'] as const;
+const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
 
 /** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip. */
@@ -110,6 +111,20 @@ const HOW_STEPS: Record<LView, { title: string; desc: string }[]> = {
     {
       title: 'Reuse',
       desc: 'The fleet reads them before grepping code. Open the Insights tab to browse the full library.',
+    },
+  ],
+  learnings: [
+    {
+      title: 'Seeded',
+      desc: 'A new hive starts with a learning pack — curated working wisdom copied into its shared memory, badged so you can always tell it apart from what the hive learned itself.',
+    },
+    {
+      title: 'Grown',
+      desc: 'Agents bind the pack’s discovery rules to your project (the test command, the design system) and record their own conventions into the same pool.',
+    },
+    {
+      title: 'Yours to edit',
+      desc: 'Everything here is editable — fix a learning that doesn’t fit your project, remove what you disagree with, add what’s missing. Agents treat the pool as strong defaults, not gospel.',
     },
   ],
 };
@@ -185,6 +200,16 @@ export default function LearningTab() {
             <BookOpen size={13} aria-hidden />
             <span>Knowledge<em>agent insights</em></span>
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={lview === 'learnings'}
+            className={`pc-learning__subtab${lview === 'learnings' ? ' is-active' : ''}`}
+            onClick={() => void setLview('learnings')}
+          >
+            <Brain size={13} aria-hidden />
+            <span>Learnings<em>hive memory</em></span>
+          </button>
         </div>
         <button
           type="button"
@@ -219,12 +244,14 @@ export default function LearningTab() {
         <ScoutView />
       ) : view === 'knowledge' ? (
         <KnowledgeView />
+      ) : view === 'learnings' ? (
+        <LearningsView />
       ) : (
         <ImprovementsView />
       )}
 
       <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights.
+        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it’s all working, and Scout hunts for ideas — captured knowledge lives in Knowledge / Insights, and each hive’s editable memory lives in Learnings.
       </p>
 
       <LearningStyles />
@@ -922,6 +949,182 @@ function KnowledgeView() {
           <ArrowUpRight size={13} aria-hidden /> Open the Insights library
         </button>
       </div>
+    </section>
+  );
+}
+
+// ─── Learnings view (a hive's editable shared memory — learning-packs P-008) ──
+
+type HiveLearningRowT = HiveLearningsSnapshot['rows'][number];
+
+function LearningsView() {
+  // Selection is URL state (agents drive it via ui:dispatch; the creation
+  // success card deep-links here with ?lhive=<slug>).
+  const [lhive, setLhive] = useQueryState('lhive', parseAsString.withDefault(''));
+  const [lpack, setLpack] = useQueryState('lpack', parseAsString.withDefault('all'));
+
+  const hiveList = useSyncQuery<{ slug: string; remote: boolean }>({
+    queryName: 'learning.hiveList',
+    args: {},
+    staleTime: 60_000,
+  });
+  const hives = hiveList.data ?? [];
+  const hive = lhive || hives[0]?.slug || '';
+
+  const sync = useSyncQuery<HiveLearningsSnapshot>({
+    queryName: 'learning.hive',
+    args: { hive },
+    enabled: hive.length > 0,
+    staleTime: 30_000,
+  });
+  const snap = sync.data?.[0];
+  const rows = snap?.rows ?? [];
+  const filtered =
+    lpack === 'all' ? rows : lpack === 'organic' ? rows.filter((r) => !r.packId) : rows.filter((r) => r.packId === lpack);
+
+  const forget = async (row: HiveLearningRowT) => {
+    if (!window.confirm(`Remove this learning?\n\n${row.text.slice(0, 160)}`)) return;
+    try {
+      await fetch(`/api/user/memory?id=${encodeURIComponent(row.id)}`, { method: 'DELETE' });
+    } finally {
+      sync.invalidate();
+    }
+  };
+  const edit = async (row: HiveLearningRowT) => {
+    const next = window.prompt('Edit this learning (agents recall the exact text):', row.text);
+    if (next == null || !next.trim() || next === row.text) return;
+    try {
+      await fetch('/api/user/memory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, text: next.trim() }),
+      });
+    } finally {
+      sync.invalidate();
+    }
+  };
+
+  const actionBtn: React.CSSProperties = {
+    background: 'none',
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    color: 'var(--fg-dim)',
+    cursor: 'pointer',
+    fontSize: 11,
+    padding: '1px 7px',
+  };
+
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__flow" aria-label="Learnings scope">
+        <label className="pc-learning__flowchip" style={{ gap: 6 }}>
+          <Brain size={11} aria-hidden />
+          hive
+          <select
+            aria-label="Hive"
+            value={hive}
+            onChange={(e) => void setLhive(e.target.value)}
+            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
+          >
+            {hives.length === 0 && <option value="">no hives yet</option>}
+            {hives.map((h) => (
+              <option key={h.slug} value={h.slug}>{h.slug}{h.remote ? ' (joined)' : ''}</option>
+            ))}
+          </select>
+        </label>
+        <label className="pc-learning__flowchip" style={{ gap: 6 }}>
+          show
+          <select
+            aria-label="Filter by origin"
+            value={lpack}
+            onChange={(e) => void setLpack(e.target.value)}
+            style={{ background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 12 }}
+          >
+            <option value="all">everything</option>
+            <option value="organic">hive-learned only</option>
+            {(snap?.packs ?? []).map((p) => (
+              <option key={p.packId} value={p.packId}>pack: {p.packId}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="pc-learning__scoreboard" aria-label="Learnings summary">
+        <Stat label="learnings" value={snap ? rows.length : '—'} hint="Everything in this hive's shared memory pool — every agent in the hive recalls these." />
+        {(snap?.packs ?? []).map((p) => (
+          <Stat
+            key={p.packId}
+            label={`${p.packId}${p.packVersion ? ` v${p.packVersion}` : ''}`}
+            value={`${p.present}${p.packTotal ? `/${p.packTotal}` : ''}`}
+            tone="auto"
+            hint={`Seeded from the ${p.packId} learning pack — ${p.present} present (${p.modified} edited), ${p.notPresent} not seeded or removed.`}
+          />
+        ))}
+        <Stat label="hive-learned" value={snap ? snap.organicCount : '—'} tone="good" hint="Conventions and gotchas this hive's agents (or you) recorded — not from a pack." />
+      </div>
+
+      <div className="pc-learning__sectionhead">
+        <h2>Shared memory</h2>
+        <button
+          type="button"
+          className="pc-learning__refresh"
+          aria-label="Reload the learnings"
+          disabled={sync.fetching}
+          onClick={() => sync.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
+      </div>
+
+      {hive === '' ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Brain size={20} aria-hidden />
+          <strong>No hives yet</strong>
+          <span>Create a hive and it starts with a default learning pack — curated working wisdom its agents inherit from the first wake. It appears here, fully editable.</span>
+        </div>
+      ) : sync.loading && !snap ? (
+        <p className="pc-learning__empty">Loading the hive&rsquo;s shared memory…</p>
+      ) : snap?.unavailable ? (
+        <p className="pc-learning__empty">Memory store unavailable — try reloading.</p>
+      ) : filtered.length === 0 ? (
+        <div className="pc-learning__empty pc-learning__empty--card">
+          <Brain size={20} aria-hidden />
+          <strong>Nothing here yet</strong>
+          <span>This hive&rsquo;s shared memory is empty for this filter. Seeded pack learnings and agent-recorded conventions both land here.</span>
+        </div>
+      ) : (
+        <ul className="pc-learning__list">
+          {filtered.map((r) => (
+            <li key={r.id} className="pc-learning__row" style={{ alignItems: 'flex-start' }}>
+              <span
+                className="pc-learning__sev"
+                style={{ background: r.packId ? '#818cf8' : '#34d399', marginTop: 5 }}
+                aria-hidden
+              />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 12.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{r.text}</span>
+                <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 3, fontSize: 10.5, color: 'var(--fg-mute)' }}>
+                  {r.packId ? (
+                    <span title={`Seeded from the ${r.packId} learning pack${r.packState === 'modified' ? ' — edited since seeding' : ''}`}>
+                      <span style={{ border: '1px solid var(--border)', borderRadius: 3, padding: '0 4px' }}>
+                        pack: {r.packId}{r.packVersion ? ` v${r.packVersion}` : ''}
+                      </span>
+                      {r.packState === 'modified' ? ' · edited' : ''}
+                    </span>
+                  ) : (
+                    <span title={`Recorded by ${r.createdBy ?? 'an agent'} — this hive's own learning`}>hive-learned{r.createdBy ? ` · ${r.createdBy}` : ''}</span>
+                  )}
+                  {r.kind ? <span>{r.kind}</span> : null}
+                </span>
+              </span>
+              <span style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                <button type="button" style={actionBtn} onClick={() => void edit(r)} title="Edit the learning text">edit</button>
+                <button type="button" style={actionBtn} onClick={() => void forget(r)} title="Remove this learning from the hive's memory">remove</button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

@@ -148,6 +148,7 @@ describe('boot ensure → the boundary is LIVE with PG-grant sovereignty intact'
         signer: B.signer,
       },
       drainOnWire: false,
+      sql: db.sql, // default wiring deps (ask ledger etc.) stay in the test DB
     };
 
     // ── BOOT: the ensure wires the published hive; the private one stays dark.
