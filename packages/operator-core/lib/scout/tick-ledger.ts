@@ -63,3 +63,71 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
        ${input.ideasGenerated ?? 0}, ${input.ideasRouted ?? 0}, ${input.ideasDeduped ?? 0},
        ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb)`;
 }
+
+/**
+ * One tick row read back from the ledger — the camelCase mirror of the
+ * migration-208 columns. Extends {@link ScoutTickRecord} so a read row IS a
+ * valid pure-core tick snapshot (quality-metrics consumes exactly this shape).
+ */
+export interface ScoutTickRow extends ScoutTickRecord {
+  /** The harness the tick ran for, when recorded. */
+  installSlug?: string;
+  /** ISO timestamp of the tick. */
+  tickAt: string;
+}
+
+/** Read scope for {@link readScoutTicks}. */
+export interface ReadScoutTicksOpts {
+  /** Override the active workspace (tests). */
+  workspaceId?: string;
+  /** Filter to one harness's ticks. */
+  installSlug?: string;
+  /** Max rows, newest-first. Default 500 — the standing-quality window. */
+  limit?: number;
+}
+
+interface TickRow {
+  install_slug: string | null;
+  tick_at: string | Date;
+  status: string;
+  gate: string | null;
+  ideas_generated: number | null;
+  ideas_routed: number | null;
+  ideas_deduped: number | null;
+  budget_used_usd: string | number | null;
+  detail: Record<string, unknown> | null;
+}
+
+/**
+ * Read the last N tick rows (newest-first) for a workspace — the read seam the
+ * Scout standing quality-metrics module (quality-metrics.ts) snapshots its tick
+ * window from. Mirrors {@link readRoutedIdeas} in routed-ledger.ts: thin SQL,
+ * camelCase mapping, no derivation (the pure math lives in quality-metrics.ts).
+ */
+export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<ScoutTickRow[]> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const limit = opts.limit ?? 500;
+  const rows = await sql<TickRow[]>`
+    SELECT install_slug, tick_at, status, gate, ideas_generated, ideas_routed,
+           ideas_deduped, budget_used_usd, detail
+      FROM harness_shared.scout_ticks
+     WHERE workspace_id = ${ws}
+       ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
+     ORDER BY tick_at DESC
+     LIMIT ${limit}`;
+  return rows.map((r) => {
+    const spend = r.budget_used_usd == null ? null : Number(r.budget_used_usd);
+    return {
+      status: r.status as ScoutTickStatus,
+      ...(r.gate ? { gate: r.gate } : {}),
+      ideasGenerated: r.ideas_generated ?? 0,
+      ideasRouted: r.ideas_routed ?? 0,
+      ideasDeduped: r.ideas_deduped ?? 0,
+      ...(spend != null && Number.isFinite(spend) ? { budgetUsedUsd: spend } : {}),
+      ...(r.detail && typeof r.detail === 'object' ? { detail: r.detail } : {}),
+      ...(r.install_slug ? { installSlug: r.install_slug } : {}),
+      tickAt: r.tick_at instanceof Date ? r.tick_at.toISOString() : new Date(r.tick_at).toISOString(),
+    };
+  });
+}

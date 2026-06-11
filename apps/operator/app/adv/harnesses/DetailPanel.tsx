@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { openFeatureChat } from '@papercusp/papercup-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
@@ -252,10 +252,25 @@ function WorkItemDetail({
   onSelect: (id: string) => void;
   onBack?: () => void;
 }) {
+  // Field values use the same canonical renderings as the WorkItemsPanel grid:
+  // the kind chip, the family-aware status pill, and the severity pill.
   const fields: Array<[string, React.ReactNode]> = [
-    ['Kind', `${workItem.kind} (${workItem.family} family)`],
-    ['State', workItem.state],
-    ['Severity', workItem.severity ?? '—'],
+    [
+      'Kind',
+      <>
+        <span className="pc-adv-detail__kind-chip">{workItem.kind}</span>{' '}
+        <span className="pc-adv-detail__muted">({workItem.family} family)</span>
+      </>,
+    ],
+    [
+      'State',
+      workItem.family === 'issue' ? (
+        <IssueStatusPill status={workItem.state} size="xs" />
+      ) : (
+        <StatusPill status={workItem.state as HarnessStatus} size="xs" />
+      ),
+    ],
+    ['Severity', workItem.severity ? <SeverityPill severity={workItem.severity} size="xs" /> : '—'],
     [
       'Assignee',
       workItem.assignee
@@ -280,15 +295,15 @@ function WorkItemDetail({
       <div className="pc-adv-detail__body">
         <div className="pc-adv-detail__section">
           {fields.map(([label, value]) => (
-            <div key={label} className="pc-adv-detail__status-row">
-              <span className="pc-adv-detail__muted">{label}</span>
+            <div key={label} className="pc-adv-detail__field-row">
+              <span className="pc-adv-detail__field-label">{label}</span>
               <span>{value}</span>
             </div>
           ))}
           {workItem.planSlug ? (
-            <div className="pc-adv-detail__status-row">
-              <span className="pc-adv-detail__muted">Plan</span>
-              <code className="pc-adv-detail__code">{workItem.planSlug}</code>
+            <div className="pc-adv-detail__field-row">
+              <span className="pc-adv-detail__field-label">Plan</span>
+              <code className="pc-adv-detail__pointer">{workItem.planSlug}</code>
             </div>
           ) : null}
         </div>
@@ -670,7 +685,7 @@ function FeatureDetail({
                 }
               }}
             >
-              💬 Chat
+              <MessageCircle size={13} aria-hidden /> Chat
             </button>
             <button type="button" disabled={working !== null} onClick={resetFeature}>
               Reset
@@ -892,6 +907,7 @@ function DetailStyles() {
         flex-shrink: 0;
         padding: 14px 18px 12px;
         border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 40%);
       }
       .pc-adv-detail__back {
         display: inline-flex;
@@ -932,8 +948,13 @@ function DetailStyles() {
         flex-wrap: wrap;
       }
       .pc-adv-detail__attempts {
-        font-size: 11px;
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 1px 7px;
+        border-radius: 999px;
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
         color: var(--fg-mute, #7f9bb4);
+        white-space: nowrap;
       }
       .pc-adv-detail__plan,
       .pc-adv-detail__link {
@@ -962,6 +983,46 @@ function DetailStyles() {
         display: flex;
         flex-direction: column;
         gap: 16px;
+      }
+      /* The status Select's simple row container. */
+      .pc-adv-detail__status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      /* Label / value field rows (WorkItemDetail) — previously unstyled:
+         the spans rendered run-together inline. */
+      .pc-adv-detail__field-row {
+        display: grid;
+        grid-template-columns: 88px 1fr;
+        gap: 12px;
+        align-items: baseline;
+        padding: 3px 0;
+        font-size: 12.5px;
+        color: var(--fg, #e7f7ff);
+      }
+      .pc-adv-detail__field-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-adv-detail__kind-chip {
+        font-size: 9.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        color: var(--fg-mute, #7f9bb4);
+        white-space: nowrap;
+      }
+      /* Hairline rhythm between stacked sections — scannability without cards. */
+      .pc-adv-detail__section + .pc-adv-detail__section {
+        border-top: 1px solid color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 45%);
+        padding-top: 14px;
       }
       .pc-adv-detail__section h3 {
         margin: 0 0 6px;
@@ -1217,6 +1278,9 @@ function DetailStyles() {
         flex-wrap: wrap;
       }
       .pc-adv-detail__actions button {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
         padding: 6px 12px;
         font-size: 12px;
         font-weight: 600;

@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781148755467
-mtime_ms: 1781148755483
+last_run_ts: 1781153765360
+mtime_ms: 1781153765376
 name: "Fresh empty PG reaches schema head via baseline + every migration, idempotently"
-payload: {"file":"apps/operator/test/fresh-migrate.integration.test.ts","kind":"contract","name":"Fresh empty PG reaches schema head via baseline + every migration, idempotently","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781148755467,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-001"],"durationMs":0,"planItemIds":["P-001"]}
+payload: {"file":"apps/operator/test/fresh-migrate.integration.test.ts","kind":"contract","name":"Fresh empty PG reaches schema head via baseline + every migration, idempotently","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781153765360,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-001"],"durationMs":0,"planItemIds":["P-001"]}
 phase: "staging"
 status: "passing"
 test_id: "boot-fresh-migrate"

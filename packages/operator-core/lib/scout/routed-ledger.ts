@@ -91,7 +91,8 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
     VALUES
       (${input.ideaId}, ${ws}, ${input.harnessSlug}, ${input.cycleId ?? null}, ${input.lens},
        ${input.rail}, ${input.routedRef}, ${input.title ?? null},
-       ${sql.json(input.addressesPatternRefs ?? null)}, ${routedAt})
+       ${input.addressesPatternRefs ? JSON.stringify(input.addressesPatternRefs) : null}::text::jsonb,
+       ${routedAt})
     ON CONFLICT (idea_id) DO UPDATE SET
       harness_slug = EXCLUDED.harness_slug,
       cycle_id = EXCLUDED.cycle_id,

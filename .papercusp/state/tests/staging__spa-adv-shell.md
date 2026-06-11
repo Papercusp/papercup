@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781148755467
-mtime_ms: 1781148755483
+last_run_ts: 1781153765360
+mtime_ms: 1781153765376
 name: "AdvShell: tab strip, selection restore precedence, share/create flows (18 tests)"
-payload: {"file":"apps/operator-vite/src/components/adv/AdvShell.test.tsx","kind":"contract","name":"AdvShell: tab strip, selection restore precedence, share/create flows (18 tests)","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781148755467,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-027"],"durationMs":0,"planItemIds":["P-027"]}
+payload: {"file":"apps/operator-vite/src/components/adv/AdvShell.test.tsx","kind":"contract","name":"AdvShell: tab strip, selection restore precedence, share/create flows (18 tests)","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781153765360,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-027"],"durationMs":0,"planItemIds":["P-027"]}
 phase: "staging"
 status: "passing"
 test_id: "spa-adv-shell"
