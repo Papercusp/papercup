@@ -6,14 +6,21 @@
  * (instrumentation-node.ts → applyPendingMigrations).
  */
 
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it, afterAll } from 'vitest';
 
-const BASE = process.env.OPERATOR_BASE ?? 'http://localhost:3055';
+// 127.0.0.1, not localhost: Node's fetch resolves `localhost` to ::1 (IPv6)
+// first, but the operator binds IPv4 only — a `localhost` BASE makes the probe
+// ECONNREFUSE and the suite skip even when the operator IS up (same trap the
+// desktop devUrl + main.rs runtime-base avoid).
+const BASE = process.env.OPERATOR_BASE ?? 'http://127.0.0.1:3055';
 const TEST_LAYOUT = `vitest:dock-${Date.now()}`;
 const TEST_SLUG = `vitest-slug-${Date.now()}`;
 
-let operatorUp = false;
-
+// Reachability probe at module load so `describe.skipIf` can genuinely SKIP the
+// suite when no operator is up (CI / a dev box without `bin/dev`). The previous
+// `it('skip if operator not reachable')` + `it.runIf(operatorUp || true)` +
+// early-return pattern produced PASSING no-ops (and its console.warn failed the
+// CI integration config that treats console output as an error — WI-123).
 async function tryFetch(path: string): Promise<Response | null> {
   try {
     return await fetch(`${BASE}${path}`);
@@ -22,10 +29,8 @@ async function tryFetch(path: string): Promise<Response | null> {
   }
 }
 
-beforeAll(async () => {
-  const r = await tryFetch('/api/dock-layouts/default');
-  operatorUp = !!r && r.ok;
-});
+const probe = await tryFetch('/api/dock-layouts/default');
+const operatorUp = !!probe && probe.ok;
 
 afterAll(async () => {
   if (!operatorUp) return;
@@ -34,16 +39,8 @@ afterAll(async () => {
   }).catch(() => {});
 });
 
-describe.runIf(true)('/api/dock-layouts integration', () => {
-  it('skip if operator not reachable', async () => {
-    if (!operatorUp) {
-      console.warn(`operator at ${BASE} not reachable; skipping`);
-    }
-    expect(true).toBe(true);
-  });
-
-  it.runIf(operatorUp || true)('GET seeds default layout on miss', async () => {
-    if (!operatorUp) return;
+describe.skipIf(!operatorUp)('/api/dock-layouts integration', () => {
+  it('GET seeds default layout on miss', async () => {
     const r = await fetch(`${BASE}/api/dock-layouts/${encodeURIComponent(TEST_LAYOUT)}`);
     expect(r.status).toBe(200);
     const body = await r.json();
@@ -52,8 +49,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(body.layoutJson?.root).toBeDefined();
   });
 
-  it.runIf(operatorUp || true)('PUT then GET round-trip', async () => {
-    if (!operatorUp) return;
+  it('PUT then GET round-trip', async () => {
     const layout = {
       schemaVersion: 1,
       root: {
@@ -78,8 +74,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(getBody.updatedTs).toBe(putBody.updatedTs);
   });
 
-  it.runIf(operatorUp || true)('PUT with bad schemaVersion → 400', async () => {
-    if (!operatorUp) return;
+  it('PUT with bad schemaVersion → 400', async () => {
     const r = await fetch(`${BASE}/api/dock-layouts/${encodeURIComponent(TEST_LAYOUT)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -88,8 +83,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(r.status).toBe(400);
   });
 
-  it.runIf(operatorUp || true)('PUT with If-Match: stale → 409', async () => {
-    if (!operatorUp) return;
+  it('PUT with If-Match: stale → 409', async () => {
     // Establish baseline
     const layout = {
       schemaVersion: 1,
@@ -109,8 +103,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(stale.status).toBe(409);
   });
 
-  it.runIf(operatorUp || true)('DELETE → GET reseeds', async () => {
-    if (!operatorUp) return;
+  it('DELETE → GET reseeds', async () => {
     const del = await fetch(`${BASE}/api/dock-layouts/${encodeURIComponent(TEST_LAYOUT)}`, {
       method: 'DELETE',
     });
@@ -120,8 +113,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(body.layoutJson.schemaVersion).toBe(1);
   });
 
-  it.runIf(operatorUp || true)('opaque schemaVersion=0 round-trips', async () => {
-    if (!operatorUp) return;
+  it('opaque schemaVersion=0 round-trips', async () => {
     const opaque = { schemaVersion: 0, dockviewJson: { grid: { root: { type: 'branch', data: [] } } } };
     const r = await fetch(`${BASE}/api/dock-layouts/${encodeURIComponent(TEST_LAYOUT)}`, {
       method: 'PUT',
@@ -133,8 +125,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(body.schemaVersion).toBe(0);
   });
 
-  it.runIf(operatorUp || true)('phase-last-used: PUT then GET', async () => {
-    if (!operatorUp) return;
+  it('phase-last-used: PUT then GET', async () => {
     const put = await fetch(
       `${BASE}/api/harness-phase-last-used/${encodeURIComponent(TEST_SLUG)}`,
       {
@@ -151,8 +142,7 @@ describe.runIf(true)('/api/dock-layouts integration', () => {
     expect(body.phase).toBe('testing');
   });
 
-  it.runIf(operatorUp || true)('phase-last-used: GET on unknown slug returns null', async () => {
-    if (!operatorUp) return;
+  it('phase-last-used: GET on unknown slug returns null', async () => {
     const r = await fetch(
       `${BASE}/api/harness-phase-last-used/${encodeURIComponent(`never-${Date.now()}`)}`,
     );

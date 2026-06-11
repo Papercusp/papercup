@@ -1190,6 +1190,10 @@ pub struct App {
     /// Consecutive roster refreshes the watched agent has been absent/stale —
     /// at 2 the watch pane exits (its `--close-on-exit` pane then closes).
     pub watch_misses: u8,
+    /// Per-bee wake-pane lifecycle (owner ask 2026-06-11): consecutive roster
+    /// misses for an Owner-scoped wake-pane's agent — the wake-pane analog of
+    /// `watch_misses` (2 misses + a drained queue → this instance exits).
+    pub wake_owner_misses: u8,
     /// The watched bee's accumulated raw output (the "thinking" feed) — a
     /// capped ring fed by the bee-output poll; newest at the END.
     pub watch_output: String,
@@ -1445,6 +1449,7 @@ impl App {
             bee: crate::bee::BeeState::default(),
             watch: None,
             watch_misses: 0,
+            wake_owner_misses: 0,
             watch_output: String::new(),
             watch_output_offset: 0,
             watch_input: String::new(),
@@ -2449,16 +2454,37 @@ impl App {
             // (zellij has no per-pane color — D-008 — so the glyph carries the type).
             let title =
                 crate::agent_pane_kind::glyph_prefixed_title(&title, kind, self.hive_agent_tabs);
+            let rank = kind.map(|k| k.group_rank()).unwrap_or(u8::MAX);
             out.push((
                 // P-011: group same-type panes — the batch appends in group-rank
                 // order so bees land together, planners together. Unknown → last.
-                kind.map(|k| k.group_rank()).unwrap_or(u8::MAX),
+                rank,
                 // P-004: flag-on, a claude bee resumes as a real Claude TUI
                 // (claude --resume <session_id>); else the read-only watch-pane.
                 crate::mux::PaneSpec::new(r.dock_pane_argv(self.hive_agent_tabs))
                     .titled(title)
                     .stacked_autoclose(),
             ));
+            // Owner ask 2026-06-11: every bee pane gets a COMPANION wake-queue
+            // pane (`pui wake-pane <owner>`) so its staged wakes are reviewable
+            // right next to it. Flag-on only (the wake UI family rides
+            // hive-agent-tabs). Same rank, pushed immediately after its bee —
+            // the stable sort keeps the pair adjacent. The pane SELF-EXITS when
+            // its bee is gone AND its queue is drained (wake_pane_should_exit),
+            // so departed bees don't accrete dead panes.
+            if self.hive_agent_tabs {
+                let glyph = kind.map(|k| k.glyph()).unwrap_or("🐝");
+                out.push((
+                    rank,
+                    crate::mux::PaneSpec::new(vec![
+                        "pui".to_string(),
+                        "wake-pane".to_string(),
+                        r.owner_id.clone(),
+                    ])
+                    .titled(format!("{glyph}⏸ {}", short_owner(&r.owner_id)))
+                    .stacked_autoclose(),
+                ));
+            }
             // Record the owner directly — the flag-on argv is `claude --resume
             // <session_id>` (no owner at argv[2]), so parsing argv would dedup on
             // the wrong key and re-pane the bee every refresh.
@@ -2559,6 +2585,18 @@ impl App {
     /// consecutive roster refreshes (one miss can be churn; two is gone).
     pub fn watch_should_exit(&self) -> bool {
         self.watch.is_some() && self.watch_misses >= 2
+    }
+
+    /// Per-bee wake-pane exit rule (owner ask 2026-06-11): an Owner-scoped
+    /// `pui wake-pane <owner>` exits once its agent has been gone for 2
+    /// consecutive roster refreshes AND its queue is drained — a dead bee's
+    /// staged wakes stay reviewable until released/skipped. The dock's static
+    /// panes (fleet-wide All, the queen's --queen) never self-exit.
+    pub fn wake_pane_should_exit(&self) -> bool {
+        matches!(self.wake_filter, WakeFilter::Owner(_))
+            && self.wake_owner_misses >= 2
+            && !self.wake_board.loading
+            && self.wake_board.total() == 0
     }
 
     /// The tabs the strip shows + switch keys may reach — the full `Tab::ALL`
@@ -3371,6 +3409,18 @@ impl App {
                         self.watch_misses.saturating_add(1)
                     };
                     return Action::Render;
+                }
+                // Per-bee wake pane (owner ask 2026-06-11): an Owner-scoped
+                // wake-pane tracks its agent's roster presence the same way —
+                // the run loop exits this instance once the agent is gone AND
+                // the queue is drained (wake_pane_should_exit).
+                if let WakeFilter::Owner(id) = &self.wake_filter {
+                    let present = self.roster.iter().any(|r| &r.owner_id == id && !r.stale);
+                    self.wake_owner_misses = if present {
+                        0
+                    } else {
+                        self.wake_owner_misses.saturating_add(1)
+                    };
                 }
                 // Reactively open work-area panes for new LOCAL workbench launches
                 // (pui-reactive-session-panes D-006). The pure diff returns the
@@ -5341,16 +5391,56 @@ mod tests {
         ]);
         let specs = a.watch_panes_to_open();
         let titles: Vec<&str> = specs.iter().map(|s| s.title.as_deref().unwrap_or("")).collect();
-        assert_eq!(specs.len(), 4);
-        // Bees (rank 2) before planners (rank 3); roster order within a group.
-        assert!(titles[0].starts_with("🐝") && titles[1].starts_with("🐝"), "{titles:?}");
-        assert!(titles[2].starts_with("📋") && titles[3].starts_with("📋"), "{titles:?}");
+        // Flag-on, every agent pane has a COMPANION wake-queue pane (owner ask
+        // 2026-06-11) directly after it — 4 agents ⇒ 8 specs.
+        assert_eq!(specs.len(), 8);
+        // Bees (rank 2) before planners (rank 3); roster order within a group;
+        // each companion adjacent to its agent.
+        assert!(titles[0].starts_with("🐝") && titles[2].starts_with("🐝"), "{titles:?}");
+        assert!(titles[1].starts_with("🐝⏸") && titles[3].starts_with("🐝⏸"), "{titles:?}");
+        assert!(titles[4].starts_with("📋") && titles[6].starts_with("📋"), "{titles:?}");
+        assert!(titles[5].starts_with("📋⏸") && titles[7].starts_with("📋⏸"), "{titles:?}");
+        // The companion runs the per-agent wake board for ITS owner.
+        assert_eq!(specs[1].argv, vec!["pui", "wake-pane", "b-1"]);
+        assert!(specs[1].close_on_exit, "companion must autoclose with the dock");
         // The dedup set records OWNER ids (not argv[2], which is a session id for
         // a flag-on claude --resume bee) — a re-refresh opens nothing.
         for o in ["p-1", "b-1", "p-2", "b-2"] {
             assert!(a.watched_panes.contains(o), "owner {o} not recorded");
         }
         assert!(a.watch_panes_to_open().is_empty(), "second refresh must dedup");
+    }
+
+    #[test]
+    fn owner_scoped_wake_pane_exits_only_when_bee_gone_AND_queue_drained() {
+        let mut a = App::new();
+        a.wake_filter = WakeFilter::Owner("b-1".into());
+        a.update(Event::WakeBoard {
+            result: Ok((vec![board_group("b-1", vec![pending_wake(7, "boot")])], None)),
+        });
+        let bee = fleet_bee("b-1", "bee");
+        // Present → no exit, misses reset.
+        a.update(Event::Roster { active: vec![bee.clone()], pending: vec![] });
+        assert!(!a.wake_pane_should_exit());
+        // Gone twice → still NO exit: the queue holds a reviewable wake.
+        a.update(Event::Roster { active: vec![], pending: vec![] });
+        a.update(Event::Roster { active: vec![], pending: vec![] });
+        assert_eq!(a.wake_owner_misses, 2);
+        assert!(!a.wake_pane_should_exit(), "drain gate: staged wakes keep the pane");
+        // Queue drains → NOW it exits.
+        a.update(Event::WakeBoard { result: Ok((vec![], None)) });
+        assert!(a.wake_pane_should_exit());
+        // A returning bee resets the misses (churn tolerance).
+        a.update(Event::Roster { active: vec![bee], pending: vec![] });
+        assert!(!a.wake_pane_should_exit());
+        assert_eq!(a.wake_owner_misses, 0);
+        // The static panes never self-exit, drained or not.
+        let mut q = App::new();
+        q.wake_filter = WakeFilter::Queen;
+        q.update(Event::WakeBoard { result: Ok((vec![], None)) });
+        q.update(Event::Roster { active: vec![], pending: vec![] });
+        q.update(Event::Roster { active: vec![], pending: vec![] });
+        assert!(!q.wake_pane_should_exit());
     }
 
     fn topo_pane(id: u32, title: &str) -> pui_companion_proto::PaneNode {

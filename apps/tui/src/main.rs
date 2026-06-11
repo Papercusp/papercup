@@ -381,6 +381,12 @@ async fn run<B: Backend>(
         if app.watch_should_exit() {
             break;
         }
+        // Per-bee wake-pane lifecycle (owner ask 2026-06-11): an Owner-scoped
+        // wake-pane exits once its bee is gone AND its queue is drained — the
+        // pane was opened close-on-exit, so it leaves the dock stack on its own.
+        if app.wake_pane_should_exit() {
+            break;
+        }
 
         if voice_dropped {
             // Release the now-dead stream + mic so the next Connect re-establishes
