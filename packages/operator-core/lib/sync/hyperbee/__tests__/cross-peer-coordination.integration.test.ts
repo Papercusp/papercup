@@ -21,6 +21,15 @@
  *   4. Both Swarms then contend for one work-item, routing the claim to that
  *      federated-presence-elected authority over the real `HttpPeerRpcTransport` →
  *      the authority's single real store grants EXACTLY ONE (cross-peer exactly-once).
+ *   5. FAILOVER: the elected authority Swarm departs; its federated presence row
+ *      ages past `staleMs` while the survivor keeps heartbeating → the survivor's
+ *      election over its OWN federated roster names ITSELF (failover by definition,
+ *      D-005 — no election round-trip), and a new claim grants locally.
+ *   6. PARTITION (D-004): the authority stays in the fresh roster but its RPC leg is
+ *      unreachable → the non-authority Swarm FAILS OPEN (local-advisory grant in its
+ *      OWN store, loud warning), the documented optimistic split-brain window is
+ *      real (both stores can hold the same item until git-merge), and on heal the
+ *      claim path routes `remote-authority` again.
  *
  * Proof boundary: REAL corestores/logs, REAL Hyperswarm/Noise over a local testnet
  * DHT, REAL announce signature verification, REAL presence projection → PG, REAL

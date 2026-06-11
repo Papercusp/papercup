@@ -247,11 +247,19 @@ function WorkingView({ slug }: { slug: string }) {
       headerText: 'Live',
       width: '40px',
       align: 'right',
-      render: ({ row }) => (
-        <Tooltip label={row.heartbeatAt ?? 'no heartbeat'}>
-          <span className={`pc-adv-agents__dot${row.alive ? ' is-running' : ''}`} aria-hidden />
-        </Tooltip>
-      ),
+      render: ({ row }) => {
+        // The 3-state dot (live/idle/stale — see LIVENESS_LEGEND) derived from
+        // the row's own heartbeat, same scale as the sessions roster. A row
+        // with no heartbeat reads stale.
+        const liveness = livenessFromHeartbeat(row.heartbeatAt ?? '');
+        return (
+          <Tooltip label={`${liveness} — heartbeat ${row.heartbeatAt ?? 'never'}`}>
+            <span style={{ display: 'inline-flex' }}>
+              <LivenessDot liveness={liveness} title="" />
+            </span>
+          </Tooltip>
+        );
+      },
     },
   ];
 
@@ -493,6 +501,7 @@ function PanelStyles() {
         font-size: 10px; color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-agents__legend-item { display: inline-flex; align-items: center; gap: 3px; cursor: default; }
+      .pc-adv-agents__legend-gap { width: 6px; border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%)); }
       .pc-adv-agents__kind { font-size: 13px; line-height: 1; }
       .pc-adv-agents__kind.is-dead { opacity: 0.45; filter: grayscale(0.8); }
       .pc-adv-agents__doing {
