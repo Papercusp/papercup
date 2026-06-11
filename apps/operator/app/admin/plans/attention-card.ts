@@ -102,15 +102,23 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   };
 }
 
-/** Fire-and-forget loop resume — POST the harness launch endpoint so the
- *  orchestrator picks up where the human just unblocked it. Mirrors
- *  `InboxItemActions.resumeLoop`. */
-function resumeLoop(harnessSlug: string | null): void {
-  if (!harnessSlug) return;
-  void fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
+/** Fire-and-forget brain nudge — the human just unblocked something, so wake
+ *  the Queen now (`hive:wake`, floor-debounced) instead of waiting for her
+ *  next armed wake. Replaces the retired `/harness/:slug/launch` legacy
+ *  run-loop kick (the orchestrator bin was archived 2026-06-06). No `harness`
+ *  arg: the hive home slug is resolved server-side (PAPERCUSP_HIVE_HOME_SLUG)
+ *  — the attention item's harness may be a managed harness, not the hive
+ *  home. Unresolvable → harmless no-op; the always-armed-wake invariant
+ *  (start-hive-wake-orchestration D-002) still guarantees pickup. */
+function resumeLoop(_harnessSlug: string | null): void {
+  void fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify({
+      name: 'hive:wake',
+      args: { source: 'user', reason: 'Attention item resolved — pick up the unblocked work' },
+      confirmed: true,
+    }),
   }).catch(() => {});
 }
 

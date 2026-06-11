@@ -30,7 +30,16 @@ import {
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
 
-const LAUNCH = (slug: string) => `/api/harness/${slug}/launch?phase=staging`;
+/** The resume-on-resolve nudge is now a floor-debounced Queen wake through the
+ *  palette bridge (the legacy /harness/:slug/launch run-loop kick is retired). */
+const expectQueenWake = () =>
+  expect(fetch).toHaveBeenCalledWith(
+    '/api/agent-mcp/run-tool',
+    expect.objectContaining({
+      method: 'POST',
+      body: expect.stringContaining('"hive:wake"'),
+    }),
+  );
 
 function item(overrides: Partial<AttentionItem>): AttentionItem {
   return {
@@ -200,10 +209,10 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     expect(r.resolved).toBe(true);
   });
 
-  it('plan-item Resolve → setItemStatus done AND resumes the loop', async () => {
+  it('plan-item Resolve → setItemStatus done AND nudges the Queen awake', async () => {
     const r = await resolveAttentionAction(needsHuman, 'mark-done');
     expect(setItemStatus).toHaveBeenCalledWith({ slug: 'p', itemId: 'P-7', status: 'done' });
-    expect(fetch).toHaveBeenCalledWith(LAUNCH('h'), expect.objectContaining({ method: 'POST' }));
+    expectQueenWake();
     expect(r.resolved).toBe(true);
   });
 
@@ -240,11 +249,11 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
 });
 
 describe('answerAttentionItem (P-021 Answer flow parity)', () => {
-  it('records a decision, marks done, and resumes', async () => {
+  it('records a decision, marks done, and nudges the Queen awake', async () => {
     const r = await answerAttentionItem(needsHuman, 'do the thing');
     expect(addPlanDecision).toHaveBeenCalledWith({ slug: 'p', title: 'Answer to P-7', body: 'do the thing', refs: ['P-7'] });
     expect(setItemStatus).toHaveBeenCalledWith({ slug: 'p', itemId: 'P-7', status: 'done' });
-    expect(fetch).toHaveBeenCalledWith(LAUNCH('h'), expect.objectContaining({ method: 'POST' }));
+    expectQueenWake();
     expect(r.resolved).toBe(true);
   });
 
