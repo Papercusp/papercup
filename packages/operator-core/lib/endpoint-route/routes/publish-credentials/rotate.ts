@@ -21,6 +21,7 @@ import {
   manifestSha256Hex,
   mintJwt,
 } from '@papercusp/publish-auth';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default defineTool({
@@ -29,6 +30,8 @@ export default defineTool({
   // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
     if (blocked) return blocked;
     const c = await readPublishCredentials();

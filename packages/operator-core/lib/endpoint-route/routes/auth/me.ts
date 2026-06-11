@@ -18,6 +18,7 @@ import {
 } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 const get = defineTool({
   method: 'GET',
@@ -99,8 +100,15 @@ const get = defineTool({
 const patch = defineTool({
   method: 'PATCH',
   path: '/auth/me',
-  auth: 'public',
+  // loopback (not public): the cookie-less desktop webview (EI-338) presents a
+  // loopback Host, so this tier admits it while blocking off-box callers — and
+  // the default-user fallback below is then only reachable from the local box.
+  auth: 'loopback',
   async handler(req) {
+    // Belt-and-suspenders against a cross-origin browser page POSTing to the
+    // loopback port (the Host check alone can't see Origin).
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     // Default-user fallback, matching GET above: the desktop webview is
     // cookie-less (EI-338), so a strict session check left display-name
     // editing permanently broken on desktop installs.

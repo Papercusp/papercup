@@ -11,6 +11,7 @@
  * recommended follow-up, deliberately not folded into the mechanical port.
  */
 import { readCredentials, writeCredentials, maskCredentials } from '../../../credentials';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
@@ -30,9 +31,12 @@ export default [
     path: '/credentials',
     // unverified-loopback: the desktop webview is cookie-less (EI-338) and
     // resolves as bare loopback; without it the API-keys settings page 403s.
-    // Remote exposure stays blocked at boot (PAPERCUSP_BIND_HOST guard).
+    // The cross-origin CSRF backstop the trust tier used to provide is restored
+    // by requireAllowedOriginOr403 below (a foreign page can't write creds).
     auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
+      const csrf = requireAllowedOriginOr403(req);
+      if (csrf) return csrf;
       const body = await req.json().catch(() => null);
       if (!body || typeof body !== 'object') {
         return Response.json({ error: 'invalid body' }, { status: 400 });

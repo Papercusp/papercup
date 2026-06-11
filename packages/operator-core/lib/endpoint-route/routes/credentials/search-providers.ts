@@ -8,6 +8,7 @@
  * `auth: 'public'` preserves original behavior.
  */
 import { readMaskedView, writeSearchProviderCredentials } from '../../../search-provider-credentials';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
@@ -26,6 +27,8 @@ export default [
     // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
     auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
+      const csrf = requireAllowedOriginOr403(req);
+      if (csrf) return csrf;
       let body: unknown;
       try {
         body = await req.json();

@@ -14,12 +14,19 @@ import { getSessionUserOrDefault, changePassword, login, SESSION_COOKIE } from '
 import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 export default defineTool({
   method: 'POST',
   path: '/auth/change-password',
-  auth: 'public',
+  // loopback (not public): the cookie-less desktop webview (EI-338) presents a
+  // loopback Host, so this tier admits it while blocking off-box callers. The
+  // current password is still verified by changePassword, and the cross-origin
+  // CSRF guard below blocks a foreign browser page on the loopback port.
+  auth: 'loopback',
   async handler(req) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const userAgent = req.headers.get('user-agent') ?? undefined;
     const ip = req.headers.get('x-forwarded-for') ?? '127.0.0.1';
 

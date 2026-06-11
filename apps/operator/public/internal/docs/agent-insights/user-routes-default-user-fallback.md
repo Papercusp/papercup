@@ -62,3 +62,29 @@ gate. `__tests__/user.test.ts` asserts the fallback semantics.
   page gates its data query on a session-auth'd bootstrap fetch, then check
   `harness_shared.user_sessions` for the used-once-then-never pattern before
   suspecting the resolver, the sync transport, or the bundle.
+
+## Loosening a trust-gated route removes a CSRF backstop — restore it
+
+When the broken route is gated `auth: { trust: ['verified', 'trusted'] }` (the
+D3 sensitive tier — credentials, deploy-accounts, publish-credentials), the fix
+is **not** just to add `unverified-loopback` to the allowlist. That tier was
+doing double duty: it also blocked **cross-origin CSRF**. A foreign web page the
+user visits can `fetch('http://127.0.0.1:<port>/api/credentials', {method:'POST',
+headers:{'content-type':'text/plain'}})` — `text/plain` is CORS-safelisted, so
+there's **no preflight**, the request executes server-side (the response is
+unreadable cross-origin, but the *write* lands), and the session cookie is
+`SameSite=Strict` so the request arrives unauthenticated → `unverified-loopback`.
+The trust tier used to 403 that; admitting `unverified-loopback` opens an
+unauthenticated credential-write / password-change vector.
+
+The Host-based loopback check (`isLoopbackRequest`) does **not** save you here —
+a browser page hitting `127.0.0.1` directly sends a real `Host: 127.0.0.1`, which
+passes. The control that works is the **Origin allowlist**: reuse
+`defaultCorsOrigin` via `requireAllowedOriginOr403(req)` (in
+`endpoint-route/cors.ts`) at the top of each mutating handler. A foreign Origin
+→ 403; an absent Origin (curl / SU bearer / same-origin) or an allowlisted one
+(the webview is tauri.localhost / 127.0.0.1) → through. Pair the trust loosening
+with this guard on every mutating handler, and flip `auth: 'public'` mutating
+routes that take the default-user fallback to `auth: 'loopback'` (off-box block
+that doesn't lean on the bind-host env). EI-338 tracks the real cookie fix; the
+guard stays as defense-in-depth even after it lands.

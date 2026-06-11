@@ -172,10 +172,13 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
   const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
   /** The owner-confirmed `public!` mutating exceptions (review 2026-06-11). */
   const OWNER_PUBLIC: ReadonlySet<string> = new Set([
-    'POST /auth/change-password',
+    // change-password + auth/me PATCH were flipped public → 'loopback'
+    // (2026-06-11, settings audit): they take the cookie-less-webview
+    // default-user fallback (EI-338), so they must NOT also be remote-public.
+    // Loopback admits the local webview while blocking off-box; a cross-origin
+    // CSRF guard (requireAllowedOriginOr403) blocks foreign browser pages.
     'POST /auth/login',
     'POST /auth/logout',
-    'PATCH /auth/me',
     // Signup is additionally gated in-handler: first-account bootstrap, then
     // the OPEN_SIGNUP flag (default OFF).
     'POST /auth/signup',

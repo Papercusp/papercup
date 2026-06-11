@@ -61,3 +61,35 @@ export function corsFor(origins?: readonly string[]): MiddlewareHandler {
     maxAge: 600,
   });
 }
+
+/**
+ * CSRF guard for state-mutating handlers that admit the cookie-less desktop
+ * webview (EI-338) — i.e. routes whose auth tier accepts `unverified-loopback`
+ * or the default-user fallback, so the tier no longer blocks a cross-origin
+ * browser page from POSTing to 127.0.0.1.
+ *
+ * Why a guard is still needed despite CORS: CORS stops a foreign page from
+ * READING a response, and the JSON preflight stops most writes — but a
+ * cross-origin SIMPLE request (e.g. `POST` with `text/plain` to dodge the
+ * preflight) still EXECUTES server-side. The `verified/trusted` tier used to
+ * be the backstop for that; loosening it to admit the webview removed it. This
+ * restores it on the `Origin` header, which a browser always stamps on a
+ * cross-origin request and JS cannot forge:
+ *   - no `Origin` (non-browser: curl, server-to-server, SU bearer, or a
+ *     same-origin GET that omits it) → allow.
+ *   - `Origin` present → must pass `defaultCorsOrigin` (the SAME allowlist the
+ *     CORS layer already trusts for the desktop/device clients), so every
+ *     legitimate webview/device call passes and a foreign page is refused.
+ *
+ * Returns a 403 `Response` to short-circuit the handler, or `null` to proceed.
+ * Call at the top of a mutating handler:
+ *
+ *   const csrf = requireAllowedOriginOr403(req);
+ *   if (csrf) return csrf;
+ */
+export function requireAllowedOriginOr403(req: Request): Response | null {
+  const origin = req.headers.get('origin');
+  if (!origin) return null;
+  if (defaultCorsOrigin(origin)) return null;
+  return Response.json({ error: 'cross_origin_blocked' }, { status: 403 });
+}

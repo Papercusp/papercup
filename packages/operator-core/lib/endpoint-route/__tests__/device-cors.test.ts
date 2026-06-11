@@ -12,7 +12,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { registerRoute } from '../define-route';
-import { defaultCorsOrigin } from '../cors';
+import { defaultCorsOrigin, requireAllowedOriginOr403 } from '../cors';
 
 describe('defaultCorsOrigin allowlist', () => {
   it('admits the desktop WebView + dev origins', () => {
@@ -26,6 +26,28 @@ describe('defaultCorsOrigin allowlist', () => {
   it('refuses an unknown origin', () => {
     expect(defaultCorsOrigin('https://evil.example.com')).toBe('');
     expect(defaultCorsOrigin('http://papercuspai.com')).toBe('');
+  });
+});
+
+describe('requireAllowedOriginOr403 — CSRF guard for webview-loosened mutating routes', () => {
+  const reqWith = (headers: Record<string, string>) =>
+    new Request('http://127.0.0.1:3170/api/credentials', { method: 'POST', headers });
+
+  it('allows a request with NO Origin (non-browser: curl / SU bearer / same-origin)', () => {
+    expect(requireAllowedOriginOr403(reqWith({}))).toBeNull();
+  });
+
+  it('allows an allowlisted Origin (the desktop webview + dev tabs)', () => {
+    expect(requireAllowedOriginOr403(reqWith({ origin: 'http://tauri.localhost' }))).toBeNull();
+    expect(requireAllowedOriginOr403(reqWith({ origin: 'https://tauri.localhost' }))).toBeNull();
+    expect(requireAllowedOriginOr403(reqWith({ origin: 'http://127.0.0.1:3170' }))).toBeNull();
+    expect(requireAllowedOriginOr403(reqWith({ origin: 'http://localhost:1420' }))).toBeNull();
+  });
+
+  it('403s a cross-origin browser page (the CSRF vector)', () => {
+    const res = requireAllowedOriginOr403(reqWith({ origin: 'https://evil.example.com' }));
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
   });
 });
 

@@ -16,6 +16,7 @@ import { dirname } from 'node:path';
 import { registerAccount } from '../../../deployment/account-pool';
 import { updateAccountPool, accountStatus } from '../../../deployment/account-pool-store';
 import { papercuspPath } from '../../../papercusp-root';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -26,6 +27,8 @@ export default defineTool({
   // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     let body: { accountId?: string; label?: string; value?: string };
     try {
       body = await req.json();
