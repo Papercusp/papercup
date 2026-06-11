@@ -1,13 +1,16 @@
 /**
  * @vitest-environment jsdom
  *
- * CreateHarnessPicker — P-012a/b/c/d/e unit tests.
- * Uses @testing-library/react + vitest only (no jest-dom matchers).
+ * CreateHarnessPicker — P-012a/b/c/d unit tests + the hive-from-github-url
+ * P-012 integration (flag-gated GitHub-URL entry, Entry-4 demotion, ?picker=
+ * nuqs step). Uses @testing-library/react + vitest only (no jest-dom matchers).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { FLAGS } from '@papercusp/flags';
 import { CreateHarnessPicker } from '../CreateHarnessPicker';
 
 // ── Global mock setup ──────────────────────────────────────────────────────
@@ -27,9 +30,20 @@ vi.mock('../../adv/harnesses/useViewer', () => ({
   isViewer: () => false,
 }));
 
+// Per-key flag override map — the picker gates the GitHub-URL entry on
+// HIVE_FROM_GITHUB_URL and useLexicon reads THE_HIVE. Unset keys default true
+// (both flags default-ON in FLAG_DEFAULTS). Mocking the hook keeps jsdom away
+// from the real flag bootstrap (fetch + EventSource). vi.hoisted: the factory
+// runs during hoisted module mocking, before module-scope consts initialize.
+const flagValues = vi.hoisted(() => ({}) as Record<string, boolean>);
+vi.mock('@/lib/flag-hooks', () => ({
+  useFlag: (key: string) => flagValues[key] ?? true,
+}));
+
 const mockFetch = vi.fn<typeof fetch>();
 beforeEach(() => {
   mockFetch.mockReset();
+  for (const k of Object.keys(flagValues)) delete flagValues[k];
   vi.stubGlobal('fetch', mockFetch);
 });
 afterEach(() => cleanup());
@@ -48,6 +62,8 @@ function renderPicker(props?: {
       hiveScope={props?.hiveScope ?? null}
       hiveLabel={props?.hiveLabel ?? 'Hive'}
     />,
+    // The picker's selected entry rides the `?picker=` nuqs param now.
+    { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
   );
   return { ...result, onOpenChange };
 }
@@ -70,16 +86,36 @@ function lastCreateBody(): Record<string, unknown> {
   return JSON.parse((call?.[1] as RequestInit).body as string) as Record<string, unknown>;
 }
 
-// ── P-012a — picker renders 4 entry cards ─────────────────────────────────
+// ── P-012a — picker renders the entry cards ────────────────────────────────
 
 describe('P-012a — picker step', () => {
-  it('renders 4 entry buttons', () => {
+  it('renders 3 entry cards + the demoted harness-link affordance (flag on)', () => {
     renderPicker();
     // getByText throws if not found — asserts presence without jest-dom
     screen.getByText('New local directory');
     screen.getByText('Existing local repo');
     screen.getByText('GitHub URL');
+    // Entry-4 demotion (hive-from-github-url D-001): no Harness-link CARD —
+    // the secondary "I have a link" affordance replaces it.
+    expect(screen.queryByText('Harness link')).toBeNull();
+    screen.getByText(/I have a harness link/);
+  });
+
+  it('renders the legacy 4 cards when HIVE_FROM_GITHUB_URL is off', () => {
+    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
+    renderPicker();
+    screen.getByText('New local directory');
+    screen.getByText('Existing local repo');
+    screen.getByText('GitHub URL');
     screen.getByText('Harness link');
+    expect(screen.queryByText(/I have a harness link/)).toBeNull();
+  });
+
+  it('flag on: the GitHub URL card carries the hive framing description', () => {
+    renderPicker();
+    screen.getByText(
+      'Create a hive from a GitHub repository. Forks nothing — clones and registers; auto-publishes to the directory.',
+    );
   });
 
   it('renders no Phase 1b badge in the picker (label removed)', () => {
@@ -234,30 +270,51 @@ describe('P-012d — error messages', () => {
   });
 });
 
-// ── P-012e — Coming-soon stubs ─────────────────────────────────────────────
+// ── hive-from-github-url P-012 — the GitHub-URL entry routing ──────────────
 
-describe('P-012e — Coming-soon stubs', () => {
-  it('GitHub URL card shows coming-soon stub on click', async () => {
+describe('P-012 (hive-from-github-url) — GitHub URL entry routing', () => {
+  it('flag on (default): the card opens the real EntryGithubUrlForm', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText('GitHub URL'));
+    expect(screen.queryByText('Coming soon')).toBeNull();
+    screen.getByRole('heading', { name: 'GitHub URL' });
+    screen.getByPlaceholderText('https://github.com/owner/repo');
+  });
+
+  it('flag off: the card still shows the coming-soon stub', async () => {
+    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
     screen.getByText('Coming soon');
   });
 
-  it('Harness link card opens the EntryHarnessLinkForm (no longer a stub)', async () => {
-    const user = userEvent.setup();
-    renderPicker();
-    await user.click(screen.getByText('Harness link'));
-    // EntryHarnessLinkForm renders an input for the harness link.
-    expect(screen.queryByText('Coming soon')).toBeNull();
-  });
-
-  it('coming-soon stub has a back button that returns to picker', async () => {
+  it('flag off: the stub back button returns to the picker', async () => {
+    flagValues[FLAGS.HIVE_FROM_GITHUB_URL] = false;
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('GitHub URL'));
     await user.click(screen.getByText('← Back'));
     screen.getByRole('heading', { name: 'Add a harness' });
+  });
+
+  it('the demoted "I have a link" affordance opens the EntryHarnessLinkForm', async () => {
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText(/I have a harness link/));
+    // EntryHarnessLinkForm renders a textarea for the harness link.
+    expect(screen.queryByText('Coming soon')).toBeNull();
+    screen.getByPlaceholderText('papercusp://harness?topic=…&github=owner/repo&repo_id=…');
+  });
+
+  it('into-hive picker mode seeds the form with the Add-to-<hive> fork selected', async () => {
+    const user = userEvent.setup();
+    renderPicker({ hiveScope: 'acme' });
+    // Default picker mode is into-hive when a scope is selected.
+    await user.click(screen.getByText('GitHub URL'));
+    const addBtn = screen.getByRole('button', { name: 'Add to acme' });
+    expect(addBtn.getAttribute('aria-pressed')).toBe('true');
   });
 });
 

@@ -831,7 +831,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
         <button type="button" onClick={onBack} style={secondaryBtn}>Cancel</button>
         <button type="submit" disabled={!url.trim()} style={{ ...primaryBtn, opacity: url.trim() ? 1 : 0.5, cursor: url.trim() ? 'pointer' : 'not-allowed' }}>
-          {mode === 'standalone' ? 'Clone & register' : mode === 'into-hive' ? `Add to ${hiveScope}` : `Create ${hiveLower}`}
+          {mode === 'standalone' ? 'Clone & register' : mode === 'into-hive' ? 'Add repository' : `Create ${hiveLower}`}
         </button>
       </div>
     </form>

@@ -8,30 +8,42 @@
  *   P-012b  Entry 1 (New local directory) happy path
  *   P-012c  Entry 3 (Existing local repo) happy path
  *   P-012d  Per-error-code error messages
- *   P-012e  Coming-soon placeholder entry (GitHub URL)
  *
- * Entries are grouped under "Local" (new / existing local) and "Shared"
- * (GitHub URL, Harness link). GitHub URL still routes to a coming-soon
- * stub; Harness link is wired (EntryHarnessLinkForm).
+ * Entries are grouped under "Local" (new / existing local) and "Shared".
+ * The GitHub-URL entry is the hive-level Entry 2 (hive-from-github-url
+ * P-011/P-012, gated on HIVE_FROM_GITHUB_URL — flag off keeps the legacy
+ * coming-soon stub); with it on, the Entry-4 harness-link card demotes to a
+ * secondary "I have a link" affordance (still fully functional, D-001).
+ *
+ * The SELECTED entry rides the `?picker=` nuqs param (user-meaningful state →
+ * URL, the house rule); form drafts inside each entry stay useState.
  */
 
 import { useState, useRef, type FormEvent, type ReactNode } from 'react';
+import { parseAsStringEnum, useQueryState } from 'nuqs';
 import { Modal } from './Modal';
 import { toast } from 'sonner';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
+import { EntryGithubUrlForm } from './EntryGithubUrlForm';
 import { ShareWizard } from './ShareWizard';
 import { useViewer } from '../adv/harnesses/useViewer';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type Step =
-  | 'picker'
-  | 'new-local'
-  | 'existing-local'
-  | 'new-hive'
-  | 'github-url-stub'
-  | 'harness-link-stub'
-  | 'share-offer';
+/** The non-default steps — the `?picker=` nuqs values ('picker' = param unset). */
+const ENTRY_STEPS = [
+  'new-local',
+  'existing-local',
+  'new-hive',
+  'github-url',
+  'harness-link',
+  'share-offer',
+] as const;
+type EntryStep = (typeof ENTRY_STEPS)[number];
+
+type Step = 'picker' | EntryStep;
 
 /**
  * The creation fork (harnesses-tab-hive-model D-005 / P-010). `standalone` and
@@ -402,48 +414,71 @@ interface PickerEntry {
   comingSoon?: boolean;
 }
 
-const SECTIONS: {
+interface PickerSection {
   heading: string;
   subheading?: string;
   entries: PickerEntry[];
-}[] = [
-  {
-    heading: 'Local',
-    entries: [
-      {
-        id: 'new-local',
-        label: 'New local directory',
-        description: 'Create a new folder, run git init, and register it as a harness.',
-        icon: '📁',
-      },
-      {
-        id: 'existing-local',
-        label: 'Existing local repo',
-        description: 'Register an existing local directory or git repo as a harness.',
-        icon: '📂',
-      },
-    ],
-  },
-  {
-    heading: 'Shared',
-    subheading: 'Work on these repositories collaboratively.',
-    entries: [
-      {
-        id: 'github-url-stub',
-        label: 'GitHub URL',
-        description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
-        icon: '🐙',
-        comingSoon: true,
-      },
-      {
-        id: 'harness-link-stub',
-        label: 'Harness link',
-        description: 'Join a shared harness via a papercusp://harness?… invite link.',
-        icon: '🔗',
-      },
-    ],
-  },
-];
+}
+
+/**
+ * Sections are built per-render: the GitHub-URL entry's copy + routing depend
+ * on the HIVE_FROM_GITHUB_URL flag (P-012) and the hive label is lexicon-bound.
+ * With the flag ON the Entry-4 harness-link card demotes out of the grid — it
+ * becomes the "I have a link" secondary affordance under the Shared section.
+ */
+function buildSections(opts: { hiveLower: string; githubUrlEnabled: boolean }): PickerSection[] {
+  const { hiveLower, githubUrlEnabled } = opts;
+  return [
+    {
+      heading: 'Local',
+      entries: [
+        {
+          id: 'new-local',
+          label: 'New local directory',
+          description: 'Create a new folder, run git init, and register it as a harness.',
+          icon: '📁',
+        },
+        {
+          id: 'existing-local',
+          label: 'Existing local repo',
+          description: 'Register an existing local directory or git repo as a harness.',
+          icon: '📂',
+        },
+      ],
+    },
+    {
+      heading: 'Shared',
+      subheading: 'Work on these repositories collaboratively.',
+      entries: [
+        githubUrlEnabled
+          ? {
+              id: 'github-url',
+              label: 'GitHub URL',
+              description: `Create a ${hiveLower} from a GitHub repository. Forks nothing — clones and registers; auto-publishes to the directory.`,
+              icon: '🐙',
+            }
+          : {
+              id: 'github-url',
+              label: 'GitHub URL',
+              description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
+              icon: '🐙',
+              comingSoon: true,
+            },
+        // Flag off: the harness-link card keeps its legacy primary spot.
+        ...(githubUrlEnabled
+          ? []
+          : [
+              {
+                id: 'harness-link' as Step,
+                label: 'Harness link',
+                description: 'Join a shared harness via a papercusp://harness?… invite link.',
+                icon: '🔗',
+              },
+            ]),
+      ],
+    },
+  ];
+}
 
 /**
  * The creation fork toggle (D-005 / P-010): New hive · Add to <hive> · Standalone.
@@ -500,14 +535,17 @@ function PickerStep({
   onMode,
   hiveScope,
   hiveLabel,
+  githubUrlEnabled,
 }: {
   onSelect: (step: Step) => void;
   mode: CreateMode;
   onMode: (m: CreateMode) => void;
   hiveScope: string | null;
   hiveLabel: string;
+  githubUrlEnabled: boolean;
 }) {
   const intoHive = mode === 'into-hive' && hiveScope;
+  const sections = buildSections({ hiveLower: hiveLabel.toLowerCase(), githubUrlEnabled });
   return (
     <div>
       <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>Add a {hiveLabel.toLowerCase() === 'hive' ? 'harness' : 'harness'}</h2>
@@ -517,7 +555,7 @@ function PickerStep({
           : 'Choose how to add a new harness to this workspace.'}
       </p>
       <ForkToggle mode={mode} onMode={onMode} onNewHive={() => onSelect('new-hive')} hiveScope={hiveScope} hiveLabel={hiveLabel} />
-      {SECTIONS.map((section) => (
+      {sections.map((section) => (
         <div key={section.heading} style={{ marginBottom: 18 }}>
           <div style={{ marginBottom: 10 }}>
             <h3
@@ -566,6 +604,18 @@ function PickerStep({
               </button>
             ))}
           </div>
+          {/* Entry-4 demotion (hive-from-github-url D-001/P-012): with the
+              GitHub-URL door live, the harness-link card becomes a secondary
+              "I have a link" affordance — same flow, lower billing. */}
+          {section.heading === 'Shared' && githubUrlEnabled && (
+            <button
+              type="button"
+              onClick={() => onSelect('harness-link')}
+              style={{ background: 'none', border: 'none', color: 'var(--fg-dim)', cursor: 'pointer', padding: 0, fontSize: 12, marginTop: 10, textDecoration: 'underline' }}
+            >
+              I have a harness link (papercusp://…) →
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -594,11 +644,22 @@ interface CreateHarnessPickerProps {
 }
 
 export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope = null, hiveLabel = 'Hive' }: CreateHarnessPickerProps) {
-  const [step, setStep] = useState<Step>('picker');
+  // The SELECTED entry is user-meaningful → nuqs `?picker=` (the memo's URL
+  // state design; agents read/drive it via ui:get_state / ui:dispatch).
+  // Param unset = the picker grid.
+  const [pickerParam, setPickerParam] = useQueryState(
+    'picker',
+    parseAsStringEnum<EntryStep>([...ENTRY_STEPS]),
+  );
+  const step: Step = pickerParam ?? 'picker';
+  const setStep = (s: Step) => void setPickerParam(s === 'picker' ? null : s);
   // Default into-hive when a hive is selected (the common case from the tab).
   const [mode, setMode] = useState<CreateMode>(hiveScope ? 'into-hive' : 'standalone');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  // P-012 (hive-from-github-url): the GitHub-URL entry goes live behind this
+  // flag; off = the legacy coming-soon stub + the old Shared-section layout.
+  const githubUrlEnabled = useFlag(FLAGS.HIVE_FROM_GITHUB_URL);
   // Names the provisional owner in the ShareWizard's P-069d first-share
   // explainer. Anonymous / unresolved → undefined → the explainer's 'you'.
   const { viewer } = useViewer();
@@ -639,7 +700,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
       <Modal
         open={open && !shareOpen}
         onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
-        title={step === 'share-offer' ? 'Harness created' : 'Add a harness'}
+        title={step === 'share-offer' && createdSlug ? 'Harness created' : 'Add a harness'}
         contentStyle={{
           width: 'min(520px, 96vw)',
           background: 'var(--bg-popover, #0d1829)',
@@ -649,14 +710,32 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
           color: 'var(--fg, #e8e8ea)',
         }}
       >
-        {step === 'picker' && (
-          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} />
+        {/* A deep-linked `?picker=share-offer` has no created slug (transient
+            result state is useState) — fall back to the grid. */}
+        {(step === 'picker' || (step === 'share-offer' && createdSlug === null)) && (
+          <PickerStep onSelect={setStep} mode={mode} onMode={setMode} hiveScope={hiveScope} hiveLabel={hiveLabel} githubUrlEnabled={githubUrlEnabled} />
         )}
         {step === 'new-local' && <NewLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
         {step === 'existing-local' && <ExistingLocalForm onBack={goBack} onSuccess={handleSuccess} hive={memberHive} />}
         {step === 'new-hive' && <NewHiveForm onBack={goBack} onSuccess={handleSuccess} hiveLabel={hiveLabel} />}
-        {step === 'github-url-stub' && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
-        {step === 'harness-link-stub' && (
+        {step === 'github-url' && !githubUrlEnabled && <ComingSoonStub title="GitHub URL" onBack={goBack} />}
+        {step === 'github-url' && githubUrlEnabled && (
+          <EntryGithubUrlForm
+            onBack={goBack}
+            hiveScope={hiveScope}
+            // The entry's own 3-mode fork (P-012): the picker's into-hive
+            // selection carries over; otherwise the headline new-hive default.
+            initialMode={mode === 'into-hive' && hiveScope ? 'into-hive' : 'new-hive'}
+            onCreated={(slug, opts) => {
+              // The form already showed its own success/publish summary (and a
+              // hive auto-publishes per visibility) — skip the share offer.
+              if (opts?.hive) onCreated?.(slug, { hive: opts.hive });
+              else onCreated?.(slug);
+              handleClose();
+            }}
+          />
+        )}
+        {step === 'harness-link' && (
           <EntryHarnessLinkForm
             onBack={goBack}
             onCreated={(slug) => {

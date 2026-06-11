@@ -712,3 +712,57 @@ describe('repo-id guard at the lookup step', () => {
     await waitFor(() => screen.getByText(/Look up the binding before continuing/));
   });
 });
+
+describe('P-016 — the hive share-pointer card (hive-from-github-url-2026-06-11)', () => {
+  it('renders the pointer for a hive member; one-click publish drives the hive flip', async () => {
+    const user = userEvent.setup();
+    const published: string[] = [];
+    render(
+      <ShareWizard
+        open
+        onClose={() => {}}
+        harnessSlug="shop"
+        hiveSlug="shop-hive"
+        publishHive={async (slug) => {
+          published.push(slug);
+          return { ok: true, announced: true };
+        }}
+      />,
+    );
+    expect(screen.getByTestId('hive-share-pointer')).toBeTruthy();
+    expect(screen.getByText(/part of hive/)).toBeTruthy();
+    await user.click(screen.getByText('Publish the hive instead'));
+    await waitFor(() => screen.getByText(/Hive published \+ announced to the directory/));
+    expect(published).toEqual(['shop-hive']);
+  });
+
+  it('dismiss = the explicit single-harness sub-share choice; the wizard continues', async () => {
+    const user = userEvent.setup();
+    render(<ShareWizard open onClose={() => {}} harnessSlug="shop" hiveSlug="shop-hive" />);
+    await user.click(screen.getByText('Continue with single-harness share'));
+    expect(screen.queryByTestId('hive-share-pointer')).toBeNull();
+    // step 1 is still rendered under the dismissed banner
+    expect(screen.getByText('Confirm GitHub remote')).toBeTruthy();
+  });
+
+  it('publish failure surfaces inline, never blocks the wizard', async () => {
+    const user = userEvent.setup();
+    render(
+      <ShareWizard
+        open
+        onClose={() => {}}
+        harnessSlug="shop"
+        hiveSlug="shop-hive"
+        publishHive={async () => ({ ok: false, error: 'gh_auth_required' })}
+      />,
+    );
+    await user.click(screen.getByText('Publish the hive instead'));
+    await waitFor(() => screen.getByText(/Hive publish failed: gh_auth_required/));
+    expect(screen.getByText('Confirm GitHub remote')).toBeTruthy();
+  });
+
+  it('no hiveSlug → no pointer (standalone harnesses see the classic wizard)', () => {
+    render(<ShareWizard open onClose={() => {}} harnessSlug="solo" />);
+    expect(screen.queryByTestId('hive-share-pointer')).toBeNull();
+  });
+});

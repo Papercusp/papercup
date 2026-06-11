@@ -109,6 +109,33 @@ export interface ShareWizardProps {
    * "publish later" affordance.
    */
   publishToCupboard?: (input: CupboardPublishInput) => Promise<void>;
+  /**
+   * P-016 (hive-from-github-url-2026-06-11): the harness's home Hive slug when
+   * it is a Hive member. Sharing happens at the HIVE level now — the wizard
+   * shows a "share the hive instead" pointer card with a one-click hive
+   * publish (POST /api/discovery/set-hive); this per-harness wizard remains
+   * the single-harness sub-share path.
+   */
+  hiveSlug?: string;
+  /** Injection point for the hive publish (tests). Default: POST /api/discovery/set-hive. */
+  publishHive?: (hiveSlug: string) => Promise<{ ok: boolean; announced?: boolean; error?: string }>;
+}
+
+async function defaultPublishHive(
+  hiveSlug: string,
+): Promise<{ ok: boolean; announced?: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/discovery/set-hive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hiveId: hiveSlug, title: hiveSlug, visibility: 'public' }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { announced?: boolean; error?: string };
+    if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, announced: body.announced };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export interface CupboardPublishInput {
@@ -261,7 +288,15 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     runBackfill = defaultRunBackfill,
     writeSharedJson = defaultWriteSharedJson,
     publishToCupboard = defaultPublishToCupboard,
+    hiveSlug,
+    publishHive = defaultPublishHive,
   } = props;
+  // P-016 — the hive pointer card: dismissed = the user explicitly chose the
+  // single-harness sub-share. Transient per-open lifecycle → useState.
+  const [hivePointerDismissed, setHivePointerDismissed] = useState(false);
+  const [hivePublish, setHivePublish] = useState<
+    { busy: boolean; outcome?: { ok: boolean; announced?: boolean; error?: string } }
+  >({ busy: false });
   const [publishWarning, setPublishWarning] = useState<string | null>(null);
   // P-069c — the existing-binding detail (claim status + publisher) the
   // step-2 lookup found, so the alert can surface claimed/unclaimed status
@@ -803,6 +838,53 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
           color: 'var(--fg, #e8e8ea)',
         }}
       >
+        {/* P-016 — this harness belongs to a Hive: sharing happens at the hive
+            level; this wizard remains the single-harness sub-share path. */}
+        {hiveSlug && !hivePointerDismissed && (
+          <div
+            data-testid="hive-share-pointer"
+            style={{
+              border: '1px solid var(--accent, #4a90d9)',
+              borderRadius: 8,
+              padding: 12,
+              marginBottom: 16,
+              fontSize: 13,
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>
+              This harness is part of hive <code>{hiveSlug}</code>
+            </div>
+            <div style={{ color: 'var(--fg-dim)', marginBottom: 10 }}>
+              Sharing now happens at the hive level — publishing the hive lists it on the
+              P2P directory with all member repos, joinable in one click. Continue below
+              only for a single-harness sub-share (a guest on this one repo).
+            </div>
+            {hivePublish.outcome ? (
+              <div style={{ marginBottom: 6 }}>
+                {hivePublish.outcome.ok
+                  ? `Hive published${hivePublish.outcome.announced ? ' + announced to the directory' : ' (announce pending transport)'}.`
+                  : `Hive publish failed: ${hivePublish.outcome.error ?? 'unknown error'}`}
+              </div>
+            ) : null}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                style={buttonPrimary}
+                disabled={hivePublish.busy || hivePublish.outcome?.ok === true}
+                onClick={() => {
+                  setHivePublish({ busy: true });
+                  void publishHive(hiveSlug).then((outcome) =>
+                    setHivePublish({ busy: false, outcome }),
+                  );
+                }}
+              >
+                {hivePublish.busy ? 'Publishing…' : 'Publish the hive instead'}
+              </button>
+              <button style={buttonSecondary} onClick={() => setHivePointerDismissed(true)}>
+                Continue with single-harness share
+              </button>
+            </div>
+          </div>
+        )}
         {renderStep()}
         {err && step !== 'backfill' && step !== 'write-shared-json' && (
           <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>
