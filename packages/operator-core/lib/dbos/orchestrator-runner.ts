@@ -244,38 +244,51 @@ export async function spawnInvokeOnce(
       forceSessionId: opts?.forceSessionId,
     });
 
-    // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →
-    // unchanged). PACING ONLY — concurrency/rate gate + penalize the governor on a detected
-    // 429, so the whole operator's agent spawns stay under the account's rate limit. We do
-    // NOT retry here: the orchestrator/director already owns turn retries (avoid double-retry).
+    // RB-012 / EI-86: the SHARED governor that paces + tracks this spawn's account budget.
     // Key the bucket to the backend+model the spawn ACTUALLY uses (the default `omp -p`
     // self-paces → its own concurrency-only bucket; claude → the Anthropic per-class bucket)
     // rather than the old hardcoded `('claude-code','')` which mis-bucketed everything.
+    // P-019: on a frame launched under a bound account, key the bucket to that account so its
+    // separate subscription tracks its separate rate limits (and its pauses carry the account
+    // id, driving the Queen's scale-out). Unset locally ⇒ the global bucket.
+    const { backend, model } = resolveSpawnBackendModel(role);
+    const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
+    // The back-edge EI-86 closes: classify the child's outcome and, on an account-wide stop
+    // (429 / overload / usage-cap), PENALIZE the shared governor so the AIMD + the rate
+    // read-model react to the DOMINANT (spawned claude-CLI) traffic class — not just the
+    // in-process meridian lane. The claude/codex CLIs print these to STDOUT, so
+    // classifyTurnError folds it in on a failed exit. This feedback is ALWAYS-ON: pacing
+    // (acquire, below) is opt-in, but without the penalize back-edge the governor stays blind
+    // to bee 429s, buckets read green while the account chokes, and the AIMD never engages.
+    // A usage_limit carries its reset, so the fleet parks until reset (D-001). No retry here —
+    // the director owns turn-retries (avoid double-retry).
+    const feedGovernor = (inner: { output: string; exitCode: number; stderr: string }): void => {
+      const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
+      if (isAccountWide(te.class)) gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
+    };
+
+    // PACING is opt-in (PAPERCUSP_AGENT_GOVERNOR=1, default OFF → unchanged): when enabled,
+    // gate the spawn through the governor's concurrency/rate budget on top of the always-on
+    // feedback, so the whole operator's agent spawns stay under the account's rate limit.
     if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
-      const { backend, model } = resolveSpawnBackendModel(role);
-      // P-019: on a frame launched under a bound account, key the bucket to that account
-      // so its separate subscription tracks its separate rate limits (and its pauses carry
-      // the account id, driving the Queen's scale-out). Unset locally ⇒ the global bucket.
-      const gov = governorForBackend(backend, model, undefined, process.env.PAPERCUSP_ACCOUNT_ID || undefined);
       const release = await gov.acquire({}, { maxWaitMs: governorMaxWaitMs() });
       if (!release) {
         return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
       }
       try {
         const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
-        // Classify the outcome; on a detected account-wide stop (429/overload/usage-cap), pause the
-        // SHARED governor so the operator's other agent spawns back off too. No retry here — the
-        // director owns that. A usage_limit carries its reset, so the fleet parks until reset (D-001).
-        const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
-        if (isAccountWide(te.class)) gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
+        feedGovernor(inner);
         return inner;
       } finally {
         release();
       }
     }
-    // `return await` (not bare `return`) so the display lease's finally releases
-    // AFTER the child exits, not when the promise is handed back.
-    return await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+    // Pacing off (the default): run directly, but STILL feed the child's 429/overload back into
+    // the shared governor (EI-86). The await happens here (inside the try) so the display
+    // lease's finally releases AFTER the child exits, not when the promise is handed back.
+    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+    feedGovernor(inner);
+    return inner;
   } finally {
     displayLease?.release();
   }
