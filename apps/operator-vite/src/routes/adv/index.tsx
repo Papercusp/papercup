@@ -34,7 +34,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'overview') return 'Overview';
   if (tab === 'conversations') return 'Conversations';
   if (tab === 'learning') return 'Learning';
-  if (tab === 'harnesses') return 'Harnesses';
+  if (tab === 'harnesses') return 'Progress';
   if (tab === 'frames') return 'Frames';
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];

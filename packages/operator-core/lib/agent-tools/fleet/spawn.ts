@@ -28,7 +28,8 @@ export default defineTool({
   capability: 'work_items:write',
   requirePrincipal: false,
   // D-002 (bee-capability-expansion-2026-06-08): spawning agents is PLACEMENT — a
-  // Queen-only surface. The Queen calls this as role 'operator'; the worker-bee is
+  // Queen-only surface. The Queen calls this as role 'queen' (the registered
+  // placement decider, EI-286 follow-up) or 'operator'; the worker-bee is
   // explicitly EXCLUDED. The bee joined COORD_ROLES in local-hive P-011 (so it could
   // coord:* / issues:* / improvements:capture), which inadvertently leaked this
   // placement tool to it via [...COORD_ROLES]. Filtering bee back out restores the

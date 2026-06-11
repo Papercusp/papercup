@@ -19,6 +19,13 @@ export const COORD_ROLES = [
   // ordered work-list via work_items:* — both gated on this list — so it MUST be a
   // coord role. Same gate the pipeline worker passes, minus the chunk coupling.
   'bee',
+  // The QUEEN — the hive's placement decider (operator specialized; local-hive
+  // D-001/P-030). Her whole loop is coord/fleet/work_items: survey
+  // (coord:presence/inbox, work_items:list) → place (fleet:spawn — note
+  // fleet/spawn.ts filters OUT bee+sentinel but keeps queen; placement is hers)
+  // → warm-inject (coord:send {wake}) → drain (fleet:drain). EI-286 follow-up:
+  // the role existed only in the blueprint, so every gate here filtered her out.
+  'queen',
   // The SENTINEL — the fleet watcher (unify-launch-mechanics-2026-06-09 D-004).
   // Its core surface IS coord: it READS the substrate (coord:presence/inbox/feed)
   // + the fleet (fleet:assignments/tree — both COORD_ROLES-gated, surfacing stuck/
