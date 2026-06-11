@@ -32,6 +32,26 @@ async function readEnabled(harness: string): Promise<EnabledFile | null> {
   }
 }
 
+/**
+ * `plugin_enables.enabled_at` is BIGINT epoch-ms (Zero-era contract, see the
+ * column comment in the baseline), but the CLI's enabled-plugins.json stores
+ * `enabledAt` as an ISO string — passing it through verbatim made every
+ * fresh-DB INSERT fail (EI-300: the .deb first-run logged
+ * `invalid input syntax for type bigint: "2026-06-10T10:58:51.426Z"` and the
+ * mirror retried forever; populated dev DBs never hit it because the
+ * ON CONFLICT update path doesn't touch enabled_at).
+ */
+export function enabledAtEpochMs(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return Math.trunc(n);
+    const parsed = Date.parse(v);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
 /** Mirror a single harness's enabled-plugins.json into PG. */
 export async function mirrorHarness(harness: string): Promise<void> {
   const file = await readEnabled(harness);
@@ -45,7 +65,7 @@ export async function mirrorHarness(harness: string): Promise<void> {
         INSERT INTO harness_shared.plugin_enables
           (harness_slug, plugin_slug, version, config_hash, enabled_at, updated_at, workspace_id)
         VALUES (${harness}, ${pluginSlug}, ${meta.version ?? ''}, ${meta.configHash ?? ''},
-                ${meta.enabledAt ?? new Date().toISOString()}, now(), ${ws})
+                ${enabledAtEpochMs(meta.enabledAt)}, now(), ${ws})
         ON CONFLICT (harness_slug, plugin_slug) DO UPDATE
           SET version = EXCLUDED.version,
               config_hash = EXCLUDED.config_hash,

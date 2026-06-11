@@ -28,7 +28,7 @@ import { buildStateOfHiveReaders } from './corpus-digest-deps';
 import { runIdeators } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
-import { routeProposals, wholeSystemInstanceOverride, type RouterPorts } from './router';
+import { routeProposals, wholeSystemInstanceOverride, type CapturePort, type RouterPorts } from './router';
 import {
   buildCapturePort,
   buildGymDispatchPort,
@@ -64,6 +64,12 @@ export interface BuildScoutCycleDepsOptions {
   noveltyCorpus?: () => Promise<CorpusEntry[]>;
   /** Capture-port options for the concrete rail (default scope = `harness:<slug>`, filed as the Queen). */
   captureOptions?: CapturePortOptions;
+  /**
+   * Override the concrete rail's capture port entirely (tests / the live-LLM quality
+   * lane, which routes to inert sinks — real LLM, no live improvement writes). Default:
+   * the production `buildCapturePort` over the real `captureImprovement`.
+   */
+  capturePort?: CapturePort;
 }
 
 /**
@@ -130,7 +136,8 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
   const routerPorts: RouterPorts = {
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
-    capture: buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
+    capture:
+      opts.capturePort ?? buildCapturePort({ scope: `harness:${opts.harnessSlug}`, ...opts.captureOptions }),
     // whole-system → InstanceSubject (reconciliation P-005). Acknowledge-only until the
     // apiary's intake queue is built — the routed-idea ledger (rail='instance') is the
     // pending-candidate record the apiary reads.

@@ -314,11 +314,14 @@ function WorkItemDetail({
         ) : null}
         {/* Feature-family rows keep their richer F-* detail: cross-link to it. */}
         {workItem.family === 'feature' && workItem.id.startsWith('F-') ? (
-          <button type="button" className="pc-adv-detail__link-btn" onClick={() => onSelect(workItem.id)}>
+          <button type="button" className="pc-adv-detail__link pc-adv-detail__link-btn" onClick={() => onSelect(workItem.id)}>
             Open feature detail <ArrowUpRight size={12} />
           </button>
         ) : null}
       </div>
+      {/* WorkItemDetail historically omitted this — every WI-* detail rendered
+          with ZERO panel CSS (run-together label/value spans). */}
+      <DetailStyles />
     </div>
   );
 }

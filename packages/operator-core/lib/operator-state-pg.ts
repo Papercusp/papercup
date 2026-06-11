@@ -69,7 +69,10 @@ type StateTable =
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
   | 'operator_account_pool'
   // Migration 216 — PG-backed runtime flag overrides (audit P-070, EI-76):
-  | 'operator_flag_overrides';
+  | 'operator_flag_overrides'
+  // Migration 223 — P2P voice blind-relay state (holepunch-voice-channels
+  // P-013/D-009; table was missing until EI-300):
+  | 'voice_relay';
 
 /**
  * Read the single row for the active workspace, or null if missing.
