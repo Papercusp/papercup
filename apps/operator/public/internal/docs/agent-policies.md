@@ -547,6 +547,35 @@ part of the rendered engineering reference site at `/internal/docs/agent-insight
 * You discovered that an external system (PG, Zero, a specific
   library) has a quirk this codebase has to work around.
 
+### WHEN to write it — the same-turn rule
+
+Timing is part of the policy, not a style preference. **A proven
+non-obvious root cause is a cue to write the insight IN THE SAME TURN
+as exploiting the fix — before continuing the task.** Queuing it "for
+the close-out step" is how insights get lost: close-outs die to
+compaction, session death, and interrupts, and meanwhile the next
+agent hits the same wall. The insight is part of the fix, not an
+appendix.
+
+Two escalations make it **mandatory, immediately**:
+
+* **The recurrence marker.** When the owner or a peer tells you the
+  failure class recurs ("agents **often** think…", "agents **keep**
+  hitting…"), that sentence is a classification instruction, not just
+  diagnostic color — the write-up stops being optional the moment your
+  fix proves out.
+* **Self-filed, self-resolved.** You filed the EI and resolved it in
+  the same session with a novel root cause. (The
+  `improvements:resolve` fixed-outcome response now nudges this
+  check.)
+
+Why a timing rule at all: descriptions don't fire under a hot goal;
+cues and hooks do. This is the same lesson that moved file locking
+from advisory ("always acquire first") to a PreToolUse hook — incident:
+the 2026-06-11 Scout 429 saga, where the `LLM_TEST_BACKEND=claude-code`
+escape was proven and then queued for close-out until the owner asked
+"did you write the insight?"
+
 ### When NOT to write one
 
 * The fix lives in code and is self-explanatory there. Insights are

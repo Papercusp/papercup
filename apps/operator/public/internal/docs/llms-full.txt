@@ -2885,7 +2885,7 @@ Two things to know before you touch the harness **Tests** tab (`/adv` → `Harne
 
 [Section titled “The domain nav is HARNESS-owned data, not an operator registry”](#the-domain-nav-is-harness-owned-data-not-an-operator-registry)
 
-`/admin/testing` reads `adminRegistry` (the 8-domain Universal tier — formerly “generalized” — plus \~30 Papercusp domains, i.e. `[...operatorUniversal, ...papercuspRegistry]`) from `packages/operator-core/lib/testing-domains-registry.ts` — operator-internal code. The **harness** Tests tab does NOT import that. Each harness declares its own test domains in its contract surface:
+The operator’s testing API (`/api/admin/testing/*`; the old `/admin/testing` UI route was removed 2026-06-11) reads `adminRegistry` (the 8-domain Universal tier — formerly “generalized” — plus \~30 Papercusp domains, i.e. `[...operatorUniversal, ...papercuspRegistry]`) from `packages/operator-core/lib/testing-domains-registry.ts` — operator-internal code. The **harness** Tests tab does NOT import that. Each harness declares its own test domains in its contract surface:
 
 ```plaintext
 <worktree>/.papercusp/testing-domains.json   ->  { domains: TestDomain[], tierLabels?: {} }
@@ -4085,7 +4085,7 @@ Check the rungs in order. `PAPERCUSP_MEM0_SESSION_EXTRACTION=0` disables rung 1 
 
 [Section titled “Verifying it live”](#verifying-it-live)
 
-* **Round-trip probe** (isolated schema; exit 2 = skip without a session): `npx tsx packages/operator-core/lib/memory/session-extraction-live.ts` — also registered in `/admin/testing` (memory → Live). Proof-of-rung is the adapter’s own usage counters (`sessionExtractionUsage()`), not just a stored row.
+* **Round-trip probe** (isolated schema; exit 2 = skip without a session): `npx tsx packages/operator-core/lib/memory/session-extraction-live.ts` — also registered in the `/adv` Tests tab (Memory → Live). Proof-of-rung is the adapter’s own usage counters (`sessionExtractionUsage()`), not just a stored row.
 * **Telemetry**: every session-rung call lands a usage sample in `harness_shared.agent_usage_samples` (provider `anthropic`, class `haiku`) via the shared meridian sink — tokens are metered against the Max quota even though marginal cost is \~$0.
 * A staging (`:3170`) `memory:remember` whose stored text comes back **rewritten** (not your verbatim input) is extraction working; verbatim echo means the write skipped extraction (`verbatim: true`) or the client fell back to a degraded path.
 
@@ -8511,6 +8511,19 @@ Plans that pre-date the format spec (no frontmatter or malformed frontmatter) ar
 * You learned that an apparent pattern is actually wrong (e.g., “agent reaches for `lodash` when the repo already uses `radash`”).
 * You found a subtle invariant in the code that isn’t documented anywhere.
 * You discovered that an external system (PG, Zero, a specific library) has a quirk this codebase has to work around.
+
+### WHEN to write it — the same-turn rule
+
+[Section titled “WHEN to write it — the same-turn rule”](#when-to-write-it--the-same-turn-rule)
+
+Timing is part of the policy, not a style preference. **A proven non-obvious root cause is a cue to write the insight IN THE SAME TURN as exploiting the fix — before continuing the task.** Queuing it “for the close-out step” is how insights get lost: close-outs die to compaction, session death, and interrupts, and meanwhile the next agent hits the same wall. The insight is part of the fix, not an appendix.
+
+Two escalations make it **mandatory, immediately**:
+
+* **The recurrence marker.** When the owner or a peer tells you the failure class recurs (“agents **often** think…”, “agents **keep** hitting…”), that sentence is a classification instruction, not just diagnostic color — the write-up stops being optional the moment your fix proves out.
+* **Self-filed, self-resolved.** You filed the EI and resolved it in the same session with a novel root cause. (The `improvements:resolve` fixed-outcome response now nudges this check.)
+
+Why a timing rule at all: descriptions don’t fire under a hot goal; cues and hooks do. This is the same lesson that moved file locking from advisory (“always acquire first”) to a PreToolUse hook — incident: the 2026-06-11 Scout 429 saga, where the `LLM_TEST_BACKEND=claude-code` escape was proven and then queued for close-out until the owner asked “did you write the insight?”
 
 ### When NOT to write one
 
@@ -27580,7 +27593,7 @@ Net effect: edit the discovery file → operator picks it up within \~50ms, no r
 The Admin section is structured as separate operator-vite SPA routes per tab (not in-page state):
 
 * `/admin/features` → `<AdminShell title="Features"><FeaturesAdmin /></AdminShell>` — the flag console (`apps/operator-vite/src/routes/admin/features.tsx`; the `FeaturesAdmin` component still lives at `apps/operator/app/admin/features/FeaturesAdmin.tsx`, imported via the SPA’s `@/app` alias).
-* Sibling tabs (`/admin/git`, `/admin/testing`, …) follow the same `<AdminShell>` pattern.
+* Sibling tabs (`/admin/git`, `/admin/dbos`, …) follow the same `<AdminShell>` pattern.
 
 `AdminShell` is the chrome (header with title + tabs). Each tab is a TanStack `<Link>` so navigations are full route transitions; the URL is the source of truth for the active tab (no `useState`).
 
@@ -41349,16 +41362,16 @@ Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four** test framewo
 
 | Framework         | File shape                     | Where                                               | Discovered by                                       |
 | ----------------- | ------------------------------ | --------------------------------------------------- | --------------------------------------------------- |
-| **Vitest**        | `*.test.ts` next to source     | per-package                                         | `/admin/testing` registry globs                     |
+| **Vitest**        | `*.test.ts` next to source     | per-package                                         | Tests-tab registry globs                            |
 | **Playwright**    | `*.spec.ts`                    | `apps/operator/e2e/`                                | `harness` / domain-specific E2E sections            |
 | **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                                      | `cargo test --message-format=json` reporter (P-012) |
 | **LLM scenarios** | `.ts` / `.yaml`                | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab                                     |
 
-**Where tests appear in the UI:** drop a test file under one of the glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts` and it shows up automatically in the matching `/admin/testing` subtab (and the `/adv` Tests tab) — no registration step. The shared `<DomainTestPanel>` walks the server-side glob at every request, so renames + deletions propagate without a rebuild.
+**Where tests appear in the UI:** drop a test file under one of the glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts` and it shows up automatically in the matching subtab of the `/adv` Tests tab — no registration step. (The old `/admin/testing` route was removed 2026-06-11; the Tests tab is the only testing console.) The shared `<DomainTestPanel>` walks the server-side glob at every request, so renames + deletions propagate without a rebuild.
 
 The domain globs are deliberately **directory/prefix-level** so a new test in an existing area appears with no registry edit. A genuinely new subsystem (a new top-level dir nothing globs yet) is the one case that needs a one-line glob add — and the coverage guard below forces it.
 
-**Two sources, one of them generated.** `/admin/testing` reads the registry (`testing-domains-registry.ts`) directly; the `/adv` Tests tab reads the harness contract `.papercusp/testing-domains.json`. That contract is **generated** from the registry — run `npm run gen:contract` after changing domains (CI’s `gen:contract:check` fails if it drifted). Do not hand-edit the JSON.
+**Two sources, one of them generated.** The operator’s testing API (`/api/admin/testing/*`) reads the registry (`testing-domains-registry.ts`) directly; the `/adv` Tests tab reads the harness contract `.papercusp/testing-domains.json`. That contract is **generated** from the registry — run `npm run gen:contract` after changing domains (CI’s `gen:contract:check` fails if it drifted). Do not hand-edit the JSON.
 
 **Coverage guard (no test is invisible).** `npm run lint:tests` (from `apps/operator`; CI-gated) fails if any canonical `*.test.ts(x)` / `*.spec.ts` matches **no** registry glob — i.e. would be invisible in the tab. This caught the 2026-06-02 audit finding that 614 of 1168 tests were orphaned. When it fires, widen a domain’s globs (or add a domain) in the registry (`packages/operator-core/lib/testing-domains-registry.ts`), then `npm run gen:contract`.
 
@@ -41378,7 +41391,7 @@ The domain globs are deliberately **directory/prefix-level** so a new test in an
 
 Two orthogonal ways to invoke a test:
 
-* **File-Run buttons in `/admin/testing`** (P-014/P-016) spawn the test file directly via `vitest run <path>` / `playwright test <path>` / `cargo test`. Single-process, polling-based status.
+* **File-Run buttons in the `/adv` Tests tab** (P-014/P-016) spawn the test file directly via `vitest run <path>` / `playwright test <path>` / `cargo test`. Single-process, polling-based status.
 * **Agent-e2e workflow** (see [`testing/agent-e2e`](./agent-e2e)) is a meta-loop where an agent drives the Tauri UI to verify the running app — the same test file may legitimately be invoked both ways.
 
 ## 1.0 Why this exists

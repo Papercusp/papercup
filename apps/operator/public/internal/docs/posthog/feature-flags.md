@@ -279,7 +279,7 @@ Net effect: edit the discovery file → operator picks it up within \~50ms, no r
 The Admin section is structured as separate operator-vite SPA routes per tab (not in-page state):
 
 * `/admin/features` → `<AdminShell title="Features"><FeaturesAdmin /></AdminShell>` — the flag console (`apps/operator-vite/src/routes/admin/features.tsx`; the `FeaturesAdmin` component still lives at `apps/operator/app/admin/features/FeaturesAdmin.tsx`, imported via the SPA's `@/app` alias).
-* Sibling tabs (`/admin/git`, `/admin/testing`, …) follow the same `<AdminShell>` pattern.
+* Sibling tabs (`/admin/git`, `/admin/dbos`, …) follow the same `<AdminShell>` pattern.
 
 `AdminShell` is the chrome (header with title + tabs). Each tab is a TanStack `<Link>` so navigations are full route transitions; the URL is the source of truth for the active tab (no `useState`).
 

@@ -52,15 +52,16 @@ test frameworks ship new tests. Everything else is being migrated out.
 
 | Framework | File shape | Where | Discovered by |
 | --- | --- | --- | --- |
-| **Vitest** | `*.test.ts` next to source | per-package | `/admin/testing` registry globs |
+| **Vitest** | `*.test.ts` next to source | per-package | Tests-tab registry globs |
 | **Playwright** | `*.spec.ts` | `apps/operator/e2e/` | `harness` / domain-specific E2E sections |
 | **Cargo** | `#[cfg(test)] mod tests { … }` | `<crate>/src/` | `cargo test --message-format=json` reporter (P-012) |
 | **LLM scenarios** | `.ts` / `.yaml` | `packages/operator-core/lib/llm-testing/scenarios/` | LLM testing tab |
 
 **Where tests appear in the UI:** drop a test file under one of the
 glob-matched paths in `packages/operator-core/lib/testing-domains-registry.ts`
-and it shows up automatically in the matching `/admin/testing` subtab
-(and the `/adv` Tests tab) — no registration step. The shared
+and it shows up automatically in the matching subtab of the `/adv` Tests
+tab — no registration step. (The old `/admin/testing` route was removed
+2026-06-11; the Tests tab is the only testing console.) The shared
 `<DomainTestPanel>` walks the server-side glob at every request, so
 renames + deletions propagate without a rebuild.
 
@@ -69,8 +70,9 @@ test in an existing area appears with no registry edit. A genuinely new
 subsystem (a new top-level dir nothing globs yet) is the one case that
 needs a one-line glob add — and the coverage guard below forces it.
 
-**Two sources, one of them generated.** `/admin/testing` reads the
-registry (`testing-domains-registry.ts`) directly; the `/adv` Tests tab
+**Two sources, one of them generated.** The operator's testing API
+(`/api/admin/testing/*`) reads the registry
+(`testing-domains-registry.ts`) directly; the `/adv` Tests tab
 reads the harness contract `.papercusp/testing-domains.json`. That contract
 is **generated** from the registry — run `npm run gen:contract` after
 changing domains (CI's `gen:contract:check` fails if it drifted). Do not
@@ -108,7 +110,7 @@ genuinely needs a live process.
 
 Two orthogonal ways to invoke a test:
 
-- **File-Run buttons in `/admin/testing`** (P-014/P-016) spawn the
+- **File-Run buttons in the `/adv` Tests tab** (P-014/P-016) spawn the
   test file directly via `vitest run <path>` / `playwright test
   <path>` / `cargo test`. Single-process, polling-based status.
 - **Agent-e2e workflow** (see [`testing/agent-e2e`](./agent-e2e)) is a

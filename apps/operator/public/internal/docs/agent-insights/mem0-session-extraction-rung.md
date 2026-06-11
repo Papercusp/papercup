@@ -69,7 +69,7 @@ hard stop for the whole client) — not extraction.
 
 * **Round-trip probe** (isolated schema; exit 2 = skip without a session):
   `npx tsx packages/operator-core/lib/memory/session-extraction-live.ts` —
-  also registered in `/admin/testing` (memory → Live). Proof-of-rung is the
+  also registered in the `/adv` Tests tab (Memory → Live). Proof-of-rung is the
   adapter's own usage counters (`sessionExtractionUsage()`), not just a
   stored row.
 * **Telemetry**: every session-rung call lands a usage sample in

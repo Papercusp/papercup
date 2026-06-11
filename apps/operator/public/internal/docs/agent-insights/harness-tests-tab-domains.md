@@ -11,9 +11,10 @@ Two things to know before you touch the harness **Tests** tab (`/adv` →
 
 ## The domain nav is HARNESS-owned data, not an operator registry
 
-`/admin/testing` reads `adminRegistry` (the 8-domain Universal tier — formerly
-"generalized" — plus \~30 Papercusp domains, i.e. `[...operatorUniversal,
-...papercuspRegistry]`) from
+The operator's testing API (`/api/admin/testing/*`; the old `/admin/testing`
+UI route was removed 2026-06-11) reads `adminRegistry` (the 8-domain Universal
+tier — formerly "generalized" — plus \~30 Papercusp domains, i.e.
+`[...operatorUniversal, ...papercuspRegistry]`) from
 `packages/operator-core/lib/testing-domains-registry.ts` — operator-internal code.
 The **harness** Tests tab does NOT import that. Each harness declares its own
 test domains in its contract surface:

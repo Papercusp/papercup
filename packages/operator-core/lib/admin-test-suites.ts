@@ -48,6 +48,7 @@ interface DesktopState {
 
 interface RoutePage {
   href: string;
+  /** Exact trimmed text of every h1 AND h2 on the page (predicates use Array.includes — exact element match). */
   h1: string[];
   domNodes: number;
   hasHarnessRoot: boolean;
@@ -395,19 +396,25 @@ function aiExplorePromptChecks(ctx: SuiteContext) {
   }));
 }
 
+// The testing console lives on the harness Tests tab (/adv) — the
+// /admin/testing route was removed once the Tests tab covered it. Headings
+// are exact h1/h2 text (readRoutePage collects both; AiExplorePanel only
+// renders an h2).
+const TESTS_TAB = '/adv?slug=papercup&tab=testing';
+
 function adminTestingCoreChecks(ctx: SuiteContext) {
   return [
-    routeCheck(ctx, 'live-route', 'Live metrics route', '/admin/testing?tab=live', 'Live metrics'),
-    routeCheck(ctx, 'chaos-route', 'Chaos route', '/admin/testing?tab=chaos', 'Chaos'),
-    routeCheck(ctx, 'routes-route', 'Routes route', '/admin/testing?tab=routes', 'Routes'),
-    routeCheck(ctx, 'packaged-route', 'Packaged build route', '/admin/testing?tab=packaged', 'Packaged build'),
+    routeCheck(ctx, 'live-route', 'Live metrics route', `${TESTS_TAB}&testsTab=vitals`, 'Live metrics'),
+    routeCheck(ctx, 'chaos-route', 'Chaos route', `${TESTS_TAB}&testsTab=chaos-desktop`, 'Chaos (desktop)'),
+    routeCheck(ctx, 'routes-route', 'Routes route', `${TESTS_TAB}&testsTab=routes`, 'Routes'),
+    routeCheck(ctx, 'packaged-route', 'Packaged build route', `${TESTS_TAB}&testsTab=packaged`, 'Packaged build'),
   ];
 }
 
 function adminTestingExtendedChecks(ctx: SuiteContext) {
   return [
-    routeCheck(ctx, 'ai-route', 'AI Explore route', '/admin/testing?tab=ai', 'AI Explore'),
-    routeCheck(ctx, 'llm-route', 'LLM testing route', '/admin/testing?tab=llm', 'LLM testing'),
+    routeCheck(ctx, 'ai-route', 'AI Explore route', `${TESTS_TAB}&testsTab=ai-explore`, 'AI Explore'),
+    routeCheck(ctx, 'llm-route', 'LLM testing route', `${TESTS_TAB}&testsTab=llm`, 'LLM testing'),
   ];
 }
 
@@ -463,7 +470,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'chaos-recorder-usability',
       label: 'Chaos recorder usability',
       run: async () => {
-        const summary = await runChaosRecorder(ctx, '/admin/testing?tab=test-runs', 5_000);
+        const summary = await runChaosRecorder(ctx, '/adv?slug=papercup&tab=testing&testsTab=test-runs', 5_000);
         const pass = summary.clicks > 0 && summary.maxInp <= 500 && summary.p95Inp <= 250 && summary.errors === 0 && summary.reloads === 0 && summary.frameDrops <= 8 && summary.maxFrameMs <= 200;
         return statusResult(
           pass,
@@ -844,11 +851,10 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   const routeUrl = new URL(route, state.origin);
   routeUrl.searchParams.set('__suiteRun', suiteRun);
   // The chaos recorder lives on the harness Tests tab (/adv) — the
-  // /admin/testing route was removed once the Tests tab covered it. NOTE:
-  // the universalized ChaosDesktopPanel does not (yet) read the
-  // chaosRoute/chaosDur/dry params or install the __pcChaosIdleReset hatch
-  // the old admin tab honored — this driver flow needs panel-side hooks
-  // restored before it can go green again (tracked as an engineer issue).
+  // /admin/testing route was removed once the Tests tab covered it. The
+  // universalized ChaosDesktopPanel still reads chaosRoute/chaosDur/dry via
+  // nuqs and installs the __pcChaosIdleReset hatch, so the driver flow below
+  // works unchanged once pointed at the right tab.
   const chaosUrl = new URL('/adv', state.origin);
   chaosUrl.searchParams.set('slug', 'papercup');
   chaosUrl.searchParams.set('tab', 'testing');
@@ -1153,7 +1159,7 @@ async function readRoutePage(ctx: SuiteContext): Promise<RoutePage | null> {
     ctx,
     `(() => ({
       href: location.href,
-      h1: Array.from(document.querySelectorAll('h1')).map((node) => (node.textContent || '').trim()),
+      h1: Array.from(document.querySelectorAll('h1, h2')).map((node) => (node.textContent || '').trim()),
       domNodes: document.querySelectorAll('*').length,
       hasHarnessRoot: Boolean(document.querySelector('.h-root')),
     }))()`,

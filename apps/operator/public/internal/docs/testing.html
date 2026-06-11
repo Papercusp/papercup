@@ -142,19 +142,21 @@ test frameworks ship new tests. Everything else is being migrated out.</p>
 
 
 
-<table><thead><tr><th>Framework</th><th>File shape</th><th>Where</th><th>Discovered by</th></tr></thead><tbody><tr><td><strong>Vitest</strong></td><td><code dir="auto">*.test.ts</code> next to source</td><td>per-package</td><td><code dir="auto">/admin/testing</code> registry globs</td></tr><tr><td><strong>Playwright</strong></td><td><code dir="auto">*.spec.ts</code></td><td><code dir="auto">apps/operator/e2e/</code></td><td><code dir="auto">harness</code> / domain-specific E2E sections</td></tr><tr><td><strong>Cargo</strong></td><td><code dir="auto">#[cfg(test)] mod tests { … }</code></td><td><code dir="auto">&#x3C;crate>/src/</code></td><td><code dir="auto">cargo test --message-format=json</code> reporter (P-012)</td></tr><tr><td><strong>LLM scenarios</strong></td><td><code dir="auto">.ts</code> / <code dir="auto">.yaml</code></td><td><code dir="auto">packages/operator-core/lib/llm-testing/scenarios/</code></td><td>LLM testing tab</td></tr></tbody></table>
+<table><thead><tr><th>Framework</th><th>File shape</th><th>Where</th><th>Discovered by</th></tr></thead><tbody><tr><td><strong>Vitest</strong></td><td><code dir="auto">*.test.ts</code> next to source</td><td>per-package</td><td>Tests-tab registry globs</td></tr><tr><td><strong>Playwright</strong></td><td><code dir="auto">*.spec.ts</code></td><td><code dir="auto">apps/operator/e2e/</code></td><td><code dir="auto">harness</code> / domain-specific E2E sections</td></tr><tr><td><strong>Cargo</strong></td><td><code dir="auto">#[cfg(test)] mod tests { … }</code></td><td><code dir="auto">&#x3C;crate>/src/</code></td><td><code dir="auto">cargo test --message-format=json</code> reporter (P-012)</td></tr><tr><td><strong>LLM scenarios</strong></td><td><code dir="auto">.ts</code> / <code dir="auto">.yaml</code></td><td><code dir="auto">packages/operator-core/lib/llm-testing/scenarios/</code></td><td>LLM testing tab</td></tr></tbody></table>
 <p><strong>Where tests appear in the UI:</strong> drop a test file under one of the
 glob-matched paths in <code dir="auto">packages/operator-core/lib/testing-domains-registry.ts</code>
-and it shows up automatically in the matching <code dir="auto">/admin/testing</code> subtab
-(and the <code dir="auto">/adv</code> Tests tab) — no registration step. The shared
+and it shows up automatically in the matching subtab of the <code dir="auto">/adv</code> Tests
+tab — no registration step. (The old <code dir="auto">/admin/testing</code> route was removed
+2026-06-11; the Tests tab is the only testing console.) The shared
 <code dir="auto">&#x3C;DomainTestPanel></code> walks the server-side glob at every request, so
 renames + deletions propagate without a rebuild.</p>
 <p>The domain globs are deliberately <strong>directory/prefix-level</strong> so a new
 test in an existing area appears with no registry edit. A genuinely new
 subsystem (a new top-level dir nothing globs yet) is the one case that
 needs a one-line glob add — and the coverage guard below forces it.</p>
-<p><strong>Two sources, one of them generated.</strong> <code dir="auto">/admin/testing</code> reads the
-registry (<code dir="auto">testing-domains-registry.ts</code>) directly; the <code dir="auto">/adv</code> Tests tab
+<p><strong>Two sources, one of them generated.</strong> The operator’s testing API
+(<code dir="auto">/api/admin/testing/*</code>) reads the registry
+(<code dir="auto">testing-domains-registry.ts</code>) directly; the <code dir="auto">/adv</code> Tests tab
 reads the harness contract <code dir="auto">.papercusp/testing-domains.json</code>. That contract
 is <strong>generated</strong> from the registry — run <code dir="auto">npm run gen:contract</code> after
 changing domains (CI’s <code dir="auto">gen:contract:check</code> fails if it drifted). Do not
@@ -187,7 +189,7 @@ ones get migrated in P-029. New ones fail CI.</li>
 <div class="sl-heading-wrapper level-h3"><h3 id="agent-e2e-workflow-vs-file-run-buttons">Agent-e2e workflow vs. file-Run buttons</h3><a class="sl-anchor-link" href="#agent-e2e-workflow-vs-file-run-buttons"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Agent-e2e workflow vs. file-Run buttons”</span></a></div>
 <p>Two orthogonal ways to invoke a test:</p>
 <ul>
-<li><strong>File-Run buttons in <code dir="auto">/admin/testing</code></strong> (P-014/P-016) spawn the
+<li><strong>File-Run buttons in the <code dir="auto">/adv</code> Tests tab</strong> (P-014/P-016) spawn the
 test file directly via <code dir="auto">vitest run &#x3C;path></code> / <code dir="auto">playwright test &#x3C;path></code> / <code dir="auto">cargo test</code>. Single-process, polling-based status.</li>
 <li><strong>Agent-e2e workflow</strong> (see <a href="./agent-e2e"><code dir="auto">testing/agent-e2e</code></a>) is a
 meta-loop where an agent drives the Tauri UI to verify the running

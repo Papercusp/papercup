@@ -448,7 +448,7 @@
 <p>The Admin section is structured as separate operator-vite SPA routes per tab (not in-page state):</p>
 <ul>
 <li><code dir="auto">/admin/features</code> → <code dir="auto">&#x3C;AdminShell title="Features">&#x3C;FeaturesAdmin />&#x3C;/AdminShell></code> — the flag console (<code dir="auto">apps/operator-vite/src/routes/admin/features.tsx</code>; the <code dir="auto">FeaturesAdmin</code> component still lives at <code dir="auto">apps/operator/app/admin/features/FeaturesAdmin.tsx</code>, imported via the SPA’s <code dir="auto">@/app</code> alias).</li>
-<li>Sibling tabs (<code dir="auto">/admin/git</code>, <code dir="auto">/admin/testing</code>, …) follow the same <code dir="auto">&#x3C;AdminShell></code> pattern.</li>
+<li>Sibling tabs (<code dir="auto">/admin/git</code>, <code dir="auto">/admin/dbos</code>, …) follow the same <code dir="auto">&#x3C;AdminShell></code> pattern.</li>
 </ul>
 <p><code dir="auto">AdminShell</code> is the chrome (header with title + tabs). Each tab is a TanStack <code dir="auto">&#x3C;Link></code> so navigations are full route transitions; the URL is the source of truth for the active tab (no <code dir="auto">useState</code>).</p>
 <p>The <code dir="auto">/admin/*</code> routes are intentionally not linked from the nav — reach them by URL. The flag-mutating endpoints behind them (<code dir="auto">/api/flags/set</code>, <code dir="auto">/api/flags/preset</code>) enforce a loopback guard server-side (<code dir="auto">requireLoopbackOr403</code>); the route itself is <strong>not</strong> flag-gated (an earlier <code dir="auto">FLAGS.ADMIN</code> gate was removed — and that key no longer exists in <code dir="auto">FLAGS</code>).</p>
