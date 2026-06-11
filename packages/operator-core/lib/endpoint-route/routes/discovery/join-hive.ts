@@ -12,16 +12,15 @@
  * Loopback + long timeout: N member joins = N read-only clones.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 export default defineTool({
   method: 'POST',
   path: '/discovery/join-hive',
-  auth: 'public',
+  // The formal Wave-1 tier (auth-posture standing gate) — N member joins =
+  // N read-only clones, desktop-webview-only like its discovery siblings.
+  auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     let body: { hiveId?: string; title?: string; memberLinks?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;
