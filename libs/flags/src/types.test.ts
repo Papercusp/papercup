@@ -54,6 +54,13 @@ describe('flag registry invariants', () => {
       expect(FLAG_DEFAULTS[key]).toBe(false);
     }
   });
+
+  it('security flags stay OFF by default (deliberate exceptions to the alpha default-ON policy)', () => {
+    // Open signup is internet-reachable attack surface (the cloudflared
+    // tunnel) — the signup route's zero-users bootstrap path covers fresh
+    // installs, so default-OFF costs nothing.
+    expect(FLAG_DEFAULTS[FLAGS.OPEN_SIGNUP]).toBe(false);
+  });
 });
 
 describe('resolveWithDefaults', () => {

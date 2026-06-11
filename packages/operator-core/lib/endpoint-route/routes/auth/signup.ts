@@ -4,7 +4,7 @@
  * Ported from app/api/auth/signup/route.ts. `auth: 'public'` — account
  * creation is pre-auth.
  */
-import { signup, login, SESSION_COOKIE } from '../../../auth';
+import { signup, login, listUsers, SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 
@@ -20,6 +20,20 @@ export default defineTool({
     const autoLogin = body?.auto_login !== false;
     if (!username || !display_name) {
       return Response.json({ error: 'username + display_name required' }, { status: 400 });
+    }
+
+    // Single-owner posture (auth-tier rollout 2026-06-10, OWNER rows): the
+    // route stays `public` so a fresh install can create its first account,
+    // but once any active user exists further signups need the explicit
+    // OPEN_SIGNUP flag — this endpoint is internet-reachable through the
+    // cloudflared tunnel.
+    const existing = await listUsers();
+    if (existing.length > 0) {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      if (!(await getFlag(FLAGS.OPEN_SIGNUP, 'system'))) {
+        return Response.json({ error: 'signup_disabled' }, { status: 403 });
+      }
     }
 
     try {

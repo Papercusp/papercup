@@ -83,6 +83,17 @@ export const FLAGS = {
   // flip takes effect without an operator restart. ON by default — leaving it
   // off means credential forks mutually invalidate again.
   CLAUDE_CRED_SYNC: "papercusp-claude-cred-sync",
+  // auth-tier-rollout-2026-06-10 (OWNER rows review): POST /auth/signup is
+  // `public` and internet-reachable via the cloudflared tunnel. The route
+  // allows the FIRST account unconditionally (fresh-install bootstrap); once
+  // any active user exists, further signups require this flag.
+  OPEN_SIGNUP: "papercusp-open-signup",
+  // hive-from-github-url-2026-06-11 (P-011/P-012): gates the picker's GitHub-URL
+  // entry — paste a repo URL → create a Hive from it (clone → blueprint detect →
+  // hive home + member → visibility-gated auto-publish), join the existing hive
+  // when the paste-time lookup hits, or clone standalone (D-007). OFF = the
+  // legacy coming-soon stub renders instead. Backend (P-006..P-010) is ungated.
+  HIVE_FROM_GITHUB_URL: "papercusp-hive-from-github-url",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -129,6 +140,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the fix for the live every-terminal-relogin cascade; it is monotonic
   // (newest-wins, never deletes) and a converged tree produces zero writes.
   [FLAGS.CLAUDE_CRED_SYNC]: true,
+  // OFF by default — SECURITY exception to the alpha default-ON policy: open
+  // signup on an internet-facing box mints real accounts. The zero-active-users
+  // bootstrap path in the signup route keeps fresh installs working regardless.
+  [FLAGS.OPEN_SIGNUP]: false,
+  // ON by default (alpha flags-default-on policy / hive-from-github-url P-011):
+  // the backend (P-006..P-010) shipped tested; the picker entry goes live with
+  // it. OFF = the GitHub-URL card reverts to the coming-soon stub.
+  [FLAGS.HIVE_FROM_GITHUB_URL]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

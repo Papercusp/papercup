@@ -47,6 +47,9 @@ export interface PublishCreatedHiveOutcome {
     /** Why the Cupboard leg was skipped, when it was. */
     skipped?: 'invite' | 'private_repo' | 'no_hive_pubkey' | 'no_member_repo_ids';
     rowsCreated?: number;
+    /** Rows already present (the worker's per-repo uniqueness, HTTP 409) —
+     *  expected on re-publish/visibility flips, not a failure. */
+    rowsExisted?: number;
     rowsFailed?: number;
     errors?: string[];
   };
@@ -77,7 +80,9 @@ export interface PublishCreatedHiveDeps {
   deriveMemberRepos?: typeof deriveHiveMemberRepoRefs;
   publishDirectory?: typeof publishHiveToDirectory;
   getDirectory?: typeof getHiveDirectory;
-  publishListing?: (input: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
+  publishListing?: (
+    input: Record<string, unknown>,
+  ) => Promise<{ ok: boolean; error?: string; status?: number; upstream_status?: number }>;
   createLocalBinding?: (input: {
     githubUrl: string;
     privacy: 'shared-private' | 'shared-public';
@@ -275,6 +280,7 @@ async function publishListingForMeta(
     } else {
       cupboard.attempted = true;
       cupboard.rowsCreated = 0;
+      cupboard.rowsExisted = 0;
       cupboard.rowsFailed = 0;
       cupboard.errors = [];
       const publishListing =
@@ -299,7 +305,12 @@ async function publishListingForMeta(
           hive_title: meta.title,
         }).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
         if (res.ok) cupboard.rowsCreated! += 1;
-        else {
+        else if (
+          ('status' in res && (res.status === 409 || res.upstream_status === 409)) ||
+          /exists|conflict/i.test(res.error ?? '')
+        ) {
+          cupboard.rowsExisted! += 1; // re-publish/flip over an existing row — fine
+        } else {
           cupboard.rowsFailed! += 1;
           if (res.error) cupboard.errors!.push(`${parsed.owner}/${parsed.repo}: ${res.error}`);
         }

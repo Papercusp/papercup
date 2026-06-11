@@ -42,6 +42,11 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // every bee's inference auth through a gateway service that must be
   // deployed first; flipping early would break the whole fleet's auth.
   FLAGS.INFERENCE_GATEWAY,
+  // auth-tier rollout (OWNER rows): SECURITY gate, not unfinished work —
+  // /auth/signup is internet-reachable via the cloudflared tunnel; open
+  // signup on a single-owner box mints real accounts. The zero-users
+  // bootstrap path in the route keeps fresh installs working while dark.
+  FLAGS.OPEN_SIGNUP,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

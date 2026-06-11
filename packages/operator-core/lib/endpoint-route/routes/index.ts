@@ -18,6 +18,7 @@ import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
 import discoveryHives from './discovery/hives';
+import discoverySetHive from './discovery/set-hive';
 import deployVncSession from './deploy/vnc-session';
 import flagsWebhook from './flags/webhook';
 import flagsBootstrap from './flags/bootstrap';
@@ -408,6 +409,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
   ...flatten(discoveryHives as AnyRoute),
+  ...flatten(discoverySetHive as AnyRoute),
   ...flatten(deployVncSession as AnyRoute),
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),

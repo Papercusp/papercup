@@ -35,6 +35,8 @@ vi.mock('../../auth-rate-limit', () => ({
   resetHardPerUser: vi.fn(async () => {}),
 }));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+// signup's open-signup gate reads the flag server-side (dynamic import).
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
@@ -49,6 +51,7 @@ import {
   getSessionUser, getSessionUserOrDefault, listUsers, updateDisplayName,
 } from '../../auth';
 import { checkSoftPerIp, checkHardPerUser } from '../../auth-rate-limit';
+import { getFlag } from '@papercusp/flags/server';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -75,6 +78,7 @@ beforeEach(() => {
   vi.mocked(changePassword).mockResolvedValue(undefined);
   vi.mocked(listUsers).mockResolvedValue([]);
   vi.mocked(updateDisplayName).mockResolvedValue(undefined);
+  vi.mocked(getFlag).mockResolvedValue(false);
   vi.mocked(checkSoftPerIp).mockResolvedValue({ ok: true, retryAfterS: undefined });
   vi.mocked(checkHardPerUser).mockResolvedValue({ ok: true, retryAfterS: undefined });
 });
@@ -149,6 +153,25 @@ describe('POST /auth/signup', () => {
     const res = await app.request('/auth/signup', json({ username: 'alice', display_name: 'A' }));
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'username_taken' });
+  });
+
+  // The open-signup gate (auth-tier rollout, OWNER rows): the first account
+  // bootstraps unconditionally (listUsers → [] above); after that, signup
+  // requires the OPEN_SIGNUP flag — the route is internet-reachable.
+  it('denies signup once a user exists and OPEN_SIGNUP is off', async () => {
+    vi.mocked(listUsers).mockResolvedValue([USER]);
+    const res = await app.request('/auth/signup', json({ username: 'bob', display_name: 'Bob' }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'signup_disabled' });
+    expect(signup).not.toHaveBeenCalled();
+  });
+
+  it('allows signup past the first user when OPEN_SIGNUP is on', async () => {
+    vi.mocked(listUsers).mockResolvedValue([USER]);
+    vi.mocked(getFlag).mockResolvedValue(true);
+    const res = await app.request('/auth/signup', json({ username: 'bob', display_name: 'Bob' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
   });
 });
 

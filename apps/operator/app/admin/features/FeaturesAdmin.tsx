@@ -28,6 +28,7 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.VIDEO_CHANNELS]: 'Video channels (desktop)',
   [FLAGS.VOICE_CHANNELS]: 'Voice channels (desktop)',
   [FLAGS.THE_HIVE]: 'The Swarm (bee lexicon)',
+  [FLAGS.OPEN_SIGNUP]: 'Open signup',
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
@@ -46,6 +47,8 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
     'Desktop P2P voice channel (holepunch) for shared harnesses. Off until the live Tauri+mic pass.',
   [FLAGS.THE_HIVE]:
     'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
+  [FLAGS.OPEN_SIGNUP]:
+    'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
 };
 
 type LoadState =
