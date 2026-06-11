@@ -358,6 +358,9 @@ export interface SwarmCell {
   name: CellName;
   /** Injected ELECTION identity (argmin ⇒ cell a is the authority). */
   electionPubkey: string;
+  /** The substrate ANNOUNCE identity (Ed25519 device pubkey) — what
+   *  `handle.revoke(devicePubkey)` takes and what op provenance carries. */
+  announcePubkey: string;
   githubUserId: number;
   /** Claim owner string (distinct per cell — two Swarms are distinct holders). */
   owner: string;
@@ -657,6 +660,7 @@ export class CompositionRig {
       a: {
         name: 'a',
         electionPubkey: ELECT_A,
+        announcePubkey: idA.devicePubkey,
         githubUserId: 4201,
         owner: 'shl-swarm-a',
         sql: dbA.sql,
@@ -668,6 +672,7 @@ export class CompositionRig {
       b: {
         name: 'b',
         electionPubkey: ELECT_B,
+        announcePubkey: idB.devicePubkey,
         githubUserId: 4202,
         owner: 'shl-swarm-b',
         sql: dbB.sql,

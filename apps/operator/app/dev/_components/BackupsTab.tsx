@@ -94,7 +94,12 @@ export default function BackupsTab() {
 
   useEffect(() => { load(); startServer(); }, [load, startServer]);
   useEffect(() => {
-    const t = setInterval(load, 15_000);
+    // Documented polling exception (audit P-058): kopia server state is an
+    // external process probe — no sync invalidation source. 15s while
+    // visible; paused when hidden.
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void load();
+    }, 15_000);
     return () => clearInterval(t);
   }, [load]);
 

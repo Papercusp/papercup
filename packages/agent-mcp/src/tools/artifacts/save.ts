@@ -52,16 +52,23 @@ export default defineTool({
     // workspace-scoped (harness_app + app.workspace_id GUC, RLS-enforced)
     // for normal dispatch, admin only for superuser/cross-workspace
     // dispatch. The admin handle here bypassed harness_text_artifacts'
-    // workspace-isolation policy. workspace_id is stamped from the GUC so
-    // the policy's WITH CHECK holds; under the admin handle the GUC is
-    // unset → legacy ''.
+    // workspace-isolation policy. workspace_id stamps GUC-first, then
+    // ctx.workspaceId — the admin path has no GUC, and a bare
+    // COALESCE(...,'') there minted the blank legacy rows EI-280 had to
+    // repair ('*' = no concrete workspace, never a stamp). The conflict
+    // arm ADOPTS a blank-stamped legacy row instead of tripping the
+    // policy on it.
+    const wsFallback = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : '';
     await ctx.tx`
       INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
       VALUES (${slug}, ${key}, ${args.content}, ${now},
-              COALESCE(current_setting('app.workspace_id', true), ''))
+              COALESCE(NULLIF(current_setting('app.workspace_id', true), ''), ${wsFallback}))
       ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
-        content    = EXCLUDED.content,
-        updated_at = EXCLUDED.updated_at
+        content      = EXCLUDED.content,
+        updated_at   = EXCLUDED.updated_at,
+        workspace_id = CASE WHEN harness_text_artifacts.workspace_id = ''
+                            THEN EXCLUDED.workspace_id
+                            ELSE harness_text_artifacts.workspace_id END
     `;
     return {
       content: [

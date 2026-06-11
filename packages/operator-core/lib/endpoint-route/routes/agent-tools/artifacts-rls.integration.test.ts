@@ -163,4 +163,106 @@ describe('artifacts:* cross-workspace denial via ctx.tx + RLS (audit P-012)', ()
     expect(p.found).toBe(true);
     expect(p.content).toBe('secret-A');
   });
+
+  // ── EI-280: pre-fix blank-stamp legacy rows ────────────────────────────────
+  // Rows written before P-012 carry workspace_id='' — invisible to load and a
+  // poison pill for save's upsert. Three legs close the class: migration 221
+  // backfills per registration, the admin write path stamps ctx.workspaceId
+  // instead of minting '', and the conflict arm adopts blank rows.
+
+  it('EI-280: migration 221 backfills a blank legacy row per harness registration', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { resolve, dirname } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const migration = readFileSync(
+      resolve(here, '../../../../../../libs/papercusp/libs/db/sql/221-backfill-text-artifacts-workspace-id.sql'),
+      'utf8',
+    );
+    // Register the slug (leg-1 mapping source) + seed a pre-fix blank row.
+    await db.adminSql`
+      INSERT INTO harness_shared.projects (id, name, status, created_ts, updated_ts, slug, workspace_id)
+      VALUES ('proj-legacy-h', 'legacy', 'active', 1, 1, 'legacy-h', ${WS_A})
+      ON CONFLICT (id) DO UPDATE SET workspace_id = ${WS_A}
+    `;
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+      VALUES ('legacy-h', 'old.md', 'pre-fix content', 1, '')
+    `;
+    // Invisible before the backfill…
+    const before = await callInWorkspace(WS_A, (tx) =>
+      tool('artifacts:load').fn({ slug: 'legacy-h', rel_path: 'old.md' }, ctxWith(tx, WS_A)),
+    );
+    expect(payloadOf(before as never).found).toBe(false);
+    // …run the (idempotent) migration…
+    await db.adminSql.unsafe(migration);
+    // …now visible from the registered workspace, and the upsert works.
+    const after = await callInWorkspace(WS_A, (tx) =>
+      tool('artifacts:load').fn({ slug: 'legacy-h', rel_path: 'old.md' }, ctxWith(tx, WS_A)),
+    );
+    expect(payloadOf(after as never).content).toBe('pre-fix content');
+    await callInWorkspace(WS_A, (tx) =>
+      tool('artifacts:save').fn(
+        { slug: 'legacy-h', rel_path: 'old.md', content: 'updated post-backfill' },
+        ctxWith(tx, WS_A),
+      ),
+    );
+    const rows = await db.adminSql<{ content: string; workspace_id: string }[]>`
+      SELECT content, workspace_id FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = 'legacy-h' AND rel_path = 'old.md'
+    `;
+    expect(rows[0]).toEqual({ content: 'updated post-backfill', workspace_id: WS_A });
+  });
+
+  it('EI-280: an unregistered slug falls through to the default workspace', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { resolve, dirname } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const migration = readFileSync(
+      resolve(here, '../../../../../../libs/papercusp/libs/db/sql/221-backfill-text-artifacts-workspace-id.sql'),
+      'utf8',
+    );
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+      VALUES ('never-registered-h', 'orphan.md', 'x', 1, '')
+    `;
+    await db.adminSql.unsafe(migration);
+    const rows = await db.adminSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = 'never-registered-h' AND rel_path = 'orphan.md'
+    `;
+    expect(rows[0].workspace_id).toBe('default');
+  });
+
+  it('EI-280: the admin write path stamps ctx.workspaceId, never blank', async () => {
+    // Superuser/cross-workspace dispatch runs on the admin handle with no
+    // GUC — the original COALESCE(...,'') minted the blank rows. The
+    // fallback now stamps ctx.workspaceId ('*' is not a stamp).
+    await tool('artifacts:save').fn(
+      { slug: SLUG, rel_path: 'admin-written.md', content: 'by-admin' },
+      ctxWith(db.adminSql, WS_A),
+    );
+    const rows = await db.adminSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${SLUG} AND rel_path = 'admin-written.md'
+    `;
+    expect(rows[0].workspace_id).toBe(WS_A);
+  });
+
+  it('EI-280: save on the admin handle ADOPTS a blank-stamped row instead of bricking', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
+      VALUES (${SLUG}, 'blank-legacy.md', 'old', 1, '')
+    `;
+    await tool('artifacts:save').fn(
+      { slug: SLUG, rel_path: 'blank-legacy.md', content: 'adopted' },
+      ctxWith(db.adminSql, WS_B),
+    );
+    const rows = await db.adminSql<{ content: string; workspace_id: string }[]>`
+      SELECT content, workspace_id FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${SLUG} AND rel_path = 'blank-legacy.md'
+    `;
+    expect(rows[0]).toEqual({ content: 'adopted', workspace_id: WS_B });
+  });
 });

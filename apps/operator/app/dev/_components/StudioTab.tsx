@@ -47,7 +47,14 @@ export default function StudioTab() {
 
   useEffect(() => {
     void refresh();
-    const t = setInterval(refresh, 2500);
+    // Documented polling exception (audit P-058): drizzle-studio is an
+    // external process probe (running? port?) with no sync invalidation
+    // source. Was 2.5s — process state only changes on start/stop, so 10s
+    // while visible (paused hidden) is plenty; the action buttons refresh
+    // immediately on completion anyway.
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh();
+    }, 10_000);
     return () => clearInterval(t);
   }, [refresh]);
 

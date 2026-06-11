@@ -28,6 +28,17 @@ import { and, eq, sql } from 'drizzle-orm';
 const t = generated.harnessTextArtifactsInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
 import { notifySyncInvalidate } from './sync-sse';
+import { activeWorkspaceId } from './workspace-registry';
+
+/**
+ * workspace_id stamp for operator-side writes (EI-280): this lib runs on the
+ * admin handle (RLS-bypass), so without an explicit stamp every insert minted
+ * a blank-workspace row — invisible to the RLS-scoped artifacts:* agent tools
+ * and a poison pill for their upserts. Stamp the operator's active workspace;
+ * on conflict, adopt a blank-stamped legacy row (never re-home a properly
+ * stamped one).
+ */
+const adoptBlankWorkspace = sql`CASE WHEN ${t.workspaceId} = '' THEN EXCLUDED.workspace_id ELSE ${t.workspaceId} END`;
 
 function normalizeRelPath(rel: string): string {
   // Drop leading `.papercusp/` so the PG key is consistent with the bare
@@ -94,10 +105,14 @@ export async function saveTextArtifact(slug: string, relPath: string, content: s
   const now = Date.now();
   await db
     .insert(t)
-    .values({ harnessSlug: slug, relPath: key, content, updatedAt: now })
+    .values({ harnessSlug: slug, relPath: key, content, updatedAt: now, workspaceId: activeWorkspaceId() })
     .onConflictDoUpdate({
       target: [t.harnessSlug, t.relPath],
-      set: { content: sql`EXCLUDED.content`, updatedAt: sql`EXCLUDED.updated_at` },
+      set: {
+        content: sql`EXCLUDED.content`,
+        updatedAt: sql`EXCLUDED.updated_at`,
+        workspaceId: adoptBlankWorkspace,
+      },
     });
   if (opts.customDiskPath) {
     try {
@@ -119,12 +134,13 @@ export async function appendTextArtifact(slug: string, relPath: string, suffix: 
   // RETURNING comes back typed via .returning({ content }).
   const rows = await db
     .insert(t)
-    .values({ harnessSlug: slug, relPath: key, content: suffix, updatedAt: now })
+    .values({ harnessSlug: slug, relPath: key, content: suffix, updatedAt: now, workspaceId: activeWorkspaceId() })
     .onConflictDoUpdate({
       target: [t.harnessSlug, t.relPath],
       set: {
         content: sql`${t.content} || EXCLUDED.content`,
         updatedAt: sql`EXCLUDED.updated_at`,
+        workspaceId: adoptBlankWorkspace,
       },
     })
     .returning({ content: t.content });

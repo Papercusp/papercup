@@ -87,7 +87,13 @@ export default function PgTab() {
       }
     }
     refresh();
-    const id = setInterval(refresh, 10_000);
+    // Documented polling exception (audit P-058): pg_stat_activity /
+    // connection counts / table sizes are live DB introspection — no table
+    // write fires a sync invalidation for them (the dev.pg* resolver entries
+    // have no producer). Poll while the dev tab is visible; pause hidden.
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refresh();
+    }, 10_000);
     return () => {
       cancelled = true;
       clearInterval(id);

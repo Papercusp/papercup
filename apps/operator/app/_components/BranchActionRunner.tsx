@@ -1,16 +1,27 @@
 'use client';
 
 /**
- * BranchActionRunner — modal that invokes a per-branch action and tails
- * its log via SSE. Mirrors ProvisionStream's xterm pattern but speaks the
- * branch-action event vocabulary (`output`, `stderr`, `action-started`,
- * `action-completed`, `action-failed`, `done`).
+ * BranchActionRunner — modal that invokes a per-branch action and renders
+ * its run as STRUCTURE via the shared <StructuredStreamView> (typed run row
+ * with status/duration/latest output; raw stdout/stderr one click away in
+ * the drawer — the xterm escape hatch). It used to flatten the same typed
+ * event stream (`action-started`, `output`, `stderr`, `action-completed`,
+ * `action-failed`, `done`) into opaque terminal bytes.
+ *
+ * Plan: structured-streams-not-terminals-2026-06-05 (D-004, P1). The step
+ * projection + raw-line ANSI renderer live in `branch-action-stream-steps.ts`
+ * (pure, unit-tested); this component is now just the start-run wiring.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import '@xterm/xterm/css/xterm.css';
-import { useEventSource } from '@papercusp/sse/react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from '../harness/Modal';
+import { StructuredStreamView } from './StructuredStreamView';
+import {
+  BRANCH_ACTION_EVENT_KINDS,
+  classifyBranchActionTerminal,
+  deriveBranchActionSteps,
+  renderBranchActionRawLine,
+} from './branch-action-stream-steps';
 
 interface Props {
   slug: string;
@@ -21,55 +32,12 @@ interface Props {
   onClose: () => void;
 }
 
-const C = {
-  reset: '\x1b[0m', dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m',
-  yellow: '\x1b[33m', cyan: '\x1b[36m', bold: '\x1b[1m',
-};
-
 export default function BranchActionRunner({ slug, branch, name, existingRunId, onClose }: Props) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<any>(null);
-  const fitRef = useRef<any>(null);
   const [runId, setRunId] = useState<string | null>(existingRunId ?? null);
-  const [status, setStatus] = useState<'starting' | 'connecting' | 'streaming' | 'done' | 'failed' | 'error'>(
-    existingRunId ? 'connecting' : 'starting',
+  const [status, setStatus] = useState<'starting' | 'streaming' | 'done' | 'failed' | 'error'>(
+    existingRunId ? 'streaming' : 'starting',
   );
   const [error, setError] = useState<string | null>(null);
-
-  // Mount xterm
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([
-        import('@xterm/xterm'),
-        import('@xterm/addon-fit'),
-      ]);
-      if (cancelled || !containerRef.current) return;
-      const t = new Terminal({
-        convertEol: true,
-        scrollback: 5000,
-        fontFamily: 'ui-monospace, Menlo, monospace',
-        fontSize: 12,
-        theme: { background: '#0d1117', foreground: '#c9d1d9' },
-      });
-      const fit = new FitAddon();
-      t.loadAddon(fit);
-      t.open(containerRef.current);
-      fit.fit();
-      termRef.current = t;
-      fitRef.current = fit;
-
-      const onResize = () => { try { fit.fit(); } catch { /* ignore */ } };
-      window.addEventListener('resize', onResize);
-      return () => window.removeEventListener('resize', onResize);
-    })();
-    return () => {
-      cancelled = true;
-      try { termRef.current?.dispose(); } catch { /* ignore */ }
-      termRef.current = null;
-      fitRef.current = null;
-    };
-  }, []);
 
   const [missingKeys, setMissingKeys] = useState<{ name: string; plugin?: string }[] | null>(null);
 
@@ -95,7 +63,7 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
         if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
         if (!cancelled) {
           setRunId(body.runId as string);
-          setStatus('connecting');
+          setStatus('streaming');
         }
       } catch (e) {
         if (!cancelled) { setError(String((e as Error).message)); setStatus('error'); }
@@ -104,56 +72,10 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
     return () => { cancelled = true; };
   }, [runId, slug, branch, name]);
 
-  // Subscribe SSE
   const streamUrl = useMemo(() => runId
     ? `/api/harness/${slug}/branch/${branch}/action-stream?name=${encodeURIComponent(name)}&runId=${encodeURIComponent(runId)}`
     : null,
     [runId, slug, branch, name]);
-
-  const write = (s: string) => termRef.current?.write(s);
-  const ts = () => `${C.dim}${new Date().toISOString().slice(11, 19)}${C.reset} `;
-
-  const { status: esStatus } = useEventSource(streamUrl, {
-    // Disable consecutive-failure escalation — we don't have a fallback,
-    // and the previous impl just retried forever via browser auto-reconnect.
-    maxConsecutiveFailures: 0,
-    handlers: {
-      attached: () => setStatus('streaming'),
-      'action-started': (data) => {
-        try {
-          const d = JSON.parse(data);
-          write(`${ts()}${C.cyan}── starting ${d.branch}/${d.name} ──${C.reset}\r\n`);
-          write(`${ts()}${C.dim}cwd: ${d.cwd}${C.reset}\r\n`);
-        } catch { /* ignore */ }
-      },
-      output: (data) => {
-        try { write(`${JSON.parse(data).line as string}\r\n`); } catch { /* ignore */ }
-      },
-      stderr: (data) => {
-        try { write(`${C.red}${JSON.parse(data).line}${C.reset}\r\n`); } catch { /* ignore */ }
-      },
-      'action-completed': (data) => {
-        try {
-          const d = JSON.parse(data);
-          write(`\r\n${ts()}${C.green}${C.bold}✓ completed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
-        } catch { /* ignore */ }
-        setStatus('done');
-      },
-      'action-failed': (data) => {
-        try {
-          const d = JSON.parse(data);
-          write(`\r\n${ts()}${C.red}${C.bold}✗ failed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
-        } catch { /* ignore */ }
-        setStatus('failed');
-      },
-      done: () => { /* hook handles close on `done` events natively */ },
-    },
-  });
-
-  // Surface a connection-error state if we never made it past 'connecting'.
-  useEffect(() => {
-    if (esStatus === 'failing' && status === 'connecting') setStatus('error');
-  }, [esStatus, status]);
 
   return (
     <Modal
@@ -195,7 +117,30 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
             }}
           >Close</button>
         </div>
-        <div ref={containerRef} style={{ flex: 1, padding: 8, background: '#0d1117', display: missingKeys ? 'none' : 'block' }} />
+        {!missingKeys && (
+          <div style={{ flex: 1, minHeight: 0, padding: 8, display: 'flex', flexDirection: 'column' }}>
+            {streamUrl ? (
+              <StructuredStreamView
+                url={streamUrl}
+                eventKinds={BRANCH_ACTION_EVENT_KINDS}
+                deriveSteps={deriveBranchActionSteps}
+                formatRawLine={renderBranchActionRawLine}
+                classifyTerminal={classifyBranchActionTerminal}
+                controlKinds={{ attached: 'attached', done: 'done' }}
+                onDone={({ kind }) => {
+                  if (kind === 'success') setStatus('done');
+                  else if (kind === 'failed') setStatus('failed');
+                }}
+                caption={`${branch}/${name} @ ${slug}${runId ? ` · ${runId}` : ''}`}
+                rawRows={20}
+              />
+            ) : (
+              <div style={{ padding: 16, fontSize: 12, color: 'var(--fg-mute)' }}>
+                Starting {branch}/{name}…
+              </div>
+            )}
+          </div>
+        )}
         {missingKeys && (
           <div style={{ padding: 16, background: '#1c1917', color: 'var(--warn)', fontSize: 13, lineHeight: 1.5, overflow: 'auto', flex: 1 }}>
             <div style={{ fontWeight: 600, marginBottom: 8, color: 'var(--warn)' }}>

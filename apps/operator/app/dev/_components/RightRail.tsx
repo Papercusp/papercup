@@ -104,7 +104,12 @@ export default function RightRail({ workspaceIds }: Props) {
       });
     }
     refresh();
-    const t = setInterval(refresh, 15_000);
+    // Documented polling exception (audit P-058): plugin-host status, recent
+    // activity, pg health and build status are live probes with no sync
+    // invalidation source. 15s while visible; paused when hidden.
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') refresh();
+    }, 15_000);
     return () => {
       cancelled = true;
       clearInterval(t);

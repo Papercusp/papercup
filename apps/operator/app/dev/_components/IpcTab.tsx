@@ -75,7 +75,9 @@ export default function IpcTab(): JSX.Element {
     setTransport(tauri && !forceHttp ? 'ipc' : 'http');
   }, []);
 
-  // Auto-refresh the inspector view while `live`.
+  // Auto-refresh the inspector view while `live`. Pure UI render tick over
+  // in-memory inspector state (no fetch) — the documented UI-timer exception
+  // to the no-polling rule (audit P-058).
   useEffect(() => {
     if (!live) return;
     const id = window.setInterval(() => setTick((t) => t + 1), 1000);

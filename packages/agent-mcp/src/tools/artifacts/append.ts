@@ -48,15 +48,20 @@ export default defineTool({
     const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
     const now = Date.now();
-    // ctx.tx, NOT getOrgPg() — RLS-scoped write; workspace_id stamped from
-    // the GUC for the policy's WITH CHECK (audit P-012, see save.ts).
+    // ctx.tx, NOT getOrgPg() — RLS-scoped write; workspace_id stamps
+    // GUC-first then ctx.workspaceId, and the conflict arm adopts
+    // blank-stamped legacy rows (audit P-012 + EI-280, see save.ts).
+    const wsFallback = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : '';
     const rows = await ctx.tx<{ content: string }[]>`
       INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
       VALUES (${slug}, ${key}, ${args.suffix}, ${now},
-              COALESCE(current_setting('app.workspace_id', true), ''))
+              COALESCE(NULLIF(current_setting('app.workspace_id', true), ''), ${wsFallback}))
       ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
-        content    = harness_text_artifacts.content || EXCLUDED.content,
-        updated_at = EXCLUDED.updated_at
+        content      = harness_text_artifacts.content || EXCLUDED.content,
+        updated_at   = EXCLUDED.updated_at,
+        workspace_id = CASE WHEN harness_text_artifacts.workspace_id = ''
+                            THEN EXCLUDED.workspace_id
+                            ELSE harness_text_artifacts.workspace_id END
       RETURNING content
     `;
     const merged = rows[0]?.content ?? args.suffix;
