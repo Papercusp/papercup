@@ -17,9 +17,15 @@ describe('harnessPackageDir', () => {
     vi.stubEnv('PAPERCUSP_HARNESS_DIR', '/custom/harness');
     expect(harnessPackageDir()).toBe('/custom/harness');
   });
-  it('defaults to ~/autonomous-harness', () => {
+  it('falls back to ~/autonomous-harness, or the in-repo package when the symlink is absent', () => {
+    // Dev boxes carry the ~/autonomous-harness symlink; fresh clones (CI
+    // runners) don't and resolve the harness package inside this repo
+    // (WI-123). Either result is the documented contract.
     vi.stubEnv('PAPERCUSP_HARNESS_DIR', '');
-    expect(harnessPackageDir().endsWith('/autonomous-harness')).toBe(true);
+    const dir = harnessPackageDir();
+    expect(
+      dir.endsWith('/autonomous-harness') || dir.endsWith('/libs/papercusp/packages/harness'),
+    ).toBe(true);
   });
 });
 

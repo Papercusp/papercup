@@ -4027,7 +4027,7 @@ su-1e4ef’s Scout test campaign (coord stream, 2026-06-11). This page was writt
 
 # Mac build VM — QMP recovery from a wedged boot, and the launcher split-brain
 
-> When SSH :2222 is dead and papercup-vm-mac.service crash-loops on SPICE :5930, an orphaned durable qemu is usually parked at the OpenCore boot picker. Recover with QMP screendump + send-key — never pkill. Plus the boot-sonoma.sh vs boot-sonoma-durable.sh split-brain that caused 5,708 restart failures.
+> When SSH :2222 is dead and papercup-vm-mac.service crash-loops on SPICE :5930, an orphaned durable qemu is usually parked at the OpenCore boot picker. Recover with QMP screendump + send-key — never pkill. Plus the boot-sonoma.sh vs boot-sonoma-durable.sh split-brain, the loginwindow-vs-PAM password divergence (avraham vs aviweiss), and why you verify the desktop UI with ui:dispatch — NOT QMP keystrokes (they reach loginwindow only, never the webview).
 
 ## Symptom
 
@@ -4086,6 +4086,30 @@ cmd({"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ret"}]}})
 [Section titled “GUI-session auth (loginwindow) on this VM — passwords DIVERGE by layer”](#gui-session-auth-loginwindow-on-this-vm--passwords-diverge-by-layer)
 
 CORRECTED 2026-06-11: the original “secure-token wedge” diagnosis was wrong. The GUI credential path (loginwindow / lock screen) simply has a **different password** (`avraham`) from the PAM path that ssh/sudo accept (`aviweiss`). A day of “loginwindow rejects the correct password” was a wrong password; the owner supplied the GUI one and the locked session unlocked first try. To unlock for agent verification: wake the display with a QMP `send-key` (`shift`), type the GUI password char-by-char via `send-key`, send `ret`, then `screendump` for pixels. If you hit auth errors from `sysadminctl` / kcpassword anyway, suspect a wrong-password loop before any secure-token theory — verify which password each auth layer actually holds.
+
+## Verifying the desktop UI on the VM — dispatch, NOT QMP keystrokes
+
+[Section titled “Verifying the desktop UI on the VM — dispatch, NOT QMP keystrokes”](#verifying-the-desktop-ui-on-the-vm--dispatch-not-qmp-keystrokes)
+
+Once the GUI is unlocked, the productive way to drive + verify the running desktop app is the **agent→UI control surface**, not QMP `send-key`:
+
+* **QMP keyboard reaches `loginwindow` only.** Raw `send-key` unlocks the lock screen (loginwindow grabs all keyboard input), but it does **not** reach the WKWebView — typing into a form field lands nowhere, and even `Cmd+R` doesn’t reload the webview (the SPA’s `ui_client` id stays the same across a “reload”). Don’t try to fill the setup wizard or the create-harness form by injecting keystrokes; it silently no-ops.
+
+* **Use `ui:dispatch` against the VM’s operator instead.** The SPA registers a `ui_client` on `papercusp://localhost`; drive it over the sidecar’s MCP endpoint. List the tab (`ui:list_clients`), then dispatch built-in intents: `set_url` (every nuqs view/tab/dialog is a URL param — `{create:"true"}` opens the create dialog, `{tab:"docs",harness:"<slug>"}` switches tab + pot), `click` (CSS selector), `read_visible_text`, `snapshot`. This walked the whole 11-step wizard, every OPS tab, the Cupboard, and the create dialog with zero pixels.
+
+  ```bash
+  TOKEN=$(ssh …vm 'cat ~/.papercusp/superuser-token')
+  # operator port = grep 'operator ready on :' from the app's stdout log
+  curl -s -X POST "http://127.0.0.1:<port>/api/mcp?superuser=1" \
+    -H "Authorization: Bearer $TOKEN" -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ui:dispatch","arguments":{"client_id":"<id>","intent":"set_url","args":{"params":{"create":"true"}}}}}'
+  ```
+
+* **For anything that needs text entry (form submit, a chat turn), drive the BACKEND, not the keystrokes.** A pot is created by `harness:create({slug, parentDir, folderName, blueprintId:"coding"})` — the exact path the create form’s submit calls — which on darwin git-inits the dir, writes `.papercusp/blueprint.yaml`, and provisions the PG schema. Verify on disk (`git -C … rev-parse`). The form itself is proven by render + dispatched clicks; its submit is React-standard.
+
+* **A chat turn still needs a real LLM credential on the VM** — that’s an owner hands-on step, not an agent-verifiable one.
+
+* **Screendump caveat:** the display sleeps with no real input; a single `send-key shift` wakes it, but it re-sleeps. `pmset -a displaysleep 0` (needs the GUI password via `sudo -S`) helps but doesn’t fully stick under this VM. Wake immediately before each `screendump`.
 
 ## Related
 
@@ -8260,6 +8284,9 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 10. **Never forward PATH through WSLENV** (`PATH/l`) — the translated Windows PATH *replaces* the distro PATH inside the spawned process, so `/usr/bin` et al vanish and every distro-binary spawn from serve (kopia, locale, git) dies ENOENT — while the same binary works from a fresh `wsl --exec` session, which is what makes it maddening to diagnose. Forward specific dirs as their own `/p` vars (`PAPERCUSP_SIDECAR_BIN`) and compose PATH on the Linux side.
 11. **Hard-killing the app orphans the entire WSL backend** — `taskkill /T /F` kills the Windows tree (app + wsl.exe relay) but the Linux-side node/PG keep running (and keep the redirected log handle open, so the next launch’s `>` redirect fails and the task silently exits 1). Tolerated by design for the operator itself (next launch `--ensure` reuses it), but tear down test sessions with a WSL-side `kill -TERM <serve-pid>` (clean pg\_ctl stop, removes operator.json), not a Windows-side kill.
 12. **Watch for peer churn on the shared tree mid-build** — the sidecar SPA build snapshots whatever the canonical tree holds; an in-flight peer refactor (mid-edit import/export mismatch) fails your build with a MISSING\_EXPORT that has nothing to do with your change. Check `coord:presence` for the file’s owner and just retry once they’re consistent.
+13. **The rootfs bake script re-runs at first boot — every step must be idempotent AND prompt-free.** `build-rootfs.sh` ships *itself* as `/opt/papercup/bootstrap`; files it created at image-build time already exist on the re-run. A bare `gpg --dearmor -o <keyring>` hangs FOREVER on an interactive “Overwrite? (y/N)” (wedged the whole Windows first-run live — use `gpg --batch --yes`). Symptom: gate stuck at “Configuring runtime…”, `ps -ef` in the distro shows `bash /opt/papercup/bootstrap` + a stuck child.
+14. **You can get full DevTools into the packaged app’s webview**: launch with `set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS= --remote-debugging-port=9222`, then drive CDP from the VM’s own node (v24 has global WebSocket/fetch): `/json` lists targets; `Runtime.evaluate` reads the DOM; `Log.enable` streams console. This separates “app broken” from “paint broken” instantly. Do NOT add `--disable-gpu`/`--disable-gpu-compositing` — WebView2 creation fails outright and the app exits.
+15. **Transient white window with a healthy DOM** — observed twice on schtasks-launched windows: CDP shows the full DOM but the window paints white (WebView2 GPU/compositor init flake under QEMU qxl). It self-resolved after the onboarding-finalize restart. If you see white, check the DOM via CDP (§14) before assuming the app is dead.
 
 ## Where the artifacts live
 

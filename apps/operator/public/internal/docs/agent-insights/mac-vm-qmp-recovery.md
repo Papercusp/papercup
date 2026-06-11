@@ -1,7 +1,7 @@
 # Mac build VM — QMP recovery from a wedged boot, and the launcher split-brain
 URL: /internal/docs/agent-insights/mac-vm-qmp-recovery
 
-When SSH :2222 is dead and papercup-vm-mac.service crash-loops on SPICE :5930, an orphaned durable qemu is usually parked at the OpenCore boot picker. Recover with QMP screendump + send-key — never pkill. Plus the boot-sonoma.sh vs boot-sonoma-durable.sh split-brain that caused 5,708 restart failures.
+When SSH :2222 is dead and papercup-vm-mac.service crash-loops on SPICE :5930, an orphaned durable qemu is usually parked at the OpenCore boot picker. Recover with QMP screendump + send-key — never pkill. Plus the boot-sonoma.sh vs boot-sonoma-durable.sh split-brain, the loginwindow-vs-PAM password divergence (avraham vs aviweiss), and why you verify the desktop UI with ui:dispatch — NOT QMP keystrokes (they reach loginwindow only, never the webview).
 
 ## Symptom
 
@@ -86,6 +86,51 @@ with a QMP `send-key` (`shift`), type the GUI password char-by-char via
 errors from `sysadminctl` / kcpassword anyway, suspect a wrong-password
 loop before any secure-token theory — verify which password each auth
 layer actually holds.
+
+## Verifying the desktop UI on the VM — dispatch, NOT QMP keystrokes
+
+Once the GUI is unlocked, the productive way to drive + verify the running
+desktop app is the **agent→UI control surface**, not QMP `send-key`:
+
+* **QMP keyboard reaches `loginwindow` only.** Raw `send-key` unlocks the
+  lock screen (loginwindow grabs all keyboard input), but it does **not**
+  reach the WKWebView — typing into a form field lands nowhere, and even
+  `Cmd+R` doesn't reload the webview (the SPA's `ui_client` id stays the
+  same across a "reload"). Don't try to fill the setup wizard or the
+  create-harness form by injecting keystrokes; it silently no-ops.
+
+* **Use `ui:dispatch` against the VM's operator instead.** The SPA
+  registers a `ui_client` on `papercusp://localhost`; drive it over the
+  sidecar's MCP endpoint. List the tab (`ui:list_clients`), then dispatch
+  built-in intents: `set_url` (every nuqs view/tab/dialog is a URL param —
+  `{create:"true"}` opens the create dialog, `{tab:"docs",harness:"<slug>"}`
+  switches tab + pot), `click` (CSS selector), `read_visible_text`,
+  `snapshot`. This walked the whole 11-step wizard, every OPS tab, the
+  Cupboard, and the create dialog with zero pixels.
+
+  ```bash
+  TOKEN=$(ssh …vm 'cat ~/.papercusp/superuser-token')
+  # operator port = grep 'operator ready on :' from the app's stdout log
+  curl -s -X POST "http://127.0.0.1:<port>/api/mcp?superuser=1" \
+    -H "Authorization: Bearer $TOKEN" -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ui:dispatch","arguments":{"client_id":"<id>","intent":"set_url","args":{"params":{"create":"true"}}}}}'
+  ```
+
+* **For anything that needs text entry (form submit, a chat turn), drive
+  the BACKEND, not the keystrokes.** A pot is created by
+  `harness:create({slug, parentDir, folderName, blueprintId:"coding"})` — the exact path
+  the create form's submit calls — which on darwin git-inits the dir,
+  writes `.papercusp/blueprint.yaml`, and provisions the PG schema. Verify
+  on disk (`git -C … rev-parse`). The form itself is proven by render +
+  dispatched clicks; its submit is React-standard.
+
+* **A chat turn still needs a real LLM credential on the VM** — that's an
+  owner hands-on step, not an agent-verifiable one.
+
+* **Screendump caveat:** the display sleeps with no real input; a single
+  `send-key shift` wakes it, but it re-sleeps. `pmset -a displaysleep 0`
+  (needs the GUI password via `sudo -S`) helps but doesn't fully stick
+  under this VM. Wake immediately before each `screendump`.
 
 ## Related
 

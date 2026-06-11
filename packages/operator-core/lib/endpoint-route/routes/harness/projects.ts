@@ -577,10 +577,18 @@ const scanSubharnesses = defineTool({
         qualifiedSlug: (n as { qualifiedSlug: string }).qualifiedSlug,
         gitDirTarget: (n as { gitDirTarget: string }).gitDirTarget,
       }));
+    // P-002 (hive-pr-rollup-and-subharness-membership): preview the membership
+    // edge /register-subs would write, so the UI preview and the write can't
+    // diverge. hive_slug = formal hive membership; parent_slug = legacy edge.
+    const hiveSlug = resolveSubHarnessHiveSlug(project);
+    const membership = hiveSlug
+      ? { kind: 'hive_slug' as const, value: hiveSlug }
+      : { kind: 'parent_slug' as const, value: slug };
     return Response.json({
       ok: true,
       rootSlug: slug,
       rootPath: project.path,
+      membership,
       submodules,
     });
   },
@@ -616,6 +624,13 @@ const registerSubs = defineTool({
     const nodes = walkHarnessTree(root.path, { parentSlug: rootSlug });
     const submodules = nodes.filter((n): n is import('../../../harness/classify-tree').SubmoduleNode => n.kind === 'submodule');
 
+    // P-001 (hive-pr-rollup-and-subharness-membership / EI-332): subs of a
+    // hive resolve into FORMAL membership — stamp hive_slug on their registry
+    // entries so they group as members (hive-groups precedence: formal wins)
+    // instead of riding the legacy parent_slug fallback. parent_slug still
+    // goes to config.json below for self-description (dogfood-v5 D-007).
+    const hiveSlug = resolveSubHarnessHiveSlug(root);
+
     const registered: Array<{ slug: string; path: string; created: boolean }> = [];
     const reconciled: Array<{ slug: string; path: string }> = [];
     const errors: Array<{ slug: string; error: string }> = [];
@@ -639,6 +654,7 @@ const registerSubs = defineTool({
             slug: subSlug,
             path: subPath,
             harness_kind: 'sub-harness',
+            ...(hiveSlug ? { hive_slug: hiveSlug } : {}),
           });
           created = true;
         }
@@ -663,15 +679,39 @@ const registerSubs = defineTool({
       }
     }
 
-    if (registered.length > 0 || reconciled.length > 0) {
+    // hive_slug stamped onto ALREADY-registered sub rows whose edge was
+    // missing/drifted — re-running Register sub-harnesses IS the backfill
+    // path (P-001; no migration, registry blob field).
+    const hiveReconciled: string[] = [];
+    if (registered.length > 0 || reconciled.length > 0 || hiveSlug) {
       // Atomic re-apply against the CURRENT registry (audit P-006 / EI-82):
       // the walk above worked on a snapshot; re-insert only what's still new.
+      const erroredSlugs = new Set(errors.map((e) => e.slug));
       await mutateHarnessRegistry((cur) => {
         const have = new Set(cur.projects.map((p) => p.slug));
         const additions = registered
           .filter((r) => !have.has(r.slug))
-          .map((r) => ({ slug: r.slug, path: r.path, harness_kind: 'sub-harness' }));
-        return additions.length > 0 ? { ...cur, projects: [...cur.projects, ...additions] } : cur;
+          .map((r) => ({
+            slug: r.slug,
+            path: r.path,
+            harness_kind: 'sub-harness',
+            ...(hiveSlug ? { hive_slug: hiveSlug } : {}),
+          }));
+        let changed = additions.length > 0;
+        let projects = changed ? [...cur.projects, ...additions] : cur.projects;
+        if (hiveSlug) {
+          const subSlugs = new Set(submodules.map((n) => n.qualifiedSlug));
+          projects = projects.map((p) => {
+            // Only this root's classified subtree; never slugs the loop errored on.
+            if (!subSlugs.has(p.slug) || p.slug === rootSlug) return p;
+            if (erroredSlugs.has(p.slug)) return p;
+            if (p.harness_kind !== 'sub-harness' || p.hive_slug === hiveSlug) return p;
+            hiveReconciled.push(p.slug);
+            changed = true;
+            return { ...p, hive_slug: hiveSlug };
+          });
+        }
+        return changed ? { ...cur, projects } : cur;
       });
       // Bust the lite-cache so consumers see the new tree on next poll.
       bustProjectsLiteCache();
@@ -682,8 +722,12 @@ const registerSubs = defineTool({
       ok: true,
       rootSlug,
       discovered: submodules.length,
+      membership: hiveSlug
+        ? { kind: 'hive_slug' as const, value: hiveSlug }
+        : { kind: 'parent_slug' as const, value: rootSlug },
       registered,
       reconciled,
+      hiveReconciled,
       errors,
     });
   },
@@ -722,6 +766,23 @@ export function resolveProjectHiveMembership(
       value: scope,
     },
   };
+}
+
+/**
+ * Resolve the FORMAL hive membership that registering sub-harnesses under
+ * `root` should stamp (EI-332 / hive-pr-rollup-and-subharness-membership
+ * P-001). Mirrors `resolveProjectHiveMembership`'s formal-vs-legacy
+ * precedence, one level up: a `kind:'hive'` home owns its subs directly; a
+ * root that is itself a hive MEMBER passes its home through (so a sub of a
+ * member groups with the hive instead of orphaning); a plain root confers no
+ * formal membership (legacy parent_slug only). Pure; exported for tests +
+ * the scan/register handlers.
+ */
+export function resolveSubHarnessHiveSlug(
+  root: Pick<ProjectEntry, 'slug' | 'harness_kind' | 'hive_slug'>,
+): string | null {
+  if (root.harness_kind === HIVE_KIND) return root.slug;
+  return root.hive_slug?.trim() || null;
 }
 
 /**

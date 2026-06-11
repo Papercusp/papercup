@@ -101,6 +101,26 @@ edge that cost an hour:
     a MISSING\_EXPORT that has nothing to do with your change. Check
     `coord:presence` for the file's owner and just retry once they're
     consistent.
+13. **The rootfs bake script re-runs at first boot — every step must be
+    idempotent AND prompt-free.** `build-rootfs.sh` ships *itself* as
+    `/opt/papercup/bootstrap`; files it created at image-build time
+    already exist on the re-run. A bare `gpg --dearmor -o <keyring>`
+    hangs FOREVER on an interactive "Overwrite? (y/N)" (wedged the whole
+    Windows first-run live — use `gpg --batch --yes`). Symptom: gate
+    stuck at "Configuring runtime…", `ps -ef` in the distro shows
+    `bash /opt/papercup/bootstrap` + a stuck child.
+14. **You can get full DevTools into the packaged app's webview**:
+    launch with `set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS= --remote-debugging-port=9222`, then drive CDP from the VM's own
+    node (v24 has global WebSocket/fetch): `/json` lists targets;
+    `Runtime.evaluate` reads the DOM; `Log.enable` streams console.
+    This separates "app broken" from "paint broken" instantly. Do NOT
+    add `--disable-gpu`/`--disable-gpu-compositing` — WebView2 creation
+    fails outright and the app exits.
+15. **Transient white window with a healthy DOM** — observed twice on
+    schtasks-launched windows: CDP shows the full DOM but the window
+    paints white (WebView2 GPU/compositor init flake under QEMU qxl).
+    It self-resolved after the onboarding-finalize restart. If you see
+    white, check the DOM via CDP (§14) before assuming the app is dead.
 
 ## Where the artifacts live
 

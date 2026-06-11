@@ -26,7 +26,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 interface Rule {
   /** Identifier matching the docs anchor (A1, A2, …). */
@@ -92,9 +93,14 @@ const RULES: Rule[] = [
   },
 ];
 
+// Resolved from the module location, NOT hardcoded to a box path — the old
+// absolute /home/marsh-office/… roots made the walk return nothing on any
+// other checkout (the CI runner), so every BASELINE entry read as stale
+// (WI-123, nightly rounds 2–3).
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const ROOTS = [
-  '/home/marsh-office/papercupai-workspace/papercup/apps/operator/app',
-  '/home/marsh-office/papercupai-workspace/papercup/apps/operator/lib',
+  join(REPO_ROOT, 'apps/operator/app'),
+  join(REPO_ROOT, 'apps/operator/lib'),
 ];
 
 const TS_EXT = /\.(ts|tsx|mts|cts|mjs|cjs)$/;
@@ -127,7 +133,7 @@ interface Hit {
 
 async function scan(): Promise<Hit[]> {
   const hits: Hit[] = [];
-  const repoRoot = '/home/marsh-office/papercupai-workspace/papercup';
+  const repoRoot = REPO_ROOT;
   for (const root of ROOTS) {
     const files = await walk(root);
     for (const f of files) {
