@@ -48,19 +48,29 @@ export const CUPBOARD_CLAIM_STATUSES = [
 export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
 
 /**
- * The storefront listing kinds (Cupboard worker migrations 004 + 006 /
- * distribution plan D-005, tool-distribution-granularity D-001). ONE
- * storefront, each kind with its own consumer action:
- *   harness   → join     (shared-harness via the Hypercore topic)
- *   blueprint → fork     (a blueprint stream within a project)
- *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
- *   pack      → install  (a runtime-less code-tool pack; n≥1 tools)
+ * The storefront listing kinds (Cupboard worker migrations 004 + 006 + 008 /
+ * distribution plan D-005, tool-distribution-granularity D-001,
+ * learning-packs-2026-06-11 D-005). ONE storefront, each kind with its own
+ * consumer action:
+ *   harness       → view-hive (the repo→Hive lookup index)
+ *   blueprint     → fork      (a blueprint stream within a project)
+ *   plugin        → install   (a distributable plugin — a tool pack WITH a runtime)
+ *   tool-pack     → install   (a runtime-less code-tool pack; n≥1 tools —
+ *                              RENAMED from 'pack' by worker migration 008;
+ *                              the old wire value still parses via listingKindOf)
+ *   learning-pack → install   (a distributable set of curated hive learnings,
+ *                              installed into a hive's shared memory through
+ *                              the conflict review)
  *
  * The `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005):
  * the Cupboard distributes RECIPES (blueprints), not binary tarballs; the
  * reproducible clone is the lightweight InstanceSpec, not a published snapshot.
+ *
+ * Review policy (learning-packs D-007): `learning-pack` + `blueprint` listings
+ * publish PENDING and surface publicly only after operator approval — see
+ * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -83,7 +93,8 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'blueprint':
       return 'fork';
     case 'plugin':
-    case 'pack':
+    case 'tool-pack':
+    case 'learning-pack':
       return 'install';
   }
 }
@@ -102,9 +113,18 @@ export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
 // language). These pure helpers read whichever shape is present so the UI
 // renders correctly against real data without per-call branching.
 
-/** A listing's kind, defaulting to 'harness' for pre-004 / aspirational rows. */
+/** A listing's kind, defaulting to 'harness' for pre-004 / aspirational rows.
+ *  Pre-008 'pack' rows (servers not yet migrated) read as 'tool-pack'. */
 export function listingKindOf(l: HarnessListing): ListingKind {
+  if (l.listing_kind === 'pack') return 'tool-pack';
   return isListingKind(l.listing_kind) ? l.listing_kind : 'harness';
+}
+
+/** Pre-publication review (worker migration 008 / learning-packs D-007):
+ *  pending/rejected listings are publicly invisible server-side; this badge
+ *  helper is for the PUBLISHER's own views (their pending rows + reasons). */
+export function isPendingReview(l: HarnessListing): boolean {
+  return l.review_status === 'pending';
 }
 
 /** `<owner>/<repo>` for the listing, from either field shape. '' if unknown. */
@@ -218,8 +238,9 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | plugin | pack. Absent ⇒ treat as 'harness'. */
-  listing_kind?: ListingKind;
+  /** harness | blueprint | plugin | tool-pack | learning-pack. Absent ⇒ treat
+   *  as 'harness'; the pre-008 'pack' wire value normalizes via listingKindOf. */
+  listing_kind?: ListingKind | 'pack';
   /** Papercupai project remote this listing belongs to (D-008); null = legacy/standalone. */
   project_ref?: string | null;
   /** Within-project discriminator (blueprint stream / plugin/pack slug). */
@@ -249,6 +270,15 @@ export interface HarnessListing {
    * "which Cupboard unit provides tool X?". Absent/null ⇒ no declared tools.
    */
   provides_tools?: string | null;
+
+  // ── Pre-publication review (worker migration 008 / learning-packs D-007).
+  // Policy kinds (learning-pack, blueprint) publish 'pending'; the server
+  // hides non-approved rows from public reads, so most clients only ever see
+  // 'approved' — the pending/rejected values surface on the PUBLISHER's own
+  // GET /:id view (with auth) and the operator /admin queue. ──
+  review_status?: 'pending' | 'approved' | 'rejected';
+  reviewed_at?: number | null;
+  review_reason?: string | null;
 
   // ── Live-worker row fields (the deployed Cupboard returns these; the
   // aspirational fields above predate the worker and may be absent on real

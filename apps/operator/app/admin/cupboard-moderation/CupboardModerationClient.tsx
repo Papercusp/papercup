@@ -64,6 +64,166 @@ const STATUS_LABEL: Record<ReportRow['status'], string> = {
   resolved_dismiss: 'Dismissed',
 };
 
+interface PendingRow {
+  id: string;
+  listing_kind: string;
+  listing_ref: string | null;
+  title: string;
+  description: string | null;
+  github_url: string;
+  publisher_github_login: string;
+  created_at: number;
+}
+
+/**
+ * Pre-publication review queue (learning-packs-2026-06-11 P-020, D-007):
+ * policy-kind listings (learning-pack, blueprint) awaiting an operator
+ * decision. Only allowlisted operators reach this — the worker 403s everyone
+ * else. Review the CONTENT (the repo link carries the pack/blueprint files)
+ * before approving: these listings are instructions injected into agents.
+ */
+function PendingReviewQueue() {
+  const [pending, setPending] = useState<PendingRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/cupboard/admin/pending');
+      const data = (await res.json().catch(() => ({}))) as { pending?: PendingRow[]; error?: string };
+      if (!res.ok) {
+        setError(
+          res.status === 401
+            ? 'GitHub sign-in required — the operator needs a `gh auth login` token to moderate.'
+            : res.status === 403
+              ? 'This GitHub account is not a Cupboard operator (not in CUPBOARD_OPERATOR_GITHUB_IDS).'
+              : data.error ?? `HTTP ${res.status}`,
+        );
+        setPending([]);
+        return;
+      }
+      setPending(data.pending ?? []);
+    } catch (e) {
+      setError(String(e));
+      setPending([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const decide = useCallback(
+    async (id: string, decision: 'approve' | 'reject') => {
+      setBusyId(id);
+      try {
+        const res = await fetch(`/api/cupboard/admin/listings/${encodeURIComponent(id)}/review`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ decision, reason: reasons[id]?.trim() || undefined }),
+        });
+        if (!res.ok) {
+          const b = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(b.error ?? `HTTP ${res.status}`);
+        }
+        toast.success(decision === 'approve' ? 'Listing approved — now publicly visible' : 'Listing rejected');
+        setReasons((m) => {
+          const next = { ...m };
+          delete next[id];
+          return next;
+        });
+        void load();
+      } catch (e) {
+        toast.error(`Review failed: ${String(e)}`);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load, reasons],
+  );
+
+  return (
+    <div className="pc-cbmod__pendingwrap">
+      <div className="pc-cbmod__bar">
+        <span className="pc-cbmod__title">
+          <Shield size={15} aria-hidden /> Pending review
+          <span className="pc-cbmod__count">{loading ? '…' : pending.length}</span>
+        </span>
+        <button type="button" className="pc-cbmod__refresh" onClick={() => void load()} aria-label="Refresh pending queue">
+          <RefreshCw size={14} aria-hidden />
+        </button>
+      </div>
+      {loading ? (
+        <div className="pc-cbmod__msg">Loading…</div>
+      ) : error ? (
+        <div className="pc-cbmod__msg pc-cbmod__msg--err">{error}</div>
+      ) : pending.length === 0 ? (
+        <div className="pc-cbmod__msg">No listings awaiting review.</div>
+      ) : (
+        <div className="pc-cbmod__list" style={{ flex: 'none' }}>
+          {pending.map((p) => {
+            const repoUrl = safeHttpUrl(p.github_url);
+            return (
+              <div key={p.id} className="pc-cbmod__card" data-testid="pending-review-card">
+                <div className="pc-cbmod__cardhead">
+                  <span className="pc-cbmod__status pc-cbmod__status--pending">{p.listing_kind}</span>
+                  <span className="pc-cbmod__harness">{p.title}</span>
+                  {p.listing_ref && <code style={{ fontSize: 11 }}>{p.listing_ref}</code>}
+                  {repoUrl && (
+                    <a className="pc-cbmod__gh" href={repoUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink size={12} aria-hidden /> review the content
+                    </a>
+                  )}
+                </div>
+                {p.description && <div className="pc-cbmod__reason">{p.description}</div>}
+                <div className="pc-cbmod__meta">
+                  submitted by <strong>@{p.publisher_github_login}</strong> · {fmtTime(p.created_at)} · this kind
+                  is injected into agents — read it before approving
+                </div>
+                <div className="pc-cbmod__resolve">
+                  <input
+                    type="text"
+                    className="pc-cbmod__note"
+                    placeholder="Reason (recorded; shown to the submitter on rejection)…"
+                    value={reasons[p.id] ?? ''}
+                    maxLength={1000}
+                    disabled={busyId === p.id}
+                    onChange={(e) => setReasons((m) => ({ ...m, [p.id]: e.target.value }))}
+                  />
+                  <div className="pc-cbmod__actions">
+                    <button
+                      type="button"
+                      className="pc-cbmod__btn pc-cbmod__btn--unlist"
+                      disabled={busyId === p.id}
+                      onClick={() => void decide(p.id, 'reject')}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      type="button"
+                      className="pc-cbmod__btn pc-cbmod__btn--approve"
+                      disabled={busyId === p.id}
+                      onClick={() => void decide(p.id, 'approve')}
+                    >
+                      Approve
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CupboardModerationClient() {
   const [filter, setFilter] = useQueryState(
     'cb_status',
@@ -141,9 +301,13 @@ export default function CupboardModerationClient() {
 
   return (
     <div className="pc-cbmod">
+      {/* learning-packs P-020: the pre-publication approval queue renders
+          ABOVE the abuse reports — proactive review before reactive. */}
+      <PendingReviewQueue />
+
       <div className="pc-cbmod__bar">
         <span className="pc-cbmod__title">
-          <Shield size={15} aria-hidden /> Cupboard moderation
+          <Flag size={15} aria-hidden /> Abuse reports
         </span>
         <div className="pc-cbmod__filters" role="tablist" aria-label="Report status filter">
           {STATUS_FILTERS.map((f) => (
@@ -271,6 +435,10 @@ export default function CupboardModerationClient() {
         .pc-cbmod__btn--dismiss:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
         .pc-cbmod__btn--unlist { background: color-mix(in oklab, #f87171, transparent 86%); color: #f87171; border-color: color-mix(in oklab, #f87171, transparent 55%); }
         .pc-cbmod__btn--unlist:hover:not(:disabled) { background: color-mix(in oklab, #f87171, transparent 75%); }
+        .pc-cbmod__btn--approve { background: color-mix(in oklab, #22c55e, transparent 86%); color: #22c55e; border-color: color-mix(in oklab, #22c55e, transparent 55%); }
+        .pc-cbmod__btn--approve:hover:not(:disabled) { background: color-mix(in oklab, #22c55e, transparent 75%); }
+        .pc-cbmod__pendingwrap { margin-bottom: 18px; }
+        .pc-cbmod__count { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in oklab, #f59e0b, transparent 84%); color: #f59e0b; }
       `}</style>
     </div>
   );

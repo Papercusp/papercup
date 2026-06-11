@@ -16,7 +16,10 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  * - First-render save is suppressed by default (skipFirst), so hydration from
  *   the server doesn't fire an immediate POST.
  * - Calling flush() forces an immediate save (e.g. before a Test button runs).
- * - The pending timer is cancelled on unmount.
+ * - A PENDING save is FLUSHED (fire-and-forget) on unmount and on `pagehide`,
+ *   never dropped — navigating away or reloading right after an edit must not
+ *   lose it. Callers whose persist uses fetch should pass `keepalive: true`
+ *   so the pagehide-time request survives a full page unload.
  *
  * See /docs/design/libraries#form-patterns for when to use this vs RHF.
  */
@@ -46,6 +49,10 @@ export function useDebouncedSave<T>(
   const persistRef = useRef(persist);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isFirstRef = useRef(true);
+  // True while an edit is scheduled but not yet persisted. Survives the
+  // schedule-effect's cleanup (which only swaps timers) so the unmount /
+  // pagehide flush can tell "still pending" from "already saved".
+  const pendingRef = useRef(false);
 
   // Keep refs current so the debounced closure always reads the latest value
   // + the latest persist function (callers often pass an inline async fn).
@@ -65,14 +72,17 @@ export function useDebouncedSave<T>(
       setSaving(false);
     }
   }, [onSavedAt, onError]);
+  const doSaveRef = useRef(doSave);
+  doSaveRef.current = doSave;
 
   const flush = useCallback(async () => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    await doSave();
-  }, [doSave]);
+    pendingRef.current = false;
+    await doSaveRef.current();
+  }, []);
 
   useEffect(() => {
     if (skipFirst && isFirstRef.current) {
@@ -82,12 +92,16 @@ export function useDebouncedSave<T>(
     isFirstRef.current = false;
 
     if (timerRef.current) clearTimeout(timerRef.current);
+    pendingRef.current = true;
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
+      pendingRef.current = false;
       void doSave();
     }, ms);
 
     return () => {
+      // Only swap the timer here — pendingRef stays true so the
+      // unmount/pagehide flush below still fires for an unsaved edit.
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -98,6 +112,25 @@ export function useDebouncedSave<T>(
     // every render that creates a new persist closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(value), ms, skipFirst, doSave]);
+
+  // Flush (never drop) a pending edit when the component unmounts or the
+  // page unloads — losing a save the UI already promised is data loss.
+  useEffect(() => {
+    const flushPending = () => {
+      if (!pendingRef.current) return;
+      pendingRef.current = false;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      void doSaveRef.current();
+    };
+    window.addEventListener('pagehide', flushPending);
+    return () => {
+      window.removeEventListener('pagehide', flushPending);
+      flushPending();
+    };
+  }, []);
 
   return { saving, lastSavedAt, flush };
 }

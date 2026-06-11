@@ -32,7 +32,7 @@ import * as ghToken from '../identity/gh-token';
 import * as cupboardPublish from './publisher-attestation';
 
 const nonHarnessInput = {
-  listing_kind: 'pack' as const,
+  listing_kind: 'tool-pack' as const,
   listing_ref: 'my-pack',
   github_repository_id: 7,
   github_owner: 'acme',

@@ -280,8 +280,18 @@ export class FakeStore {
         .sort((a, b) => (a.unlisted_at == null ? 0 : 1) - (b.unlisted_at == null ? 0 : 1));
       return matches.length ? [matches[0]] : [];
     }
-    // listHarnesses: WHERE unlisted_at IS NULL [AND listing_kind=?] [AND project_ref=?]
-    //   [AND cursor] [AND search×4] [AND claim_status=?] ... LIMIT ?
+    // listPendingReview (migration 008): the operator's pending queue. Must
+    // precede the generic list matcher (both hit UNLISTED_AT IS NULL).
+    if (upper.includes("REVIEW_STATUS = 'PENDING'")) {
+      const limit = binds[binds.length - 1] as number;
+      return this.tables.harnesses
+        .filter((r) => r.review_status === 'pending' && r.unlisted_at == null)
+        .sort((a, b) => (a.created_at as number) - (b.created_at as number))
+        .slice(0, limit);
+    }
+    // listHarnesses: WHERE unlisted_at IS NULL AND review_status='approved'
+    //   [AND listing_kind=?] [AND project_ref=?] [AND cursor] [AND search×4]
+    //   [AND claim_status=?] ... LIMIT ?
     if (upper.startsWith('SELECT * FROM HARNESSES WHERE') && upper.includes('UNLISTED_AT IS NULL')) {
       let i = 0;
       const hasKind = upper.includes('LISTING_KIND = ?');
@@ -296,6 +306,10 @@ export class FakeStore {
       const claim = hasClaim ? binds[i++] : undefined;
       const limit = binds[binds.length - 1] as number;
       let rows = this.tables.harnesses.filter((r) => r.unlisted_at == null);
+      // migration 008: public browse only sees approved listings.
+      if (upper.includes("REVIEW_STATUS = 'APPROVED'")) {
+        rows = rows.filter((r) => r.review_status === 'approved');
+      }
       if (hasKind) rows = rows.filter((r) => r.listing_kind === kind);
       if (hasProject) rows = rows.filter((r) => r.project_ref === project);
       if (hasClaim) rows = rows.filter((r) => r.claim_status === claim);

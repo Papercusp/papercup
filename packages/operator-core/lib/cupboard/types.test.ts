@@ -316,27 +316,27 @@ describe('groupListingsByKind (per-Hive rollup, D-005)', () => {
     const groups = groupListingsByKind([
       makeListing({ id: 1, listing_kind: 'plugin' }),
       makeListing({ id: 2, listing_kind: 'harness' }),
-      makeListing({ id: 3, listing_kind: 'pack' }),
+      makeListing({ id: 3, listing_kind: 'tool-pack' }),
       makeListing({ id: 4, listing_kind: 'blueprint' }),
     ]);
-    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'plugin', 'pack']);
+    expect(groups.map((g) => g.kind)).toEqual(['harness', 'blueprint', 'plugin', 'tool-pack']);
   });
 
   it('drops empty kinds', () => {
     const groups = groupListingsByKind([
       makeListing({ id: 1, listing_kind: 'blueprint' }),
-      makeListing({ id: 2, listing_kind: 'pack' }),
+      makeListing({ id: 2, listing_kind: 'tool-pack' }),
     ]);
-    expect(groups.map((g) => g.kind)).toEqual(['blueprint', 'pack']);
+    expect(groups.map((g) => g.kind)).toEqual(['blueprint', 'tool-pack']);
   });
 
   it('keeps every listing within its kind group', () => {
     const groups = groupListingsByKind([
-      makeListing({ id: 1, listing_kind: 'pack' }),
-      makeListing({ id: 2, listing_kind: 'pack' }),
+      makeListing({ id: 1, listing_kind: 'tool-pack' }),
+      makeListing({ id: 2, listing_kind: 'tool-pack' }),
       makeListing({ id: 3, listing_kind: 'blueprint' }),
     ]);
-    const packs = groups.find((g) => g.kind === 'pack');
+    const packs = groups.find((g) => g.kind === 'tool-pack');
     expect(packs?.listings.map((l) => l.id)).toEqual([1, 2]);
   });
 

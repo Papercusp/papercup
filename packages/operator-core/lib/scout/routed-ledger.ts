@@ -110,6 +110,22 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
     .catch(() => {});
 }
 
+/**
+ * The plan refs Scout has routed ("plan:<slug>"), across ALL workspaces — the
+ * provenance lookup behind the plans:list `origin: 'scout'` flag. Deliberately
+ * NOT workspace-narrowed: plan slugs are globally-unique dated identifiers and
+ * the consuming list is already harness-scoped, while in-process tool dispatch
+ * (read-dispatch's synthesized superuser ctx) runs under the 'default' ALS
+ * workspace even though the ledger rows carry the active one — a workspace
+ * clause here silently empties the join (live miss, 2026-06-11).
+ */
+export async function readScoutPlanRefs(): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ routed_ref: string }[]>`
+    SELECT DISTINCT routed_ref FROM harness_shared.scout_routed_ideas WHERE rail = 'plan'`;
+  return new Set(rows.map((r) => r.routed_ref));
+}
+
 /** Read routed-idea provenance for (workspace[, harness][, cycle]), newest-first. */
 export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<RoutedIdeaProvenance[]> {
   const { sql } = getOrgPg();

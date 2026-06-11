@@ -111,9 +111,12 @@ describe('isListingKind', () => {
 });
 
 describe('listingKindOf (row → kind, defaulting to harness)', () => {
-  it('reads an explicit valid listing_kind', () => {
+  it('reads an explicit valid listing_kind (pre-008 "pack" normalizes to tool-pack)', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'plugin' }))).toBe('plugin');
-    expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
+    expect(listingKindOf(makeListing({ listing_kind: 'tool-pack' }))).toBe('tool-pack');
+    expect(listingKindOf(makeListing({ listing_kind: 'learning-pack' }))).toBe('learning-pack');
+    // learning-packs D-005 rename: a row from a pre-migration-008 server.
+    expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('tool-pack');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');
     expect(listingKindOf(makeListing({ listing_kind: 'harness' }))).toBe('harness');
   });

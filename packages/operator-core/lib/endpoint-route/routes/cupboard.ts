@@ -285,6 +285,32 @@ const unlistCupboardHarness = defineTool({
   },
 });
 
+// Pre-publication review queue (learning-packs-2026-06-11 P-020, D-007):
+// the desktop moderation surface's view of pending policy-kind listings +
+// the approve/reject decision, both forwarded with the operator's gh token.
+const listCupboardPending = defineTool({
+  method: 'GET',
+  path: '/cupboard/admin/pending',
+  auth: 'public',
+  async handler() {
+    return forwardToCupboardAdmin('/admin/pending', { method: 'GET' });
+  },
+});
+
+const reviewCupboardListing = defineTool({
+  method: 'POST',
+  path: '/cupboard/admin/listings/:id/review',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const id = ctx.params.id as string;
+    const body = await req.text();
+    return forwardToCupboardAdmin(`/admin/listings/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: body || '{}',
+    });
+  },
+});
+
 export default [
   listCupboardListings,
   getCupboardListing,
@@ -293,4 +319,6 @@ export default [
   listCupboardReports,
   resolveCupboardReport,
   unlistCupboardHarness,
+  listCupboardPending,
+  reviewCupboardListing,
 ];

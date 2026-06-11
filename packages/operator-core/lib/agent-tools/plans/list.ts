@@ -180,15 +180,18 @@ export default defineTool({
 
     // Scout provenance: one batched ledger read (scout_routed_ideas is the
     // canonical record of what the Scout loop routed — frontmatter need not be
-    // parsed, and pre-stamp plans are covered retroactively). Non-fatal.
-    const scoutPlanRefs = new Set<string>();
+    // parsed, and pre-stamp plans are covered retroactively). Workspace-free by
+    // design (see readScoutPlanRefs — in-dispatch ALS is 'default'). Non-fatal.
+    let scoutPlanRefs = new Set<string>();
     try {
-      const { readRoutedIdeas } = await import('../../scout/routed-ledger');
-      for (const r of await readRoutedIdeas()) {
-        if (r.rail === 'plan') scoutPlanRefs.add(r.routedRef);
-      }
-    } catch {
-      // Non-fatal — origin degrades to null.
+      const { readScoutPlanRefs } = await import('../../scout/routed-ledger');
+      scoutPlanRefs = await readScoutPlanRefs();
+    } catch (err) {
+      // Non-fatal — origin degrades to null. Logged because a silent miss here
+      // cost a live debugging session (2026-06-11): the Create tab's scout
+      // filter quietly matches nothing when this read breaks.
+      // eslint-disable-next-line no-console
+      console.warn('[plans:list] scout-provenance read failed — origin omitted:', err instanceof Error ? err.message : err);
     }
 
     for (const harnessSlug of perHarness) {

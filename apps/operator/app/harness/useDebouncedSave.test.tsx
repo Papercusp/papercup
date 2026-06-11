@@ -2,7 +2,8 @@
 /**
  * Tests for useDebouncedSave — the canonical per-field auto-save hook.
  * Covers: skipFirst behaviour, debounce window, flush(), error path,
- * cancel-on-unmount, and lastSavedAt tracking.
+ * flush-on-unmount/pagehide (a pending edit is persisted, never dropped),
+ * and lastSavedAt tracking.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
@@ -104,7 +105,7 @@ describe('useDebouncedSave', () => {
     expect(onError).toHaveBeenCalledWith(err);
   });
 
-  it('cancels pending save on unmount', async () => {
+  it('flushes a pending save on unmount instead of dropping it', async () => {
     const persist = vi.fn().mockResolvedValue(undefined);
     const { rerender, unmount } = renderHook(
       ({ v }) => useDebouncedSave(v, persist),
@@ -112,8 +113,42 @@ describe('useDebouncedSave', () => {
     );
     rerender({ v: 'b' });
     unmount();
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith('b');
+    // The cancelled timer doesn't fire a second save later.
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(persist).not.toHaveBeenCalled();
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not save on unmount when nothing is pending', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const { rerender, unmount } = renderHook(
+      ({ v }) => useDebouncedSave(v, persist),
+      { initialProps: { v: 'a' } },
+    );
+    rerender({ v: 'b' });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    unmount();
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('flushes a pending save on pagehide (reload/navigation)', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = renderHook(
+      ({ v }) => useDebouncedSave(v, persist),
+      { initialProps: { v: 'a' } },
+    );
+    rerender({ v: 'b' });
+    await act(async () => { window.dispatchEvent(new Event('pagehide')); });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith('b');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(persist).toHaveBeenCalledTimes(1);
   });
 
   it('respects skipFirst: false (saves on first render)', async () => {

@@ -132,8 +132,8 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect((await res.json() as { field: string }).field).toBe('topic_hex');
   });
 
-  it('GET /listings?kind=blueprint filters to blueprints; bare /listings returns all kinds', async () => {
-    const { env } = makeEnv();
+  it('GET /listings?kind=blueprint filters to blueprints (post-approval); bare /listings returns all kinds', async () => {
+    const { env, store } = makeEnv();
     // Seed one of each kind directly.
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 20, private: false } });
     await publish(api, env, { github_owner: 'o', github_name: 'n', github_url: 'https://github.com/o/n', github_repository_id: 20, listing_kind: 'blueprint', listing_ref: 'bp1' });
@@ -141,6 +141,14 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     await publish(api, env, { github_owner: 'o', github_name: 'n2', github_url: 'https://github.com/o/n2', github_repository_id: 21, listing_kind: 'plugin', listing_ref: 'pl1' });
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 22, private: false } });
     await publish(api, env, { github_owner: 'o', github_name: 'n3', github_url: 'https://github.com/o/n3', github_repository_id: 22, topic_hex: 'a'.repeat(64) });
+
+    // Blueprint is a review-policy kind (migration 008 / learning-packs D-007):
+    // it publishes PENDING and is invisible to public browse until approved.
+    const pending = await api.request('/listings?kind=blueprint', {}, env);
+    expect((await pending.json() as { results: unknown[] }).results).toHaveLength(0);
+    const bpRow = store.tables.harnesses.find((r) => r.listing_kind === 'blueprint')!;
+    expect(bpRow.review_status).toBe('pending');
+    bpRow.review_status = 'approved'; // operator approval (admin flow pinned in admin.test.ts)
 
     const bps = await api.request('/listings?kind=blueprint', {}, env);
     const bpBody = await bps.json() as { results: Array<{ listing_kind: string }> };
@@ -157,7 +165,9 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 30, private: false } });
     const pub = await publish(api, env, { github_owner: 'o', github_name: 'n', github_url: 'https://github.com/o/n', github_repository_id: 30, listing_kind: 'blueprint', listing_ref: 'bp' });
     const id = (await pub.json() as { id: string }).id;
-    void store;
+    // Approve the pending blueprint so the public reads exercise the kind gate,
+    // not the review gate (which has its own tests).
+    store.tables.harnesses.find((r) => r.id === id)!.review_status = 'approved';
 
     const viaHarness = await api.request(`/harnesses/${id}`, {}, env);
     expect(viaHarness.status).toBe(404);                    // kind-pinned view rejects it
@@ -200,7 +210,9 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     expect(res.status).toBe(200);
     const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
     expect(j.ok).toBe(true);
-    expect(j.listing.listing_kind).toBe('pack');
+    // Migration 008 (learning-packs D-005): the wire alias 'pack' normalizes
+    // to the renamed 'tool-pack' kind.
+    expect(j.listing.listing_kind).toBe('tool-pack');
     expect(j.listing.provides_tools).toBe(JSON.stringify(['md.render', 'md.lint']));
 
     const got = await api.request(`/listings/${j.id}`, {}, env);
@@ -239,7 +251,7 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     expect(res.status).toBe(400);
     const j = await res.json() as { field: string; reason: string };
     expect(j.field).toBe('provides_tools');
-    expect(j.reason).toBe('plugin_or_pack_kind_only');
+    expect(j.reason).toBe('plugin_or_tool_pack_kind_only');
   });
 
   it('provides_tools rejects bad shapes: non-array, empty array, empty strings, oversize', async () => {
@@ -287,10 +299,14 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 57, private: false } });
     await publish(api, env, { ...PACK_BASE, github_name: 'other', github_url: 'https://github.com/papercupai/other', github_repository_id: 57, listing_kind: 'plugin', listing_ref: 'pl' });
 
+    // ?kind=pack stays a working wire alias (normalized to tool-pack, mig 008).
     const packs = await api.request('/listings?kind=pack', {}, env);
     const packBody = await packs.json() as { results: Array<{ listing_kind: string }> };
     expect(packBody.results).toHaveLength(1);
-    expect(packBody.results[0].listing_kind).toBe('pack');
+    expect(packBody.results[0].listing_kind).toBe('tool-pack');
+
+    const toolPacks = await api.request('/listings?kind=tool-pack', {}, env);
+    expect((await toolPacks.json() as { results: unknown[] }).results).toHaveLength(1);
   });
 });
 
