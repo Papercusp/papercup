@@ -36,15 +36,17 @@ import { SyncProvider } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
-// Drift-repair tick, NOT a freshness source (EI-278). Under SSE, freshness
-// comes from invalidate-driven refetches; this interval only repairs pushes
-// lost to an SSE blip or a table missing its bridge entry. It was 5_000 —
-// which made every subscribed query REST-refetch every 5s on top of SSE
-// (~3.2 fetches/s sustained on /adv; the dominant workload behind the
-// 16GB webview OOM). Worst-case staleness for an unbridged table is now
-// this interval. The POLLING transport (degraded mode) keeps its own fast
-// cadence — there polling IS the freshness source.
-const DEFAULT_POLL_INTERVAL_MS = 180_000;
+// SSE drift-repair tick, NOT a freshness source (EI-278). Under SSE,
+// freshness comes from invalidate-driven refetches; this interval only
+// repairs pushes lost to an SSE blip or a table missing its bridge entry.
+// It was a shared 5_000ms pollIntervalMs — which made every subscribed
+// query REST-refetch every 5s ON TOP of SSE (~3.2 fetches/s sustained on
+// /adv; the dominant workload behind the 16GB webview OOM, and contrary to
+// the "occasional invalidate-driven refetches" intent documented above).
+// Worst-case staleness for an unbridged table is now this interval. The
+// degraded POLLING fallback keeps the lib's fast pollIntervalMs default —
+// there the tick IS the freshness source.
+const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
 
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
@@ -53,11 +55,12 @@ const queryClient = new QueryClient();
 export function HarnessZeroProvider({
   children,
   userID = 'papercusp-anon',
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+  ssePollIntervalMs = DEFAULT_SSE_DRIFT_REPAIR_MS,
 }: {
   children: ReactNode;
   userID?: string;
-  pollIntervalMs?: number;
+  /** SSE drift-repair tick (see DEFAULT_SSE_DRIFT_REPAIR_MS). */
+  ssePollIntervalMs?: number;
 }) {
   return (
     <QueryClientProvider client={queryClient}>
@@ -65,7 +68,7 @@ export function HarnessZeroProvider({
         syncType="SSE"
         userId={userID}
         restEndpoint={DEFAULT_REST_ENDPOINT}
-        pollIntervalMs={pollIntervalMs}
+        ssePollIntervalMs={ssePollIntervalMs}
       >
         {children}
       </SyncProvider>

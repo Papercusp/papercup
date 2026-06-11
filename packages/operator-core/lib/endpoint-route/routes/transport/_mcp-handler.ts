@@ -1073,4 +1073,43 @@ const handler = createMcpHandler(
   },
 );
 
-export { handler as mcpHandler };
+/**
+ * SSE header-flush priming: a streamable-HTTP tools/call that BLOCKS inside
+ * the tool (chat:ask_choice awaiting the user's pick) opens a text/event-stream
+ * response and then writes NOTHING until the tool resolves. Direct clients see
+ * the 200 headers immediately (node flushes them), but any intermediary built
+ * on node http-proxy — the :3055 Vite dev proxy, most reverse proxies — holds
+ * the response headers until the FIRST BODY BYTE arrives, so the client sees
+ * a connection that never responds at all. Prepending one SSE comment line
+ * (spec-legal; eventsource parsers ignore `:`-prefixed lines) pushes the
+ * headers through every hop the moment the stream opens.
+ * Pinned by ask-choice-e2e.integration.test.ts ("tool reachable" case).
+ */
+const SSE_PRIME = new TextEncoder().encode(':stream-open\n\n');
+
+export function primeSseResponse(res: Response): Response {
+  const ctype = res.headers.get('content-type') ?? '';
+  if (!res.body || !ctype.includes('text/event-stream')) return res;
+  const reader = res.body.getReader();
+  const primed = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(SSE_PRIME);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    // Propagate client disconnects to the inner stream so blocking tools
+    // (ctx.askUser) observe the abort and resolve {action:'cancel'}.
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(primed, res);
+}
+
+const mcpHandler = async (req: Request): Promise<Response> =>
+  primeSseResponse(await handler(req));
+
+export { mcpHandler };
