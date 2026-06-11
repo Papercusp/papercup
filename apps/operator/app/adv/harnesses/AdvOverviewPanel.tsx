@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { Tooltip } from '../../harness/Tooltip';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 const PHASES = ['staging', 'testing', 'production'] as const;
@@ -132,15 +133,16 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
             <span className="pc-adv-ov__alive">{data.alive ? 'alive' : 'idle'}</span>
             {data.escalated ? <span className="pc-adv-ov__badge">ESCALATED</span> : null}
             {data.smokeFail ? <span className="pc-adv-ov__badge">SMOKE-FAIL</span> : null}
-            <button
-              type="button"
-              className="pc-adv-ov__refresh"
-              onClick={() => setTick((t) => t + 1)}
-              aria-label="Refresh status"
-              title="Refresh"
-            >
-              <RefreshCw size={12} aria-hidden />
-            </button>
+            <Tooltip label="Refresh status">
+              <button
+                type="button"
+                className="pc-adv-ov__refresh"
+                onClick={() => setTick((t) => t + 1)}
+                aria-label="Refresh status"
+              >
+                <RefreshCw size={12} aria-hidden />
+              </button>
+            </Tooltip>
           </div>
 
           <div className="pc-adv-ov__path" title={data.project.path}>
@@ -226,8 +228,8 @@ export default function AdvOverviewPanel({ params, api }: PanelComponentProps) {
         .pc-adv-ov__alive { color: var(--fg-mute); font-size: 11px; }
         .pc-adv-ov__badge {
           padding: 1px 6px; font-size: 10px; font-weight: 600; border-radius: 3px;
-          color: var(--amber-100, #fed7aa);
-          background: color-mix(in oklab, var(--amber-400, #fbbf24), black 55%);
+          color: color-mix(in oklab, var(--warn, #fbbf24), white 55%);
+          background: color-mix(in oklab, var(--warn, #fbbf24), black 55%);
         }
         .pc-adv-ov__refresh {
           margin-left: auto; display: inline-flex; align-items: center; padding: 4px;
