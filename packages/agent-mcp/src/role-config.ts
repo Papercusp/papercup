@@ -95,6 +95,43 @@ export const AGENT_ROLES = [
 export type BuiltinAgentRole = (typeof AGENT_ROLES)[number];
 
 /**
+ * The standard SU-tool `agentRoles:` allowlist — the eight pipeline roles +
+ * the operator chat role. THE single source for this set (audit P-072,
+ * EI-145/EI-66 — it used to exist as ~113 identical inline copies named
+ * SU_ROLES/ALL_ROLES across agent-tools). Variants compose at the use site:
+ * `[...SU_ROLES, 'bee']`, `[...SU_ROLES, 'sentinel']`, etc.
+ *
+ * `satisfies` pins every member to AGENT_ROLES, so renaming a role there
+ * breaks compilation here instead of silently orphaning an allowlist.
+ */
+export const SU_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const satisfies readonly BuiltinAgentRole[];
+
+/**
+ * The write-side subset of SU_ROLES: validator + reviewer are judgment
+ * roles — they read artifacts/state but never author it (the artifacts
+ * tools' allowlist; audit P-072 "shared READ/WRITE role consts").
+ */
+export const SU_WRITE_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const satisfies readonly BuiltinAgentRole[];
+
+/**
  * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
  * that decides whether a new agent spawn is worth it (unify-agent-spawn-chokepoint
  * P-006 / D-008). This is an RBAC role on `Principal.roles` (the fail-closed
