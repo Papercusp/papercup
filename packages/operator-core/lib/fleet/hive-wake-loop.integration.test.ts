@@ -45,7 +45,11 @@ const SPAWNED_AGENTS_DDL = `
     coordination_domain text NOT NULL DEFAULT 'default', plan_slug text, item_id text,
     restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
-    heartbeat_at timestamptz NOT NULL DEFAULT now())`;
+    heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    -- migration 228 (EI-85 leg c): reclaimOrphanedSpawns SELECTs these for
+    -- same-host /proc liveness. This fixture hand-rolls the schema, so it must
+    -- mirror them or the SELECT fails "column pid does not exist".
+    pid integer, launcher_host text)`;
 
 const WS = 'default';
 const STALE = { staleMs: 5 * 60_000 };

@@ -124,6 +124,13 @@ export function readToken(): string | null {
  * Cold-start singleton guard. Atomically create the lockfile (O_EXCL) with our
  * pid. Returns true if acquired. If a *live* owner holds it, returns false.
  * A stale lock (owner dead) is reclaimed and re-attempted once.
+ *
+ * Liveness = pid alive AND its cmdline looks like a serve/node process —
+ * bare pid-aliveness is defeated by pid reuse, which is near-CERTAIN in a
+ * restarted WSL distro (serve gets a single-digit pid; after
+ * `wsl --terminate` / host reboot the distro's own init session occupies
+ * it, and an unreleased lock then wedges every future boot — found live on
+ * Windows 2026-06-11). Same guard sweepOrphanPostgres already uses.
  */
 export function acquireColdStartLock(retried = false): boolean {
   try {
@@ -141,7 +148,10 @@ export function acquireColdStartLock(retried = false): boolean {
         return '';
       }
     })()) || 0;
-    if (pidAlive(ownerPid)) return false;
+    const ownerIsServe =
+      pidAlive(ownerPid)
+      && /node|serve\.(mjs|ts)|papercusp/i.test(processCommandLine(ownerPid) ?? '');
+    if (ownerIsServe) return false;
     if (retried) return false;
     try {
       unlinkSync(LOCK_PATH);
