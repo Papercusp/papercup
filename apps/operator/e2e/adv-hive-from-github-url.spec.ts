@@ -1,0 +1,354 @@
+/**
+ * /adv Harnesses tab — create a Hive from a GitHub URL
+ * (hive-from-github-url-2026-06-11 P-018 e2e). Drives the REAL header "New" →
+ * CreateHarnessPicker → GitHub URL entry on the live default path
+ * (`/adv?tab=harnesses&slug=<hive>` → `?create=true` → `?picker=github-url`,
+ * both nuqs axes), NOT a component story with injected props (the EI-89 /
+ * D-007 bug class is "works under injected props, mis-wired on the live
+ * default path").
+ *
+ * Covers:
+ *   P-018a  the picker (HIVE_FROM_GITHUB_URL on — the default) shows the LIVE
+ *           GitHub URL entry with the hive-framed description, and the Entry-4
+ *           harness-link card demoted to the secondary "I have a link"
+ *           affordance (D-001).
+ *   P-018b  selecting the entry renders EntryGithubUrlForm on the real URL
+ *           axis: new-hive is the headline default mode, visibility defaults
+ *           Public, and the slug auto-derives from the repo name
+ *           (octocat/Hello-World → `hello-world`, home `hello-world-hive`).
+ *   P-018c  an invalid URL fails inline client-side — NO network call.
+ *   P-018d  a mocked created-response renders the success summary (hiveSlug /
+ *           memberSlug / publish outcome) and Done lands the new hive focused
+ *           (`?slug=`).
+ *   P-018e  a mocked existing-response (joinable) renders the JOIN-OFFER card
+ *           (title / owner / member-link count / Join button).
+ *   P-018f  a mocked existing-response with no member links offers
+ *           Create-anyway, which re-submits with force:true and renders the
+ *           duplicate-flagged summary.
+ *
+ * Hermetic: stubs `/api/flags/bootstrap` (pins HIVE_FROM_GITHUB_URL +
+ * THE_HIVE so copy is deterministic), `/api/harness/projects/lite` + the
+ * benign dock fetches, and MOCKS POST /api/harness/hives/from-repo — the spec
+ * never clones a repository or writes anything. The projects/join-link POSTs
+ * are stubbed to fail loudly so a mis-route can never hit the real backend.
+ *
+ * NB (same as the creation-fork spec): the operator-vite SPA only renders
+ * against a BUILT bundle (staging-served dist on :3170, or a vite preview) —
+ * a stale HMR-disabled :3055 serves a blank #root, so these `test.skip`. The
+ * WebKitGTK/Tauri-shell confirmation per D-007 is a separate agent-driven run
+ * (isolated Xvfb), recorded as plan evidence.
+ *
+ * NB: the creation-fork spec opens the picker via the bottom-right
+ * `/new harness/i` FAB, which has since been REMOVED (see the
+ * HarnessesWorkspace header comment) — that opener is stale. The live entry
+ * is the shell header's "New" button (title 'Create or add a new harness'),
+ * which is what this spec drives.
+ */
+import { test, expect, type Page, type Locator } from '@playwright/test';
+
+const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+
+const HIVE = 'e2e-hive';
+const MEMBER_RD = 'e2e-hive-rd';
+
+const REPO_URL = 'https://github.com/octocat/Hello-World';
+const DERIVED_SLUG = 'hello-world'; // deriveSlugFromRepo('Hello-World')
+const HOME_SLUG = 'hello-world-hive';
+
+/** projects/lite stub: a real root + a member so the tab mounts its dock. */
+const PROJECTS_LITE = {
+  projects: [
+    { slug: HIVE, path: `/tmp/${HIVE}`, hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project', is_shared: false },
+    { slug: MEMBER_RD, path: `/tmp/${MEMBER_RD}`, hasState: true, hasSpec: false, parent_slug: HIVE, harness_kind: 'coding', is_shared: false },
+  ],
+};
+
+interface FromRepoCapture {
+  bodies: Array<Record<string, unknown>>;
+}
+
+/**
+ * Pin the flags this spec depends on (HIVE_FROM_GITHUB_URL — the live entry;
+ * THE_HIVE — "Hive" lexicon so copy assertions are deterministic), stub
+ * projects/lite + the benign dock fetches, and fail-loud-stub the OTHER write
+ * endpoints so a mis-routed create can never touch the real backend.
+ */
+async function stubBase(page: Page): Promise<void> {
+  await page.route('**/api/flags/bootstrap', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        flags: { 'papercusp-hive-from-github-url': true, 'papercusp-the-hive': true },
+        evaluatedAt: Date.now(),
+        source: 'api',
+      }),
+    });
+  });
+  await page.route('**/api/harness/projects/lite', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
+  });
+  // Guard rails: this spec must NEVER create anything for real.
+  await page.route('**/api/harness/projects', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'e2e: unexpected projects POST', code: 'e2e_unexpected' }) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route('**/api/harness/join-link', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'e2e: unexpected join-link POST', code: 'e2e_unexpected' }) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route('**/api/harness/*/lanes**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ lanes: [], max: 1 }) });
+  });
+  await page.route('**/api/harness/*/status**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ iteration: 1, alive: false, counts: { passed: 0 } }) });
+  });
+  await page.route('**/api/harness/*/agents**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agents: [] }) });
+  });
+}
+
+/**
+ * MOCK POST /api/harness/hives/from-repo (the spec never clones): responses
+ * are served in order (the last repeats), and every request body is captured —
+ * the force:true / visibility / no-network oracles.
+ */
+async function stubFromRepo(page: Page, responses: Array<Record<string, unknown>>): Promise<FromRepoCapture> {
+  const cap: FromRepoCapture = { bodies: [] };
+  let i = 0;
+  await page.route('**/api/harness/hives/from-repo', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    cap.bodies.push(JSON.parse(route.request().postData() ?? '{}'));
+    const body = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  });
+  return cap;
+}
+
+const CREATED_RESPONSE = {
+  ok: true,
+  created: { hiveSlug: HOME_SLUG, memberSlug: DERIVED_SLUG, memberPath: `/tmp/${DERIVED_SLUG}`, defaultBranch: 'main' },
+  publish: { announced: true, cupboard: { attempted: true, rowsCreated: 2, rowsFailed: 0 } },
+};
+
+const EXISTING_JOINABLE_RESPONSE = {
+  ok: true,
+  existing: {
+    kind: 'hive',
+    hive: {
+      hiveId: 'h-hello-world',
+      title: 'Hello World Hive',
+      ownerGithubLogin: 'octocat',
+      memberLinks: ['papercusp://harness?v=1&payload=e2e-member-link'],
+      claimStatus: 'claimed',
+    },
+    coords: { owner: 'octocat', repo: 'Hello-World' },
+    source: 'cupboard',
+  },
+};
+
+const EXISTING_UNJOINABLE_RESPONSE = {
+  ok: true,
+  existing: {
+    kind: 'hive',
+    hive: { hiveId: 'h-hello-world', title: 'Hello World Hive', ownerGithubLogin: 'octocat', memberLinks: [], claimStatus: 'unclaimed' },
+    coords: { owner: 'octocat', repo: 'Hello-World' },
+    source: 'cupboard',
+  },
+};
+
+const FORCED_CREATED_RESPONSE = {
+  ok: true,
+  created: {
+    hiveSlug: HOME_SLUG,
+    memberSlug: DERIVED_SLUG,
+    memberPath: `/tmp/${DERIVED_SLUG}`,
+    defaultBranch: 'main',
+    duplicateOf: { kind: 'hive', hivePubkey: 'abc123', source: 'cupboard' },
+  },
+  publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } },
+};
+
+const DOCK_MOUNT = { role: 'button', name: 'Add panel' } as const;
+const SKIP_MSG =
+  'The /adv shell did not mount the Harnesses tab. Run against a BUILT operator-vite bundle ' +
+  '(staging-served dist on :3170 via OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170, or a vite preview) — ' +
+  "a stale HMR-disabled :3055 serves a blank #root.";
+
+async function gotoHarnessesTab(page: Page, search: string): Promise<boolean> {
+  await page.goto(`${baseURL}/adv?tab=harnesses&${search}`, { waitUntil: 'domcontentloaded' });
+  return page
+    .getByRole(DOCK_MOUNT.role, { name: DOCK_MOUNT.name })
+    .first()
+    .waitFor({ state: 'visible', timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+}
+
+/** Open the create picker from the shell header's "New" button. */
+async function openPicker(page: Page): Promise<Locator> {
+  await page.getByTitle('Create or add a new harness').click();
+  const dialog = page.getByRole('dialog', { name: 'Add a harness' });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  return dialog;
+}
+
+/** Picker grid → the GitHub URL entry → EntryGithubUrlForm (`?picker=github-url`). */
+async function openGithubUrlForm(page: Page): Promise<Locator> {
+  const dialog = await openPicker(page);
+  await dialog.getByRole('button', { name: /GitHub URL/ }).click();
+  await expect(dialog.getByRole('heading', { name: 'GitHub URL' })).toBeVisible({ timeout: 10_000 });
+  return dialog;
+}
+
+test.describe('/adv Harnesses tab — Hive from GitHub URL (P-018)', () => {
+  test('P-018a picker shows the live GitHub URL entry (flag-on default) + the demoted "I have a link" affordance', async ({ page }) => {
+    await stubBase(page);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openPicker(page);
+    // The live (non-coming-soon) entry card with the HIVE-framed description (P-011/P-012).
+    const card = dialog.getByRole('button', { name: /GitHub URL/ });
+    await expect(card).toBeVisible();
+    await expect(dialog.getByText(/Create a hive from a GitHub repository/)).toBeVisible();
+    await expect(dialog.getByText(/Forks nothing/)).toBeVisible();
+    // Entry-4 demotion (D-001): the harness-link CARD is out of the grid…
+    await expect(dialog.getByText(/Join a shared harness via/)).toHaveCount(0);
+    // …replaced by the secondary "I have a link" affordance (still functional).
+    await expect(dialog.getByRole('button', { name: /I have a harness link/ })).toBeVisible();
+  });
+
+  test('P-018b entry renders EntryGithubUrlForm: new-hive default, visibility Public, slug auto-derive', async ({ page }) => {
+    await stubBase(page);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openGithubUrlForm(page);
+    // The selected entry rides the nuqs `?picker=` axis (the live URL state).
+    await expect.poll(() => new URL(page.url()).searchParams.get('picker'), { timeout: 10_000 }).toBe('github-url');
+
+    // The entry's 3-mode fork: new-hive is the headline default; no hive scope
+    // on the shell picker ⇒ no "Add to <hive>" mode.
+    const fork = dialog.getByRole('group', { name: 'Creation mode' });
+    await expect(fork.getByRole('button', { name: 'New hive' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(fork.getByRole('button', { name: 'Standalone' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(fork.getByRole('button', { name: /^Add to/ })).toHaveCount(0);
+
+    // Visibility defaults Public (D-002).
+    await expect(dialog.getByRole('radio', { name: /Public \(default\)/ })).toBeChecked();
+
+    // Slug auto-derive: octocat/Hello-World → hello-world (+ home hello-world-hive).
+    await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
+    await dialog.getByRole('button', { name: /Advanced: customize slug/ }).click();
+    await expect(dialog.getByLabel('Slug')).toHaveValue(DERIVED_SLUG);
+    await expect(dialog.getByText(/The hive home becomes/)).toBeVisible();
+    await expect(dialog.getByText(HOME_SLUG, { exact: true })).toBeVisible();
+  });
+
+  test('P-018c invalid URL fails inline with NO network call', async ({ page }) => {
+    await stubBase(page);
+    const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openGithubUrlForm(page);
+    await dialog.getByPlaceholder('https://github.com/owner/repo').fill('https://gitlab.com/acme/rocket');
+    await dialog.getByRole('button', { name: 'Create hive' }).click();
+
+    // Inline client-side validation (mirrors the server parser)…
+    await expect(dialog.getByText(/Not a valid GitHub repository URL/)).toBeVisible();
+    // …the form never left the draft phase (no progress strip)…
+    await expect(dialog.getByTestId('github-url-progress')).toHaveCount(0);
+    // …and the backend was never called.
+    expect(cap.bodies).toHaveLength(0);
+  });
+
+  test('P-018d created response renders the success summary; Done lands the new hive focused', async ({ page }) => {
+    await stubBase(page);
+    const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openGithubUrlForm(page);
+    await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
+    await dialog.getByRole('button', { name: 'Create hive' }).click();
+
+    // Success summary settled from the REAL response (hiveSlug / memberSlug / publish).
+    await expect(dialog.getByRole('heading', { name: /Hive created/ })).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.locator('code', { hasText: HOME_SLUG }).first()).toBeVisible();
+    await expect(dialog.locator('code', { hasText: DERIVED_SLUG }).first()).toBeVisible();
+    await expect(dialog.getByText(/Announced to the hive directory/)).toBeVisible();
+    await expect(dialog.getByText(/Central listing: 2 rows created/)).toBeVisible();
+
+    // The POST carried the form's defaults (the D-002 Public default).
+    expect(cap.bodies).toHaveLength(1);
+    expect(cap.bodies[0].githubUrl).toBe(REPO_URL);
+    expect(cap.bodies[0].visibility).toBe('public');
+    expect(cap.bodies[0].force).toBeUndefined();
+
+    // Done → onCreated → the new hive becomes the focused scope (?slug=).
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get('slug'), { timeout: 10_000 }).toBe(HOME_SLUG);
+  });
+
+  test('P-018e existing (joinable) response renders the join-offer card with Join', async ({ page }) => {
+    await stubBase(page);
+    const cap = await stubFromRepo(page, [EXISTING_JOINABLE_RESPONSE]);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openGithubUrlForm(page);
+    await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
+    await dialog.getByRole('button', { name: 'Create hive' }).click();
+
+    // The JOIN OFFER (zero side effects happened server-side).
+    await expect(dialog.getByRole('heading', { name: /A hive already exists for this repository/ })).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByText('Hello World Hive')).toBeVisible();
+    await expect(dialog.getByText('owner: octocat')).toBeVisible();
+    await expect(dialog.getByText('1 member harness')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Join hive' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    // Joinable ⇒ no Create-anyway.
+    await expect(dialog.getByRole('button', { name: 'Create anyway' })).toHaveCount(0);
+    expect(cap.bodies).toHaveLength(1);
+  });
+
+  test('P-018f existing non-joinable response offers Create-anyway → force:true → duplicate-flagged summary', async ({ page }) => {
+    await stubBase(page);
+    const cap = await stubFromRepo(page, [EXISTING_UNJOINABLE_RESPONSE, FORCED_CREATED_RESPONSE]);
+    const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
+    test.skip(!mounted, SKIP_MSG);
+
+    const dialog = await openGithubUrlForm(page);
+    await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
+    await dialog.getByRole('button', { name: 'Create hive' }).click();
+
+    // Exists but isn't joinable yet — no Join button, Create-anyway offered.
+    await expect(dialog.getByRole('heading', { name: /A hive already exists for this repository/ })).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByText(/isn[’']t joinable yet/)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Join hive' })).toHaveCount(0);
+
+    await dialog.getByRole('button', { name: 'Create anyway' }).click();
+
+    // The re-submit carried force:true (the duplicateOf-flagged path).
+    await expect.poll(() => cap.bodies.length, { timeout: 10_000 }).toBe(2);
+    expect(cap.bodies[0].force).toBeUndefined();
+    expect(cap.bodies[1].force).toBe(true);
+    expect(cap.bodies[1].githubUrl).toBe(REPO_URL);
+
+    // The duplicate-flagged success summary.
+    await expect(dialog.getByRole('heading', { name: /Hive created/ })).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByText(/Created as a duplicate of an existing hive/)).toBeVisible();
+  });
+});
