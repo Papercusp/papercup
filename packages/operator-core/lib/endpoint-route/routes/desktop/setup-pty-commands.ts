@@ -10,6 +10,7 @@ import { detectBinaries } from '../../../agent-bin-detect';
 
 const MERIDIAN_VERSION = '1.42.1';
 const OMP_PACKAGE = '@oh-my-pi/cli';
+const CODEX_PACKAGE = '@openai/codex';
 
 export interface SpawnSpec {
   command: string;
@@ -33,9 +34,9 @@ $runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 @'
 { "name":"papercusp-runtime","version":"0.0.0","private":true,
-  "dependencies":{"@rynfar/meridian":"${MERIDIAN_VERSION}","${OMP_PACKAGE}":"latest"} }
+  "dependencies":{"@rynfar/meridian":"${MERIDIAN_VERSION}","${OMP_PACKAGE}":"latest","${CODEX_PACKAGE}":"latest"} }
 '@ | Set-Content -Path (Join-Path $runtime 'package.json') -Encoding UTF8
-Write-Host '==> installing meridian + omp'
+Write-Host '==> installing meridian + omp + codex'
 npm install --prefix $runtime --no-audit --no-fund
 Write-Host '==> done'
 `;
@@ -58,11 +59,12 @@ cat > ~/.papercusp/runtime/package.json <<JSON
   "private": true,
   "dependencies": {
     "@rynfar/meridian": "${MERIDIAN_VERSION}",
-    "${OMP_PACKAGE}": "latest"
+    "${OMP_PACKAGE}": "latest",
+    "${CODEX_PACKAGE}": "latest"
   }
 }
 JSON
-echo '==> installing meridian + omp'
+echo '==> installing meridian + omp + codex'
 npm install --prefix ~/.papercusp/runtime --no-audit --no-fund
 echo '==> done'
 `;

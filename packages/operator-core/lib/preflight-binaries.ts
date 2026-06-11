@@ -55,6 +55,25 @@ export async function detectOmp(): Promise<boolean> {
   return false;
 }
 
+export async function detectCodex(): Promise<boolean> {
+  if (await tryProbe('codex')) return true;
+  // Same fallback shapes as claude/omp: the wizard's runtime prefix,
+  // npm-global, and common manual install locations.
+  const home = process.env.HOME ?? '';
+  const candidates = [
+    `${home}/.papercusp/runtime/node_modules/.bin/codex`,
+    `${home}/.local/bin/codex`,
+    `${home}/.bun/bin/codex`,
+    `${home}/.npm-global/bin/codex`,
+    '/usr/local/bin/codex',
+    '/opt/homebrew/bin/codex',
+  ].filter(Boolean);
+  for (const path of candidates) {
+    if (existsSync(path) && (await tryProbe(path))) return true;
+  }
+  return false;
+}
+
 /**
  * Detect whether Meridian is *installed* (package present), not
  * whether it's currently running. The Setup Wizard treats "installed"

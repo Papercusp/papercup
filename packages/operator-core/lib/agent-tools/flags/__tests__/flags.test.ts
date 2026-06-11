@@ -56,6 +56,7 @@ afterEach(() => {
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../../flag-bus');
   vi.doUnmock('../../../flag-distinct-id');
+  vi.doUnmock('../../../flag-audit');
 });
 
 describe('flags:get', () => {

@@ -15,7 +15,7 @@ import { listDevices } from '../../../device-store';
 import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
 import { workspaceBackupFor } from '../../../backup';
 import { anyAgentSignedIn } from '../../../agent-auth-detect';
-import { detectClaude, detectOmp, detectMeridianInstalled } from '../../../preflight-binaries';
+import { detectClaude, detectCodex, detectOmp, detectMeridianInstalled } from '../../../preflight-binaries';
 import { defineTool } from '@papercusp/agent-mcp';
 
 type StepStatus = 'ok' | 'needs-attention' | 'unknown';
@@ -108,6 +108,7 @@ export default defineTool({
     const [
       pgOk,
       claudeOk,
+      codexOk,
       ompOk,
       meridianOk,
       creds,
@@ -118,6 +119,7 @@ export default defineTool({
     ] = await Promise.all([
       safe(probePostgres(), false),
       safe(detectClaude(), false),
+      safe(detectCodex(), false),
       safe(detectOmp(), false),
       safe(Promise.resolve(detectMeridianInstalled()), false),
       safe(readCredentials(), {} as Awaited<ReturnType<typeof readCredentials>>),
@@ -148,11 +150,11 @@ export default defineTool({
     // workspace: registry has at least one entry.
     const workspaceOk = readRegistry().workspaces.length > 0;
 
-    // agents: a complete backend is EITHER Claude Code alone (claude-code:
-    // the orchestrator runs `claude` and stateless calls go direct to
-    // Anthropic — no omp/Meridian needed) OR oh-my-pi + Meridian (the
-    // multi-provider path). Either one satisfies the step.
-    const agentsOk = claudeOk || (ompOk && meridianOk);
+    // agents: a complete backend is EITHER a standalone CLI agent
+    // (Claude Code or Codex — the orchestrator drives the CLI directly)
+    // OR oh-my-pi + Meridian (the multi-provider path). Any one
+    // satisfies the step.
+    const agentsOk = claudeOk || codexOk || (ompOk && meridianOk);
 
     // keys: any of openai/anthropic/github saved.
     const keysOk = Boolean(
@@ -181,7 +183,7 @@ export default defineTool({
     };
 
     // Per-component breakdown for the Agent Runtime step.
-    const agentRuntime = { claude: claudeOk, omp: ompOk, meridian: meridianOk };
+    const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk, meridian: meridianOk };
 
     return Response.json({ statuses, agentRuntime });
   },
