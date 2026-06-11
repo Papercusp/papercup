@@ -280,6 +280,11 @@ describe.skipIf(!LIVE)(
         },
         limits: { maxCostUsd: MAX_CYCLE_USD, maxIdeators: MAX_IDEATORS },
         cycleId: CYCLE_ID,
+        // Trim the digest (default 20/category ≈ 3.1k rendered tokens) — the
+        // shared Claude-Max session is ITPM-tight under fleet load and the opus
+        // ideators fire in parallel; 10/category halves the input pressure while
+        // keeping a rich grounding substrate (still the real synthesis path).
+        digestOptions: { perCategory: 10 },
         // Capture the production novelty corpus the critics judged against, so
         // the invariants + dedup rate below use the SAME prior set.
         noveltyCorpus: async () => {
