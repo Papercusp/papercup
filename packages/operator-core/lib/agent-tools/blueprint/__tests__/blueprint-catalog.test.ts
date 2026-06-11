@@ -69,7 +69,7 @@ describe('blueprint:catalog — built-in tier', () => {
     // The Pot itself is discoverable — a one-shot launch blueprint, not a pipeline.
     const hive = byId(r, 'hive')!;
     expect(hive.launchable).toBe(true);
-    expect(hive.decider).toBe('operator');
+    expect(hive.decider).toBe('queen'); // hive decider since P-071 (2026-06-10)
     // A launch/hive blueprint declares NO dispatch policy — the catalog reflects
     // that absence rather than inventing a default.
     expect(hive.dispatch).toBeUndefined();

@@ -31,8 +31,10 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       // release-pipeline-resilience-2026-06-09 P-006: the gate-fixer's decider IS the release-fixer role.
       'release-fix': 'release-fixer',
       audit: 'auditor',
-      // autoloop-pot-operator-rebuild P0: the hive's decider IS the operator (D-001).
-      hive: 'operator',
+      // local-hive P-071 (2026-06-10): the hive's decider is the QUEEN — the
+      // operator specialized for placement (D-001); `operator` remains the
+      // deciderAlternative for decision-tree-only wakes (blueprint.yaml).
+      hive: 'queen',
       // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
       bee: 'bee',
       // unify-launch-mechanics D-004: the sentinel watcher's decider IS the sentinel role.
@@ -155,9 +157,9 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     });
     // No `parent` → root launch → the guard does not trip; the hive fires normally.
     const target = await fireLaunchBlueprint('hive', { ...opts, kickoff: 'wake' });
-    expect(target.role).toBe('operator');
+    expect(target.role).toBe('queen'); // hive decider since P-071 (2026-06-10)
     expect(fired).toHaveLength(1);
-    expect(fired[0]).toMatchObject({ blueprintId: 'hive', role: 'operator' });
+    expect(fired[0]).toMatchObject({ blueprintId: 'hive', role: 'queen' });
   });
 
   it('a parented kind:harness launch (a bee placed by the Queen) is ALLOWED', async () => {

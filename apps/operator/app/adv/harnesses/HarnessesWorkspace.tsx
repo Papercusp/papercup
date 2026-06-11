@@ -12,7 +12,6 @@ import HiveMemberRail from './HiveMemberRail';
 import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
-import { Tooltip } from '../../harness/Tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
 import { groupByHive } from './harness-hive-groups';
@@ -41,9 +40,9 @@ export interface AdvProjectEntry {
  * switches to the hive-grouped workspace overview (D-003).
  *
  * The member rail (P-002) is the in-tab place to select among a hive's
- * member harnesses — the affordance the tab was missing. The "Create new
- * harness" button lives here (formerly only reachable via the retired
- * /harness route).
+ * member harnesses — the affordance the tab was missing. Harness creation is
+ * reached via the empty-state CTAs and the all-mode workspace cards (the
+ * bottom-right "New harness" FAB is removed — deprecated).
  */
 export default function HarnessesWorkspace() {
   const t = useLexicon();
@@ -238,18 +237,6 @@ export default function HarnessesWorkspace() {
         </>
       )}
 
-      {!allMode && slug && (
-        <Tooltip label={`Add a ${t('harness', { lower: true })} to this ${hiveLabel.toLowerCase()}`}>
-          <button
-            type="button"
-            className="pc-adv-harnesses__create-fab"
-            onClick={() => setCreateOpen(true)}
-          >
-            <Plus size={16} aria-hidden /> New {t('harness', { lower: true })}
-          </button>
-        </Tooltip>
-      )}
-
       <CreateHarnessPicker
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -306,29 +293,6 @@ export default function HarnessesWorkspace() {
         }
         .pc-adv-harnesses__create-cta:hover {
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 65%);
-        }
-        .pc-adv-harnesses__create-fab {
-          position: absolute;
-          bottom: 18px;
-          right: 18px;
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 8px 14px;
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 70%);
-          color: var(--fg, #e7f7ff);
-          border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 0.02em;
-          cursor: pointer;
-          /* Flat per the design spec (HR9) — no raised drop-shadow; the
-             .pc-advshell__body backstop strips one anyway. */
-          z-index: 5;
-        }
-        .pc-adv-harnesses__create-fab:hover {
-          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
         }
         /* Blue-frost dock theme now lives in the shared ./adv-dock.css
            (scoped to .pc-adv-dock — applied here and on the Git dock). */
