@@ -2,7 +2,12 @@ node_modules/
 .next/
 .next-prod/
 .next-build-cache/
+# Stray nested lockfiles (workspace members must ride the root lock) stay
+# ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
+# fresh clones (regenerated + validated 2026-06-11, audit P-024/EI-84) —
+# ignoring it meant CI had no lockfile and `npm ci` could never run.
 package-lock.json
+!/package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log

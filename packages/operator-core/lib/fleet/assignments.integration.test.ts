@@ -34,6 +34,23 @@ async function truncateAll(): Promise<void> {
   await admin`TRUNCATE harness_shared.plan_item_assignments`;
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id LIKE 'FA-TEST-%'`;
   await admin`DELETE FROM harness_shared.engineer_issues WHERE issue_id LIKE 'FA-TEST-%'`;
+  await admin`DELETE FROM harness_shared.spawned_agents WHERE spawn_id LIKE 'fa-test-%'`;
+}
+
+/** A nursery row (EI-311 alias-liveness leg) — fleet:spawn's three identity
+ *  aliases: spawn_id == session_owner (s-…), plus the per-invocation run_id. */
+async function seedSpawn(
+  spawnId: string,
+  opts: { runId?: string; status?: string; heartbeatAgeSeconds?: number } = {},
+): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.spawned_agents
+      (spawn_id, workspace_id, harness_slug, parent_role, child_role, run_id,
+       status, session_owner, heartbeat_at)
+    VALUES (${spawnId}, ${WS}, 'demo', 'operator', 'bee', ${opts.runId ?? `${spawnId}-run`},
+            ${opts.status ?? 'running'}, ${spawnId},
+            now() - ${`${opts.heartbeatAgeSeconds ?? 0} seconds`}::interval)
+  `;
 }
 
 async function seedPresence(
@@ -161,6 +178,61 @@ describe('fleet_assignment view + reader (P-001/P-002)', () => {
     await seedPresence('su-talk', { planSlug: 'plan-z', intent: 'on plan-z (allegedly)' });
     const grouped = groupByAgent(await listFleetAssignments({ workspaceId: WS }));
     expect(grouped[0].declaredUnclaimed).toBe(true);
+  });
+
+  // ── EI-311: nursery alias liveness (migration 225) ──────────────────────────
+  // A spawned bee's claim can key to ANY of its identity aliases (spawn_id ==
+  // session_owner, or the run_id a degraded bee self-identified by), and a
+  // short-lived bee may never write a presence row at all — the nursery's
+  // process heartbeat is its liveness.
+
+  it("EI-311: a claim keyed to a RUNNING spawn's run_id reads alive, not orphaned (the WI-122 repro)", async () => {
+    await seedSpawn('fa-test-bee', { runId: 'opspawn-fa-test-bee' });
+    await admin`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at)
+      VALUES (${WS}, 'demo', 'FA-TEST-EI311', 'bee work', 'open', 'opspawn-fa-test-bee', now())
+    `;
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const claim = rows.find((r) => r.workItemId === 'FA-TEST-EI311');
+    expect(claim?.holderPresent).toBe(true);
+    expect(claim?.holderAlive).toBe(true);
+    expect(claim?.orphaned).toBe(false);
+  });
+
+  it('EI-311: spawn_id-keyed claims join the nursery too; presence wins when both exist', async () => {
+    // spawn_id-keyed claim, no presence row → nursery liveness carries it.
+    await seedSpawn('fa-test-bee2');
+    await seedPlanClaim('fa-test-bee2', { plan: 'plan-n', item: 'P-031' });
+    // The same owner ALSO has a presence row (declared intent) → presence's
+    // richer fields (intent) must win over the nursery synthetic row.
+    await seedSpawn('fa-test-bee3');
+    await seedPresence('fa-test-bee3', { intent: 'declared via coord' });
+    await seedPlanClaim('fa-test-bee3', { plan: 'plan-n', item: 'P-032' });
+
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const viaNursery = rows.find((r) => r.itemId === 'P-031');
+    expect(viaNursery?.holderAlive).toBe(true);
+    expect(viaNursery?.orphaned).toBe(false);
+    const viaPresence = rows.find((r) => r.itemId === 'P-032');
+    expect(viaPresence?.holderAlive).toBe(true);
+    expect(viaPresence?.holderIntent).toBe('declared via coord');
+  });
+
+  it('EI-311: a FINISHED or stale-heartbeat spawn still orphans its claims', async () => {
+    await seedSpawn('fa-test-done', { runId: 'opspawn-fa-test-done', status: 'done' });
+    await seedPlanClaim('opspawn-fa-test-done', { plan: 'plan-n', item: 'P-033' });
+    await seedSpawn('fa-test-stale', { heartbeatAgeSeconds: 20 * 60 });
+    await seedPlanClaim('fa-test-stale', { plan: 'plan-n', item: 'P-034' });
+
+    const rows = await listFleetAssignments({ workspaceId: WS });
+    const done = rows.find((r) => r.itemId === 'P-033');
+    expect(done?.holderPresent).toBe(false); // finished spawn emits no holder row
+    expect(done?.orphaned).toBe(true);
+    const stale = rows.find((r) => r.itemId === 'P-034');
+    expect(stale?.holderPresent).toBe(true); // running but heartbeat stale
+    expect(stale?.holderAlive).toBe(false);
+    expect(stale?.orphaned).toBe(true);
   });
 });
 

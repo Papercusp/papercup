@@ -123,6 +123,19 @@ still refreshes unconditionally.
   B's `GET /api/discovery/hives`, bidirectional. Also exercises the
   `ensureHiveDirectoryWired` lazy wire (a fresh install boots zero harnesses, so
   the boot-join has nothing to ride; the first publish/browse self-heals it).
+- `papercusp-desktop/bin/two-instance-hive-from-repo-smoke.sh` — the
+  **create-from-repo → discover → join-offer → join loop**
+  (hive-from-github-url-2026-06-11 P-019, PASSED 2026-06-11): A POSTs
+  `/api/harness/hives/from-repo` (public, Cupboard pointed at an unreachable
+  port → `bindingUnverified:true` degradation proven) → B discovers the hive +
+  member-links over the testnet directory → B pastes the SAME repo URL and gets
+  the JOIN OFFER (`existing.kind='hive'`, `source='directory'` — the announce's
+  `member_repos` repo-id match end-to-end) → B joins via the offered link
+  (`clone_repo` done). Two modes: `deb` (the template path, static-gated on the
+  packaged serve.mjs carrying `hives/from-repo`) and `sidecar` (the documented
+  fallback: the same `src-tauri/sidecar/serve.mjs` artifact the .deb ships, run
+  directly under the bundled node — full stack minus the Tauri window). The
+  green run used sidecar mode (the on-disk .deb predated the from-repo backend).
 
 Same-host limits still apply: a loopback **testnet** connects fine, but raw
 hyperswarm holepunch between two processes on one physical host over a real DHT

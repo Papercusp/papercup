@@ -23,6 +23,7 @@
  * fleet-wide presence to one hive.
  */
 
+import { useState } from 'react';
 import { Share2, Users, Cloud } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
 
@@ -42,6 +43,45 @@ export interface HiveHeaderStripProps {
   members: readonly HiveHeaderMember[];
   /** Truthy ⇒ the hive is deployed to a non-local execution plane (badge only). */
   deployed?: boolean;
+  /**
+   * P-015 (hive-from-github-url): the directory visibility flip seam — tests
+   * inject; default POSTs /api/discovery/set-hive (private withdraws + unlists,
+   * public/invite runs the full publish set). Only rendered for formal Hive
+   * homes (kind 'hive').
+   */
+  setVisibility?: (
+    hiveSlug: string,
+    visibility: 'public' | 'invite' | 'private',
+    inviteSecret?: string,
+  ) => Promise<{ ok: boolean; announced?: boolean; withdrawn?: boolean; error?: string }>;
+}
+
+async function defaultSetVisibility(
+  hiveSlug: string,
+  visibility: 'public' | 'invite' | 'private',
+  inviteSecret?: string,
+): Promise<{ ok: boolean; announced?: boolean; withdrawn?: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/discovery/set-hive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hiveId: hiveSlug,
+        title: hiveSlug,
+        visibility,
+        ...(inviteSecret ? { inviteSecret } : {}),
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      announced?: boolean;
+      withdrawn?: boolean;
+      error?: string;
+    };
+    if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, announced: body.announced, withdrawn: body.withdrawn };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export default function HiveHeaderStrip({
@@ -50,9 +90,29 @@ export default function HiveHeaderStrip({
   isShared,
   members,
   deployed,
+  setVisibility = defaultSetVisibility,
 }: HiveHeaderStripProps) {
   const t = useLexicon();
+  // P-015 flip lifecycle (busy/outcome) — transient, render-only → useState.
+  const [flip, setFlip] = useState<{
+    busy: boolean;
+    outcome?: { ok: boolean; announced?: boolean; withdrawn?: boolean; error?: string };
+    inviteSecret?: string;
+  }>({ busy: false });
   if (!hiveSlug) return null;
+
+  async function applyVisibility(v: 'public' | 'invite' | 'private'): Promise<void> {
+    // An invite flip mints the secret CLIENT-side so it can be shown exactly once.
+    const inviteSecret =
+      v === 'invite'
+        ? Array.from(crypto.getRandomValues(new Uint8Array(24)))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('')
+        : undefined;
+    setFlip({ busy: true });
+    const outcome = await setVisibility(hiveSlug, v, inviteSecret);
+    setFlip({ busy: false, outcome, ...(outcome.ok && inviteSecret ? { inviteSecret } : {}) });
+  }
 
   const hiveLabel = t('pot');
   const membersLabel = t('harness', { plural: true });
@@ -91,6 +151,44 @@ export default function HiveHeaderStrip({
             title={`${setUp} of ${memberCount} set up (${colonyLabel.toLowerCase()} liveness)`}
           >
             {setUp}/{memberCount} set up
+          </span>
+        )}
+        {hiveKind === 'hive' && (
+          <span className="pc-hive-header__stat" data-testid="hive-visibility-flip">
+            <select
+              aria-label="Directory visibility"
+              disabled={flip.busy}
+              defaultValue=""
+              onChange={(e) => {
+                const v = e.target.value as 'public' | 'invite' | 'private' | '';
+                e.target.value = '';
+                if (v) void applyVisibility(v);
+              }}
+              className="pc-hive-header__viz"
+            >
+              <option value="" disabled>
+                {flip.busy ? 'publishing…' : 'directory…'}
+              </option>
+              <option value="public">Publish (public)</option>
+              <option value="invite">Publish (invite-only)</option>
+              <option value="private">Withdraw (private)</option>
+            </select>
+            {flip.outcome && (
+              <span
+                className="pc-hive-header__stat--muted"
+                data-testid="hive-visibility-outcome"
+                title={flip.inviteSecret ? `Invite secret: ${flip.inviteSecret}` : undefined}
+              >
+                {flip.outcome.ok
+                  ? flip.outcome.withdrawn
+                    ? 'withdrawn'
+                    : flip.outcome.announced
+                      ? 'announced'
+                      : 'saved'
+                  : `failed: ${flip.outcome.error ?? 'error'}`}
+                {flip.inviteSecret ? ` · secret: ${flip.inviteSecret.slice(0, 8)}… (hover)` : ''}
+              </span>
+            )}
           </span>
         )}
       </div>
@@ -163,6 +261,14 @@ function HeaderStyles() {
         font-variant-numeric: tabular-nums;
       }
       .pc-hive-header__stat--muted { color: var(--fg-mute, #7f9bb4); font-weight: 500; }
+      .pc-hive-header__viz {
+        font-size: 11px;
+        background: transparent;
+        color: var(--fg-dim, #b9d4e8);
+        border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 78%);
+        border-radius: 6px;
+        padding: 1px 4px;
+      }
     `}</style>
   );
 }

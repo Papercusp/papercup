@@ -762,6 +762,9 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
           }}
           harnessSlug={createdSlug}
           ownerLogin={viewer?.githubLogin ?? undefined}
+          // P-016 (hive-from-github-url): a harness created INTO a hive points
+          // the wizard at the hive-level share (the pointer card).
+          hiveSlug={mode === 'into-hive' && hiveScope ? hiveScope : undefined}
         />
       )}
     </>

@@ -55,3 +55,68 @@ describe('HiveHeaderStrip', () => {
     expect(container.querySelector('[data-testid="hive-header-strip"]')).toBeNull();
   });
 });
+
+describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-11)', () => {
+  it('renders the flip only for a formal hive home', () => {
+    render(<HiveHeaderStrip hiveSlug="plain-root" members={[]} />);
+    expect(screen.queryByTestId('hive-visibility-flip')).toBeNull();
+    cleanup();
+    render(<HiveHeaderStrip hiveSlug="acme-hive" hiveKind="hive" members={[]} />);
+    expect(screen.getByTestId('hive-visibility-flip')).toBeTruthy();
+  });
+
+  it('public flip drives the seam and reports the announce', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    const calls: unknown[][] = [];
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async (...a) => {
+          calls.push(a);
+          return { ok: true, announced: true };
+        }}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'public');
+    await screen.findByText('announced');
+    expect(calls[0][0]).toBe('acme-hive');
+    expect(calls[0][1]).toBe('public');
+    expect(calls[0][2]).toBeUndefined();
+  });
+
+  it('invite flip mints a client-side secret and surfaces it once', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    let gotSecret: string | undefined;
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async (_s, _v, secret) => {
+          gotSecret = secret;
+          return { ok: true, announced: true };
+        }}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'invite');
+    await screen.findByTestId('hive-visibility-outcome');
+    expect(gotSecret).toMatch(/^[0-9a-f]{48}$/);
+    expect(screen.getByTestId('hive-visibility-outcome').textContent).toContain('secret:');
+  });
+
+  it('withdraw reports withdrawn; failures surface inline', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        setVisibility={async () => ({ ok: true, withdrawn: true })}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText('Directory visibility'), 'private');
+    await screen.findByText('withdrawn');
+  });
+});
