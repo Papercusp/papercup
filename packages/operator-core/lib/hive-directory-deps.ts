@@ -80,6 +80,17 @@ function productionDeps(): HiveDirectoryDeps {
     // import keeps this module light; the enricher is best-effort internally.
     enrichDescriptor: async (desc) =>
       (await import('./hive-descriptor-enrich')).enrichLocalHiveDescriptor(desc),
+    // P-005 (hardening): withdrawal tombstones persist beside the offline
+    // cache so a reboot can't resurrect a withdrawn hive from it.
+    loadTombstones: async () => {
+      const row = await readOperatorState<{ tombstones: Record<string, number> }>(
+        'hive_directory_tombstones',
+      ).catch(() => null);
+      return row?.tombstones ?? {};
+    },
+    saveTombstones: async (tombstones) => {
+      await writeOperatorState('hive_directory_tombstones', { tombstones }).catch(() => {});
+    },
   };
 }
 

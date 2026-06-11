@@ -32,6 +32,8 @@ export interface SetHiveListingResult {
   saved: true;
   announced: boolean;
   withdrawn?: boolean;
+  /** P-005: the signed unlist tombstone reached the wire (false = TTL-only). */
+  tombstoneSent?: boolean;
   cupboardUnlist?: Record<string, unknown>;
   publish?: Record<string, unknown>;
   announceError?: string;
@@ -61,9 +63,13 @@ export async function setHiveListing(
   // rows. Both best-effort.
   if (meta.visibility === 'private') {
     let unlist: Record<string, unknown> | undefined;
+    let tombstoneSent = false;
     try {
-      const { unpublishHiveFromDirectory } = await import('./hive-publish');
-      unpublishHiveFromDirectory(getHiveDirectory(), meta.hiveId);
+      // P-005: ACTIVE withdrawal — broadcast the signed unlist tombstone so
+      // peers drop the listing immediately (instead of waiting out the TTL).
+      const { withdrawHiveFromDirectory } = await import('./hive-publish');
+      const res = await withdrawHiveFromDirectory(getHiveDirectory(), meta.hiveId);
+      tombstoneSent = res.withdrawn;
     } catch {
       /* directory not wired — nothing was announcing */
     }
@@ -83,6 +89,9 @@ export async function setHiveListing(
       saved: true,
       announced: false,
       withdrawn: true,
+      /** P-005: whether the signed unlist tombstone went out on the wire
+       *  (false = passive TTL withdrawal only — e.g. keychain not wired). */
+      tombstoneSent,
       ...(unlist ? { cupboardUnlist: unlist } : {}),
     };
   }

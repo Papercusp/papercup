@@ -109,11 +109,34 @@ export async function publishHiveToDirectory(
 }
 
 /**
- * Stop announcing a hive (visibility flipped to `private`, or the hive deleted):
- * drop it from the owned set so the re-announce timer no longer broadcasts it.
- * (Discovered peers age out of others' directories via the TTL — there is no
- * un-announce frame; ceasing to re-announce is the withdrawal.)
+ * Stop announcing a hive WITHOUT a wire withdrawal (legacy / local-only path):
+ * drop it from the owned set so the re-announce timer no longer broadcasts it;
+ * peers age it out via the TTL. Prefer `withdrawHiveFromDirectory` (P-005),
+ * which ALSO broadcasts the signed unlist tombstone so peers drop immediately.
  */
 export function unpublishHiveFromDirectory(dir: HiveDirectory, hiveId: string): void {
   dir.unregisterLocalHive(hiveId);
+}
+
+/**
+ * P-005 (hive-from-repo-hardening D-005) — the ACTIVE withdrawal: broadcast a
+ * signed `hive-unlist` tombstone on the hive's announce topic (peers verify it
+ * against the listing's owner device key and drop the record immediately,
+ * replay-resistant via the ts watermark), then unregister so the timer stops.
+ * Best-effort: returns whether a tombstone actually went out (false for a
+ * private/unknown hive — nothing was on the wire to withdraw).
+ */
+export async function withdrawHiveFromDirectory(
+  dir: HiveDirectory,
+  hiveId: string,
+): Promise<{ withdrawn: boolean }> {
+  try {
+    const frame = await dir.unlistLocalHive(hiveId);
+    return { withdrawn: frame !== null };
+  } catch {
+    // Signing/broadcast unavailable (e.g. keychain not wired) — fall back to
+    // the passive path so the listing at least stops re-announcing.
+    dir.unregisterLocalHive(hiveId);
+    return { withdrawn: false };
+  }
 }

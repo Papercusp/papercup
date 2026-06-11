@@ -211,6 +211,158 @@ describe('HiveDirectory.announceLocalHive — routes by visibility (D-004)', () 
     expect(n).toBe(1); // only the public one
     expect(deps.broadcasts).toHaveLength(1);
   });
+
+  it('announce-build enrichment makes every reannounce FRESH (hardening P-004/D-004)', async () => {
+    const kp = keypair();
+    let memberSet = ['acme/shop#100'];
+    const deps = makeDeps({
+      sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)),
+      enrichDescriptor: async (d) => ({ ...d, memberRepos: [...memberSet] }),
+    });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({ ...localBase, visibility: 'public', ownerDevicePubkey: kp.pubkey });
+    const first = await dir.announceLocalHive('my-hive');
+    expect(first?.member_repos).toEqual(['acme/shop#100']);
+    // A member added BETWEEN announces (no re-register) appears on the next tick.
+    memberSet = ['acme/shop#100', 'acme/added-later#200'];
+    const second = await dir.announceLocalHive('my-hive');
+    expect(second?.member_repos).toEqual(['acme/shop#100', 'acme/added-later#200']);
+  });
+
+  it('a failing enricher falls back to the registered descriptor (best-effort)', async () => {
+    const kp = keypair();
+    const deps = makeDeps({
+      sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)),
+      enrichDescriptor: async () => {
+        throw new Error('pg down');
+      },
+    });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({ ...localBase, visibility: 'public', ownerDevicePubkey: kp.pubkey, memberRepos: ['registered/ref#1'] });
+    const frame = await dir.announceLocalHive('my-hive');
+    expect(frame?.member_repos).toEqual(['registered/ref#1']);
+  });
+});
+
+describe('HiveDirectory — withdrawal tombstones (hardening P-005 / D-005)', () => {
+  async function listedHive(dir: HiveDirectory, kp: ReturnType<typeof keypair>, ts = NOW) {
+    const res = await dir.ingestAnnounce(await announce(kp, { ts }));
+    expect(res.accepted).toBe(true);
+  }
+  async function unlistFrame(kp: ReturnType<typeof keypair>, over: Record<string, unknown> = {}) {
+    const { buildHiveUnlist, HIVE_UNLIST_KIND } = await import('./sync/hyperbee/hive-unlist');
+    return buildHiveUnlist(
+      {
+        kind: HIVE_UNLIST_KIND,
+        hive_id: 'hive-1',
+        owner_device_pubkey: kp.pubkey,
+        ts: NOW + 10,
+        ...over,
+      } as never,
+      (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)),
+    );
+  }
+
+  it('owner unlist drops the listing immediately; replayed older announces stay dropped; a newer announce relists', async () => {
+    const kp = keypair();
+    const dir = new HiveDirectory(makeDeps());
+    await listedHive(dir, kp);
+    const res = await dir.ingestUnlist(await unlistFrame(kp));
+    expect(res).toEqual({ accepted: true });
+    expect(dir.listDiscoveredHives()).toHaveLength(0);
+    // Replay of an announce at/before the watermark → tombstoned.
+    const replay = await dir.ingestAnnounce(await announce(kp, { ts: NOW + 5, nonce: 'r' }));
+    expect(replay).toEqual({ accepted: false, reason: 'tombstoned' });
+    // A genuinely newer announce (re-publish) relists + clears the tombstone.
+    const relist = await dir.ingestAnnounce(await announce(kp, { ts: NOW + 20, nonce: 'n' }));
+    expect(relist.accepted).toBe(true);
+    expect(dir.listDiscoveredHives()).toHaveLength(1);
+  });
+
+  it("a non-owner's unlist is rejected (sig valid but pubkey ≠ the listing's)", async () => {
+    const owner = keypair();
+    const attacker = keypair();
+    const dir = new HiveDirectory(makeDeps());
+    await listedHive(dir, owner);
+    const res = await dir.ingestUnlist(await unlistFrame(attacker));
+    expect(res).toEqual({ accepted: false, reason: 'not-owner' });
+    expect(dir.listDiscoveredHives()).toHaveLength(1);
+  });
+
+  it('an unlist for an unknown hive is rejected (nothing to authenticate against)', async () => {
+    const kp = keypair();
+    const dir = new HiveDirectory(makeDeps());
+    const res = await dir.ingestUnlist(await unlistFrame(kp));
+    expect(res).toEqual({ accepted: false, reason: 'unknown-hive' });
+  });
+
+  it('tombstones persist via the seams and survive a "reboot" (cache cannot resurrect)', async () => {
+    const kp = keypair();
+    let savedTombstones: Record<string, number> = {};
+    let savedHives: DiscoveredHive[] = [];
+    const deps = makeDeps({
+      saveTombstones: async (t) => {
+        savedTombstones = t;
+      },
+      saveCache: async (h) => {
+        savedHives = h;
+      },
+    });
+    const dir = new HiveDirectory(deps);
+    await listedHive(dir, kp);
+    const cachedBeforeUnlist = [...savedHives];
+    await dir.ingestUnlist(await unlistFrame(kp));
+    expect(savedTombstones['hive-1']).toBe(NOW + 10);
+
+    // "Reboot": a fresh directory hydrating from a STALE cache (still carries
+    // the hive) + the persisted tombstones — the withdrawn hive must not list.
+    const dir2 = new HiveDirectory(
+      makeDeps({
+        loadCache: async () => cachedBeforeUnlist,
+        loadTombstones: async () => savedTombstones,
+      }),
+    );
+    await dir2.hydrateFromCache();
+    expect(dir2.listDiscoveredHives()).toHaveLength(0);
+  });
+
+  it('owner side: unlistLocalHive broadcasts the signed tombstone + unregisters; private hives broadcast nothing', async () => {
+    const kp = keypair();
+    const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({
+      hiveId: 'mine',
+      title: 't',
+      description: '',
+      memberTopics: [],
+      visibility: 'public',
+      createdAt: NOW,
+      ownerGithubLogin: 'me',
+      ownerGithubUserId: 1,
+      ownerDevicePubkey: kp.pubkey,
+      attestationGistId: 'g',
+    });
+    const frame = await dir.unlistLocalHive('mine');
+    expect(frame?.kind).toBe('hive-unlist');
+    expect(deps.broadcasts).toHaveLength(1);
+    expect(await dir.announceLocalHive('mine')).toBeNull(); // unregistered
+
+    dir.registerLocalHive({
+      hiveId: 'priv',
+      title: 't',
+      description: '',
+      memberTopics: [],
+      visibility: 'private',
+      createdAt: NOW,
+      ownerGithubLogin: 'me',
+      ownerGithubUserId: 1,
+      ownerDevicePubkey: kp.pubkey,
+      attestationGistId: 'g',
+    });
+    const none = await dir.unlistLocalHive('priv');
+    expect(none).toBeNull();
+    expect(deps.broadcasts).toHaveLength(1); // unchanged — nothing was on the wire
+  });
 });
 
 describe('HiveDirectory — PG cache seam + TTL GC', () => {

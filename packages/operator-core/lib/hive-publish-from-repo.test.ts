@@ -9,9 +9,12 @@ import {
   publishCreatedHive,
   type PublishCreatedHiveDeps,
 } from './hive-publish-from-repo';
+import { parseHiveInviteLink } from './harness/hive-invite-link';
 import type { ProjectEntry } from './harness-registry';
 
 const HIVE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
+/** Hardening P-006: a real hex secret so the invite-link artifact round-trips. */
+const INVITE_SECRET = 'c0ffee'.repeat(8); // 48 hex chars
 
 function members(): ProjectEntry[] {
   return [
@@ -68,7 +71,7 @@ function fakes(over: Partial<PublishCreatedHiveDeps> = {}) {
       calls.localBindings.push(input as unknown as Record<string, unknown>);
     },
     now: () => 1_700_000_000_000,
-    randomSecret: () => 'secret-hex',
+    randomSecret: () => INVITE_SECRET,
     ...over,
   };
   return { deps, calls };
@@ -114,12 +117,43 @@ describe('publishCreatedHive (P-007)', () => {
   it('invite: announces on the secret topic, returns the secret, NO Cupboard rows (D-003)', async () => {
     const { deps, calls } = fakes();
     const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
-    expect(out.inviteSecret).toBe('secret-hex');
-    expect(calls.savedMeta[0]).toMatchObject({ visibility: 'invite', inviteSecret: 'secret-hex' });
+    expect(out.inviteSecret).toBe(INVITE_SECRET);
+    expect(calls.savedMeta[0]).toMatchObject({ visibility: 'invite', inviteSecret: INVITE_SECRET });
     expect(out.cupboard).toEqual({ attempted: false, skipped: 'invite' });
     expect(calls.listings).toEqual([]);
     // local rows still land (a LOCAL row leaks nothing off-box)
     expect(calls.localBindings[0]).toMatchObject({ privacy: 'shared-private' });
+  });
+
+  it('invite: formats the FULL invite-link artifact — pubkey + secret + title (hardening P-006/D-006)', async () => {
+    const { deps } = fakes();
+    const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
+    expect(out.hivePubkey).toBe(HIVE_PUBKEY);
+    expect(out.inviteLink).toBeDefined();
+    expect(out.inviteLink!.startsWith('papercusp://hive?')).toBe(true);
+    expect(parseHiveInviteLink(out.inviteLink!)).toEqual({
+      secret: INVITE_SECRET,
+      pubkeyBase64: HIVE_PUBKEY,
+      title: 'acme/shop',
+    });
+  });
+
+  it('invite without a loadable pubkey: the invite link degrades to secret-only and still parses (P-006)', async () => {
+    const { deps } = fakes({ loadPubkey: async () => null });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
+    expect(out.hivePubkey).toBeUndefined();
+    expect(parseHiveInviteLink(out.inviteLink!)).toEqual({
+      secret: INVITE_SECRET,
+      title: 'acme/shop',
+    });
+  });
+
+  it('public: outcome carries the hive pubkey but mints no invite secret/link (P-006)', async () => {
+    const { deps } = fakes();
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.hivePubkey).toBe(HIVE_PUBKEY);
+    expect(out.inviteSecret).toBeUndefined();
+    expect(out.inviteLink).toBeUndefined();
   });
 
   it('public + private repo: Cupboard skipped (the public registry refuses private repos)', async () => {
@@ -249,5 +283,20 @@ describe('publishCreatedHive (P-007)', () => {
     expect(out.announced).toBe(false);
     expect(out.error).toContain('save_meta_failed');
     expect(calls.published).toEqual([]);
+  });
+
+  it('saveMeta failure on an invite hive still hands back the secret + a secret-only link (P-006)', async () => {
+    const { deps } = fakes({
+      saveMeta: async () => {
+        throw new Error('pg down');
+      },
+    });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
+    expect(out.error).toContain('save_meta_failed');
+    expect(out.inviteSecret).toBe(INVITE_SECRET);
+    expect(parseHiveInviteLink(out.inviteLink!)).toEqual({
+      secret: INVITE_SECRET,
+      title: 'acme/shop',
+    });
   });
 });

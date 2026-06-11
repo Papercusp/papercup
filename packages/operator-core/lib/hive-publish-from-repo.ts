@@ -30,6 +30,7 @@ import {
 import { saveOwnedHiveMeta } from './hive-directory-meta';
 import { parseGithubUrl } from './harness/clone-github';
 import { formatHarnessLink } from './harness/url-scheme';
+import { formatHiveInviteLink } from './harness/hive-invite-link';
 import {
   deriveHiveFederationTopic,
   topicAsHex,
@@ -42,6 +43,14 @@ export interface PublishCreatedHiveOutcome {
   announced: boolean;
   /** Returned for invite hives so the creator can hand the secret to invitees. */
   inviteSecret?: string;
+  /**
+   * Hardening P-006 (D-006): the shareable invite ARTIFACT —
+   * `papercusp://hive?pubkey=…&secret=…&title=…` — formatted whenever an
+   * inviteSecret is minted (secret-only when the pubkey isn't loadable).
+   */
+  inviteLink?: string;
+  /** The hive's Ed25519 identity pubkey (base64, 32 bytes), when loadable. */
+  hivePubkey?: string;
   cupboard: {
     attempted: boolean;
     /** Why the Cupboard leg was skipped, when it was. */
@@ -180,7 +189,9 @@ export async function publishCreatedHive(
       announced: false,
       cupboard: { attempted: false },
       error: `save_meta_failed: ${e instanceof Error ? e.message : e}`,
-      ...(inviteSecret ? { inviteSecret } : {}),
+      ...(inviteSecret
+        ? { inviteSecret, inviteLink: formatHiveInviteLink({ secret: inviteSecret, title: opts.title }) }
+        : {}),
     };
   }
 
@@ -189,7 +200,16 @@ export async function publishCreatedHive(
     { workspaceId: opts.workspaceId, ...(opts.repoIsPrivate !== undefined ? { repoIsPrivate: opts.repoIsPrivate } : {}) },
     deps,
   );
-  return { ...out, ...(inviteSecret ? { inviteSecret } : {}) };
+  // P-006 (D-006): one shareable artifact — the full invite link, carrying the
+  // hive pubkey when the publish leg loaded it (secret-only otherwise).
+  const inviteLink = inviteSecret
+    ? formatHiveInviteLink({
+        ...(out.hivePubkey ? { pubkeyBase64: out.hivePubkey } : {}),
+        secret: inviteSecret,
+        title: opts.title,
+      })
+    : undefined;
+  return { ...out, ...(inviteSecret ? { inviteSecret, inviteLink } : {}) };
 }
 
 /**
@@ -409,6 +429,7 @@ async function publishListingForMeta(
     announced,
     cupboard,
     localBindings,
+    ...(hivePubkey ? { hivePubkey } : {}),
     ...(announceError ? { error: announceError } : {}),
   };
 }

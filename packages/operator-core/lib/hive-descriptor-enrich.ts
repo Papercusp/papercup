@@ -17,33 +17,46 @@
  */
 
 import type { LocalHiveDescriptor } from './hive-directory';
+import type { HarnessRegistry } from './harness-registry';
+
+export interface EnrichDescriptorDeps {
+  loadPubkey?: (workspaceId: string, hiveId: string) => Promise<string | null>;
+  deriveMemberRepos?: (workspaceId: string, hiveId: string) => Promise<string[]>;
+  loadRegistry?: (workspaceId?: string) => Promise<HarnessRegistry>;
+}
 
 export async function enrichLocalHiveDescriptor(
   desc: LocalHiveDescriptor,
+  deps: EnrichDescriptorDeps = {},
 ): Promise<LocalHiveDescriptor> {
   if (!desc.workspaceId) return desc;
   const ws = desc.workspaceId;
   try {
-    const { loadHivePubkey } = await import('./identity/hive-keypair');
-    const { deriveHiveMemberRepoRefs } = await import('./hive-member-repos');
+    const loadPubkey =
+      deps.loadPubkey ??
+      (async (w: string, id: string) =>
+        (await import('./identity/hive-keypair')).loadHivePubkey(w, id).catch(() => null));
+    const deriveMemberRepos =
+      deps.deriveMemberRepos ??
+      (async (w: string, id: string) =>
+        (await import('./hive-member-repos')).deriveHiveMemberRepoRefs(w, id));
+    const loadRegistry =
+      deps.loadRegistry ??
+      (async (w?: string) => (await import('./harness-registry')).loadHarnessRegistry(w));
 
-    const pk =
-      desc.hivePubkey ?? ((await loadHivePubkey(ws, desc.hiveId).catch(() => null)) || undefined);
-    const memberRepos = await deriveHiveMemberRepoRefs(ws, desc.hiveId).catch(
-      () => [] as string[],
-    );
+    const pk = desc.hivePubkey ?? ((await loadPubkey(ws, desc.hiveId).catch(() => null)) || undefined);
+    const memberRepos = await deriveMemberRepos(ws, desc.hiveId).catch(() => [] as string[]);
 
     // Fresh one-click member links over the HIVE federation topic — only when
     // the identity exists (a topic-less link is not joinable).
     let memberLinks = desc.memberLinks;
     if (pk) {
-      const { loadHarnessRegistry } = await import('./harness-registry');
       const { parseGithubUrl } = await import('./harness/clone-github');
       const { formatHarnessLink } = await import('./harness/url-scheme');
       const { deriveHiveFederationTopic, topicAsHex } = await import(
         './sync/hyperbee/derive-swarm-topic'
       );
-      const reg = await loadHarnessRegistry(ws).catch(() => ({ projects: [] }));
+      const reg = await loadRegistry(ws).catch(() => ({ projects: [] }) as HarnessRegistry);
       const topicHex = topicAsHex(deriveHiveFederationTopic(pk));
       const links: string[] = [];
       for (const m of reg.projects) {

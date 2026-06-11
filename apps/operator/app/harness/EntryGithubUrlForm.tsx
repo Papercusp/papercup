@@ -216,6 +216,8 @@ interface ExistingOffer {
 interface PublishOutcome {
   announced?: boolean;
   inviteSecret?: string;
+  /** Hardening P-006 (D-006): the full shareable `papercusp://hive?...` artifact. */
+  inviteLink?: string;
   cupboard?: { attempted?: boolean; rowsCreated?: number; rowsFailed?: number; errors?: string[]; skipped?: string };
   skipped?: 'private' | 'unpublished_hive';
 }
@@ -322,6 +324,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const [offerUnverified, setOfferUnverified] = useState(false);
   const [created, setCreated] = useState<{ kind: 'hive'; result: CreatedResult; publish?: PublishOutcome; bindingUnverified: boolean } | { kind: 'standalone'; slug: string; path: string; blueprintGenerated?: boolean } | null>(null);
   const [joinSummary, setJoinSummary] = useState<{ ok: number; total: number; firstSlug?: string } | null>(null);
+  // P-006: "Copied ✓" feedback on the invite-artifact copy button — transient UI.
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   const parsed = parseGithubUrlClient(url);
   const derivedSlug = parsed ? deriveSlugFromRepo(parsed.repo) : '';

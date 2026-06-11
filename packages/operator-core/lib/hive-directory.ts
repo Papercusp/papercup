@@ -38,6 +38,14 @@ import {
   type HiveVisibility,
   type SignedHiveAnnounce,
 } from './sync/hyperbee/hive-announce';
+import {
+  HIVE_UNLIST_KIND,
+  buildHiveUnlist,
+  verifyHiveUnlist,
+  type SignedHiveUnlist,
+} from './sync/hyperbee/hive-unlist';
+
+export { isHiveUnlistFrame, type SignedHiveUnlist } from './sync/hyperbee/hive-unlist';
 
 // Re-export the topic derivation so capability probes (e.g. the p2p-perf-tier3
 // announce-volume forward hook's `hiveDirectoryReady`) can detect the substrate
@@ -111,7 +119,16 @@ export interface LocalHiveDescriptor {
 }
 
 /** Why an inbound announce was rejected (never rendered). */
-export type IngestReject = 'bad-signature-or-stale' | 'unattested' | 'superseded' | 'muted';
+export type IngestReject =
+  | 'bad-signature-or-stale'
+  | 'unattested'
+  | 'superseded'
+  | 'muted'
+  /** P-005: dropped by a withdrawal tombstone with ts ≥ this announce's. */
+  | 'tombstoned';
+
+/** Why an inbound UNLIST was rejected (P-005). */
+export type UnlistReject = 'bad-signature-or-stale' | 'unknown-hive' | 'not-owner';
 
 export interface IngestResult {
   accepted: boolean;
@@ -134,6 +151,12 @@ export interface HiveDirectoryDeps {
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
   saveCache?(hives: DiscoveredHive[]): Promise<void>;
+  /** P-005: load the withdrawal tombstones (hiveId → unlist ts). Optional —
+   *  omit for in-memory-only tombstones (a reboot could resurrect a dropped
+   *  hive from the offline cache until its TTL). */
+  loadTombstones?(): Promise<Record<string, number>>;
+  /** P-005: persist the tombstones. Optional. */
+  saveTombstones?(tombstones: Record<string, number>): Promise<void>;
   /**
    * Announce-BUILD-time descriptor enrichment (hardening P-004/D-004): called
    * on every frame build so the timer reannounce + fresh-pair snapshots carry
@@ -153,6 +176,9 @@ export class HiveDirectory {
   private readonly discovered = new Map<string, DiscoveredHive>();
   private readonly owned = new Map<string, LocalHiveDescriptor>();
   private readonly muted = new Set<string>();
+  /** P-005: withdrawal tombstones — hiveId → the unlist frame's ts. An
+   *  announce with ts ≤ this stays dropped; a newer one relists + clears. */
+  private readonly tombstones = new Map<string, number>();
   private reannounceTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: HiveDirectoryDeps) {}
@@ -163,10 +189,22 @@ export class HiveDirectory {
 
   /** Hydrate the in-memory set from the PG cache (offline listing before the swarm reconnects). */
   async hydrateFromCache(): Promise<number> {
-    if (!this.deps.loadCache) return 0;
+    // P-005: tombstones hydrate FIRST so a withdrawn hive in the offline cache
+    // cannot resurrect across a reboot.
+    if (this.deps.loadTombstones) {
+      const ts = await this.deps.loadTombstones().catch(() => ({}) as Record<string, number>);
+      for (const [id, t] of Object.entries(ts)) {
+        const prev = this.tombstones.get(id);
+        if (prev === undefined || t > prev) this.tombstones.set(id, t);
+      }
+    }
+    if (!this.deps.loadCache) return this.discovered.size;
     const cached = await this.deps.loadCache().catch(() => [] as DiscoveredHive[]);
     for (const h of cached) {
-      if (!this.muted.has(h.hiveId)) this.discovered.set(h.hiveId, h);
+      if (this.muted.has(h.hiveId)) continue;
+      const tomb = this.tombstones.get(h.hiveId);
+      if (tomb !== undefined && h.announcedTs <= tomb) continue; // withdrawn
+      this.discovered.set(h.hiveId, h);
     }
     return this.discovered.size;
   }
@@ -189,6 +227,15 @@ export class HiveDirectory {
     const existing = this.discovered.get(frame.hive_id);
     if (existing && frame.ts <= existing.announcedTs) {
       return { accepted: false, reason: 'superseded' };
+    }
+    // P-005 tombstone: a withdrawn hive stays dropped for announces at or
+    // before the withdrawal watermark (replay-resistance); a genuinely NEWER
+    // signed announce relists (re-publish after withdraw) and clears it.
+    const tomb = this.tombstones.get(frame.hive_id);
+    if (tomb !== undefined) {
+      if (frame.ts <= tomb) return { accepted: false, reason: 'tombstoned' };
+      this.tombstones.delete(frame.hive_id);
+      await this.persistTombstones();
     }
     const attested = await this.deps
       .verifyAttestation({
@@ -234,6 +281,66 @@ export class HiveDirectory {
       out.push(h);
     }
     return out.sort((a, b) => b.announcedTs - a.announcedTs);
+  }
+
+  /**
+   * P-005 — ingest an inbound WITHDRAWAL tombstone. Trust rule (D-005): the
+   * frame's signature must verify AND its pubkey must equal the LISTED
+   * record's owner_device_pubkey (no listing → nothing to authenticate
+   * against → rejected). On accept: drop the record, remember the watermark,
+   * persist both.
+   */
+  async ingestUnlist(frame: SignedHiveUnlist): Promise<{ accepted: boolean; reason?: UnlistReject }> {
+    const nowMs = this.nowMs();
+    if (!verifyHiveUnlist(frame, { nowMs })) {
+      return { accepted: false, reason: 'bad-signature-or-stale' };
+    }
+    const listed = this.discovered.get(frame.hive_id);
+    if (!listed) return { accepted: false, reason: 'unknown-hive' };
+    if (listed.ownerDevicePubkey !== frame.owner_device_pubkey) {
+      return { accepted: false, reason: 'not-owner' };
+    }
+    this.discovered.delete(frame.hive_id);
+    const prev = this.tombstones.get(frame.hive_id);
+    if (prev === undefined || frame.ts > prev) this.tombstones.set(frame.hive_id, frame.ts);
+    await this.persist();
+    await this.persistTombstones();
+    return { accepted: true };
+  }
+
+  /**
+   * P-005 — owner side: broadcast a signed unlist for an owned hive on its
+   * announce topic(s), then unregister it (stop re-announcing). Returns the
+   * frame, or null when the hive is unknown/private (a private hive never
+   * announced — there is nothing to withdraw on the wire).
+   */
+  async unlistLocalHive(hiveId: string): Promise<SignedHiveUnlist | null> {
+    const desc = this.owned.get(hiveId);
+    if (!desc) return null;
+    const topic = this.topicForLocalHive(desc); // null = private, never on the wire
+    if (!topic) {
+      this.owned.delete(hiveId);
+      return null;
+    }
+    const frame = await buildHiveUnlist(
+      {
+        kind: HIVE_UNLIST_KIND,
+        hive_id: hiveId,
+        owner_device_pubkey: desc.ownerDevicePubkey,
+        ts: this.nowMs(),
+      },
+      this.deps.sign,
+    );
+    await this.deps
+      .broadcast(hiveTopicAsHex(topic), frame as unknown as SignedHiveAnnounce)
+      .catch(() => {});
+    this.owned.delete(hiveId);
+    return frame;
+  }
+
+  private async persistTombstones(): Promise<void> {
+    if (!this.deps.saveTombstones) return;
+    await this.deps.saveTombstones(Object.fromEntries(this.tombstones)).catch(() => {});
   }
 
   /** Locally hide a hive from the browse list (D-001 — no global moderation). */
@@ -372,6 +479,11 @@ export class HiveDirectory {
         this.discovered.delete(id);
         evicted += 1;
       }
+    }
+    // P-005: tombstones age out with the same TTL — after that, the listing
+    // would have TTL'd anyway, so the watermark has done its job.
+    for (const [id, ts] of this.tombstones) {
+      if (nowMs - ts > DISCOVERED_HIVE_TTL_MS) this.tombstones.delete(id);
     }
     return evicted;
   }

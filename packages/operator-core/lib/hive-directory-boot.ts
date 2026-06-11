@@ -26,6 +26,7 @@ import {
 import type { HyperswarmLike } from './sync/hyperbee/swarm';
 import type { SignedHiveAnnounce } from './sync/hyperbee/hive-announce';
 import { getHiveDirectory, setHiveDirectoryTransport } from './hive-directory-deps';
+import { isHiveUnlistFrame } from './hive-directory';
 import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity } from './hive-publish';
 import type { HiveDirectory } from './hive-directory';
 
@@ -78,7 +79,11 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
   // onto the global topic.
   const gossip = createDirectoryGossip({
     swarm: opts.swarm,
-    onAnnounce: (frame) => dir.ingestAnnounce(frame),
+    // P-005: the shared gossip channel carries announces AND withdrawal
+    // tombstones — route by frame kind, synchronously (the test fakes deliver
+    // inline); old peers shape-reject unlist frames harmlessly.
+    onAnnounce: (frame) =>
+      isHiveUnlistFrame(frame) ? dir.ingestUnlist(frame) : dir.ingestAnnounce(frame),
     getOwnAnnounces: (topicHex) => dir.buildOwnedAnnounces({ topicHex }),
     refreshMs: opts.refreshMs,
   });

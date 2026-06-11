@@ -345,6 +345,25 @@ export async function bootAllHarnessesForActiveWorkspace(
     })();
   }
 
+  // hive-from-repo-hardening-2026-06-11 P-009: once-per-process registry
+  // github-coords revalidation — re-fetch each coord-bearing project by its
+  // IMMUTABLE github_repository_id and repair github_remote /
+  // github_default_branch drift after an upstream GitHub rename. Same posture
+  // as the hive-directory wire above: fully best-effort + fire-and-forget with
+  // its own catch — it must NEVER affect harness boot. The once-guard lives in
+  // the module, so retry passes of this function no-op. Workspace omitted →
+  // the ACTIVE workspace (the registry helpers' default scope).
+  void (async () => {
+    try {
+      const { ensureRepoCoordsRevalidatedOnce } = await import(
+        '../../harness/revalidate-repo-coords'
+      );
+      ensureRepoCoordsRevalidatedOnce();
+    } catch {
+      /* best-effort; boot-all never fails on coord revalidation */
+    }
+  })();
+
   return {
     attempted: results.length,
     booted: results.filter((r) => r.state === 'booted').length,
