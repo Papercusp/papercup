@@ -31,12 +31,21 @@ interface WindowWithTauri extends Window {
 /**
  * True iff we're running inside the Tauri webview AND the native pty
  * commands are available. PiPanel calls this to choose its transport.
+ *
+ * `__TAURI_INTERNALS__` is Tauri's own injection — present in EVERY
+ * document of the webview, reload-proof. `__PAPERCUSP_TAURI__` is set by
+ * finish_boot's bounded eval loop, so it is LOST on any reload/late
+ * navigation — treat it as an optional override (an explicit non-native
+ * marker wins), never as a requirement, or the wizard's install/login
+ * buttons silently vanish after a reload (found live on Windows
+ * 2026-06-11).
  */
 export function isTauriNative(): boolean {
   if (typeof window === 'undefined') return false;
   const w = window as WindowWithTauri;
-  if (w.__PAPERCUSP_TAURI__?.kind !== 'native') return false;
-  return Boolean(w.__TAURI_INTERNALS__?.invoke);
+  if (!w.__TAURI_INTERNALS__?.invoke) return false;
+  if (w.__PAPERCUSP_TAURI__ && w.__PAPERCUSP_TAURI__.kind !== 'native') return false;
+  return true;
 }
 
 function tauriListen(): TauriListenFn {

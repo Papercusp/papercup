@@ -1,0 +1,385 @@
+{
+  "meta": {
+    "capturedAt": "2026-06-11T14:37:01.213Z",
+    "cycleId": "scout-live-cycle-1",
+    "harnessSlug": "papercup",
+    "limits": {
+      "maxCostUsd": 0.5,
+      "maxIdeators": 2
+    },
+    "transport": "meridian-stateless via AGENT_BACKEND=claude-code",
+    "noveltyCorpusSize": 0,
+    "inertRails": {
+      "planDrafts": [],
+      "gymSeeds": [],
+      "captures": []
+    }
+  },
+  "result": {
+    "cycleId": "scout-live-cycle-1",
+    "stop": "no-ideas",
+    "costUsd": 0,
+    "digest": {
+      "generatedAt": "2026-06-11T14:33:38.901Z",
+      "corpus": {
+        "completions": 287,
+        "reverts": 58,
+        "frictionCaptured": 254,
+        "deferrals": 222,
+        "spendUsd": 65960.68,
+        "spendBuckets": 23
+      },
+      "recurringFriction": [
+        {
+          "category": "recurring-friction",
+          "summary": "Tool plans:set-status erroring repeatedly",
+          "detail": "recurred 2× (2 open), last 0.2d ago",
+          "ref": "wi:EI-131",
+          "weight": 1
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "p2p-perf scenario crashed in weekly Tier-2 run: netem.sustained: netem-inner fatal: Error: proc mesh: reader 1 never ad…",
+          "detail": "recurred 2× (2 open), last 0d ago",
+          "ref": "wi:EI-115",
+          "weight": 1
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "coord invariant: wake-queue depth/age growth",
+          "detail": "recurred 2× (1 open), last 0.3d ago",
+          "ref": "wi:EI-275",
+          "weight": 0.75
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Schema drift: migrations on disk are not applied to the live DB",
+          "detail": "recurred 2× (1 open), last 1.6d ago",
+          "ref": "wi:EI-182",
+          "weight": 0.75
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Test failing repeatedly: packages/operator-core/lib/sync/hyperbee/__tests__/swarm.test.ts",
+          "detail": "recurred 2× (0 open), last 0.6d ago",
+          "ref": "wi:EI-236",
+          "weight": 0.25
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Test failing repeatedly: apps/operator/app/harness/dock/RealAgentsPanel.test.tsx",
+          "detail": "recurred 2× (0 open), last 0.6d ago",
+          "ref": "wi:EI-263",
+          "weight": 0.25
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Test failing repeatedly: apps/operator/e2e/voice-mode.spec.ts",
+          "detail": "recurred 2× (0 open), last 0.6d ago",
+          "ref": "wi:EI-222",
+          "weight": 0.25
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Test failing repeatedly: libs/papercusp/packages/orchestrator/src/state.test.ts",
+          "detail": "recurred 2× (0 open), last 1.2d ago",
+          "ref": "wi:EI-167",
+          "weight": 0.25
+        },
+        {
+          "category": "recurring-friction",
+          "summary": "Test failing repeatedly: apps/operator/app/cupboard/__tests__/CupboardDetailPage.test.tsx",
+          "detail": "recurred 2× (0 open), last 1.2d ago",
+          "ref": "wi:EI-159",
+          "weight": 0.25
+        }
+      ],
+      "timeTokenSinks": [
+        {
+          "category": "time-token-sink",
+          "summary": "$65892.54 on (unattributed) · interactive",
+          "detail": "8260 run(s), 642,645,474 tokens",
+          "ref": "usage:(unattributed)/interactive",
+          "weight": 1
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$21.92 on brood-box-alpha · bee",
+          "detail": "121 run(s), 676,049 tokens",
+          "ref": "usage:brood-box-alpha/bee",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$10.75 on sb-devboard · worker",
+          "detail": "4 run(s), 159,856 tokens",
+          "ref": "usage:sb-devboard/worker",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$9.37 on papercup · bee",
+          "detail": "30 run(s), 309,146 tokens",
+          "ref": "usage:papercup/bee",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$5.35 on papercup · worker",
+          "detail": "3 run(s), 59,264 tokens",
+          "ref": "usage:papercup/worker",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$4.15 on sb-devboard-hive · operator",
+          "detail": "12 run(s), 165,627 tokens",
+          "ref": "usage:sb-devboard-hive/operator",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$4.08 on papercup-hive · queen",
+          "detail": "12 run(s), 94,937 tokens",
+          "ref": "usage:papercup-hive/queen",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$2.65 on papercup · release-fixer",
+          "detail": "6 run(s), 65,929 tokens",
+          "ref": "usage:papercup/release-fixer",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$2.1 on papercup-hive · operator",
+          "detail": "15 run(s), 77,339 tokens",
+          "ref": "usage:papercup-hive/operator",
+          "weight": 0
+        },
+        {
+          "category": "time-token-sink",
+          "summary": "$1.93 on sb-devboard · validator",
+          "detail": "1 run(s), 30,682 tokens",
+          "ref": "usage:sb-devboard/validator",
+          "weight": 0
+        }
+      ],
+      "chronicDeferrals": [
+        {
+          "category": "chronic-deferral",
+          "summary": "**Bee**: keep `invoke-once` as the headless work engine (D-007); make the bee's zellij pane a real psu/Claude TUI by at…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:hive-agent-tabs-psu-tui-2026-06-09#P-004",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Design + stage per-route auth tiers for the ~767 auth:'public' endpoint-routes (EI-100); tactical loopback gates (P-025…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:papercusp-full-app-audit-2026-06-09#P-032",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Two-box variant: run P-005's verb sweep + P-008/P-009 rungs across two physical machines per the `vm-federation-separat…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:coord-system-e2e-testing-2026-06-10#P-010",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "needs-human: Owner ratifies the four proposed decisions before execution — D-001 (build natively on the Windows VM, no …",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:windows-desktop-release-readiness-2026-06-11#P-019",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Live one-shot cycle harness: drive system:scout-cycle on staging with the approved cap; assert on REAL output — 100% sc…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:scout-loop-test-plan-2026-06-11#P-007",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Judge-panel quality baseline: score the live cycle's proposals on groundedness / novelty-vs-corpus / bettability (exper…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:scout-loop-test-plan-2026-06-11#P-008",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Duplicate-rate measurement: real-cycle ideas vs the prior plans+ideas corpus through the shipped dedup signature; recor…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:scout-loop-test-plan-2026-06-11#P-009",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Queen triage E2E: a Scout-routed draft plan reaches Queen triage; greenlight promotes it into pipeline work, reject par…",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:scout-loop-test-plan-2026-06-11#P-012",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Pre-ship sign-off: review Phase 1–5 results, confirm flag default-ON, close out.",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:hive-from-github-url-2026-06-11#P-020",
+          "weight": 1
+        },
+        {
+          "category": "chronic-deferral",
+          "summary": "Decide the Tahoe question: someone prepped a macOS Tahoe upgrade on Jun 9 (BaseSystem.img + OSX-KVM \"Support for macOS …",
+          "detail": "deferred 1× across 1 plan(s) [needs-human]",
+          "ref": "plan:mac-desktop-release-readiness-2026-06-11#P-004",
+          "weight": 1
+        }
+      ],
+      "capabilityGaps": [
+        {
+          "category": "capability-gap",
+          "summary": ".papercusp/tests.json TestItem.framework lacks cargo/shell — the Rust desktop gate can't be a first-class Tests-tab reg…",
+          "detail": "net-new ask (1 open)",
+          "ref": "wi:EI-299",
+          "weight": 1
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Test failing repeatedly: packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination.integration.test.ts",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-327",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "The rate-governor is BLIND to subprocess bees — claude-CLI children's 429s never reach penalize(), so the AIMD can't re…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-86",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "plans:promote resolves plans only at papercup-primary scope — a harness-scoped plan (plans:* { harness: slug }) cannot …",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-103",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "memory:forget / memory:update lack the per-call workspace arg memory:remember/search have — unusable from an unscoped p…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-211",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "hive-watchdog hiveBootCheck floods console.warn (\"time?.lastFiredAt?.getTime is not a function\") — intermittently fails…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-257",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Adding a role requires edits in THREE parallel hand-maintained registries — COORD_ROLES misses silently disable coord:*…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-66",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "Feature flags can't be toggled at runtime on dev boxes without PostHog — env override requires a :3070 restart per flip…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-76",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "fleet:spawn children were MUTE on coord — signed-spawn MCP URL carried no stable coord owner (no client= param)",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-77",
+          "weight": 0.67
+        },
+        {
+          "category": "capability-gap",
+          "summary": "fleet:spawn silently STRIPS unknown args (zod strip-default) — a `brief` sent to a pre-brief host spawned 5 task-less b…",
+          "detail": "named missing capability (1 open)",
+          "ref": "wi:EI-72",
+          "weight": 0.67
+        }
+      ],
+      "reverts": [
+        {
+          "summary": "F-015 reverted 13× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-015",
+          "weight": 1
+        },
+        {
+          "summary": "F-AUTOFIT-001 reverted 7× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-AUTOFIT-001",
+          "weight": 0.73
+        },
+        {
+          "summary": "F-CSV-003 reverted 3× (latest passed→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-CSV-003",
+          "weight": 0.55
+        },
+        {
+          "summary": "F-FIX-012 reverted 3× (latest todo→deprecated)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-012",
+          "weight": 0.45
+        },
+        {
+          "summary": "F-KV-004 reverted 4× (latest todo→deprecated)",
+          "detail": "last by api",
+          "ref": "wi:F-KV-004",
+          "weight": 0.36
+        },
+        {
+          "summary": "F-FIX-024 reverted 4× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-024",
+          "weight": 0.27
+        },
+        {
+          "summary": "F-FIX-017 reverted 5× (latest todo→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-017",
+          "weight": 0.23
+        },
+        {
+          "summary": "F-FIX-028 reverted 4× (latest in_progress→todo)",
+          "detail": "last by api",
+          "ref": "wi:F-FIX-028",
+          "weight": 0.18
+        },
+        {
+          "summary": "F-HOME-001 reverted 1× (latest passed→todo)",
+          "detail": "last by api:reset",
+          "ref": "wi:F-HOME-001",
+          "weight": 0.18
+        },
+        {
+          "summary": "F-FILL-001 reverted 2× (latest validating→failing)",
+          "detail": "last by api",
+          "ref": "wi:F-FILL-001",
+          "weight": 0.18
+        }
+      ],
+      "headline": "State of the Hive: 9 recurring friction, 10 spend sink(s) ($65960.68), 10 chronic deferral(s), 10 capability gap(s), 10 reverted item(s) over 287 completions"
+    },
+    "ideas": [],
+    "scored": [],
+    "survivors": [],
+    "proposals": [],
+    "routed": [],
+    "provenance": [],
+    "calls": []
+  }
+}

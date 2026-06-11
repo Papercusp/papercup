@@ -6,6 +6,7 @@ import { InlinePtyTerminal } from './InlinePtyTerminal';
 
 interface AgentRuntime {
   claude: boolean;
+  codex: boolean;
   omp: boolean;
   meridian: boolean;
 }
@@ -56,13 +57,14 @@ export function StepAgents() {
   }, []);
 
   const claudeOk = runtime?.claude ?? false;
+  const codexOk = runtime?.codex ?? false;
   const ompOk = runtime?.omp ?? false;
   const meridianOk = runtime?.meridian ?? false;
-  // A complete backend is EITHER Claude Code alone (claude-code: the
-  // orchestrator runs `claude`, stateless calls go direct to Anthropic — no
-  // omp/Meridian) OR oh-my-pi + Meridian (the multi-provider path).
+  // A complete backend is EITHER a standalone CLI agent (Claude Code or
+  // Codex — the orchestrator drives the CLI directly) OR oh-my-pi +
+  // Meridian (the multi-provider path).
   const ompPathOk = ompOk && meridianOk;
-  const allOk = claudeOk || ompPathOk;
+  const allOk = claudeOk || codexOk || ompPathOk;
 
   const startInstall = async () => {
     setLastExitCode(null);
@@ -104,8 +106,10 @@ export function StepAgents() {
         Papercusp needs an <strong>agent backend</strong>. The simplest is{' '}
         <strong>Claude Code</strong> — just the <code>claude</code> CLI signed into
         your Claude subscription; the orchestrator drives it and background calls go
-        straight to Anthropic. Or use <strong>oh-my-pi + Meridian</strong> to route
-        through other providers. You need <em>one</em> complete path, not all three.
+        straight to Anthropic. <strong>Codex</strong> (the <code>codex</code> CLI,
+        OpenAI) works the same way. Or use <strong>oh-my-pi + Meridian</strong> to
+        route through other providers. You need <em>one</em> complete path, not all
+        of them.
       </p>
 
       {!loading && (
@@ -116,17 +120,23 @@ export function StepAgents() {
               <>
                 <strong>Ready.</strong>
                 <span>
-                  {claudeOk
-                    ? 'Claude Code is installed — you can run on the claude-code backend.'
-                    : 'oh-my-pi + Meridian are installed.'}
+                  {[
+                    claudeOk && 'Claude Code',
+                    codexOk && 'Codex',
+                    ompPathOk && 'oh-my-pi + Meridian',
+                  ]
+                    .filter(Boolean)
+                    .join(', ')}{' '}
+                  installed.
                 </span>
               </>
             ) : (
               <>
                 <strong>No agent backend yet.</strong>
                 <span>
-                  Install <strong>Claude Code</strong> (the <code>claude</code> CLI) — or
-                  oh-my-pi + Meridian. Click Install to run the commands here in the wizard.
+                  Install <strong>Claude Code</strong> (the <code>claude</code> CLI),{' '}
+                  <strong>Codex</strong> (the <code>codex</code> CLI) — or oh-my-pi +
+                  Meridian. Click Install to run the commands here in the wizard.
                 </span>
               </>
             )}
@@ -209,6 +219,9 @@ export function StepAgents() {
 curl -fsSL https://claude.ai/install.sh | bash   # macOS/Linux
 iwr https://claude.ai/install.ps1 | iex          # Windows PowerShell
 
+# Codex (OpenAI)
+npm install -g @openai/codex
+
 # Meridian + oh-my-pi (per-workspace install root)
 mkdir -p ~/.papercusp/runtime
 cd ~/.papercusp/runtime && npm init -y
@@ -218,6 +231,10 @@ npm install @rynfar/meridian @oh-my-pi/cli
           <p className="pc-agent-card__link">
             <a href="https://docs.anthropic.com/claude/docs/claude-code" target="_blank" rel="noreferrer">
               Claude Code docs ↗
+            </a>{' '}
+            ·{' '}
+            <a href="https://github.com/openai/codex" target="_blank" rel="noreferrer">
+              Codex docs ↗
             </a>{' '}
             ·{' '}
             <a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noreferrer">
