@@ -122,6 +122,12 @@ export const FLAGS = {
   // completes while the original strands in `validating`. force:true overrides
   // per-call. OFF = the kill-switch if the guard ever false-positives.
   WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
+  // EI-309 (Queen frontier-blind wake wedge): when ON, hive:declare-wake refuses
+  // an event-only/none declaration (no time component) while the home harness has
+  // unplaced todo work items — forcing the Queen to place them or arm a time-wake
+  // instead of sleeping on phantom self-claim. force:true overrides per-call.
+  // OFF = the kill-switch if the guard ever wrongly blocks a declaration.
+  HIVE_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -195,6 +201,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // work-item — a near-zero-false-positive signal — and force:true is the
   // per-call escape hatch. OFF is the fleet-wide kill-switch.
   [FLAGS.WORK_ITEM_MIRROR_GUARD]: true,
+  // ON by default (alpha flags-default-on policy + EI-309 correctness fix): the
+  // guard fires only when a no-time-component wake is declared with a non-empty
+  // unplaced frontier — a genuine wedge condition — and force:true overrides.
+  // OFF is the kill-switch.
+  [FLAGS.HIVE_WAKE_FRONTIER_GUARD]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

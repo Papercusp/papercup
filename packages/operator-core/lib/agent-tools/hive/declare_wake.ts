@@ -15,6 +15,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { DataCondition } from '@papercusp/rules';
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -25,6 +27,7 @@ import {
   setHiveEventSubscriptions,
   type HiveEventSubscription,
 } from '../../hive/wake';
+import { evaluateWakeFrontierGuard, listUnplacedHiveFrontier } from '../../hive/wake-frontier-guard';
 
 const subscriptionSchema = z.object({
   on: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]).describe(
@@ -58,6 +61,12 @@ export default defineTool({
       mode: z.literal('none').optional().describe("Explicit 'nothing' — sleep until the user or a manual hive:wake."),
       harness: z.string().max(120).optional().describe('Home harness slug the wake fires against (default: ctx harness or PAPERCUSP_HIVE_HOME_SLUG).'),
       kickoff: z.string().max(2000).optional().describe('Kickoff text the woken operator reads (why this wake exists).'),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          'Override the frontier guard (EI-309): declare an event-only/none wake even though the home harness has unplaced todo work items. Only set this when you deliberately intend to leave them unplaced.',
+        ),
     })
     .refine((a) => !(a.at != null && a.inSeconds != null), { message: 'pass either at or inSeconds, not both' })
     .refine((a) => !(a.mode === 'none' && (a.at != null || a.inSeconds != null || (a.events?.length ?? 0) > 0)), {
@@ -83,6 +92,21 @@ export default defineTool({
     const { sql } = getOrgPg();
 
     const wantsTime = args.at != null || args.inSeconds != null;
+
+    // EI-309 frontier guard: refuse a no-time-component wake (event-only / none)
+    // while the home harness still has unplaced todo work — that wake would never
+    // place it (in a Hive the Queen IS the dispatcher). Runs BEFORE any mutation
+    // so a refused declaration doesn't partially apply. Flag-gated; force overrides.
+    if (!wantsTime && !args.force && (await getFlag(FLAGS.HIVE_WAKE_FRONTIER_GUARD, 'system'))) {
+      const frontierIds = await listUnplacedHiveFrontier(sql, workspaceId, installSlug);
+      const refusal = evaluateWakeFrontierGuard({ hasTimeWake: false, frontierIds });
+      if (refusal) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...refusal }) }],
+        };
+      }
+    }
+
     let time: { at: string; clamped: boolean } | null = null;
     if (wantsTime) {
       const requested = args.at != null ? new Date(args.at) : new Date(Date.now() + (args.inSeconds as number) * 1_000);

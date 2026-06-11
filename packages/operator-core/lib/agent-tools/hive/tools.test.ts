@@ -52,6 +52,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: {} }),
 }));
+// EI-309 frontier guard reads the home-harness frontier via this query; default
+// to an EMPTY frontier so the declaration-mechanics tests allow no-time wakes.
+// evaluateWakeFrontierGuard stays REAL — a test that returns a non-empty frontier
+// exercises the genuine refusal. (arrow-deref so the hoisted factory sees it.)
+const listUnplacedHiveFrontier = vi.fn(async () => [] as string[]);
+vi.mock('../../hive/wake-frontier-guard', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listUnplacedHiveFrontier: (...a: unknown[]) => listUnplacedHiveFrontier(...(a as [])),
+}));
 // start-hive-wake P-004/P-012: hive:status also reads the started bit + the
 // watchdog fire signal — both PG-backed, mocked at their module seams here.
 const getHiveStarted = vi.fn(async () => false);
@@ -173,6 +182,43 @@ describe('hive:declare-wake', () => {
     expect(res.eventRules).toBe(0);
     expect(clearHiveTimeWake).toHaveBeenCalledTimes(1);
     expect(setHiveEventSubscriptions).toHaveBeenCalledWith('ws-test', []);
+  });
+
+  it('EI-309 guard: REFUSES an event-only wake while the home harness has unplaced work (frontier_not_empty)', async () => {
+    listUnplacedHiveFrontier.mockResolvedValueOnce(['WI-116', 'WI-117']);
+    const res = parse(
+      await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup' }, ctx()),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('frontier_not_empty');
+    expect(res.frontier).toEqual(['WI-116', 'WI-117']);
+    // Refused BEFORE any mutation — the declaration did not partially apply.
+    expect(setHiveEventSubscriptions).not.toHaveBeenCalled();
+    expect(clearHiveTimeWake).not.toHaveBeenCalled();
+  });
+
+  it('EI-309 guard: REFUSES a mode:none wake with an unplaced frontier too', async () => {
+    listUnplacedHiveFrontier.mockResolvedValueOnce(['WI-116']);
+    const res = parse(await tool.handler({ mode: 'none', harness: 'papercup' }, ctx()));
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('frontier_not_empty');
+  });
+
+  it('EI-309 guard: force:true OVERRIDES — the event-only declaration applies despite the frontier', async () => {
+    listUnplacedHiveFrontier.mockResolvedValueOnce(['WI-116']);
+    const res = parse(
+      await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup', force: true }, ctx()),
+    );
+    expect(res.mode).toBe('event');
+    expect(res.eventRules).toBe(1);
+    expect(setHiveEventSubscriptions).toHaveBeenCalled();
+  });
+
+  it('EI-309 guard: a TIME wake is allowed even with an unplaced frontier (a timer re-wakes to place)', async () => {
+    listUnplacedHiveFrontier.mockResolvedValueOnce(['WI-116']); // would refuse if read, but a time wake skips the guard
+    const res = parse(await tool.handler({ inSeconds: 300, harness: 'papercup' }, ctx()));
+    expect(res.mode).toBe('time');
+    expect(declareHiveTimeWake).toHaveBeenCalledTimes(1);
   });
 
   it('uses ctx.harnessSlug when no explicit harness is passed', async () => {
