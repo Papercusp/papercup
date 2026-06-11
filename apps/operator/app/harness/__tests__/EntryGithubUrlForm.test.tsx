@@ -193,6 +193,38 @@ describe('new-hive mode', () => {
     expect(onCreated).toHaveBeenCalledWith('web-hive');
   });
 
+  it('test-verify is opt-in (hardening D-001): unchecked sends no runTests; checked sends true', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+      },
+    });
+    renderForm();
+    const optin = screen.getByTestId('verify-tests-optin').querySelector('input')!;
+    expect(optin.checked).toBe(false); // default OFF — running repo code is opt-in
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('runTests');
+
+    cleanup();
+    mockFetch.mockClear();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+      },
+    });
+    renderForm();
+    await user.click(screen.getByTestId('verify-tests-optin'));
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ runTests: true });
+  });
+
   it('shows the invite secret for an invite hive', async () => {
     const user = userEvent.setup();
     respondByUrl({

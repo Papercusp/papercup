@@ -23,6 +23,10 @@ export interface HiveDirectoryMeta {
   hiveId: string;
   title: string;
   description: string;
+  /** The owning workspace — lets the announce-build enricher (P-004 hardening)
+   *  re-derive members/links fresh per announce. Stamped by the publish
+   *  call-sites; absent ⇒ legacy frozen-descriptor behavior. */
+  workspaceId?: string;
   /** public = announce to the global topic; invite = invite-scoped topic only;
    *  private = never announce. Default for a directory-created hive: public. */
   visibility: HiveVisibility;
@@ -86,6 +90,7 @@ export async function publishHiveToDirectory(
     hiveId: meta.hiveId,
     title: meta.title,
     description: meta.description,
+    ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
     memberTopics: [...meta.memberTopics],
     ...(meta.hivePubkey ? { hivePubkey: meta.hivePubkey } : {}),
     ...(meta.memberLinks ? { memberLinks: [...meta.memberLinks] } : {}),

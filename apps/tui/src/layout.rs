@@ -351,6 +351,20 @@ pub fn chat_dock_kdl(
 // brain). Tab-style pui surfaces (Hives · Voice · Swarm …) live in the pui
 // app's own tab strip, NOT in zellij. Pane display names route through the
 // lexicon.
+//
+// Tab → fullscreen the focused pane (owner ask 2026-06-11): focus an agent
+// chat and press Tab to zoom it full (hiding its wakes pane + the rest); Tab
+// again restores the split. zellij `ToggleFocusFullscreen` is its native zoom,
+// bound here at the LAYOUT level so it MERGES with the user's config and applies
+// only inside this dock session. Trade-off: plain Tab no longer reaches a pane's
+// program here (it's the zoom toggle) — but Shift+Tab is a separate bind, so
+// Claude's permission-mode toggle is unaffected; only plain-Tab prompt
+// completion in the chat panes is given up.
+keybinds {{
+    normal {{
+        bind "Tab" {{ ToggleFocusFullscreen; }}
+    }}
+}}
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
@@ -733,6 +747,28 @@ mod tests {
         assert!(!off.contains("args \"wake-pane\""));
         assert!(!off.contains("split_direction"), "flag-off stays the single stack");
         assert_eq!(off.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
+    fn chat_dock_binds_tab_to_fullscreen_zoom_at_the_layout_level() {
+        // owner ask 2026-06-11: Tab fullscreens the focused pane (chat → hide
+        // its wakes pane; Tab again restores). A layout-level keybind (merges
+        // with the user's config, dock-session-only). Present in both flag
+        // states (it zooms whatever is focused).
+        for flag in [true, false] {
+            let kdl = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), flag);
+            assert!(kdl.contains("keybinds {"), "keybinds block missing (flag={flag}): {kdl}");
+            assert!(
+                kdl.contains("bind \"Tab\" { ToggleFocusFullscreen; }"),
+                "Tab→fullscreen bind missing (flag={flag}): {kdl}",
+            );
+            // The keybinds block precedes the layout block (zellij wants it as a
+            // top-level sibling, not nested in `layout`).
+            assert!(
+                kdl.find("keybinds {").unwrap() < kdl.find("layout {").unwrap(),
+                "keybinds must precede layout (flag={flag})",
+            );
+        }
     }
 
     #[test]

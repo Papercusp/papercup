@@ -177,7 +177,13 @@ export async function ensureHiveDirectoryWired(workspaceId: string): Promise<Hiv
  */
 export async function wireHiveDirectoryForWorkspace(
   workspaceId: string,
-  opts: { swarm?: HyperswarmLike; reannounceMs?: number } = {},
+  opts: {
+    swarm?: HyperswarmLike;
+    reannounceMs?: number;
+    /** Hardening P-003 test seam — the full-publish-set reconcile for public
+     *  hives. Default: hive-publish-from-repo's republishHiveAfterMemberAdd. */
+    republish?: (o: { workspaceId: string; hiveSlug: string }) => Promise<unknown>;
+  } = {},
 ): Promise<HiveDirectoryWiring | null> {
   try {
     const { resolveLocalAnnounceIdentity } = await import('./sync/hyperbee/local-announce-identity');
@@ -208,6 +214,7 @@ export async function wireHiveDirectoryForWorkspace(
         );
         return {
           ...h,
+          workspaceId, // P-004: announce-build enrichment key
           ...(pk ? { hivePubkey: pk } : {}),
           ...(memberRepos.length ? { memberRepos } : {}),
         };
@@ -235,6 +242,9 @@ export async function wireHiveDirectoryForWorkspace(
         }
       }
     }
+
+    // Hardening P-003 (D-003): boot-time Cupboard reconcile for public hives.
+    await reconcilePublicHiveListings(ownedHives, workspaceId, opts.republish);
     return _wiring;
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -243,6 +253,40 @@ export async function wireHiveDirectoryForWorkspace(
     );
     return null;
   }
+}
+
+/**
+ * Hardening P-003 (D-003): the boot tick is the designed Cupboard reconcile
+ * point — re-run the FULL publish set (announce + Cupboard rows + local
+ * bindings; rowsExisted-tolerant) for owned PUBLIC hives, so a create that
+ * happened while the Cupboard was unreachable self-heals on the next boot.
+ * Invite/private stay directory-only (no Cupboard, D-003 of the parent plan).
+ * Best-effort throughout: a reconcile failure never breaks the wire, and the
+ * extra announce it emits is harmless (newer-ts LWW).
+ */
+export async function reconcilePublicHiveListings(
+  ownedHives: readonly Pick<HiveDirectoryMeta, 'hiveId' | 'visibility'>[],
+  workspaceId: string,
+  republish?: (o: { workspaceId: string; hiveSlug: string }) => Promise<unknown>,
+): Promise<number> {
+  let reconciled = 0;
+  try {
+    const run =
+      republish ??
+      (async (o: { workspaceId: string; hiveSlug: string }) =>
+        (await import('./hive-publish-from-repo')).republishHiveAfterMemberAdd(o));
+    for (const h of ownedHives) {
+      if (h.visibility !== 'public') continue;
+      const ok = await run({ workspaceId, hiveSlug: h.hiveId }).then(
+        () => true,
+        () => false,
+      );
+      if (ok) reconciled += 1;
+    }
+  } catch {
+    /* best-effort */
+  }
+  return reconciled;
 }
 
 /** Test seam: drop the process wiring so the next call re-joins. */

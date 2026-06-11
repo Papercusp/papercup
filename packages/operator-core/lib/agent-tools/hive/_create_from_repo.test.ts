@@ -142,6 +142,19 @@ describe('createHiveFromRepo (P-006)', () => {
     });
   });
 
+  it('test-verify is OPT-IN: default runTests=false reaches detection (hardening D-001)', async () => {
+    const seen: boolean[] = [];
+    const { deps } = fakes({
+      buildBlueprint: async (_slug, _path, o) => {
+        seen.push(o.runTests);
+        return { ok: true, blueprint: { id: 'x', extends: 'coding' } };
+      },
+    });
+    await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    await createHiveFromRepo({ githubUrl: URL, slug: 'shop-x', runTests: true, workspaceId: 'ws' }, deps);
+    expect(seen).toEqual([false, true]);
+  });
+
   it('private visibility skips publish entirely (D-003 zero external writes)', async () => {
     const { deps, calls } = fakes();
     const r = await createHiveFromRepo({ githubUrl: URL, visibility: 'private', workspaceId: 'ws' }, deps);

@@ -76,6 +76,10 @@ function productionDeps(): HiveDirectoryDeps {
     saveCache: async (hives) => {
       await writeOperatorState('hive_directory_cache', { hives }).catch(() => {});
     },
+    // P-004 (hardening): fresh members/links on every announce build. Lazy
+    // import keeps this module light; the enricher is best-effort internally.
+    enrichDescriptor: async (desc) =>
+      (await import('./hive-descriptor-enrich')).enrichLocalHiveDescriptor(desc),
   };
 }
 

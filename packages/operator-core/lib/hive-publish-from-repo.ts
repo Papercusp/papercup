@@ -51,6 +51,11 @@ export interface PublishCreatedHiveOutcome {
      *  expected on re-publish/visibility flips, not a failure. */
     rowsExisted?: number;
     rowsFailed?: number;
+    /** Hardening D-002 auto-claim: rows claimed by the creator at create time
+     *  (the worker verified maintain/admin via its OWN claim path). A row left
+     *  unclaimed because the creator lacks permission is the normal
+     *  provisional posture, not a failure. */
+    rowsClaimed?: number;
     errors?: string[];
   };
   localBindings?: { created: number; existed: number; failed: number };
@@ -82,7 +87,23 @@ export interface PublishCreatedHiveDeps {
   getDirectory?: typeof getHiveDirectory;
   publishListing?: (
     input: Record<string, unknown>,
-  ) => Promise<{ ok: boolean; error?: string; status?: number; upstream_status?: number }>;
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    status?: number;
+    upstream_status?: number;
+    /** The worker's create response (carries the new listing's `id`). */
+    data?: unknown;
+  }>;
+  /**
+   * Hardening D-002: drive the worker's OWN claim path (POST
+   * /listings/:id/claim — the same endpoint the claim CTA uses; the worker
+   * verifies maintain/admin itself). Best-effort; insufficient permission is
+   * the normal provisional outcome.
+   */
+  claimListing?: (
+    listingId: string | number,
+  ) => Promise<{ ok: boolean; status?: number; error?: string }>;
   createLocalBinding?: (input: {
     githubUrl: string;
     privacy: 'shared-private' | 'shared-public';
@@ -93,6 +114,29 @@ export interface PublishCreatedHiveDeps {
   getMeta?: (hiveId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
   now?: () => number;
   randomSecret?: () => string;
+}
+
+async function defaultClaimListing(
+  listingId: string | number,
+): Promise<{ ok: boolean; status?: number; error?: string }> {
+  try {
+    const { getGhAuthToken } = await import('./identity/gh-token');
+    const tokenRes = await getGhAuthToken();
+    if (tokenRes.kind !== 'ok') return { ok: false, error: 'gh_auth_required' };
+    const { resolveCupboardBaseUrl } = await import(
+      './endpoint-route/routes/harness/cupboard-publish'
+    );
+    const res = await fetch(`${resolveCupboardBaseUrl()}/listings/${listingId}/claim`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenRes.token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { ok: true, status: res.status };
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { ok: false, status: res.status, error: body.error ?? `cupboard_http_${res.status}` };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function defaultResolveOwner(): Promise<HiveOwnerIdentity> {
@@ -123,6 +167,7 @@ export async function publishCreatedHive(
     hiveId: opts.hiveSlug,
     title: opts.title,
     description: opts.description,
+    workspaceId: opts.workspaceId, // P-004: announce-build enrichment key
     visibility: opts.visibility,
     memberTopics: [],
     createdAt: now(),
@@ -282,7 +327,9 @@ async function publishListingForMeta(
       cupboard.rowsCreated = 0;
       cupboard.rowsExisted = 0;
       cupboard.rowsFailed = 0;
+      cupboard.rowsClaimed = 0;
       cupboard.errors = [];
+      const claimListing = deps.claimListing ?? defaultClaimListing;
       const publishListing =
         deps.publishListing ??
         (async (input: Record<string, unknown>) =>
@@ -304,8 +351,17 @@ async function publishListingForMeta(
           hive_pubkey: hivePubkey,
           hive_title: meta.title,
         }).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
-        if (res.ok) cupboard.rowsCreated! += 1;
-        else if (
+        if (res.ok) {
+          cupboard.rowsCreated! += 1;
+          // D-002 auto-claim: the worker's own claim path verifies maintain/
+          // admin. 403 insufficient_permission = the normal provisional
+          // posture; 409 already_claimed = someone beat us — both silent.
+          const listingId = (('data' in res ? res.data : undefined) as { id?: string | number } | undefined)?.id;
+          if (listingId !== undefined && listingId !== null) {
+            const claim = await claimListing(listingId).catch(() => ({ ok: false as const }));
+            if (claim.ok) cupboard.rowsClaimed! += 1;
+          }
+        } else if (
           ('status' in res && (res.status === 409 || res.upstream_status === 409)) ||
           /exists|conflict/i.test(res.error ?? '')
         ) {

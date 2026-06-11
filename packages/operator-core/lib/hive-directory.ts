@@ -82,6 +82,12 @@ export interface LocalHiveDescriptor {
   hiveId: string;
   title: string;
   description: string;
+  /**
+   * The workspace this hive lives in — the key the announce-build enricher
+   * (P-004 hardening) derives fresh pubkey/memberRepos/memberLinks against.
+   * Absent ⇒ the descriptor announces exactly as registered (legacy behavior).
+   */
+  workspaceId?: string;
   memberTopics: string[];
   /** Full join links per member harness (one-click join), when known. */
   memberLinks?: string[];
@@ -128,6 +134,14 @@ export interface HiveDirectoryDeps {
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
   saveCache?(hives: DiscoveredHive[]): Promise<void>;
+  /**
+   * Announce-BUILD-time descriptor enrichment (hardening P-004/D-004): called
+   * on every frame build so the timer reannounce + fresh-pair snapshots carry
+   * the registry as of NOW (members added between publishes included). MUST be
+   * best-effort — a throw/reject falls back to the registered descriptor.
+   * Prod: hive-descriptor-enrich.enrichLocalHiveDescriptor.
+   */
+  enrichDescriptor?(desc: LocalHiveDescriptor): Promise<LocalHiveDescriptor>;
   /** Clock seam for deterministic tests. */
   now?(): number;
 }
@@ -261,8 +275,13 @@ export class HiveDirectory {
    */
   /** Build (sign, do NOT broadcast) the announce frame for one owned hive, or
    *  null when private/unknown. Shared by announceLocalHive + buildOwnedAnnounces. */
-  private async buildAnnounceFor(desc: LocalHiveDescriptor): Promise<SignedHiveAnnounce | null> {
-    if (!this.topicForLocalHive(desc)) return null; // private
+  private async buildAnnounceFor(descIn: LocalHiveDescriptor): Promise<SignedHiveAnnounce | null> {
+    if (!this.topicForLocalHive(descIn)) return null; // private
+    // P-004 (hardening): re-derive pubkey/memberRepos/memberLinks at BUILD
+    // time so every announce is fresh; failure → announce as registered.
+    const desc = this.deps.enrichDescriptor
+      ? await this.deps.enrichDescriptor(descIn).catch(() => descIn)
+      : descIn;
     const body: HiveAnnounceBody = {
       hive_id: desc.hiveId,
       title: desc.title,

@@ -45,6 +45,7 @@ export async function setHiveListing(
     hiveId: input.hiveId,
     title: input.title,
     description: input.description ?? '',
+    workspaceId, // P-004: the announce-build enricher derives against this
     visibility: input.visibility,
     memberTopics: input.memberTopics ?? [],
     ...(input.memberLinks ? { memberLinks: input.memberLinks } : {}),

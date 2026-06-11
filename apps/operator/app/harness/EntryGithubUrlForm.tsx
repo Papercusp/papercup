@@ -307,6 +307,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const [url, setUrl] = useState('');
   const [urlError, setUrlError] = useState('');
   const [visibility, setVisibility] = useState<Visibility>('public');
+  // D-001 (hive-from-repo-hardening): verifying the detected test command RUNS
+  // CODE from the pasted repo — explicit opt-in, default off. Transient draft →
+  // useState (nuqs exception).
+  const [verifyTests, setVerifyTests] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customSlug, setCustomSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
@@ -401,7 +405,11 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         const res = await fetch('/api/harness/projects', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slug: effectiveSlug, githubUrl: trimmed }),
+          body: JSON.stringify({
+          slug: effectiveSlug,
+          githubUrl: trimmed,
+          ...(verifyTests ? { runTests: true } : {}),
+        }),
         });
         const body: StandaloneResponse = await res.json().catch(() => ({}));
         if (!res.ok || !body.ok || !body.project) {
@@ -425,6 +433,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           ...(slugTouched && customSlug.trim() ? { slug: customSlug.trim() } : {}),
           ...(mode === 'new-hive' ? { visibility } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
+          ...(verifyTests ? { runTests: true } : {}),
           ...(opts?.force ? { force: true } : {}),
         }),
       });
@@ -798,6 +807,30 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           ))}
         </fieldset>
       )}
+
+      {/* D-001 (hardening): test-verify is opt-in — it EXECUTES code from the
+          pasted repo. Rendered in every mode (all three paths detect). */}
+      <label
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', marginBottom: 14, borderRadius: 6, cursor: 'pointer' }}
+        data-testid="verify-tests-optin"
+      >
+        <input
+          type="checkbox"
+          checked={verifyTests}
+          onChange={(e) => setVerifyTests(e.target.checked)}
+          style={{ marginTop: 2 }}
+        />
+        <span>
+          <span style={{ display: 'block', fontSize: 13, fontWeight: verifyTests ? 600 : 500 }}>
+            Verify the detected test command
+          </span>
+          <span style={{ display: 'block', fontSize: 11.5, color: 'var(--fg-mute)', lineHeight: 1.45 }}>
+            Runs code from the repository on this machine once, to confirm the blueprint&rsquo;s test
+            command works. Leave off for repos you don&rsquo;t fully trust — you can verify after
+            creation instead.
+          </span>
+        </span>
+      </label>
 
       <div style={{ marginBottom: 14 }}>
         <button

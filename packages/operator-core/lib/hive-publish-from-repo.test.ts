@@ -150,6 +150,41 @@ describe('publishCreatedHive (P-007)', () => {
     expect(out.localBindings).toEqual({ created: 0, existed: 1, failed: 0 });
   });
 
+  it('auto-claims created rows via the worker claim path when permitted (hardening D-002)', async () => {
+    const claimed: (string | number)[] = [];
+    const { deps } = fakes({
+      publishListing: async () => ({ ok: true, data: { id: 'listing-1' } }),
+      claimListing: async (id) => {
+        claimed.push(id);
+        return { ok: true, status: 200 };
+      },
+    });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.cupboard).toMatchObject({ rowsCreated: 1, rowsClaimed: 1 });
+    expect(claimed).toEqual(['listing-1']);
+  });
+
+  it('insufficient permission leaves the row provisional — no claim, no error (D-002)', async () => {
+    const { deps } = fakes({
+      publishListing: async () => ({ ok: true, data: { id: 'listing-2' } }),
+      claimListing: async () => ({ ok: false, status: 403, error: 'insufficient_permission' }),
+    });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.cupboard).toMatchObject({ rowsCreated: 1, rowsClaimed: 0, rowsFailed: 0 });
+    expect(out.cupboard.errors).toBeUndefined();
+  });
+
+  it('a create response without an id skips the claim quietly', async () => {
+    const { deps } = fakes({
+      publishListing: async () => ({ ok: true }),
+      claimListing: async () => {
+        throw new Error('must not be called');
+      },
+    });
+    const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);
+    expect(out.cupboard).toMatchObject({ rowsCreated: 1, rowsClaimed: 0 });
+  });
+
   it('cupboard row failures are reported, never thrown', async () => {
     const { deps } = fakes({ publishListing: async () => ({ ok: false, error: 'gh_auth_required' }) });
     const out = await publishCreatedHive({ ...BASE, visibility: 'public' }, deps);

@@ -219,6 +219,28 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
     await wiring.stop();
   });
 
+  it('boot Cupboard reconcile runs the full publish set for PUBLIC hives only (hardening P-003/D-003)', async () => {
+    const { reconcilePublicHiveListings } = await import('./hive-directory-boot');
+    const calls: string[] = [];
+    const n = await reconcilePublicHiveListings(
+      [
+        { hiveId: 'pub-a', visibility: 'public' },
+        { hiveId: 'inv-b', visibility: 'invite' },
+        { hiveId: 'priv-c', visibility: 'private' },
+        { hiveId: 'pub-d', visibility: 'public' },
+      ],
+      'ws-1',
+      async ({ hiveSlug, workspaceId }) => {
+        expect(workspaceId).toBe('ws-1');
+        calls.push(hiveSlug);
+        if (hiveSlug === 'pub-d') throw new Error('cupboard still down'); // best-effort
+        return {};
+      },
+    );
+    expect(calls).toEqual(['pub-a', 'pub-d']); // public only; invite/private untouched
+    expect(n).toBe(1); // the failing one doesn't count and doesn't throw
+  });
+
   it('joinInviteTopic (invitee side) joins an additional topic from a received secret', async () => {
     const f = fakeSwarm();
     const dir = new HiveDirectory(fakeDirDeps());
