@@ -302,6 +302,22 @@ const messagesRoute = defineTool({
       return Response.json({ error: 'agent_chats:chat tool not registered' }, { status: 500 });
     }
 
+    // EI-259: a chat turn is a real agent invocation — track it in the durable
+    // nursery (harness_shared.spawned_agents) like every other spawn path, so
+    // it shows in fleet:tree / intel:spawn_tree and counts a provider slot.
+    // Best-effort: tracking failure never blocks the chat (null ⇒ untracked).
+    const { beginChatSpawnTracking, resolveChatRunOutcome } =
+      await import('../../../fleet/chat-spawn-tracking');
+    const spawnTracking = await beginChatSpawnTracking({
+      chatId,
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: slug,
+      childRole: chat.role,
+      runId: assembled.runId,
+      featureId: chat.feature_id ?? null,
+      projectDir,
+    });
+
     return sseResponse({
       signal: req.signal,
       setup: async (sink) => {
@@ -312,6 +328,8 @@ const messagesRoute = defineTool({
         let lastErrorMessage: string | null = null;
         let lastErrorStderr: string | undefined;
         let toolError: { code: string; message: string } | null = null;
+        let sawDone = false;
+        let threwMessage: string | null = null;
 
         try {
           const dispatchCtx = {
@@ -319,7 +337,7 @@ const messagesRoute = defineTool({
             harnessSlug: slug,
             role: 'operator' as const,
             runId: assembled.runId,
-            spawnId: `agent_chats-${chatId}`,
+            spawnId: spawnTracking?.spawnId ?? `agent_chats-${chatId}`,
             log: () => { /* */ },
             progress: () => { /* */ },
             emit: () => { /* overridden by dispatcher */ },
@@ -348,6 +366,7 @@ const messagesRoute = defineTool({
                 lastErrorStderr = d.stderr;
               }
             } else if (ev.kind === 'done') {
+              sawDone = true;
               try {
                 const blob = ev.result?.content?.[0];
                 if (blob && 'text' in blob && typeof blob.text === 'string') {
@@ -366,8 +385,24 @@ const messagesRoute = defineTool({
               toolError = ev.error;
             }
           }
+        } catch (e) {
+          threwMessage = e instanceof Error ? e.message : String(e);
+          throw e;
         } finally {
           activeChats.delete(chatId);
+          if (spawnTracking) {
+            const outcome = resolveChatRunOutcome({
+              sawDone,
+              toolErrorMessage: toolError?.message ?? null,
+              lastErrorMessage,
+              threwMessage,
+              aborted: req.signal.aborted,
+            });
+            await spawnTracking.finish({
+              ...outcome,
+              outputTail: assistantText ? assistantText.slice(-400) : null,
+            });
+          }
         }
 
         if (toolError) {

@@ -267,6 +267,13 @@ describe('runScoutTick — double-fire / overlapping ticks (scout-loop-test-plan
         return { provenance: [] };
       },
       persistRouted: async () => {},
+      // Mirrors autoloop.claimFire's CAS: win only while the shared slot still
+      // matches what this tick read; the winner stamps it (last_fired_at=now()).
+      claimFire: async (expected) => {
+        if (shared.lastRunAtMs !== expected) return false;
+        shared.lastRunAtMs = NOW;
+        return true;
+      },
       recordFire: async (o) => {
         calls.fire.push(o);
         shared.lastRunAtMs = NOW; // autoloop: last_fired_at = now()
@@ -289,27 +296,34 @@ describe('runScoutTick — double-fire / overlapping ticks (scout-loop-test-plan
     expect(calls.cycles).toBe(1); // exactly one cycle across both ticks
   });
 
-  it('FINDING: two OVERLAPPING ticks BOTH run a full cycle — runScoutTick has NO concurrency guard', async () => {
-    // ── This test DOCUMENTS A DEFECT; it does not bless the behavior. ─────────
-    // runScoutTick is check-then-act with no claim step: each tick snapshots
-    // cadence state (readCadenceState) before either records its 'attempt', so
-    // both see the stale lastRunAtMs and both pass the min-interval floor.
-    // Nothing downstream catches it either:
-    //   - tick-ledger.ts is a best-effort observability INSERT, not a guard;
-    //   - the autoloop fire-gate (evaluateFireGate) only gates on consecutive
-    //     ERRORS — for a healthy role it always allows, and its check is not
-    //     atomic with recordFire('attempt') anyway.
-    // The interleaving below is deterministic (both readCadenceState snapshots
-    // are taken synchronously before either tick's first await resumes), so this
-    // is the guaranteed behavior of overlapping invocations, not a flaky race.
-    // If a single-flight/claim guard is ever added, this assertion flips to
-    // cycles === 1 — update the double-fire verdict in the P-005 plan with it.
+  it('EI-304 FIXED: two OVERLAPPING ticks collapse to ONE cycle via the single-flight claim', async () => {
+    // The historical defect (pinned here until 2026-06-11): runScoutTick was
+    // check-then-act — both overlapping ticks snapshotted stale lastRunAtMs,
+    // both passed the min-interval floor, both ran a full budgeted cycle.
+    // The fix is the claimFire CAS step between the gates and the cycle:
+    // exactly one tick wins the claim; the loser exits as a gated no-op with
+    // reason 'claim-lost'. (Production wiring: autoloop.claimFire — a CAS
+    // UPDATE on autoloop_state.last_fired_at, cross-process correct.)
     const { deps, calls } = sharedClockDeps();
     const [a, b] = await Promise.all([runScoutTick(deps), runScoutTick(deps)]);
-    expect(a.fired).toBe(true);
-    expect(b.fired).toBe(true); // ← the double-run
-    expect(calls.cycles).toBe(2); // two full cycle executions from overlapping ticks
-    expect(calls.fire.filter((o) => o === 'attempt')).toHaveLength(2);
-    expect(calls.ticks.filter((t) => t.status === 'ran')).toHaveLength(2);
+    const winner = a.fired ? a : b;
+    const loser = a.fired ? b : a;
+    expect(winner.fired).toBe(true);
+    expect(loser.fired).toBe(false);
+    expect(loser.reason).toBe('claim-lost');
+    expect(calls.cycles).toBe(1); // exactly one cycle across overlapping ticks
+    expect(calls.fire.filter((o) => o === 'attempt')).toHaveLength(1);
+    expect(calls.ticks.filter((t) => t.status === 'ran')).toHaveLength(1);
+    expect(calls.ticks.filter((t) => t.status === 'gated' && t.gate === 'claim-lost')).toHaveLength(1);
+  });
+
+  it('production wiring includes the single-flight claim (buildScoutTickDeps)', async () => {
+    const deps = buildScoutTickDeps({
+      harnessSlug: 'papercup',
+      runCycle: async () => ({ provenance: [] }),
+      readIdleRatio: async () => 1,
+      readFrictionSignals: async () => 0,
+    });
+    expect(typeof deps.claimFire).toBe('function');
   });
 });

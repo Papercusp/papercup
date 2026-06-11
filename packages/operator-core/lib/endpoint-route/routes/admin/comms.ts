@@ -11,7 +11,6 @@
  *     session (scoper/architect/worker/… transcripts, with tokens + cost). The
  *     `agent_chats:*` MCP tools are PER-HARNESS (require a slug); this is the
  *     cross-harness roll-up the Conversations tab needs.
- *   - operator — `operator_conversations`: the human↔operator chat sessions.
  *   - messages — `messages_consolidated`: work-item-scoped agent↔agent messages
  *     (messages:send / messages:inbox), distinct from coord:send firehose msgs.
  *
@@ -96,17 +95,6 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
              LIMIT 1000`,
       ]);
       return Response.json({ thread: thread[0] ?? null, posts });
-    }
-
-    // ── operator conversations — the human↔operator chats ──
-    if (kind === 'operator' && verb === 'list') {
-      const rows = await sql`
-        SELECT id, harness_slug, title, status, started_at, ended_at,
-               summary_text, has_audio
-          FROM harness_shared.operator_conversations
-         ORDER BY started_at DESC NULLS LAST
-         LIMIT ${limit}`;
-      return Response.json({ items: rows });
     }
 
     // ── work-item-scoped agent messages (messages:send / messages:inbox) ──

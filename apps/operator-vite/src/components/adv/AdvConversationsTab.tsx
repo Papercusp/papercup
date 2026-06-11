@@ -23,9 +23,6 @@
  *    (messages:send / messages:inbox) from `messages_consolidated` — from → to,
  *    kind, subject/body, status, click-to-expand.
  *
- *  - **Operator** (`conv=operator`): the human↔operator chat sessions from
- *    `operator_conversations` — title/status/summary, click-to-expand.
- *
  *  - **Activity log** (`conv=feed`): raw coordination events for debugging,
  *    newest-first, with day separators, grouped filters, URL-backed advanced
  *    kind filters, `from → to` routing, a plan chip, and click-to-expand detail.
@@ -33,9 +30,10 @@
  *    the same observer read the high-tier `coord:feed` tool exposes); "load
  *    older" paginates by cursor.
  *
- * The Threads/Feed views read the admin-coordination dispatch; the three new views
- * read the global communication-surface dispatch (`/api/admin/comms/:kind/:verb`,
- * see routes/admin/comms.ts) since those tables had no global view before.
+ * The Threads/Feed views read the admin-coordination dispatch; the other three
+ * (Deliberations / Agent chats / Messages) read the global communication-surface
+ * dispatch (`/api/admin/comms/:kind/:verb`, see routes/admin/comms.ts) since those
+ * tables had no global view before.
  *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only mid-edit
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
@@ -58,8 +56,8 @@ async function coord<T = Record<string, unknown>>(verb: string, body: Record<str
   return (await res.json()) as T;
 }
 
-// The global communication-surface reads (agent chats / operator chats / work-item
-// messages) the coordination dispatch doesn't cover — see routes/admin/comms.ts.
+// The global communication-surface reads (agent chats / deliberation threads /
+// work-item messages) the coordination dispatch doesn't cover — see routes/admin/comms.ts.
 async function comms<T = Record<string, unknown>>(kind: string, verb: string, body: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch(`/api/admin/comms/${kind}/${verb}`, {
     method: 'POST',
@@ -71,7 +69,7 @@ async function comms<T = Record<string, unknown>>(kind: string, verb: string, bo
   return (await res.json()) as T;
 }
 
-// agent-chat / operator timestamps are bigint epoch-ms; coord/message ones are ISO
+// agent-chat timestamps are bigint epoch-ms; coord/message ones are ISO
 // strings. Normalise either to a display string.
 function fmtTs(v: string | number | null | undefined): string {
   if (v == null) return '';
@@ -120,7 +118,7 @@ function errText(e: unknown): string {
 }
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'operator', 'feed'] as const;
+const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 const VIEW_DEFS: ReadonlyArray<{
@@ -133,7 +131,6 @@ const VIEW_DEFS: ReadonlyArray<{
   { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — proposals and votes.', Icon: MessagesSquare },
   { id: 'agentchats', label: 'Agent chats', desc: 'What each pipeline agent said, with token + cost detail.', Icon: Bot },
   { id: 'messages', label: 'Messages', desc: 'Work-item-scoped agent → agent messages.', Icon: Mail },
-  { id: 'operator', label: 'Operator', desc: 'Your chat sessions with the operator.', Icon: UserRound },
   { id: 'feed', label: 'Activity log', desc: 'Raw coordination events, newest first.', Icon: Radio },
 ];
 
@@ -177,8 +174,6 @@ export default function AdvConversationsTab() {
         <AgentChatsView />
       ) : view === 'messages' ? (
         <MessagesView />
-      ) : view === 'operator' ? (
-        <OperatorView />
       ) : (
         <ThreadsView />
       )}
@@ -1479,94 +1474,6 @@ function MessagesView() {
               </div>
             );
           })
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Operator — the human↔operator chat sessions ────────────────────────
-
-interface OpConvRow {
-  id: string;
-  harness_slug: string | null;
-  title: string | null;
-  status: string | null;
-  started_at: number;
-  ended_at: number | null;
-  summary_text: string | null;
-  has_audio: boolean;
-}
-
-function OperatorView() {
-  const [list, setList] = useState<OpConvRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useQueryState('opc', parseAsString);
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await comms<{ items?: OpConvRow[] }>('operator', 'list', { limit: 500 });
-      setList(r.items ?? []);
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  return (
-    <div className="pc-advfeed">
-      <div className="pc-advfeed__filters">
-        <div className="pc-advfeed__filterhead">
-          <div>
-            <span><UserRound size={12} aria-hidden /> Operator chats</span>
-            <p>Your conversations with the operator.</p>
-          </div>
-          <div className="pc-advfeed__filtermeta">
-            <strong>{loading ? 'loading…' : `${list.length} chats`}</strong>
-            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload operator chats" disabled={loading} onClick={() => void reload()}>
-              <RefreshCw size={11} aria-hidden />
-            </button>
-          </div>
-        </div>
-      </div>
-      <div className="pc-advfeed__stream">
-        {loading && list.length === 0 ? (
-          <LoadingRows />
-        ) : error && list.length === 0 ? (
-          <LoadError message={error} onRetry={() => void reload()} />
-        ) : list.length === 0 ? (
-          <div className="pc-coord__empty pc-advconv__empty pc-advconv__empty--card">
-            <strong>No operator chats</strong>
-            <span>No human↔operator conversations recorded.</span>
-          </div>
-        ) : (
-          list.map((c) => (
-            <div key={c.id} className={`pc-advfeed__item${open === c.id ? ' is-open' : ''}`}>
-              <div className="pc-advfeed__row">
-                <span className="pc-advfeed__time" title={String(c.started_at)}>{fmtTs(c.started_at)}</span>
-                <span className="pc-advfeed__badge">{c.status ?? 'chat'}</span>
-                <button type="button" className="pc-advfeed__summary" onClick={() => void setOpen(open === c.id ? null : c.id)} aria-expanded={open === c.id}>
-                  {c.title || c.summary_text?.slice(0, 90) || <em className="pc-advfeed__nosum">(untitled)</em>}
-                </button>
-                {c.has_audio && <span className="pc-advconv__statepill">audio</span>}
-                <span className="pc-advfeed__rel">{fmtRel(c.started_at)}</span>
-              </div>
-              {open === c.id && c.summary_text && (
-                <div className="pc-advfeed__detail">
-                  <div className="pc-advfeed__bodycard">
-                    <strong>Summary</strong>
-                    <p className="pc-advfeed__body">{c.summary_text}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))
         )}
       </div>
     </div>

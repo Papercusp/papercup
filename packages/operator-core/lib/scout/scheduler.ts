@@ -81,6 +81,12 @@ export interface ScoutTickDeps {
   fireGate?: () => Promise<ScoutFireGate>;
   /** Optional fire-state recorder (autoloop recordFire). */
   recordFire?: (outcome: 'attempt' | 'ok' | 'error') => Promise<void>;
+  /**
+   * Optional single-flight claim (EI-304): atomically claim the fire slot
+   * given the lastRunAtMs this tick READ. Returns false when a concurrent
+   * tick (any process) already claimed since the read — the loser skips.
+   */
+  claimFire?: (expectedLastFiredAtMs: number | null) => Promise<boolean>;
   /** Optional: recompute + persist lens outcomes after the cycle (P-013). */
   refreshOutcomes?: () => Promise<void>;
   /**
@@ -99,8 +105,8 @@ export interface ScoutTickOptions {
 
 export interface ScoutTickResult {
   fired: boolean;
-  /** Cadence reason when fired/withheld, or 'circuit'/'cycle-error'. */
-  reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'cycle-error';
+  /** Cadence reason when fired/withheld, or 'circuit'/'claim-lost'/'cycle-error'. */
+  reason: ScoutCadenceVerdict['reason'] | 'circuit' | 'claim-lost' | 'cycle-error';
   cycleId?: string;
   routedCount?: number;
   retryAfterSec?: number;
@@ -150,6 +156,18 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         },
       });
       return { fired: false, reason: 'circuit', retryAfterSec: gate.retryAfterSec };
+    }
+  }
+
+  // EI-304 single-flight: everything above is check-then-act — two overlapping
+  // ticks both snapshot stale cadence state and both pass the floor. The claim
+  // is the one atomic step that collapses them to a single cycle; the loser
+  // exits as a gated no-op.
+  if (deps.claimFire) {
+    const claimed = await deps.claimFire(state.lastRunAtMs ?? null);
+    if (!claimed) {
+      await note({ status: 'gated', gate: 'claim-lost' });
+      return { fired: false, reason: 'claim-lost' };
     }
   }
 
@@ -247,6 +265,10 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     async recordFire(outcome) {
       const { recordFire } = await import('../autoloop');
       await recordFire(harnessSlug, SCOUT_CYCLE_ROLE, SCOUT_CYCLE_ROLE, outcome);
+    },
+    async claimFire(expectedLastFiredAtMs) {
+      const { claimFire } = await import('../autoloop');
+      return claimFire(harnessSlug, SCOUT_CYCLE_ROLE, expectedLastFiredAtMs, 'scout-claim');
     },
     async refreshOutcomes() {
       await refreshScoutOutcomes({ harnessSlug, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });

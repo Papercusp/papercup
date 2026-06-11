@@ -177,7 +177,6 @@ describe('AdvConversationsTab — simplified design', () => {
       deliberations: 'Group decisions — proposals and votes.',
       agentchats: 'What each pipeline agent said, with token + cost detail.',
       messages: 'Work-item-scoped agent → agent messages.',
-      operator: 'Your chat sessions with the operator.',
       feed: 'Raw coordination events, newest first.',
     };
     for (const [view, desc] of Object.entries(FINAL_DESCS)) {
@@ -188,7 +187,7 @@ describe('AdvConversationsTab — simplified design', () => {
     }
   });
 
-  // D-007/D-010 (OQ-4): when the 6-tab row outgrows the header width the
+  // D-007/D-010 (OQ-4): when the tab row outgrows the header width the
   // tablist scrolls horizontally — it must never wrap to a second row.
   it('keeps the view tablist single-row with horizontal overflow scroll', () => {
     render(<AdvConversationsTab />);
@@ -316,7 +315,6 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByRole('tab', { name: /Deliberations/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Agent chats/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Messages/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Operator/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Activity log/i })).toBeTruthy();
   });
 
@@ -444,28 +442,6 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(await screen.findByText('pick up the UI work')).toBeTruthy();
     expect(screen.getByText('architect')).toBeTruthy();
     expect(screen.getByText('→ worker')).toBeTruthy();
-  });
-
-  it('Operator view lists human↔operator chats', async () => {
-    nuqsState.conv = 'operator';
-    stubComms({
-      '/comms/operator/list': {
-        items: [
-          {
-            id: 'opc-1',
-            harness_slug: null,
-            title: 'review the conversations tab',
-            status: 'ended',
-            started_at: Date.now() - 7_200_000,
-            ended_at: Date.now() - 7_000_000,
-            summary_text: 'discussed surfacing every comm type',
-            has_audio: false,
-          },
-        ],
-      },
-    });
-    render(<AdvConversationsTab />);
-    expect(await screen.findByText('review the conversations tab')).toBeTruthy();
   });
 
   it('each new view degrades to an empty state with no data', async () => {

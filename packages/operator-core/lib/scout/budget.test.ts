@@ -70,11 +70,18 @@ describe('Scout budget (P-008)', () => {
   });
 
   describe('boundary + config edges (scout-loop-test-plan P-005)', () => {
-    it('a zero/negative maxCostUsd is NOT honored — it resolves to the default cap', () => {
-      // "Zero budget" cannot be configured: the only zero-remaining state is
-      // spent ≥ cap. A 0 (or negative) cap silently becomes the default.
-      expect(resolveScoutBudget({ maxCostUsd: 0 }).maxCostUsd).toBe(DEFAULT_SCOUT_BUDGET.maxCostUsd);
-      expect(checkScoutBudget(0, { maxCostUsd: 0 }).proceed).toBe(true); // default cap applies
+    it('a ZERO maxCostUsd is honored as a no-spend cap (EI-305); negative/NaN still fall back', () => {
+      // Fixed contract: 0 is a VALID cap meaning "no LLM spend this cycle" —
+      // a routine payload disabling spend must not silently enable the $1
+      // default. Negative and NaN remain invalid → default.
+      expect(resolveScoutBudget({ maxCostUsd: 0 }).maxCostUsd).toBe(0);
+      const v = checkScoutBudget(0, { maxCostUsd: 0 });
+      expect(v.proceed).toBe(false);
+      expect(v.reason).toBe('cost-exhausted');
+      expect(v.remainingUsd).toBe(0);
+      expect(v.fractionUsed).toBe(1);
+      expect(resolveScoutBudget({ maxCostUsd: -1 }).maxCostUsd).toBe(DEFAULT_SCOUT_BUDGET.maxCostUsd);
+      expect(resolveScoutBudget({ maxCostUsd: Number.NaN }).maxCostUsd).toBe(DEFAULT_SCOUT_BUDGET.maxCostUsd);
     });
 
     it('zero remaining EXACTLY at the cap: proceed false, remaining 0, fraction 1', () => {

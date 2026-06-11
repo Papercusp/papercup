@@ -15,7 +15,7 @@
  */
 
 export interface ScoutBudget {
-  /** Hard cap on one cycle's LLM spend (USD). Default 1.0. */
+  /** Hard cap on one cycle's LLM spend (USD). 0 = no spend (EI-305). Default 1.0. */
   maxCostUsd?: number;
   /** Cap on ideators per cycle (one call per lens slot). Default 6. */
   maxIdeators?: number;
@@ -43,7 +43,8 @@ export interface ScoutBudgetVerdict {
 /** Merge a partial budget with the defaults, clamping every field non-negative. */
 export function resolveScoutBudget(b?: ScoutBudget): Required<ScoutBudget> {
   return {
-    maxCostUsd: pos(b?.maxCostUsd, DEFAULT_SCOUT_BUDGET.maxCostUsd),
+    // 0 is a VALID cap — "no LLM spend this cycle" (EI-305). Negative/NaN fall back.
+    maxCostUsd: nonneg(b?.maxCostUsd, DEFAULT_SCOUT_BUDGET.maxCostUsd),
     maxIdeators: Math.floor(pos(b?.maxIdeators, DEFAULT_SCOUT_BUDGET.maxIdeators)),
     maxCriticsPerIdea: Math.floor(pos(b?.maxCriticsPerIdea, DEFAULT_SCOUT_BUDGET.maxCriticsPerIdea)),
   };
@@ -107,4 +108,8 @@ export function fitsCycleBudget(
 
 function pos(v: number | undefined, dflt: number): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : dflt;
+}
+
+function nonneg(v: number | undefined, dflt: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : dflt;
 }

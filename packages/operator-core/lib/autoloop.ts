@@ -160,6 +160,68 @@ export async function recordFire(
     });
 }
 
+/**
+ * Atomically claim a fire slot for (active workspace, slug, role) — the
+ * single-flight guard for schedulers whose check-then-act window can overlap
+ * (EI-304: two concurrent Scout ticks both snapshot stale cadence state, both
+ * pass the min-interval floor, both spend a full budgeted cycle).
+ *
+ * CAS on `last_fired_at`: the claim succeeds only while the row's value still
+ * matches what the caller read (compared at ms precision — JS readers get a
+ * Date and lose PG's µs), stamping `now()` so every concurrent loser's
+ * expected value is stale by the time its UPDATE runs. A never-fired slot
+ * (expected null) is claimed by insert, falling back to a NULL-guarded UPDATE
+ * when the row exists unstamped. Each path is a single statement, so the
+ * guard holds across processes, not just within one event loop.
+ */
+export async function claimFire(
+  slug: string,
+  role: string,
+  expectedLastFiredAtMs: number | null,
+  status = 'claimed',
+): Promise<boolean> {
+  const { db } = getOrgPg();
+  const ws = activeWorkspaceId();
+  if (expectedLastFiredAtMs == null) {
+    const ins = await db
+      .insert(at)
+      .values({
+        harnessSlug: slug,
+        role,
+        lastFiredAt: dsql`now()` as any,
+        lastStatus: status,
+        consecutiveErrors: 0,
+        workspaceId: ws,
+      })
+      .onConflictDoNothing({ target: [at.workspaceId, at.harnessSlug, at.role] });
+    if (Number((ins as unknown as { count?: number }).count ?? 0) > 0) return true;
+    const upd = await db
+      .update(at)
+      .set({ lastFiredAt: dsql`now()`, lastStatus: status })
+      .where(
+        and(
+          eq(at.workspaceId, ws),
+          eq(at.harnessSlug, slug),
+          eq(at.role, role),
+          dsql`${at.lastFiredAt} IS NULL`,
+        ),
+      );
+    return Number((upd as unknown as { count?: number }).count ?? 0) > 0;
+  }
+  const upd = await db
+    .update(at)
+    .set({ lastFiredAt: dsql`now()`, lastStatus: status })
+    .where(
+      and(
+        eq(at.workspaceId, ws),
+        eq(at.harnessSlug, slug),
+        eq(at.role, role),
+        dsql`date_trunc('milliseconds', ${at.lastFiredAt}) = to_timestamp(${expectedLastFiredAtMs}::double precision / 1000.0)`,
+      ),
+    );
+  return Number((upd as unknown as { count?: number }).count ?? 0) > 0;
+}
+
 /** Close the circuit by hand: zero the error counters for a harness (all roles,
  *  or one). The `autoloop:control { op:'reset-errors' }` target. */
 export async function resetFireErrors(slug: string, role?: string): Promise<number> {

@@ -255,6 +255,13 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
   //    to the cycle (the digest reader owns its own budget upstream).
   const digest = await deps.readCorpus();
 
+  // EI-305: a zero cap means NO spend — halt before the first costed step.
+  // (The between-steps gate below uses strict `spent > cap`, which a
+  // 0-spent/0-cap start would pass.)
+  if (deps.limits?.maxCostUsd != null && deps.limits.maxCostUsd <= 0) {
+    return finish('budget-exhausted', { digest });
+  }
+
   // 2. Divergent generation (P-004).
   currentStep = 'ideate';
   const ideas = await deps.ideate(digest, {
