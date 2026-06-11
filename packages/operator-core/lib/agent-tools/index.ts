@@ -77,6 +77,8 @@ import './hive/pause';
 import './hive/list';
 import './hive/get';
 import './hive/create';
+// hive-from-github-url-2026-06-11 P-006 — create a Hive FROM a GitHub URL:
+import './hive/create_from_repo';
 import './hive/dissolve';
 import './hive/update';
 // cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:

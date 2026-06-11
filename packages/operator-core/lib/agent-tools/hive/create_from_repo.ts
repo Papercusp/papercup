@@ -1,0 +1,84 @@
+/**
+ * hive:create_from_repo — create a Hive FROM a GitHub URL
+ * (hive-from-github-url-2026-06-11 P-006; the headline Entry-2-at-Hive-level
+ * flow). Paste a URL → repo→Hive lookup (join offer when one exists) → clone →
+ * test-verified blueprint detection → Hive home + member harness → visibility-
+ * gated auto-publish (D-002; private = zero external writes, D-003).
+ *
+ * ROOT-ONLY like hive:create — hives are peers, never nested.
+ * The composition lives in `_create_from_repo.ts` (seam-injected, unit-tested);
+ * this is the guard + arg surface. The HTTP face for the CreateHarnessPicker is
+ * POST /harness/hives/from-repo (routes/harness/projects.ts).
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { COORD_ROLES } from '../coordination/roles';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { createHiveFromRepo } from './_create_from_repo';
+
+const text = (payload: Record<string, unknown>) => ({
+  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+});
+
+export default defineTool({
+  name: 'hive:create_from_repo',
+  profile: 'engineer',
+  description:
+    'Create a Hive FROM a GitHub URL: looks up the repo→Hive binding first (an existing Hive returns a JOIN OFFER with zero side effects), then clones the repo, detects + test-verifies its blueprint (generate-from-repo spine), stands up a Hive home (hive:create) with the clone as the first member harness (harness:create { hive }), stamps the upstream coords (fork-PR context), and auto-publishes per visibility — public (default) announces to the P2P directory + registers Cupboard binding rows; invite announces to the secret topic only; private performs zero external writes. Returns {ok, existing?} (join offer) or {ok, created:{hiveSlug, memberSlug, memberPath}, publish}.',
+  guidance: {
+    when: 'Onboarding a GitHub repository as a NEW Hive in one call — the paste-a-URL creation flow. Also the backend the CreateHarnessPicker GitHub-URL entry drives.',
+    notWhen:
+      'The repo may already have a Hive and you only want the answer — lookup happens inside, but a read-only check is the picker flow. An existing LOCAL repo — harness:generate-from-repo. A repo-less hive — hive:create. Adding a repo into an EXISTING hive — harness:create { hive } after cloning (the into-hive picker mode).',
+    chaining:
+      'hive:create_from_repo { githubUrl } → on {existing} drive the join (POST /api/harness/join-link per member link) → on {created} hive:get / discovery:set_hive to edit the listing.',
+  },
+  capability: 'harness:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    githubUrl: z.string().min(1).max(500).describe('The GitHub repo URL (https or git@).'),
+    slug: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
+      .optional()
+      .describe('Base slug (default: repo name). Member = <base>, Hive home = <base>-hive; auto-suffixed on collision.'),
+    visibility: z
+      .enum(['public', 'invite', 'private'])
+      .default('public')
+      .describe('D-002 auto-publish: public (default) = directory + Cupboard; invite = secret-topic announce only; private = zero external writes (publish later via discovery:set_hive).'),
+    shallow: z.boolean().optional().describe('Shallow clone (--depth 1) for large repos.'),
+    runTests: z.boolean().default(true).describe('Run the detected test command once to verify it (D-023).'),
+    testTimeoutMs: z.number().int().positive().optional().describe('Budget for the test-verify run (default 120s).'),
+    parentDir: z.string().min(1).optional().describe('Parent dir for the HIVE HOME folder (default ~/.papercusp/hives).'),
+    workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
+  }),
+  async handler(args, ctx) {
+    // Root-only enforcement (mirrors hive:create D-002): hives are peers, never nested.
+    const actor = resolveAgentIdentity(ctx);
+    if (actor.source === 'fleet-spawn') {
+      return text({
+        ok: false,
+        error: 'hive_create_root_only',
+        message:
+          'hive:create_from_repo cannot be called from a bee (a spawned/parented agent). Hives are peers, never nested.',
+      });
+    }
+
+    const workspaceId =
+      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const res = await createHiveFromRepo({
+      githubUrl: args.githubUrl,
+      ...(args.slug ? { slug: args.slug } : {}),
+      visibility: args.visibility,
+      ...(args.shallow !== undefined ? { shallow: args.shallow } : {}),
+      runTests: args.runTests,
+      ...(args.testTimeoutMs ? { testTimeoutMs: args.testTimeoutMs } : {}),
+      ...(args.parentDir ? { parentDir: args.parentDir } : {}),
+      workspaceId,
+    });
+    return text(res as unknown as Record<string, unknown>);
+  },
+});
