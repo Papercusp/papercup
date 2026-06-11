@@ -20,7 +20,6 @@ import { toast } from 'sonner';
 
 const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
-  [FLAGS.ORACLE]: 'Oracle (tutorial)',
   [FLAGS.HARNESS_PHASES]: 'Harness phases',
   [FLAGS.DESIGN]: 'Design tab',
   [FLAGS.TESTING]: 'Testing surfaces',
@@ -33,10 +32,10 @@ const FLAG_LABELS: Record<FlagKey, string> = {
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
   [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
-  [FLAGS.ORACLE]: 'Always-on tutorial dock + Oracle endpoint. Cut for V1 ship.',
   [FLAGS.HARNESS_PHASES]: 'Multi-phase harness (staging / testing / production). Cut for V1 ship.',
   [FLAGS.DESIGN]: 'In-harness design tab + /design route. Cut for V1 ship.',
-  [FLAGS.TESTING]: 'Testing-only surfaces: pi tab, + add plugin button. Cut for V1 ship.',
+  [FLAGS.TESTING]:
+    'Testing-only surfaces: pi tab, + add plugin button, Oracle assistant (tutorial dock + menubar button + /api/oracle). Cut for V1 ship.',
   [FLAGS.INBOX_DURABLE_ESCALATIONS]:
     'Mirror chat decision cards to durable coord escalations (answer live or from the inbox).',
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]:

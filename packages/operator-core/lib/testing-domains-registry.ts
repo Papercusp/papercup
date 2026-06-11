@@ -1110,6 +1110,13 @@ defineTestDomain({
       globs: ['packages/operator-core/lib/work-item-claim-authority*.test.ts'],
     },
     {
+      id: 'coordination',
+      label: 'Cross-peer coordination (presence→authority→claim)',
+      description:
+        'Coordination across the shared Hive end-to-end: two REAL peers federate presence over the wire → the federated roster drives a CONSISTENT (no-split-brain) Hive authority election → both Swarms contend for one work-item and the federated-presence-elected authority grants EXACTLY ONE (cross-peer exactly-once). Closes the gap the injected-roster authority/claim suites leave open.',
+      globs: ['packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination.integration.test.ts'],
+    },
+    {
       id: 'loop-composition',
       label: 'Multi-swarm loop composition (hermetic 2-swarm rig)',
       description:

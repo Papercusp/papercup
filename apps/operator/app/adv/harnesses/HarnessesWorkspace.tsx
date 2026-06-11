@@ -13,8 +13,9 @@ import HiveHeaderStrip from './HiveHeaderStrip';
 import HiveWorkspaceCards from './HiveWorkspaceCards';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { Tooltip } from '../../harness/Tooltip';
+import { useSyncQuery } from '@papercusp/sync';
 import { hiveMembers, resolveFocusedMember, isHarnessParamStale } from './harness-axis';
-import { groupByHive, type HiveGroup } from './harness-hive-groups';
+import { groupByHive } from './harness-hive-groups';
 import './adv-dock.css';
 
 export interface AdvProjectEntry {
@@ -60,30 +61,25 @@ export default function HarnessesWorkspace() {
     'scope',
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
-  const [projects, setProjects] = useState<AdvProjectEntry[]>([]);
-  // P-021: the registry now groups hive→members SERVER-side; prefer that field so
-  // the all-mode cards stop re-inferring the grouping client-side. Falls back to
-  // the shared `groupByHive` (same module) for an older payload without `hives`.
-  const [serverHives, setServerHives] = useState<HiveGroup<AdvProjectEntry>[] | null>(null);
-  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const refreshProjects = useCallback(async () => {
-    try {
-      const r = await fetch('/api/harness/projects/lite');
-      if (!r.ok) throw new Error(`projects/lite ${r.status}`);
-      const j = (await r.json()) as { projects: AdvProjectEntry[]; hives?: HiveGroup<AdvProjectEntry>[] };
-      setProjects(j.projects);
-      setServerHives(j.hives ?? null);
-      setProjectsError(null);
-    } catch (e) {
-      setProjectsError((e as Error).message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshProjects();
-  }, [refreshProjects]);
+  // EI-206: the registry list rides @papercusp/sync (queryName
+  // harnessProjects.lite, invalidated from the registry write seam in
+  // harness-registry.ts), so a harness created/deleted from ANY window or
+  // agent process appears here without a remount. Rows are the lite
+  // `projects` array; the hive grouping is recomputed via the shared
+  // groupByHive (the same module the server grouping used, P-021).
+  const projectsQuery = useSyncQuery<AdvProjectEntry>({
+    queryName: 'harnessProjects.lite',
+    args: {},
+  });
+  const projects = projectsQuery.data ?? [];
+  const projectsError = projectsQuery.error ? projectsQuery.error.message : null;
+  const refreshProjects = useCallback(
+    () => projectsQuery.invalidate(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectsQuery.invalidate],
+  );
 
   const allMode = scopeMode === 'all';
 
@@ -108,8 +104,7 @@ export default function HarnessesWorkspace() {
   );
 
   // All-mode (P-003): every hive in the workspace, grouped by root subtree.
-  // Prefer the SERVER grouping (P-021); fall back to the shared client compute.
-  const groups = useMemo(() => serverHives ?? groupByHive(projects), [serverHives, projects]);
+  const groups = useMemo(() => groupByHive(projects), [projects]);
 
   // Drop a stale `?harness=` when the shell selector switches `?slug=` to a
   // different hive (the value no longer names a member). Guarded inside

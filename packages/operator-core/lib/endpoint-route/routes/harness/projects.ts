@@ -24,7 +24,6 @@ import {
   bustProjectsLiteCache,
 } from '../../../harness/projects-lite';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../../workspace-registry';
 
 // SSR self-fetch site for /harness/<slug>/page.tsx — every page render
 // fans through here. The payload build + per-workspace cache live in

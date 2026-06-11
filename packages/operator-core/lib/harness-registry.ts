@@ -166,6 +166,30 @@ export async function saveHarnessRegistry(
   if (next.length !== prevCount) {
     await auditRegistryWrite(ws, prevCount, next.length);
   }
+  notifyRegistryChanged();
+}
+
+/**
+ * Push invalidation + per-process lite-cache bust after any registry
+ * mutation, so open harness lists live-update without a remount (EI-206).
+ * The notify rides pg_notify, so writes from OTHER operator processes
+ * (e.g. an MCP-side harness:create) reach this process's SSE subscribers
+ * too. Fire-and-forget — a notify failure never blocks the write.
+ */
+function notifyRegistryChanged(): void {
+  void (async () => {
+    try {
+      const [{ bustProjectsLiteCache }, { notifySyncInvalidate }] = await Promise.all([
+        import('./harness/projects-lite'),
+        import('./sync-sse'),
+      ]);
+      bustProjectsLiteCache();
+      await notifySyncInvalidate('harnessProjects.lite', {});
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[harness-registry] sync invalidate failed:', err);
+    }
+  })();
 }
 
 /**
@@ -217,5 +241,6 @@ export async function mutateHarnessRegistry(
   if (nextCount !== prevCount) {
     await auditRegistryWrite(ws, prevCount, nextCount);
   }
+  notifyRegistryChanged();
   return next;
 }

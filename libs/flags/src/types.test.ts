@@ -46,7 +46,6 @@ describe('flag registry invariants', () => {
     // cut-for-V1 surfaces are pinned off here.
     const cutForV1: FlagKey[] = [
       FLAGS.CLOUDFLARE_PUBLISH,
-      FLAGS.ORACLE,
       FLAGS.HARNESS_PHASES,
       FLAGS.DESIGN,
       FLAGS.TESTING,
@@ -66,26 +65,26 @@ describe('resolveWithDefaults', () => {
   });
 
   it('applies supplied boolean overrides over the defaults', () => {
-    const out = resolveWithDefaults({ [FLAGS.ORACLE]: true });
-    expect(out[FLAGS.ORACLE]).toBe(true);
+    const out = resolveWithDefaults({ [FLAGS.TESTING]: true });
+    expect(out[FLAGS.TESTING]).toBe(true);
     expect(out[FLAGS.DESIGN]).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]);
   });
 
   it('honours an explicit false override (not treated as "unset")', () => {
     // An explicit `false` must be applied (the guard keys off `typeof === boolean`,
     // not truthiness) — distinct from an absent key, which keeps the default.
-    const out = resolveWithDefaults({ [FLAGS.ORACLE]: false });
-    expect(out[FLAGS.ORACLE]).toBe(false);
+    const out = resolveWithDefaults({ [FLAGS.TESTING]: false });
+    expect(out[FLAGS.TESTING]).toBe(false);
   });
 
   it('ignores non-boolean values (undefined / null / string) and keeps the default', () => {
     const partial = {
-      [FLAGS.ORACLE]: undefined,
+      [FLAGS.CLOUDFLARE_PUBLISH]: undefined,
       [FLAGS.DESIGN]: null as unknown as boolean,
       [FLAGS.TESTING]: 'yes' as unknown as boolean,
     };
     const out = resolveWithDefaults(partial);
-    expect(out[FLAGS.ORACLE]).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]);
+    expect(out[FLAGS.CLOUDFLARE_PUBLISH]).toBe(FLAG_DEFAULTS[FLAGS.CLOUDFLARE_PUBLISH]);
     expect(out[FLAGS.DESIGN]).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]);
     expect(out[FLAGS.TESTING]).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
   });
@@ -100,12 +99,12 @@ describe('resolveWithDefaults', () => {
 
   it('does not mutate FLAG_DEFAULTS', () => {
     const before = { ...FLAG_DEFAULTS };
-    resolveWithDefaults({ [FLAGS.ORACLE]: true, [FLAGS.DESIGN]: false });
+    resolveWithDefaults({ [FLAGS.TESTING]: true, [FLAGS.DESIGN]: false });
     expect(FLAG_DEFAULTS).toEqual(before);
   });
 
   it('always resolves to the full key set, whatever the partial', () => {
-    const out = resolveWithDefaults({ [FLAGS.ORACLE]: true });
+    const out = resolveWithDefaults({ [FLAGS.TESTING]: true });
     expect(Object.keys(out).sort()).toEqual([...ALL_FLAG_KEYS].sort());
   });
 });

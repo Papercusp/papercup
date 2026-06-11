@@ -87,7 +87,6 @@ export default function ChromeShell() {
   // When the user is already on /adv, the Ops CTA is a no-op (rendered as a
   // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
-  const oracleFlag = useFlag(FLAGS.ORACLE);
   const testingFlag = useFlag(FLAGS.TESTING);
   const t = useLexicon();
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
@@ -207,7 +206,7 @@ export default function ChromeShell() {
           })()}
           <RouteLink href="/cupboard" {...navLinkProps('/cupboard')}>{t('cupboard')}</RouteLink>
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
-          {oracleFlag ? <TutorialButton /> : null}
+          {testingFlag ? <TutorialButton /> : null}
           <UpdateChip />
           <NotificationCenter />
           <RecentActionsCenter />
@@ -247,7 +246,7 @@ export default function ChromeShell() {
 // chains, polling, and event-listener registration.
 function DeferredDocks() {
   const [ready, setReady] = useState(false);
-  const oracleEnabled = useFlag(FLAGS.ORACLE);
+  const testingEnabled = useFlag(FLAGS.TESTING);
   useEffect(() => {
     const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
     let idleId: number | undefined;
@@ -281,7 +280,7 @@ function DeferredDocks() {
   return (
     <Suspense fallback={null}>
       <ChatwootWidget />
-      {oracleEnabled ? <OracleDock /> : null}
+      {testingEnabled ? <OracleDock /> : null}
       <VoiceAppBridge />
       <OperatorDelegationListener />
       <OperatorVoiceAnnouncer />

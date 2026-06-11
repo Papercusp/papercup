@@ -8,9 +8,11 @@
  *   POST /api/oracle/chat     body: { messages: [...] }  → SSE stream
  *
  * The legacy router gated `/oracle/*` with a Hono middleware that 404s
- * when `FLAGS.ORACLE` is off (V1 ship-state gate). `defineTool` has no
+ * when the flag is off (V1 ship-state gate). `defineTool` has no
  * per-prefix middleware, so each handler runs `oracleEnabled()` first —
- * same behavior, no shared middleware.
+ * same behavior, no shared middleware. Gated on `FLAGS.TESTING`: the
+ * Oracle is a testing surface (papercusp-oracle folded into
+ * papercusp-testing, owner ask 2026-06-10).
  *
  * `auth: 'public'` — the legacy router gated only on the flag.
  */
@@ -22,11 +24,11 @@ import { readOracleConfig, writeOracleConfig } from '../../../agent-tools/oracle
 import { getSessionUserOrDefault } from '../../../auth';
 import '../../../agent-tools/index';
 
-/** V1 ship-state gate — Oracle is dark unless `FLAGS.ORACLE` is on. */
+/** V1 ship-state gate — Oracle is dark unless `FLAGS.TESTING` is on. */
 async function oracleEnabled(): Promise<boolean> {
   const { getFlag } = await import('@papercusp/flags/server');
   const { FLAGS } = await import('@papercusp/flags');
-  return getFlag(FLAGS.ORACLE, 'system');
+  return getFlag(FLAGS.TESTING, 'system');
 }
 
 const NOT_FOUND = () => new Response(null, { status: 404 });

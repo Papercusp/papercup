@@ -9,9 +9,12 @@ export const FLAGS = {
   // legacy :3057 marketplace + /templates were already deleted (revive-cupboard D-004);
   // distribution lives in the (ungated) Cupboard.
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
-  ORACLE: "papercusp-oracle",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
+  // Testing-only surfaces (pi tab, add-plugin button) AND the Oracle assistant
+  // (dock + Tutorial menubar button + /settings/oracle + /api/oracle/*) — the
+  // separate `papercusp-oracle` key was folded into this one by owner ask
+  // (2026-06-10): the Oracle is a testing surface.
   TESTING: "papercusp-testing",
   // inbox-cards-unification Phase D (P-031): when on, a chat decision card
   // (chat:ask_choice / ctx.askUser) ALSO writes a durable coord escalation so
@@ -86,7 +89,6 @@ export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
-  [FLAGS.ORACLE]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,

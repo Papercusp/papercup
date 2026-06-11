@@ -235,6 +235,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // harnessTextArtifact.byHarness — text artifacts ordered by relative path.
   //   zql.harnessTextArtifacts.where('harnessSlug', s).orderBy('relPath', 'asc')
+  // harnessProjects.lite — the workspace's harness registry list (the
+  // /api/harness/projects/lite payload's `projects` rows; clients regroup
+  // hives via the shared groupByHive). Invalidated from the registry write
+  // seam in harness-registry.ts, so creates/deletes/renames from ANY
+  // operator process live-update open lists (EI-206). Workspace scoping
+  // rides the request's x-papercusp-workspace ALS, same as the route.
+  'harnessProjects.lite': {
+    resolve: async () => {
+      const { buildProjectsLitePayload } = await import('../harness/projects-lite');
+      // Bypass the 1s TTL cache: an invalidation-triggered refetch must not
+      // serve a payload built just BEFORE the write it's reacting to.
+      const payload = await buildProjectsLitePayload({ bypassCache: true });
+      return payload.projects as unknown[];
+    },
+  },
+
   'harnessTextArtifact.byHarness': {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {

@@ -9,7 +9,7 @@ import { useFlag } from '@/lib/flag-hooks';
 
 const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
-  '/settings/oracle':     FLAGS.ORACLE,
+  '/settings/oracle':     FLAGS.TESTING,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
 };
 
@@ -118,12 +118,12 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }, []);
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
-  const oracleEnabled = useFlag(FLAGS.ORACLE);
+  const testingEnabled = useFlag(FLAGS.TESTING);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
 
   const flagEnabled: Record<FlagKey, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
-    [FLAGS.ORACLE]: oracleEnabled,
+    [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
     [FLAGS.HARNESS_PHASES]: true,
   };
