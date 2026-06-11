@@ -208,20 +208,18 @@ export async function writeShellEnvFile(cfg: AgentConfig): Promise<string> {
     '#   [ -f "$HOME/.papercusp/agent/env.sh" ] && . "$HOME/.papercusp/agent/env.sh"',
     '# Edits will be overwritten on the next save.',
   ];
+  // EI-337: an empty config value emits NO line (neither export nor unset) —
+  // an `unset` here actively stripped the sourcing shell's own exported value
+  // (.env.local, user exports), the same clobber applyToProcessEnv had.
+  // Empty = "no user override → the shell/run.sh defaults stand".
   if (cfg.backend !== 'auto') {
     lines.push(`export AGENT_BACKEND=${shQuote(cfg.backend)}`);
-  } else {
-    lines.push('unset AGENT_BACKEND');
   }
   if (cfg.cmd && cfg.cmd.trim()) {
     lines.push(`export AGENT_CMD=${shQuote(cfg.cmd.trim())}`);
-  } else {
-    lines.push('unset AGENT_CMD');
   }
   if (Object.keys(cfg.models).length > 0) {
     lines.push(`export AGENT_MODELS=${shQuote(JSON.stringify(cfg.models))}`);
-  } else {
-    lines.push('unset AGENT_MODELS');
   }
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, lines.join('\n') + '\n', { mode: 0o644 });
@@ -233,26 +231,52 @@ function shQuote(s: string): string {
 }
 
 /**
+ * The agent env vars exactly as the process BOOTED with (.env.local via the
+ * systemd unit, the shell, etc.), captured once at module load — i.e. before
+ * any writeAgentConfig could have mutated process.env. The EI-337 fix's
+ * ground truth: "empty config value" must mean "revert to the host's boot
+ * default", not "delete whatever the host was booted with".
+ */
+const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS', string | undefined>> = {
+  AGENT_BACKEND: process.env.AGENT_BACKEND,
+  AGENT_CMD: process.env.AGENT_CMD,
+  AGENT_MODELS: process.env.AGENT_MODELS,
+};
+
+function restoreBootEnv(key: keyof typeof BOOT_AGENT_ENV): void {
+  const boot = BOOT_AGENT_ENV[key];
+  if (boot === undefined) delete process.env[key];
+  else process.env[key] = boot;
+}
+
+/**
  * Mirror saved config into process.env so in-process spawns pick up
  * the change immediately. Called automatically on writeAgentConfig and
  * once at server startup (call applyToProcessEnv(readAgentConfig())
  * from a hot path; we don't have a single startup hook).
+ *
+ * EI-337: an EMPTY config value restores the BOOT-time env value rather than
+ * deleting it. Deleting meant any settings save with cmd:''/models:{} (the
+ * usual page state) silently stripped the host's .env.local-provided
+ * AGENT_CMD/AGENT_MODELS until the next restart — observed live 2026-06-11:
+ * bee spawns fell from the configured claude command to `omp -p` and produced
+ * empty output. Empty = "no user override → host default", not "unset".
  */
 export function applyToProcessEnv(cfg: AgentConfig): void {
   if (cfg.backend === 'auto') {
-    delete process.env.AGENT_BACKEND;
+    restoreBootEnv('AGENT_BACKEND');
   } else {
     process.env.AGENT_BACKEND = cfg.backend;
   }
   if (cfg.cmd && cfg.cmd.trim()) {
     process.env.AGENT_CMD = cfg.cmd.trim();
   } else {
-    delete process.env.AGENT_CMD;
+    restoreBootEnv('AGENT_CMD');
   }
   if (Object.keys(cfg.models).length > 0) {
     process.env.AGENT_MODELS = JSON.stringify(cfg.models);
   } else {
-    delete process.env.AGENT_MODELS;
+    restoreBootEnv('AGENT_MODELS');
   }
 }
 

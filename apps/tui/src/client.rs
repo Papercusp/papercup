@@ -962,6 +962,26 @@ impl OperatorClient {
         Ok(payload.agents)
     }
 
+    /// The prompt an agent runs on (`GET /api/fleet/agent-prompt`, dock
+    /// prompt-pane): a spawn's recorded prompt_body + brief/model/tier, or a
+    /// live role-persona render when only a `role` hint is available (the
+    /// interactive queen). Returns the raw JSON — the caller maps fields.
+    pub async fn agent_prompt(
+        &self,
+        owner: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut q: Vec<String> = Vec::new();
+        if let Some(o) = owner {
+            q.push(format!("owner={}", urlencode(o)));
+        }
+        if let Some(r) = role {
+            q.push(format!("role={}", urlencode(r)));
+        }
+        self.get_json(&format!("/api/fleet/agent-prompt?{}", q.join("&")))
+            .await
+    }
+
     /// The selected bee's coord inbox + outbox via `fleet:bee_mail { owner_id }`
     /// (MCP envelope unwrapped).
     pub async fn bee_mail(&self, owner_id: &str, limit: u32) -> Result<BeeMailPayload> {

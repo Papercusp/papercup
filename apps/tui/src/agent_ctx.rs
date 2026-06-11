@@ -1,8 +1,11 @@
 //! Agent-context panes (dock 4-pane split, owner ask 2026-06-11) — the three
 //! data boards stacked with the wake board in an agent's dock side column:
 //!
-//!   - `pui brief-pane`  — the parent-authored brief that STARTED the agent
-//!     (spawned_agents.brief, mig 230) + the model/tier it launched at;
+//!   - `pui prompt-pane` — the prompt the agent RUNS ON: a fleet spawn's
+//!     recorded prompt_body (its brief — the per-agent signal — led first,
+//!     with the model/tier it launched at), or a live render of the role
+//!     persona for interactive agents like the queen (GET
+//!     /api/fleet/agent-prompt, sources labeled recorded/rendered);
 //!   - `pui mail-pane`   — coord mail addressed to / sent by the agent;
 //!   - `pui work-pane`   — its ranked work items + declared plan + claims.
 //!
@@ -55,7 +58,7 @@ pub fn draw_agent_ctx(f: &mut Frame, app: &App, area: Rect) {
                 )));
             } else {
                 match app.agent_ctx_mode {
-                    AgentCtxMode::Brief => brief_lines(d, &mut lines),
+                    AgentCtxMode::Prompt => prompt_lines(d, &mut lines),
                     AgentCtxMode::Mail => mail_lines(d, &mut lines),
                     AgentCtxMode::Work => work_lines(d, &mut lines),
                 }
@@ -70,13 +73,13 @@ pub fn draw_agent_ctx(f: &mut Frame, app: &App, area: Rect) {
 
 fn title(mode: AgentCtxMode) -> &'static str {
     match mode {
-        AgentCtxMode::Brief => "✉ brief",
+        AgentCtxMode::Prompt => "✉ prompt",
         AgentCtxMode::Mail => "✉ mail",
         AgentCtxMode::Work => "☑ work",
     }
 }
 
-fn brief_lines(d: &crate::models::AgentCtxData, lines: &mut Vec<Line<'_>>) {
+fn prompt_lines(d: &crate::models::AgentCtxData, lines: &mut Vec<Line<'_>>) {
     if let (Some(m), t) = (&d.model, &d.tier) {
         let tier = t.as_deref().map(|t| format!(" ({t})")).unwrap_or_default();
         lines.push(Line::from(Span::styled(
@@ -85,14 +88,33 @@ fn brief_lines(d: &crate::models::AgentCtxData, lines: &mut Vec<Line<'_>>) {
         )));
         lines.push(Line::default());
     }
-    match &d.brief {
-        Some(b) if !b.trim().is_empty() => {
-            for l in b.lines() {
+    // The brief leads when present — it's the per-agent signal; the full
+    // prompt below is mostly boilerplate shared across agents of the role.
+    if let Some(b) = d.brief.as_deref().filter(|b| !b.trim().is_empty()) {
+        lines.push(Line::from(Span::styled("brief", Theme::header())));
+        for l in b.lines() {
+            lines.push(Line::from(format!("  {l}")));
+        }
+        lines.push(Line::default());
+    }
+    match d.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+        Some(p) => {
+            let src = match d.source.as_deref() {
+                Some("recorded") => "full prompt (recorded — what this run was invoked with)",
+                Some("rendered") => "full prompt (rendered — what a fresh session of this role gets)",
+                _ => "full prompt",
+            };
+            lines.push(Line::from(Span::styled(src, Theme::header())));
+            for l in p.lines() {
                 lines.push(Line::from(l.to_string()));
             }
         }
-        _ => lines.push(Line::from(Span::styled(
-            "(no brief — launched without one)",
+        None if d.brief.is_none() => lines.push(Line::from(Span::styled(
+            "(no prompt available — run predates recording, or the agent is interactive with no role hint)",
+            Theme::dim(),
+        ))),
+        None => lines.push(Line::from(Span::styled(
+            "(full prompt not recorded for this run)",
             Theme::dim(),
         ))),
     }

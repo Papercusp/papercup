@@ -84,12 +84,57 @@ describe('loadPluginFromDir', () => {
     }
   });
 
-  it('rejects when entry point is missing', async () => {
-    const dir = await makePlugin({ name: 'no-entry', noEntry: true });
+  it('rejects when entry point is missing but the manifest declares tools', async () => {
+    // Tool handlers live on the entry's `tools` export — a tools-declaring
+    // manifest with no entry is a broken plugin, not a manifest-only one.
+    const dir = join(ROOT, 'no-entry-with-tools');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      join(dir, 'papercusp.json'),
+      JSON.stringify({
+        name: 'no-entry-with-tools',
+        version: '0.1.0',
+        tools: [{ name: 'pack', capabilities: ['tools:pack'] }],
+      }),
+      'utf8',
+    );
     const r = await loadPluginFromDir(dir, 'project');
     assert.ok('error' in r);
     if ('error' in r) {
       assert.match(r.error, /entry point/);
+    }
+  });
+
+  it('rejects a pack with no entry point (a pack exists to provide tool handlers)', async () => {
+    const dir = join(ROOT, 'no-entry-pack');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      join(dir, 'papercusp.json'),
+      JSON.stringify({
+        name: 'no-entry-pack',
+        version: '0.1.0',
+        kind: 'pack',
+        tools: [{ name: 'pack', capabilities: ['tools:pack'] }],
+      }),
+      'utf8',
+    );
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok('error' in r);
+    if ('error' in r) {
+      assert.match(r.error, /entry point/);
+    }
+  });
+
+  it('loads a manifest-only plugin (no entry, no tools — provision/roles/config only)', async () => {
+    // The cloudflare-stack shape: a fully declarative plugin (provision
+    // scripts, manifest-declared roles, configSchema) with no code at all.
+    const dir = await makePlugin({ name: 'manifest-only', noEntry: true });
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok(!('error' in r) && !('skipped' in r), `expected success, got ${JSON.stringify(r)}`);
+    if ('plugin' in r) {
+      assert.equal(r.plugin.name, 'manifest-only');
+      assert.equal((r.plugin as unknown as { __runtime?: string }).__runtime, 'manifest-only');
+      assert.deepEqual(r.toolDefinitions, []);
     }
   });
 

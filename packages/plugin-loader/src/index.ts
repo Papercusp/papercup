@@ -430,6 +430,21 @@ async function runtimeDispatch(
     }
     return { plugin: makeDaemonPluginShim(manifest), manifest, path, source };
   }
+  // Manifest-only plugins: a JS-runtime manifest with no tool declarations
+  // and no entry module is a legitimate asset/declarative plugin —
+  // provision scripts, manifest-declared roles, configSchema (e.g.
+  // cloudflare-stack ships only provision/*.sh + roles/*.md). Excluded:
+  // packs (a pack exists to provide js tool handlers) and manifests
+  // declaring react UI surfaces (the component comes from the entry).
+  if (
+    (!runtime || runtime.kind === 'js') &&
+    (manifest as { kind?: string }).kind !== 'pack' &&
+    !(manifest.tools && manifest.tools.length > 0) &&
+    !(manifest.ui ?? []).some((u) => u.type === 'react') &&
+    !(await locateEntry(path))
+  ) {
+    return { plugin: makeManifestOnlyPluginShim(manifest), manifest, path, source };
+  }
   return null;
 }
 
@@ -508,6 +523,20 @@ function makeDaemonPluginShim(manifest: ManifestShape): import('@papercusp/plugi
     version: manifest.version,
     description: manifest.description,
     __runtime: 'daemon',
+  } as unknown as import('@papercusp/plugin-sdk').Plugin;
+}
+
+/**
+ * See makeWasmPluginShim. Same idea for manifest-only plugins (no code at
+ * all — provision scripts / declarative roles / configSchema). No init, no
+ * hooks, no tool handlers; the host's optional-chained call sites skip it.
+ */
+function makeManifestOnlyPluginShim(manifest: ManifestShape): import('@papercusp/plugin-sdk').Plugin {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    __runtime: 'manifest-only',
   } as unknown as import('@papercusp/plugin-sdk').Plugin;
 }
 

@@ -353,6 +353,9 @@ import './work_items/set_priority';
 // Register the work-item claim AUTHORITY ops (cross-Swarm claim RPC receiving side) —
 // decentralized-dispatch-scaling P-004 / D-002. Side-effecting; mirrors plan-items.
 import './work_items/register-claim-authority-ops';
+// Register the work-item REPLICA authority ops (cross-Swarm BOINC redundancy RPC
+// receiving side) — EI-266. Side-effecting; mirrors the claim ops above.
+import './work_items/register-replica-authority-ops';
 // Wire the FILE-LOCK authority (fed-reanchor P-060 cutover 2): the domain→harness→Hive
 // resolvers + the authority-side store adapter, so locks:acquire/release serialize at the
 // Hive authority cross-machine. Side-effecting; dormant passthrough at single-hive (N=1).

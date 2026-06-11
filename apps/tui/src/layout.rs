@@ -310,8 +310,8 @@ pub fn chat_dock_kdl(
     // Flag OFF: the classic single stack — the pui chat-pane (operator chat +
     // reactive driver) over the brain. Unchanged.
     // The queen's side column (dock 4-pane split, owner ask 2026-06-11): the
-    // 38% column right of her chat is FOUR stacked data boards — the brief
-    // that started the agent, the staged-wake queue, her coord mail, and her
+    // 38% column right of her chat is FOUR stacked data boards — the prompt
+    // the agent runs on (brief led first), the staged-wake queue, her coord mail, and her
     // work items + plan linkage. Each is its own `pui <x>-pane --queen`
     // process (one pinned Tab each); zellij owns the vertical stack.
     let dock_body = if hive_agent_tabs {
@@ -322,9 +322,9 @@ pub fn chat_dock_kdl(
                 command "{brain_cmd}"{args_line}
             }}
             pane split_direction="horizontal" size="38%" {{
-                pane name="♛✉ brief" {{
+                pane name="♛✉ prompt" {{
                     command "pui"
-                    args "brief-pane" "--queen"
+                    args "prompt-pane" "--queen"
                 }}
                 pane name="♛⏸ wakes" {{
                     command "pui"
@@ -740,27 +740,27 @@ mod tests {
         assert!(!on.contains("agent-pane"), "the reverted one-pane variant must not return: {on}");
         assert!(on.contains("name=\"♛ queen\" split_direction=\"vertical\""), "queen split container: {on}");
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
-        // split, owner ask 2026-06-11): brief → wakes → mail → work, top-down.
-        assert!(on.contains("args \"brief-pane\" \"--queen\""));
+        // split, owner ask 2026-06-11): prompt → wakes → mail → work, top-down.
+        assert!(on.contains("args \"prompt-pane\" \"--queen\""));
         assert!(on.contains("args \"wake-pane\" \"--queen\""));
         assert!(on.contains("args \"mail-pane\" \"--queen\""));
         assert!(on.contains("args \"work-pane\" \"--queen\""));
-        assert!(on.contains("name=\"♛✉ brief\""));
+        assert!(on.contains("name=\"♛✉ prompt\""));
         assert!(on.contains("name=\"♛⏸ wakes\""));
         assert!(on.contains("name=\"♛✉ mail\""));
         assert!(on.contains("name=\"♛☑ work\""));
-        let brief_at = on.find("♛✉ brief").expect("brief pane");
+        let brief_at = on.find("♛✉ prompt").expect("prompt pane");
         let queen_wakes_at = on.find("♛⏸ wakes").expect("queen wake pane");
         let mail_at = on.find("♛✉ mail").expect("mail pane");
         let work_at = on.find("♛☑ work").expect("work pane");
         assert!(brief_at < queen_wakes_at && queen_wakes_at < mail_at && mail_at < work_at,
-            "side column order is brief → wakes → mail → work");
+            "side column order is prompt → wakes → mail → work");
         // P-004/D-009: the reactive driver + the fleet-wide wake board remain
         // stack members.
         assert!(on.contains("args \"dock-driver\""));
         assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
-        // queen brief/wakes/mail/work + driver + fleet-wakes
+        // queen prompt/wakes/mail/work + driver + fleet-wakes
         assert_eq!(on.matches("command \"pui\"").count(), 6);
         // Order: brain precedes her side column; the queen container precedes
         // the agent `chat` stack; the driver is inside the stack.

@@ -332,7 +332,7 @@ impl WakeReview {
 }
 
 /// Which board a pinned agent-context pane renders (dock 4-pane split,
-/// owner ask 2026-06-11). One mode per zellij pane: `pui brief-pane` /
+/// owner ask 2026-06-11). One mode per zellij pane: `pui prompt-pane` /
 /// `pui mail-pane` / `pui work-pane`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentCtxMode {
@@ -813,7 +813,7 @@ pub enum Tab {
     /// pui-rendered substitutes; pui panes are for data boards like this one.)
     Wake,
     /// Agent-context board (dock 4-pane split, owner ask 2026-06-11): ONE data
-    /// pane about ONE agent — its launch brief (`pui brief-pane`), its coord
+    /// pane about ONE agent — the prompt it runs on (`pui prompt-pane`), its coord
     /// mail (`pui mail-pane`), or its work items + plan linkage
     /// (`pui work-pane`). PANE-ONLY like Wake: no tab-strip slot, no switch
     /// key; the mode + agent scope come from the subcommand. Stacked with the

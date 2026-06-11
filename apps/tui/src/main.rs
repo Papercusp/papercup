@@ -2472,30 +2472,29 @@ async fn fetch_agent_ctx(
         };
         let Some(owner) = owner else { return Ok(data) };
         match mode {
-            app::AgentCtxMode::Brief => {
-                // The owner of a fleet spawn IS its nursery spawn id (s-…);
-                // other owners (su-…, the interactive queen) have no row —
-                // the pane then shows "(no brief)".
-                if owner.starts_with("s-") {
-                    let v = client
-                        .run_tool("fleet:tree", serde_json::json!({ "spawn_id": owner }))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let inner =
-                        crate::client::run_tool_inner_json(&v).map_err(|e| e.to_string())?;
-                    if let Some(root) = inner
-                        .get("nodes")
-                        .and_then(|n| n.as_array())
-                        .and_then(|a| a.iter().find(|n| n.get("depth").and_then(|d| d.as_u64()) == Some(0)))
-                    {
-                        let s = |k: &str| {
-                            root.get(k).and_then(|v| v.as_str()).map(str::to_string)
-                        };
-                        data.brief = s("brief");
-                        data.model = s("model");
-                        data.tier = s("tier");
-                    }
-                }
+            app::AgentCtxMode::Prompt => {
+                // The prompt the agent runs on (GET /api/fleet/agent-prompt):
+                // an s-… owner gets its RECORDED run prompt (brief led
+                // separately); a non-spawn owner under Queen scope gets a live
+                // render of the queen role persona. The role hint follows the
+                // roster entry's kind when known.
+                let role_hint = if owner.starts_with("s-") {
+                    None
+                } else {
+                    entry
+                        .and_then(|r| r.agent_pane_kind.clone())
+                        .or_else(|| matches!(scope, app::WakeFilter::Queen).then(|| "queen".to_string()))
+                };
+                let v = client
+                    .agent_prompt(Some(&owner), role_hint.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+                data.prompt = s("prompt");
+                data.source = s("source");
+                data.brief = s("brief");
+                data.model = s("model");
+                data.tier = s("tier");
             }
             app::AgentCtxMode::Mail => {
                 data.mail = Some(client.bee_mail(&owner, 30).await.map_err(|e| e.to_string())?);

@@ -3557,22 +3557,26 @@ mod tests {
         app.pinned = Some(crate::app::Tab::AgentCtx);
         app.tab = crate::app::Tab::AgentCtx;
 
-        // Brief mode: the launch brief + model/tier header.
-        app.agent_ctx_mode = AgentCtxMode::Brief;
+        // Prompt mode: brief led first, recorded full prompt below.
+        app.agent_ctx_mode = AgentCtxMode::Prompt;
         app.agent_ctx = Some(Ok(crate::models::AgentCtxData {
             owner: Some("s-17".into()),
             label: Some("bee-7".into()),
             brief: Some("Watch for the flaky sync test".into()),
+            prompt: Some("You are a bee.\nDo the work.".into()),
+            source: Some("recorded".into()),
             model: Some("opus:high".into()),
             tier: Some("deep".into()),
             ..Default::default()
         }));
-        let text = render(&app, 80, 12);
+        let text = render(&app, 80, 16);
         assert!(text.contains("brief"));
         assert!(text.contains("bee-7"));
         assert!(text.contains("Watch for the flaky sync test"));
         assert!(text.contains("opus:high"));
         assert!(text.contains("deep"));
+        assert!(text.contains("recorded"));
+        assert!(text.contains("You are a bee."));
 
         // Mail mode.
         app.agent_ctx_mode = AgentCtxMode::Mail;

@@ -31,6 +31,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { getWorkItem, setWorkItemState } from './work-items';
+import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
 import {
   judgeGymRun,
   rubricFromBlueprintGym,
@@ -39,6 +40,28 @@ import {
   type GymRubricInput,
   type JudgeLlmCall,
 } from './gym/primitives';
+
+/**
+ * Authority-op kinds for the replica store (EI-266) — the redundancy analog of
+ * WORK_ITEM_CLAIM_OP_KINDS. A non-authority Swarm's replica op routes to the Hive
+ * authority (where the `work_item_replicas` table is homed) under these kinds;
+ * `work-item-replica-authority-ops.ts` registers the receiving handlers.
+ */
+export const WORK_ITEM_REPLICA_OP_KINDS = {
+  claimSlot: 'work-item.replica.claim-slot',
+  heartbeat: 'work-item.replica.heartbeat',
+  release: 'work-item.replica.release',
+  recordResult: 'work-item.replica.record-result',
+  list: 'work-item.replica.list',
+  judge: 'work-item.replica.judge',
+} as const;
+
+/** The authority scope key for a replica op: the Hive home if present, else the
+ *  harness slug — identical to the claim store's scopeOf (single box → harness). */
+function replicaScopeOf(opts: { hiveSlug?: string | null; harnessSlug?: string; harness?: string }): string {
+  const harness = opts.harnessSlug ?? opts.harness ?? '';
+  return opts.hiveSlug && opts.hiveSlug.length > 0 ? opts.hiveSlug : harness;
+}
 
 /** The owner's master switch for BOINC redundancy (P-014). Default OFF — mirrors
  *  `PAPERCUSP_WORKITEM_CLAIM_LEASE`. Env-gated (a synchronous server-side dispatch
@@ -145,6 +168,8 @@ export async function setItemRedundancy(
 export interface ClaimReplicaOpts {
   workspaceId?: string;
   harnessSlug: string;
+  /** Hive home for authority routing (EI-266). Omit → routes by harness (single box). */
+  hiveSlug?: string | null;
   workItemId: string;
   owner: string;
   ownerLabel?: string | null;
@@ -168,6 +193,19 @@ export type ClaimReplicaResult =
  * work_item_claims pattern) — two racers on slot k can't both win; the loser falls to k+1.
  */
 export async function claimReplicaSlot(opts: ClaimReplicaOpts): Promise<ClaimReplicaResult> {
+  const resolved = { ...opts, workspaceId: opts.workspaceId ?? activeWorkspaceId() };
+  return getWorkItemReplicaAuthority().route(replicaScopeOf(resolved), {
+    local: () => claimReplicaSlotLocal(resolved),
+    remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.claimSlot, payload: resolved, decode: (raw) => raw as ClaimReplicaResult },
+  });
+}
+
+/**
+ * The LOCAL (un-routed) execution of claim_slot — the raw SQL against THIS peer's
+ * PG. Exported so the authority-op registry can run it on the authority's store on
+ * a remote peer's behalf; normal callers use `claimReplicaSlot`.
+ */
+export async function claimReplicaSlotLocal(opts: ClaimReplicaOpts): Promise<ClaimReplicaResult> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const redundancy = await getItemRedundancy(opts.workItemId, { harness: opts.harnessSlug });
   if (redundancy == null) return { ok: false, reason: 'item-not-found' };
@@ -223,6 +261,8 @@ export async function claimReplicaSlot(opts: ClaimReplicaOpts): Promise<ClaimRep
 export interface ReplicaLeaseParams {
   workspaceId?: string;
   harnessSlug: string;
+  /** Hive home for authority routing (EI-266). Omit → routes by harness. */
+  hiveSlug?: string | null;
   workItemId: string;
   replicaIndex: number;
   claimId: string;
@@ -236,8 +276,18 @@ export interface ReplicaHeartbeatResult {
   expiresTs: string | null;
 }
 
-/** Renew a replica slot's lease (proving the replica run is still in flight). */
+/** Renew a replica slot's lease (proving the replica run is still in flight).
+ *  Routed through the per-Hive replica authority (EI-266). */
 export async function heartbeatReplica(p: ReplicaLeaseParams): Promise<ReplicaHeartbeatResult> {
+  const resolved = { ...p, workspaceId: p.workspaceId ?? activeWorkspaceId() };
+  return getWorkItemReplicaAuthority().route(replicaScopeOf(resolved), {
+    local: () => heartbeatReplicaLocal(resolved),
+    remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.heartbeat, payload: resolved, decode: (raw) => raw as ReplicaHeartbeatResult },
+  });
+}
+
+/** LOCAL (un-routed) heartbeat — the authority-side execution. */
+export async function heartbeatReplicaLocal(p: ReplicaLeaseParams): Promise<ReplicaHeartbeatResult> {
   const workspaceId = p.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const ttl = p.ttlSecOverride != null ? clampTtl(p.ttlSecOverride) : null;
@@ -255,8 +305,18 @@ export async function heartbeatReplica(p: ReplicaLeaseParams): Promise<ReplicaHe
   return { renewed: false, held: false, expiresTs: null };
 }
 
-/** Release (delete) a replica slot the caller holds — its slot returns to the pool. */
+/** Release (delete) a replica slot the caller holds — its slot returns to the pool.
+ *  Routed through the per-Hive replica authority (EI-266). */
 export async function releaseReplica(p: ReplicaLeaseParams): Promise<boolean> {
+  const resolved = { ...p, workspaceId: p.workspaceId ?? activeWorkspaceId() };
+  return getWorkItemReplicaAuthority().route(replicaScopeOf(resolved), {
+    local: () => releaseReplicaLocal(resolved),
+    remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.release, payload: resolved, decode: (raw) => raw as boolean },
+  });
+}
+
+/** LOCAL (un-routed) release — the authority-side execution. */
+export async function releaseReplicaLocal(p: ReplicaLeaseParams): Promise<boolean> {
   const workspaceId = p.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const rows = await sql<{ replica_index: number }[]>`
@@ -271,6 +331,8 @@ export async function releaseReplica(p: ReplicaLeaseParams): Promise<boolean> {
 export interface RecordReplicaResultOpts {
   workspaceId?: string;
   harnessSlug: string;
+  /** Hive home for authority routing (EI-266). Omit → routes by harness. */
+  hiveSlug?: string | null;
   workItemId: string;
   replicaIndex: number;
   owner: string;
@@ -283,6 +345,15 @@ export interface RecordReplicaResultOpts {
  * Returns the updated replica, or null when the caller does not hold a claimed slot.
  */
 export async function recordReplicaResult(opts: RecordReplicaResultOpts): Promise<WorkItemReplica | null> {
+  const resolved = { ...opts, workspaceId: opts.workspaceId ?? activeWorkspaceId() };
+  return getWorkItemReplicaAuthority().route(replicaScopeOf(resolved), {
+    local: () => recordReplicaResultLocal(resolved),
+    remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.recordResult, payload: resolved, decode: (raw) => raw as WorkItemReplica | null },
+  });
+}
+
+/** LOCAL (un-routed) record-result — the authority-side execution. */
+export async function recordReplicaResultLocal(opts: RecordReplicaResultOpts): Promise<WorkItemReplica | null> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const resultJson = JSON.stringify(opts.result);
@@ -297,10 +368,27 @@ export async function recordReplicaResult(opts: RecordReplicaResultOpts): Promis
   return rows[0] ? replicaFromDb(rows[0]) : null;
 }
 
-/** All replica rows for a redundancy group, ordered by slot. */
+/** All replica rows for a redundancy group, ordered by slot. Routed through the
+ *  per-Hive replica authority (EI-266) so the judge reads the FULL group. */
 export async function listReplicas(
   workItemId: string,
-  opts: { harness: string; workspaceId?: string },
+  opts: { harness: string; workspaceId?: string; hiveSlug?: string | null },
+): Promise<WorkItemReplica[]> {
+  const resolved = { ...opts, workspaceId: opts.workspaceId ?? activeWorkspaceId() };
+  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, hiveSlug: resolved.hiveSlug }), {
+    local: () => listReplicasLocal(workItemId, resolved),
+    remote: {
+      kind: WORK_ITEM_REPLICA_OP_KINDS.list,
+      payload: { workItemId, ...resolved },
+      decode: (raw) => raw as WorkItemReplica[],
+    },
+  });
+}
+
+/** LOCAL (un-routed) list — the authority-side execution. */
+export async function listReplicasLocal(
+  workItemId: string,
+  opts: { harness: string; workspaceId?: string; hiveSlug?: string | null },
 ): Promise<WorkItemReplica[]> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
@@ -349,6 +437,8 @@ export function pickRedundancyWinner(verdicts: readonly ReplicaVerdict[]): numbe
 export interface JudgeRedundancyOpts {
   workspaceId?: string;
   harness: string;
+  /** Hive home for authority routing (EI-266). Omit → routes by harness. */
+  hiveSlug?: string | null;
   workItemId: string;
   /** Default: the work-item's title + summary. */
   intent?: string;
@@ -386,11 +476,28 @@ export async function judgeRedundancyGroup(
   opts: JudgeRedundancyOpts,
   deps: { llmCall: JudgeLlmCall },
 ): Promise<JudgeRedundancyResult> {
+  const resolved = { ...opts, workspaceId: opts.workspaceId ?? activeWorkspaceId() };
+  // The judge needs the WHOLE group + adopts the winner — it MUST run where the
+  // replicas live (the authority). Route it; on a remote authority the caller's
+  // injected `llmCall` cannot serialize, so the authority judges with its OWN
+  // grader (the only grader of record) — the op handler supplies it.
+  return getWorkItemReplicaAuthority().route(replicaScopeOf({ harness: resolved.harness, hiveSlug: resolved.hiveSlug }), {
+    local: () => judgeRedundancyGroupLocal(resolved, deps),
+    remote: { kind: WORK_ITEM_REPLICA_OP_KINDS.judge, payload: resolved, decode: (raw) => raw as JudgeRedundancyResult },
+  });
+}
+
+/** LOCAL (un-routed) judge — the authority-side execution (reads the full group,
+ *  scores, adopts the winner, settles the item). */
+export async function judgeRedundancyGroupLocal(
+  opts: JudgeRedundancyOpts,
+  deps: { llmCall: JudgeLlmCall },
+): Promise<JudgeRedundancyResult> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const wi = await getWorkItem(opts.workItemId, opts.harness);
   if (!wi) return { ok: false, reason: 'item-not-found' };
 
-  const replicas = await listReplicas(opts.workItemId, { harness: opts.harness, workspaceId });
+  const replicas = await listReplicasLocal(opts.workItemId, { harness: opts.harness, workspaceId });
   const complete = replicas.filter((r) => r.status === 'complete');
   if (complete.length < MIN_REDUNDANCY) {
     return { ok: false, reason: 'insufficient-replicas', completeCount: complete.length };
