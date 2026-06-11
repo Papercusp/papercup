@@ -246,10 +246,17 @@ describe.skipIf(!LIVE)(
       process.env.AGENT_BACKEND ??= 'claude-code';
 
       // The REAL transport, wrapped only to record parse/cost evidence per call.
+      // SCOUT_LIVE_MODEL_OVERRIDE rewrites every step's model (2026-06-11: the
+      // shared credential's opus-tier ITPM 429'd three attempts through full
+      // backoff while sonnet probes passed — overriding to sonnet trades
+      // ideator strength for a measurable lane; the ACTUAL model used is
+      // recorded per call in the baseline, so the watermark stays honest).
+      const modelOverride = process.env.SCOUT_LIVE_MODEL_OVERRIDE;
       const recordingLlm: ScoutLlmCall = async (opts) => {
-        const res = await llmCall(opts);
+        const effective = modelOverride ? { ...opts, model: modelOverride } : opts;
+        const res = await llmCall(effective);
         liveCalls.push({
-          model: opts.model,
+          model: effective.model,
           costUsd: res.costUsd,
           parsed: parseLlmJson(res) != null,
           responseChars: res.text.length,
