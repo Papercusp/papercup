@@ -42,6 +42,13 @@ export const AGENT_ROLES = [
   // ONLY when a bee explicitly spins up a coding harness (kind:'harness'); the bee
   // itself is the generic agent of the kind:'hive' blueprint.
   'bee',
+  // The QUEEN — the hive blueprint's placement-specialist decider
+  // (spine.deciderAlternatives; local-hive-orchestration P-030). The operator role
+  // specialized for placement (D-001): same judgment layer, dial turned toward
+  // fleet:spawn/drain + work-list shaping. Registered late (EI-286 follow-up): the
+  // blueprint declared the role but the registry never knew it, so a role=queen
+  // launch got an almost-empty role-scoped MCP catalog and could not place work.
+  'queen',
   // The PLANNER (hive-agent-tabs-psu-tui-2026-06-09 P-006): an interactive,
   // RESPONSIVE plan-authoring session launched into the dock as a Planner-kind pane
   // (no auto-injected wakes — the owner drives). It drafts/refines ONE plan via the
@@ -112,6 +119,9 @@ export const SU_ROLES = [
   'reviewer',
   'debugger',
   'operator',
+  // The queen is the operator specialized (local-hive D-001) — operator-equivalent
+  // grants so her placement loop (events:emit, hive wake declarations) resolves.
+  'queen',
   'documenter',
   'curator',
 ] as const satisfies readonly BuiltinAgentRole[];
@@ -127,6 +137,7 @@ export const SU_WRITE_ROLES = [
   'worker',
   'debugger',
   'operator',
+  'queen',
   'documenter',
   'curator',
 ] as const satisfies readonly BuiltinAgentRole[];

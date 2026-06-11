@@ -191,6 +191,34 @@ export async function lintParsed(
 
   const itemIds = new Set(parsed.items.map((i) => i.id));
   const itemById = new Map(parsed.items.map((i) => [i.id, i]));
+
+  // EI-251: checkbox-style item lines (`- [ ] P-NNN — text`) are NOT the
+  // canonical item syntax (`- **P-NNN** \`status\` text`) and parse as ZERO
+  // items — plans:set-status returns item_not_found, plans:items can't see
+  // them, and claims never auto-release. This bit all 15 agents of the
+  // 2026-06-10 closeout dispatch on the audit plan (81 invisible items,
+  // lint silently green). Surface every checkbox-form id the parser did
+  // not register. WARNING, not error: lint advises rather than gates, and
+  // the regex is line-anchored so a prose mention can't fire it, but a
+  // quoted example block legitimately could.
+  const checkboxItemRe = /^[ \t]*-\s*\[(?: |x|X)\]\s*\*{0,2}([A-Z]-\d{3,})\b/gm;
+  const ghostIds: string[] = [];
+  for (const m of parsed.raw.matchAll(checkboxItemRe)) {
+    const id = m[1];
+    if (id && !itemIds.has(id)) ghostIds.push(id);
+  }
+  if (ghostIds.length > 0) {
+    const sample = ghostIds.slice(0, 5).join(', ');
+    const suffix = ghostIds.length > 5 ? `, … +${ghostIds.length - 5} more` : '';
+    report.warnings.push({
+      level: 'warning',
+      code: 'checkbox_item_syntax',
+      message:
+        `${ghostIds.length} checkbox-style item line(s) (${sample}${suffix}) are INVISIBLE to the plan parser — ` +
+        'plans:set-status fails item_not_found on them and they never appear in plans:items. ' +
+        'Rewrite as the canonical form `- **P-NNN** `status` text` (spec/plan-format).',
+    });
+  }
   for (const it of parsed.items) {
     for (const dep of it.blockedBy) {
       const depItem = itemById.get(dep);

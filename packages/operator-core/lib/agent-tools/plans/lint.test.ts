@@ -204,3 +204,63 @@ describe('plans:lint — superseded_status_mismatch (EI-154)', () => {
     expect(has(r)).toBe(false);
   });
 });
+
+/**
+ * EI-251: checkbox-style item lines (`- [ ] P-NNN — text`) parse as ZERO
+ * items, so plans:set-status fails item_not_found and the items are invisible
+ * to plans:items/claims — silently (lint was green on the 81-item audit plan).
+ * `checkbox_item_syntax` surfaces them as a WARNING.
+ */
+describe('plans:lint — checkbox-style item lines (EI-251)', () => {
+  const checkboxPlan = (phaseBody: string) =>
+    `---\n` +
+    `title: T\n` +
+    `slug: spawn-lint-test\n` +
+    `status: active\n` +
+    `created: 2026-06-10\n` +
+    `---\n\n` +
+    `# T\n\n` +
+    `## Now\n\n**State:** x\n\n**Next:** y\n\n` +
+    `## Phase 1\n\n${phaseBody}\n\n` +
+    `## Decisions\n\n### D-001 — a decision\nBody.\n`;
+
+  it('warns on checkbox item lines the parser cannot see, naming the ids', async () => {
+    const report = await lint(
+      checkboxPlan('- [ ] P-058 — migrate the pollers\n- [x] P-059 — remove the dead form'),
+    );
+    const w = report.warnings.find((f) => f.code === 'checkbox_item_syntax');
+    expect(w).toBeTruthy();
+    expect(w!.message).toMatch(/P-058/);
+    expect(w!.message).toMatch(/P-059/);
+    expect(w!.message).toMatch(/2 checkbox-style/);
+    // Advisory only — never an error.
+    expect(codes(report.errors)).not.toContain('checkbox_item_syntax');
+  });
+
+  it('does NOT warn on canonical item lines', async () => {
+    const report = await lint(checkboxPlan('- **P-001** `todo` do a thing'));
+    expect(codes(report.warnings)).not.toContain('checkbox_item_syntax');
+  });
+
+  it('does NOT flag a checkbox line whose id is ALSO parsed canonically (mid-conversion duplicate)', async () => {
+    const report = await lint(
+      checkboxPlan('- **P-001** `todo` do a thing\n- [ ] P-001 — stale duplicate of the same id'),
+    );
+    expect(codes(report.warnings)).not.toContain('checkbox_item_syntax');
+  });
+
+  it('summarises long ghost lists with a +N more suffix', async () => {
+    const lines = Array.from({ length: 7 }, (_, i) => `- [ ] P-10${i} — thing ${i}`).join('\n');
+    const report = await lint(checkboxPlan(lines));
+    const w = report.warnings.find((f) => f.code === 'checkbox_item_syntax');
+    expect(w).toBeTruthy();
+    expect(w!.message).toMatch(/\+2 more/);
+  });
+
+  it('does NOT fire on a plain prose mention of an item id', async () => {
+    const report = await lint(
+      checkboxPlan('- **P-001** `todo` see P-002 of the other plan for context'),
+    );
+    expect(codes(report.warnings)).not.toContain('checkbox_item_syntax');
+  });
+});
