@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781172264482
-mtime_ms: 1781172264502
+last_run_ts: 1781193623784
+mtime_ms: 1781193623799
 name: "Sweep glue cleans stale executors"
-payload: {"file":"apps/operator/test/dbos-sweep-glue.integration.test.ts","kind":"contract","name":"Sweep glue cleans stale executors","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781172264482,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-019"],"durationMs":0,"planItemIds":["P-019"]}
+payload: {"file":"apps/operator/test/dbos-sweep-glue.integration.test.ts","kind":"contract","name":"Sweep glue cleans stale executors","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781193623784,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-019"],"durationMs":0,"planItemIds":["P-019"]}
 phase: "staging"
 status: "passing"
 test_id: "dbos-sweep"

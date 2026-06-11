@@ -148,9 +148,18 @@ export function acquireColdStartLock(retried = false): boolean {
         return '';
       }
     })()) || 0;
+    // Our own pid = we already hold it; never reclaim out from under
+    // ourselves.
+    if (ownerPid === process.pid) return false;
+    // Foreign pids must look like serve SPECIFICALLY — a loose pattern
+    // (node, or any .papercusp path mention) false-positives on whatever
+    // unrelated process reused the pid, e.g. a `cat
+    // ~/.papercusp/operator.json` health probe (observed live: the probe's
+    // own cmdline contains "papercusp" and occupied the reclaimed pid,
+    // wedging boot exactly like the stale lock it was checking for).
     const ownerIsServe =
       pidAlive(ownerPid)
-      && /node|serve\.(mjs|ts)|papercusp/i.test(processCommandLine(ownerPid) ?? '');
+      && /serve\.(mjs|ts)/i.test(processCommandLine(ownerPid) ?? '');
     if (ownerIsServe) return false;
     if (retried) return false;
     try {

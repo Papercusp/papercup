@@ -1,97 +1,1351 @@
 {
-  "_comment": "Production-readiness acceptance registry for the papercup Tests tab (Acceptance view). One entry per covering test file; coversVALs links to harness_plan_assertions rows promoted from plan production-readiness-acceptance-2026-06-10. status not_run = awaiting the designated runner agent. Integration files (*.integration.test.ts) run via their package's vitest.integration.config.ts; e2e specs via playwright from apps/operator; the Rust desktop surface (VAL-020) additionally requires `cargo test` in papercusp-desktop/src-tauri (not registrable here).",
-  "tests": [
-    { "id": "boot-fresh-migrate", "summary": "Fresh empty PG reaches schema head via baseline + every migration, idempotently", "file": "apps/operator/test/fresh-migrate.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-001"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "boot-migration-runner", "summary": "Migration runner failure paths: rollback, continueOnError, out-of-band DDL, recording", "file": "apps/operator/test/migration-runner-behaviors.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-001"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "boot-baseline-schema", "summary": "Baseline schema completeness: tables, RLS, constraints", "file": "apps/operator/test/baseline-schema-globalsetup.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-001"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "boot-db-boot-migrate", "summary": "Operator boot + migration orchestration", "file": "packages/operator-core/lib/db-boot-migrate.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-001"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "iso-rls", "summary": "Row-level security isolates workspaces", "file": "apps/operator/test/rls-isolation.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-002"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "iso-cross-workspace", "summary": "No cross-workspace read/write leaks", "file": "apps/operator/test/cross-workspace-isolation.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-002"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "ep-bootstrap-role", "summary": "Endpoint auth principal grant → request context binding", "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-003"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "ep-bootstrap-su", "summary": "Superuser tool availability through defineTool dispatch", "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-003"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "ep-mcp-dispatch", "summary": "MCP projection: result format + tool routing", "file": "packages/agent-mcp/src/server-dispatch.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-003"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "ep-tool-auth-gating", "summary": "Tool auth gating matrix incl. SU bypass telemetry", "file": "packages/operator-core/lib/__tests__/tool-auth-gating.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-003", "VAL-production-readiness-acceptance-2026-06-10-024"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "sync-sse-unit", "summary": "sync-sse bus + invalidation unit contract", "file": "packages/operator-core/lib/sync-sse.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-004"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "sync-sse-backfill", "summary": "SSE backfill recovers missed invalidations", "file": "packages/operator-core/lib/sync-sse-backfill.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-004"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "sync-roundtrip-acceptance", "summary": "Golden path: resolver read → write → pg_notify → bus subscriber, incl. emit_change_notify trigger leg", "file": "packages/operator-core/lib/sync-resolver/__tests__/acceptance-sync-roundtrip.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-004"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "plans-e2e", "summary": "Plan lifecycle end-to-end: new → edit → revision → launch", "file": "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-005"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "plans-concurrency", "summary": "Concurrent plan edits are write-skew safe (CAS, claims)", "file": "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-005"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "wi-core", "summary": "Work items create → claim → complete", "file": "packages/operator-core/lib/work-items.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-006"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "wi-lifecycle", "summary": "Work item state machine transitions", "file": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-006"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "wi-feature-pipeline", "summary": "Feature pipeline state + message durability vs real PG", "file": "apps/operator/test/feature-lifecycle-pg.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-006"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "wi-generalization", "summary": "Unified work-items surface across kinds", "file": "apps/operator/test/work-items-generalization.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-006"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "coord-presence", "summary": "Presence heartbeat + actor lifecycle", "file": "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-007"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "coord-watermark-restart", "summary": "Watermark persistence across crash-restart", "file": "packages/operator-core/lib/agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-007"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "coord-deliver-wake", "summary": "deliver-and-wake re-invokes sleeping recipients", "file": "packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-007"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "locks-su", "summary": "locks:* acquire/queue/contention via the SU surface", "file": "packages/operator-core/lib/agent-tools/locks/__tests__/su-locks.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-008"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "locks-grant-cascade", "summary": "Grant cascade steals expired rows; no waiter granted on path shortfall", "file": "packages/operator-core/lib/agent-tools/locks/__tests__/grant-cascade-expired-steal.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-008"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "locks-authority-failover", "summary": "Cross-instance lock authority failover with epoch fencing", "file": "packages/operator-core/lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-008"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "fleet-spawn-admission", "summary": "fleet:spawn admission honors concurrency ceiling (8-way concurrent single-admit)", "file": "packages/operator-core/lib/fleet/spawn-admission.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-009"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "fleet-assignments", "summary": "Fleet assignment (Brood Box) projection", "file": "packages/operator-core/lib/fleet/assignments.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-009"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "fleet-spawn-reclaim", "summary": "Heartbeat-stale spawn reclaim frees ceiling + fires parent-wake", "file": "packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-009"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "fleet-hive-wake-loop", "summary": "Hive wake loop liveness end-to-end", "file": "packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-009"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "hive-start-e2e", "summary": "Hive boot → Queen launch → bee placement", "file": "packages/operator-core/lib/hive/start-hive-e2e.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-009"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "harness-provisioning", "summary": "Workspace/harness provisioning end-to-end", "file": "apps/operator/test/provisioning.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-010"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "harness-blueprint-pg", "summary": "Blueprint → PG projection", "file": "apps/operator/test/blueprint-project-pg.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-010"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "harness-join-shared", "summary": "Shared-harness join flow", "file": "packages/operator-core/lib/harness/__tests__/join-shared-harness.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-010"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "mem-anchors", "summary": "Memory anchor extraction + dedup", "file": "packages/operator-core/lib/memory/anchors.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-011"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "mem-injection", "summary": "Memory injection into agent context", "file": "packages/operator-core/lib/memory/injection.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-011"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "mem-backend-selection", "summary": "Memory backend selection logic", "file": "packages/operator-core/lib/memory/backend-selection.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-011"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "docs-search-engine", "summary": "Docs engine fulltext search ranking", "file": "packages/docs-engine/__tests__/search.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-012"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "flags-server-backend", "summary": "Flag PG backend + override resolution", "file": "libs/flags/src/server-backend.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-013"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "flags-client", "summary": "Flag client cache + invalidation", "file": "libs/flags/src/client.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-013"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "flags-production-defaults", "summary": "Guard: every flag defaults ON except the vetted dark allowlist (9 flags)", "file": "libs/flags/src/production-defaults.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-013"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "id-auth-principals", "summary": "Principal resolution + RLS binding", "file": "packages/operator-core/lib/auth.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-014"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "id-device-jwt", "summary": "Device JWT mint + verify", "file": "packages/operator-core/lib/device-jwt.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-014", "VAL-production-readiness-acceptance-2026-06-10-022"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "id-ed25519", "summary": "Ed25519 keychain signing", "file": "packages/operator-core/lib/identity/ed25519.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-014"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "id-attest", "summary": "Device attestation flow", "file": "packages/operator-core/lib/identity/attest.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-014"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "sub-federation-adversarial", "summary": "Two-peer eventual consistency under adversarial ordering", "file": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-015"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "sub-outbox-trigger", "summary": "Outbox trigger → replication chain", "file": "packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-015"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "sub-revocation", "summary": "Revocation enforcement across peers", "file": "packages/operator-core/lib/sync/hyperbee/__tests__/revocation-enforcement.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-015"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "shl-happy-path", "summary": "Shared-hive composition rig: steer → contend → execute → converge", "file": "packages/operator-core/lib/shared-hive-loop/composition-happy-path.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-016"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "shl-chaos", "summary": "Shared-hive chaos legs (partition, churn, revoke)", "file": "packages/operator-core/lib/shared-hive-loop/composition-chaos.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-016"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "shl-coord-verbs", "summary": "Cross-cell coord verb lifecycle over real DHT", "file": "packages/operator-core/lib/shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-016"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "backup-policy", "summary": "Kopia policy serialization", "file": "packages/backup/src/policy.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-017"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "backup-e2e", "summary": "UI backup flow: settings → snapshot", "file": "apps/operator/e2e/backups.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-017"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "voice-engines", "summary": "Voice engine selection + health", "file": "packages/operator-core/lib/voice-engines.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-018"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "voice-device-ws", "summary": "Desktop voice WS relay dispatch", "file": "packages/operator-core/lib/device-voice-ws.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-018"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "dbos-crash-replay", "summary": "Durable workflow crash → deterministic replay", "file": "apps/operator/test/dbos-crash-replay.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-019"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "dbos-happy-path", "summary": "Durable workflow step execution", "file": "apps/operator/test/dbos-happy-path-smoke.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-019"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "dbos-sweep", "summary": "Sweep glue cleans stale executors", "file": "apps/operator/test/dbos-sweep-glue.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-019"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "desktop-pty-stack", "summary": "Native PTY stack driven end-to-end from TS (cargo test in papercusp-desktop/src-tauri is the Rust half — runner must execute it separately)", "file": "apps/operator/test/pty-stack.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-020"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-adv-shell-nav", "summary": "/adv shell tab nav: 500-free, nuqs round-trip, console-clean", "file": "apps/operator/e2e/adv-shell-nav.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-dock", "summary": "Dock panels + layout persistence", "file": "apps/operator/e2e/dock.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-global-shortcuts", "summary": "Global keyboard shortcuts", "file": "apps/operator/e2e/global-shortcuts.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-design-dashboard", "summary": "Design dashboard: 6-pane strip, pane/bucket/feature nuqs round-trips", "file": "apps/operator/e2e/design-dashboard-flow.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-harness-settings", "summary": "Harness settings panel mounts read-only with sections + fields", "file": "apps/operator/e2e/harness-settings-flow.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "e2e-plan-detail", "summary": "Plan detail: rail, ?plan= deep link, revisions tab, item decorations", "file": "apps/operator/e2e/plan-detail-flow.spec.ts", "framework": "playwright", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-021"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "dev-pair-store", "summary": "Device pair store", "file": "packages/operator-core/lib/device-pair-store.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-022"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "dev-feeds", "summary": "Device feeds serve paired-device state", "file": "packages/operator-core/lib/device-feeds.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-022"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "plug-loader", "summary": "Plugin load → grant → unload lifecycle", "file": "packages/plugin-loader/src/loader.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-023"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "plug-grants", "summary": "Plugin grant enforcement → tool availability", "file": "apps/operator/test/plugin-grants.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-023"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "plug-kv", "summary": "Plugin KV persistence", "file": "apps/operator/test/plugin-kv.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-023"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "tools-list", "summary": "agent_tools:list role filtering", "file": "packages/operator-core/lib/__tests__/agent-tools-list.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-024"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "tools-read", "summary": "Read-side tools endpoint + per-role availability", "file": "apps/operator/test/read-tools.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-024"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "llm-runner-aggregate", "summary": "LLM scenario runner aggregation (registry drift pinned)", "file": "packages/operator-core/lib/llm-testing/__tests__/runner-aggregate.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-025"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "brain-converse-prompt", "summary": "Operator converse prompt assembly", "file": "packages/operator-core/lib/operator-converse-prompt.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-026"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "brain-suggestion-schema", "summary": "Operator suggestion schema validation", "file": "packages/operator-core/lib/operator-suggestion-schema.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-026"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-adv-shell", "summary": "AdvShell: tab strip, selection restore precedence, share/create flows (18 tests)", "file": "apps/operator-vite/src/components/adv/AdvShell.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-adv-overview", "summary": "AdvOverviewTab: tiles, badges, activity envelopes, deep links (11 tests)", "file": "apps/operator-vite/src/components/adv/AdvOverviewTab.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-adv-frames", "summary": "AdvFramesTab: roster, SSE per slug, viewer ladder (16 tests)", "file": "apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-adv-now-running", "summary": "AdvNowRunning: hive states, start/pause dispatch, run pills (11 tests)", "file": "apps/operator-vite/src/components/adv/AdvNowRunning.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-fleet-rate", "summary": "FleetRateControl: live numbers, blur-commit, Escape cancels (regression-pins the Escape-commit bug fixed 2026-06-10)", "file": "apps/operator-vite/src/components/adv/FleetRateControl.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-admin-shell", "summary": "AdminShell: header chrome, 8-tab rail, active-tab derivation (7 tests)", "file": "apps/operator-vite/src/components/admin/AdminShell.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "spa-testing-client", "summary": "TestingClient: three-tier rail, DomainTestPanel lifecycle, run POST + poll (12 tests)", "file": "apps/operator-vite/src/components/admin/TestingClient.test.tsx", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-027"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-invariants", "summary": "Scout loop invariants: grounded, forced lens diversity, non-duplicate, bettable (structured experiment), no-human-prompt", "file": "packages/operator-core/lib/scout/scout-loop-invariants.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-cycle-e2e", "summary": "Full autonomous Scout cycle: >=1 broad idea -> plan draft + >=1 testable -> gym, no human prompt (fake LLM, $0)", "file": "packages/operator-core/lib/scout/cycle-e2e.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-routed-ledger", "summary": "Routed-idea ledger (scout_routed_ideas) persists provenance vs real PG — the lens-outcome meta-learning substrate", "file": "packages/operator-core/lib/scout/routed-ledger.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-corpus-digest", "summary": "Corpus digest (state-of-Hive synthesis) over change feed + completions + reverts vs real PG", "file": "packages/operator-core/lib/scout/corpus-digest-deps.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-failure-modes", "summary": "Cycle failure modes: malformed LLM JSON per stage, empty digest, zero survivors, budget exhaustion, rail-failure isolation, moonshot-only (14 tests)", "file": "packages/operator-core/lib/scout/cycle-failure-modes.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "scout-invariant-properties", "summary": "fast-check properties over grounded/bettable/provenance/forced-diversity invariants (~2,800 cases/run)", "file": "packages/operator-core/lib/scout/invariants.property.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "scout-cadence-matrix", "summary": "shouldRunScoutCycle decision matrix + runScoutTick composition (real fireGate half-open, budget boundaries) — 35 table-driven tests", "file": "packages/operator-core/lib/scout/cadence-matrix.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" },
-    { "id": "scout-outcome-feedback-wire", "summary": "Lens meta-learning full wire: outcomes -> classifyIdeaOutcome -> weight shifts (Beta-smoothed, floored), idempotent, errored stays pending (16 tests)", "file": "packages/operator-core/lib/scout/outcome-feedback-wire.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-real-rails", "summary": "One cycle, all four routing rails land in REAL PG storage: draft plan, gym QD archive row, improvement row, provenance ledger w/ pattern refs (7 tests)", "file": "packages/operator-core/lib/scout/cycle-real-rails.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-quality-metrics", "summary": "Standing quality report math: acceptance/conversion/per-lens/cost-per-accepted + degradation-vs-baseline eval + capture-once flagging (24 tests)", "file": "packages/operator-core/lib/scout/quality-metrics.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "contract" },
-    { "id": "scout-cycle-live", "summary": "LIVE-LLM quality lane (cred-gated: skips without SCOUT_LIVE_CYCLE=1 + credential; spends <=$0.50/cycle when armed — runner: leave skipped unless a live capture is explicitly wanted)", "file": "packages/operator-core/lib/scout/cycle-live.integration.test.ts", "framework": "vitest", "coversVALs": ["VAL-production-readiness-acceptance-2026-06-10-028"], "status": "not_run", "lastRunTs": 0, "durationMs": 0, "phase": "staging", "kind": "edge" }
-  ]
+ "_comment": "Production-readiness acceptance registry for the papercup Tests tab (Acceptance view). One entry per covering test file; coversVALs links to harness_plan_assertions rows promoted from plan production-readiness-acceptance-2026-06-10. status not_run = awaiting the designated runner agent. Integration files (*.integration.test.ts) run via their package's vitest.integration.config.ts; e2e specs via playwright from apps/operator; the Rust desktop surface (VAL-020) additionally requires `cargo test` in papercusp-desktop/src-tauri (not registrable here).",
+ "tests": [
+  {
+   "id": "boot-fresh-migrate",
+   "summary": "Fresh empty PG reaches schema head via baseline + every migration, idempotently",
+   "file": "apps/operator/test/fresh-migrate.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-001"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "boot-migration-runner",
+   "summary": "Migration runner failure paths: rollback, continueOnError, out-of-band DDL, recording",
+   "file": "apps/operator/test/migration-runner-behaviors.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-001"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "boot-baseline-schema",
+   "summary": "Baseline schema completeness: tables, RLS, constraints",
+   "file": "apps/operator/test/baseline-schema-globalsetup.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-001"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "boot-db-boot-migrate",
+   "summary": "Operator boot + migration orchestration",
+   "file": "packages/operator-core/lib/db-boot-migrate.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-001"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "iso-rls",
+   "summary": "Row-level security isolates workspaces",
+   "file": "apps/operator/test/rls-isolation.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-002"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "iso-cross-workspace",
+   "summary": "No cross-workspace read/write leaks",
+   "file": "apps/operator/test/cross-workspace-isolation.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-002"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "ep-bootstrap-role",
+   "summary": "Endpoint auth principal grant \u2192 request context binding",
+   "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-003"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "ep-bootstrap-su",
+   "summary": "Superuser tool availability through defineTool dispatch",
+   "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-003"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "ep-mcp-dispatch",
+   "summary": "MCP projection: result format + tool routing",
+   "file": "packages/agent-mcp/src/server-dispatch.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-003"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "ep-tool-auth-gating",
+   "summary": "Tool auth gating matrix incl. SU bypass telemetry",
+   "file": "packages/operator-core/lib/__tests__/tool-auth-gating.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-003",
+    "VAL-production-readiness-acceptance-2026-06-10-024"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sync-sse-unit",
+   "summary": "sync-sse bus + invalidation unit contract",
+   "file": "packages/operator-core/lib/sync-sse.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-004"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sync-sse-backfill",
+   "summary": "SSE backfill recovers missed invalidations",
+   "file": "packages/operator-core/lib/sync-sse-backfill.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-004"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "sync-roundtrip-acceptance",
+   "summary": "Golden path: resolver read \u2192 write \u2192 pg_notify \u2192 bus subscriber, incl. emit_change_notify trigger leg",
+   "file": "packages/operator-core/lib/sync-resolver/__tests__/acceptance-sync-roundtrip.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-004"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "plans-e2e",
+   "summary": "Plan lifecycle end-to-end: new \u2192 edit \u2192 revision \u2192 launch",
+   "file": "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-005"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "plans-concurrency",
+   "summary": "Concurrent plan edits are write-skew safe (CAS, claims)",
+   "file": "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-005"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "wi-core",
+   "summary": "Work items create \u2192 claim \u2192 complete",
+   "file": "packages/operator-core/lib/work-items.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-006"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "wi-lifecycle",
+   "summary": "Work item state machine transitions",
+   "file": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-006"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "wi-feature-pipeline",
+   "summary": "Feature pipeline state + message durability vs real PG",
+   "file": "apps/operator/test/feature-lifecycle-pg.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-006"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "wi-generalization",
+   "summary": "Unified work-items surface across kinds",
+   "file": "apps/operator/test/work-items-generalization.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-006"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "coord-presence",
+   "summary": "Presence heartbeat + actor lifecycle",
+   "file": "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-007"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "coord-watermark-restart",
+   "summary": "Watermark persistence across crash-restart",
+   "file": "packages/operator-core/lib/agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-007"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "coord-deliver-wake",
+   "summary": "deliver-and-wake re-invokes sleeping recipients",
+   "file": "packages/operator-core/lib/agent-tools/coordination/tools/deliver-and-wake.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-007"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "locks-su",
+   "summary": "locks:* acquire/queue/contention via the SU surface",
+   "file": "packages/operator-core/lib/agent-tools/locks/__tests__/su-locks.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-008"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "locks-grant-cascade",
+   "summary": "Grant cascade steals expired rows; no waiter granted on path shortfall",
+   "file": "packages/operator-core/lib/agent-tools/locks/__tests__/grant-cascade-expired-steal.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-008"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "locks-authority-failover",
+   "summary": "Cross-instance lock authority failover with epoch fencing",
+   "file": "packages/operator-core/lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-008"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "fleet-spawn-admission",
+   "summary": "fleet:spawn admission honors concurrency ceiling (8-way concurrent single-admit)",
+   "file": "packages/operator-core/lib/fleet/spawn-admission.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-009"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "fleet-assignments",
+   "summary": "Fleet assignment (Brood Box) projection",
+   "file": "packages/operator-core/lib/fleet/assignments.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-009"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "fleet-spawn-reclaim",
+   "summary": "Heartbeat-stale spawn reclaim frees ceiling + fires parent-wake",
+   "file": "packages/operator-core/lib/fleet/spawn-reclaim.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-009"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "fleet-hive-wake-loop",
+   "summary": "Hive wake loop liveness end-to-end",
+   "file": "packages/operator-core/lib/fleet/hive-wake-loop.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-009"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "hive-start-e2e",
+   "summary": "Hive boot \u2192 Queen launch \u2192 bee placement",
+   "file": "packages/operator-core/lib/hive/start-hive-e2e.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-009"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "harness-provisioning",
+   "summary": "Workspace/harness provisioning end-to-end",
+   "file": "apps/operator/test/provisioning.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-010"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "harness-blueprint-pg",
+   "summary": "Blueprint \u2192 PG projection",
+   "file": "apps/operator/test/blueprint-project-pg.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-010"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "harness-join-shared",
+   "summary": "Shared-harness join flow",
+   "file": "packages/operator-core/lib/harness/__tests__/join-shared-harness.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-010"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "mem-anchors",
+   "summary": "Memory anchor extraction + dedup",
+   "file": "packages/operator-core/lib/memory/anchors.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-011"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "mem-injection",
+   "summary": "Memory injection into agent context",
+   "file": "packages/operator-core/lib/memory/injection.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-011"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "mem-backend-selection",
+   "summary": "Memory backend selection logic",
+   "file": "packages/operator-core/lib/memory/backend-selection.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-011"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "docs-search-engine",
+   "summary": "Docs engine fulltext search ranking",
+   "file": "packages/docs-engine/__tests__/search.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-012"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "flags-server-backend",
+   "summary": "Flag PG backend + override resolution",
+   "file": "libs/flags/src/server-backend.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-013"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "flags-client",
+   "summary": "Flag client cache + invalidation",
+   "file": "libs/flags/src/client.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-013"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "flags-production-defaults",
+   "summary": "Guard: every flag defaults ON except the vetted dark allowlist (9 flags)",
+   "file": "libs/flags/src/production-defaults.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-013"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "id-auth-principals",
+   "summary": "Principal resolution + RLS binding",
+   "file": "packages/operator-core/lib/auth.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-014"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "id-device-jwt",
+   "summary": "Device JWT mint + verify",
+   "file": "packages/operator-core/lib/device-jwt.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-014",
+    "VAL-production-readiness-acceptance-2026-06-10-022"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "id-ed25519",
+   "summary": "Ed25519 keychain signing",
+   "file": "packages/operator-core/lib/identity/ed25519.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-014"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "id-attest",
+   "summary": "Device attestation flow",
+   "file": "packages/operator-core/lib/identity/attest.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-014"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sub-federation-adversarial",
+   "summary": "Two-peer eventual consistency under adversarial ordering",
+   "file": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-015"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "sub-outbox-trigger",
+   "summary": "Outbox trigger \u2192 replication chain",
+   "file": "packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-015"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "sub-revocation",
+   "summary": "Revocation enforcement across peers",
+   "file": "packages/operator-core/lib/sync/hyperbee/__tests__/revocation-enforcement.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-015"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "shl-happy-path",
+   "summary": "Shared-hive composition rig: steer \u2192 contend \u2192 execute \u2192 converge",
+   "file": "packages/operator-core/lib/shared-hive-loop/composition-happy-path.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-016"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "shl-chaos",
+   "summary": "Shared-hive chaos legs (partition, churn, revoke)",
+   "file": "packages/operator-core/lib/shared-hive-loop/composition-chaos.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-016"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "shl-coord-verbs",
+   "summary": "Cross-cell coord verb lifecycle over real DHT",
+   "file": "packages/operator-core/lib/shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-016"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "backup-policy",
+   "summary": "Kopia policy serialization",
+   "file": "packages/backup/src/policy.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-017"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "backup-e2e",
+   "summary": "UI backup flow: settings \u2192 snapshot",
+   "file": "apps/operator/e2e/backups.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-017"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "voice-engines",
+   "summary": "Voice engine selection + health",
+   "file": "packages/operator-core/lib/voice-engines.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-018"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "voice-device-ws",
+   "summary": "Desktop voice WS relay dispatch",
+   "file": "packages/operator-core/lib/device-voice-ws.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-018"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "dbos-crash-replay",
+   "summary": "Durable workflow crash \u2192 deterministic replay",
+   "file": "apps/operator/test/dbos-crash-replay.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-019"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "dbos-happy-path",
+   "summary": "Durable workflow step execution",
+   "file": "apps/operator/test/dbos-happy-path-smoke.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-019"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "dbos-sweep",
+   "summary": "Sweep glue cleans stale executors",
+   "file": "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-019"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "desktop-pty-stack",
+   "summary": "Native PTY stack driven end-to-end from TS (cargo test in papercusp-desktop/src-tauri is the Rust half \u2014 runner must execute it separately)",
+   "file": "apps/operator/test/pty-stack.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-020"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-adv-shell-nav",
+   "summary": "/adv shell tab nav: 500-free, nuqs round-trip, console-clean",
+   "file": "apps/operator/e2e/adv-shell-nav.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-dock",
+   "summary": "Dock panels + layout persistence",
+   "file": "apps/operator/e2e/dock.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-global-shortcuts",
+   "summary": "Global keyboard shortcuts",
+   "file": "apps/operator/e2e/global-shortcuts.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-design-dashboard",
+   "summary": "Design dashboard: 6-pane strip, pane/bucket/feature nuqs round-trips",
+   "file": "apps/operator/e2e/design-dashboard-flow.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-harness-settings",
+   "summary": "Harness settings panel mounts read-only with sections + fields",
+   "file": "apps/operator/e2e/harness-settings-flow.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "e2e-plan-detail",
+   "summary": "Plan detail: rail, ?plan= deep link, revisions tab, item decorations",
+   "file": "apps/operator/e2e/plan-detail-flow.spec.ts",
+   "framework": "playwright",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-021"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "dev-pair-store",
+   "summary": "Device pair store",
+   "file": "packages/operator-core/lib/device-pair-store.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-022"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "dev-feeds",
+   "summary": "Device feeds serve paired-device state",
+   "file": "packages/operator-core/lib/device-feeds.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-022"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "plug-loader",
+   "summary": "Plugin load \u2192 grant \u2192 unload lifecycle",
+   "file": "packages/plugin-loader/src/loader.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-023"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "plug-grants",
+   "summary": "Plugin grant enforcement \u2192 tool availability",
+   "file": "apps/operator/test/plugin-grants.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-023"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "plug-kv",
+   "summary": "Plugin KV persistence",
+   "file": "apps/operator/test/plugin-kv.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-023"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "tools-list",
+   "summary": "agent_tools:list role filtering",
+   "file": "packages/operator-core/lib/__tests__/agent-tools-list.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-024"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "tools-read",
+   "summary": "Read-side tools endpoint + per-role availability",
+   "file": "apps/operator/test/read-tools.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-024"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "llm-runner-aggregate",
+   "summary": "LLM scenario runner aggregation (registry drift pinned)",
+   "file": "packages/operator-core/lib/llm-testing/__tests__/runner-aggregate.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-025"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "brain-converse-prompt",
+   "summary": "Operator converse prompt assembly",
+   "file": "packages/operator-core/lib/operator-converse-prompt.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-026"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "brain-suggestion-schema",
+   "summary": "Operator suggestion schema validation",
+   "file": "packages/operator-core/lib/operator-suggestion-schema.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-026"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-adv-shell",
+   "summary": "AdvShell: tab strip, selection restore precedence, share/create flows (18 tests)",
+   "file": "apps/operator-vite/src/components/adv/AdvShell.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-adv-overview",
+   "summary": "AdvOverviewTab: tiles, badges, activity envelopes, deep links (11 tests)",
+   "file": "apps/operator-vite/src/components/adv/AdvOverviewTab.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-adv-frames",
+   "summary": "AdvFramesTab: roster, SSE per slug, viewer ladder (16 tests)",
+   "file": "apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-adv-now-running",
+   "summary": "AdvNowRunning: hive states, start/pause dispatch, run pills (11 tests)",
+   "file": "apps/operator-vite/src/components/adv/AdvNowRunning.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-fleet-rate",
+   "summary": "FleetRateControl: live numbers, blur-commit, Escape cancels (regression-pins the Escape-commit bug fixed 2026-06-10)",
+   "file": "apps/operator-vite/src/components/adv/FleetRateControl.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-admin-shell",
+   "summary": "AdminShell: header chrome, 8-tab rail, active-tab derivation (7 tests)",
+   "file": "apps/operator-vite/src/components/admin/AdminShell.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spa-testing-client",
+   "summary": "TestingClient: three-tier rail, DomainTestPanel lifecycle, run POST + poll (12 tests)",
+   "file": "apps/operator-vite/src/components/admin/TestingClient.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-invariants",
+   "summary": "Scout loop invariants: grounded, forced lens diversity, non-duplicate, bettable (structured experiment), no-human-prompt",
+   "file": "packages/operator-core/lib/scout/scout-loop-invariants.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-cycle-e2e",
+   "summary": "Full autonomous Scout cycle: >=1 broad idea -> plan draft + >=1 testable -> gym, no human prompt (fake LLM, $0)",
+   "file": "packages/operator-core/lib/scout/cycle-e2e.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-routed-ledger",
+   "summary": "Routed-idea ledger (scout_routed_ideas) persists provenance vs real PG \u2014 the lens-outcome meta-learning substrate",
+   "file": "packages/operator-core/lib/scout/routed-ledger.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-corpus-digest",
+   "summary": "Corpus digest (state-of-Hive synthesis) over change feed + completions + reverts vs real PG",
+   "file": "packages/operator-core/lib/scout/corpus-digest-deps.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-failure-modes",
+   "summary": "Cycle failure modes: malformed LLM JSON per stage, empty digest, zero survivors, budget exhaustion, rail-failure isolation, moonshot-only (14 tests)",
+   "file": "packages/operator-core/lib/scout/cycle-failure-modes.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "scout-invariant-properties",
+   "summary": "fast-check properties over grounded/bettable/provenance/forced-diversity invariants (~2,800 cases/run)",
+   "file": "packages/operator-core/lib/scout/invariants.property.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "scout-cadence-matrix",
+   "summary": "shouldRunScoutCycle decision matrix + runScoutTick composition (real fireGate half-open, budget boundaries) \u2014 35 table-driven tests",
+   "file": "packages/operator-core/lib/scout/cadence-matrix.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "scout-outcome-feedback-wire",
+   "summary": "Lens meta-learning full wire: outcomes -> classifyIdeaOutcome -> weight shifts (Beta-smoothed, floored), idempotent, errored stays pending (16 tests)",
+   "file": "packages/operator-core/lib/scout/outcome-feedback-wire.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-real-rails",
+   "summary": "One cycle, all four routing rails land in REAL PG storage: draft plan, gym QD archive row, improvement row, provenance ledger w/ pattern refs (7 tests)",
+   "file": "packages/operator-core/lib/scout/cycle-real-rails.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-quality-metrics",
+   "summary": "Standing quality report math: acceptance/conversion/per-lens/cost-per-accepted + degradation-vs-baseline eval + capture-once flagging (24 tests)",
+   "file": "packages/operator-core/lib/scout/quality-metrics.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "scout-cycle-live",
+   "summary": "LIVE-LLM quality lane (cred-gated: skips without SCOUT_LIVE_CYCLE=1 + credential; spends <=$0.50/cycle when armed \u2014 runner: leave skipped unless a live capture is explicitly wanted)",
+   "file": "packages/operator-core/lib/scout/cycle-live.integration.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-028"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  },
+  {
+   "id": "sync-connectivity-store",
+   "summary": "Client connectivity store: offline flips on sustained network-level failure only (HTTP errors prove reachable), recovers on first success; batch-fetcher reporting integration (EI-239)",
+   "file": "libs/generic/sync/src/connectivity.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-004"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "adv-workitem-chat-affordance",
+   "summary": "WorkItemDetail Chat action opens a discuss-mode worker chat scoped to the WI id; open-chat failure surfaces as toast, never throws (EI-290)",
+   "file": "apps/operator/app/adv/harnesses/WorkItemDetail.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "shared-open-feature-chat",
+   "summary": "openFeatureChat helper: reuse-before-create for same (role,featureId), GET-then-POST contract, OPEN_CHAT_EVENT detail shape, error branches (WI-125)",
+   "file": "libs/papercup-shared/src/openFeatureChat.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "cupboard-error-state",
+   "summary": "Cupboard shared error slot: friendly copy mapping (network/404/503/5xx), raw error kept muted, inline Retry re-invokes the fetch (EI-215)",
+   "file": "apps/operator/app/cupboard/__tests__/CupboardErrorState.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0,
+   "durationMs": 0,
+   "phase": "staging",
+   "kind": "edge"
+  }
+ ]
 }

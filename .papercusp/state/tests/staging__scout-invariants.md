@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781172264482
-mtime_ms: 1781172264502
+last_run_ts: 1781193623784
+mtime_ms: 1781193623799
 name: "Scout loop invariants: grounded, forced lens diversity, non-duplicate, bettable (structured experiment), no-human-prompt"
-payload: {"file":"packages/operator-core/lib/scout/scout-loop-invariants.test.ts","kind":"contract","name":"Scout loop invariants: grounded, forced lens diversity, non-duplicate, bettable (structured experiment), no-human-prompt","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781172264482,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-028"],"durationMs":0,"planItemIds":["P-034"]}
+payload: {"file":"packages/operator-core/lib/scout/scout-loop-invariants.test.ts","kind":"contract","name":"Scout loop invariants: grounded, forced lens diversity, non-duplicate, bettable (structured experiment), no-human-prompt","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781193623784,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-028"],"durationMs":0,"planItemIds":["P-034"]}
 phase: "staging"
 status: "passing"
 test_id: "scout-invariants"

@@ -55,6 +55,22 @@ async function stubAndCapture(page: Page): Promise<CreateCapture> {
   await page.route('**/api/harness/projects/lite', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS_LITE) });
   });
+  // HarnessesWorkspace reads the projects list via useSyncQuery('harnessProjects.lite')
+  // (REST→sync migration 2026-06-11), NOT the legacy REST route above — its rows
+  // come through the sync batch fetcher (POST /api/zero-harness/rest-query-batch →
+  // {results:[{rows,version}]}, one result per {name,args} query, in order). Stub
+  // it or the member rail renders empty and the P-011 hive-member-* testid assertion
+  // is absent (EI-319 residual). SSE carries only invalidation; rows come from here.
+  await page.route('**/api/zero-harness/rest-query-batch**', async (route) => {
+    let queries: Array<{ name?: string }> = [];
+    try { queries = (JSON.parse(route.request().postData() ?? '{}').queries ?? []) as Array<{ name?: string }>; } catch { /* empty batch */ }
+    const results = queries.map((q) =>
+      q?.name === 'harnessProjects.lite'
+        ? { rows: PROJECTS_LITE.projects, version: '1' }
+        : { rows: [], version: '1' },
+    );
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ results }) });
+  });
   // The into-hive / standalone create — capture the body (asserts `hive`), succeed.
   await page.route('**/api/harness/projects', async (route) => {
     if (route.request().method() === 'POST') {
