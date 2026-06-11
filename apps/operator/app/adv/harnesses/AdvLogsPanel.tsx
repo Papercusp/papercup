@@ -105,11 +105,13 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
       headerText: 'Source',
       width: '150px',
       toCopyText: (r) => String(r.ev.source ?? ''),
+      // Native title=, not <Tooltip>: per-row truncation hint in a grid cell —
+      // a Radix portal per row is the documented perf anti-pattern.
       render: ({ row }) =>
         row.ev.source ? (
-          <Tooltip label={String(row.ev.source)}>
-            <span className="pc-adv-logs__src">{String(row.ev.source)}</span>
-          </Tooltip>
+          <span className="pc-adv-logs__src" title={String(row.ev.source)}>
+            {String(row.ev.source)}
+          </span>
         ) : null,
     },
     {
@@ -166,6 +168,7 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
             inline
             rows={rows}
             columns={columns}
+            resizableColumns
             getRowId={(r) => r.id}
             headerHeight={26}
             rowMinHeight={24}

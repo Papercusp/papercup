@@ -204,7 +204,7 @@ describe('AdvShell — strip + header', () => {
     expect(screen.getByText('Advanced orchestration')).toBeTruthy();
     expect(screen.getAllByRole('tab')).toHaveLength(ADV_TABS.length);
     // labels render lowercased in the trigger span
-    expect(screen.getByRole('tab', { name: 'progress' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'working' })).toBeTruthy();
     expect(screen.getByText('sub-harnesses')).toBeTruthy();
     // single-slug widgets get the active slug
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('pot-a');
@@ -214,7 +214,7 @@ describe('AdvShell — strip + header', () => {
     nuqsState.scope = 'all';
     await renderShell();
     const tabs = screen.getAllByRole('tab').map((t) => t.getAttribute('title'));
-    expect(tabs).toEqual(['Overview', 'Create', 'Progress', 'Frames', 'Conversations', 'Learning']);
+    expect(tabs).toEqual(['Overview', 'Create', 'Working', 'Frames', 'Conversations', 'Learning']);
     expect(screen.queryByText('sub-harnesses')).toBeNull();
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
     expect(screen.getByTestId('now-running').getAttribute('data-slug')).toBe('');

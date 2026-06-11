@@ -402,6 +402,64 @@ const createHive = defineTool({
   },
 });
 
+/**
+ * hive-from-github-url-2026-06-11 P-006 — "create a Hive from a GitHub URL":
+ * the HTTP face the CreateHarnessPicker's GitHub-URL entry drives. Thin over
+ * the canonical `createHiveFromRepo` composition (hive:create_from_repo) —
+ * lookup (join offer) → clone → blueprint detection → home + member →
+ * visibility-gated auto-publish. Long timeout: clone + the test-verify run.
+ */
+const createHiveFromRepoRoute = defineTool({
+  method: 'POST',
+  path: '/harness/hives/from-repo',
+  auth: 'public',
+  // Clone + the blueprint test-verify run can far exceed the default route timeout.
+  timeoutSec: 600,
+  async handler(req) {
+    let body: {
+      githubUrl?: string;
+      slug?: string;
+      visibility?: string;
+      shallow?: boolean;
+      runTests?: boolean;
+      force?: boolean;
+    } = {};
+    try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
+    const githubUrl = String(body.githubUrl ?? '').trim();
+    if (!githubUrl) {
+      return Response.json({ error: 'githubUrl required', code: 'invalid_url' }, { status: 400 });
+    }
+    const visibility =
+      body.visibility === 'private' || body.visibility === 'invite' || body.visibility === 'public'
+        ? body.visibility
+        : 'public';
+    const { createHiveFromRepo } = await import('../../../agent-tools/hive/_create_from_repo');
+    const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const res = await createHiveFromRepo({
+      githubUrl,
+      ...(typeof body.slug === 'string' && body.slug.trim() ? { slug: body.slug.trim() } : {}),
+      visibility,
+      ...(body.shallow !== undefined ? { shallow: body.shallow === true } : {}),
+      ...(body.runTests !== undefined ? { runTests: body.runTests !== false } : {}),
+      ...(body.force !== undefined ? { force: body.force === true } : {}),
+      workspaceId: activeWorkspaceId(),
+    });
+    if (!res.ok) {
+      const status =
+        res.error === 'invalid_url' || res.error === 'invalid_slug' ? 400 :
+        res.error === 'slug_exhausted' || res.error.startsWith('clone_dest_exists') ? 409 :
+        res.error === 'clone_auth_required' ? 401 :
+        res.error === 'clone_not_found' ? 404 :
+                                          502;
+      return Response.json({ error: res.message ?? res.error, code: res.error, ...(res.cleanup ? { cleanup: res.cleanup } : {}) }, { status });
+    }
+    // Bust the registry caches so the new Hive + member appear immediately.
+    bustProjectsLiteCache();
+    __projectsCache.expires = 0;
+    return Response.json(res);
+  },
+});
+
 const remove = defineTool({
   method: 'DELETE',
   path: '/harness/projects/:slug',
@@ -625,4 +683,4 @@ export function isSafeSubHarnessSlug(slug: string): boolean {
   return true;
 }
 
-export default [lite, list, create, createHive, remove, scanSubharnesses, registerSubs];
+export default [lite, list, create, createHive, createHiveFromRepoRoute, remove, scanSubharnesses, registerSubs];

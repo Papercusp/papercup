@@ -1,0 +1,219 @@
+/**
+ * _create_from_repo.test.ts — the create-Hive-from-GitHub-URL composition
+ * (hive-from-github-url P-006). Every seam faked — no git, PG, swarm, GitHub.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import {
+  createHiveFromRepo,
+  deriveSlugs,
+  type CreateHiveFromRepoDeps,
+} from './_create_from_repo';
+import type { RepoHiveLookup } from '../../harness/lookup-hive-for-repo';
+
+const URL = 'https://github.com/acme/shop';
+
+const NONE_LOOKUP: RepoHiveLookup = {
+  kind: 'none',
+  coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, private: false, identityResolved: true },
+  bindingUnverified: false,
+};
+
+function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
+  const calls = {
+    cloned: [] as string[],
+    hiveCreated: [] as string[],
+    memberCreated: [] as { slug: string; hive: string; path: string }[],
+    removedDirs: [] as string[],
+    removedHomes: [] as string[],
+    publishes: [] as Record<string, unknown>[],
+    registry: [{ slug: 'existing', path: '/x' }] as Record<string, unknown>[],
+  };
+  const deps: CreateHiveFromRepoDeps = {
+    lookup: async () => NONE_LOOKUP,
+    clone: async (url: string) => {
+      calls.cloned.push(url);
+      return {
+        path: '/clones/shop',
+        parsed: { owner: 'acme', repo: 'shop', cloneUrl: 'https://github.com/acme/shop.git' },
+        defaultBranch: 'develop',
+      };
+    },
+    buildBlueprint: async (slug) => ({ ok: true, blueprint: { id: slug, extends: 'coding' }, detection: { toolchains: ['node'] } }),
+    createHive: async (o) => {
+      calls.hiveCreated.push(o.slug);
+      return { ok: true, slug: o.slug, path: `/hives/${o.slug}` };
+    },
+    createMember: async (a) => {
+      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path });
+      return { ok: true };
+    },
+    publish: async (o) => {
+      calls.publishes.push(o as unknown as Record<string, unknown>);
+      return { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 }, localBindings: { created: 1, existed: 0, failed: 0 } };
+    },
+    loadRegistry: async () => ({ projects: calls.registry as never }),
+    mutateRegistry: (async (fn: (r: { projects: never[] }) => unknown) => {
+      // apply over a snapshot so the coord-stamp step is observable
+      const next = fn({ projects: calls.registry as never });
+      calls.registry = (next as { projects: Record<string, unknown>[] }).projects;
+      return undefined as never;
+    }) as never,
+    removeHiveHome: async (slug) => {
+      calls.removedHomes.push(slug);
+    },
+    rmDir: async (p) => {
+      calls.removedDirs.push(p);
+    },
+    ...over,
+  };
+  return { deps, calls };
+}
+
+describe('deriveSlugs', () => {
+  it('uses the base when free; suffixes on collision', () => {
+    expect(deriveSlugs('shop', new Set())).toEqual({ memberSlug: 'shop', hiveSlug: 'shop-hive' });
+    expect(deriveSlugs('shop', new Set(['shop']))).toEqual({ memberSlug: 'shop-2', hiveSlug: 'shop-2-hive' });
+    expect(deriveSlugs('shop', new Set(['shop-hive']))).toEqual({ memberSlug: 'shop-2', hiveSlug: 'shop-2-hive' });
+  });
+  it('gives up after -9', () => {
+    const taken = new Set<string>(['shop']);
+    for (let i = 2; i <= 9; i++) taken.add(`shop-${i}`);
+    expect(deriveSlugs('shop', taken)).toBeNull();
+  });
+});
+
+describe('createHiveFromRepo (P-006)', () => {
+  it('returns a join offer with ZERO side effects when the repo already has a hive', async () => {
+    const { deps, calls } = fakes({
+      lookup: async () =>
+        ({
+          kind: 'hive',
+          coords: { owner: 'acme', repo: 'shop', identityResolved: true },
+          hive: { hiveId: 'h', title: 'H' },
+          source: 'directory',
+          bindingUnverified: false,
+        }) as RepoHiveLookup,
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('existing' in r)) throw new Error('expected existing');
+    expect(r.existing.kind).toBe('hive');
+    expect(calls.cloned).toEqual([]);
+    expect(calls.hiveCreated).toEqual([]);
+  });
+
+  it('happy path: clone → blueprint → home → member(hive) → coords stamped → publish', async () => {
+    const { deps, calls } = fakes();
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.created).toMatchObject({
+      hiveSlug: 'shop-hive',
+      memberSlug: 'shop',
+      memberPath: '/clones/shop',
+      defaultBranch: 'develop',
+      githubRepositoryId: 100,
+    });
+    expect(calls.hiveCreated).toEqual(['shop-hive']);
+    expect(calls.memberCreated).toEqual([{ slug: 'shop', hive: 'shop-hive', path: '/clones/shop' }]);
+    // coord stamp landed on the member entry
+    const member = calls.registry.find((p) => p.slug === 'shop');
+    expect(member).toBeUndefined(); // member row is created by harness:create (faked) — stamp applies only when present
+    // publish got the public default + the repo title
+    expect(calls.publishes[0]).toMatchObject({ hiveSlug: 'shop-hive', visibility: 'public', title: 'acme/shop' });
+    expect(r.publish).toMatchObject({ announced: true });
+  });
+
+  it('stamps github coords onto the member registry entry when present', async () => {
+    const { deps, calls } = fakes();
+    // harness:create registers the member row — simulate that in the fake so
+    // the post-create coord stamp (step 7) has a row to land on.
+    deps.createMember = async (a) => {
+      calls.registry.push({ slug: a.slug, path: a.path });
+      calls.memberCreated.push({ slug: a.slug, hive: a.hive, path: a.path });
+      return { ok: true };
+    };
+    await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    const member = calls.registry.find((p) => p.slug === 'shop')!;
+    expect(member).toMatchObject({
+      github_remote: 'https://github.com/acme/shop.git',
+      github_repository_id: 100,
+      github_default_branch: 'develop',
+    });
+  });
+
+  it('private visibility skips publish entirely (D-003 zero external writes)', async () => {
+    const { deps, calls } = fakes();
+    const r = await createHiveFromRepo({ githubUrl: URL, visibility: 'private', workspaceId: 'ws' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.publish).toEqual({ skipped: 'private' });
+    expect(calls.publishes).toEqual([]);
+  });
+
+  it('blueprint failure removes the clone and reports', async () => {
+    const { deps, calls } = fakes({ buildBlueprint: async () => ({ ok: false, error: 'no test cmd' }) });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'blueprint_failed' });
+    expect(calls.removedDirs).toContain('/clones/shop');
+    expect(calls.hiveCreated).toEqual([]);
+  });
+
+  it('member-create failure rolls back the home + clone', async () => {
+    const { deps, calls } = fakes({ createMember: async () => ({ ok: false, error: 'boom' }) });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'member_create_failed' });
+    expect(calls.removedHomes).toEqual(['shop-hive']);
+    expect(calls.removedDirs).toEqual(expect.arrayContaining(['/hives/shop-hive', '/clones/shop']));
+  });
+
+  it('clone errors map to clone_<code>', async () => {
+    const { deps } = fakes({
+      clone: async () => ({ code: 'auth_required' as const, message: 'auth pls' }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r).toMatchObject({ ok: false, error: 'clone_auth_required' });
+  });
+
+  it('slug collisions auto-suffix (OQ-1) and propagate bindingUnverified', async () => {
+    const { deps, calls } = fakes({
+      lookup: async () => ({ ...NONE_LOOKUP, bindingUnverified: true }),
+      loadRegistry: async () => ({ projects: [{ slug: 'shop', path: '/x' }] as never }),
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.created.memberSlug).toBe('shop-2');
+    expect(r.created.hiveSlug).toBe('shop-2-hive');
+    expect(r.bindingUnverified).toBe(true);
+    expect(calls.hiveCreated).toEqual(['shop-2-hive']);
+  });
+
+  it('force creates past an existing hive, flagged duplicateOf (P-008)', async () => {
+    const { deps, calls } = fakes({
+      lookup: async () =>
+        ({
+          kind: 'hive',
+          coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true },
+          hive: { hiveId: 'h', title: 'H', hivePubkey: 'HPK' },
+          source: 'directory',
+          bindingUnverified: false,
+        }) as RepoHiveLookup,
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, force: true, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.created.duplicateOf).toEqual({ kind: 'hive', hivePubkey: 'HPK', source: 'directory' });
+    expect(calls.hiveCreated).toEqual(['shop-hive']);
+  });
+
+  it('publish failure NEVER fails the create', async () => {
+    const { deps } = fakes({
+      publish: async () => {
+        throw new Error('cupboard exploded');
+      },
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.publish).toMatchObject({ announced: false, error: 'cupboard exploded' });
+  });
+});

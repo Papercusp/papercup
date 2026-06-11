@@ -53,6 +53,10 @@ export default defineTool({
     runTests: z.boolean().default(true).describe('Run the detected test command once to verify it (D-023).'),
     testTimeoutMs: z.number().int().positive().optional().describe('Budget for the test-verify run (default 120s).'),
     parentDir: z.string().min(1).optional().describe('Parent dir for the HIVE HOME folder (default ~/.papercusp/hives).'),
+    force: z
+      .boolean()
+      .optional()
+      .describe('Create-anyway past an existing hive/share for this repo (P-008): the result is flagged duplicateOf for the claim/supersede flow. Default false — an existing hive returns a join offer instead.'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
@@ -77,6 +81,7 @@ export default defineTool({
       runTests: args.runTests,
       ...(args.testTimeoutMs ? { testTimeoutMs: args.testTimeoutMs } : {}),
       ...(args.parentDir ? { parentDir: args.parentDir } : {}),
+      ...(args.force !== undefined ? { force: args.force } : {}),
       workspaceId,
     });
     return text(res as unknown as Record<string, unknown>);

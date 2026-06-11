@@ -49,11 +49,12 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
-  // Label "Progress" (owner ask 2026-06-11): the tab is the work-progress view
-  // (work items / agents / runs for the selected project). The tab ID stays
-  // 'harnesses' — it's serialized in URLs (?tab=harnesses), deep links, and the
-  // agent ui:dispatch surface; renaming the id would break all of them.
-  { id: 'harnesses', label: 'Progress', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  // Label "Working" (owner ask 2026-06-11, was "Progress"): the tab is the
+  // live-work view (work items / agents / runs for the selected project). The
+  // tab ID stays 'harnesses' — it's serialized in URLs (?tab=harnesses), deep
+  // links, and the agent ui:dispatch surface; renaming the id would break all
+  // of them.
+  { id: 'harnesses', label: 'Working', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: '#22d3ee', accentRgb: '34, 211, 238' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },

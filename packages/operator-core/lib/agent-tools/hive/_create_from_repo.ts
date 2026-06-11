@@ -39,6 +39,7 @@ import type { HiveVisibility } from '../../sync/hyperbee/hive-announce';
 import { createHiveHarness, type CreateHiveResult } from './_create';
 import {
   publishCreatedHive,
+  republishHiveAfterMemberAdd,
   type PublishCreatedHiveOutcome,
 } from '../../hive-publish-from-repo';
 
@@ -57,6 +58,21 @@ export interface CreateHiveFromRepoOpts {
   testTimeoutMs?: number;
   /** Parent dir for the HIVE HOME folder (default ~/.papercusp/hives). */
   parentDir?: string;
+  /**
+   * P-008 create-anyway: proceed even when the lookup finds an existing
+   * Hive/share for this repo (e.g. it has no join links yet). The result is
+   * explicitly flagged `duplicateOf` — the dispute lands in the claim/supersede
+   * flow (a duplicate's Cupboard row is also refused by the per-repo
+   * uniqueness, which surfaces in publish.cupboard.errors).
+   */
+  force?: boolean;
+  /**
+   * P-009 into-hive mode: add the repo as a member of this EXISTING
+   * `kind:'hive'` home instead of standing up a new hive. No new identity, no
+   * new listing — the hive's existing listing is re-published with the new
+   * member's repo coords (+ its Cupboard/local rows only, for public hives).
+   */
+  intoHive?: string;
   workspaceId: string;
 }
 
@@ -67,6 +83,9 @@ export interface CreateHiveFromRepoCreated {
   defaultBranch?: string;
   githubRepositoryId?: number;
   detection?: unknown;
+  /** P-008: set when `force` created past an existing hive/share — the
+   *  duplicate marker the supersede flow resolves. */
+  duplicateOf?: { kind: 'hive' | 'legacy_shared_harness'; hivePubkey?: string; source: string };
 }
 
 export type CreateHiveFromRepoResult =
@@ -99,6 +118,7 @@ export interface CreateHiveFromRepoDeps {
     | { ok: false; error: string }
   >;
   createHive?: typeof createHiveHarness;
+  republish?: typeof republishHiveAfterMemberAdd;
   /** harness:create composition for the member (inline blueprint + hive membership). */
   createMember?: (args: {
     slug: string;
@@ -241,10 +261,19 @@ export async function createHiveFromRepo(
   if (found.kind === 'invalid_url') {
     return { ok: false, error: 'invalid_url', message: found.message };
   }
+  let duplicateOf: CreateHiveFromRepoCreated['duplicateOf'];
   if (found.kind === 'hive' || found.kind === 'legacy_shared_harness') {
-    return { ok: true, existing: found };
+    if (!opts.force) return { ok: true, existing: found };
+    // P-008 create-anyway: proceed, explicitly flagged for the supersede flow.
+    duplicateOf = {
+      kind: found.kind,
+      ...(found.kind === 'hive' && found.hive.hivePubkey
+        ? { hivePubkey: found.hive.hivePubkey }
+        : {}),
+      source: found.source,
+    };
   }
-  const bindingUnverified = found.bindingUnverified;
+  const bindingUnverified = found.kind === 'none' ? found.bindingUnverified : false;
   const repoId = found.coords.githubRepositoryId;
   const repoIsPrivate = found.coords.private;
 
@@ -357,6 +386,7 @@ export async function createHiveFromRepo(
       ...(defaultBranch ? { defaultBranch } : {}),
       ...(repoId !== undefined ? { githubRepositoryId: repoId } : {}),
       ...(bp.detection !== undefined ? { detection: bp.detection } : {}),
+      ...(duplicateOf ? { duplicateOf } : {}),
     },
     bindingUnverified,
     publish: publishOutcome,

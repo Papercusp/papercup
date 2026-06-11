@@ -9,7 +9,7 @@
 import { readOperatorState } from '../../../operator-state-pg';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const GITHUB_REPO = process.env.GITHUB_DESKTOP_REPO ?? 'papercupai/papercusp-desktop';
+const GITHUB_REPO = process.env.GITHUB_DESKTOP_REPO ?? 'Papercusp/papercusp-desktop';
 
 type Channel = 'alpha' | 'beta' | 'stable';
 const CHANNELS = new Set<Channel>(['alpha', 'beta', 'stable']);
@@ -56,7 +56,7 @@ function platformKeyFor(target: string, arch: string): string | null {
   return `${t}-${a}`;
 }
 
-function pickAssetUrl(release: GhRelease, target: string, arch: string): string | null {
+export function pickAssetUrl(release: GhRelease, target: string, arch: string): string | null {
   const platform = platformKeyFor(target, arch);
   if (!platform) return null;
   const candidates = release.assets.filter((a) => {
@@ -71,8 +71,11 @@ function pickAssetUrl(release: GhRelease, target: string, arch: string): string 
       !name.endsWith('.exe.tar.gz')
     )
       return false;
+    // A macOS universal bundle (Papercusp_universal.app.tar.gz) serves every
+    // darwin arch — without this the updater 404s on universal-only releases.
+    if (target === 'darwin' && name.includes('universal')) return true;
     return (
-      (arch === 'x86_64' && (name.includes('x86_64') || name.includes('x64'))) ||
+      (arch === 'x86_64' && (name.includes('x86_64') || name.includes('x64') || name.includes('amd64'))) ||
       (arch === 'aarch64' && (name.includes('aarch64') || name.includes('arm64'))) ||
       (arch === 'i686' && (name.includes('i686') || name.includes('x86')))
     );

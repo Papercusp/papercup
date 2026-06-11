@@ -26,9 +26,21 @@ export interface PendingWake {
   source: string | null;
   workspaceId: string | null;
   createdAt: string;
+  /** How many identical fires coalesced into this row (EI-312; ≥1). */
+  count: number;
+  /** When the newest coalesced fire was staged (== createdAt until a re-fire). */
+  lastSeenAt: string;
 }
 
-/** Stage a wake for a manual-mode agent (the P-007 gate calls this instead of firing). */
+/**
+ * Stage a wake for a manual-mode agent (the P-007 gate calls this instead of firing).
+ *
+ * EI-312: identical (owner, source, summary, workspace) re-fires COALESCE into the
+ * existing staged row — bump `count` + `last_seen_at`, keep the newest payload as the
+ * headline — instead of inserting review-spam duplicates. This mirrors the live pump's
+ * per-subscriber coalescing (events/await/engine.ts) at the staging boundary, so a
+ * wake storm against a paused agent reads as "watchdog ×11", not 11 queue rows.
+ */
 export async function stagePendingWake(input: StageWakeInput): Promise<void> {
   const { sql } = getOrgPg();
   const payloadJson = input.payload != null ? JSON.stringify(input.payload) : null;
@@ -41,6 +53,11 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
       ${input.source ?? null},
       ${input.workspaceId ?? null}
     )
+    ON CONFLICT (owner_id, coalesce(source, ''), coalesce(summary, ''), coalesce(workspace_id, ''))
+    DO UPDATE SET
+      count = pending_wakes.count + 1,
+      last_seen_at = now(),
+      payload = EXCLUDED.payload
   `;
 }
 
@@ -48,7 +65,7 @@ export async function stagePendingWake(input: StageWakeInput): Promise<void> {
 export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> {
   const { sql } = getOrgPg();
   const rows = await sql`
-    SELECT id, owner_id, summary, payload, source, workspace_id, created_at
+    SELECT id, owner_id, summary, payload, source, workspace_id, created_at, count, last_seen_at
     FROM harness_shared.pending_wakes
     WHERE owner_id = ${ownerId}
     ORDER BY id ASC
@@ -61,6 +78,8 @@ export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> 
     source: (r.source as string | null) ?? null,
     workspaceId: (r.workspace_id as string | null) ?? null,
     createdAt: String(r.created_at),
+    count: Number(r.count ?? 1),
+    lastSeenAt: String(r.last_seen_at ?? r.created_at),
   }));
 }
 
@@ -94,4 +113,13 @@ export async function countAllPendingWakes(): Promise<Map<string, number>> {
 export async function releasePendingWake(id: number): Promise<void> {
   const { sql } = getOrgPg();
   await sql`DELETE FROM harness_shared.pending_wakes WHERE id = ${id}`;
+}
+
+/** Drop ALL of an agent's staged wakes (release_all / skip_all). Returns rows dropped. */
+export async function clearPendingWakes(ownerId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    DELETE FROM harness_shared.pending_wakes WHERE owner_id = ${ownerId} RETURNING id
+  `;
+  return (rows as unknown[]).length;
 }

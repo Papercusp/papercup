@@ -84,6 +84,8 @@ export interface PublishCreatedHiveDeps {
     harness_topic: string;
     harness_slug: string;
   }) => Promise<unknown>;
+  /** Owned-meta read for republishHiveAfterMemberAdd. */
+  getMeta?: (hiveId: string, workspaceId: string) => Promise<HiveDirectoryMeta | null>;
   now?: () => number;
   randomSecret?: () => string;
 }
@@ -106,11 +108,6 @@ export async function publishCreatedHive(
   deps: PublishCreatedHiveDeps = {},
 ): Promise<PublishCreatedHiveOutcome> {
   const saveMeta = deps.saveMeta ?? saveOwnedHiveMeta;
-  const resolveOwner = deps.resolveOwner ?? defaultResolveOwner;
-  const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
-  const deriveMemberRepos = deps.deriveMemberRepos ?? deriveHiveMemberRepoRefs;
-  const publishDirectory = deps.publishDirectory ?? publishHiveToDirectory;
-  const getDirectory = deps.getDirectory ?? getHiveDirectory;
   const now = deps.now ?? Date.now;
   const randomSecret = deps.randomSecret ?? (() => randomBytes(32).toString('hex'));
 
@@ -137,6 +134,60 @@ export async function publishCreatedHive(
     };
   }
 
+  const out = await publishListingForMeta(
+    meta,
+    { workspaceId: opts.workspaceId, ...(opts.repoIsPrivate !== undefined ? { repoIsPrivate: opts.repoIsPrivate } : {}) },
+    deps,
+  );
+  return { ...out, ...(inviteSecret ? { inviteSecret } : {}) };
+}
+
+/**
+ * P-009 — re-publish an EXISTING hive's listing after a member was added
+ * (into-hive mode): re-derives member repos/links, re-announces, and registers
+ * the NEW member repo's Cupboard + local rows only (`onlyRepoIds` — re-posting
+ * existing rows would just trip the worker's per-repo uniqueness). A hive that
+ * was never published (private / no meta) is left untouched.
+ */
+export async function republishHiveAfterMemberAdd(
+  opts: {
+    workspaceId: string;
+    hiveSlug: string;
+    /** Restrict the Cupboard/local-binding legs to these repo ids (the new member). */
+    onlyRepoIds?: number[];
+    repoIsPrivate?: boolean;
+  },
+  deps: PublishCreatedHiveDeps = {},
+): Promise<PublishCreatedHiveOutcome | { skipped: 'unpublished_hive' }> {
+  const getMeta =
+    deps.getMeta ??
+    (async (hiveId: string, ws: string) =>
+      (await import('./hive-directory-meta')).getOwnedHiveMeta(hiveId, ws));
+  const meta = await getMeta(opts.hiveSlug, opts.workspaceId).catch(() => null);
+  if (!meta || meta.visibility === 'private') return { skipped: 'unpublished_hive' };
+  return publishListingForMeta(
+    meta as HiveDirectoryMeta & { visibility: Exclude<HiveVisibility, 'private'> },
+    {
+      workspaceId: opts.workspaceId,
+      ...(opts.repoIsPrivate !== undefined ? { repoIsPrivate: opts.repoIsPrivate } : {}),
+      ...(opts.onlyRepoIds ? { onlyRepoIds: opts.onlyRepoIds } : {}),
+    },
+    deps,
+  );
+}
+
+/** The shared announce + Cupboard + local-binding legs (steps 2–6). */
+async function publishListingForMeta(
+  meta: HiveDirectoryMeta & { visibility: Exclude<HiveVisibility, 'private'> },
+  opts: { workspaceId: string; repoIsPrivate?: boolean; onlyRepoIds?: number[] },
+  deps: PublishCreatedHiveDeps = {},
+): Promise<PublishCreatedHiveOutcome> {
+  const resolveOwner = deps.resolveOwner ?? defaultResolveOwner;
+  const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
+  const deriveMemberRepos = deps.deriveMemberRepos ?? deriveHiveMemberRepoRefs;
+  const publishDirectory = deps.publishDirectory ?? publishHiveToDirectory;
+  const getDirectory = deps.getDirectory ?? getHiveDirectory;
+
   // 2 — best-effort transport wire (a box that gh-authed after boot).
   try {
     const ensureWired =
@@ -153,15 +204,15 @@ export async function publishCreatedHive(
     deps.loadPubkey ??
     (async (ws: string, slug: string) =>
       (await import('./identity/hive-keypair')).loadHivePubkey(ws, slug).catch(() => null));
-  const hivePubkey = await loadPubkey(opts.workspaceId, opts.hiveSlug).catch(() => null);
-  const memberRepos = await deriveMemberRepos(opts.workspaceId, opts.hiveSlug).catch(
+  const hivePubkey = await loadPubkey(opts.workspaceId, meta.hiveId).catch(() => null);
+  const memberRepos = await deriveMemberRepos(opts.workspaceId, meta.hiveId).catch(
     () => [] as string[],
   );
 
   const reg = await loadRegistry(opts.workspaceId).catch(() => ({ projects: [] as ProjectEntry[] }));
   const members = reg.projects.filter(
     (p) =>
-      (p.slug === opts.hiveSlug || p.hive_slug === opts.hiveSlug) &&
+      (p.slug === meta.hiveId || p.hive_slug === meta.hiveId) &&
       typeof p.github_remote === 'string' &&
       p.github_remote.length > 0,
   );
@@ -207,14 +258,18 @@ export async function publishCreatedHive(
   // 5 — the Cupboard index (PUBLIC hives only; D-003 invite leak rule; the
   //     public registry refuses private repos).
   const cupboard: PublishCreatedHiveOutcome['cupboard'] = { attempted: false };
-  if (opts.visibility !== 'public') {
+  if (meta.visibility !== 'public') {
     cupboard.skipped = 'invite';
   } else if (opts.repoIsPrivate) {
     cupboard.skipped = 'private_repo';
   } else if (!hivePubkey || !hiveTopicHex) {
     cupboard.skipped = 'no_hive_pubkey';
   } else {
-    const withIds = members.filter((m) => typeof m.github_repository_id === 'number');
+    const withIds = members.filter(
+      (m) =>
+        typeof m.github_repository_id === 'number' &&
+        (!opts.onlyRepoIds || opts.onlyRepoIds.includes(m.github_repository_id)),
+    );
     if (withIds.length === 0) {
       cupboard.skipped = 'no_member_repo_ids';
     } else {
@@ -237,11 +292,11 @@ export async function publishCreatedHive(
           github_owner: parsed.owner,
           github_name: parsed.repo,
           github_url: parsed.cloneUrl,
-          title: opts.title,
-          description: opts.description,
+          title: meta.title,
+          description: meta.description,
           topic_hex: hiveTopicHex,
           hive_pubkey: hivePubkey,
-          hive_title: opts.title,
+          hive_title: meta.title,
         }).catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
         if (res.ok) cupboard.rowsCreated! += 1;
         else {
@@ -267,10 +322,11 @@ export async function publishCreatedHive(
       }) => (await import('./harness/binding-service')).createUnclaimedBinding(input));
     for (const m of members) {
       if (typeof m.github_repository_id !== 'number' || !m.github_remote) continue;
+      if (opts.onlyRepoIds && !opts.onlyRepoIds.includes(m.github_repository_id)) continue;
       try {
         await createLocalBinding({
           githubUrl: m.github_remote,
-          privacy: opts.visibility === 'public' ? 'shared-public' : 'shared-private',
+          privacy: meta.visibility === 'public' ? 'shared-public' : 'shared-private',
           harness_topic: hiveTopicHex,
           harness_slug: m.slug,
         });
@@ -284,7 +340,6 @@ export async function publishCreatedHive(
 
   return {
     announced,
-    ...(inviteSecret ? { inviteSecret } : {}),
     cupboard,
     localBindings,
     ...(announceError ? { error: announceError } : {}),

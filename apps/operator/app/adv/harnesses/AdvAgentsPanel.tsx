@@ -187,12 +187,15 @@ function WorkingView({ slug }: { slug: string }) {
       headerText: '',
       width: '30px',
       toCopyText: (r) => r.agentPaneKind,
+      // Native title=, not <Tooltip>: per-row hints in grid cells — a Radix
+      // portal per row is the documented perf anti-pattern (design/gotchas).
       render: ({ row }) => (
-        <Tooltip label={`${row.agentPaneKind}${row.alive ? '' : ' (not live)'}`}>
-          <span className={`pc-adv-agents__kind${row.alive ? '' : ' is-dead'}`}>
-            {KIND_GLYPH[row.agentPaneKind] ?? '·'}
-          </span>
-        </Tooltip>
+        <span
+          className={`pc-adv-agents__kind${row.alive ? '' : ' is-dead'}`}
+          title={`${row.agentPaneKind}${row.alive ? '' : ' (not live)'}`}
+        >
+          {KIND_GLYPH[row.agentPaneKind] ?? '·'}
+        </span>
       ),
     },
     {
@@ -202,9 +205,9 @@ function WorkingView({ slug }: { slug: string }) {
       width: '140px',
       toCopyText: (r) => r.agentId,
       render: ({ row }) => (
-        <Tooltip label={row.intent || row.agentId}>
-          <span className="pc-adv-agents__run">{row.name ?? row.label ?? row.agentId}</span>
-        </Tooltip>
+        <span className="pc-adv-agents__run" title={row.intent || row.agentId}>
+          {row.name ?? row.label ?? row.agentId}
+        </span>
       ),
     },
     {
@@ -253,11 +256,12 @@ function WorkingView({ slug }: { slug: string }) {
         // with no heartbeat reads stale.
         const liveness = livenessFromHeartbeat(row.heartbeatAt ?? '');
         return (
-          <Tooltip label={`${liveness} — heartbeat ${row.heartbeatAt ?? 'never'}`}>
-            <span style={{ display: 'inline-flex' }}>
-              <LivenessDot liveness={liveness} title="" />
-            </span>
-          </Tooltip>
+          <span
+            style={{ display: 'inline-flex' }}
+            title={`${liveness} — heartbeat ${row.heartbeatAt ?? 'never'}`}
+          >
+            <LivenessDot liveness={liveness} title="" />
+          </span>
         );
       },
     },
@@ -275,6 +279,7 @@ function WorkingView({ slug }: { slug: string }) {
         <RichGrid<WorkingAgent>
           columns={columns}
           rows={rows}
+          resizableColumns
           getRowId={(r) => r.agentId}
           onRowClick={(r) => {
             if (r.doing) void setSelectedId(r.doing.id);
@@ -335,12 +340,10 @@ function RunsView({ slug }: { slug: string }) {
         headerText: '',
         width: '22px',
         render: ({ row }) => (
-          <Tooltip label={row.running ? 'running' : 'idle'}>
-            <span
-              className={`pc-adv-agents__dot${row.running ? ' is-running' : ''}`}
-              aria-hidden
-            />
-          </Tooltip>
+          <span
+            className={`pc-adv-agents__dot${row.running ? ' is-running' : ''}`}
+            title={row.running ? 'running' : 'idle'}
+          />
         ),
       },
       {
@@ -371,9 +374,7 @@ function RunsView({ slug }: { slug: string }) {
         toCopyText: (r) => r.runId,
         render: ({ row }) => (
           <span className="pc-adv-agents__cellrow">
-            <Tooltip label={row.runId}>
-              <span className="pc-adv-agents__run">{row.runId}</span>
-            </Tooltip>
+            <span className="pc-adv-agents__run" title={row.runId}>{row.runId}</span>
             {row.featureId ? <span className="pc-adv-agents__feat">{row.featureId}</span> : null}
           </span>
         ),
@@ -394,9 +395,12 @@ function RunsView({ slug }: { slug: string }) {
         width: '48px',
         align: 'right',
         render: ({ row }) => (
-          <Tooltip label={row.lastEventTs ? new Date(row.lastEventTs).toISOString() : ''}>
-            <span className="pc-adv-agents__num">{fmtAge(row.lastEventTs ?? row.ts)}</span>
-          </Tooltip>
+          <span
+            className="pc-adv-agents__num"
+            title={row.lastEventTs ? new Date(row.lastEventTs).toISOString() : undefined}
+          >
+            {fmtAge(row.lastEventTs ?? row.ts)}
+          </span>
         ),
       },
     ],
@@ -440,6 +444,7 @@ function RunsView({ slug }: { slug: string }) {
         ) : (
           <RichGrid<HarnessAgentRun>
             inline
+            resizableColumns
             virtualMode={{
               virtualizer: rowVirtualizer,
               totalRows: visible.length,

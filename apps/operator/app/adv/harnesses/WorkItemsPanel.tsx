@@ -260,6 +260,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           <RichGrid<WorkItemRow>
             columns={columns}
             rows={filtered}
+            resizableColumns
             getRowId={(r) => r.id}
             onRowClick={(r) => void setSelectedId(r.id)}
             getRowBg={(r) =>

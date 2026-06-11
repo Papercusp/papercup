@@ -181,10 +181,13 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
     [rows, sort],
   );
 
-  if (!slug) return <div className="pc-adv-empty">No harness selected.</div>;
-  if (error) return <div className="pc-adv-empty">Contributors unavailable: {error}</div>;
-  if (rows === null) return <div className="pc-adv-empty">Loading contributors…</div>;
-  if (rows.length === 0) return <div className="pc-adv-empty">No contributors yet.</div>;
+  // Early returns render before the main tree's <style> mounts — inline the
+  // empty-state look so they're styled regardless.
+  const EMPTY: React.CSSProperties = { padding: 16, fontSize: 13, color: 'var(--fg-mute, #7f9bb4)' };
+  if (!slug) return <div className="pc-adv-empty" style={EMPTY}>No harness selected.</div>;
+  if (error) return <div className="pc-adv-empty" style={EMPTY}>Contributors unavailable: {error}</div>;
+  if (rows === null) return <div className="pc-adv-empty" style={EMPTY}>Loading contributors…</div>;
+  if (rows.length === 0) return <div className="pc-adv-empty" style={EMPTY}>No contributors yet.</div>;
 
   return (
     <div className="pc-adv-contributors">
@@ -261,6 +264,80 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
           );
         })}
       </ul>
+      {/* This panel shipped with NO styles at all (the classes were defined
+          nowhere) — every row rendered as raw inline text. */}
+      <style>{`
+        .pc-adv-contributors { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-1, #0b1220); }
+        .pc-adv-contributors__sortbar {
+          display: flex; gap: 4px; padding: 6px 8px; flex-shrink: 0;
+          border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+        }
+        .pc-adv-contributors__sortbar button {
+          padding: 2px 10px; font-size: 11px; color: var(--fg-mute, #7f9bb4);
+          background: transparent; border: 1px solid transparent;
+          border-radius: 999px; cursor: pointer;
+        }
+        .pc-adv-contributors__sortbar button.is-active,
+        .pc-adv-contributors__sortbar button[aria-selected="true"] {
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+        }
+        .pc-adv-contributors__list {
+          list-style: none; margin: 0; padding: 0;
+          flex: 1; min-height: 0; overflow-y: auto;
+        }
+        .pc-adv-contributors__row {
+          display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+          padding: 7px 12px; font-size: 12.5px;
+          border-bottom: 1px solid color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 45%);
+        }
+        .pc-adv-contributors__row:hover { background: var(--bg-2, rgba(255, 255, 255, 0.045)); }
+        .pc-adv-contributors__who {
+          display: inline-flex; align-items: center; gap: 8px;
+          flex: 1; min-width: 0; color: var(--fg, #e7f7ff); text-decoration: none;
+        }
+        .pc-adv-contributors__who:hover .pc-adv-contributors__name { color: var(--accent-strong, #7dd3fc); }
+        .pc-adv-contributors__avatar { border-radius: 50%; flex-shrink: 0; }
+        .pc-adv-contributors__name {
+          min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          font-weight: 600;
+        }
+        .pc-adv-contributors__login { margin-left: 6px; font-weight: 400; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
+        .pc-adv-contributors__you { font-size: 11px; color: var(--accent-strong, #7dd3fc); }
+        .pc-adv-contributors__tiers {
+          display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
+          font-size: 11px; color: var(--fg-dim, #b9d4e8); font-variant-numeric: tabular-nums;
+        }
+        .pc-adv-contributors__activity {
+          padding: 1px 8px; font-size: 11px; color: var(--fg-dim, #b9d4e8);
+          background: transparent;
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+          border-radius: 999px; cursor: pointer; font-variant-numeric: tabular-nums;
+        }
+        .pc-adv-contributors__activity:hover { color: var(--fg, #e7f7ff); border-color: var(--accent, #38bdf8); }
+        .pc-adv-contributors__activity[aria-expanded="true"] {
+          color: var(--fg, #e7f7ff);
+          background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+          border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
+        }
+        .pc-adv-contributors__joined { flex-shrink: 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
+        .pc-adv-contributors__devices {
+          flex-shrink: 0; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+          background: var(--bg-3, rgba(255, 255, 255, 0.075)); color: var(--fg-mute, #7f9bb4);
+        }
+        .pc-adv-contributors__usage {
+          flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px;
+          padding: 2px 0 2px 30px; font-size: 11px; color: var(--fg-dim, #b9d4e8);
+        }
+        .pc-adv-contributors__usage-kind {
+          padding: 1px 7px; border-radius: 999px;
+          background: var(--bg-2, rgba(255, 255, 255, 0.045));
+          border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+        }
+        .pc-adv-contributors__usage-loading,
+        .pc-adv-contributors__usage-empty { color: var(--fg-mute, #7f9bb4); font-style: italic; }
+      `}</style>
     </div>
   );
 }
