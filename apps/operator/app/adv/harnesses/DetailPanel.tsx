@@ -1072,23 +1072,23 @@ function DetailStyles() {
         white-space: nowrap;
       }
       .pc-adv-detail__run-outcome.is-done {
-        background: color-mix(in oklab, #4ade80, transparent 84%);
-        color: #86efac;
+        background: color-mix(in oklab, var(--good, #34d399), transparent 84%);
+        color: color-mix(in oklab, var(--good, #34d399), white 35%);
       }
       .pc-adv-detail__run-outcome.is-failed {
-        background: color-mix(in oklab, #f87171, transparent 82%);
-        color: #fca5a5;
+        background: color-mix(in oklab, var(--bad, #f87171), transparent 82%);
+        color: color-mix(in oklab, var(--bad, #f87171), white 35%);
       }
       .pc-adv-detail__run-outcome.is-cancelled {
-        background: color-mix(in oklab, #facc15, transparent 84%);
-        color: #fde68a;
+        background: color-mix(in oklab, var(--warn, #fbbf24), transparent 84%);
+        color: color-mix(in oklab, var(--warn, #fbbf24), white 35%);
       }
       .pc-adv-detail__run-outcome.is-running {
-        background: color-mix(in oklab, #38bdf8, transparent 84%);
-        color: #7dd3fc;
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
+        color: var(--accent-strong, #7dd3fc);
       }
       .pc-adv-detail__run-outcome.is-muted {
-        background: rgba(255, 255, 255, 0.06);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
         color: var(--fg-mute, #7f9bb4);
       }
       .pc-adv-detail__run-open {
@@ -1108,7 +1108,7 @@ function DetailStyles() {
       .pc-adv-detail__run-error {
         margin: 1px 0 2px 90px;
         font-size: 11px;
-        color: #fca5a5;
+        color: color-mix(in oklab, var(--bad, #f87171), white 35%);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

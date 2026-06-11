@@ -66,8 +66,20 @@ export default function WorkspaceSwitcher() {
       if (menuRef.current?.contains(target)) return;
       setOpen(false);
     };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      // The rename input handles its own Escape (cancel rename) — keep the menu open.
+      const target = ev.target as HTMLElement | null;
+      if (target && menuRef.current?.contains(target) && target.tagName === 'INPUT') return;
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
     document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [open]);
 
   // Anchor the portaled menu to the trigger button. Recompute on resize/scroll

@@ -34,7 +34,7 @@ interface StatusResponse {
 const STATUS_ACCENT: Record<string, string> = {
   passed: 'var(--good, #4ade80)',
   todo: 'var(--fg-mute)',
-  in_progress: 'var(--sky-300, #7dd3fc)',
+  in_progress: 'var(--accent-strong, #7dd3fc)',
   validating: 'var(--warn, #fbbf24)',
   failing: 'var(--bad, #f87171)',
   blocked: 'var(--bad, #f87171)',

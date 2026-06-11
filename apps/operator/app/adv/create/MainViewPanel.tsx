@@ -51,9 +51,12 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
     }
   }, [view, plan, searching, firstSlug, setPlan]);
 
-  // A loaded plan fills the whole region (single pane) — except in Sessions,
-  // which ignores ?plan. No "← All plans" back button: the sidebar list is
-  // the always-visible picker, so there is no list view to go back to.
+  // A loaded plan fills the whole region (single pane) — only in Plans view:
+  // Inbox/Sessions render their own panes even while ?plan is set (the param
+  // persists so flipping back to Plans restores the open plan). Every
+  // open-plan affordance outside Plans view (e.g. PreviewPanel) sets
+  // view='plans' explicitly. No "← All plans" back button: the sidebar list
+  // is the always-visible picker, so there is no list view to go back to.
   //
   // Wrap in `.pc-plans__main` (the standalone /admin/plans scroller) so the
   // plan editor has its own overflow:auto. PlanDetail itself is overflow:
@@ -61,7 +64,7 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
   // relies on PlansClient's `.pc-plans__main` grid track to scroll the spill.
   // The dock's dockview content box is overflow:hidden, so without this the
   // editor's lower/right content is clipped with no scrollbar ("cut off").
-  if (view !== 'sessions' && plan) {
+  if (view === 'plans' && plan) {
     return (
       <div className="pc-plans__main" style={{ height: '100%' }}>
       <PlanDetail

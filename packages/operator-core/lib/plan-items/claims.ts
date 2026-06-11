@@ -20,6 +20,7 @@
  * NOT federated. NO RLS (coord-family); org handle + workspace_id filter.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { getClaimAuthority } from './claim-authority';
 
 export type LivenessMode = 'availability' | 'activity';
@@ -307,17 +308,25 @@ export async function releaseAllClaimsForOwner(workspaceId: string, owner: strin
 }
 
 /**
- * Renew (push the lease out on) every NON-EXPIRED ACTIVITY-mode claim an owner holds
- * in a workspace — the D-003 per-turn auto-renewal driven by the activity bridge: an
- * owner that is completing turns (reporting activity) is alive + working, so its
- * SHARED-harness activity claims stay; an owner that goes idle (no turns) lets them
- * lapse so others can pull. AVAILABILITY-mode claims are untouched (they renew on any
- * heartbeat and only lapse when the session dies). An ALREADY-EXPIRED claim is NOT
- * resurrected (`expires_ts > now()` guard — a lapsed claim must be re-acquired). We
- * renew all of the owner's activity claims rather than one item: an agent producing
- * turns is active in (at most) the one harness it's working, so this is the owner's
- * live working set; the per-item attribution the activity stream lacks is not needed.
- * Returns the renewed item ids.
+ * Renew (push the lease out on) every NON-EXPIRED claim an owner holds — the D-003
+ * per-turn auto-renewal driven by the activity bridge: an owner that is completing
+ * turns (reporting activity) is alive + working, so its claims stay; an owner that
+ * goes idle (no turns) lets them lapse so others can pull.
+ *
+ * BOTH liveness modes renew here (EI-295 residual, 2026-06-11): the original
+ * activity-only filter assumed availability claims "renew on any heartbeat" — but no
+ * heartbeat path existed, so every availability-mode lane claim (the declare-intent
+ * default on this box, where the shared-resolver sees one human contributor) silently
+ * lapsed ~20min into long turns while the agent kept working — the claim-discipline
+ * watcher then nagged live agents, and the Queen's placement reads went empty. The
+ * property that matters — lapse-on-IDLE — is preserved: an owner producing no turns
+ * renews nothing either way. An ALREADY-EXPIRED claim is NOT resurrected
+ * (`expires_ts > now()` guard — a lapsed claim must be re-acquired). The workspace
+ * filter accepts the plan-store DEFAULT domain alongside the caller's workspace
+ * (the same two-domain split EI-295 fixed in the assignments reader — claims are
+ * keyed by the PLAN-STORE scope, activity by the AGENT workspace). We renew all of
+ * the owner's claims rather than one item: owner ids are globally unique, so this
+ * is exactly the owner's live working set. Returns the renewed item ids.
  *
  * Local (not authority-routed): on a single box the authority is self, so the renewal
  * runs on the same store the claim lives in. Cross-machine the renewal would route to
@@ -331,8 +340,8 @@ export async function renewOwnerActivityClaims(workspaceId: string, owner: strin
     UPDATE harness_shared.plan_item_claims
        SET expires_ts = clock_timestamp() + make_interval(secs => ttl_sec),
            last_activity_ts = clock_timestamp()
-     WHERE workspace_id = ${workspaceId} AND owner = ${owner}
-       AND liveness_mode = 'activity'
+     WHERE (workspace_id = ${workspaceId} OR workspace_id = ${DEFAULT_WORKSPACE_ID})
+       AND owner = ${owner}
        AND expires_ts > clock_timestamp()
     RETURNING item_id
   `;

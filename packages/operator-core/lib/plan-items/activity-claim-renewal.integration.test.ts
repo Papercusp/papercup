@@ -75,13 +75,13 @@ describe('renewOwnerActivityClaims (D-003 per-turn renewal)', () => {
     expect(await secsLeft('P-001', 'sess-A')).toBeGreaterThan(1000);
   });
 
-  it('does NOT renew an AVAILABILITY claim (those renew on any heartbeat, not via the activity bridge)', async () => {
+  it('DOES renew an AVAILABILITY claim too (EI-295 residual: no heartbeat path exists, so turn-active owners must keep their lanes)', async () => {
     await claims.acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-002', owner: 'sess-A', livenessMode: 'availability' });
     await db.sql`UPDATE harness_shared.plan_item_claims SET expires_ts = clock_timestamp() + interval '30 seconds' WHERE item_id = 'P-002'`;
 
     const renewed = await claims.renewOwnerActivityClaims(WS, 'sess-A');
-    expect(renewed).toEqual([]);
-    expect(await secsLeft('P-002', 'sess-A')).toBeLessThan(120); // untouched
+    expect(renewed).toEqual(['P-002']);
+    expect(await secsLeft('P-002', 'sess-A')).toBeGreaterThan(1000); // pushed back out
   });
 
   it('does NOT resurrect an already-LAPSED activity claim (must be re-acquired)', async () => {

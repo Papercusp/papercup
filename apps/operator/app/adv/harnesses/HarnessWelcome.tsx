@@ -119,7 +119,7 @@ export function HarnessWelcomeCard({
           margin: 0;
           font-size: 13px;
           line-height: 1.6;
-          color: rgba(220, 214, 248, 0.75);
+          color: var(--fg-dim, #b9d4e8);
         }
         .pc-harness-welcome__actions {
           display: flex;
@@ -131,7 +131,7 @@ export function HarnessWelcomeCard({
           gap: 6px;
           padding: 8px 14px;
           background: color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-          color: #e7f7ff;
+          color: var(--fg, #e7f7ff);
           border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
           border-radius: 6px;
           font-size: 13px;
@@ -146,12 +146,12 @@ export function HarnessWelcomeCard({
           border: none;
           padding: 2px 4px;
           font-size: 11.5px;
-          color: rgba(220, 214, 248, 0.5);
+          color: var(--fg-mute, #7f9bb4);
           text-decoration: underline;
           cursor: pointer;
         }
         .pc-harness-welcome__dismiss:hover {
-          color: rgba(220, 214, 248, 0.8);
+          color: var(--fg-dim, #b9d4e8);
         }
       `}</style>
     </div>

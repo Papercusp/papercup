@@ -129,7 +129,7 @@ function CardStyles() {
         align-items: center;
         justify-content: center;
         gap: 14px;
-        color: rgba(220, 214, 248, 0.6);
+        color: var(--fg-mute, #7f9bb4);
         font-size: 13px;
         text-align: center;
       }
@@ -139,7 +139,7 @@ function CardStyles() {
         gap: 6px;
         padding: 8px 14px;
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 80%);
-        color: #e7f7ff;
+        color: var(--fg, #e7f7ff);
         border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 55%);
         border-radius: 6px;
         font-size: 13px;
@@ -169,14 +169,14 @@ function CardStyles() {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%);
         border: none;
         border-bottom: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        color: #f3eeff;
+        color: var(--fg, #e7f7ff);
         font-size: 13.5px;
         font-weight: 700;
         text-align: left;
         cursor: pointer;
       }
       .pc-hive-cards__card-head:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 76%); }
-      .pc-hive-cards__card-icon { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #38bdf8), white 18%); }
+      .pc-hive-cards__card-icon { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
       .pc-hive-cards__card-name {
         flex: 1 1 auto;
         min-width: 0;
@@ -184,7 +184,7 @@ function CardStyles() {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-cards__shared { flex: 0 0 auto; color: #7dd3fc; }
+      .pc-hive-cards__shared { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
       .pc-hive-cards__card-count {
         flex: 0 0 auto;
         font-size: 10.5px;
@@ -192,7 +192,7 @@ function CardStyles() {
         padding: 1px 7px;
         border-radius: 999px;
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 70%);
-        color: #e7f7ff;
+        color: var(--fg, #e7f7ff);
         font-variant-numeric: tabular-nums;
       }
       .pc-hive-cards__members {
@@ -212,26 +212,26 @@ function CardStyles() {
         background: transparent;
         border: 1px solid transparent;
         border-radius: 6px;
-        color: rgba(220, 214, 248, 0.82);
+        color: var(--fg-dim, #b9d4e8);
         font-size: 12.5px;
         text-align: left;
         cursor: pointer;
       }
       .pc-hive-cards__member:hover {
         background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%);
-        color: #e7f7ff;
+        color: var(--fg, #e7f7ff);
       }
       .pc-hive-cards__dot {
         flex: 0 0 auto;
         width: 7px;
         height: 7px;
         border-radius: 999px;
-        background: rgba(220, 214, 248, 0.28);
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        background: color-mix(in srgb, var(--fg-dim, #b9d4e8), transparent 72%);
+        box-shadow: inset 0 0 0 1px var(--bg-3, rgba(255, 255, 255, 0.075));
       }
       .pc-hive-cards__dot.is-live {
-        background: #4ade80;
-        box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+        background: var(--good, #34d399);
+        box-shadow: 0 0 6px color-mix(in srgb, var(--good, #34d399), transparent 40%);
       }
       .pc-hive-cards__member-name {
         flex: 1 1 auto;
@@ -240,7 +240,7 @@ function CardStyles() {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-hive-cards__root { flex: 0 0 auto; color: color-mix(in oklab, var(--accent, #38bdf8), white 20%); }
+      .pc-hive-cards__root { flex: 0 0 auto; color: var(--accent-strong, #7dd3fc); }
       .pc-hive-cards__kind {
         flex: 0 0 auto;
         font-size: 9.5px;
@@ -249,8 +249,8 @@ function CardStyles() {
         letter-spacing: 0.02em;
         padding: 1px 5px;
         border-radius: 4px;
-        background: rgba(255, 255, 255, 0.07);
-        color: rgba(220, 214, 248, 0.7);
+        background: var(--bg-3, rgba(255, 255, 255, 0.075));
+        color: var(--fg-mute, #7f9bb4);
       }
     `}</style>
   );

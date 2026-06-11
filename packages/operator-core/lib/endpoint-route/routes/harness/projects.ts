@@ -18,81 +18,24 @@ import {
   mutateHarnessRegistry,
 } from '../../../harness-registry';
 import { harnessDir } from '../../../harness-core';
-import { groupByHive, HIVE_KIND, type HiveGroupProject } from '../../../harness/hive-groups';
+import { HIVE_KIND } from '../../../harness/hive-groups';
+import {
+  buildProjectsLitePayload,
+  bustProjectsLiteCache,
+} from '../../../harness/projects-lite';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 
 // SSR self-fetch site for /harness/<slug>/page.tsx — every page render
-// fans through here. On dev, Turbopack's per-request route re-eval flaps
-// it 14ms-2.3s; under page-load contention the cold path lands at the
-// 2s end and dominates TTFB. Cached.
-//
-// KEYED BY WORKSPACE: the payload is workspace-dependent (loadHarnessRegistry
-// resolves the request-scoped workspace via the x-papercusp-workspace ALS), so
-// a single global entry let one window's payload serve ANOTHER workspace's
-// callers for up to the TTL — a default-workspace window intermittently saw
-// papercusp-workspace's project list and vice versa (dock.spec 404 flap,
-// 2026-06-10 forensics).
-interface LiteCacheEntry {
-  ts: number;
-  payload: unknown;
-}
-const __liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
-type LiteGlobals = typeof globalThis & { [__liteKey]?: Map<string, LiteCacheEntry> };
-const LITE_TTL_MS = 1000;
-
+// fans through here. The payload build + per-workspace cache live in
+// ../../../harness/projects-lite so the sync resolver (harnessProjects.lite,
+// EI-206) shares them.
 const lite = defineTool({
   method: 'GET',
   path: '/harness/projects/lite',
   auth: 'public',
   async handler() {
-    const g = globalThis as LiteGlobals;
-    const now = Date.now();
-    const ws = activeWorkspaceId();
-    const hit = g[__liteKey]?.get(ws);
-    if (hit && now - hit.ts < LITE_TTL_MS) {
-      return Response.json(hit.payload as object);
-    }
-    const reg = await loadHarnessRegistry();
-    // P-012: surface `parent_slug` + `harness_kind` so the AdvShell
-    // selector can render a tree (P-014) without paying the full
-    // /projects round-trip. parent_slug is a scaffold-time harness contract
-    // artifact in .papercusp/config.json (NOT a migrated HarnessConfig field —
-    // deprecate-harness-config-json-2026-06-06 D-005); the file persists for it.
-    const projects = await Promise.all(reg.projects.map(async (p) => {
-      const hDir = harnessDir(p);
-      const cfgPath = join(p.path, '.papercusp', 'config.json');
-      let parentSlug: string | null = null;
-      try {
-        if (existsSync(cfgPath)) {
-          const txt = await readFile(cfgPath, 'utf8');
-          const j = JSON.parse(txt) as { parent_slug?: unknown };
-          parentSlug = typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
-        }
-      } catch { /* ignore — bad config = no parent */ }
-      const isShared = existsSync(join(p.path, '.papercusp', 'shared.json'));
-      return {
-        slug: p.slug,
-        path: p.path,
-        harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
-        // FORMAL Hive membership (shared-hive-federation): a registry field, so
-        // grouping over it needs no PG `hives`-table read (harnesses-tab P-021).
-        hive_slug: (p as { hive_slug?: string }).hive_slug ?? null,
-        parent_slug: parentSlug,
-        is_shared: isShared,
-        hasState: existsSync(hDir),
-        hasSpec: existsSync(join(p.path, 'SPEC.md')),
-        harnessDir: hDir,
-      };
-    }));
-    // P-021 — the registry exposes the Hive grouping NATIVELY so the client
-    // (buildHarnessSelectOptions, member rail, all-mode cards) stops
-    // tree-inferring it. Grouped over the formal `harness_kind:'hive'` home +
-    // `hive_slug`, with `parent_slug` legacy fallback (D-002/D-008 seam).
-    const hives = groupByHive(projects as unknown as HiveGroupProject[]);
-    const payload = { projects, hives };
-    (g[__liteKey] ??= new Map()).set(ws, { ts: Date.now(), payload });
-    return Response.json(payload);
+    return Response.json(await buildProjectsLitePayload());
   },
 });
 
@@ -341,11 +284,8 @@ const create = defineTool({
     }
     // Bust the lite/projects caches so the new member appears in the rail + the
     // hive grouping on the next poll (membership changed the grouping).
-    {
-      const g = globalThis as LiteGlobals;
-      delete g[__liteKey];
-      __projectsCache.expires = 0;
-    }
+    bustProjectsLiteCache();
+    __projectsCache.expires = 0;
 
     // Entry-seam migration (deprecate-harness-config-json-2026-06-06): a harness
     // that ARRIVES with a legacy `.papercusp/config.json` (a gym substrate, an
@@ -414,8 +354,7 @@ const createHive = defineTool({
       return Response.json({ error: res.message, code: res.error }, { status });
     }
     // Bust the registry caches so the new Hive home appears in the selector + grouping.
-    const g = globalThis as LiteGlobals;
-    delete g[__liteKey];
+    bustProjectsLiteCache();
     __projectsCache.expires = 0;
     return Response.json({ ok: true, project: { slug: res.slug, path: res.path }, hive: true, waked: res.waked });
   },
@@ -440,8 +379,7 @@ const remove = defineTool({
     }, undefined, { allowEmpty: true });
     if (!removed) return Response.json({ error: 'not found' }, { status: 404 });
     // Bust the registry caches so the removed harness disappears immediately.
-    const g = globalThis as LiteGlobals;
-    delete g[__liteKey];
+    bustProjectsLiteCache();
     __projectsCache.expires = 0;
     return Response.json({ ok: true });
   },
@@ -576,8 +514,7 @@ const registerSubs = defineTool({
         return additions.length > 0 ? { ...cur, projects: [...cur.projects, ...additions] } : cur;
       });
       // Bust the lite-cache so consumers see the new tree on next poll.
-      const g = globalThis as LiteGlobals;
-      delete g[__liteKey];
+      bustProjectsLiteCache();
       __projectsCache.expires = 0;
     }
 
