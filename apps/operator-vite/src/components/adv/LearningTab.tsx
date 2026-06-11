@@ -35,7 +35,7 @@ import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbel
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
-import type { ScoutSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
+import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge'] as const;
 type LView = (typeof LVIEWS)[number];
@@ -672,19 +672,44 @@ function ApiaryView() {
 
 // ─── Scout view (idea radar — routed ideas + tick health) ────────────────────
 
-/** Rail → human label + accent for the routed-ideas rows. */
+/** Rail → human label + accent for the routed-ideas rows. The canonical set is
+    RoutedRail ('plan' | 'gym' | 'improvement' | 'instance') — open set, render
+    whatever arrives. */
 const RAIL_META: Record<string, { label: string; desc: string; color: string }> = {
-  plan: { label: 'plan', desc: 'Routed into plan drafts for review', color: '#7dd3fc' },
-  gym: { label: 'gym', desc: 'Routed into gym experiments', color: '#34d399' },
-  wi: { label: 'work item', desc: 'Routed into work items', color: '#a78bfa' },
+  plan: { label: 'plan draft', desc: 'A draft plan awaiting Queen/owner triage — open it in the Create tab', color: '#7dd3fc' },
+  gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: '#34d399' },
+  improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: '#a78bfa' },
+  instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
 };
 
 function ScoutView() {
   const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
+  const recent = snap?.recent ?? [];
   const tick = snap?.lastTick ?? null;
   const tickMs = tick?.at ? Date.parse(tick.at) : NaN;
+
+  // Deep-links: a routed idea opens its artifact's home surface (all nuqs, so
+  // agents can drive the same navigation via ui:dispatch).
+  const [, setTab] = useQueryState('tab', parseAsString);
+  const [, setCreateView] = useQueryState('view', parseAsString);
+  const [, setPlanSel] = useQueryState('plan', parseAsString);
+  const [, setLviewRaw] = useQueryState('lview', parseAsString);
+  const openRouted = (item: ScoutRoutedItem) => {
+    if (item.rail === 'plan' && item.routedRef.startsWith('plan:')) {
+      void setPlanSel(item.routedRef.slice('plan:'.length));
+      void setCreateView('plans');
+      void setTab('plans');
+    } else if (item.rail === 'gym') {
+      void setLviewRaw('gym');
+    } else if (item.rail === 'instance') {
+      void setLviewRaw('benchmark');
+    } else {
+      // improvement (wi:EI-…) and anything unknown → the improvements backlog.
+      void setLviewRaw('improvements');
+    }
+  };
 
   return (
     <section className="pc-learning__section">
@@ -707,7 +732,7 @@ function ScoutView() {
       </div>
 
       <div className="pc-learning__sectionhead">
-        <h2>Routed ideas by rail</h2>
+        <h2>Routed ideas</h2>
         <button
           type="button"
           className="pc-learning__refresh"
@@ -723,23 +748,41 @@ function ScoutView() {
         <p className="pc-learning__empty">Loading the scout ledger…</p>
       ) : sync.error ? (
         <p className="pc-learning__empty">Scout feed unavailable: {sync.error.message}</p>
-      ) : rails.length === 0 ? (
+      ) : recent.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Radar size={20} aria-hidden />
           <strong>Scout has not routed ideas yet</strong>
-          <span>Scout sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, or a work item, and it appears here.</span>
+          <span>Scout sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, an improvement work-item, or an instance candidate, and it appears here.</span>
         </div>
       ) : (
         <ul className="pc-learning__list">
-          {rails.map((r) => {
-            const meta = RAIL_META[r.rail] ?? { label: r.rail, desc: 'Routed ideas', color: '#94a3b8' };
+          {recent.map((item) => {
+            const meta = RAIL_META[item.rail] ?? { label: item.rail, desc: 'Routed idea', color: '#94a3b8' };
+            const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
             return (
-              <li key={r.rail} className="pc-learning__row" title={meta.desc}>
+              <li
+                key={item.ideaId}
+                className="pc-learning__row pc-learning__row--link"
+                role="button"
+                tabIndex={0}
+                onClick={() => openRouted(item)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openRouted(item);
+                  }
+                }}
+                title={`${meta.desc}\n${item.routedRef}`}
+              >
                 <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
-                <span className="pc-learning__id">{r.rail}</span>
-                <span className="pc-learning__title">{meta.desc}</span>
+                <span className="pc-learning__id" style={{ color: meta.color }}>{meta.label}</span>
+                <span className="pc-learning__title">{item.title ?? item.routedRef}</span>
                 <span className="pc-learning__meta">
-                  <span className="pc-learning__score" title="Ideas routed into this rail">{r.count}</span>
+                  <span className="pc-learning__chip pc-learning__chip--idea" title="Creative lens that produced this idea">{item.lens}</span>
+                  {item.outcome && item.outcome !== 'pending' ? (
+                    <span className="pc-learning__score" title="Outcome from the change feed">{item.outcome}</span>
+                  ) : null}
+                  <span className="pc-learning__age">{!Number.isNaN(when) ? whenLabel(when) : ''}</span>
                 </span>
               </li>
             );
@@ -979,6 +1022,8 @@ function LearningStyles() {
         background: var(--bg-2, rgba(255, 255, 255, 0.03));
       }
       .pc-learning__sev { width: 4px; height: 100%; min-height: 18px; border-radius: 3px; }
+      .pc-learning__row--link { cursor: pointer; }
+      .pc-learning__row--link:hover, .pc-learning__row--link:focus-visible { border-color: var(--accent, rgba(125, 211, 252, 0.45)); background: var(--bg-3, rgba(255, 255, 255, 0.06)); }
       .pc-learning__id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); white-space: nowrap; }
       .pc-learning__title { font-size: 12.5px; color: var(--fg, #e7f7ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pc-learning__muted { color: var(--fg-mute, #7f9bb4); }

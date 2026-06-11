@@ -35,6 +35,7 @@ export function buildScoutPlanTemplate(args: {
 title: ${args.title}
 slug: ${args.slug}
 status: draft
+origin: scout
 created: ${args.date}
 updated: ${args.date}
 ---

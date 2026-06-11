@@ -39,8 +39,10 @@ import {
  * ──────────────────────────────────────────────────────────────────────── */
 
 export interface CapturePortOptions {
-  /** Who filed it (P-010 source-tag). Default 'Queen' — Scout is prompt-free, the Queen gates (D-010). */
-  sourceRole?: 'Queen' | 'system';
+  /** Who filed it (P-010 source-tag). Default 'Scout' — the artifact-side stamp that
+      makes scout-routed EIs filterable (`improvement-source:Scout` topic); the Queen
+      still gates them (D-010). */
+  sourceRole?: 'Queen' | 'system' | 'Scout';
   /** Improvement scope ('operator' or 'harness:<slug>'). Default 'operator'. */
   scope?: string;
   /** Stamp on each capture (for the change-feed drill-back). Default 'scout-loop'. */
@@ -80,7 +82,7 @@ export function buildCapturePort(
       kind: opts.kind ?? 'change',
       body: improvementBody(proposal),
       scope: opts.scope ?? 'operator',
-      sourceRole: opts.sourceRole ?? 'Queen',
+      sourceRole: opts.sourceRole ?? 'Scout',
       foundDuring: opts.foundDuring ?? 'scout-loop',
     });
     if (res.created && res.issue) {

@@ -98,6 +98,9 @@ export interface PlanListRow {
    *  null when no items are open. Items without an `importance:` keyword
    *  count as 'normal'. (Undefined from a server predating the field.) */
   maxImportance: Importance | null;
+  /** 'scout' when the Scout loop routed this plan (ledger-derived server-side).
+   *  (May arrive undefined from a server predating the field.) */
+  origin?: 'scout' | null;
 }
 
 export interface PlanItem {

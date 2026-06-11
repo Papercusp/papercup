@@ -161,6 +161,8 @@ export default defineTool({
     type AugmentedRow = ListRow & {
       startStatus: 'started' | 'paused' | 'done' | null;
       priority: number | null;
+      /** 'scout' when the plan was routed by the Scout loop (ledger-derived) — the Create-tab origin filter. */
+      origin: 'scout' | null;
     };
     const augmentedRows: AugmentedRow[] = [];
     const seenRowKeys = new Set<string>();
@@ -174,6 +176,19 @@ export default defineTool({
       allBlocked = await getAllBlockedPlanItems();
     } catch {
       // Non-fatal — no issue-block overlay.
+    }
+
+    // Scout provenance: one batched ledger read (scout_routed_ideas is the
+    // canonical record of what the Scout loop routed — frontmatter need not be
+    // parsed, and pre-stamp plans are covered retroactively). Non-fatal.
+    const scoutPlanRefs = new Set<string>();
+    try {
+      const { readRoutedIdeas } = await import('../../scout/routed-ledger');
+      for (const r of await readRoutedIdeas()) {
+        if (r.rail === 'plan') scoutPlanRefs.add(r.routedRef);
+      }
+    } catch {
+      // Non-fatal — origin degrades to null.
     }
 
     for (const harnessSlug of perHarness) {
@@ -269,6 +284,7 @@ export default defineTool({
           startStatus: reconcileStartStatus(row.opStatus, status),
           priority: row.opPriority,
           maxImportance,
+          origin: scoutPlanRefs.has(`plan:${slug}`) ? ('scout' as const) : null,
         });
       }
     }

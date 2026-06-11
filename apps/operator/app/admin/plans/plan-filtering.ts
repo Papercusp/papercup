@@ -20,6 +20,8 @@ export interface PlanFilterState {
   legacy: boolean;
   inbox: boolean;
   actionable: boolean;
+  /** Only plans the Scout loop routed (origin 'scout', ledger-derived server-side). */
+  scout: boolean;
 }
 
 /**
@@ -44,6 +46,9 @@ export function applyPlanFilters(
   }
   if (f.actionable) {
     working = working.filter((p) => ((p.itemCounts ?? {}).todo ?? 0) > 0);
+  }
+  if (f.scout) {
+    working = working.filter((p) => p.origin === 'scout');
   }
   const needle = query.trim().toLowerCase();
   if (!needle) return working;

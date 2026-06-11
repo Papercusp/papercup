@@ -38,9 +38,27 @@ export interface ScoutTickSummary {
   detail: string | null;
 }
 
+/** One routed idea, as the Scout view lists it (the ledger row, UI-shaped). */
+export interface ScoutRoutedItem {
+  ideaId: string;
+  /** Creative lens that produced the idea (analogical | reframing | …). */
+  lens: string;
+  /** The rail it routed into: 'plan' | 'gym' | 'improvement' | 'instance' (open set). */
+  rail: string;
+  /** Change-feed ref of the created artifact: "plan:<slug>" | "wi:EI-…" | "gym:…". */
+  routedRef: string;
+  title: string | null;
+  /** ISO timestamp of routing. */
+  routedAt: string | null;
+  /** Cached outcome from the change-feed join (won/lost/pending), when classified. */
+  outcome: string | null;
+}
+
 export interface ScoutSnapshot {
   totalRouted: number;
   railCounts: ScoutRailCount[];
+  /** Newest routed ideas (ledger rows, newest-first) — the per-item view across ALL rails. */
+  recent: ScoutRoutedItem[];
   /** Newest scout tick, or null when none recorded (or the table doesn't exist yet). */
   lastTick: ScoutTickSummary | null;
 }
@@ -105,6 +123,26 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
   }));
   const totalRouted = railCounts.reduce((sum, r) => sum + r.count, 0);
 
+  // The per-item half: newest ledger rows so the tab can show WHICH ideas
+  // routed where (owner ask 2026-06-11), not just counts. routed_at is
+  // epoch-ms (bigint) in migration 194.
+  const items = (await sql`
+    SELECT idea_id, lens, rail, routed_ref, title, routed_at, outcome
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id = ${workspaceId}
+     ORDER BY routed_at DESC
+     LIMIT 50
+  `) as Array<Record<string, unknown>>;
+  const recent: ScoutRoutedItem[] = items.map((r) => ({
+    ideaId: String(r.idea_id ?? ''),
+    lens: String(r.lens ?? ''),
+    rail: String(r.rail ?? ''),
+    routedRef: String(r.routed_ref ?? ''),
+    title: typeof r.title === 'string' && r.title ? r.title : null,
+    routedAt: toIso(typeof r.routed_at === 'string' ? Number(r.routed_at) : r.routed_at),
+    outcome: typeof r.outcome === 'string' && r.outcome ? r.outcome : null,
+  }));
+
   // scout_ticks lands with P-034 (a peer owns the migration); until then — and
   // under any column-shape drift — omit the tick half rather than failing the
   // routed-ideas half.
@@ -123,5 +161,5 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     }
   }
 
-  return { totalRouted, railCounts, lastTick };
+  return { totalRouted, railCounts, recent, lastTick };
 }
