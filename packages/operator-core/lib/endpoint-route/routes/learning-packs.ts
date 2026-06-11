@@ -152,4 +152,40 @@ const setEnabled = defineTool({
   },
 });
 
-export default [install, upgrade, uninstall, setEnabled];
+/**
+ * POST /learning-packs/fetch-from-comb — stage a Comb-listed learning pack
+ * locally (P-017): resolve the listing's repo coords, shallow-clone, validate,
+ * copy under ~/.papercusp/learning-packs. The pack then appears in
+ * learningPacks.list and installs into a hive through the normal review.
+ */
+const fetchFromComb = defineTool({
+  method: 'POST',
+  path: '/learning-packs/fetch-from-comb',
+  auth: 'loopback',
+  timeoutSec: 180,
+  async handler(req) {
+    const gated = await gateApiRoute(req, FLAGS.LEARNING_PACKS);
+    if (gated) return gated;
+    let body: { listingId?: string; githubUrl?: string; listingRef?: string } = {};
+    try { body = (await req.json()) as typeof body; } catch { /* empty */ }
+
+    let githubUrl = typeof body.githubUrl === 'string' ? body.githubUrl.trim() : '';
+    let listingRef = typeof body.listingRef === 'string' ? body.listingRef.trim() : undefined;
+    if (!githubUrl && body.listingId) {
+      const { resolveListingCoords } = await import('../../cupboard/install-io');
+      const resolved = await resolveListingCoords(String(body.listingId));
+      if (!resolved) {
+        return Response.json({ ok: false, error: 'listing_not_found_or_unreachable' }, { status: 404 });
+      }
+      githubUrl = resolved.githubUrl;
+      listingRef = listingRef ?? resolved.listingRef;
+    }
+    if (!githubUrl) return badRequest('githubUrl or listingId required');
+
+    const { fetchLearningPackFromRepo } = await import('../../learning-packs/install-from-repo');
+    const result = await fetchLearningPackFromRepo({ githubUrl, ...(listingRef ? { listingRef } : {}) });
+    return Response.json(result, { status: result.ok ? 200 : 422 });
+  },
+});
+
+export default [install, upgrade, uninstall, setEnabled, fetchFromComb];

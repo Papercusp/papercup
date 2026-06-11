@@ -163,3 +163,14 @@ export async function loadLearningPack(
   }
   return null;
 }
+
+/**
+ * Read + validate one pack DIRECTORY directly (no root resolution) — the
+ * fetch-from-Comb path (P-017) validates a cloned repo's pack dir before
+ * copying it under the installed root. Returns null + errors when invalid.
+ */
+export async function loadLearningPackFromDir(
+  dir: string,
+): Promise<{ loaded?: LoadedLearningPack; errors: string[] }> {
+  return readPackDir(dir, 'installed');
+}

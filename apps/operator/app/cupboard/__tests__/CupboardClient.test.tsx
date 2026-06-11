@@ -113,7 +113,8 @@ describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', ()
     { kind: 'blueprint', action: 'fork', label: 'Fork' },
     // ('snapshot → fork' removed — snapshot kind retired by retire-snapshots-instance-spec-2026-06-09 D-005.)
     { kind: 'plugin', action: 'install', label: 'Install' },
-    { kind: 'pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (migration 006)
+    { kind: 'tool-pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (mig 006, renamed mig 008)
+    { kind: 'learning-pack', action: 'install', label: 'Install' }, // curated hive learnings (learning-packs mig 008)
   ];
   for (const c of cases) {
     it(`${c.kind} → ${c.action} action`, () => {

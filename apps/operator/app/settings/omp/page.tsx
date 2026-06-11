@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsString, parseAsArrayOf } from 'nuqs';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 
@@ -30,13 +31,18 @@ interface OmpSection { name: string; settings: OmpSetting[]; }
 
 type RowState = 'idle' | 'saving' | 'saved' | 'error';
 
-const SECTIONS_OPEN_BY_DEFAULT = new Set(['providers']);
+const SECTIONS_OPEN_BY_DEFAULT = ['providers'];
 
 export default function OmpSettingsPage(): JSX.Element {
   const [sections, setSections] = useState<OmpSection[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [openSections, setOpenSections] = useState<Set<string>>(new Set(SECTIONS_OPEN_BY_DEFAULT));
+  // URL-backed view state (nuqs) — agents can read + drive the filter and
+  // section expansion; survives reloads/deep-links.
+  const [query, setQuery] = useQueryState('q', parseAsString.withDefault(''));
+  const [openSections, setOpenSections] = useQueryState(
+    'open',
+    parseAsArrayOf(parseAsString).withDefault(SECTIONS_OPEN_BY_DEFAULT),
+  );
   const [rowStates, setRowStates] = useState<Record<string, { state: RowState; error?: string }>>({});
 
   const refresh = async () => {
@@ -70,12 +76,12 @@ export default function OmpSettingsPage(): JSX.Element {
   // Auto-expand sections that have search matches.
   useEffect(() => {
     if (!query || !filtered) return;
-    setOpenSections((prev) => {
+    void setOpenSections((prev) => {
       const next = new Set(prev);
       for (const sec of filtered) next.add(sec.name);
-      return next;
+      return next.size === prev.length ? prev : [...next];
     });
-  }, [query, filtered]);
+  }, [query, filtered, setOpenSections]);
 
   const setRow = (key: string, s: { state: RowState; error?: string }) => {
     setRowStates((prev) => ({ ...prev, [key]: s }));
@@ -162,7 +168,7 @@ export default function OmpSettingsPage(): JSX.Element {
         <input
           type="search"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => void setQuery(e.target.value || null)}
           placeholder="Filter settings (e.g. web_search, hindsight, theme)…"
           style={S.searchInput}
           aria-label="Filter omp settings"
@@ -174,17 +180,15 @@ export default function OmpSettingsPage(): JSX.Element {
 
       <div style={S.sections}>
         {filtered?.map((sec) => {
-          const isOpen = openSections.has(sec.name);
+          const isOpen = openSections.includes(sec.name);
           return (
             <section key={sec.name} style={S.section}>
               <button
                 style={S.sectionHeader}
                 onClick={() => {
-                  setOpenSections((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(sec.name)) next.delete(sec.name); else next.add(sec.name);
-                    return next;
-                  });
+                  void setOpenSections((prev) => prev.includes(sec.name)
+                    ? prev.filter((n) => n !== sec.name)
+                    : [...prev, sec.name]);
                 }}
                 aria-expanded={isOpen}
               >

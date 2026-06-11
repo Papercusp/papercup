@@ -96,10 +96,50 @@ export default function CupboardDetailPage() {
       void installBlueprintFromCupboard();
       return;
     }
-    // plugin | pack — the remaining install kinds — clone into global-plugins
-    // directly (EI-27). Replaces the dead `/harness?cupboardListing=…`
-    // navigation no consumer ever read.
+    // learning-pack (learning-packs P-017): fetch the pack files into the
+    // installed root — it then appears in the creation picker + Learning tab,
+    // and lands in a hive only through the normal conflict review.
+    if (kind === 'learning-pack') {
+      void fetchLearningPackFromComb();
+      return;
+    }
+    // plugin | tool-pack — the remaining install kinds — clone into
+    // global-plugins directly (EI-27). Replaces the dead
+    // `/harness?cupboardListing=…` navigation no consumer ever read.
     void installPluginFromCupboard();
+  };
+
+  // learning-pack Install (learning-packs P-017): stage the pack locally.
+  // Nothing is injected into any agent by the fetch itself — adding it to a
+  // hive happens in the Learning tab, through the install conflict review.
+  const fetchLearningPackFromComb = async () => {
+    if (!listing || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/learning-packs/fetch-from-comb', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ listingId: listing.id }),
+      });
+      const d = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        pack?: { id: string; title: string; version: string; itemCount: number };
+        error?: string;
+        detail?: string;
+      };
+      if (!r.ok || !d.ok || !d.pack) {
+        toast.error(`Fetch failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
+        return;
+      }
+      toast.success(
+        `Learning pack "${d.pack.title}" v${d.pack.version} fetched (${d.pack.itemCount} learnings). ` +
+          'Add it to a hive from the Learning tab → Learnings — incoming learnings go through the conflict review there.',
+      );
+    } catch (e) {
+      toast.error(`Fetch crashed: ${(e as Error)?.message ?? String(e)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const installBlueprintFromCupboard = async () => {
@@ -290,7 +330,7 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
           {listing.listing_ref && (
-            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'pack' ? 'Pack' : 'Listing'}>
+            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'tool-pack' ? 'Tool pack' : kind === 'learning-pack' ? 'Learning pack' : 'Listing'}>
               <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}>{listing.listing_ref}</span>
             </MetaRow>
           )}
@@ -335,6 +375,12 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
         </div>
+
+        {/* learning-pack: every learning is readable BEFORE install — the
+            pre-install trust surface (learning-packs P-015, D-007). */}
+        {kind === 'learning-pack' && repoSlug && (
+          <LearningPackContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
+        )}
 
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
             join is retired; nothing to act on). */}
@@ -398,6 +444,96 @@ export default function CupboardDetailPage() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * LearningPackContents — read every learning BEFORE installing
+ * (learning-packs-2026-06-11 P-015): the pre-install trust surface for
+ * instruction-carrying content. Fetched straight from the public GitHub repo
+ * (contents API + raw download; unauthenticated, so a rate-limit or network
+ * miss degrades to the "browse on GitHub" link, never an error wall).
+ * Convention: the pack lives at `learning-packs/<listing_ref>/` (P-016's
+ * export shape) — repo-root manifests also resolve.
+ */
+function LearningPackContents({ repoSlug, listingRef }: { repoSlug: string; listingRef: string | null }) {
+  const [items, setItems] = useState<Array<{ name: string; text: string }> | null>(null);
+  const [contentsError, setContentsError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open || items !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const dir = listingRef ? `learning-packs/${listingRef}` : '';
+        const listRes = await fetch(
+          `https://api.github.com/repos/${repoSlug}/contents/${dir}`,
+          { headers: { Accept: 'application/vnd.github+json' } },
+        );
+        if (!listRes.ok) throw new Error(`GitHub contents → ${listRes.status}`);
+        const files = (await listRes.json()) as Array<{ name: string; download_url: string | null; type: string }>;
+        const mds = files.filter((f) => f.type === 'file' && f.name.endsWith('.md') && f.download_url).slice(0, 50);
+        const fetched = await Promise.all(
+          mds.map(async (f) => {
+            const r = await fetch(f.download_url as string);
+            return { name: f.name.replace(/\.md$/, ''), text: r.ok ? await r.text() : '(unreadable)' };
+          }),
+        );
+        if (!cancelled) setItems(fetched);
+      } catch (e) {
+        if (!cancelled) setContentsError((e as Error).message ?? String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, items, repoSlug, listingRef]);
+
+  return (
+    <div style={{ marginTop: SIZES.md, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: RADIUS.lg, padding: SIZES.md }} data-testid="learning-pack-contents">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.text, fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600, padding: 0 }}
+        aria-expanded={open}
+      >
+        {open ? '▾' : '▸'} Browse the learnings before installing
+      </button>
+      <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0' }}>
+        These texts are injected into your agents&rsquo; recall once installed into a hive — read them first.
+        Installing also runs a per-item conflict review against the hive&rsquo;s existing learnings.
+      </p>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {contentsError ? (
+            <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+              Couldn&rsquo;t fetch the pack contents ({contentsError}) —{' '}
+              <a
+                href={`https://github.com/${repoSlug}${listingRef ? `/tree/HEAD/learning-packs/${listingRef}` : ''}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent-soft)' }}
+              >
+                browse it on GitHub
+              </a>
+              .
+            </p>
+          ) : items === null ? (
+            <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>Loading…</p>
+          ) : (
+            items
+              .filter((f) => f.name !== 'README')
+              .map((f) => (
+                <details key={f.name} style={{ marginBottom: 6 }}>
+                  <summary style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.text, cursor: 'pointer' }}>{f.name}</summary>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: FONTS.mono, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0 14px' }}>{f.text}</pre>
+                </details>
+              ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

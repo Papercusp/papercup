@@ -14,7 +14,8 @@ export default [
   defineTool({
     method: 'GET',
     path: '/credentials/search-providers',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler() {
       return Response.json(await readMaskedView());
     },
@@ -22,7 +23,8 @@ export default [
   defineTool({
     method: 'POST',
     path: '/credentials/search-providers',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
       let body: unknown;
       try {

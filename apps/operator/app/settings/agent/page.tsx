@@ -9,9 +9,15 @@
  * PER-FIELD AUTO-SAVE (owner ask 2026-06-11): every control persists
  * automatically (debounced) — there is no Save button. This is the canonical
  * macOS-System-Preferences settings shape (design libraries §form-patterns;
- * voice/backups/operator are the sibling sites). Invalid rows (bad model
- * spec, duplicate tier name) are EXCLUDED from the saved config and flagged
- * inline — they never block the rest of the page from saving.
+ * voice/backups/operator are the sibling sites).
+ *
+ * VALIDATE BEFORE PERSIST (owner ask 2026-06-11, round 2): text inputs are
+ * DraftInput/DraftTextarea — typing stays local and only commits on blur /
+ * Enter, after validation, so a mid-typed or wrong value never goes live.
+ * Cross-field issues (duplicate tier name, incomplete row) HOLD that section
+ * at its last saved value with an inline flag — an invalid edit can never
+ * delete a stored setting (the old exclude-from-save behavior wiped rows on
+ * reload). Assembly semantics live in assemble-config.ts (unit-tested).
  *
  * Persisted via POST /api/agent-config (PG operator_agent_config). Changes
  * take effect for in-process spawns immediately (the route mirrors into
@@ -20,28 +26,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useDebouncedSave } from '../../harness/useDebouncedSave';
-import { FormField } from '@/lib/forms';
+import { DraftInput, DraftTextarea, FormField } from '@/lib/forms';
 import { Select } from '../../harness/Select';
 import {
   AGENT_BACKENDS,
   DEFAULT_MODEL_TIERS,
-  SURFACE_KEYS,
-  isValidModelSpec,
   type AgentBackend,
   type ModelTier,
   type SurfaceKey,
+  SURFACE_KEYS,
 } from '@papercusp/operator-core/lib/agent-config-constants';
+import {
+  assembleAgentConfig,
+  modelSpecError,
+  modelsJsonError,
+  tierToRow,
+  type GlobalBackend,
+  type LastValidSections,
+  type SurfaceChoice,
+  type TierRow,
+} from './assemble-config';
 
 /** Options for a backend pick that may also inherit (per-surface, per-tier). */
 const BACKEND_CHOICE_OPTIONS = [
   { value: 'inherit', label: 'Inherit global' },
   ...AGENT_BACKENDS.map((b) => ({ value: b, label: b })),
 ];
-
-/** Local select value: a concrete backend, or 'inherit' = omit from the map. */
-type SurfaceChoice = 'inherit' | AgentBackend;
-
-type GlobalBackend = 'auto' | AgentBackend;
 
 interface AgentConfig {
   backend: GlobalBackend;
@@ -78,42 +88,6 @@ const ROLE_HINTS = ['operator', 'orchestrator', 'scoper', 'worker', 'validator',
     queen's per-task tier pick applies (others can be added via the JSON). */
 const CEILING_ROLES = ['bee', 'worker', 'validator', 'scoper', 'reviewer', 'scanner', 'judge'];
 
-/** The claude CLI's bare model aliases (verified against the installed CLI
-    2026-06-11: `claude -p --model <x>` — `fable5`/`opush` are rejected).
-    Used for a SOFT typo warning only: full ids (claude-opus-4-8), provider
-    ids (anthropic/…, gpt-5.5) and other backends' ids are always allowed. */
-const KNOWN_CLAUDE_ALIASES = new Set(['haiku', 'sonnet', 'opus', 'fable']);
-
-/** Model-id half of a `<modelId>[:<effort>]` spec. */
-function specId(spec: string): string {
-  const lastColon = spec.lastIndexOf(':');
-  if (lastColon <= 0) return spec;
-  const suffix = spec.slice(lastColon + 1);
-  return ['low', 'medium', 'high', 'xhigh', 'max'].includes(suffix) ? spec.slice(0, lastColon) : spec;
-}
-
-/** Soft typo check: a bare lowercase word that isn't a known claude alias is
-    almost always a misspelling (opush, fable5). Anything with -, /, or . is
-    a full/provider id and never flagged. */
-function aliasWarning(spec: string): string | null {
-  const id = specId(spec.trim());
-  if (!/^[a-z][a-z0-9]*$/.test(id)) return null;
-  if (KNOWN_CLAUDE_ALIASES.has(id)) return null;
-  return `"${id}" is not a known claude alias (haiku · sonnet · opus · fable) — full model ids like claude-opus-4-8 are also fine`;
-}
-
-/** Mid-edit tier rows (drafts, so plain useState like the other form fields).
-    `backend: ''` = inherit the global agent command. */
-interface TierRow {
-  name: string;
-  spec: string;
-  backend: '' | AgentBackend;
-  /** When the queen should pick this tier — injected into her launch prompt. */
-  when: string;
-}
-
-const tierToRow = (t: ModelTier): TierRow => ({ name: t.name, spec: t.spec, backend: t.backend ?? '', when: t.when ?? '' });
-
 export default function AgentSettingsPage() {
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -144,9 +118,10 @@ export default function AgentSettingsPage() {
   // Auto-save plumbing: the last server-acknowledged config (stringified) —
   // hydration echoes and no-op edits compare equal and skip the POST.
   const lastSavedRef = useRef<string | null>(null);
-  // Last VALID parsed models map — an in-progress (invalid) JSON edit keeps
-  // saving the previous valid map instead of blocking the page.
-  const lastValidModelsRef = useRef<Record<string, string>>({});
+  // Last server-acknowledged value of each holdable section — what assembly
+  // substitutes while a section is invalid, so a bad edit can never delete a
+  // stored setting (assemble-config.ts has the full story).
+  const lastValidRef = useRef<LastValidSections>({ models: {}, surfaceModels: {}, tiers: [], tierCeilings: {} });
 
   const load = useCallback(async () => {
     try {
@@ -156,7 +131,12 @@ export default function AgentSettingsPage() {
       setSnapshot(d);
       setBackend(d.config.backend);
       setCmd(d.config.cmd);
-      lastValidModelsRef.current = d.config.models ?? {};
+      lastValidRef.current = {
+        models: d.config.models ?? {},
+        surfaceModels: d.config.surfaceModels ?? {},
+        tiers: d.config.tiers ?? [],
+        tierCeilings: d.config.tierCeilings ?? {},
+      };
       setModelsJson(Object.keys(d.config.models).length > 0 ? JSON.stringify(d.config.models, null, 2) : '');
       const fetched = d.config.backends ?? {};
       setSurfaceBackends(
@@ -180,96 +160,22 @@ export default function AgentSettingsPage() {
   useEffect(() => { void load(); }, [load]);
 
   // ── Assemble the persistable config + inline problems ──────────────────────
-  // Invalid pieces are EXCLUDED from the save (and flagged inline) so one bad
-  // row never blocks the rest of the page from persisting.
-  const { persistable, problems, warnings } = useMemo(() => {
-    const problems: string[] = [];
-    const warnings: string[] = [];
-
-    let models = lastValidModelsRef.current;
-    if (modelsJson.trim()) {
-      try {
-        const parsed = JSON.parse(modelsJson) as unknown;
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('must be a JSON object of { role: model }');
-        }
-        const next: Record<string, string> = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          if (typeof v !== 'string') throw new Error(`"${k}" must map to a string model id`);
-          next[k] = v;
-        }
-        models = next;
-        lastValidModelsRef.current = next;
-      } catch (err) {
-        problems.push(`per-role models JSON not saved: ${(err as Error).message}`);
-      }
-    } else {
-      models = {};
-      lastValidModelsRef.current = {};
-    }
-
-    const backends: Partial<Record<SurfaceKey, AgentBackend>> = {};
-    const surfaceModelsOut: Partial<Record<SurfaceKey, string>> = {};
-    for (const k of SURFACE_KEYS) {
-      const choice = surfaceBackends[k];
-      if (choice !== 'inherit') backends[k] = choice;
-      const m = surfaceModels[k]?.trim();
-      if (m) surfaceModelsOut[k] = m;
-    }
-
-    const cleanedTiers: ModelTier[] = [];
-    const seenNames = new Set<string>();
-    for (const [i, row] of tierRows.entries()) {
-      const name = row.name.trim();
-      const spec = row.spec.trim();
-      if (!name && !spec) continue; // blank row — ignored
-      if (!name || !spec) {
-        problems.push(`tier row ${i + 1} not saved: needs both a name and a model spec`);
-        continue;
-      }
-      if (seenNames.has(name.toLowerCase())) {
-        problems.push(`tier row ${i + 1} not saved: duplicate name "${name}"`);
-        continue;
-      }
-      if (!isValidModelSpec(spec)) {
-        problems.push(`tier "${name}" not saved: invalid spec "${spec}" (shape: <modelId>[:<effort>], no spaces)`);
-        continue;
-      }
-      const warn = aliasWarning(spec);
-      if (warn) warnings.push(`tier "${name}": ${warn}`);
-      seenNames.add(name.toLowerCase());
-      cleanedTiers.push({
-        name,
-        spec,
-        ...(row.backend ? { backend: row.backend } : {}),
-        ...(row.when.trim() ? { when: row.when.trim() } : {}),
-      });
-    }
-    // Store [] when the rows still equal the committed defaults — an untouched
-    // menu keeps tracking future default changes instead of freezing a copy.
-    const isDefaultMenu = JSON.stringify(cleanedTiers) === JSON.stringify(DEFAULT_MODEL_TIERS);
-    const tiersOut = isDefaultMenu ? [] : cleanedTiers;
-
-    const ceilingsOut: Record<string, string> = {};
-    for (const [role, tier] of Object.entries(tierCeilings)) {
-      if (!tier) continue;
-      if (!seenNames.has(tier.toLowerCase())) {
-        problems.push(`ceiling for "${role}" not saved: names unknown tier "${tier}"`);
-        continue;
-      }
-      ceilingsOut[role] = tier;
-    }
-
-    const persistable: AgentConfig = {
+  // All inputs here are COMMITTED values (DraftInput gates keystrokes behind
+  // blur + validation). Cross-field problems hold their section at the last
+  // saved value — flagged inline, never silently dropped.
+  const { persistable, problems } = useMemo(() => {
+    const result = assembleAgentConfig({
       backend,
       cmd,
-      models,
-      backends,
-      surfaceModels: surfaceModelsOut,
-      tiers: tiersOut,
-      tierCeilings: ceilingsOut,
-    };
-    return { persistable, problems, warnings };
+      modelsJson,
+      surfaceBackends,
+      surfaceModels,
+      tierRows,
+      tierCeilings,
+      lastValid: lastValidRef.current,
+    });
+    lastValidRef.current = result.lastValid;
+    return result;
   }, [backend, cmd, modelsJson, surfaceBackends, surfaceModels, tierRows, tierCeilings]);
 
   const hydrated = !loading && snapshot != null;
@@ -280,12 +186,18 @@ export default function AgentSettingsPage() {
       const body = JSON.stringify(v);
       // Hydration echo / no-op edit — nothing changed since the last ack.
       if (lastSavedRef.current === body) return;
+      // keepalive: the pagehide flush in useDebouncedSave must survive a
+      // full reload/navigation, not just an SPA unmount.
       const r = await fetch('/api/agent-config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,
+        keepalive: true,
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        const detail = await r.json().then((d) => (d as { error?: string }).error).catch(() => null);
+        throw new Error(detail ?? `HTTP ${r.status}`);
+      }
       lastSavedRef.current = body;
     },
     {
@@ -332,7 +244,7 @@ export default function AgentSettingsPage() {
             ? 'Saving…'
             : lastSavedAt
               ? `✓ Saved ${lastSavedAt.toLocaleTimeString()}`
-              : 'Changes save automatically'}
+              : 'Fields validate and save when you finish editing'}
         </span>
       </h1>
       <p className="pc-settings-intro">
@@ -344,16 +256,14 @@ export default function AgentSettingsPage() {
           rel="noreferrer"
           style={{ color: 'var(--accent)' }}
         >oh-my-pi</a>) — the multi-provider option. Every change on this page
-        saves automatically.
+        saves automatically: text fields validate and commit when you leave
+        them (Enter also commits), toggles and menus save immediately.
       </p>
 
-      {(problems.length > 0 || warnings.length > 0) && (
-        <section className="pc-card" style={{ padding: 12, marginTop: 12, borderColor: problems.length > 0 ? 'var(--bad)' : 'var(--warn, #b58900)' }}>
+      {problems.length > 0 && (
+        <section className="pc-card" style={{ padding: 12, marginTop: 12, borderColor: 'var(--bad)' }}>
           {problems.map((p, i) => (
             <div key={`p${i}`} style={{ fontSize: 12, color: 'var(--bad)' }}>✗ {p}</div>
-          ))}
-          {warnings.map((w, i) => (
-            <div key={`w${i}`} style={{ fontSize: 12, color: 'var(--warn, #b58900)' }}>⚠ {w}</div>
           ))}
         </section>
       )}
@@ -425,12 +335,12 @@ export default function AgentSettingsPage() {
           label="Custom command (sets AGENT_CMD)"
           description={`Overrides the default binary + flags. Equivalent to setting the AGENT_CMD env var. Leave empty for "${defaultCmd}" (or the host environment's own value).`}
         >
-          <input
+          <DraftInput
             type="text"
             placeholder={backend === 'omp' || backend === 'auto' ? 'omp -p' : backend === 'codex' ? 'codex exec' : 'claude -p --dangerously-skip-permissions'}
             className="pc-input"
             value={cmd}
-            onChange={(e) => setCmd(e.target.value)}
+            onCommit={setCmd}
           />
           <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {(['omp -p', 'claude -p', 'claude -p --dangerously-skip-permissions', ''] as const).map((preset) => (
@@ -451,13 +361,14 @@ export default function AgentSettingsPage() {
           label="Per-role model overrides (JSON)"
           description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-harness .papercusp/config.json values still win.`}
         >
-          <textarea
+          <DraftTextarea
             rows={6}
             placeholder='{\n  "worker": "haiku",\n  "reviewer": "opus"\n}'
             className="pc-input"
             style={{ fontFamily: 'monospace', fontSize: 12 }}
             value={modelsJson}
-            onChange={(e) => setModelsJson(e.target.value)}
+            onCommit={setModelsJson}
+            validate={modelsJsonError}
           />
         </FormField>
 
@@ -474,36 +385,41 @@ export default function AgentSettingsPage() {
               <span>When to use (the queen&apos;s rubric)</span>
             </div>
             {tierRows.map((row, i) => (
-              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right' }}>{i + 1}</span>
-                <input
+              <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <span style={{ fontSize: 11, color: 'var(--fg-mute)', width: 14, textAlign: 'right', paddingTop: 4 }}>{i + 1}</span>
+                <DraftInput
                   className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 110 }}
+                  wrapperStyle={{ width: 110 }}
+                  style={{ fontSize: 13, padding: '2px 6px' }}
                   placeholder="tier name"
                   aria-label={`Tier ${i + 1} name`}
                   value={row.name}
-                  onChange={(e) => {
+                  onCommit={(name) => {
+                    const oldName = row.name.trim().toLowerCase();
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)));
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, name } : r)));
+                    // A rename follows through to ceilings that referenced the
+                    // old name — otherwise they dangle and would be dropped.
+                    if (oldName && name.trim()) {
+                      setTierCeilings((prev) =>
+                        Object.fromEntries(
+                          Object.entries(prev).map(([role, t]) => [role, t.toLowerCase() === oldName ? name.trim() : t]),
+                        ),
+                      );
+                    }
                   }}
                 />
-                <input
+                <DraftInput
                   className="pc-input"
-                  style={{
-                    fontSize: 13,
-                    padding: '2px 6px',
-                    width: 170,
-                    fontFamily: 'monospace',
-                    ...(row.spec.trim() && (!isValidModelSpec(row.spec.trim()) || aliasWarning(row.spec))
-                      ? { borderColor: 'var(--warn, #b58900)' }
-                      : {}),
-                  }}
+                  wrapperStyle={{ width: 170 }}
+                  style={{ fontSize: 13, padding: '2px 6px', fontFamily: 'monospace' }}
                   placeholder="model[:effort], e.g. opus:high"
                   aria-label={`Tier ${i + 1} model spec`}
                   value={row.spec}
-                  onChange={(e) => {
+                  validate={modelSpecError}
+                  onCommit={(spec) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, spec: e.target.value } : r)));
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, spec } : r)));
                   }}
                 />
                 <Select
@@ -518,15 +434,17 @@ export default function AgentSettingsPage() {
                     ));
                   }}
                 />
-                <input
+                <DraftInput
                   className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', flex: 1, minWidth: 180 }}
+                  wrapperStyle={{ flex: 1, minWidth: 180 }}
+                  style={{ fontSize: 13, padding: '2px 6px' }}
                   placeholder="when the queen should pick this tier"
                   aria-label={`Tier ${i + 1} when-to-use guidance`}
+                  maxLength={300}
                   value={row.when}
-                  onChange={(e) => {
+                  onCommit={(when) => {
                     setTiersCustomized(true);
-                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, when: e.target.value } : r)));
+                    setTierRows((prev) => prev.map((r, j) => (j === i ? { ...r, when } : r)));
                   }}
                 />
                 <button
@@ -534,8 +452,16 @@ export default function AgentSettingsPage() {
                   className="pc-btn pc-btn-secondary"
                   style={{ fontSize: 11, padding: '2px 8px' }}
                   onClick={() => {
+                    const removed = row.name.trim().toLowerCase();
                     setTiersCustomized(true);
                     setTierRows((prev) => prev.filter((_, j) => j !== i));
+                    // Removing a tier is explicit — ceilings pointing at it
+                    // cascade away instead of dangling.
+                    if (removed) {
+                      setTierCeilings((prev) =>
+                        Object.fromEntries(Object.entries(prev).filter(([, t]) => t.toLowerCase() !== removed)),
+                      );
+                    }
                   }}
                 >
                   remove
@@ -561,6 +487,12 @@ export default function AgentSettingsPage() {
                 onClick={() => {
                   setTiersCustomized(false);
                   setTierRows(DEFAULT_MODEL_TIERS.map(tierToRow));
+                  // Ceilings referencing custom tier names that no longer
+                  // exist in the default menu cascade away with the reset.
+                  const defaultNames = new Set(DEFAULT_MODEL_TIERS.map((t) => t.name.toLowerCase()));
+                  setTierCeilings((prev) =>
+                    Object.fromEntries(Object.entries(prev).filter(([, t]) => defaultNames.has(t.toLowerCase()))),
+                  );
                 }}
               >
                 reset to defaults
@@ -612,9 +544,9 @@ export default function AgentSettingsPage() {
             {SURFACE_KEYS.map((surface) => (
               <div
                 key={surface}
-                style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}
+                style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13 }}
               >
-                <code style={{ minWidth: 110 }}>{surface}</code>
+                <code style={{ minWidth: 110, paddingTop: 4 }}>{surface}</code>
                 <Select
                   value={surfaceBackends[surface]}
                   ariaLabel={`Backend for ${surface}`}
@@ -627,16 +559,18 @@ export default function AgentSettingsPage() {
                     }))
                   }
                 />
-                <input
+                <DraftInput
                   className="pc-input"
-                  style={{ fontSize: 13, padding: '2px 6px', width: 160 }}
+                  wrapperStyle={{ width: 160 }}
+                  style={{ fontSize: 13, padding: '2px 6px' }}
                   placeholder="model (optional)"
                   aria-label={`Model for ${surface}`}
                   value={surfaceModels[surface]}
-                  onChange={(e) =>
+                  validate={modelSpecError}
+                  onCommit={(m) =>
                     setSurfaceModels((prev) => ({
                       ...prev,
-                      [surface]: e.target.value,
+                      [surface]: m,
                     }))
                   }
                 />

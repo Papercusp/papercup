@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, FormEvent } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 
@@ -24,14 +25,16 @@ interface ProseHit {
 }
 
 const SOURCE_COLOR: Record<ProseHit['source'], string> = {
-  escalations: '#f59e0b',
-  brainstorm:  '#3b82f6',
-  turns:       '#10b981',
+  escalations: 'var(--warn)',
+  brainstorm:  'var(--accent)',
+  turns:       'var(--good)',
 };
 
 export default function SearchPage() {
-  const [q, setQ] = useState('');
-  const [mode, setMode] = useState<'bm25' | 'hybrid'>('bm25');
+  // URL-backed (nuqs) so agents can read + drive the search and it
+  // survives reloads/deep-links.
+  const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
+  const [mode, setMode] = useQueryState('mode', parseAsStringEnum<'bm25' | 'hybrid'>(['bm25', 'hybrid']).withDefault('bm25'));
   const [memories, setMemories] = useState<MemoryHit[]>([]);
   const [prose, setProse] = useState<ProseHit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -67,7 +70,7 @@ export default function SearchPage() {
         <input
           type="search"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => void setQ(e.target.value || null)}
           placeholder="What do you remember about…"
           autoFocus
           style={{ flex: 1, minWidth: 240 }}
@@ -76,7 +79,7 @@ export default function SearchPage() {
           <span>
             <Select
               value={mode}
-              onChange={(v) => setMode(v as 'bm25' | 'hybrid')}
+              onChange={(v) => void setMode(v as 'bm25' | 'hybrid')}
               options={[
                 { value: 'bm25', label: 'bm25' },
                 { value: 'hybrid', label: 'hybrid' },
@@ -104,7 +107,7 @@ export default function SearchPage() {
               <li key={m.id} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                   {m.scope === 'workspace' && (
-                    <span style={{ padding: '2px 8px', borderRadius: 4, background: '#3b82f6', color: '#fff', fontSize: 11 }}>shared</span>
+                    <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--accent)', color: 'var(--accent-ink)', fontSize: 11 }}>shared</span>
                   )}
                   {typeof m.score === 'number' && (
                     <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>score {m.score.toFixed(2)}</span>
@@ -126,7 +129,7 @@ export default function SearchPage() {
             {prose.map((h) => (
               <li key={`${h.source}:${h.source_id}`} style={{ padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-                  <span style={{ padding: '2px 8px', borderRadius: 4, background: SOURCE_COLOR[h.source], color: '#fff', fontSize: 11, fontWeight: 600 }}>{h.source}</span>
+                  <span style={{ padding: '2px 8px', borderRadius: 4, background: SOURCE_COLOR[h.source], color: 'var(--accent-ink)', fontSize: 11, fontWeight: 600 }}>{h.source}</span>
                   {h.harness_slug && (
                     <span style={{ padding: '2px 8px', borderRadius: 4, background: 'var(--bg-3)', fontSize: 11 }}>{h.harness_slug}</span>
                   )}

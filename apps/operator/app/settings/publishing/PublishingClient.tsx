@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface MaskedCreds {
   tenantId: string | null;

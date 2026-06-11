@@ -6,6 +6,14 @@
  * POST — replace AgentConfig (full body). Mirrors into process.env so
  *        subsequent spawns pick it up immediately.
  *
+ * POST is STRICT: if normalization would silently drop anything the body
+ * asked to store (an invalid tier row, a dangling ceiling, an unknown
+ * surface key), the request fails 422 with the reason instead of persisting
+ * a gutted config. Silent normalization is how a transiently invalid edit
+ * from /settings/agent used to delete stored settings — the saved config
+ * looked fine until a reload re-hydrated the holes (owner bug 2026-06-11).
+ * Reads stay lenient (readAgentConfig normalizes legacy rows).
+ *
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
@@ -62,6 +70,32 @@ export default [
         tiers: parseTiers(body.tiers),
         tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
       };
+      // Strict-save guard: persisting LESS than the body asked for is silent
+      // data loss, not normalization. Count the entries the parsers kept.
+      const dropped: string[] = [];
+      const sentCount = (v: unknown) =>
+        Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0;
+      if (body.models != null && sentCount(body.models) !== Object.keys(next.models).length) {
+        dropped.push('models: every value must be a non-empty model id string');
+      }
+      if (body.backends != null && sentCount(body.backends) !== Object.keys(next.backends ?? {}).length) {
+        dropped.push('backends: unknown surface key or backend');
+      }
+      if (body.surfaceModels != null && sentCount(body.surfaceModels) !== Object.keys(next.surfaceModels ?? {}).length) {
+        dropped.push('surfaceModels: unknown surface key or empty model id');
+      }
+      if (body.tiers != null && sentCount(body.tiers) !== (next.tiers ?? []).length) {
+        dropped.push('tiers: a row is invalid (needs a unique name and a <modelId>[:<effort>] spec)');
+      }
+      if (body.tierCeilings != null && sentCount(body.tierCeilings) !== Object.keys(next.tierCeilings ?? {}).length) {
+        dropped.push('tierCeilings: a ceiling names a tier absent from the menu');
+      }
+      if (dropped.length > 0) {
+        return Response.json(
+          { error: `config rejected — would silently drop: ${dropped.join('; ')}`, dropped },
+          { status: 422 },
+        );
+      }
       await writeAgentConfig(next);
       return Response.json({
         config: next,

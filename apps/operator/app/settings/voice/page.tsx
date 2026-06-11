@@ -74,6 +74,8 @@ const FULL_AGENT_KEY: Record<string, {
   'openai-realtime':           { service: 'openai',     field: 'openaiApiKey',     label: 'OpenAI',    placeholder: 'sk-…',  helpUrl: 'https://platform.openai.com/api-keys' },
   'gemini-live':               { service: 'google',     field: 'googleApiKey',     label: 'Google AI', placeholder: 'AIza…', helpUrl: 'https://aistudio.google.com/app/apikey' },
   'elevenlabs-conv':           { service: 'elevenlabs', field: 'elevenlabsApiKey', label: 'ElevenLabs', placeholder: 'sk_…', helpUrl: 'https://elevenlabs.io/app/settings/api-keys' },
+  // Legacy alias for 'elevenlabs-conv' — kept so a stored value still resolves,
+  // but deliberately NOT offered in the engine picker's option list.
   'elevenlabs-conversational': { service: 'elevenlabs', field: 'elevenlabsApiKey', label: 'ElevenLabs', placeholder: 'sk_…', helpUrl: 'https://elevenlabs.io/app/settings/api-keys' },
 };
 
@@ -407,6 +409,12 @@ export default function VoiceSettingsPage() {
                       value: 'elevenlabs-conv',
                       label: `ElevenLabs Conversational AI (Claude Haiku)${!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}`,
                     },
+                    // 'elevenlabs-conversational' is a legacy alias for 'elevenlabs-conv'
+                    // (design memo: accept it when stored, never offer it). Only included
+                    // when it IS the stored value so the trigger can render a label.
+                    ...(fullAgentVal === 'elevenlabs-conversational'
+                      ? [{ value: 'elevenlabs-conversational', label: 'ElevenLabs Conversational AI (legacy)' }]
+                      : []),
                   ]}
                 />
                 <p style={hint}>
@@ -519,7 +527,7 @@ export default function VoiceSettingsPage() {
 
       {/* ── ELEVENLABS SUB-SECTION ───────────────────────────────── */}
       {prefs?.ttsEngine === 'elevenlabs' && (
-        <section style={{ marginBottom: 32, padding: 16, background: 'rgba(99, 102, 241, 0.04)', borderRadius: 6 }}>
+        <section style={{ marginBottom: 32, padding: 16, background: 'color-mix(in srgb, var(--accent), transparent 96%)', borderRadius: 6 }}>
           <h2>ElevenLabs</h2>
           <p style={{ ...hint, marginBottom: 12 }}>
             Cloud TTS — text leaves the machine to ElevenLabs.
@@ -553,7 +561,7 @@ export default function VoiceSettingsPage() {
           </div>
 
           {connTest && connTest.ok && (
-            <div style={{ marginBottom: 12, padding: 8, background: 'rgba(45, 212, 191, 0.1)', borderRadius: 4, fontSize: 13 }}>
+            <div style={{ marginBottom: 12, padding: 8, background: 'color-mix(in srgb, var(--good), transparent 90%)', borderRadius: 4, fontSize: 13 }}>
               Connected as <strong>{connTest.email ?? '(no email)'}</strong> — <strong>{connTest.tier}</strong> tier
               · {connTest.characterCount?.toLocaleString()} / {connTest.characterLimit?.toLocaleString()} chars used
             </div>
@@ -1592,9 +1600,9 @@ function ElSubscriptionStatus() {
     return (
       <div style={{
         marginTop: 8, padding: 8, fontSize: 12, borderRadius: 6,
-        background: missingPerm ? '#fef3c7' : '#fee2e2',
-        color: missingPerm ? '#92400e' : '#991b1b',
-        border: `1px solid ${missingPerm ? '#fde68a' : '#fecaca'}`,
+        background: missingPerm ? 'var(--warn-bg)' : 'color-mix(in srgb, var(--bad), transparent 90%)',
+        color: missingPerm ? 'var(--warn)' : 'var(--bad)',
+        border: `1px solid ${missingPerm ? 'var(--warn-border)' : 'color-mix(in srgb, var(--bad), transparent 65%)'}`,
       }}>
         <strong>ElevenLabs plan status: unavailable.</strong>
         {missingPerm ? (
@@ -1625,9 +1633,9 @@ function ElSubscriptionStatus() {
   return (
     <div style={{
       marginTop: 8, padding: 8, fontSize: 12, borderRadius: 6,
-      background: exceeded ? '#fee2e2' : warn ? '#fef3c7' : '#f3f4f6',
-      color: exceeded ? '#991b1b' : warn ? '#92400e' : '#374151',
-      border: `1px solid ${exceeded ? '#fecaca' : warn ? '#fde68a' : '#e5e7eb'}`,
+      background: exceeded ? 'color-mix(in srgb, var(--bad), transparent 90%)' : warn ? 'var(--warn-bg)' : 'var(--bg-raised)',
+      color: exceeded ? 'var(--bad)' : warn ? 'var(--warn)' : 'var(--fg-dim)',
+      border: `1px solid ${exceeded ? 'color-mix(in srgb, var(--bad), transparent 65%)' : warn ? 'var(--warn-border)' : 'var(--border)'}`,
     }}>
       <div>
         <strong>ElevenLabs plan</strong>

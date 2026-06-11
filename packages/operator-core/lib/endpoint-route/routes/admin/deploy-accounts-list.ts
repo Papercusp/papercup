@@ -8,7 +8,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'GET',
   path: '/admin/deploy-accounts',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler() {
     try {
       return Response.json({ ok: true, accounts: await accountStatus() });

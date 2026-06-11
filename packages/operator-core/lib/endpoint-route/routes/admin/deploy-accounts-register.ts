@@ -23,7 +23,8 @@ const ID_RE = /^[A-Za-z0-9._-]+$/;
 export default defineTool({
   method: 'POST',
   path: '/admin/deploy-accounts/register',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {
     let body: { accountId?: string; label?: string; value?: string };
     try {

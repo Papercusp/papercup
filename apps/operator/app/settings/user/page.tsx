@@ -288,7 +288,7 @@ export default function UserSettingsPage() {
                   display: 'flex', alignItems: 'flex-start', gap: 12,
                   padding: 12, borderRadius: 6,
                   border: '1px solid var(--border)',
-                  background: overridden ? 'rgba(167, 139, 250, 0.05)' : 'transparent',
+                  background: overridden ? 'color-mix(in srgb, var(--accent), transparent 95%)' : 'transparent',
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -296,7 +296,7 @@ export default function UserSettingsPage() {
                     <strong style={{ fontSize: 14 }}>{spec.label}</strong>
                     {overridden && (
                       <>
-                        <span style={{ padding: '1px 6px', borderRadius: 3, background: '#a78bfa', color: '#fff', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
+                        <span style={{ padding: '1px 6px', borderRadius: 3, background: 'var(--accent)', color: 'var(--accent-ink)', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
                         <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                           workspace: <code>{formatValue(workspaceValue)}</code>
                         </span>

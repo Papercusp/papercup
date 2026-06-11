@@ -101,8 +101,10 @@ const patch = defineTool({
   path: '/auth/me',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    // Default-user fallback, matching GET above: the desktop webview is
+    // cookie-less (EI-338), so a strict session check left display-name
+    // editing permanently broken on desktop installs.
+    const user = await getSessionUserOrDefault(req.headers);
     const body = await req.json().catch(() => null);
     const display_name = typeof body?.display_name === 'string' ? body.display_name.trim() : '';
     if (!display_name) {

@@ -52,11 +52,11 @@ const KIND_COLORS: Record<string, string> = {
 };
 
 const STATE_BADGES: Record<string, { label: string; icon: string; color: string; bg: string }> = {
-  active:        { label: 'verified',           icon: '✓', color: '#065f46', bg: '#d1fae5' },
-  broken_anchor: { label: 'broken anchor',      icon: '⚠', color: '#92400e', bg: '#fef3c7' },
-  superseded:    { label: 'superseded',         icon: '🔄', color: '#1e40af', bg: '#dbeafe' },
-  contradicted: { label: 'contradicted',       icon: '❌', color: '#991b1b', bg: '#fee2e2' },
-  forgotten:     { label: 'forgotten',          icon: '🗑', color: '#374151', bg: '#e5e7eb' },
+  active:        { label: 'verified',           icon: '✓', color: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 85%)' },
+  broken_anchor: { label: 'broken anchor',      icon: '⚠', color: 'var(--warn)', bg: 'var(--warn-bg)' },
+  superseded:    { label: 'superseded',         icon: '🔄', color: 'var(--accent)', bg: 'color-mix(in srgb, var(--accent), transparent 85%)' },
+  contradicted: { label: 'contradicted',       icon: '❌', color: 'var(--bad)', bg: 'color-mix(in srgb, var(--bad), transparent 85%)' },
+  forgotten:     { label: 'forgotten',          icon: '🗑', color: 'var(--fg-mute)', bg: 'color-mix(in srgb, var(--fg-mute), transparent 85%)' },
 };
 
 function isFlagged(row: MemoryRow): boolean {
@@ -415,7 +415,7 @@ export default function MemoryPage() {
           display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
           padding: 12, gap: 12,
           borderRadius: 6,
-          border: state !== 'active' ? '1px solid #f59e0b' : '1px solid var(--border)',
+          border: state !== 'active' ? '1px solid var(--warn-border)' : '1px solid var(--border)',
           background: 'var(--bg-2)',
         }}
       >
@@ -457,10 +457,10 @@ export default function MemoryPage() {
             )}
           </div>
           {brokenAnchors.length > 0 && (
-            <div style={{ marginBottom: 4, fontSize: 12, color: '#92400e' }}>
+            <div style={{ marginBottom: 4, fontSize: 12, color: 'var(--warn)' }}>
               {brokenAnchors.map((a, i) => (
                 <div key={`${a.kind}-${a.value}-${i}`}>
-                  <code style={{ background: 'transparent', color: '#92400e' }}>{a.kind}:{a.value}</code>
+                  <code style={{ background: 'transparent', color: 'var(--warn)' }}>{a.kind}:{a.value}</code>
                   {a.reason && <> — {a.reason}</>}
                 </div>
               ))}
@@ -517,7 +517,7 @@ export default function MemoryPage() {
           <button
             type="button"
             onClick={() => onDelete(row.id)}
-            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid #f87171', color: '#f87171', cursor: 'pointer' }}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--bad)', color: 'var(--bad)', cursor: 'pointer' }}
           >
             Delete
           </button>
@@ -581,7 +581,7 @@ export default function MemoryPage() {
       )}
 
       {reason && (
-        <div style={{ padding: 12, border: '1px solid #f59e0b', borderRadius: 6, background: '#fffbeb' }}>
+        <div style={{ padding: 12, border: '1px solid var(--warn-border)', borderRadius: 6, background: 'var(--warn-bg)' }}>
           Memory backend{backendName ? <> (<code>{backendName}</code>)</> : null} unavailable: <code>{reason}</code>.
           {reason === 'mem0_unavailable' && (
             <> Run <code>npm install</code> in <code>apps/operator</code> to enable.</>
@@ -593,7 +593,7 @@ export default function MemoryPage() {
       )}
 
       {hygiene && hygiene.overflowCount > 0 && (
-        <div style={{ padding: 12, border: '1px solid #f59e0b', borderRadius: 6, background: '#fffbeb', fontSize: 13 }}>
+        <div style={{ padding: 12, border: '1px solid var(--warn-border)', borderRadius: 6, background: 'var(--warn-bg)', fontSize: 13 }}>
           <strong>⚠ Memory index over capacity.</strong>{' '}
           {hygiene.overflowCount} of {hygiene.activeCount + hygiene.overflowCount} Claude
           file-memories are paged out of the always-loaded index
@@ -719,9 +719,9 @@ export default function MemoryPage() {
             title="Show only memories with broken anchors / contradictions / etc."
             style={{
               padding: '4px 10px', borderRadius: 6,
-              border: flaggedOnly ? '2px solid #f59e0b' : '1px solid var(--border)',
-              background: flaggedOnly ? '#fef3c7' : 'var(--bg-2)',
-              color: flaggedOnly ? '#92400e' : 'var(--fg)',
+              border: flaggedOnly ? '2px solid var(--warn)' : '1px solid var(--border)',
+              background: flaggedOnly ? 'var(--warn-bg)' : 'var(--bg-2)',
+              color: flaggedOnly ? 'var(--warn)' : 'var(--fg)',
               cursor: 'pointer', fontSize: 13,
               fontWeight: flaggedOnly ? 600 : 400,
             }}
@@ -768,7 +768,7 @@ export default function MemoryPage() {
             type="button"
             onClick={onForgetAll}
             disabled={rows.length === 0}
-            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #f87171', color: '#f87171', background: 'transparent', cursor: 'pointer', fontSize: 13 }}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--bad)', color: 'var(--bad)', background: 'transparent', cursor: 'pointer', fontSize: 13 }}
           >
             Forget all my memories
           </button>

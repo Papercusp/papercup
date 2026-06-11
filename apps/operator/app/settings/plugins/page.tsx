@@ -294,7 +294,7 @@ export default function PluginSettingsPage() {
                         renderInput(key, field, current, (v) => setValue(key, v, { shouldDirty: true, shouldValidate: false }))
                       )}
                       {fieldError && (
-                        <div role="alert" style={{ marginTop: 4, fontSize: 11, color: '#fca5a5' }}>{fieldError}</div>
+                        <div role="alert" style={{ marginTop: 4, fontSize: 11, color: 'var(--bad)' }}>{fieldError}</div>
                       )}
                     </div>
                   );
@@ -385,12 +385,12 @@ const pluginBtn: React.CSSProperties = {
   background: 'transparent', cursor: 'pointer', fontSize: 13, marginBottom: 4,
 };
 const primary: React.CSSProperties = {
-  padding: '8px 16px', background: 'var(--accent, #58a6ff)', color: '#000',
+  padding: '8px 16px', background: 'var(--accent, #58a6ff)', color: 'var(--accent-ink)',
   border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 13, fontWeight: 600,
 };
 const notice: React.CSSProperties = {
-  marginTop: 12, padding: '8px 12px', background: 'rgba(255, 200, 50, 0.08)',
-  border: '1px solid rgba(255, 200, 50, 0.3)', borderRadius: 4, fontSize: 12, color: '#cc9',
+  marginTop: 12, padding: '8px 12px', background: 'var(--warn-bg)',
+  border: '1px solid var(--warn-border)', borderRadius: 4, fontSize: 12, color: 'var(--warn)',
 };
 const badgeBase: React.CSSProperties = {
   display: 'inline-block', marginLeft: 8, padding: '1px 6px', borderRadius: 3,
@@ -398,13 +398,13 @@ const badgeBase: React.CSSProperties = {
   verticalAlign: 'middle',
 };
 const badgeMute: React.CSSProperties = {
-  ...badgeBase, background: 'rgba(150,150,150,.12)', color: '#999', border: '1px solid rgba(150,150,150,.25)',
+  ...badgeBase, background: 'color-mix(in srgb, var(--fg-mute), transparent 88%)', color: 'var(--fg-mute)', border: '1px solid color-mix(in srgb, var(--fg-mute), transparent 75%)',
 };
 const badgeWarn: React.CSSProperties = {
-  ...badgeBase, background: 'rgba(255,140,0,.10)', color: '#e9a040', border: '1px solid rgba(255,140,0,.3)',
+  ...badgeBase, background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid var(--warn-border)',
 };
 const badgeAccent: React.CSSProperties = {
-  ...badgeBase, background: 'rgba(88,166,255,.12)', color: '#58a6ff', border: '1px solid rgba(88,166,255,.3)',
+  ...badgeBase, background: 'color-mix(in srgb, var(--accent), transparent 88%)', color: 'var(--accent)', border: '1px solid color-mix(in srgb, var(--accent), transparent 70%)',
 };
 
 /* ─── OAuth field editor — Connect button + Advanced (paste PAT with scope verify) ─── */
@@ -469,7 +469,7 @@ function OAuthFieldEditor({ plugin, harness, field, provider, scopes, currentVal
     <div>
       {connected ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
-          <span style={{ color: '#7fcf7f' }}>● Connected</span>
+          <span style={{ color: 'var(--good)' }}>● Connected</span>
           <a href={startUrl} style={linkBtn}>Reconnect</a>
         </div>
       ) : (
@@ -510,7 +510,7 @@ function OAuthFieldEditor({ plugin, harness, field, provider, scopes, currentVal
 }
 
 const connectBtn: React.CSSProperties = {
-  display: 'inline-block', padding: '6px 12px', background: '#58a6ff', color: '#000',
+  display: 'inline-block', padding: '6px 12px', background: 'var(--accent)', color: 'var(--accent-ink)',
   borderRadius: 4, textDecoration: 'none', fontSize: 13, fontWeight: 600,
 };
 const linkBtn: React.CSSProperties = {
@@ -522,6 +522,6 @@ const advBtn: React.CSSProperties = {
 };
 const advPanel: React.CSSProperties = {
   marginTop: 8, padding: 10, border: '1px solid var(--border, #2a2a2a)',
-  borderRadius: 4, background: 'rgba(255,255,255,.02)',
+  borderRadius: 4, background: 'color-mix(in srgb, var(--fg), transparent 98%)',
   display: 'flex', flexDirection: 'column', gap: 8,
 };

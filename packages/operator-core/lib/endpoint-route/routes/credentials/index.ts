@@ -17,7 +17,10 @@ export default [
   defineTool({
     method: 'GET',
     path: '/credentials',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: the desktop webview is cookie-less (EI-338) and
+    // resolves as bare loopback; without it the API-keys settings page 403s.
+    // Remote exposure stays blocked at boot (PAPERCUSP_BIND_HOST guard).
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler() {
       return Response.json(maskCredentials(await readCredentials()));
     },
@@ -25,7 +28,10 @@ export default [
   defineTool({
     method: 'POST',
     path: '/credentials',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: the desktop webview is cookie-less (EI-338) and
+    // resolves as bare loopback; without it the API-keys settings page 403s.
+    // Remote exposure stays blocked at boot (PAPERCUSP_BIND_HOST guard).
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
       const body = await req.json().catch(() => null);
       if (!body || typeof body !== 'object') {

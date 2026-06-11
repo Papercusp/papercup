@@ -328,7 +328,7 @@ function VoiceKeyRow({
             {state.apiKey ?? '(masked)'}
           </code>
           <button type="button" onClick={clear} disabled={busy}
-            style={{ padding: '4px 10px', fontSize: 12, color: '#fca5a5', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>
+            style={{ padding: '4px 10px', fontSize: 12, color: 'var(--bad)', background: 'transparent', border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer' }}>
             Clear
           </button>
         </div>

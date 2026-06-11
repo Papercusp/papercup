@@ -3,10 +3,14 @@
  * and re-issue a session (changePassword invalidates all sessions).
  *
  * Ported from app/api/auth/change-password/route.ts. `auth: 'public'` —
- * the handler does its own session check via `getSessionUser` so it can
- * emit the `change_password_no_session` audit row on the no-session path.
+ * resolves the user with the seeded-`default`-user fallback: the desktop
+ * webview is cookie-less (EI-338), so a strict session check left the
+ * change-password form permanently 401 on desktop installs. Safe because
+ * `changePassword` independently verifies the CURRENT password before
+ * changing it (bad_password path) — a caller without the old password
+ * still can't take over the account.
  */
-import { getSessionUser, changePassword, login, SESSION_COOKIE } from '../../../auth';
+import { getSessionUserOrDefault, changePassword, login, SESSION_COOKIE } from '../../../auth';
 import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
@@ -19,14 +23,7 @@ export default defineTool({
     const userAgent = req.headers.get('user-agent') ?? undefined;
     const ip = req.headers.get('x-forwarded-for') ?? '127.0.0.1';
 
-    const user = await getSessionUser(req.headers);
-    if (!user) {
-      void recordAuthEvent({
-        kind: 'change_password_no_session', ip, userAgent, ok: false,
-        errorCode: 'unauthenticated',
-      });
-      return Response.json({ error: 'unauthenticated' }, { status: 401 });
-    }
+    const user = await getSessionUserOrDefault(req.headers);
     const body = await req.json().catch(() => null);
     const current = typeof body?.current === 'string' ? body.current : null;
     const next = typeof body?.next === 'string' ? body.next : null;

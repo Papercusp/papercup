@@ -178,7 +178,7 @@ export default function BackupsSettingsPage() {
       </header>
 
       {health && !health.kopia.ok && (
-        <section className="pc-settings-section" style={{ borderLeft: '3px solid rgba(255, 80, 80, 0.6)', paddingLeft: 12 }}>
+        <section className="pc-settings-section" style={{ borderLeft: '3px solid color-mix(in srgb, var(--bad), transparent 40%)', paddingLeft: 12 }}>
           <strong>kopia binary not found</strong> ({health.kopia.reason ?? 'unknown'}).
           <p className="pc-settings-note">
             Install kopia (https://kopia.io/docs/installation/) or set <code>KOPIA_BIN</code> to the binary path.
@@ -187,7 +187,7 @@ export default function BackupsSettingsPage() {
         </section>
       )}
       {health && health.kopia.ok && health.state === 'stale' && (
-        <section className="pc-settings-section" style={{ borderLeft: '3px solid rgba(255, 200, 80, 0.6)', paddingLeft: 12 }}>
+        <section className="pc-settings-section" style={{ borderLeft: '3px solid color-mix(in srgb, var(--warn), transparent 40%)', paddingLeft: 12 }}>
           <strong>Backups are stale</strong>
           {health.ageSeconds != null && ` — last snapshot was ${Math.round(health.ageSeconds / 60)} min ago.`}
         </section>

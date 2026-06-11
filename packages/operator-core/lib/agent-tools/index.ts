@@ -107,6 +107,7 @@ import './learning_packs/uninstall';
 import './learning_packs/set_enabled';
 import './learning_packs/upgrade';
 import './learning_packs/sweep';
+import './learning_packs/publish';
 import './memory/forget';
 import './memory/update';
 import './autoloop/status';

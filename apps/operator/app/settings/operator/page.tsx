@@ -192,7 +192,7 @@ export default function OperatorSettingsPage() {
 
 
       {candidates.length > 0 && (
-        <section style={{ background: 'rgba(255,200,0,0.08)', border: '1px solid rgba(255,170,0,0.4)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
+        <section style={{ background: 'var(--warn-bg)', border: '1px solid var(--warn-border)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
           <strong style={{ fontSize: 13 }}>Standing-approval candidates</strong>
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '4px 0 8px' }}>
             Papercup dispatched these (capability, target) pairs ≥3 times in the last 24h. Approve to skip the ask-first prompt for future identical dispatches.
@@ -212,7 +212,7 @@ export default function OperatorSettingsPage() {
       )}
 
       {recentEntries.length > 0 && (
-        <section style={{ background: 'rgba(33,150,243,0.06)', border: '1px solid rgba(33,150,243,0.3)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
+        <section style={{ background: 'color-mix(in srgb, var(--accent), transparent 94%)', border: '1px solid color-mix(in srgb, var(--accent), transparent 70%)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
           <strong style={{ fontSize: 13 }}>Papercup recently learned (last 24h)</strong>
           <ul style={{ marginTop: 8, fontSize: 13, paddingLeft: 18 }}>
             {recentEntries.map((e) => (
@@ -271,7 +271,7 @@ export default function OperatorSettingsPage() {
             </div>
             <div>
               <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Escalated</div>
-              <strong style={{ fontSize: 22, color: stats.escalated > 0 ? '#a40' : 'inherit' }}>{stats.escalated}</strong>
+              <strong style={{ fontSize: 22, color: stats.escalated > 0 ? 'var(--warn)' : 'inherit' }}>{stats.escalated}</strong>
             </div>
             <div>
               <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Undo-cancel</div>
@@ -286,7 +286,7 @@ export default function OperatorSettingsPage() {
             {stats.unconsumedFraction !== null && (
               <div title="Path-(a) escalation criterion: trigger if >25%">
                 <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Unconsumed</div>
-                <strong style={{ fontSize: 22, color: stats.unconsumedFraction > 0.25 ? '#a04' : 'inherit' }}>
+                <strong style={{ fontSize: 22, color: stats.unconsumedFraction > 0.25 ? 'var(--warn)' : 'inherit' }}>
                   {(stats.unconsumedFraction * 100).toFixed(0)}%
                 </strong>
               </div>
@@ -297,7 +297,7 @@ export default function OperatorSettingsPage() {
             </div>
           </div>
           {stats.unconsumedFraction !== null && stats.unconsumedFraction > 0.25 && (
-            <p style={{ fontSize: 12, color: '#a04', marginTop: 8 }}>
+            <p style={{ fontSize: 12, color: 'var(--warn)', marginTop: 8 }}>
               ⚠ Unconsumed fraction {`>`}25% — recipient harnesses are slow to consume Papercup directives.
               The v5 plan's Path-(a) (`dispatch_role`) escalation criterion is met; consider raising the issue
               with the substrate maintainers.
@@ -377,8 +377,8 @@ export default function OperatorSettingsPage() {
               style={{
                 fontSize: 12,
                 padding: '4px 10px',
-                background: filter === f ? '#1f2937' : 'transparent',
-                color: filter === f ? '#fff' : 'inherit',
+                background: filter === f ? 'var(--bg-raised)' : 'transparent',
+                color: filter === f ? 'var(--fg)' : 'inherit',
                 border: '1px solid var(--border)',
                 borderRadius: 4,
               }}

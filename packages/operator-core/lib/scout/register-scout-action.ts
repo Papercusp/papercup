@@ -69,11 +69,19 @@ async function resolveArchive(scope: { workspaceId: string; harnessSlug: string 
  */
 export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId }) => {
   const { llmCall } = await import('../llm-testing/llm-client');
+  const { DEFAULT_WORKSPACE_ID } = await import('../workspace-id-constant');
   const archive = await resolveArchive({ workspaceId, harnessSlug });
   const deps = buildScoutCycleDeps({
     harnessSlug,
     llmCall,
-    createPlanDraft: (args) => createScoutPlanDraft({ ...args, harnessSlug, workspaceId }),
+    // Draft plans are pinned to the DEFAULT workspace, NOT the routine's ctx
+    // workspace: the whole plan surface (plans:* dispatch, Create tab, plan
+    // projections) lives under 'default', so a draft written under the
+    // routine's 'papercusp-workspace' is invisible to every plan UI/read
+    // (live miss 2026-06-11 — 3 routed drafts stranded). The routed-idea
+    // LEDGER row keeps the ctx workspace (learning.scout reads it there).
+    createPlanDraft: (args) =>
+      createScoutPlanDraft({ ...args, harnessSlug, workspaceId: DEFAULT_WORKSPACE_ID }),
     archive,
     limits: { maxCostUsd: budget.maxCostUsd, maxIdeators: budget.maxIdeators },
     cycleId,

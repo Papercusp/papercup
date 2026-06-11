@@ -59,13 +59,15 @@ beforeEach(() => {
 });
 
 describe('POST /cupboard/publish-plugin — pack kind', () => {
-  it("a kind:'pack' manifest publishes as listing_kind='pack' with manifest-derived provides_tools", async () => {
+  it("a kind:'pack' manifest publishes as listing_kind='tool-pack' (renamed by mig 008) with manifest-derived provides_tools", async () => {
     vi.mocked(findInstalledPlugin).mockResolvedValue(PACK_MANIFEST as never);
     const res = await post({ slug: 'markdown-tools' });
     expect(res.status).toBe(200);
     expect(publishListingToCupboard).toHaveBeenCalledWith(
       expect.objectContaining({
-        listing_kind: 'pack',
+        // The manifest format keeps kind:'pack'; the LISTING kind is the
+        // renamed 'tool-pack' (learning-packs D-005 / worker migration 008).
+        listing_kind: 'tool-pack',
         listing_ref: 'markdown-tools',
         provides_tools: ['markdown-tools.render', 'markdown-tools.lint'],
       }),

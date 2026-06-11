@@ -109,9 +109,11 @@ export default defineTool({
       return Response.json({ ok: false, error: coords.error }, { status: 422 });
     }
 
-    // A runtime-less code-tool pack manifest (kind:'pack') lists as kind=pack;
+    // A runtime-less code-tool pack manifest (kind:'pack') lists as the
+    // tool-pack kind (renamed from 'pack' by worker migration 008 —
+    // learning-packs D-005; the manifest format keeps its own 'pack' value);
     // everything else stays a plugin listing (D-001: plugin = pack + runtime).
-    const listingKind = installed?.kind === 'pack' ? ('pack' as const) : ('plugin' as const);
+    const listingKind = installed?.kind === 'pack' ? ('tool-pack' as const) : ('plugin' as const);
     const providesTools =
       providesToolsOverride ?? (installed ? manifestToolNames(installed) : []);
 

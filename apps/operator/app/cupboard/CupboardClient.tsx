@@ -27,7 +27,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain } from 'lucide-react';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
@@ -52,13 +52,14 @@ type KindFilter = 'all' | ListingKind;
 /** The tab row's domain: listing-kind filters + the tool-level discovery view. */
 type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'pack', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'tools'];
 const VIEW_FILTER_LABEL: Record<ViewFilter, string> = {
   all: 'All',
   harness: 'Harnesses',
   blueprint: 'Blueprints',
   plugin: 'Plugins',
-  pack: 'Packs',
+  'tool-pack': 'Tool packs',
+  'learning-pack': 'Learning Packs',
   tools: 'Tools',
 };
 
@@ -68,7 +69,8 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'harness': return <Globe size={size} />;
     case 'blueprint': return <Boxes size={size} />;
     case 'plugin': return <Plug size={size} />;
-    case 'pack': return <Box size={size} />;
+    case 'tool-pack': return <Box size={size} />;
+    case 'learning-pack': return <Brain size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
@@ -86,7 +88,8 @@ const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   blueprint: { fg: 'var(--success)', bg: 'color-mix(in srgb, var(--success), transparent 86%)', border: 'color-mix(in srgb, var(--success), transparent 74%)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
+  'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
+  'learning-pack': { fg: '#f59e0b', bg: 'color-mix(in srgb, #f59e0b, transparent 88%)', border: 'color-mix(in srgb, #f59e0b, transparent 76%)' },
 };
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({

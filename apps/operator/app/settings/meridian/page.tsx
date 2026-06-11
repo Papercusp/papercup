@@ -49,7 +49,7 @@ export default function MeridianSettingsPage() {
               borderRadius: 4,
               border: '1px solid var(--border)',
               background: t.id === tab ? 'var(--accent)' : 'transparent',
-              color: t.id === tab ? '#cce4ff' : 'var(--fg)',
+              color: t.id === tab ? 'var(--accent-soft)' : 'var(--fg)',
               cursor: 'pointer',
               fontSize: 13,
             }}
@@ -68,8 +68,10 @@ export default function MeridianSettingsPage() {
         </a>
       </nav>
       <div style={{ flex: 1, marginTop: 8 }}>
-        {reachable === false ? (
-          <div style={{ padding: 16, color: '#fca5a5', fontSize: 13 }}>
+        {reachable === null ? (
+          <p className="pc-settings-loading">Checking Meridian…</p>
+        ) : reachable === false ? (
+          <div style={{ padding: 16, color: 'var(--bad)', fontSize: 13 }}>
             Meridian is not reachable at <code>{MERIDIAN_BASE}</code>. Start it with <code>meridian</code> in a terminal, or install via <code>npm install -g @rynfar/meridian</code>.
             <br />
             <button
@@ -84,7 +86,7 @@ export default function MeridianSettingsPage() {
           <iframe
             key={active.id}
             src={`${MERIDIAN_BASE}${active.path}`}
-            style={{ width: '100%', height: '100%', minHeight: 540, border: '1px solid var(--border)', borderRadius: 4, background: '#0a0a0a' }}
+            style={{ width: '100%', height: '100%', minHeight: 540, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--bg)' }}
             title={`Meridian ${active.label}`}
           />
         )}

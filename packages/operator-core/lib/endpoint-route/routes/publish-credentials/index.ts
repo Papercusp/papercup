@@ -21,7 +21,8 @@ export default [
   defineTool({
     method: 'GET',
     path: '/publish-credentials',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
       const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
       if (blocked) return blocked;
@@ -31,7 +32,8 @@ export default [
   defineTool({
     method: 'DELETE',
     path: '/publish-credentials',
-    auth: { trust: ['verified', 'trusted'] },
+    // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+    auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
     async handler(req) {
       const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
       if (blocked) return blocked;

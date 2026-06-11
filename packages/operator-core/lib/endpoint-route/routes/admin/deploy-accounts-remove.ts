@@ -10,7 +10,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/admin/deploy-accounts/remove',
-  auth: { trust: ['verified', 'trusted'] },
+  // unverified-loopback: cookie-less desktop webview (EI-338) — see credentials/index.ts.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {
     let body: { id?: string };
     try {
