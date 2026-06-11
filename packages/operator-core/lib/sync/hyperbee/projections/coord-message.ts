@@ -89,7 +89,7 @@ async function writeToPg(
   // bigserial. ON CONFLICT targets the partial fed unique index (ws, msg_id)
   // over the federated subset — msg_id is globally unique so this updates the one
   // existing row (never violating the separate event_uq).
-  await sql`
+  const applied = await sql<{ inserted: boolean }[]>`
     INSERT INTO harness_shared.coord_event_log
       (workspace_id, surface, writer_key, msg_id, body, harness_slug,
        ts, origin, author_pubkey, fed_ts)
@@ -110,7 +110,47 @@ async function writeToPg(
     -- EI-79 step 2: PG-level LWW guard — drop a strictly-older op.
     WHERE coord_event_log.fed_ts IS NULL
        OR EXCLUDED.fed_ts >= coord_event_log.fed_ts
+    -- xmax = 0 ⇔ this statement INSERTED a brand-new row (an ON CONFLICT
+    -- update or LWW-rejected no-op returns inserted=false / no row) — the
+    -- exactly-once gate for the EI-279 wake fan below.
+    RETURNING (xmax = 0) AS inserted
   `;
+
+  // ── EI-279: cross-instance deliver-and-wake ── coord:send {wake:true} fires
+  // the recipients' inbox-wake keys on the SENDER's instance only; an agent
+  // homed HERE slept through messages that arrived via federation. When a
+  // REMOTE-origin row carrying the persisted wake intent (body.wake, set by
+  // coord:send / coord:message-agent) lands as a FRESH insert, run the same
+  // targeted fan locally:
+  //   - origin gate: local sends already fanned at send time (and skipOwnOps
+  //     keeps own-log replays out of here entirely);
+  //   - fresh-INSERT gate: at-least-once re-applies / post-cursor-reset
+  //     replays UPDATE the existing row → never re-wake (once per msg_id);
+  //   - locality needs no map: a recipient homed elsewhere has no standing
+  //     watch in THIS instance's await store, so its emit is a woken:0 no-op;
+  //   - wakeRecipients brings the wake-mode (hive Pause) gate + '*'/'human'
+  //     filtering for free.
+  // Best-effort: a wake-fan failure must never fail the projection apply.
+  if (origin === 'remote' && applied.length > 0 && applied[0].inserted === true) {
+    const b = row.body as { wake?: unknown; to?: unknown; summary?: unknown; from?: unknown };
+    const to = Array.isArray(b.to) ? b.to.filter((x): x is string => typeof x === 'string') : [];
+    if (b.wake === true && to.length > 0) {
+      try {
+        const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
+        await wakeRecipients(to, {
+          ...(typeof b.summary === 'string' ? { summary: b.summary } : {}),
+          ...(typeof b.from === 'string' ? { source: b.from } : {}),
+          workspaceId: opts.workspaceId,
+        });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[coord-message] federated wake fan failed for ${row.msg_id} (message persisted; recipient sees it next turn):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+  }
 }
 
 async function deleteFromPg(

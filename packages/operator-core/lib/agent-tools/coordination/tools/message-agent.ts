@@ -121,6 +121,9 @@ export default defineTool({
           body: `${args.body}\n\n— reply in conversation ${conversationId} (conversations:post).`,
           ...(args.harness ? { harnessSlug: args.harness } : {}),
           ...(args.plan_slug ? { plan_slug: args.plan_slug } : {}),
+          // EI-279: federate the wake intent (see coord:send) so an owner homed
+          // on a remote instance is woken by the projection-side fan.
+          ...(args.wake ? { extra: { wake: true } } : {}),
         });
         pinged = true;
       } catch {

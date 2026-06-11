@@ -429,6 +429,10 @@ export class CompositionRig {
   private server: Server | null = null;
   private serverUrl = '';
   private authorityKilled = false;
+  /** Announce/device pubkeys the AUTHORITY cell has revoked — mirrored off cell
+   *  A's handle.revoke so the EI-284 caller-standing gate sees the same view
+   *  the substrate's announce-time refusal does. */
+  private readonly revokedByAuthority = new Set<string>();
   /** Frozen presence timestamps for killed cells (live cells read the clock). */
   private frozenLastSeen = new Map<string, number>();
   private cleanups: Array<() => void | Promise<void>> = [];
@@ -597,9 +601,22 @@ export class CompositionRig {
     const depsA = mkDeps(ELECT_A, 4201);
     const depsB = mkDeps(ELECT_B, 4202);
 
-    // The authority's RPC ops run against the AUTHORITY cell's store.
+    // The authority's RPC ops run against the AUTHORITY cell's store, with the
+    // EI-284 caller-standing gate wired to the authority instance's revocation
+    // view: claims carry the caller's ELECTION pubkey while revocation operates
+    // on ANNOUNCE/device pubkeys, so the rig's checker bridges the domains via
+    // its cell table + the revocations mirrored off cell A's handle.revoke
+    // (production bridges the same way: holder_pubkey is the device pubkey, and
+    // the default check reads contributors.revoked_pubkeys).
     __resetAuthorityOpsForTests();
-    registerWorkItemClaimAuthorityOps(storeA.asCoordinator());
+    registerWorkItemClaimAuthorityOps(storeA.asCoordinator(), {
+      isCallerRevoked: async (holderPubkey) => {
+        const cells = Object.values(this.cells ?? {});
+        const announce =
+          cells.find((c) => c.electionPubkey === holderPubkey)?.announcePubkey ?? holderPubkey;
+        return this.revokedByAuthority.has(announce);
+      },
+    });
     this.cleanups.push(() => __resetAuthorityOpsForTests());
 
     this.server = createServer((req, res) => {
@@ -655,6 +672,16 @@ export class CompositionRig {
       if (this.priorWorkspaceEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
       else process.env.PAPERCUSP_WORKSPACE_ID = this.priorWorkspaceEnv;
     });
+
+    // Mirror cell A's revocations into the authority's standing view (EI-284):
+    // the test revokes via the substrate handle; the claim-op gate must see it.
+    {
+      const origRevoke = handleA.revoke.bind(handleA);
+      handleA.revoke = async (devicePubkey: string) => {
+        this.revokedByAuthority.add(devicePubkey);
+        await origRevoke(devicePubkey);
+      };
+    }
 
     this.cells = {
       a: {

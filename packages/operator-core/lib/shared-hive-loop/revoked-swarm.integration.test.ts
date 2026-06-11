@@ -14,13 +14,14 @@
  *     (B's sovereignty over its own DB is not A's problem).
  *  2. ASYMMETRY — revocation is one-sided: A's writes still reach B (B never
  *     revoked A).
- *  3. THE AUTHORITY-MEMBERSHIP GAP (probed, filed) — the authority op layer
- *     (`handleAuthorityRpc` → claim ops) checks only that the RECEIVER is the
- *     elected authority, never the CALLER's hive standing. A revoked swarm's
- *     lease RPC still GRANTS at HEAD — and that stolen grant then BLOCKS the
- *     live swarm's claim on the item until the lease lapses. "New claims
- *     rejected" (the P-011 contract) is unenforced at the op layer today;
- *     enforcement relies on transport-level gating alone.
+ *  3. AUTHORITY MEMBERSHIP ENFORCEMENT (EI-284 — was the probed gap, now
+ *     fixed): the claim-op layer gates acquire/heartbeat on the CALLER's hive
+ *     standing (`registerWorkItemClaimAuthorityOps` isCallerRevoked seam; the
+ *     rig bridges the election→announce pubkey domains). A revoked swarm's
+ *     lease RPC is REFUSED (`refused:'caller_revoked'`) — it can neither
+ *     steal the lease nor block the live swarm. Residual on EI-284's thread:
+ *     the envelope is unauthenticated, so the holder pubkey is self-reported
+ *     (defense-in-depth, not anti-spoofing).
  *  4. IN-FLIGHT SEMANTICS — the revoked holder's lease lapses (injected
  *     clock), the orphan sweep (P-013) returns the federated `taken_by`, the
  *     surviving swarm re-runs the item, and D-007 adoption picks the
@@ -69,7 +70,7 @@ const record = (executor: string, claim: WorkItemClaim, at: number): CompletionR
 
 describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
   it(
-    'revocation stops the zombie federating; the authority-membership gap is probed; the in-flight item recovers via sweep + D-007 adoption',
+    'revocation stops the zombie federating; the authority refuses the revoked caller (EI-284); the in-flight item recovers via sweep + D-007 adoption',
     async () => {
       rig = await bootCompositionRig({ harnessSlug: HARNESS, claimTtlSec: 60 });
       const { a, b } = rig.cells;
@@ -102,21 +103,23 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
         "the revoking side's writes still federate to the revoked peer",
       ).toBe('passed');
 
-      // ── 3. The authority-membership GAP: B's lease RPC still grants… ──
+      // ── 3. Authority MEMBERSHIP ENFORCEMENT (EI-284, flipped from the filed
+      //    gap): the revoked swarm's lease RPC is REFUSED on caller standing —
+      //    it can no longer steal the lease or block the live swarm at all. ──
       const stolen = await rig.acquireHiveLease(b, 'F-603', { intent: 'revoked swarm still claiming' });
       expect(stolen.via).toBe('remote-authority');
       expect(
         stolen.value.ok,
-        'EXPECTED GAP (filed): the authority op layer never checks the caller\'s hive standing — ' +
-          'if this now REFUSES, membership enforcement landed: flip this assertion and close the issue',
-      ).toBe(true);
-      // …and that stolen grant BLOCKS the live swarm's claim until it lapses.
-      const blocked = await rig.claimNext(a);
-      expect(blocked).toMatchObject({ item: { id: 'F-603' }, leased: false });
-      rig.advanceClock(61_000); // the revoked holder cannot meaningfully heartbeat forever
-      const recovered = await rig.claimNext(a);
-      expect(recovered).toMatchObject({ item: { id: 'F-603' }, leased: true });
+        'the authority op layer now checks caller standing (EI-284) — a revoked swarm must be refused',
+      ).toBe(false);
+      expect((stolen.value as { refused?: string }).refused).toBe('caller_revoked');
+      // The live swarm claims F-603 IMMEDIATELY — no zombie grant to lapse.
+      const unblocked = await rig.claimNext(a);
+      expect(unblocked).toMatchObject({ item: { id: 'F-603' }, leased: true });
       await rig.runFakePipeline(a, 'F-603');
+      // (Step 4 still needs B's ORIGINAL F-601 lease lapsed before the sweep
+      // reclaim — the advance that previously also aged the zombie grant.)
+      rig.advanceClock(61_000);
 
       // ── 4. The in-flight item: lease lapsed above; the sweep returns the
       //    federated taken_by and the survivor re-runs F-601. ──

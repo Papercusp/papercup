@@ -15,13 +15,26 @@
  * Owns its schema (the 000-baseline coord_event_log + the real 102 outbox/capture
  * fn + migration 147 verbatim); does not touch the dev DB.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import { buildCoordMessageProjection, type CoordMessageRow } from '../projections/coord-message';
+
+// EI-279: the projection's federated deliver-and-wake fan dynamically imports
+// wakeRecipients — mock it so these tests assert the fan contract without the
+// real await-event pump.
+vi.mock('../../../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: vi.fn(async (recipients: readonly string[]) => ({
+    targets: [...recipients],
+    keys: [],
+    woken: 1,
+    staged: 0,
+  })),
+}));
+import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -241,5 +254,73 @@ describe('coord_event_log federation (real PG)', () => {
     } finally {
       await dbB.cleanup();
     }
+  });
+
+  describe('EI-279 — federated deliver-and-wake fan', () => {
+    const proj = () => buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const remoteWakeRow = (msgId: string): CoordMessageRow => ({
+      harness_slug: HARNESS,
+      msg_id: msgId,
+      surface: 'messages',
+      writer_key: 'peer-A',
+      body: envelope(msgId, { wake: true, summary: 'wake me', to: ['su-B', 'su-C'] }),
+      ts: 1_700_000_000_000,
+    });
+
+    it('the wake intent FEDERATES: body.wake survives capture → reshape', async () => {
+      await clearOutbox();
+      await insertRow({ msgId: 'wake-fed', body: envelope('wake-fed', { wake: true }) });
+      const rows = await outbox();
+      expect(rows).toHaveLength(1);
+      const op = outboxRowToLocalWriteOp({
+        table_name: rows[0].table_name, op: rows[0].op as 'put', key: rows[0].key,
+        ts: rows[0].ts, row: rows[0].row,
+      } as OutboxRow);
+      expect(((op as { value: CoordMessageRow }).value.body as { wake?: unknown }).wake).toBe(true);
+    });
+
+    it('a FRESH remote-origin row with body.wake fires the local fan ONCE; re-applies never re-wake', async () => {
+      vi.mocked(wakeRecipients).mockClear();
+      const p = proj();
+      await p.writeToPg(remoteWakeRow('wake-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledExactlyOnceWith(['su-B', 'su-C'], {
+        summary: 'wake me',
+        source: 'su-A',
+        workspaceId: WS,
+      });
+
+      // At-least-once re-apply (same op after a cursor reset) → UPDATE path → no re-wake.
+      await p.writeToPg(remoteWakeRow('wake-1'), { authorPubkey: 'peerPubA', origin: 'remote' });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it('no wake intent → no fan; local origin → no fan (defensive)', async () => {
+      vi.mocked(wakeRecipients).mockClear();
+      const p = proj();
+      const noWake: CoordMessageRow = {
+        ...remoteWakeRow('wake-2'),
+        body: envelope('wake-2', { summary: 'plain inject' }),
+      };
+      await p.writeToPg(noWake, { authorPubkey: 'peerPubA', origin: 'remote' });
+      await p.writeToPg(remoteWakeRow('wake-3'), { authorPubkey: 'peerPubA', origin: 'local' });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('a wake-fan failure never fails the projection apply (message persists)', async () => {
+      vi.mocked(wakeRecipients).mockRejectedValueOnce(new Error('pump down'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await proj().writeToPg(remoteWakeRow('wake-4'), { authorPubkey: 'peerPubA', origin: 'remote' });
+        expect(
+          await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='wake-4'`,
+        ).toHaveLength(1);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('federated wake fan failed'),
+          expect.anything(),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });

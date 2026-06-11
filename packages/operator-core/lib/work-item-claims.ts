@@ -59,7 +59,18 @@ export interface AcquireOpts {
 
 export type AcquireResult =
   | { ok: true; claim: WorkItemClaim }
-  | { ok: false; conflict: WorkItemClaim };
+  | {
+      ok: false;
+      conflict: WorkItemClaim;
+      /**
+       * Set when the AUTHORITY refused the op on the CALLER's standing rather
+       * than on contention (EI-284): the caller's holder pubkey is in the
+       * hive's revoked set. The `conflict` is a synthetic zero-claim (no real
+       * holder to report). Carried on the wire so a refused swarm can tell
+       * "lost the race" from "I am revoked".
+       */
+      refused?: 'caller_revoked';
+    };
 
 export const DEFAULT_WORK_ITEM_TTL_SEC = 1800; // 30m — generous for an LLM work turn; renewed by heartbeat
 export const MAX_WORK_ITEM_TTL_SEC = 7200; // 2h hard cap (an explicit extend for a long op)
@@ -188,6 +199,10 @@ export interface HeartbeatClaimParams {
   claimId: string;
   owner: string;
   ttlSecOverride?: number;
+  /** The caller's device pubkey, for the authority-side standing gate (EI-284).
+   *  Optional: absent → the gate skips (no identity to judge, fail-open). The
+   *  heartbeatClaimLocal SQL never reads it — claim_id+owner key the renewal. */
+  holderPubkey?: string | null;
 }
 
 /**
@@ -377,4 +392,15 @@ function synthMissing(opts: AcquireOpts): WorkItemClaim {
     lastActivityTs: now,
     expired: true,
   };
+}
+
+/**
+ * The standing-refusal result the authority-side op handlers return when the
+ * CALLER's hive standing fails (EI-284 — revoked swarm claiming over RPC).
+ * Rides the normal ok:false path (consumers already treat any !ok as "no
+ * lease"), with a synthetic conflict (there is no real holder to report) and
+ * the machine-readable `refused` marker.
+ */
+export function refusedAcquire(opts: AcquireOpts): AcquireResult {
+  return { ok: false, conflict: { ...synthMissing(opts), intent: 'refused: caller revoked' }, refused: 'caller_revoked' };
 }

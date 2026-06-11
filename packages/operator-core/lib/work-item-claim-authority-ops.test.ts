@@ -87,3 +87,82 @@ describe('registerWorkItemClaimAuthorityOps', () => {
     expect(res.error).toBe('unknown_kind');
   });
 });
+
+describe('caller-standing gate (EI-284)', () => {
+  beforeEach(() => __resetAuthorityOpsForTests());
+  afterEach(() => __resetAuthorityOpsForTests());
+
+  const payload = {
+    workspaceId: 'ws', harnessSlug: 'h', workItemId: 'F-001', owner: 'su-b',
+    hiveSlug: 'hive-a', holderPubkey: 'pk-revoked',
+  };
+
+  it('REFUSES a revoked caller’s acquire with refused:caller_revoked — coordinator never runs', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, { isCallerRevoked: async (pk) => pk === 'pk-revoked' });
+    const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload });
+    expect(res.ok).toBe(true); // the RPC dispatched — the REFUSAL is the result
+    const out = res.result as AcquireResult & { refused?: string };
+    expect(out.ok).toBe(false);
+    expect(out.refused).toBe('caller_revoked');
+    expect(calls.acquire).toHaveLength(0);
+  });
+
+  it('REFUSES a revoked caller’s heartbeat (reason caller_revoked) — a zombie cannot extend its lease', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, { isCallerRevoked: async (pk) => pk === 'pk-revoked' });
+    const res = await handleAuthorityRpc({
+      harnessSlug: 'hive-a',
+      kind: WORK_ITEM_CLAIM_OP_KINDS.heartbeat,
+      payload: { ...payload, claimId: 'cid-9' },
+    });
+    const out = res.result as HeartbeatResult;
+    expect(out).toMatchObject({ renewed: false, held: false, reason: 'caller_revoked' });
+    expect(calls.heartbeat).toHaveLength(0);
+  });
+
+  it('release is NOT gated — a revoked holder relinquishing its lease is allowed', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, { isCallerRevoked: async () => true });
+    const res = await handleAuthorityRpc({
+      harnessSlug: 'hive-a',
+      kind: WORK_ITEM_CLAIM_OP_KINDS.release,
+      payload: { ...payload, claimId: 'cid-9' },
+    });
+    expect(res.result).toBe(true);
+    expect(calls.release).toHaveLength(1);
+  });
+
+  it('a payload WITHOUT a holderPubkey skips the check (no identity to judge — fail-open)', async () => {
+    const { coord, calls } = makeFake();
+    const seen: string[] = [];
+    registerWorkItemClaimAuthorityOps(coord, {
+      isCallerRevoked: async (pk) => { seen.push(pk); return true; },
+    });
+    const { holderPubkey: _hp, ...noPubkey } = payload;
+    const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload: noPubkey });
+    expect((res.result as AcquireResult).ok).toBe(true);
+    expect(seen).toEqual([]);
+    expect(calls.acquire).toHaveLength(1);
+  });
+
+  it('a THROWING standing check fails open at the default layer contract (gate errors never wedge claims)', async () => {
+    // The default check catches internally; a custom checker that throws surfaces
+    // as handler_error rather than a silent grant — pin BOTH behaviors.
+    const { coord } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, {
+      isCallerRevoked: async () => { throw new Error('standing store down'); },
+    });
+    const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('handler_error');
+  });
+
+  it('a clean caller passes through to the coordinator untouched', async () => {
+    const { coord, calls } = makeFake();
+    registerWorkItemClaimAuthorityOps(coord, { isCallerRevoked: async (pk) => pk === 'someone-else' });
+    const res = await handleAuthorityRpc({ harnessSlug: 'hive-a', kind: WORK_ITEM_CLAIM_OP_KINDS.acquire, payload });
+    expect((res.result as AcquireResult).ok).toBe(true);
+    expect(calls.acquire).toHaveLength(1);
+  });
+});

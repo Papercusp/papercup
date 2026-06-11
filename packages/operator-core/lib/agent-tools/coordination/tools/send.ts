@@ -55,6 +55,11 @@ export default defineTool({
       plan_slug: args.plan_slug,
       related_msg_id: args.related_msg_id,
       ...(harnessSlug ? { harnessSlug } : {}),
+      // EI-279: persist the wake intent ON the envelope so it federates — a
+      // recipient homed on a REMOTE instance is woken by the coord-message
+      // projection's fan when the row arrives there (the local fan below only
+      // covers THIS instance's await store).
+      ...(args.wake ? { extra: { wake: true } } : {}),
     });
 
     // Deliver-and-wake (P-040): the message already persisted to the inbox above

@@ -24,6 +24,7 @@ import {
   acquireClaimLocal,
   heartbeatClaimLocal,
   releaseClaimLocal,
+  refusedAcquire,
   WORK_ITEM_CLAIM_OP_KINDS,
   type AcquireOpts,
   type AcquireResult,
@@ -31,6 +32,7 @@ import {
   type HeartbeatResult,
   type ReleaseClaimParams,
 } from './work-item-claims';
+import { loadRevokedPubkeys } from './sync/hyperbee/load-revoked-pubkeys';
 
 /**
  * The minimal claim-store surface the authority ops drive. The default binds the real
@@ -100,17 +102,91 @@ function asReleaseParams(payload: unknown): ReleaseClaimParams {
  * re-registers cleanly). Each handler validates the payload, then runs the op locally on
  * THIS (the authority's) store.
  */
+/** The scope a caller-standing check judges against (from the op payload). */
+export interface CallerStandingScope {
+  workspaceId: string;
+  harnessSlug: string;
+  hiveSlug?: string | null;
+}
+
+/**
+ * Is `holderPubkey` REVOKED for this scope? (EI-284.) The authority-side gate
+ * on claim acquire/heartbeat — registered per boot via
+ * {@link registerWorkItemClaimAuthorityOps} opts; the default consults the
+ * durable revocation source (`harness_shared.contributors.revoked_pubkeys`,
+ * the same set the substrate's announce-time refusal is seeded from).
+ */
+export type IsCallerRevoked = (holderPubkey: string, scope: CallerStandingScope) => Promise<boolean>;
+
+/**
+ * The production standing check. FAIL-OPEN posture (D-004): only an
+ * AFFIRMATIVE "this pubkey is in the revoked set" refuses — an unreadable
+ * store or an empty set allows, so a PG blip can never wedge legitimate
+ * cross-swarm claims.
+ */
+export const defaultIsCallerRevoked: IsCallerRevoked = async (holderPubkey, scope) => {
+  try {
+    const revoked = await loadRevokedPubkeys({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+    });
+    return revoked.has(holderPubkey);
+  } catch {
+    return false; // fail-open: standing unknowable ≠ revoked
+  }
+};
+
+export interface WorkItemClaimAuthorityOpsOpts {
+  /** Override the standing check (tests / rigs whose holder-pubkey domain
+   *  differs from the announce/device domain). Default: the durable
+   *  revoked-set check. */
+  isCallerRevoked?: IsCallerRevoked;
+}
+
+/**
+ * Register the work-item claim authority op handlers against `coordinator`. Call ONCE at
+ * boot (from the work_items tool barrel). Idempotent: a no-op if the kinds are already
+ * registered (the global registry is reset between tests, so a re-run after a reset
+ * re-registers cleanly). Each handler validates the payload, then runs the op locally on
+ * THIS (the authority's) store.
+ *
+ * CALLER-STANDING GATE (EI-284): acquire + heartbeat first check the payload's
+ * `holderPubkey` against the hive's revoked set — a revoked swarm's RPC can no
+ * longer win (or extend) a lease and block live swarms until lapse. Release is
+ * deliberately NOT gated: a revoked holder relinquishing its lease is exactly
+ * what the hive wants. LIMITS (documented, not silent): the envelope is
+ * unauthenticated today, so `holderPubkey` is self-reported — this is
+ * defense-in-depth against well-behaved-but-revoked peers, not against a
+ * malicious caller lying about its identity (the authenticated-envelope
+ * follow-on lives on EI-284's thread); and a payload WITHOUT a holderPubkey
+ * skips the check (no identity to judge — fail-open, D-004).
+ */
 export function registerWorkItemClaimAuthorityOps(
   coordinator: WorkItemClaimCoordinator = DEFAULT_WORK_ITEM_CLAIM_COORDINATOR,
+  opts: WorkItemClaimAuthorityOpsOpts = {},
 ): void {
   if (registeredAuthorityOpKinds().includes(WORK_ITEM_CLAIM_OP_KINDS.acquire)) return;
+  const isRevoked = opts.isCallerRevoked ?? defaultIsCallerRevoked;
 
-  registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.acquire, async (payload) =>
-    coordinator.acquire(asAcquireOpts(payload)),
-  );
-  registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.heartbeat, async (payload) =>
-    coordinator.heartbeat(asHeartbeatParams(payload)),
-  );
+  registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.acquire, async (payload) => {
+    const p = asAcquireOpts(payload);
+    if (p.holderPubkey && (await isRevoked(p.holderPubkey, p))) {
+      return refusedAcquire(p);
+    }
+    return coordinator.acquire(p);
+  });
+  registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.heartbeat, async (payload) => {
+    const p = asHeartbeatParams(payload);
+    if (p.holderPubkey && (await isRevoked(p.holderPubkey, p))) {
+      return {
+        renewed: false,
+        held: false,
+        expiresTs: null,
+        reason: 'caller_revoked',
+      } satisfies HeartbeatResult;
+    }
+    return coordinator.heartbeat(p);
+  });
   registerAuthorityOp(WORK_ITEM_CLAIM_OP_KINDS.release, async (payload) =>
     coordinator.release(asReleaseParams(payload)),
   );
