@@ -13,7 +13,7 @@
 import { useMemo } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Tooltip } from '../../harness/Tooltip';
 import { useHarnessLogs, type HarnessLogEvent } from './useHarnessData';
@@ -61,6 +61,8 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
     parseAsStringEnum<LevelFilter>([...LEVEL_FILTERS]).withDefault('all'),
   );
   const [sourceFilter, setSourceFilter] = useQueryState('logSource', parseAsString.withDefault(''));
+  // Dragged widths survive panel remounts (localStorage — render-only pref).
+  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:logs');
 
   const rows = useMemo<LogRow[]>(() => {
     if (!events) return [];
@@ -169,6 +171,8 @@ export default function AdvLogsPanel({ params }: PanelComponentProps) {
             rows={rows}
             columns={columns}
             resizableColumns
+            columnWidths={colWidths}
+            onColumnWidthsChange={setColWidths}
             getRowId={(r) => r.id}
             headerHeight={26}
             rowMinHeight={24}

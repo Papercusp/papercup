@@ -20,7 +20,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { LIVE_MS, STALE_MS } from '@papercusp/operator-core/lib/liveness';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { getRoleStyle } from '../../harness/theme';
@@ -172,6 +172,8 @@ function WorkingView({ slug }: { slug: string }) {
   });
   const agents = query.loading ? null : query.data;
   const [, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  // Dragged widths survive panel remounts (localStorage — render-only pref).
+  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-working');
 
   const rows = useMemo(() => {
     // Live agents first, loaded first within liveness.
@@ -280,6 +282,8 @@ function WorkingView({ slug }: { slug: string }) {
           columns={columns}
           rows={rows}
           resizableColumns
+          columnWidths={colWidths}
+          onColumnWidthsChange={setColWidths}
           getRowId={(r) => r.agentId}
           onRowClick={(r) => {
             if (r.doing) void setSelectedId(r.doing.id);
@@ -311,6 +315,8 @@ function RunsView({ slug }: { slug: string }) {
   const { agents, loading, error, refresh } = useHarnessAgents(slug);
   // showAll persists in the URL (nuqs) so it survives reload + is agent-driveable.
   const [showAll, setShowAll] = useQueryState('agentsAll', parseAsBoolean.withDefault(false));
+  // Dragged widths survive panel remounts (localStorage — render-only pref).
+  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-runs');
   // Clicking a row with a feature jumps the Detail pane to that feature.
   const [, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -445,6 +451,8 @@ function RunsView({ slug }: { slug: string }) {
           <RichGrid<HarnessAgentRun>
             inline
             resizableColumns
+            columnWidths={colWidths}
+            onColumnWidthsChange={setColWidths}
             virtualMode={{
               virtualizer: rowVirtualizer,
               totalRows: visible.length,

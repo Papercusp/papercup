@@ -8,7 +8,7 @@ The V1 ship contract, how bin/audit-bundle.sh enforces it, and how to extend it 
 A freshly installed production binary must:
 
 1. Make **zero network requests** to `flags.papercuspai.com` under any usage.
-2. Resolve every feature flag to its `FLAG_DEFAULTS` ship value with `source: "defaults"` — i.e. PostHog must not be configured. (The defaults are the V1 ship state: `papercusp-snapshots` is `true` by design; cloudflare-publish / oracle / harness-phases / design / rust-port-ui / testing / the-hive / video / voice / improvement-auto-implement / inbox-durable-escalations are all `false`.)
+2. Resolve every feature flag to its `FLAG_DEFAULTS` ship value with `source: "defaults"` — i.e. PostHog must not be configured. (The defaults are the V1 ship state: `papercusp-snapshots` is `true` by design; cloudflare-publish / oracle / harness-phases / design / testing / the-hive / video / voice / improvement-auto-implement / inbox-durable-escalations are all `false`.)
 
 Both must hold without anyone configuring anything post-install.
 

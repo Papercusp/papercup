@@ -10,8 +10,11 @@
  */
 import { describe, it, expect } from 'vitest';
 
-/** A bee / fleet-spawn ctx: a uiClientId, no principal / superuser / power-user. */
-const BEE_CTX = { uiClientId: 's-bee-1', workspaceId: 'default' } as never;
+/** A bee / fleet-spawn ctx: a VERIFIED signed spawn (sigVerifiedSpawn — the MCP
+ *  handler checked the URL HMAC, EI-318) carrying its `s-…` client id, no
+ *  principal / superuser / power-user. resolveAgentIdentity attributes this to
+ *  `source: 'fleet-spawn'`; the hive tools then refuse it as root-only. */
+const BEE_CTX = { uiClientId: 's-bee-1', sigVerifiedSpawn: true, workspaceId: 'default' } as never;
 const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content[0].text);
 type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };

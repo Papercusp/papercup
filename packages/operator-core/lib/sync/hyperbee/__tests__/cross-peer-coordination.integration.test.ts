@@ -50,6 +50,10 @@
  *      projection applies it origin='remote' and fires the deliver-and-wake fan
  *      EXACTLY ONCE (A's own local apply never fans) — the end-to-end the
  *      coord-message-federation suite chains by hand.
+ *  11. SCALE: a FIVE-Swarm cascade — the sitting authority departs round after round
+ *      (5→4→3→2→1), and at every width EVERY survivor independently elects the SAME
+ *      successor (unanimous, no split-brain at any epoch), with a contended claim
+ *      serializing at each epoch's authority over the wire.
  *
  * Proof boundary: REAL corestores/logs, REAL Hyperswarm/Noise over a local testnet
  * DHT, REAL announce signature verification, REAL presence projection → PG, REAL
@@ -734,7 +738,7 @@ describe('cross-peer coordination on a shared Hive — partition fail-open + hea
   );
 });
 
-interface TrioNode {
+interface PeerNode {
   id: ReturnType<typeof makeIdentity>;
   db: FreshPgDb;
   peer: PresencePeer;
@@ -742,17 +746,19 @@ interface TrioNode {
   self: { githubUserId: number; devicePubkey: string };
 }
 
-/** Three Swarms of one Hive federated over the real wire — every peer's roster holds
- *  ALL THREE devices. The fixture for the post-failover-consistency assertions a
- *  two-peer rig cannot express. Returns nodes + the testnet bootstrap (for rejoin). */
-async function federateThreePeerPresence() {
-  const seeds = [
-    { login: 'alice', userId: 42, kc: 'kc-alice', machine: 'machine-A', ts: 1000 },
-    { login: 'bob', userId: 7, kc: 'kc-bob', machine: 'machine-B', ts: 1001 },
-    { login: 'carol', userId: 99, kc: 'kc-carol', machine: 'machine-C', ts: 1002 },
-  ];
+/** N Swarms of one Hive federated over the real wire — every peer's roster holds ALL
+ *  N devices. The fixture for the multi-peer consistency assertions a two-peer rig
+ *  cannot express. Returns nodes + the testnet bootstrap (for rejoin/scale legs). */
+async function federatePeerSet(count: number) {
+  const seeds = Array.from({ length: count }, (_, i) => ({
+    login: `peer${i + 1}`,
+    userId: 100 + i,
+    kc: `kc-peer${i + 1}`,
+    machine: `machine-${i + 1}`,
+    ts: 1000 + i,
+  }));
   const testnet = await makeTestnet();
-  const nodes: TrioNode[] = [];
+  const nodes: PeerNode[] = [];
   for (const s of seeds) {
     const db = await createFreshPgDb(`xpeer3-${s.login}`);
     cleanups.push(() => db.cleanup());
@@ -782,17 +788,23 @@ async function federateThreePeerPresence() {
     });
   }
   const allPubkeys = new Set(nodes.map((n) => n.id.devicePubkey));
+  let lastMissing = '';
   const federated = await pollUntil(
     async () => {
+      const missing: string[] = [];
       for (const n of nodes) await n.peer.handle.mergeNow();
-      for (const n of nodes) {
-        const devs = await devicePubkeysFor(n.db.sql);
-        for (const pk of allPubkeys) if (!devs.has(pk)) return undefined;
+      for (let i = 0; i < nodes.length; i++) {
+        const devs = await devicePubkeysFor(nodes[i].db.sql);
+        for (const m of nodes) {
+          if (!devs.has(m.id.devicePubkey)) missing.push(`${seeds[i].login}⊉${seeds[nodes.indexOf(m)].login}`);
+        }
       }
-      return true;
+      lastMissing = missing.join(' ');
+      return missing.length === 0 || undefined;
     },
     { timeoutMs: 30_000, intervalMs: 250 },
   );
+  if (!federated) console.error(`[federatePeerSet] STALLED — missing roster entries: ${lastMissing}`);
   return { nodes, seeds, testnet, admitted, federated };
 }
 
@@ -800,7 +812,7 @@ describe('cross-peer coordination on a shared Hive — THREE-peer failover consi
   it(
     'authority departs → BOTH survivors elect the SAME successor (no split-brain), a contended claim grants exactly one; the departed Swarm rejoins → all three reconverge',
     async () => {
-      const trio = await federateThreePeerPresence();
+      const trio = await federatePeerSet(3);
       expect(trio.federated, 'three-way presence federation did not complete within the window').toBeTruthy();
 
       const sorted = [...trio.nodes].sort((a, b) => (a.id.devicePubkey < b.id.devicePubkey ? -1 : 1));
@@ -1187,5 +1199,106 @@ describe('cross-peer coordination on a shared Hive — deliver-and-wake over the
       expect(onARows[0].origin).toBe('local');
     },
     60_000,
+  );
+});
+
+describe('cross-peer coordination on a shared Hive — FIVE-Swarm cascading failover (scale)', () => {
+  it(
+    'each authority departure is followed by UNANIMOUS re-election among all survivors, and claims serialize at every epoch, down to a single Swarm',
+    async () => {
+      const fleet = await federatePeerSet(5);
+      expect(fleet.federated, 'five-way presence federation did not complete within the window').toBeTruthy();
+
+      // Ascending pubkey = the deterministic succession order (argmin elects index 0).
+      let alive = [...fleet.nodes].sort((a, b) => (a.id.devicePubkey < b.id.devicePubkey ? -1 : 1));
+
+      // Round 0 — fully connected: all FIVE rosters elect the same authority.
+      for (const n of fleet.nodes) {
+        const a = await lockAuthorityForHive(HIVE_SLUG, electionDeps(n.db.sql, n.self));
+        const seen = a.isSelf ? n.id.devicePubkey : a.peer!.devicePubkey;
+        expect(seen).toBe(alive[0].id.devicePubkey);
+        expect(a.liveCount).toBe(5);
+      }
+
+      // One claim store per Swarm (the per-machine embedded-pg model) + one RPC
+      // endpoint that always fronts the CURRENT epoch's authority store (h.sql
+      // rebound each round).
+      for (const n of fleet.nodes) await n.db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+      __resetAuthorityOpsForTests();
+      registerWorkItemClaimAuthorityOps();
+      const rpc = await startAuthorityRpcServer();
+      setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => rpc.addr() }));
+      cleanups.push(() => {
+        __resetPeerRpcTransportForTests();
+        __resetAuthorityOpsForTests();
+      });
+
+      // The cascade: kill the sitting authority; survivors heartbeat one staleness
+      // window later; EVERY survivor must independently elect the SAME successor.
+      // Round-k clock = now + k*601s, so each prior round's rows (including the
+      // freshly-departed authority's last heartbeat) age out exactly one window.
+      for (let round = 1; alive.length > 1; round++) {
+        await alive[0].peer.handle.close();
+        alive = alive.slice(1);
+        const VN = Date.now() + round * 601_000;
+
+        for (const s of alive) {
+          const seed = fleet.seeds.find((x) => x.userId === s.self.githubUserId)!;
+          await s.peer.handle.append({
+            type: 'put',
+            table: 'presence',
+            hbKey: `${seed.userId}/${seed.machine}`,
+            value: { ...presenceValue(seed.userId, seed.machine, s.id.devicePubkey), last_seen_at: VN },
+            ts: 10_000 * round + seed.userId,
+            schema_version: 1,
+            writerPubkey: s.id.devicePubkey,
+          });
+        }
+        const fresh = await pollUntil(
+          async () => {
+            for (const s of alive) await s.peer.handle.mergeNow();
+            for (const s of alive) {
+              const rows = await queryPresenceRowsForHive(s.db.sql as never, HIVE_SLUG);
+              for (const other of alive) {
+                if (!rows.some((r) => r.device_pubkey === other.id.devicePubkey && r.last_seen_ms >= VN)) return undefined;
+              }
+            }
+            return true;
+          },
+          { timeoutMs: 20_000, intervalMs: 200 },
+        );
+        expect(fresh, `round ${round}: survivor heartbeats never mutually federated`).toBeTruthy();
+
+        const clock = () => VN + 1;
+        const elections = await Promise.all(
+          alive.map((s) => lockAuthorityForHive(HIVE_SLUG, electionDeps(s.db.sql, s.self, clock))),
+        );
+        elections.forEach((e, i) => {
+          const seen = e.isSelf ? alive[i].id.devicePubkey : e.peer!.devicePubkey;
+          expect(seen, `round ${round}: survivor ${i} disagreed on the successor`).toBe(alive[0].id.devicePubkey);
+          expect(e.liveCount).toBe(alive.length);
+        });
+        expect(elections.filter((e) => e.isSelf)).toHaveLength(1);
+
+        // Claims serialize at THIS epoch's authority.
+        h.sql = alive[0].db.sql;
+        const clockedClaim = (n: PeerNode, owner: string) => claimVia(n.db.sql, n.self, owner, `F-CASCADE-${round}`, clock);
+        if (alive.length >= 2) {
+          const [rAuth, rPeer] = await Promise.all([
+            clockedClaim(alive[0], `auth-r${round}`),
+            clockedClaim(alive[1], `peer-r${round}`),
+          ]);
+          expect([rAuth, rPeer].filter((r) => r.value.ok)).toHaveLength(1);
+          expect(rAuth.via).toBe('local-authority');
+          expect(rPeer.via).toBe('remote-authority');
+        } else {
+          const r = await clockedClaim(alive[0], 'last-swarm');
+          expect(r.via).toBe('local-authority');
+          expect(r.value.ok).toBe(true);
+        }
+      }
+      expect(alive).toHaveLength(1);
+    },
+    150_000,
   );
 });

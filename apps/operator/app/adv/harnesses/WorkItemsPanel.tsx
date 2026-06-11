@@ -3,7 +3,7 @@
 import { useEffect, useMemo, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
 import { Select } from '../../harness/Select';
 import { IssueStatusPill, SeverityPill, StatusPill } from '../../harness/primitives';
 import type { HarnessStatus } from '../../harness/theme';
@@ -79,6 +79,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // to the feature view, WI-* to the work-item view (same contract the retired
   // Features/Issues panels had).
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  // Dragged column widths survive dockview remounts (panel tab switches
+  // remount panels, which used to reset every resize). Render-only
+  // preference, not user-meaningful URL state → localStorage, not nuqs.
+  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:work-items');
 
   const query = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
@@ -261,6 +265,8 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
             columns={columns}
             rows={filtered}
             resizableColumns
+            columnWidths={colWidths}
+            onColumnWidthsChange={setColWidths}
             getRowId={(r) => r.id}
             onRowClick={(r) => void setSelectedId(r.id)}
             getRowBg={(r) =>

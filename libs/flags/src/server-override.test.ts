@@ -110,6 +110,20 @@ describe('flag override store', () => {
     expect(payload.source).toBe('defaults'); // base source unchanged
   });
 
+  it('getAllFlags drops stored keys for RETIRED flags instead of leaking them into the payload', async () => {
+    // The PG row outlives flag retirements (e.g. papercusp-oracle folded into
+    // papercusp-testing 2026-06-10): a raw spread of the stored map would
+    // re-introduce the dead key into every client payload forever.
+    const { store } = makeFakeStore({
+      [KEY]: true,
+      ['papercusp-retired-ghost' as FlagKey]: true,
+    });
+    initFlagOverrideStore(store);
+    const payload = await getAllFlags('u');
+    expect(payload.flags[KEY]).toBe(true); // live override still applies
+    expect('papercusp-retired-ghost' in payload.flags).toBe(false);
+  });
+
   it('a failing store falls back to defaults instead of throwing', async () => {
     initFlagOverrideStore({
       async load() {

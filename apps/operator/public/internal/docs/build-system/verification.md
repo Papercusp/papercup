@@ -64,7 +64,6 @@ Expected (the V1 ship defaults — `papercusp-snapshots` is `true` by design, ev
     "papercusp-snapshots": true,
     "papercusp-cloudflare-publish": false,
     "papercusp-oracle": false,
-    "papercusp-rust-port-ui": false,
     "papercusp-harness-phases": false,
     "papercusp-design": false,
     "papercusp-testing": false,

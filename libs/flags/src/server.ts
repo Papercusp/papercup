@@ -172,10 +172,13 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
   if (overrides) {
     return { flags: applyEnvOverrides(overrides), evaluatedAt: Date.now(), source: "override" };
   }
+  // Filter the stored map through resolveWithDefaults: the PG row can carry
+  // keys for RETIRED flags (e.g. papercusp-oracle after the 2026-06-10 fold),
+  // and a raw spread would leak them into every client payload forever.
   const stored = await loadStoredOverrides();
   if (!client) {
     return {
-      flags: applyEnvOverrides({ ...FLAG_DEFAULTS, ...stored }),
+      flags: applyEnvOverrides(resolveWithDefaults(stored)),
       evaluatedAt: Date.now(),
       source: "defaults",
     };
@@ -191,10 +194,10 @@ export async function getAllFlags(distinctId: string): Promise<FlagPayload> {
       }
     }),
   );
-  const flags: FlagValues = applyEnvOverrides({
-    ...resolveWithDefaults(evaluated),
-    ...stored,
-  });
+  // stored beats evaluated; resolveWithDefaults drops retired/unknown keys.
+  const flags: FlagValues = applyEnvOverrides(
+    resolveWithDefaults({ ...evaluated, ...stored }),
+  );
   return { flags, evaluatedAt: Date.now(), source: "posthog" };
 }
 
