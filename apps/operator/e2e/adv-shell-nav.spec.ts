@@ -67,7 +67,9 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'brainstorm', label: 'Brainstorm' },
   { id: 'plans', label: 'Create' },
-  { id: 'harnesses', label: 'Harnesses' },
+  // Label renamed Harnesses → Progress (owner ask, 2026-06-10); the tab ID
+  // stays 'harnesses' — it's URL-serialized (?tab=harnesses deep links).
+  { id: 'harnesses', label: 'Progress' },
   { id: 'frames', label: 'Frames' },
   { id: 'git', label: 'Git' },
   { id: 'testing', label: 'Tests' },

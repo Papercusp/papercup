@@ -43,19 +43,31 @@ const SKIP_MSG_BLANK =
   'The /adv shell did not mount the tab strip. Run against an HMR-enabled operator-vite ' +
   '(the playwright.config webServer) — a stale HMR-disabled :3055 serves a blank #root.';
 
-// Resolve a harness slug that actually exists in the e2e workspace
-// (dock.spec.ts pattern). Prefer `papercup` (the stable anchor project),
-// else the first project; do NOT prefer test-looking fixtures — other
-// suites create/destroy those mid-run.
+// Resolve a harness slug that exists in THE WORKSPACE THE PAGE WILL USE
+// (dock.spec.ts pattern): a fresh Playwright profile has no injected
+// __PAPERCUSP_WS__ and no `?ws=`, so getBrowserWorkspaceId() falls back to
+// 'default' and every in-page fetch stamps `x-papercusp-workspace: default`.
+// Resolving here WITHOUT that header reads a DIFFERENT workspace's registry,
+// so the page 404s on a slug its own workspace doesn't contain. Prefer
+// `papercup` when present, else a stable-looking project; do NOT prefer
+// test-looking fixtures — other suites create/destroy those mid-run.
+const PAGE_WORKSPACE = 'default';
 let SLUG = process.env.HARNESS_SETTINGS_E2E_SLUG ?? '';
 let projectsReachable = true;
 
 test.beforeAll(async ({ request }) => {
   if (SLUG) return;
   try {
-    const r = await request.get(`${baseURL}/api/harness/projects/lite`, { timeout: 15_000 });
+    const r = await request.get(`${baseURL}/api/harness/projects/lite`, {
+      timeout: 15_000,
+      headers: { 'x-papercusp-workspace': PAGE_WORKSPACE },
+    });
     const projects: Array<{ slug: string }> = (await r.json()).projects ?? [];
-    SLUG = projects.find((p) => p.slug === 'papercup')?.slug ?? projects[0]?.slug ?? '';
+    SLUG =
+      projects.find((p) => p.slug === 'papercup')?.slug ??
+      projects.find((p) => !/e2e|smoke|test/.test(p.slug))?.slug ??
+      projects[0]?.slug ??
+      '';
   } catch {
     projectsReachable = false;
   }

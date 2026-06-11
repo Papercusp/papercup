@@ -54,18 +54,29 @@ const SKIP_MSG =
   '(the playwright.config webServer, or OPERATOR_E2E_BASE_URL at a vite preview) — ' +
   "a stale HMR-disabled :3055 serves a blank #root ('/@vite/client' createHotContext mismatch).";
 
-// Resolve a harness slug that actually exists so /api/design/features is a
-// realistic call. Prefer `papercup` (the workspace's stable anchor project),
-// else the first project. The dashboard renders its shell regardless of the
-// slug's data, so a fallback literal keeps the spec runnable everywhere.
+// Resolve a harness slug that exists IN THE WORKSPACE THE PAGE WILL USE
+// (dock.spec.ts pattern): a fresh Playwright profile stamps
+// `x-papercusp-workspace: default` on every in-page fetch, so the slug must
+// come from THAT workspace's registry or the route 404s. Prefer `papercup`
+// when present, else a stable-looking project. The dashboard renders its
+// shell regardless of the slug's data, so a fallback literal keeps the spec
+// runnable everywhere.
+const PAGE_WORKSPACE = 'default';
 let SLUG = process.env.DESIGN_E2E_SLUG ?? '';
 
 test.beforeAll(async ({ request }) => {
   if (SLUG) return;
   try {
-    const r = await request.get(`${baseURL}/api/harness/projects/lite`, { timeout: 15_000 });
+    const r = await request.get(`${baseURL}/api/harness/projects/lite`, {
+      timeout: 15_000,
+      headers: { 'x-papercusp-workspace': PAGE_WORKSPACE },
+    });
     const projects: Array<{ slug: string }> = (await r.json()).projects ?? [];
-    SLUG = projects.find((p) => p.slug === 'papercup')?.slug ?? projects[0]?.slug ?? 'papercup';
+    SLUG =
+      projects.find((p) => p.slug === 'papercup')?.slug ??
+      projects.find((p) => !/e2e|smoke|test/.test(p.slug))?.slug ??
+      projects[0]?.slug ??
+      'papercup';
   } catch {
     SLUG = 'papercup';
   }
