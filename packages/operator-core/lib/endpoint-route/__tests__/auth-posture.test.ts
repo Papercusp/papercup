@@ -18,7 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { ALL_ROUTES } from '../routes';
 
-type RouteAuth = 'public' | { trust?: readonly string[] };
+type RouteAuth = 'public' | 'loopback' | { trust?: readonly string[] };
 const VT = { trust: ['verified', 'trusted'] } as const;
 const T_ONLY = { trust: ['trusted'] } as const;
 
@@ -193,6 +193,11 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     'DELETE /plugins/*',
     'POST /:transport',
     'DELETE /:transport',
+    // Cross-swarm authority RPC: remote peers POST lease/lock ops here via
+    // HttpPeerRpcTransport — loopback would break federated authority.
+    // verifyIsAuthority is the app-level check; EI-284 tracks the missing
+    // caller-standing hardening.
+    'POST /authority/rpc',
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {

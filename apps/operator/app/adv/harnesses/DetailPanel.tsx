@@ -244,8 +244,10 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
  * the agent surface (`work_items:*`) for now — EXCEPT Chat (EI-290): the
  * legacy Features-tab per-item steer surface, same `openFeatureChat` →
  * OPEN_CHAT_EVENT → dock chat panel path the F-* detail uses.
+ *
+ * Exported for tests.
  */
-function WorkItemDetail({
+export function WorkItemDetail({
   slug,
   workItem,
   onSelect,

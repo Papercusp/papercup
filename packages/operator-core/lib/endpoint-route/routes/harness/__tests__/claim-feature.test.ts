@@ -6,7 +6,7 @@ describe('claim-feature route — shape', () => {
     expect(routes).toHaveLength(1);
     expect(routes[0].method).toBe('POST');
     expect(routes[0].path).toBe('/harness/:slug/claim-feature');
-    expect(routes[0].auth).toBe('public');
+    expect(routes[0].auth).toBe('loopback');
   });
 });
 

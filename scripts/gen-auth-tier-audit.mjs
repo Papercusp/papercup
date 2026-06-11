@@ -42,6 +42,10 @@ const REMOTE_SURFACES = [
   { re: /^\/auth(\/|$)/, why: 'auth handshake must be reachable pre-auth' },
   { re: /^\/substrate(\/|$)/, why: 'federation/substrate peer surface' },
   { re: /^\/federation(\/|$)/, why: 'federation peer surface' },
+  // Cross-machine peer RPC for the per-harness lock authority (Track B) —
+  // HttpPeerRpcTransport posts here from REMOTE swarms; loopback would break
+  // federated lease ops. Caller-standing hardening tracked as EI-284.
+  { re: /^\/authority\/rpc$/, why: 'cross-swarm authority RPC (peer transport; EI-284 hardening pending)' },
   { re: /^\/cupboard\/listings/, why: 'public pack listings proxy' },
   { re: /^\/health$|^\/healthz/, why: 'health probe' },
 ];

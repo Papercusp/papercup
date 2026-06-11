@@ -12,8 +12,8 @@ Total HTTP-projected routes scanned: **685**
 | wave | routes |
 |---|---|
 | - | 143 |
-| DONE | 255 |
-| OWNER | 16 |
+| DONE | 254 |
+| OWNER | 17 |
 | W2 | 271 |
 
 | method | path | current | proposed | wave | reason | file |
@@ -181,7 +181,7 @@ Total HTTP-projected routes scanned: **685**
 | GET | `/auth/me` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/me.ts |
 | PATCH | `/auth/me` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/me.ts |
 | POST | `/auth/signup` | public | public! | OWNER | auth handshake must be reachable pre-auth | packages/operator-core/lib/endpoint-route/routes/auth/signup.ts |
-| POST | `/authority/rpc` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/authority/rpc.ts |
+| POST | `/authority/rpc` | public | public! | OWNER | cross-swarm authority RPC (peer transport; EI-284 hardening pending) | packages/operator-core/lib/endpoint-route/routes/authority/rpc.ts |
 | GET | `/backups` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/backups/index.ts |
 | PUT | `/backups` | loopback | loopback | DONE | declared loopback tier — enforced at the route-stack chokepoint (Wave 1 landed 2026-06-11) | packages/operator-core/lib/endpoint-route/routes/backups/index.ts |
 | GET | `/backups/broken-list` | public | public | W2 | read — loopback BIND is the perimeter | packages/operator-core/lib/endpoint-route/routes/backups/broken-list.ts |

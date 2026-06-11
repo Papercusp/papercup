@@ -27,7 +27,12 @@ import { lockAuthorityFor } from '../../../authority/lock-authority';
 export default defineTool({
   method: 'POST',
   path: '/authority/rpc',
-  auth: 'loopback',
+  // PUBLIC by design (auth-tier Wave-1 named exception): peers route remote
+  // authority ops here cross-machine via HttpPeerRpcTransport — a loopback
+  // tier would break the federated lock authority. The verifyIsAuthority
+  // check + the mesh transport are the app-level perimeter; the missing
+  // caller-standing check is tracked as EI-284.
+  auth: 'public',
   async handler(req) {
     let body: AuthorityRpcEnvelope;
     try {

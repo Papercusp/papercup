@@ -5,7 +5,7 @@
  * projects the directory's verified list, gates non-loopback callers with 403,
  * and never leaks a private hive.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import hivesRoute from './hives';
 import { configureHiveDirectoryForTest, __resetHiveDirectorySingleton } from '../../../hive-directory-deps';
@@ -49,7 +49,16 @@ const call = async (url: string) => {
   return { status: res.status, body: await res.json().catch(() => null) };
 };
 
-afterEach(() => __resetHiveDirectorySingleton());
+const savedEnv = process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+
+beforeEach(() => {
+  delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+});
+
+afterEach(() => {
+  __resetHiveDirectorySingleton();
+  if (savedEnv !== undefined) process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = savedEnv;
+});
 
 describe('GET /api/discovery/hives route (P-007)', () => {
   it('serves the discovered list to a loopback caller', async () => {
@@ -61,11 +70,20 @@ describe('GET /api/discovery/hives route (P-007)', () => {
     expect(body.rows[0]).toMatchObject({ hiveId: 'ash', title: 'Ash Hive', memberLinks: ['papercusp://harness?topic=a'] });
   });
 
-  it('403s a non-loopback caller (loopback-only route)', async () => {
+  it('403s a non-loopback caller via the declared loopback tier (auth-tier Wave 1)', async () => {
+    // The perimeter moved from an in-handler guard to `auth: 'loopback'`,
+    // enforced by the route-stack authStep — assert the declaration and the
+    // mounted stack's rejection (the handler itself no longer gates).
+    expect((hivesRoute as { auth?: unknown }).auth).toBe('loopback');
+    const { Hono } = await import('hono');
+    const { registerRoute } = await import('../../define-route');
+    const app = new Hono();
+    registerRoute(app, hivesRoute as never);
     configureHiveDirectoryForTest(fakeDeps());
-    const { status, body } = await call('http://evil.example.com/api/discovery/hives');
-    expect(status).toBe(403);
-    expect(body.error).toBe('loopback_only');
+    const res = await app.request('http://evil.example.com/discovery/hives');
+    expect(res.status).toBe(403);
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    expect(body?.error).toBe('loopback_only');
   });
 
   it('returns an empty list when nothing discovered', async () => {

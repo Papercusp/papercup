@@ -9,6 +9,7 @@ describe('feature-queue routes — shape', () => {
   it('GET /harness/:slug/feature-queue-membership', () => {
     const r = routes.find((x) => x.method === 'GET');
     expect(r?.path).toBe('/harness/:slug/feature-queue-membership');
+    // Read — stays public (W2: the loopback bind is the perimeter for reads).
     expect(r?.auth).toBe('public');
   });
 
@@ -17,7 +18,7 @@ describe('feature-queue routes — shape', () => {
       (x) => x.method === 'POST' && x.path.endsWith('/enqueue'),
     );
     expect(r?.path).toBe('/harness/:slug/feature-queue/:featureId/enqueue');
-    expect(r?.auth).toBe('public');
+    expect(r?.auth).toBe('loopback');
   });
 
   it('POST /harness/:slug/feature-queue/:featureId/dequeue', () => {
@@ -25,7 +26,7 @@ describe('feature-queue routes — shape', () => {
       (x) => x.method === 'POST' && x.path.endsWith('/dequeue'),
     );
     expect(r?.path).toBe('/harness/:slug/feature-queue/:featureId/dequeue');
-    expect(r?.auth).toBe('public');
+    expect(r?.auth).toBe('loopback');
   });
 });
 
