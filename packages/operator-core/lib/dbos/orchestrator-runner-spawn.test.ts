@@ -32,6 +32,13 @@ vi.mock('../harness-invoke-once', () => ({
     H.inputs.push(input);
     return H.cmd;
   },
+  // orchestrator-runner ALSO imports resolveSpawnBackendModel from this module
+  // (the AGENT_GOVERNOR bucket-keying path). The mock must mirror the module's
+  // FULL named-export surface or Vitest 4's module-evaluator throws "No
+  // resolveSpawnBackendModel export is defined on the mock" when the importer
+  // is linked — load-order-dependent, so it passed isolated but flaked under
+  // the full operator-core suite (2026-06-11).
+  resolveSpawnBackendModel: () => ({ backend: 'omp', model: '' }),
 }));
 
 import { spawnInvokeOnce } from './orchestrator-runner';

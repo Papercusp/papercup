@@ -87,8 +87,15 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
         .flat_map(|g| g.pending.iter())
         .map(|w| w.count)
         .sum();
+    // Per-agent panes (owner ask 2026-06-11) name their scope; the fleet-wide
+    // pane stays unadorned.
+    let scope = match &app.wake_filter {
+        crate::app::WakeFilter::All => String::new(),
+        crate::app::WakeFilter::Queen => " · ♛ queen".to_string(),
+        crate::app::WakeFilter::Owner(id) => format!(" · {}", trunc(id, 14)),
+    };
     let mut title = vec![Span::styled(
-        format!(" Staged wakes — {} item(s)", b.total()),
+        format!(" Staged wakes{scope} — {} item(s)", b.total()),
         Theme::title(),
     )];
     if total > b.total() as i64 {
@@ -107,11 +114,13 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
 
     // The board: per-agent headers + one row per staged wake.
     if b.groups.is_empty() && !b.loading {
+        let empty = if app.wake_filter == crate::app::WakeFilter::All {
+            " no staged wakes — every agent is in auto mode or drained"
+        } else {
+            " no staged wakes for this agent — auto mode or drained"
+        };
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                " no staged wakes — every agent is in auto mode or drained",
-                Theme::dim(),
-            ))),
+            Paragraph::new(Line::from(Span::styled(empty, Theme::dim()))),
             chunks[1],
         );
     } else {
@@ -268,6 +277,23 @@ mod tests {
         let s = render(&app);
         assert!(s.contains("no staged wakes"), "{s}");
         assert!(s.contains("GLOBAL MANUAL"), "{s}");
+    }
+
+    #[test]
+    fn per_agent_scope_shows_in_title_and_empty_state() {
+        // The queen pane ("wake-pane --queen") names its scope in the title…
+        let mut app = board_app();
+        app.wake_filter = crate::app::WakeFilter::Queen;
+        let s = render(&app);
+        assert!(s.contains("Staged wakes · ♛ queen"), "{s}");
+        // …and an owner-pinned pane shows the (truncated) id.
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Wake;
+        app.wake_board.loading = false;
+        app.wake_filter = crate::app::WakeFilter::Owner("su-75cee172-9509".into());
+        let s = render(&app);
+        assert!(s.contains("Staged wakes · su-75cee172-9"), "{s}");
+        assert!(s.contains("no staged wakes for this agent"), "{s}");
     }
 
     #[test]

@@ -76,6 +76,12 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  // Freshness guards for loadChat: the cached subscription row can lag the
+  // locally streamed transcript (per-harness agent_chats invalidation gap) —
+  // a re-run must never clobber a LONGER local transcript or interrupt an
+  // in-flight stream. Refs, not state: loadChat reads them without re-arming.
+  const localTurnsRef = useRef(0);
+  const streamingRef = useRef(false);
 
   // Eager via Zero — subscribe to all chats for this harness; pick out
   // the one matching chatId. Replaces the per-chatId REST fetch so the
@@ -99,10 +105,22 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     enabled: !!slug,
   });
 
-  const loadChat = useCallback(async () => {
-    // Try the cached subscription first.
-    const row = (zeroChatRows ?? []).find((r) => r.id === chatId);
+  const loadChat = useCallback(async (opts?: { forceRest?: boolean }) => {
+    // Never reload mid-stream — the streamed turns aren't on the server row
+    // yet, and a setChat here wipes them from the panel. (The deliberate
+    // post-stream refetch passes forceRest and skips both guards.)
+    if (!opts?.forceRest && streamingRef.current) return;
+    // Try the cached subscription first — UNLESS the caller knows it lags
+    // (post-stream: the per-harness agent_chats invalidate may never arrive,
+    // so the cached row would clobber the streamed transcript back to its
+    // pre-send state; REST always has the persisted turns).
+    const row = opts?.forceRest ? undefined : (zeroChatRows ?? []).find((r) => r.id === chatId);
     if (row) {
+      // Stale-row guard: if the subscription row carries FEWER turns than
+      // the panel already shows (locally streamed, not yet invalidated
+      // through), keep the local transcript.
+      const rowTurns = Array.isArray(row.transcript) ? row.transcript.length : 0;
+      if (rowTurns < localTurnsRef.current) return;
       setChat({
         id: row.id,
         role: row.role,
@@ -137,6 +155,13 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
   }, [slug, chatId, zeroChatRows]);
 
   useEffect(() => { void loadChat(); }, [loadChat]);
+
+  // Mirror the freshness guards (see the ref declarations above) on every
+  // render so loadChat reads current values without re-arming itself.
+  useEffect(() => {
+    localTurnsRef.current = chat?.transcript.length ?? 0;
+    streamingRef.current = sendState.kind === 'streaming';
+  });
 
   // Auto-scroll on new content.
   useEffect(() => {
@@ -229,8 +254,10 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       }
 
       // Stream finished — refetch to get persisted assistant turn + counters.
+      // forceRest: the cached subscription row may not have invalidated yet
+      // and would reset the transcript to its pre-send state.
       setSendState({ kind: 'idle' });
-      void loadChat();
+      void loadChat({ forceRest: true });
     } catch (err) {
       setSendState({ kind: 'error', message: `send failed: ${(err as Error).message}` });
     }

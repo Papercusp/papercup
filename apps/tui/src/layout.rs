@@ -282,12 +282,20 @@ pub fn chat_dock_kdl(
     } else {
         String::new()
     };
-    // Wake-queue pane (EI-312, owner ask 2026-06-11): the staged-wake board —
-    // every manual-mode agent's pending wakes (queen first) with release /
-    // edit / skip + the release-all/skip-all drains, so a paused Queen's queue
-    // is reviewable from the dock without tools. Stacked with the agents like
-    // the colony driver. Flag-on only (the wake-mode gate's UI rides
-    // hive-agent-tabs, P-008/P-009).
+    // Wake-queue panes (EI-312, owner asks 2026-06-11): the staged-wake board
+    // with release / edit / skip + the release-all/skip-all drains, so a
+    // paused Queen's queue is reviewable from the dock without tools. TWO
+    // panes, both flag-on only (the wake-mode gate's UI rides hive-agent-tabs,
+    // P-008/P-009), both stacked with the agents like the colony driver:
+    //   "♛⏸ wakes" — the QUEEN's queue only (`wake-pane --queen`), sitting
+    //     directly under her chat pane (zellij stacks can't nest splits, so a
+    //     sibling stack pane is the per-agent surface);
+    //   "⏸ wakes"  — the fleet-wide board (every agent, queen first).
+    let queen_wake_pane_block = if hive_agent_tabs {
+        "\n        pane name=\"♛⏸ wakes\" {\n            command \"pui\"\n            args \"wake-pane\" \"--queen\"\n        }"
+    } else {
+        ""
+    };
     let wake_pane_block = if hive_agent_tabs {
         "\n        pane name=\"⏸ wakes\" {\n            command \"pui\"\n            args \"wake-pane\"\n        }"
     } else {
@@ -315,7 +323,7 @@ layout {{
         }}
         pane name="{brain_name}" {{
             command "{brain_cmd}"{args_line}
-        }}{driver_pane_block}{wake_pane_block}
+        }}{queen_wake_pane_block}{driver_pane_block}{wake_pane_block}
     }}
     pane size=2 borderless=true {{
         plugin location="zellij:status-bar"
@@ -662,14 +670,22 @@ mod tests {
         assert_eq!(on.matches("command \"psu\"").count(), 2); // sentinel + queen
         // P-004/D-009: flag-on the reactive driver relocates to a `pui dock-driver`
         // pane (the chat-pane no longer drives); EI-312 adds the staged-wake
-        // board as a second pui pane (`pui wake-pane`).
+        // board panes: the queen's own queue ("♛⏸ wakes", `wake-pane --queen`,
+        // directly under her chat pane) + the fleet-wide board ("⏸ wakes").
         assert!(on.contains("args \"dock-driver\""));
-        assert!(on.contains("args \"wake-pane\""));
+        assert!(on.contains("args \"wake-pane\" \"--queen\""));
+        assert!(on.contains("name=\"♛⏸ wakes\""));
+        assert!(on.contains("args \"wake-pane\"\n"));
         assert!(on.contains("name=\"⏸ wakes\""));
-        assert_eq!(on.matches("command \"pui\"").count(), 2);
+        // The queen's wake pane rides directly under the brain pane, before the
+        // colony driver (it IS the queen pane's companion surface).
+        let queen_wakes_at = on.find("♛⏸ wakes").expect("queen wake pane");
+        let driver_at = on.find("dock-driver").expect("driver pane");
+        assert!(queen_wakes_at < driver_at, "queen wakes pane precedes the driver");
+        assert_eq!(on.matches("command \"pui\"").count(), 3);
 
         // Flag OFF → unchanged: the pui chat-pane widget drives the dock (no
-        // driver pane, no wake pane).
+        // driver pane, no wake panes).
         let off = chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), false);
         assert!(off.contains("args \"chat-pane\""));
         assert!(!off.contains("--role=operator"));

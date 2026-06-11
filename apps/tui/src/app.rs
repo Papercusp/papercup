@@ -331,6 +331,48 @@ impl WakeReview {
     }
 }
 
+/// Which agents the wake-pane board shows (owner ask 2026-06-11): the dock's
+/// "⏸ wakes" pane shows the whole fleet; a per-agent pane (e.g. "♛⏸ wakes"
+/// under the Queen) filters to one agent. `Queen` resolves the live queen
+/// from the roster each refresh (the owner id isn't known at layout time and
+/// changes when the brain respawns); `Owner` pins an explicit id.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WakeFilter {
+    #[default]
+    All,
+    Queen,
+    Owner(String),
+}
+
+/// Apply a [`WakeFilter`] to assembled wake groups. Queen resolution prefers
+/// the roster (`agent_pane_kind == "queen"` → that owner's groups); a queen
+/// missing from the roster falls back to groups the assemble step already
+/// kinded "queen" (label/kind ride the same roster join, so this only fires
+/// for a stale roster read). Pure — unit-tested.
+pub fn filter_wake_groups(
+    groups: Vec<crate::models::WakeGroup>,
+    filter: &WakeFilter,
+    roster: &[crate::models::RosterEntry],
+) -> Vec<crate::models::WakeGroup> {
+    match filter {
+        WakeFilter::All => groups,
+        WakeFilter::Owner(id) => groups.into_iter().filter(|g| &g.agent == id).collect(),
+        WakeFilter::Queen => {
+            let queen_owner = roster
+                .iter()
+                .find(|r| r.agent_pane_kind.as_deref() == Some("queen"))
+                .map(|r| r.owner_id.clone());
+            groups
+                .into_iter()
+                .filter(|g| match &queen_owner {
+                    Some(owner) => &g.agent == owner,
+                    None => g.kind.as_deref() == Some("queen"),
+                })
+                .collect()
+        }
+    }
+}
+
 /// The fleet-wide staged-wake board (the `pui wake-pane` dock pane, EI-312):
 /// every manual-mode agent's pending queue, queen first, replaced wholesale by
 /// each `Event::WakeBoard` snapshot. Same review verbs as the `W` overlay
@@ -1103,6 +1145,10 @@ pub struct App {
     /// The fleet-wide staged-wake board (the pinned `pui wake-pane`, EI-312).
     /// Only fetched/rendered when pinned to `Tab::Wake`.
     pub wake_board: WakeBoard,
+    /// The wake-pane's agent scope (owner ask 2026-06-11): All for the dock's
+    /// fleet-wide "⏸ wakes" pane; Queen/Owner for a per-agent pane. Set once
+    /// from argv at launch; the refresh loop + `g` refetch both honor it.
+    pub wake_filter: WakeFilter,
     /// The last P-011 regroup target sent to the companion — the spam guard:
     /// the same mis-ordered topology snapshot never refires the same repair.
     pub last_regroup: Option<Vec<u32>>,
@@ -1387,6 +1433,7 @@ impl App {
                 loading: true,
                 ..WakeBoard::default()
             },
+            wake_filter: WakeFilter::default(),
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
@@ -5716,6 +5763,39 @@ mod tests {
             }
         );
         assert_eq!(a.update(key('g', KeyModifiers::NONE)), Action::FetchWakeBoard);
+    }
+
+    #[test]
+    fn filter_wake_groups_scopes_to_queen_or_owner() {
+        let mk = |agent: &str, kind: Option<&str>| crate::models::WakeGroup {
+            agent: agent.into(),
+            label: agent.into(),
+            kind: kind.map(str::to_string),
+            wake_mode: Some("manual".into()),
+            pending: vec![pending_wake(1, "x")],
+        };
+        let groups = || vec![mk("su-q", Some("queen")), mk("su-b", Some("bee")), mk("su-gone", None)];
+        let roster = vec![RosterEntry {
+            owner_id: "su-q".into(),
+            label: "the queen".into(),
+            agent_pane_kind: Some("queen".into()),
+            ..Default::default()
+        }];
+
+        // All → passthrough.
+        assert_eq!(filter_wake_groups(groups(), &WakeFilter::All, &roster).len(), 3);
+        // Queen → resolved from the roster by pane-kind.
+        let q = filter_wake_groups(groups(), &WakeFilter::Queen, &roster);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].agent, "su-q");
+        // Queen with NO roster queen → falls back to the group's own kind tag.
+        let q2 = filter_wake_groups(groups(), &WakeFilter::Queen, &[]);
+        assert_eq!(q2.len(), 1);
+        assert_eq!(q2[0].agent, "su-q");
+        // Owner → that agent only (including one the roster has dropped).
+        let o = filter_wake_groups(groups(), &WakeFilter::Owner("su-gone".into()), &roster);
+        assert_eq!(o.len(), 1);
+        assert_eq!(o[0].agent, "su-gone");
     }
 
     fn plan(slug: &str) -> PlanSummary {

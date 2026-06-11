@@ -120,6 +120,18 @@ async fn main() -> Result<()> {
         },
         _ => None,
     };
+    // Wake-pane scope (owner ask 2026-06-11): bare `wake-pane` = the fleet-wide
+    // board; `wake-pane --queen` = the live queen's queue (resolved from the
+    // roster each refresh — her owner id isn't known at layout time); `wake-pane
+    // <owner-id>` = one explicit agent's queue.
+    let wake_filter: app::WakeFilter = match subcommand.as_deref() {
+        Some("wake-pane") => match std::env::args().nth(2).as_deref() {
+            Some("--queen") => app::WakeFilter::Queen,
+            Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
+            _ => app::WakeFilter::All,
+        },
+        _ => app::WakeFilter::All,
+    };
     // The dock's chat-pane drives the reactive agent stack: one watch pane per
     // active bee + one interactive pane per new local launch, appended to the
     // dock's zellij stack.
@@ -149,7 +161,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, dock_agent_panes, hive_agent_tabs).await;
+    let result = run(&mut terminal, pinned, watch, wake_filter, dock_agent_panes, hive_agent_tabs).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -227,6 +239,7 @@ async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
     watch: Option<String>,
+    wake_filter: app::WakeFilter,
     dock_agent_panes: bool,
     hive_agent_tabs: bool,
 ) -> Result<()> {
@@ -251,8 +264,9 @@ async fn run<B: Backend>(
         tokio::spawn(bee_output_loop(owner.clone(), tx.clone()));
     }
     // The wake-pane (EI-312): keep the staged-wake board fresh while pinned.
+    app.wake_filter = wake_filter.clone();
     if pinned == Some(app::Tab::Wake) {
-        tokio::spawn(wake_board_loop(tx.clone()));
+        tokio::spawn(wake_board_loop(wake_filter, tx.clone()));
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -510,8 +524,8 @@ async fn run<B: Backend>(
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchWakeBoard => {
-                // EI-312: re-snapshot the fleet-wide staged-wake board.
-                tokio::spawn(fetch_wake_board(tx.clone()));
+                // EI-312: re-snapshot the staged-wake board (this pane's scope).
+                tokio::spawn(fetch_wake_board(app.wake_filter.clone(), tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::WakeBoardAct {
@@ -522,7 +536,7 @@ async fn run<B: Backend>(
             } => {
                 // EI-312: act on the board (release/skip one, or drain all),
                 // then re-snapshot so the pane refreshes.
-                tokio::spawn(wake_board_act(agent, verb, id, edited, tx.clone()));
+                tokio::spawn(wake_board_act(agent, verb, id, edited, app.wake_filter.clone(), tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::CreateFrameTabs { tabs } => {
@@ -2257,12 +2271,13 @@ async fn wake_queue_act(
     }
 }
 
-/// EI-312: snapshot the fleet-wide staged-wake board — an agent-LESS
-/// `coord:wake-queue` list (every owner's queue, including stale owners the
-/// roster no longer carries) joined with the roster for labels/kinds, plus the
+/// EI-312: snapshot the staged-wake board — an agent-LESS `coord:wake-queue`
+/// list (every owner's queue, including stale owners the roster no longer
+/// carries) joined with the roster for labels/kinds, scoped by this pane's
+/// [`app::WakeFilter`] (fleet-wide, the live queen, or one owner), plus the
 /// GLOBAL default wake-mode (a fleet-wide pause reads differently from one
 /// paused agent) → `Event::WakeBoard`.
-async fn fetch_wake_board(tx: UnboundedSender<Event>) {
+async fn fetch_wake_board(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
     let result = match OperatorClient::from_discovery().await {
         Ok(client) => {
             let pending = client
@@ -2287,7 +2302,12 @@ async fn fetch_wake_board(tx: UnboundedSender<Event>) {
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string)
                         });
-                    Ok((crate::client::assemble_wake_board(pending, &roster), global_mode))
+                    let groups = crate::app::filter_wake_groups(
+                        crate::client::assemble_wake_board(pending, &roster),
+                        &filter,
+                        &roster,
+                    );
+                    Ok((groups, global_mode))
                 }
                 Err(e) => Err(e),
             }
@@ -2306,6 +2326,7 @@ async fn wake_board_act(
     verb: &'static str,
     id: Option<i64>,
     edited: Option<String>,
+    filter: app::WakeFilter,
     tx: UnboundedSender<Event>,
 ) {
     let res = match OperatorClient::from_discovery().await {
@@ -2338,7 +2359,7 @@ async fn wake_board_act(
         Err(e) => Err(e.to_string()),
     };
     match res {
-        Ok(()) => fetch_wake_board(tx).await,
+        Ok(()) => fetch_wake_board(filter, tx).await,
         Err(e) => {
             let _ = tx.send(Event::WakeBoard { result: Err(e) });
         }
@@ -2349,14 +2370,14 @@ async fn wake_board_act(
 /// Justified poll (matches the dock's roster cadence): the queue mutates from
 /// many writers (stagePendingWake on any wake) and the pane is the only
 /// consumer; a push rail for pending_wakes isn't built yet.
-async fn wake_board_loop(tx: UnboundedSender<Event>) {
+async fn wake_board_loop(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
     let mut ticker = tokio::time::interval(Duration::from_millis(3000));
     loop {
         ticker.tick().await;
         if tx.is_closed() {
             return;
         }
-        fetch_wake_board(tx.clone()).await;
+        fetch_wake_board(filter.clone(), tx.clone()).await;
     }
 }
 
