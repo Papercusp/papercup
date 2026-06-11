@@ -144,6 +144,10 @@ export default function AdvShell({
     }
   }, [activeTab]);
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
+  // The Harnesses-tab member axis (`?harness=`). The shell only WRITES it on an
+  // into-hive create (focus the new member in the rail, P-011 contract) — the
+  // tab owns reading it. Mirrors HarnessesWorkspace.handleCreated.
+  const [, setActiveHarness] = useQueryState('harness', parseAsString);
   // P-015: scope axis. 'expanded' (default) means consumers UNION the
   // selected slug + its sub-harnesses; 'self' narrows to just the picked
   // slug; 'all' spans every harness in the workspace (the selector's
@@ -410,11 +414,25 @@ export default function AdvShell({
       <CreateHarnessPicker
         open={createOpen}
         onOpenChange={(o: boolean) => void setCreateOpen(o)}
-        onCreated={(slug: string) => {
+        // EI-319: the removed bottom-right FAB was the only opener that passed a
+        // hive scope, so the header "New" button (now the primary opener) lost
+        // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
+        // hive — mirrors how ShareWizard below already takes activeSlug. all-mode
+        // has no scope ⇒ null ⇒ New-hive/Standalone only.
+        hiveScope={!allMode ? (activeSlug ?? null) : null}
+        onCreated={(slug: string, opts?: { hive?: string }) => {
           setRefreshNonce((n) => n + 1);
-          void setActiveSlug(slug);
-          if (typeof window !== 'undefined') {
-            window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
+          if (opts?.hive && opts.hive === activeSlug) {
+            // Added INTO the active hive (P-011): keep ?slug= on the hive, focus
+            // the new member via ?harness= — same contract as HarnessesWorkspace.
+            void setActiveHarness(slug);
+          } else {
+            // A new hive / standalone harness becomes the focused scope.
+            void setActiveSlug(slug);
+            void setActiveHarness(null);
+            if (typeof window !== 'undefined') {
+              window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
+            }
           }
         }}
       />

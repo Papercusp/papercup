@@ -248,10 +248,15 @@ defineTestDomain({
     {
       id: 'coordination',
       label: 'Coordination',
-      description: 'Messages, plan-events, watermarks, subscriptions, escalations, handoffs, promote.',
+      description:
+        'Messages, plan-events, watermarks, subscriptions, escalations, handoffs, promote — plus the coordination ENGINE underneath: the inbox bus + producer, the coord wire schema, lifecycle rules/rendering/desugaring, and the typed coord-ops programs (ops, triggers, program runner, blueprints e2e).',
       globs: [
         'packages/operator-core/lib/agent-tools/coordination/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/agent_chats/**/*.test.ts',
+        'packages/operator-core/lib/coord-inbox-bus*.test.ts',
+        'packages/operator-core/lib/coord-schema*.test.ts',
+        'packages/operator-core/lib/coord-lifecycle/**/*.test.ts',
+        'packages/operator-core/lib/coord-ops/**/*.test.ts',
       ],
     },
     {
@@ -1001,6 +1006,7 @@ defineTestDomain({
         'packages/operator-core/lib/fleet/saga.integration.test.ts',
         'packages/operator-core/lib/fleet/lock-release.integration.test.ts',
         'packages/operator-core/lib/fleet/classic-*.test.ts',
+        'packages/operator-core/lib/agent-tools/fleet/**/*.test.ts',
       ],
     },
     {
@@ -1106,8 +1112,42 @@ defineTestDomain({
       id: 'claim-authority',
       label: 'Work-item claim authority',
       description:
-        'The Hive-scoped work-item claim arbitration seam (single-peer local authority + the Track-B swap-in registry) and the authority-side acquire/heartbeat/release op routing.',
-      globs: ['packages/operator-core/lib/work-item-claim-authority*.test.ts'],
+        'The Hive-scoped work-item claim arbitration seam (single-peer local authority + the Track-B swap-in registry), the authority-side acquire/heartbeat/release op routing, and the claim STORE itself: lease lifecycle, concurrency races, and the two-instance store split.',
+      globs: [
+        'packages/operator-core/lib/work-item-claim-authority*.test.ts',
+        'packages/operator-core/lib/work-item-claims*.test.ts',
+      ],
+    },
+    {
+      id: 'authority',
+      label: 'Lock authority (election, failover, fencing, RPC)',
+      description:
+        'The D-005 deterministic lock/claim authority layer: argmin election + staleness failover over presence (harness + Hive scope), hardened epoch fencing + anti-flap, the authority-op registry, the HTTP peer-RPC transport + boot wiring + address resolution, file-lock authority ops + Hive-aware routing, the two-instance authority rigs, cross-machine lock failover mid-hold (P-007), the failover flood (P-003), the lock-set reconstructor handover, and the remote-peers fast-path cache.',
+      globs: ['packages/operator-core/lib/authority/__tests__/**/*.test.ts'],
+    },
+    {
+      id: 'wire-federation',
+      label: 'Federation wire (peers, presence, partition, coord rails)',
+      description:
+        'The Hive-relevant slice of the hyperbee substrate over the REAL wire (the full substrate suite lives at dogfood/substrate — overlap by design): two-peer + bidi swarms, three-peer partition/rejoin convergence, presence announce + hive_slug projection, the federated coord rails (messages/threads/conversations incl. the deliver-and-wake intent), the federation triggers (hive members, plan-item assignment, engineer issues, feature content, substrate outbox), the adversarial two-peer battery, swarm join/guard/chaos, topic derivation + default binding, and the live two-peer hive directory.',
+      globs: [
+        'packages/operator-core/lib/sync/hyperbee/__tests__/hive-*.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/two-peer*.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/three-peer-*.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/presence-*.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/wire-presence.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/federation-adversarial.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/coord-*-federation.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/*federation-trigger.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/plan-item-assignment-two-peer-federation.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/substrate-outbox-trigger.integration.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/swarm*.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/convergence.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/derive-swarm-topic.test.ts',
+        'packages/operator-core/lib/sync/hyperbee/__tests__/default-swarm-binding-p007.test.ts',
+      ],
     },
     {
       id: 'coordination',

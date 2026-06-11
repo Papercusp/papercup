@@ -79,6 +79,16 @@ export async function startKopiaServer(workspaceId: string): Promise<KopiaServer
     '--disable-csrf-token-checks',
   ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 
+  // An unhandled ChildProcess 'error' (spawn ENOENT when the kopia binary
+  // is absent from the runtime) is an UNCAUGHT EXCEPTION that kills the
+  // whole operator — took serve down live on Windows 2026-06-11 when the
+  // Setup Wizard reached the Backups step. Capture and surface as a
+  // normal rejection instead.
+  let spawnError: NodeJS.ErrnoException | null = null;
+  child.on('error', (e) => {
+    spawnError = e;
+    RUNNING.delete(workspaceId);
+  });
   child.stdout.on('data', () => { /* drain */ });
   child.stderr.on('data', () => { /* drain */ });
   child.on('exit', () => RUNNING.delete(workspaceId));
@@ -93,6 +103,15 @@ export async function startKopiaServer(workspaceId: string): Promise<KopiaServer
 
   // Give kopia a beat to bind. If it dies immediately, surface that.
   await new Promise((r) => setTimeout(r, 250));
+  if (spawnError) {
+    RUNNING.delete(workspaceId);
+    const failed: NodeJS.ErrnoException = spawnError;
+    throw new Error(
+      failed.code === 'ENOENT'
+        ? `kopia binary not found (${KOPIA_BIN}) — backups are unavailable in this runtime`
+        : `kopia server failed to spawn: ${failed.message}`,
+    );
+  }
   if (child.exitCode !== null) {
     RUNNING.delete(workspaceId);
     throw new Error(`kopia server failed to start (exit ${child.exitCode})`);

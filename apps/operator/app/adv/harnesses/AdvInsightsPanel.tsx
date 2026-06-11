@@ -17,6 +17,24 @@ import { useHarnessClaimStatus } from './useHarnessClaimStatus';
 
 const MSG: React.CSSProperties = { padding: 16, fontSize: 13, color: 'var(--fg-mute)' };
 
+// Flat frost retry button — a bare <button> here renders as the silver 3D OS
+// default (no globals baseline for buttons); style it on-theme inline since
+// this panel has no <style> block.
+const RETRY_BTN: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  marginLeft: 8,
+  padding: '3px 10px',
+  fontSize: 12,
+  fontWeight: 600,
+  color: 'var(--fg-dim, #b9d4e8)',
+  background: 'var(--bg-2, rgba(255, 255, 255, 0.045))',
+  border: '1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%))',
+  borderRadius: 6,
+  cursor: 'pointer',
+};
+
 export default function AdvInsightsPanel({ params }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const [data, setData] = useState<InsightsTabProps | null>(null);
@@ -51,12 +69,8 @@ export default function AdvInsightsPanel({ params }: PanelComponentProps) {
     return (
       <div style={{ ...MSG, color: 'var(--bad, #f87171)' }}>
         Failed to load insights: {error}{' '}
-        <button
-          type="button"
-          onClick={() => setTick((t) => t + 1)}
-          style={{ marginLeft: 8, cursor: 'pointer' }}
-        >
-          <RefreshCw size={12} /> Retry
+        <button type="button" onClick={() => setTick((t) => t + 1)} style={RETRY_BTN}>
+          <RefreshCw size={12} aria-hidden /> Retry
         </button>
       </div>
     );
