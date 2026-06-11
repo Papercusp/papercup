@@ -59,6 +59,8 @@ export default defineTool({
               // vs. how the task went) — omitted when no override applied.
               ...(n.modelSpec ? { model: n.modelSpec } : {}),
               ...(n.modelTier ? { tier: n.modelTier } : {}),
+              // The parent-authored brief (mig 230) — the dock brief-pane's source.
+              ...(n.brief ? { brief: n.brief } : {}),
             })),
           }),
         },

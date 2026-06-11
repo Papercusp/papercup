@@ -133,7 +133,7 @@ async function defaultClaimListing(
     const tokenRes = await getGhAuthToken();
     if (tokenRes.kind !== 'ok') return { ok: false, error: 'gh_auth_required' };
     const { resolveCupboardBaseUrl } = await import(
-      './endpoint-route/routes/harness/cupboard-publish'
+      './cupboard/base-url'
     );
     const res = await fetch(`${resolveCupboardBaseUrl()}/listings/${listingId}/claim`, {
       method: 'POST',

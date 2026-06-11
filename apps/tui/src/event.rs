@@ -152,6 +152,12 @@ pub enum Event {
     WakeBoard {
         result: Result<(Vec<crate::models::WakeGroup>, Option<String>), String>,
     },
+    /// The agent-context pane snapshot (dock 4-pane split, owner ask
+    /// 2026-06-11) — brief / mail / work data for ONE agent, replacing the
+    /// pinned `Tab::AgentCtx` pane's state each refresh.
+    AgentCtx {
+        result: Result<crate::models::AgentCtxData, String>,
+    },
     /// The deployed cloud frames (hive-agent-tabs P-013) from
     /// `/api/deploy/frames` — drives the per-frame zellij tabs in the dock.
     Frames(Vec<crate::models::DeployFrameRow>),

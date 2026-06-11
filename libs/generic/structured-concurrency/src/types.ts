@@ -73,6 +73,8 @@ export interface SpawnNode {
       Optional so hosts without per-spawn model selection never touch it. */
   modelSpec?: string | null;
   modelTier?: string | null;
+  /** Parent-authored brief that started this spawn (absent/null = none). */
+  brief?: string | null;
 }
 
 /** Result of recording one restart against a spawn's sliding intensity window. */

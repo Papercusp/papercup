@@ -12,9 +12,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../identity/gh-token', () => ({ getGhAuthToken: vi.fn() }));
-vi.mock('../routes/harness/cupboard-publish', () => ({
+vi.mock('../../cupboard/base-url', () => ({
   resolveCupboardBaseUrl: () => 'https://cupboard.test',
-  resolvePublisherAttestation: vi.fn(async () => null),
 }));
 vi.mock('../../cupboard/pack-catalog', () => ({
   derivePackCatalog: vi.fn(),

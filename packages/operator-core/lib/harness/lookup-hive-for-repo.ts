@@ -134,7 +134,7 @@ interface CupboardBindingResponse {
 const defaultCupboardLookup: CupboardRepoLookupFn = async ({ githubRepositoryId }) => {
   try {
     const { resolveCupboardBaseUrl } = await import(
-      '../endpoint-route/routes/harness/cupboard-publish'
+      '../cupboard/base-url'
     );
     const res = await fetch(`${resolveCupboardBaseUrl()}/binding/${githubRepositoryId}`, {
       signal: AbortSignal.timeout(5_000),

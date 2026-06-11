@@ -20,7 +20,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { getGhAuthToken } from '../../identity/gh-token';
-import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from '../../cupboard/base-url';
 import { derivePackCatalog } from '../../cupboard/pack-catalog';
 import {
   buildToolsDiscovery,

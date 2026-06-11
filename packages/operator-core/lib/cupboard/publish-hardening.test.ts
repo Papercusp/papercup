@@ -20,14 +20,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../identity/gh-token', () => ({
   getGhAuthToken: vi.fn(async () => ({ kind: 'ok', token: 'gh-test' })),
 }));
-vi.mock('../endpoint-route/routes/harness/cupboard-publish', () => ({
+vi.mock('./base-url', () => ({
   resolveCupboardBaseUrl: () => 'https://cupboard.test',
+}));
+vi.mock('./publisher-attestation', () => ({
   resolvePublisherAttestation: vi.fn(async () => null),
 }));
 
 import { publishListingToCupboard } from './publish-listing';
 import * as ghToken from '../identity/gh-token';
-import * as cupboardPublish from '../endpoint-route/routes/harness/cupboard-publish';
+import * as cupboardPublish from './publisher-attestation';
 
 const nonHarnessInput = {
   listing_kind: 'pack' as const,

@@ -31,6 +31,8 @@ export interface RecordSpawnInput {
    *  (per-spawn override observability). Carried, never interpreted. */
   modelSpec?: string | null;
   modelTier?: string | null;
+  /** Opaque host annotation: the parent-authored brief that started this spawn. */
+  brief?: string | null;
 }
 
 export interface FinishSpawnInput {

@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Resolves the autonomous-harness package root.
@@ -12,11 +13,27 @@ import { join } from 'node:path';
  * In the desktop bundle: Tauri's main.rs sets `PAPERCUSP_HARNESS_DIR`
  * to the bundled `<resource-dir>/sidecar/harness` so the orchestrator
  * finds run.sh + prompts + templates without any user setup.
+ *
+ * Last resort: the harness package inside THIS repo checkout. A fresh
+ * clone (CI runner, new box) has neither the env nor the `~` symlink,
+ * which made getKnownRoles() return nothing and fail every suite that
+ * imports the MEMORY_MAP role validator (WI-123, nightly run 2). Only
+ * consulted when the symlink is absent, so symlinked dev boxes are
+ * unaffected.
  */
+const inRepoHarnessDir = join(
+  dirname(fileURLToPath(import.meta.url)), // <repo>/packages/operator-core/lib
+  '..', '..', '..',
+  'libs', 'papercusp', 'packages', 'harness',
+);
+
 export function harnessPackageDir(): string {
   const fromEnv = process.env.PAPERCUSP_HARNESS_DIR;
   if (fromEnv && fromEnv.length > 0) return fromEnv;
-  return join(homedir(), 'autonomous-harness');
+  const symlinked = join(homedir(), 'autonomous-harness');
+  if (existsSync(symlinked)) return symlinked;
+  if (existsSync(inRepoHarnessDir)) return inRepoHarnessDir;
+  return symlinked;
 }
 
 export function harnessPath(...segments: string[]): string {

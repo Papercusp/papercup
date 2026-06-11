@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseDepSpec } from '@papercusp/blueprint-distribution';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../../blueprint/installed-blueprints';
-import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from '../../cupboard/base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from '../../cupboard/pack-catalog';
 import {
   installBlueprintFromCupboardCore,

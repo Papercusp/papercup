@@ -16,7 +16,7 @@
  * plugin-missing verdict to a warning rather than hard-failing on a transient
  * network blip.
  */
-import { resolveCupboardBaseUrl } from '../endpoint-route/routes/harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from './base-url';
 import {
   listPluginsIn,
   resolveProjectPath,

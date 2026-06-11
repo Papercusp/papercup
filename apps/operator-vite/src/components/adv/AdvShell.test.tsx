@@ -6,15 +6,16 @@
 // spies — the restore effect lists the setters as deps, so per-render vi.fn()
 // identities would re-fire it forever; otherwise the pinned sibling pattern,
 // see AdvConversationsTab.test.tsx). Children with their own suites
-// (AdvNowRunning, Select, CreateHarnessPicker, ShareWizard) are stubbed; the
-// pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape)
+// (AdvNowRunning, Select, CreateHarnessPicker, PublishHiveCard) are stubbed;
+// the pure exports (buildHarnessSelectOptions, visibleAdvTabs, ADV_TABS shape)
 // are pinned in __tests__/adv-shell-logic.test.ts. Asserts:
 //   - the full vs workspace-level tab strip + the all-mode snap-back,
 //   - the persisted-selection restore precedence (URL slug > persisted >
 //     All), written SEQUENTIALLY (slug then scope),
 //   - selector changes: concrete pick persists + exits all-mode first; the
 //     All row flips ?scope=all and persists the sentinel,
-//   - Share button ↔ Shared badge (is_shared), ShareWizard open/close,
+//   - Share = hive publish (hive pots only — per-harness sharing retired,
+//     comb-retire-per-harness-sharing-2026-06-11); legacy Shared badge,
 //   - the create flow (?create= → picker, onCreated selects + persists),
 //   - the Discord-parity shortcuts (tab cycling, harness cycling, goto.inbox,
 //     harness.create).
@@ -89,14 +90,30 @@ vi.mock('@/app/harness/CreateHarnessPicker', () => ({
       </div>
     ) : null,
 }));
-vi.mock('@/app/harness/ShareWizard', () => ({
-  ShareWizard: ({ harnessSlug, onClose }: { harnessSlug: string; onClose: () => void }) => (
-    <div data-testid="share-wizard" data-slug={harnessSlug}>
-      <button type="button" onClick={onClose}>
-        close-share
-      </button>
-    </div>
+vi.mock('@/app/harness/PublishHiveCard', () => ({
+  PublishHiveCard: ({ hiveSlug }: { hiveSlug: string }) => (
+    <div data-testid="publish-hive-card" data-slug={hiveSlug} />
   ),
+}));
+// The share modal wrapper — passthrough so the card renders without Radix.
+vi.mock('@/app/harness/Modal', () => ({
+  Modal: ({
+    open,
+    onOpenChange,
+    children,
+  }: {
+    open: boolean;
+    onOpenChange: (v: boolean) => void;
+    children: React.ReactNode;
+  }) =>
+    open ? (
+      <div data-testid="share-modal">
+        <button type="button" onClick={() => onOpenChange(false)}>
+          close-share
+        </button>
+        {children}
+      </div>
+    ) : null,
 }));
 vi.mock('./AdvNowRunning', () => ({
   default: ({ slug }: { slug: string | null }) => (
@@ -128,7 +145,9 @@ import AdvShell, { ADV_TABS } from './AdvShell';
 const LS_KEY = () => wsLocalKey('harness.activeProject');
 
 const PROJECTS = [
-  { slug: 'pot-a', is_shared: false },
+  // pot-a is a hive home: the header Share affordance is hive-publish-only
+  // (per-harness sharing retired — comb-retire-per-harness-sharing-2026-06-11).
+  { slug: 'pot-a', harness_kind: 'hive', is_shared: false },
   { slug: 'pot-b', is_shared: true },
   { slug: 'pot-a-child', parent_slug: 'pot-a' },
 ];
@@ -310,23 +329,24 @@ describe('AdvShell — selector + actions', () => {
     await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('self'));
   });
 
-  it('shows Share for an unshared pot and opens the wizard; Shared badge otherwise', async () => {
+  it('shows Share (hive publish) for a hive pot; legacy Shared badge for a shared non-hive pot', async () => {
     await renderShell();
     fireEvent.click(screen.getByRole('button', { name: /Share/ }));
     await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(true));
 
     cleanup();
-    nuqsState.slug = 'pot-b'; // is_shared: true
+    nuqsState.slug = 'pot-b'; // legacy shared.json share, NOT a hive
     await renderShell();
     expect(screen.getByText('Shared')).toBeTruthy();
+    // Per-harness sharing is retired: a non-hive pot gets no Share button.
     expect(screen.queryByRole('button', { name: /Share/ })).toBeNull();
   });
 
-  it('mounts ShareWizard from URL state and closes it via onClose', async () => {
+  it('mounts the hive-publish share modal from URL state and closes it', async () => {
     nuqsState.share = true;
     await renderShell();
-    const wizard = screen.getByTestId('share-wizard');
-    expect(wizard.getAttribute('data-slug')).toBe('pot-a');
+    const card = screen.getByTestId('publish-hive-card');
+    expect(card.getAttribute('data-slug')).toBe('pot-a');
     fireEvent.click(screen.getByText('close-share'));
     await waitFor(() => expect(nuqsSetters.share).toHaveBeenCalledWith(false));
   });

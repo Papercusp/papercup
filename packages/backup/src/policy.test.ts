@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { diffPolicyIgnores, IGNORE_PATTERNS } from './policy';
 
 /**
@@ -49,6 +49,17 @@ describe('diffPolicyIgnores (unit)', () => {
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
+// Module-load probe: the round-trip describe drives the REAL kopia binary,
+// which CI runners don't ship (WI-123: `spawn kopia ENOENT`). Genuinely skip
+// there; run wherever kopia is installed (dev boxes, the local gate).
+const kopiaAvailable = (() => {
+  try {
+    return spawnSync(KOPIA_BIN, ['--version'], { stdio: 'ignore' }).status === 0;
+  } catch {
+    return false;
+  }
+})();
+
 function kopia(args: string[], env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const child = spawn(KOPIA_BIN, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -86,7 +97,7 @@ async function applyIgnores(env: NodeJS.ProcessEnv, desired: string[]): Promise<
   );
 }
 
-describe('applyGlobalPolicy ignore round-trip (real kopia)', () => {
+describe.skipIf(!kopiaAvailable)('applyGlobalPolicy ignore round-trip (real kopia)', () => {
   let workspaceRoot: string;
   let env: NodeJS.ProcessEnv;
 

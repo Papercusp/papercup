@@ -182,6 +182,8 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Hives => crate::hives::draw_hives(f, app, body),
         // Pane-only (EI-312): the pinned `pui wake-pane` staged-wake board.
         Tab::Wake => crate::wake_board::draw_wake_board(f, app, body),
+        // Pane-only (dock 4-pane split): the pinned brief/mail/work boards.
+        Tab::AgentCtx => crate::agent_ctx::draw_agent_ctx(f, app, body),
     }
 }
 

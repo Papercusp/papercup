@@ -16,12 +16,13 @@
  * via Object.defineProperty) and restored after.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let tmpHome = '';
 const realPlatform = process.platform;
+const realPath = process.env.PATH;
 
 /** Override the read-only process.platform for one test. */
 function setPlatform(p: NodeJS.Platform): void {
@@ -44,6 +45,16 @@ beforeEach(() => {
   installOmpIntegrationSpy.mockClear();
   homeState.throws = false;
   tmpHome = mkdtempSync(join(tmpdir(), 'ensure-omp-su-cache-'));
+
+  // The source resolves `omp` by scanning process.env.PATH with pure-Node
+  // statSync (audit P-080 — no shell), so the child_process mock below can't
+  // satisfy the on-PATH check. Plant a stub binary in a temp dir and prepend
+  // it so the test is hermetic on boxes WITHOUT a real omp install (the CI
+  // runner — WI-123); the actual shellouts still hit the execFileSync spy.
+  mkdirSync(join(tmpHome, 'bin'), { recursive: true });
+  writeFileSync(join(tmpHome, 'bin', 'omp'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(tmpHome, 'bin', 'omp-su'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  process.env.PATH = `${join(tmpHome, 'bin')}:${realPath ?? ''}`;
 
   vi.doMock('node:os', async () => {
     const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -80,6 +91,8 @@ beforeEach(() => {
 
 afterEach(() => {
   setPlatform(realPlatform);
+  if (realPath === undefined) delete process.env.PATH;
+  else process.env.PATH = realPath;
   vi.doUnmock('node:os');
   vi.doUnmock('node:child_process');
   vi.doUnmock('./desktop-install/papercusp-files');

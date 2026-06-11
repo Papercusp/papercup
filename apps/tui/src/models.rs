@@ -1800,6 +1800,27 @@ pub struct BeeMailPayload {
     pub outbox: BeeMailSide,
 }
 
+/// The agent-context pane's fetched snapshot (dock 4-pane split, owner ask
+/// 2026-06-11) — assembled per [`crate::app::AgentCtxMode`]: only the mode's
+/// own field is fetched/populated; the header fields ride every mode.
+#[derive(Debug, Clone, Default)]
+pub struct AgentCtxData {
+    /// Resolved agent owner id (`None` = the scope found no live agent, e.g.
+    /// no queen on the roster yet).
+    pub owner: Option<String>,
+    /// Display label from the roster, when resolved.
+    pub label: Option<String>,
+    /// Brief mode: the parent-authored brief from the nursery row
+    /// (fleet:tree → root.brief), plus the model/tier it launched at.
+    pub brief: Option<String>,
+    pub model: Option<String>,
+    pub tier: Option<String>,
+    /// Mail mode: the agent's coord inbox/outbox.
+    pub mail: Option<BeeMailPayload>,
+    /// Work mode: the agent's ranked work-list + plan linkage.
+    pub assignment: Option<BeeAssignment>,
+}
+
 // ─── Hives tab (p2p swarm roster — pui-hives-tab-2026-06-07) ─────────────────
 
 /// One unified `coord:presence` row — only the fields the Hives tab reads.

@@ -8,6 +8,7 @@
 //! slow (60s) safety-net refetch is the only timer, and it is a fallback — not a
 //! poll. P1 = the Create tab (Plans / Inbox / Sessions).
 
+mod agent_ctx;
 mod agent_pane_kind;
 mod app;
 mod bee;
@@ -93,7 +94,11 @@ async fn main() -> Result<()> {
         // wake-pane (EI-312): the dock's staged-wake board — every manual-mode
         // agent's pending wakes (queen first) with release / edit / skip and
         // the release-all / skip-all drains. Pinned to the pane-only Tab::Wake.
-        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane") => {}
+        // brief-/mail-/work-pane (dock 4-pane split, owner ask 2026-06-11): one
+        // agent-context board each — the launch brief, the coord mail, the work
+        // items + plan linkage. Scope arg like wake-pane (--queen | <owner>).
+        Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane")
+        | Some("brief-pane") | Some("mail-pane") | Some("work-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -106,7 +111,13 @@ async fn main() -> Result<()> {
         Some("dock-driver") => Some(app::Tab::Fleet),
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
+        Some("brief-pane") | Some("mail-pane") | Some("work-pane") => Some(app::Tab::AgentCtx),
         _ => None,
+    };
+    let agent_ctx_mode = match subcommand.as_deref() {
+        Some("mail-pane") => app::AgentCtxMode::Mail,
+        Some("work-pane") => app::AgentCtxMode::Work,
+        _ => app::AgentCtxMode::Brief,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
     // swarm agent this instance watches, read-only. Required argv[2].
@@ -130,6 +141,15 @@ async fn main() -> Result<()> {
             Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
             _ => app::WakeFilter::All,
         },
+        // The agent-context panes share the wake-pane's scope grammar; their
+        // bare default is the QUEEN (they sit in her dock column).
+        Some("brief-pane") | Some("mail-pane") | Some("work-pane") => {
+            match std::env::args().nth(2).as_deref() {
+                Some("--queen") | None => app::WakeFilter::Queen,
+                Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
+                _ => app::WakeFilter::Queen,
+            }
+        }
         _ => app::WakeFilter::All,
     };
     // The dock's chat-pane drives the reactive agent stack: one watch pane per
@@ -161,7 +181,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, wake_filter, dock_agent_panes, hive_agent_tabs).await;
+    let result = run(&mut terminal, pinned, watch, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -240,6 +260,7 @@ async fn run<B: Backend>(
     pinned: Option<app::Tab>,
     watch: Option<String>,
     wake_filter: app::WakeFilter,
+    agent_ctx_mode: app::AgentCtxMode,
     dock_agent_panes: bool,
     hive_agent_tabs: bool,
 ) -> Result<()> {
@@ -266,7 +287,14 @@ async fn run<B: Backend>(
     // The wake-pane (EI-312): keep the staged-wake board fresh while pinned.
     app.wake_filter = wake_filter.clone();
     if pinned == Some(app::Tab::Wake) {
-        tokio::spawn(wake_board_loop(wake_filter, tx.clone()));
+        tokio::spawn(wake_board_loop(wake_filter.clone(), tx.clone()));
+    }
+    // The agent-context panes (dock 4-pane split, owner ask 2026-06-11): keep
+    // the brief/mail/work board fresh while pinned. The brief is launch-static
+    // but the pane still polls — the agent itself can appear/exit.
+    app.agent_ctx_mode = agent_ctx_mode;
+    if pinned == Some(app::Tab::AgentCtx) {
+        tokio::spawn(agent_ctx_loop(agent_ctx_mode, wake_filter, tx.clone()));
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -2385,6 +2413,104 @@ async fn wake_board_loop(filter: app::WakeFilter, tx: UnboundedSender<Event>) {
         }
         fetch_wake_board(filter.clone(), tx.clone()).await;
     }
+}
+
+/// Dock 4-pane split (owner ask 2026-06-11): the agent-context pane's refresh
+/// loop — re-snapshot every ~5s (mail/work mutate from many writers; the brief
+/// is static but the AGENT can appear/exit). Justified poll: same rationale as
+/// the wake board, one consumer per pane, no push rail for these reads.
+async fn agent_ctx_loop(
+    mode: app::AgentCtxMode,
+    scope: app::WakeFilter,
+    tx: UnboundedSender<Event>,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_millis(5000));
+    loop {
+        ticker.tick().await;
+        if tx.is_closed() {
+            return;
+        }
+        fetch_agent_ctx(mode, scope.clone(), tx.clone()).await;
+    }
+}
+
+/// One agent-context snapshot: resolve the scope to an owner id off the live
+/// roster (Queen = the roster's queen-kind entry, same rule the wake board
+/// uses), then fetch ONLY the pinned mode's data — brief via `fleet:tree`
+/// (the nursery row of the owner's own spawn id), mail via `fleet:bee_mail`,
+/// work via `fleet:assignments`.
+async fn fetch_agent_ctx(
+    mode: app::AgentCtxMode,
+    scope: app::WakeFilter,
+    tx: UnboundedSender<Event>,
+) {
+    let result: Result<models::AgentCtxData, String> = async {
+        let client = OperatorClient::from_discovery()
+            .await
+            .map_err(|e| e.to_string())?;
+        let roster = client
+            .roster_typed()
+            .await
+            .map(|(active, _)| active)
+            .unwrap_or_default();
+        let entry = match &scope {
+            app::WakeFilter::Owner(id) => roster.iter().find(|r| &r.owner_id == id),
+            // Queen (and the never-used All fallback): the roster's queen-kind row.
+            _ => roster
+                .iter()
+                .find(|r| r.agent_pane_kind.as_deref() == Some("queen")),
+        };
+        let owner = match (&scope, entry) {
+            (app::WakeFilter::Owner(id), None) => Some(id.clone()), // gone but addressable
+            (_, Some(r)) => Some(r.owner_id.clone()),
+            (_, None) => None,
+        };
+        let mut data = models::AgentCtxData {
+            owner: owner.clone(),
+            label: entry.map(|r| r.label.clone()),
+            ..Default::default()
+        };
+        let Some(owner) = owner else { return Ok(data) };
+        match mode {
+            app::AgentCtxMode::Brief => {
+                // The owner of a fleet spawn IS its nursery spawn id (s-…);
+                // other owners (su-…, the interactive queen) have no row —
+                // the pane then shows "(no brief)".
+                if owner.starts_with("s-") {
+                    let v = client
+                        .run_tool("fleet:tree", serde_json::json!({ "spawn_id": owner }))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let inner =
+                        crate::client::run_tool_inner_json(&v).map_err(|e| e.to_string())?;
+                    if let Some(root) = inner
+                        .get("nodes")
+                        .and_then(|n| n.as_array())
+                        .and_then(|a| a.iter().find(|n| n.get("depth").and_then(|d| d.as_u64()) == Some(0)))
+                    {
+                        let s = |k: &str| {
+                            root.get(k).and_then(|v| v.as_str()).map(str::to_string)
+                        };
+                        data.brief = s("brief");
+                        data.model = s("model");
+                        data.tier = s("tier");
+                    }
+                }
+            }
+            app::AgentCtxMode::Mail => {
+                data.mail = Some(client.bee_mail(&owner, 30).await.map_err(|e| e.to_string())?);
+            }
+            app::AgentCtxMode::Work => {
+                data.assignment = client
+                    .bee_assignment(&owner)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(data)
+    }
+    .await;
+    let _ = tx.send(Event::AgentCtx { result });
 }
 
 /// The watch pane's thinking feed: poll the RUNNING bee's appended raw output

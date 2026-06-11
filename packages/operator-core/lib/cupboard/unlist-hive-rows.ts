@@ -31,7 +31,7 @@ export interface UnlistHiveRowsDeps {
 
 async function defaultLookupListingId(repoId: number): Promise<number | string | null> {
   const { resolveCupboardBaseUrl } = await import(
-    '../endpoint-route/routes/harness/cupboard-publish'
+    './base-url'
   );
   const res = await fetch(`${resolveCupboardBaseUrl()}/binding/${repoId}`, {
     signal: AbortSignal.timeout(5_000),
@@ -48,7 +48,7 @@ async function defaultDeleteListing(
   const tokenRes = await getGhAuthToken();
   if (tokenRes.kind !== 'ok') return { ok: false, error: 'gh_auth_required' };
   const { resolveCupboardBaseUrl } = await import(
-    '../endpoint-route/routes/harness/cupboard-publish'
+    './base-url'
   );
   try {
     const res = await fetch(`${resolveCupboardBaseUrl()}/listings/${listingId}`, {

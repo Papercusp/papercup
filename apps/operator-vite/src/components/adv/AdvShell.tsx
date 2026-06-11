@@ -22,7 +22,8 @@ import {
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
-import { ShareWizard } from '@/app/harness/ShareWizard';
+import { Modal } from '@/app/harness/Modal';
+import { PublishHiveCard } from '@/app/harness/PublishHiveCard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
@@ -222,10 +223,13 @@ export default function AdvShell({
   // have no single target, so blank them out.
   const allMode = scopeMode === 'all';
   const singleSlug = allMode ? null : activeSlug;
-  // Is the active (single) harness already shared? `is_shared` rides the
-  // projects/lite payload AdvShell already fetched (no extra call); it flips
-  // the header's Share button to a "Shared" badge.
-  const activeIsShared = !!(singleSlug && projects.find((p) => p.slug === singleSlug)?.is_shared);
+  const activeProject = singleSlug ? projects.find((p) => p.slug === singleSlug) : undefined;
+  // Sharing happens at the HIVE level (comb-retire-per-harness-sharing-2026-06-11):
+  // the header Share affordance publishes the active hive to the P2P directory.
+  // `is_shared` (a legacy `.papercusp/shared.json` per-harness share) only
+  // surfaces as a passive badge — no new per-harness shares can be created.
+  const activeIsHive = activeProject?.harness_kind === 'hive';
+  const activeIsShared = !!activeProject?.is_shared;
 
   // Tab visibility follows scope: under "All Pots" only the workspace-level
   // tabs (Overview/Create/Harnesses/Conversations) make sense, so the per-pot
@@ -353,24 +357,23 @@ export default function AdvShell({
             >
               <Plus size={13} aria-hidden /> New
             </button>
-            {!allMode && activeSlug && (
-              activeIsShared ? (
-                <span
-                  className="pc-advshell__action pc-advshell__action--shared"
-                  title={`${activeSlug} is shared — published to GitHub`}
-                >
-                  <Check size={13} aria-hidden /> Shared
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="pc-advshell__action pc-advshell__action--share"
-                  title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
-                  onClick={() => void setShareOpen(true)}
-                >
-                  <Share2 size={13} aria-hidden /> Share
-                </button>
-              )
+            {!allMode && activeSlug && activeIsHive && (
+              <button
+                type="button"
+                className="pc-advshell__action pc-advshell__action--share"
+                title={`Share ${activeSlug} — publish the hive to the P2P directory so others can join`}
+                onClick={() => void setShareOpen(true)}
+              >
+                <Share2 size={13} aria-hidden /> Share
+              </button>
+            )}
+            {!allMode && activeSlug && !activeIsHive && activeIsShared && (
+              <span
+                className="pc-advshell__action pc-advshell__action--shared"
+                title={`${activeSlug} carries a legacy per-harness share (shared.json) — sharing now happens at the hive level`}
+              >
+                <Check size={13} aria-hidden /> Shared
+              </span>
             )}
           </div>
           {/* Inline status: dot + label + pills + start/stop */}
@@ -417,8 +420,8 @@ export default function AdvShell({
         // EI-319: the removed bottom-right FAB was the only opener that passed a
         // hive scope, so the header "New" button (now the primary opener) lost
         // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
-        // hive — mirrors how ShareWizard below already takes activeSlug. all-mode
-        // has no scope ⇒ null ⇒ New-hive/Standalone only.
+        // hive — mirrors how the share modal below already takes activeSlug.
+        // all-mode has no scope ⇒ null ⇒ New-hive/Standalone only.
         hiveScope={!allMode ? (activeSlug ?? null) : null}
         onCreated={(slug: string, opts?: { hive?: string }) => {
           setRefreshNonce((n) => n + 1);
@@ -436,17 +439,28 @@ export default function AdvShell({
           }
         }}
       />
-      {shareOpen && !allMode && activeSlug && (
-        <ShareWizard
+      {shareOpen && !allMode && activeSlug && activeIsHive && (
+        <Modal
           open={shareOpen}
-          onClose={() => {
-            void setShareOpen(false);
-            // Re-fetch projects/lite so a just-completed share flips the
-            // header button to the Shared badge (lite cache TTL is ~1s).
-            setRefreshNonce((n) => n + 1);
+          onOpenChange={(v) => {
+            if (!v) {
+              void setShareOpen(false);
+              // Re-fetch projects/lite so a just-completed publish is reflected.
+              setRefreshNonce((n) => n + 1);
+            }
           }}
-          harnessSlug={activeSlug}
-        />
+          title={`Share ${activeSlug}`}
+          contentStyle={{
+            width: 'min(480px, 96vw)',
+            background: 'var(--bg-popover, #0d1829)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: 24,
+            color: 'var(--fg, #e8e8ea)',
+          }}
+        >
+          <PublishHiveCard hiveSlug={activeSlug} />
+        </Modal>
       )}
       <div className="pc-advshell__body">{children}</div>
       <style>{`

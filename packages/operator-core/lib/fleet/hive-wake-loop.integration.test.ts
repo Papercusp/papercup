@@ -43,6 +43,7 @@ const SPAWNED_AGENTS_DDL = `
     finished_at timestamptz, duration_ms bigint, exit_code int, output_tail text, error_message text,
     cancel_requested boolean NOT NULL DEFAULT false, session_owner text,
     coordination_domain text NOT NULL DEFAULT 'default', plan_slug text, item_id text,
+    model_spec text, model_tier text, brief text,
     restart_strategy text NOT NULL DEFAULT 'one_for_one', restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz, cancel_reason text, cancelled_at timestamptz,
     heartbeat_at timestamptz NOT NULL DEFAULT now(),

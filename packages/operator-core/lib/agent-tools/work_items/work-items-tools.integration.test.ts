@@ -175,6 +175,25 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect((change.workItem as Record<string, unknown>).kind).toBe('change');
   });
 
+  it('mirror-guard (EI-316): refuses a title embedding an OPEN WI id; force:true overrides; terminal id is fine', async () => {
+    const feat = await call(createTool, { kind: 'feature', title: 'API server', harness: 'papercup' });
+    const openId = (feat.workItem as Record<string, unknown>).id as string; // WI-1, state todo (open)
+
+    // The exact EI-316 shape: a mirror titled "<openId>: …" is refused.
+    const mirror = await call(createTool, { kind: 'feature', title: `${openId}: Single-module REST API server`, harness: 'papercup' });
+    expect(mirror.ok).toBe(false);
+    expect(mirror.error).toBe('duplicate_mirror');
+    expect((mirror.existing as Record<string, unknown>).id).toBe(openId);
+
+    // force:true is the deliberate-reference escape hatch.
+    const forced = await call(createTool, { kind: 'feature', title: `${openId}: deliberate follow-up`, harness: 'papercup', force: true });
+    expect(forced.ok).toBe(true);
+
+    // A title referencing a non-existent id is never blocked.
+    const free = await call(createTool, { kind: 'feature', title: 'WI-9999 mentioned but gone', harness: 'papercup' });
+    expect(free.ok).toBe(true);
+  });
+
   it('get resolves a created work-item across kind-tables; missing → not-found envelope', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;

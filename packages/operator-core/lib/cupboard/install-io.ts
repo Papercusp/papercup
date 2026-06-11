@@ -15,7 +15,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { GLOBAL_PLUGINS_DIR } from '../plugin-catalog';
 import { grantCapabilities } from '../plugin-grants';
-import { resolveCupboardBaseUrl } from '../endpoint-route/routes/harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from './base-url';
 import {
   installPluginFromCupboardCore,
   type InstallPluginCoreDeps,

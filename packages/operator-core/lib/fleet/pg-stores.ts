@@ -54,6 +54,7 @@ interface SpawnRowDb {
   item_id: string | null;
   model_spec: string | null;
   model_tier: string | null;
+  brief: string | null;
   restart_strategy: string | null;
   restart_count: number | null;
   restart_window_start: Date | null;
@@ -62,7 +63,7 @@ interface SpawnRowDb {
 
 const SELECT_COLS = `spawn_id, parent_spawn_id, workspace_id, harness_slug, parent_role,
   child_role, status, session_owner, coordination_domain, feature_id, chunk_id,
-  plan_slug, item_id, model_spec, model_tier, restart_strategy, restart_count,
+  plan_slug, item_id, model_spec, model_tier, brief, restart_strategy, restart_count,
   restart_window_start`;
 
 function rowToNode(r: SpawnRowDb): SpawnNode {
@@ -82,6 +83,7 @@ function rowToNode(r: SpawnRowDb): SpawnNode {
     itemId: r.item_id,
     modelSpec: r.model_spec,
     modelTier: r.model_tier,
+    brief: r.brief,
     restartStrategy: (r.restart_strategy as RestartStrategy) || 'one_for_one',
     restartCount: Number(r.restart_count ?? 0),
     restartWindowStart: r.restart_window_start,
@@ -95,14 +97,14 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
   await sql`
     INSERT INTO harness_shared.spawned_agents (
       spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
-      run_id, feature_id, chunk_id, plan_slug, item_id, model_spec, model_tier,
+      run_id, feature_id, chunk_id, plan_slug, item_id, model_spec, model_tier, brief,
       session_owner, coordination_domain, restart_strategy, status, started_at
     ) VALUES (
       ${input.spawnId}, ${input.workspaceId}, ${input.harnessSlug ?? null},
       ${input.parentSpawnId ?? null}, ${input.parentRole ?? null}, ${input.childRole},
       ${input.runId}, ${input.featureId ?? null}, ${input.chunkId ?? null},
       ${input.planSlug ?? null}, ${input.itemId ?? null}, ${input.modelSpec ?? null},
-      ${input.modelTier ?? null}, ${input.sessionOwner ?? null},
+      ${input.modelTier ?? null}, ${input.brief ?? null}, ${input.sessionOwner ?? null},
       ${input.coordinationDomain ?? 'default'}, ${input.restartStrategy ?? 'one_for_one'},
       ${input.status ?? 'running'}, now()
     )

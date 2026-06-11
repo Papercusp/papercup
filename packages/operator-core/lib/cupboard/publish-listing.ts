@@ -1,22 +1,18 @@
 /**
  * Reusable Cupboard listing-publish core (revive-cupboard-distribution-2026-06-04).
  *
- * The ShareWizard's harness publish has its own route
- * (`harness/cupboard-publish.ts`); the plugin/pack publish bridges need the
- * SAME server-side publish behavior — add the gh-token +
- * channel-2 attestation, POST the generalized `/listings` surface — without
- * going through an internal HTTP hop. This extracts that core as a plain
- * function, reusing cupboard-publish's already-exported `resolveCupboardBaseUrl`
- * + `resolvePublisherAttestation` so there is one publish path, not three.
+ * THE one server-side publish path: add the gh-token + channel-2 attestation,
+ * POST the generalized `/listings` surface — no internal HTTP hop. Hive
+ * member-repo rows, blueprint and plugin/pack publishes all ride this core.
+ * (The per-harness ShareWizard publish route that used to sit beside it was
+ * retired — comb-retire-per-harness-sharing-2026-06-11 P-006.)
  *
  * The `/harnesses` fallback (for a pre-migration-004 worker) is harness-only —
  * a non-harness kind can't be stored by the old worker, so it surfaces the 404.
  */
 import { getGhAuthToken } from '../identity/gh-token';
-import {
-  resolveCupboardBaseUrl,
-  resolvePublisherAttestation,
-} from '../endpoint-route/routes/harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from './base-url';
+import { resolvePublisherAttestation } from './publisher-attestation';
 import type { ListingKind } from './types';
 
 /** A validated listing-publish payload (mirrors the Cupboard `/listings` body). */

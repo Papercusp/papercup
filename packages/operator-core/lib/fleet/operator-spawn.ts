@@ -478,6 +478,9 @@ export async function spawnAgentInHarness(
           itemId: input.itemId ?? null,
           modelSpec: spawnModelSpec,
           modelTier: spawnModelTier,
+          // Persist the brief (mig 230): the dock's brief-pane shows "what
+          // started this agent" long after the QUEEN_BRIEF env is gone.
+          brief: input.brief ?? null,
           // The child's coord/lock owner is its spawnId — the link
           // fleet:cancel uses to release its locks/claims transitively.
           sessionOwner: spawnId,

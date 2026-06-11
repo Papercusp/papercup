@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, writeFile, rm, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { IGNORE_PATTERNS } from './policy';
 
 /**
@@ -20,6 +20,17 @@ import { IGNORE_PATTERNS } from './policy';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const PASSWORD = 'self-exclusion-test-password';
+
+// Module-load probe: this suite drives the REAL kopia binary, which CI
+// runners don't ship (WI-123: `spawn kopia ENOENT`). Genuinely skip there;
+// run wherever kopia is installed (dev boxes, the local gate).
+const kopiaAvailable = (() => {
+  try {
+    return spawnSync(KOPIA_BIN, ['--version'], { stdio: 'ignore' }).status === 0;
+  } catch {
+    return false;
+  }
+})();
 
 function kopia(args: string[], env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
@@ -41,7 +52,7 @@ async function kopiaOk(args: string[], env: NodeJS.ProcessEnv): Promise<string> 
   return r.stdout;
 }
 
-describe('backup self-exclusion', () => {
+describe.skipIf(!kopiaAvailable)('backup self-exclusion', () => {
   let workspaceRoot: string;
   let repoPath: string;
   let env: NodeJS.ProcessEnv;

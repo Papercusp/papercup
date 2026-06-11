@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-vi.mock('../endpoint-route/routes/harness/cupboard-publish', () => ({
+vi.mock('./base-url', () => ({
   resolveCupboardBaseUrl: () => 'https://cupboard.test',
 }));
 

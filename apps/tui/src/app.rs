@@ -331,6 +331,20 @@ impl WakeReview {
     }
 }
 
+/// Which board a pinned agent-context pane renders (dock 4-pane split,
+/// owner ask 2026-06-11). One mode per zellij pane: `pui brief-pane` /
+/// `pui mail-pane` / `pui work-pane`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentCtxMode {
+    /// The parent-authored brief that started the agent (spawned_agents.brief).
+    #[default]
+    Brief,
+    /// Coord mail addressed to / sent by the agent (fleet:bee_mail).
+    Mail,
+    /// The agent's work items + declared plan + claims (fleet:assignments).
+    Work,
+}
+
 /// Which agents the wake-pane board shows (owner ask 2026-06-11): the dock's
 /// "⏸ wakes" pane shows the whole fleet; a per-agent pane (e.g. "♛⏸ wakes"
 /// under the Queen) filters to one agent. `Queen` resolves the live queen
@@ -796,6 +810,13 @@ pub enum Tab {
     /// 2026-06-11 — owner directive: dock agent chats are LIVE TUIs, never
     /// pui-rendered substitutes; pui panes are for data boards like this one.)
     Wake,
+    /// Agent-context board (dock 4-pane split, owner ask 2026-06-11): ONE data
+    /// pane about ONE agent — its launch brief (`pui brief-pane`), its coord
+    /// mail (`pui mail-pane`), or its work items + plan linkage
+    /// (`pui work-pane`). PANE-ONLY like Wake: no tab-strip slot, no switch
+    /// key; the mode + agent scope come from the subcommand. Stacked with the
+    /// wake board in the dock's per-agent side column.
+    AgentCtx,
 }
 
 impl Tab {
@@ -841,6 +862,7 @@ impl Tab {
             Tab::Voice => "Voice",
             Tab::Hives => "Hives",
             Tab::Wake => "Wakes",
+            Tab::AgentCtx => "Agent",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -888,6 +910,7 @@ impl Tab {
             // Pane-only (not in ALL) — unreachable from the strip; the char is
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
+            Tab::AgentCtx => 'X',
         }
     }
     pub fn index(self) -> usize {
@@ -1197,6 +1220,17 @@ pub struct App {
     /// misses for an Owner-scoped wake-pane's agent — the wake-pane analog of
     /// `watch_misses` (2 misses + a drained queue → this instance exits).
     pub wake_owner_misses: u8,
+    /// Agent-context pane mode (dock 4-pane split, owner ask 2026-06-11):
+    /// which board a pinned `Tab::AgentCtx` instance renders — the launch
+    /// brief, the coord mail, or the work items + plan linkage. The agent
+    /// scope rides `wake_filter` (same Queen/Owner resolution; a pinned pane
+    /// is its own process so the share is safe).
+    pub agent_ctx_mode: AgentCtxMode,
+    /// The agent-context pane's fetched data (`Event::AgentCtx`). `None` until
+    /// the first fetch lands; `Some(Err)` renders the error inline.
+    pub agent_ctx: Option<Result<crate::models::AgentCtxData, String>>,
+    /// Agent-context pane scroll offset (j/k).
+    pub agent_ctx_scroll: u16,
     /// The watched bee's accumulated raw output (the "thinking" feed) — a
     /// capped ring fed by the bee-output poll; newest at the END.
     pub watch_output: String,
@@ -1453,6 +1487,9 @@ impl App {
             watch: None,
             watch_misses: 0,
             wake_owner_misses: 0,
+            agent_ctx_mode: AgentCtxMode::default(),
+            agent_ctx: None,
+            agent_ctx_scroll: 0,
             watch_output: String::new(),
             watch_output_offset: 0,
             watch_input: String::new(),
@@ -3786,6 +3823,12 @@ impl App {
                 }
                 Action::Render
             }
+            Event::AgentCtx { result } => {
+                // Dock 4-pane split: an agent-context snapshot landed.
+                // Whole-snapshot replace, same shape as the wake board.
+                self.agent_ctx = Some(result);
+                Action::Render
+            }
             Event::LexiconPack(payload) => {
                 // The active brand pack landed (startup fetch). Store the resolved
                 // term→label map; user-facing labels route through it from now on.
@@ -4078,6 +4121,28 @@ impl App {
         // there is no tab strip to navigate in a pinned dock pane.
         if self.tab == Tab::Wake {
             return self.wake_board_key(code);
+        }
+        // The pinned agent-context panes (dock 4-pane split): j/k scroll,
+        // N opens the notifications history, everything else is swallowed
+        // (no tab strip to navigate here either).
+        if self.tab == Tab::AgentCtx {
+            return match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.agent_ctx_scroll = self.agent_ctx_scroll.saturating_add(1);
+                    Action::Render
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.agent_ctx_scroll = self.agent_ctx_scroll.saturating_sub(1);
+                    Action::Render
+                }
+                KeyCode::Char('N') => {
+                    self.show_notifs = true;
+                    self.toast = None;
+                    self.unseen_notifs = 0;
+                    Action::Render
+                }
+                _ => Action::None,
+            };
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.
@@ -5288,8 +5353,8 @@ impl App {
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
-            // and the Wake board owns its own j/k in wake_board_key.
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
+            // and the Wake board / agent-context pane own their own j/k.
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx => return,
         };
         if len == 0 {
             return;
@@ -5317,7 +5382,7 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;

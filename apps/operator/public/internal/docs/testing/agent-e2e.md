@@ -1171,6 +1171,24 @@ machine / new workspace:
 
 ## 12.7 Error states
 
+**Server-error legs on desktop — use the built-in fault injection (EI-297).**
+The Tauri webview's API traffic rides the IPC-first path, so an HTTP fault
+proxy in front of `/api` never sees it. Instead, start the operator under test
+with `PAPERCUSP_FAULT_INJECTION=1` and drive faults through the loopback-only
+control plane (inert without the env gate; rules are in-memory and vanish on
+restart):
+
+```sh
+# fault the next profile save with a 500, then auto-expire
+curl -X POST http://127.0.0.1:<port>/api/admin/fault-injection \
+  -H 'content-type: application/json' \
+  -d '{"pathPrefix":"/api/profile","method":"POST","status":500,"times":1}'
+# delay-only rule (latency testing): {"pathPrefix":"/api/...","delayMs":3000}
+# inspect / clear:  GET … | DELETE …?id=fault-1 | DELETE … (all)
+```
+
+Implementation + tests: `apps/operator/bin/host-fault-injection.ts`.
+
 Trigger each by stopping the relevant backend / passing a bad
 parameter:
 

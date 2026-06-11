@@ -31,7 +31,7 @@ import {
   type PackDescriptor,
 } from '@papercusp/blueprint-distribution';
 import { getCatalog, listAllProjectedTools } from '@papercusp/agent-mcp';
-import { resolveCupboardBaseUrl } from '../endpoint-route/routes/harness/cupboard-publish';
+import { resolveCupboardBaseUrl } from './base-url';
 import { listAllInstalledPlugins, type InstalledPlugin } from './plugin-listings';
 
 /** The synthetic pluginName built-in defineTool projections register under. */
