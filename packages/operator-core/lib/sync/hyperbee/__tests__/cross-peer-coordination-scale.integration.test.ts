@@ -33,7 +33,7 @@ import { registerWorkItemClaimAuthorityOps } from '../../../work-item-claim-auth
 // getOrgPg → the CURRENT epoch's authority store, via the rig's holder.
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  const { orgSqlHolder } = await import('./_cross-peer-rig');
+  const { orgSqlHolder } = await import('./_org-sql-holder');
   return { ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 

@@ -20,6 +20,7 @@ const getAllFlags = vi.fn();
 const setFlag = vi.fn();
 const publishFlagChange = vi.fn();
 const resolveDistinctId = vi.fn(() => 'did-test');
+const recordFlagAudit = vi.fn(async () => {});
 
 const MAKE_CTX = (over: Record<string, unknown> = {}) =>
   ({
@@ -42,6 +43,9 @@ beforeEach(() => {
   vi.doMock('@papercusp/flags/server', () => ({ getFlag, getAllFlags, setFlag }));
   vi.doMock('../../../flag-bus', () => ({ publishFlagChange }));
   vi.doMock('../../../flag-distinct-id', () => ({ resolveDistinctId }));
+  // flags:set now writes its audit row via recordFlagAudit (getOrgPg → real
+  // PG, EI-293) — stub it so these hermetic handler tests never touch a DB.
+  vi.doMock('../../../flag-audit', () => ({ recordFlagAudit }));
   getFlag.mockResolvedValue(false);
   getAllFlags.mockResolvedValue({});
   setFlag.mockResolvedValue({ ok: true });
@@ -103,44 +107,24 @@ describe('flags:set', () => {
     expect(publishFlagChange).not.toHaveBeenCalled();
   });
 
-  it('writes a best-effort audit row when ctx.tx is present', async () => {
-    const tx = Object.assign(
-      vi.fn(async (..._a: unknown[]) => undefined),
-      { json: vi.fn((x: unknown) => x) },
-    );
+  it('records the flag audit with the principal slug as actor (EI-293)', async () => {
     const { default: tool } = await import('../set');
     await tool.handler(
       { key: KEY, enabled: false, reason: 'disable for V1' },
-      MAKE_CTX({ tx, principal: { slug: 'agent-x' } }),
+      MAKE_CTX({ principal: { slug: 'agent-x' } }),
     );
-    expect(tx).toHaveBeenCalledTimes(1); // the INSERT INTO audit_log tagged template
-    expect(tx.json).toHaveBeenCalledWith({ enabled: false, reason: 'disable for V1' });
-    // The principal slug is threaded as the audit actor (3rd interpolated value:
-    // ts, ACTOR, action, subject, details). Regression guard for the prior
-    // `ctx.principal?.subject` typo that always recorded 'agent'.
-    expect(tx.mock.calls[0][2]).toBe('agent-x');
+    // recordFlagAudit is the single correct writer (replaced the inline
+    // ctx.tx INSERT that omitted id + workspace_id and silently failed).
+    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, false, 'agent-x', { reason: 'disable for V1' });
     expect(publishFlagChange).toHaveBeenCalledWith(KEY);
   });
 
   it("falls back to actor 'agent' when no principal is present", async () => {
-    const tx = Object.assign(vi.fn(async (..._a: unknown[]) => undefined), { json: vi.fn((x: unknown) => x) });
     const { default: tool } = await import('../set');
-    await tool.handler({ key: KEY, enabled: true, reason: 'enable it' }, MAKE_CTX({ tx }));
-    expect(tx.mock.calls[0][2]).toBe('agent');
+    await tool.handler({ key: KEY, enabled: true, reason: 'enable it' }, MAKE_CTX());
+    expect(recordFlagAudit).toHaveBeenCalledWith(KEY, true, 'agent', { reason: 'enable it' });
   });
-
-  it('swallows an audit-insert failure (the flip already succeeded)', async () => {
-    const tx = Object.assign(
-      vi.fn(async () => {
-        throw new Error('audit table missing');
-      }),
-      { json: vi.fn((x: unknown) => x) },
-    );
-    const { default: tool } = await import('../set');
-    const result = await tool.handler(
-      { key: KEY, enabled: true, reason: 'enable anyway' },
-      MAKE_CTX({ tx, principal: { slug: 'agent-x' } }),
-    );
-    expect(parseTextPayload(result as never)).toEqual({ ok: true, key: KEY, enabled: true });
-  });
+  // recordFlagAudit's best-effort "never throws even on a write failure"
+  // contract is covered against a real dead connection in
+  // flag-audit.integration.test.ts (it's mocked here).
 });

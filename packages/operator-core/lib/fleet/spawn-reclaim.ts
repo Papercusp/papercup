@@ -18,6 +18,8 @@
  * Migration 174 adds `heartbeat_at` + the partial sweep index.
  * EI-108: When reclaiming a spawn with a parent, also wake the parent.
  */
+import { hostname } from 'node:os';
+import { readFileSync } from 'node:fs';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
 
@@ -26,6 +28,39 @@ type Db = Sql | TransactionSql;
 
 /** Cadence the live host bumps `heartbeat_at` for its in-flight spawns. */
 export const SPAWN_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * Record the child OS pid + this launcher host on a nursery row (EI-85). The
+ * reclaim sweep uses these to /proc-liveness-check a stale-heartbeat row on the
+ * SAME host before reclaiming it — so a child that is actually still alive (its
+ * launching host was only briefly paused, not dead) is not reclaimed out from
+ * under itself, and a dead one is reclaimed with an accurate reason. Best-effort.
+ */
+export async function recordSpawnPid(sql: Db, spawnId: string, pid: number): Promise<void> {
+  await sql`
+    UPDATE harness_shared.spawned_agents
+       SET pid = ${pid}, launcher_host = ${hostname()}
+     WHERE spawn_id = ${spawnId} AND status IN ('running', 'restarting')`;
+}
+
+/**
+ * Is the recorded child process still alive on THIS host (EI-85)? Linux /proc
+ * check, hardened against PID reuse: the pid must exist AND its cmdline must
+ * name the invoke-once entrypoint (a reused pid running something else reads as
+ * dead). Returns false on any non-Linux / unreadable case, so the caller falls
+ * back to the heartbeat-stale reclaim — never a false "alive" that strands a
+ * ceiling slot.
+ */
+export function isSpawnProcessAlive(pid: number): boolean {
+  if (process.platform !== 'linux' || !Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    // cmdline is NUL-separated; the spawn is `node <tsx> .../invoke-once(.ts|.mjs)`.
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return cmdline.includes('invoke-once');
+  } catch {
+    return false; // /proc/<pid> gone (dead) or unreadable → treat as dead
+  }
+}
 
 /**
  * A running row un-heartbeated for longer than this is presumed orphaned
@@ -65,9 +100,57 @@ export interface ReclaimResult {
  */
 export async function reclaimOrphanedSpawns(
   sql: Db,
-  opts: { staleMs?: number } = {},
+  opts: { staleMs?: number; isAlive?: (pid: number) => boolean } = {},
 ): Promise<ReclaimResult> {
   const staleSec = Math.max(1, Math.round((opts.staleMs ?? RECLAIM_STALE_MS) / 1000));
+  const isAlive = opts.isAlive ?? isSpawnProcessAlive; // injectable for tests
+
+  // EI-85: a stale heartbeat no longer blindly reclaims. First gather the
+  // candidates with their recorded pid + launcher host; a candidate that is
+  // SAME-HOST and whose child process is still alive (/proc) is NOT reclaimed —
+  // its host was only briefly paused, the child survived (e.g. spawned into its
+  // own systemd scope). Such rows get their heartbeat bumped so this host keeps
+  // them fresh. Everything else (child confirmed dead, no pid, or a different
+  // host we can't liveness-check) is reclaimed — with a reason that says which.
+  const candidates = await sql<
+    { spawn_id: string; workspace_id: string; pid: number | null; launcher_host: string | null }[]
+  >`
+    SELECT spawn_id, workspace_id, pid, launcher_host
+      FROM harness_shared.spawned_agents
+     WHERE status IN ('running', 'restarting')
+       AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'`;
+  if (candidates.length === 0) {
+    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+  }
+
+  const me = hostname();
+  const alive: string[] = [];
+  const deadChild: string[] = [];
+  const hostGone: string[] = [];
+  for (const c of candidates) {
+    const sameHost = c.launcher_host != null && c.launcher_host === me;
+    if (sameHost && c.pid != null) {
+      if (isAlive(c.pid)) alive.push(c.spawn_id);
+      else deadChild.push(c.spawn_id);
+    } else {
+      // Different host (can't liveness-check), or a row predating pid recording.
+      hostGone.push(c.spawn_id);
+    }
+  }
+
+  // Keep the live-but-host-paused children: bump their heartbeat so neither this
+  // sweep nor the next reclaims them (their own host will resume heartbeating).
+  if (alive.length > 0) await heartbeatSpawns(sql, alive);
+
+  const reclaimable = [...deadChild, ...hostGone];
+  if (reclaimable.length === 0) {
+    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+  }
+
+  // Reclaim the confirmed-dead + unverifiable rows. The status guard keeps it
+  // idempotent + race-safe against a concurrent sweep on another host. The
+  // reason distinguishes a child we PROVED dead from a host we merely presume
+  // dead — accurate diagnosis (EI-85's mislabel was exactly this).
   const rows = await sql<{ spawn_id: string; workspace_id: string }[]>`
     UPDATE harness_shared.spawned_agents
        SET status = 'failed',
@@ -75,11 +158,17 @@ export async function reclaimOrphanedSpawns(
            duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
            error_message = COALESCE(
              error_message,
-             'reclaimed: spawn heartbeat stale > ' || ${staleSec}::text
-               || 's (launching operator host presumed dead) — concurrency ceiling freed by the P-011 reclaim sweep'
+             CASE
+               WHEN spawn_id = ANY(${deadChild}::text[])
+                 THEN 'reclaimed: child process (pid ' || COALESCE(pid::text, '?')
+                      || ') confirmed dead on ' || COALESCE(launcher_host, '?')
+                      || ' — concurrency ceiling freed by the P-011 reclaim sweep (EI-85)'
+               ELSE 'reclaimed: spawn heartbeat stale > ' || ${staleSec}::text
+                      || 's (launching operator host presumed dead) — concurrency ceiling freed by the P-011 reclaim sweep'
+             END
            )
      WHERE status IN ('running', 'restarting')
-       AND heartbeat_at < now() - ${staleSec}::int * interval '1 second'
+       AND spawn_id = ANY(${reclaimable}::text[])
     RETURNING spawn_id, workspace_id`;
 
   // EI-108: Wake parents of reclaimed spawns (best-effort, concurrent, no await)

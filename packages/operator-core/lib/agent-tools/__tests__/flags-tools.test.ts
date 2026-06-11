@@ -55,12 +55,12 @@ describe('flags:set', () => {
 
     const { default: tool } = await import('../flags/set');
     const result = (await tool.handler(
-      { key: 'snapshots', enabled: true, reason: 'enabling for v1 dogfood' },
+      { key: 'papercusp-testing', enabled: true, reason: 'enabling for v1 dogfood' },
       MAKE_CTX(),
     )) as any;
 
-    expect(setFlag).toHaveBeenCalledWith('snapshots', true);
-    expect(publishFlagChange).toHaveBeenCalledWith('snapshots');
+    expect(setFlag).toHaveBeenCalledWith('papercusp-testing', true);
+    expect(publishFlagChange).toHaveBeenCalledWith('papercusp-testing');
     const data = JSON.parse(result.content[0].text);
     expect(data.ok).toBe(true);
   });
@@ -74,7 +74,7 @@ describe('flags:set', () => {
 
     const { default: tool } = await import('../flags/set');
     const result = (await tool.handler(
-      { key: 'snapshots', enabled: false, reason: 'disabling snapshots now' },
+      { key: 'papercusp-testing', enabled: false, reason: 'disabling snapshots now' },
       MAKE_CTX(),
     )) as any;
 
@@ -95,7 +95,7 @@ describe('flags:set', () => {
 
     const { default: tool } = await import('../flags/set');
     await tool.handler(
-      { key: 'oracle', enabled: true, reason: 'turning on oracle feature.' },
+      { key: 'papercusp-design', enabled: true, reason: 'turning on oracle feature.' },
       MAKE_CTX(),
     );
     expect(publishFlagChange).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe('flags:set', () => {
     // Should not throw even with a real tx present — the audit INSERT is best-effort.
     await expect(
       tool.handler(
-        { key: 'snapshots', enabled: true, reason: 'audit trail test coverage run.' },
+        { key: 'papercusp-testing', enabled: true, reason: 'audit trail test coverage run.' },
         MAKE_CTX(tx),
       ),
     ).resolves.not.toThrow();
@@ -153,7 +153,7 @@ describe('flags:list', () => {
     await tool.handler({}, MAKE_CTX());
 
     expect(resolveDistinctId).toHaveBeenCalledTimes(1);
-    const [arg] = resolveDistinctId.mock.calls[0];
+    const arg = resolveDistinctId.mock.calls[0]?.[0];
     expect(arg).toBeInstanceOf(Request);
   });
 });

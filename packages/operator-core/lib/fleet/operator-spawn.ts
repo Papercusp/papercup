@@ -39,6 +39,7 @@ import type { Db } from './pg-stores';
 import {
   heartbeatSpawns,
   reclaimOrphanedSpawns,
+  recordSpawnPid,
   SPAWN_HEARTBEAT_INTERVAL_MS,
 } from './spawn-reclaim';
 import { wakeParentOnChildDeath } from './parent-wake';
@@ -544,6 +545,13 @@ export async function spawnAgentInHarness(
     signal: abort.signal,
     forceSessionId,
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+    // EI-85: record the child OS pid + this host so the reclaim sweep can
+    // /proc-liveness-check the process instead of mislabeling a stale-heartbeat
+    // row (host briefly paused) as a dead child. Best-effort — a missed write
+    // just degrades to the heartbeat-stale reclaim.
+    onChildPid: (pid) => {
+      void recordSpawnPid(getOrgPg().sql, spawnId, pid).catch(() => {});
+    },
   })
     .then((r) => {
       finalStatus = abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed');

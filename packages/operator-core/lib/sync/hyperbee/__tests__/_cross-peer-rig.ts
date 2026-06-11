@@ -42,9 +42,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { WORK_ITEM_CLAIM_OP_KINDS, acquireClaimLocal } from '../../../work-item-claims';
 import type { AcquireResult, AcquireOpts } from '../../../work-item-claims';
 
-/** getOrgPg() → the CURRENT authority "machine"'s PG. Rebind per test/round. The
- *  test files' vi.mock('@papercusp/db-org') factories read this holder. */
-export const orgSqlHolder = { sql: undefined as unknown as postgres.Sql };
+export { orgSqlHolder } from './_org-sql-holder';
 
 export const WORKSPACE_ID = 'ws-xpeer-coord';
 export const HARNESS_SLUG = 'xpeer-coord';

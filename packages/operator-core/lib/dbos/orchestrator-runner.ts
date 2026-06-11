@@ -175,7 +175,16 @@ export async function spawnInvokeOnce(
    *  fire-and-forgets the spawn and polls the result FILE for completion (the
    *  scoper). Routing such a caller here (rather than a private raw spawn) is
    *  what keeps the scoper governed by the one chokepoint (P-008 / D-013). */
-  opts?: { signal?: AbortSignal; timeoutMs?: number; resultPath?: string; forceSessionId?: string },
+  /** `onChildPid`: fired once with the child OS pid right after spawn (EI-85) —
+   *  the caller records it on the nursery row so the reclaim sweep can liveness-
+   *  check the process instead of blindly reclaiming a stale-heartbeat row. */
+  opts?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    resultPath?: string;
+    forceSessionId?: string;
+    onChildPid?: (pid: number) => void;
+  },
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
   // child via env-transport (workspace PG is canonical; config.json is the
@@ -276,7 +285,7 @@ export async function spawnInvokeOnce(
         return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
       }
       try {
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid);
         feedGovernor(inner);
         return inner;
       } finally {
@@ -307,6 +316,7 @@ function runChild(
   role: string,
   signal?: AbortSignal,
   timeoutMs?: number,
+  onChildPid?: (pid: number) => void,
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.
@@ -323,6 +333,12 @@ function runChild(
     // invoke-once + agent together. The new group is the child's alone, so it can
     // never signal the operator host (a different group).
     const child = spawn(command, args, { cwd: projectDir, env, detached: true });
+    // EI-85: surface the child OS pid so the caller can record it on the nursery
+    // row — the reclaim sweep liveness-checks /proc/<pid> rather than blindly
+    // reclaiming a stale-heartbeat row whose child is actually still alive.
+    if (child.pid != null) {
+      try { onChildPid?.(child.pid); } catch { /* recording is best-effort */ }
+    }
     let stdout = '';
     let stderr = '';
     let killGrace: ReturnType<typeof setTimeout> | null = null;

@@ -38,6 +38,10 @@ vi.mock('../../backup', () => ({
   triggerSnapshotEvent: vi.fn(async () => {}),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+// The flags/set success path now writes an audit row (recordFlagAudit → real
+// PG, EI-293). Stub it so this hermetic route test never touches a DB / warns
+// in CI; the real write is covered by flag-audit.integration.test.ts.
+vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn(async () => {}) }));
 
 const setFlag = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
 const setFlagOverride = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
