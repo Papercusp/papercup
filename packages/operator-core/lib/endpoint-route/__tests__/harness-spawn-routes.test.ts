@@ -38,6 +38,11 @@ const buildInvokeOnce = vi.fn((..._args: unknown[]) => ({
 }));
 vi.mock('../../harness-invoke-once', () => ({
   buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...a),
+  // The invoke route's spawn path (orchestrator-runner) also imports
+  // resolveSpawnBackendModel from this module; the mock must mirror the full
+  // named-export surface or Vitest 4's evaluator fails the link under
+  // full-suite load (the route then 500s). See orchestrator-runner-spawn.test.
+  resolveSpawnBackendModel: () => ({ backend: 'omp', model: '' }),
 }));
 
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
