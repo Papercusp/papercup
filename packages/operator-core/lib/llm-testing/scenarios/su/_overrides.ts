@@ -73,6 +73,84 @@ export const AUDIT_CSV_RESULT: ToolDispatchOverride = {
 };
 
 /**
+ * Realistic results for SU-S12 (same-turn insight): the SUT's natural first
+ * moves are memory/search/docs lookups around the just-fixed wedge, plus the
+ * shared-tree write protocol (locks:acquire, coord:declare-intent). Benign
+ * `{ok:true}` stubs left the model narrating test-frame artifacts and the
+ * judge grading stub coping instead of the same-turn discipline (EI-133
+ * class) — so give the lookups believable empty-ish results ("nothing written
+ * up yet", which is exactly the state that makes the insight write mandatory)
+ * and the write-protocol calls believable confirmations.
+ */
+export const ZOMBIE_LOCK_INSIGHT_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'memory:search' || canon === 'search:semantic') {
+      return { content: [{ text: JSON.stringify({ results: [], note: 'no stored memories match' }) }] };
+    }
+    if (canon === 'search:fulltext') {
+      return { content: [{ text: JSON.stringify({ hits: [], scope: a.scope ?? 'all' }) }] };
+    }
+    if (canon === 'docs:search') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              hits: [
+                {
+                  slug: 'agent-insights/llm-429-check-the-transport-not-the-account',
+                  section: 'agent-insights',
+                  title: 'LLM 429s: check the transport, not the account',
+                  snippet: 'Example of the insight format: one page per non-obvious root cause…',
+                },
+              ],
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'docs:outline') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              sections: [
+                { section: 'agent-insights', pages: 42 },
+                { section: 'system', pages: 31 },
+                { section: 'testing', pages: 12 },
+                { section: 'agent-policies', pages: 1 },
+              ],
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'plans:search') {
+      return { content: [{ text: JSON.stringify({ hits: [] }) }] };
+    }
+    if (canon === 'locks:acquire') {
+      return {
+        content: [
+          { text: JSON.stringify({ ok: true, lock_id: 'lk-s12-1', granted: true, paths: a.paths ?? [] }) },
+        ],
+      };
+    }
+    if (canon === 'coord:declare-intent') {
+      return {
+        content: [
+          { text: JSON.stringify({ ok: true, presence: { ownerId: 'su-test', intent: a.intent ?? '' } }) },
+        ],
+      };
+    }
+    if (canon === 'memory:remember') {
+      return { content: [{ text: JSON.stringify({ ok: true, id: 'mem-s12-1' }) }] };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
  * Realistic results for SU-S10 (claim-before-work): a concrete `plans:get`
  * payload for the scenario's plan plus believable claim confirmations. The
  * default benign stub starved the SUT of the plan's content, and the judged

@@ -31,4 +31,26 @@ describe('POST /api/authority/rpc — parse guards', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false, error: 'invalid_envelope' });
   });
+
+  it('refuses an unsigned op as unauthenticated when AUTHORITY_RPC_SIGNED is on (EI-322)', async () => {
+    // The flag defaults ON (no override store in a unit test → default true). A
+    // well-formed but UNSIGNED envelope for a registered kind reaches verifyCaller
+    // (after the unknown_kind guard, before verifyIsAuthority) and is refused —
+    // so this never touches lockAuthorityFor / PG.
+    const { registerAuthorityOp, __resetAuthorityOpsForTests } = await import(
+      '../../../authority/authority-op-registry'
+    );
+    __resetAuthorityOpsForTests();
+    registerAuthorityOp('work-item.claim.acquire', async () => ({ granted: true }));
+    try {
+      const res = await handler({
+        json: async () => ({ harnessSlug: 'papercup', kind: 'work-item.claim.acquire', payload: { workspaceId: 'ws' } }),
+      });
+      const body = (await res.json()) as { ok: boolean; error?: string };
+      expect(body.ok).toBe(false);
+      expect(body.error).toBe('unauthenticated');
+    } finally {
+      __resetAuthorityOpsForTests();
+    }
+  });
 });

@@ -21,6 +21,9 @@ import {
   __resetAuthorityOpsForTests,
   type AuthorityRpcEnvelope,
 } from '../authority-op-registry';
+import { buildAuthorityCallerVerifier } from '../verify-authority-caller';
+import { generateEd25519KeypairDer } from '../../identity/ed25519';
+import { signAuthorityRpcWithPrivateKeyDer } from '../authority-rpc-envelope';
 
 // Force routeToAuthority to see a REMOTE authority: self ('mmm') is NOT the min;
 // the live peer 'aaa' is → authority = the 'aaa' peer (machineLabel 'authority-box').
@@ -118,5 +121,133 @@ describe('lock-authority remote leg over loopback HTTP', () => {
         remoteDeps,
       ),
     ).rejects.toThrow(/lock store unavailable/);
+  });
+});
+
+/**
+ * EI-322 end-to-end: the SIGNING transport reaches a VERIFYING authority over the
+ * same real loopback HTTP. A signed op from a known device is granted; a forged
+ * holderPubkey, an unsigned caller, and a tampered-in-flight body are refused as
+ * `unauthenticated`.
+ */
+describe('authenticated authority RPC over loopback (EI-322)', () => {
+  const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
+  const signer = {
+    devicePubkey: pubkeyBase64,
+    sign: async (bytes: Buffer) => signAuthorityRpcWithPrivateKeyDer(privateKeyDer, bytes),
+  };
+  let server: Server;
+  let port: number;
+  let lastResult: unknown;
+  // Mutates the parsed body before handleAuthorityRpc — simulates a MITM tamper.
+  let mutateInFlight: ((env: AuthorityRpcEnvelope) => void) | null = null;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', async () => {
+        const env = JSON.parse(body) as AuthorityRpcEnvelope;
+        if (mutateInFlight) mutateInFlight(env);
+        lastResult = await handleAuthorityRpc(env, {
+          verifyCaller: buildAuthorityCallerVerifier({ isRevoked: async () => false }),
+          verifyIsAuthority: async () => true,
+        });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(lastResult));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as { port: number }).port;
+  });
+
+  afterAll(() => server.close());
+  afterEach(() => {
+    __resetPeerRpcTransportForTests();
+    __resetAuthorityOpsForTests();
+    mutateInFlight = null;
+  });
+
+  it('grants a validly-signed op whose holderPubkey is the signing device', async () => {
+    registerAuthorityOp('work-item.claim.acquire', async (payload) => ({ granted: true, payload }));
+    setPeerRpcTransport(
+      new HttpPeerRpcTransport({ resolveAddress: () => `http://127.0.0.1:${port}`, envelopeSigner: signer }),
+    );
+    const res = await routeToAuthority(
+      'papercup',
+      {
+        local: async () => ({ granted: false }),
+        remote: {
+          kind: 'work-item.claim.acquire',
+          payload: { workspaceId: 'ws', workItemId: 'WI-1', holderPubkey: pubkeyBase64 },
+          decode: (raw) => raw as { granted: boolean },
+        },
+      },
+      remoteDeps,
+    );
+    expect(res.via).toBe('remote-authority');
+    expect(res.value).toEqual({ granted: true, payload: { workspaceId: 'ws', workItemId: 'WI-1', holderPubkey: pubkeyBase64 } });
+  });
+
+  it('an unsigned caller is refused as unauthenticated (flag-on authority)', async () => {
+    registerAuthorityOp('work-item.claim.acquire', async () => ({ granted: true }));
+    // No envelopeSigner → unsigned.
+    setPeerRpcTransport(new HttpPeerRpcTransport({ resolveAddress: () => `http://127.0.0.1:${port}` }));
+    const err = await routeToAuthority(
+      'papercup',
+      {
+        local: async () => 'L',
+        remote: { kind: 'work-item.claim.acquire', payload: { workspaceId: 'ws', holderPubkey: pubkeyBase64 }, decode: (r) => r as unknown },
+      },
+      remoteDeps,
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(String(err)).toMatch(/unauthenticated|missing/i);
+  });
+
+  it('refuses a forged holderPubkey: signed as self but claims another device', async () => {
+    registerAuthorityOp('work-item.claim.acquire', async () => ({ granted: true }));
+    setPeerRpcTransport(
+      new HttpPeerRpcTransport({ resolveAddress: () => `http://127.0.0.1:${port}`, envelopeSigner: signer }),
+    );
+    const err = await routeToAuthority(
+      'papercup',
+      {
+        local: async () => 'L',
+        remote: {
+          kind: 'work-item.claim.acquire',
+          payload: { workspaceId: 'ws', workItemId: 'WI-1', holderPubkey: 'a-different-device' },
+          decode: (r) => r as unknown,
+        },
+      },
+      remoteDeps,
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(String(err)).toMatch(/unauthenticated|does not match/i);
+  });
+
+  it('refuses a body tampered in flight (signature covers the payload)', async () => {
+    registerAuthorityOp('work-item.claim.acquire', async () => ({ granted: true }));
+    setPeerRpcTransport(
+      new HttpPeerRpcTransport({ resolveAddress: () => `http://127.0.0.1:${port}`, envelopeSigner: signer }),
+    );
+    // A MITM flips the workItemId after signing → sig no longer matches.
+    mutateInFlight = (env) => {
+      (env.payload as Record<string, unknown>).workItemId = 'WI-HIJACKED';
+    };
+    const err = await routeToAuthority(
+      'papercup',
+      {
+        local: async () => 'L',
+        remote: {
+          kind: 'work-item.claim.acquire',
+          payload: { workspaceId: 'ws', workItemId: 'WI-1', holderPubkey: pubkeyBase64 },
+          decode: (r) => r as unknown,
+        },
+      },
+      remoteDeps,
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(String(err)).toMatch(/unauthenticated|signature/i);
   });
 });

@@ -1346,6 +1346,39 @@
    "durationMs": 0,
    "phase": "staging",
    "kind": "edge"
+  },
+  {
+   "id": "adv-chat-free-slot-picker",
+   "summary": "Add-panel Chat slot (WI-125): free slot lists non-terminal work items, Start opens a worker/discuss chat via openFeatureChat; bound slot renders the chat",
+   "file": "apps/operator/app/adv/harnesses/AdvChatPanel.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0
+  },
+  {
+   "id": "add-panel-catalog-chat-multi-instance",
+   "summary": "Add-panel catalog (WI-125): adv:chat listed; a BUSY chat slot never blocks opening another panel, a FREE slot re-focuses instead of duplicating",
+   "file": "apps/operator/app/harness/dock/AddPanelCatalog.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0
+  },
+  {
+   "id": "advconv-agentchats-live-composer",
+   "summary": "Conversations tab agent-chats (WI-125): LIVE chat embeds the interactive ChatPanel composer; archived or harness-less chats stay read-only transcripts",
+   "file": "apps/operator-vite/src/components/adv/AdvConversationsTab.test.tsx",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-production-readiness-acceptance-2026-06-10-027"
+   ],
+   "status": "not_run",
+   "lastRunTs": 0
   }
  ]
 }

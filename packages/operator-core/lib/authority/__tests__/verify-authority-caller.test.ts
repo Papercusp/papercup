@@ -80,10 +80,10 @@ describe('buildAuthorityCallerVerifier', () => {
         throw new Error('pg down');
       },
     });
-    // The default isRevoked swallows; here we pass a throwing one — verify must
-    // not reject on it. (The default-path fail-open is covered by the default
-    // impl; this asserts the verifier does not let a thrown isRevoked 500 it.)
-    await expect(verify(env)).rejects.toThrow(); // caller-supplied throwing isRevoked propagates...
+    // A revocation-store error must not reject a validly-signed caller — the
+    // verifier owns the fail-open guarantee.
+    const r = await verify(env);
+    expect(r).toEqual({ ok: true, devicePubkey: s.pubkeyBase64 });
   });
 
   it('skips the revocation gate when the payload carries no workspaceId (file-lock ops)', async () => {

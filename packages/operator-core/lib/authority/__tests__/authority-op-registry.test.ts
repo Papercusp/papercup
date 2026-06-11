@@ -67,6 +67,68 @@ describe('authority-op registry + handleAuthorityRpc', () => {
   });
 });
 
+describe('handleAuthorityRpc — verifyCaller (EI-322)', () => {
+  it('rejects with unauthenticated when verifyCaller fails — BEFORE verifyIsAuthority runs', async () => {
+    registerAuthorityOp('claim.lease', async () => 'leased');
+    let authorityChecked = false;
+    const res = await handleAuthorityRpc(
+      { harnessSlug: 'h', kind: 'claim.lease', payload: {} },
+      {
+        verifyCaller: () => ({ ok: false, reason: 'bad sig' }),
+        verifyIsAuthority: () => {
+          authorityChecked = true;
+          return true;
+        },
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('unauthenticated');
+    expect(res.message).toMatch(/bad sig/);
+    // An unproven caller must learn nothing about our authority status.
+    expect(authorityChecked).toBe(false);
+  });
+
+  it('runs the op when verifyCaller passes (then verifyIsAuthority)', async () => {
+    registerAuthorityOp('claim.lease', async () => 'leased');
+    const res = await handleAuthorityRpc(
+      { harnessSlug: 'h', kind: 'claim.lease', payload: {} },
+      { verifyCaller: () => ({ ok: true, devicePubkey: 'k' }), verifyIsAuthority: () => true },
+    );
+    expect(res).toEqual({ ok: true, result: 'leased' });
+  });
+
+  it('a throwing verifyCaller maps to unauthenticated (never a 500)', async () => {
+    registerAuthorityOp('claim.lease', async () => 'leased');
+    const res = await handleAuthorityRpc(
+      { harnessSlug: 'h', kind: 'claim.lease', payload: {} },
+      {
+        verifyCaller: () => {
+          throw new Error('verifier exploded');
+        },
+        verifyIsAuthority: () => true,
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('unauthenticated');
+    expect(res.message).toMatch(/exploded/);
+  });
+
+  it('still rejects an unknown kind before verifyCaller (cheap shape guard first)', async () => {
+    let called = false;
+    const res = await handleAuthorityRpc(
+      { harnessSlug: 'h', kind: 'nope', payload: {} },
+      {
+        verifyCaller: () => {
+          called = true;
+          return { ok: true, devicePubkey: 'k' };
+        },
+      },
+    );
+    expect(res.error).toBe('unknown_kind');
+    expect(called).toBe(false);
+  });
+});
+
 describe('HttpPeerRpcTransport — error mapping (injected fetch)', () => {
   function transportWith(fetchImpl: unknown, resolveAddress: () => string | null = () => 'http://peer:3070') {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -62,7 +62,7 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
     if (kind === 'agent-chats' && verb === 'get') {
       const id = String(body.id ?? '');
       const rows = await sql`
-        SELECT id, harness_slug, role, feature_id, title, created_at, transcript,
+        SELECT id, harness_slug, role, feature_id, title, created_at, archived_at, transcript,
                total_input_tokens, total_output_tokens, total_cost_usd_cents
           FROM harness_shared.agent_chats_consolidated
          WHERE id = ${id}

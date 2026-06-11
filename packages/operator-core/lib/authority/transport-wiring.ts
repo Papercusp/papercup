@@ -38,8 +38,10 @@ import {
   type EnvelopeSignerConfig,
 } from './http-peer-rpc-transport';
 import type { PeerRef } from './lock-authority';
-import { resolveLocalAnnounceIdentity } from '../sync/hyperbee/local-announce-identity';
 import { signWithDeviceKey } from '../identity/sign-with-device-key';
+import { resolveDeviceKeychainId } from '../identity/device-keychain-id';
+import { loadOrGenerateDeviceKeypair } from '../identity/attest';
+import { getAuthenticatedGithubUser } from '../identity/resolve-local-github-identity';
 
 export const PEER_ADDRESSES_ENV = 'PAPERCUSP_AUTHORITY_PEER_ADDRESSES';
 
@@ -96,19 +98,24 @@ export async function resolvePeerAddress(peer: PeerRef): Promise<string | null> 
 let _wired = false;
 
 /**
- * EI-322: the production envelope signer — resolve the local device identity
- * (keychain + gh-auth, the SAME identity the announce signer uses) once, and
- * sign each outgoing RPC with the device key via `signWithDeviceKey`. Returns
- * null when identity can't be resolved (no gh-auth / no keychain) → the RPC goes
- * unsigned, the same safe degradation as the fail-open transport. The transport
- * memoizes this, so the async resolution runs at most once.
+ * EI-322: the production envelope signer — resolve the local DEVICE identity
+ * (the SAME `<github_user_id>:<machine-fingerprint>` keychain key the announce
+ * signer uses) once, and sign each outgoing RPC with it via `signWithDeviceKey`.
+ * Deliberately leaner than `resolveLocalAnnounceIdentity` — it needs neither a
+ * log-core key nor the attestation gist (no extra GitHub round-trip), only the
+ * device keypair. Returns null when identity can't be resolved (no gh-auth /
+ * keychain) → the RPC goes unsigned, the same safe degradation as the fail-open
+ * transport. The transport memoizes this, so the async resolution runs once.
  */
 async function resolveDeviceEnvelopeSigner(): Promise<EnvelopeSignerConfig | null> {
   try {
-    const identity = await resolveLocalAnnounceIdentity({});
+    const user = await getAuthenticatedGithubUser();
+    if (!user) return null;
+    const keychainId = resolveDeviceKeychainId(user.id);
+    const { pubkeyBase64 } = await loadOrGenerateDeviceKeypair(keychainId);
     return {
-      devicePubkey: identity.devicePubkeyBase64,
-      sign: (bytes: Buffer) => signWithDeviceKey(identity.keychainId, bytes),
+      devicePubkey: pubkeyBase64,
+      sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
     };
   } catch {
     return null;

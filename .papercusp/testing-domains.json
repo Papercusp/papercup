@@ -1466,8 +1466,8 @@
         },
         {
           "id": "authority",
-          "label": "Lock authority (election, failover, fencing, RPC)",
-          "description": "The D-005 deterministic lock/claim authority layer: argmin election + staleness failover over presence (harness + Hive scope), hardened epoch fencing + anti-flap, the authority-op registry, the HTTP peer-RPC transport + boot wiring + address resolution, file-lock authority ops + Hive-aware routing, the two-instance authority rigs, cross-machine lock failover mid-hold (P-007), the failover flood (P-003), the lock-set reconstructor handover, and the remote-peers fast-path cache.",
+          "label": "Lock authority (election, failover, fencing, RPC, caller-auth)",
+          "description": "The D-005 deterministic lock/claim authority layer: argmin election + staleness failover over presence (harness + Hive scope), hardened epoch fencing + anti-flap, the authority-op registry, the HTTP peer-RPC transport + boot wiring + address resolution, file-lock authority ops + Hive-aware routing, the two-instance authority rigs, cross-machine lock failover mid-hold (P-007), the failover flood (P-003), the lock-set reconstructor handover, the remote-peers fast-path cache, and the EI-322 authenticated peer-RPC envelope (Ed25519 sign/verify, freshness, holderPubkey identity binding + revocation in the receiving caller-verifier, end-to-end signed/forged/tampered loopback).",
           "globs": [
             "packages/operator-core/lib/authority/__tests__/**/*.test.ts"
           ]

@@ -86,9 +86,18 @@ export function buildAuthorityCallerVerifier(
     }
 
     // 3. revocation (defense-in-depth; scoped only when the payload carries it).
+    //    FAIL-OPEN (D-004): an error consulting the store is treated as "standing
+    //    unknowable ≠ revoked" — the verifier owns this guarantee regardless of
+    //    the injected isRevoked, so a PG blip never wedges legitimate ops.
     const workspaceId = payloadString(env.payload, 'workspaceId');
     if (workspaceId) {
-      if (await isRevoked(provenPubkey, { workspaceId, harnessSlug: env.harnessSlug })) {
+      let revoked = false;
+      try {
+        revoked = await isRevoked(provenPubkey, { workspaceId, harnessSlug: env.harnessSlug });
+      } catch {
+        revoked = false;
+      }
+      if (revoked) {
         return { ok: false, reason: `device ${provenPubkey.slice(0, 12)}… is revoked for ${env.harnessSlug}` };
       }
     }

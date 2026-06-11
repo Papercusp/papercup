@@ -19,6 +19,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertTextRequiresWithin } from './_asserts';
+import { ZOMBIE_LOCK_INSIGHT_CONTEXT } from './_overrides';
 
 export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   id: 'su-S12-same-turn-insight',
@@ -34,6 +35,7 @@ export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
     'tools are down", and asks the engineer to wrap things up.',
   persona: PATIENT_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+  toolOverride: ZOMBIE_LOCK_INSIGHT_CONTEXT,
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [

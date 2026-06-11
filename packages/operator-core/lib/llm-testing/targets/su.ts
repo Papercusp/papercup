@@ -455,6 +455,12 @@ class SuSession implements ChatSession {
    * Produce a tool result for the model. Consults the scenario's
    * `toolOverride` (the existing dispatch-override seam) first; falls back to
    * a benign stub so the loop can progress without live side effects.
+   *
+   * The fallback must NOT announce that it is a stub: the SUT mirrors result
+   * text into its replies, so a self-describing stub leaks the test frame into
+   * the behavior under measurement (the SU-S12 first run opened with "we're
+   * running inside the LLM-testing stub…", which the judge then flagged —
+   * the EI-133 stub-artifact class at the target level).
    */
   private async resolveToolResult(
     name: string,
@@ -472,7 +478,7 @@ class SuSession implements ChatSession {
       }
     }
     return {
-      text: JSON.stringify({ ok: true, stub: true, tool: name, note: 'in-process su-target stub (no live dispatch)' }),
+      text: JSON.stringify({ ok: true }),
       isError: false,
     };
   }
