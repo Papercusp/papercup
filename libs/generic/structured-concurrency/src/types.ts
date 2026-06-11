@@ -69,6 +69,10 @@ export interface SpawnNode {
   chunkId: string | null;
   planSlug: string | null;
   itemId: string | null;
+  /** Resolved per-spawn model spec/tier (absent/null = no per-spawn override).
+      Optional so hosts without per-spawn model selection never touch it. */
+  modelSpec?: string | null;
+  modelTier?: string | null;
 }
 
 /** Result of recording one restart against a spawn's sliding intensity window. */

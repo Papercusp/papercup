@@ -156,6 +156,60 @@ const spawnReclaimSweepWorkflow = DBOS.registerWorkflow(spawnReclaimSweepTick, {
 });
 DBOS.registerScheduled(spawnReclaimSweepWorkflow, { name: 'spawnReclaimSweep', crontab: '0 * * * * *' });
 
+// Every minute: release work-item claims held by DEAD agents (owner-reported
+// gap, 2026-06-11). Bee identities are per-spawn and never persisted — an app
+// close/crash strands `taken_by = <dead alias>` on claimed items FOREVER
+// (claimNextWorkItem filters `taken_by IS NULL`, so no other agent can ever
+// pick them up). Liveness = the mig-225 alias-aware rule (coord_presence OR
+// running-nursery aliases, fresh heartbeats) — the sweep is the missing ACTOR
+// behind fleet_assignment's 'orphaned' signal. Companion to spawn-reclaim
+// above: that frees the dead spawn's CONCURRENCY slot, this frees its CLAIMS.
+async function staleClaimSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { reclaimStaleWorkItemClaims } = await import('../work-items-stale-claims');
+    const r = await reclaimStaleWorkItemClaims(getOrgPg().sql);
+    if (r.released.length > 0) {
+      const byStatus = r.released.reduce<Record<string, number>>((acc, c) => {
+        acc[c.status] = (acc[c.status] ?? 0) + 1;
+        return acc;
+      }, {});
+      console.warn(
+        `[stale-claims] released ${r.released.length} work-item claim(s) from dead holders ` +
+          `(${Object.entries(byStatus).map(([s, n]) => `${s}:${n}`).join(', ')}): ` +
+          r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by}`).join(', '),
+      );
+      // Non-'todo' rows died mid-flight — surface them for deliberate
+      // re-placement instead of silently returning them to the backlog.
+      const midFlight = r.released.filter((c) => c.status !== 'todo');
+      if (midFlight.length > 0) {
+        try {
+          const { sendMessage } = await import('../agent-tools/coordination/messages');
+          await sendMessage(
+            {
+              ownerId: 'stale-claim-sweep',
+              ownerLabel: 'system · stale-claim-sweep',
+              source: 'signed-spawn',
+              workspaceId: null,
+              userId: null,
+            },
+            {
+              to: ['*'],
+              summary:
+                `stale-claim sweep: ${midFlight.length} work item(s) freed from DEAD holders mid-flight ` +
+                `(non-todo status — needs re-placement): ` +
+                midFlight.map((c) => `${c.harness_slug}/${c.feature_id} [${c.status}]`).join(', '),
+            },
+          );
+        } catch { /* best-effort — the console.warn above is the floor */ }
+      }
+    }
+  }, { name: 'stale-claim-sweep' });
+}
+const staleClaimSweepWorkflow = DBOS.registerWorkflow(staleClaimSweepTick, {
+  name: 'staleClaimSweep', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(staleClaimSweepWorkflow, { name: 'staleClaimSweep', crontab: '30 * * * * *' });
+
 // Every 5min: backup orphan-snapshot sweep (consolidation P-002). REVIVES the
 // job — its only legacy start site was the dead instrumentation-node, so this
 // both ports it to DBOS and re-activates it (D-003).

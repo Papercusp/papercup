@@ -27,6 +27,10 @@ export interface RecordSpawnInput {
   coordinationDomain?: string;
   restartStrategy?: RestartStrategy;
   status?: SpawnStatus;
+  /** Opaque host annotations: the model spec/tier this spawn was resolved to run at
+   *  (per-spawn override observability). Carried, never interpreted. */
+  modelSpec?: string | null;
+  modelTier?: string | null;
 }
 
 export interface FinishSpawnInput {

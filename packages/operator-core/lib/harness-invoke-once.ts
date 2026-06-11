@@ -31,8 +31,11 @@ import type { TurnBackend } from '@papercusp/papercup-shared/agent';
  * default omp spawns to Anthropic AND collapsed every role into one `anthropic:default`
  * bucket. Exported for unit testing.
  */
-export function resolveSpawnBackendModel(role: string): { backend: TurnBackend; model: string } {
-  const cmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', role);
+export function resolveSpawnBackendModel(
+  role: string,
+  overrideSpec?: string,
+): { backend: TurnBackend; model: string } {
+  const cmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', role, overrideSpec);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
   const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
@@ -60,9 +63,16 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
  * unset, instead of silently downgrading to the CLI default). A role with
  * neither an env entry nor a committed default keeps the base command
  * unchanged. Exported for unit testing.
+ *
+ * `overrideSpec` is the PER-SPAWN escalation channel
+ * (queen-model-tier-selection-2026-06-11 P-001): an explicit spec for THIS one
+ * child — fleet:spawn's `model`/`tier` arg, threaded via
+ * extraEnv.PAPERCUSP_SPAWN_MODEL — that outranks both the env map and the
+ * committed default. Tier-derived overrides are already floor-clamped by
+ * resolveTierSpec before they reach here.
  */
-export function applyRoleModel(baseCmd: string, role: string): string {
-  if (!role) return baseCmd;
+export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: string): string {
+  if (!role && !overrideSpec?.trim()) return baseCmd;
   const raw = process.env.AGENT_MODELS;
   let models: Record<string, unknown> = {};
   if (raw) {
@@ -73,9 +83,13 @@ export function applyRoleModel(baseCmd: string, role: string): string {
     }
   }
   const envSpec = models[role];
-  // env wins; otherwise the committed default floor.
+  // per-spawn override wins, then env, then the committed default floor.
   const spec =
-    typeof envSpec === 'string' && envSpec.trim() ? envSpec : roleModelDefault(role);
+    typeof overrideSpec === 'string' && overrideSpec.trim()
+      ? overrideSpec
+      : typeof envSpec === 'string' && envSpec.trim()
+        ? envSpec
+        : roleModelDefault(role);
   if (typeof spec !== 'string' || !spec.trim()) return baseCmd;
   // Split a trailing `:<effort>` ONLY when the suffix is a known effort level, so a
   // colon-bearing model id (unusual for claude, but possible elsewhere) stays intact.
@@ -148,7 +162,16 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   // `AGENT_CMD ?? CLAUDE`, so we MUST override AGENT_CMD (the preferred var) —
   // setting only CLAUDE is masked by the inherited global AGENT_CMD. Set both so
   // whichever resolveAgentCmd reads gets the per-role command.
-  const roleAgentCmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spec.role);
+  // PAPERCUSP_SPAWN_MODEL (in extraEnv) is the per-spawn escalation: an explicit
+  // spec for THIS child that outranks the env map + committed default — set by
+  // spawnAgentInHarness from fleet:spawn's model/tier arg (P-001). It also rides
+  // the child's env, where invoke.ts resolveModel consults it first (covers the
+  // config.aiBackend agentCmd-swap path this command-level append can't reach).
+  const roleAgentCmd = applyRoleModel(
+    process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+    spec.role,
+    spec.extraEnv?.PAPERCUSP_SPAWN_MODEL,
+  );
   // P-016/D-007: when the spawn forces a native session id, bake `--session-id`
   // into the (claude) agent command so the headless bee run is resumable by exact
   // uuid for the hive-tabs bee attach. No-op for omp/codex (appendForcedSessionId).

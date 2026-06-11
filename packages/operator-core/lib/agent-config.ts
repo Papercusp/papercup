@@ -24,7 +24,14 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { papercuspPath } from './papercusp-root';
-import { AGENT_BACKENDS, SURFACE_KEYS, type AgentBackend, type SurfaceKey } from './agent-config-constants';
+import {
+  AGENT_BACKENDS,
+  SURFACE_KEYS,
+  isValidModelSpec,
+  type AgentBackend,
+  type ModelTier,
+  type SurfaceKey,
+} from './agent-config-constants';
 
 // Client-safe constants + types live in `agent-config-constants.ts` (a leaf
 // module with no Node/server imports) so the /settings/agent client page can
@@ -32,7 +39,7 @@ import { AGENT_BACKENDS, SURFACE_KEYS, type AgentBackend, type SurfaceKey } from
 // here for backward compat — existing server callers still `import … from
 // './agent-config'`.
 export { AGENT_BACKENDS, SURFACE_KEYS };
-export type { AgentBackend, SurfaceKey };
+export type { AgentBackend, ModelTier, SurfaceKey };
 
 export interface AgentConfig {
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
@@ -63,6 +70,17 @@ export interface AgentConfig {
       RunAgentChatOptions.model. Distinct from `models` above, which is the
       per-ROLE map forwarded to the orchestrator pipeline via env. */
   surfaceModels?: Partial<Record<SurfaceKey, string>>;
+  /** User-defined model-tier menu, ordered WEAKEST → STRONGEST (the order is
+      the strength ranking the floor/ceiling clamp uses). Empty = the
+      committed DEFAULT_MODEL_TIERS (quick/standard/deep/max). The queen's
+      fleet:spawn `tier` arg resolves against this menu — see
+      fleet/model-tiers.ts (queen-model-tier-selection-2026-06-11). */
+  tiers?: ModelTier[];
+  /** Per-role tier CEILING (role → tier name): the strongest tier the queen
+      may pick for that role. Absent = the strongest tier is allowed. The
+      FLOOR is not configured — it derives from the role's resolved default
+      model (a tier pick can escalate a role, never downgrade it). */
+  tierCeilings?: Record<string, string>;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -71,6 +89,8 @@ const DEFAULT_CONFIG: AgentConfig = {
   models: {},
   backends: {},
   surfaceModels: {},
+  tiers: [],
+  tierCeilings: {},
 };
 
 export async function readAgentConfig(): Promise<AgentConfig> {
@@ -88,7 +108,45 @@ export async function readAgentConfig(): Promise<AgentConfig> {
       : {},
     backends: parseBackends(raw.backends),
     surfaceModels: parseSurfaceModels(raw.surfaceModels),
+    tiers: parseTiers(raw.tiers),
+    tierCeilings: parseTierCeilings(raw.tierCeilings, raw.tiers),
   };
+}
+
+/** Validate the stored tier menu: an array of { name, spec } with a non-empty
+    lowercase-unique name and a syntactically valid model spec. Invalid entries
+    are dropped (absence → DEFAULT_MODEL_TIERS at resolution time). */
+export function parseTiers(raw: unknown): ModelTier[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModelTier[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = typeof (entry as ModelTier).name === 'string' ? (entry as ModelTier).name.trim() : '';
+    const spec = typeof (entry as ModelTier).spec === 'string' ? (entry as ModelTier).spec.trim() : '';
+    const key = name.toLowerCase();
+    if (!name || !spec || seen.has(key) || !isValidModelSpec(spec)) continue;
+    seen.add(key);
+    out.push({ name, spec });
+  }
+  return out;
+}
+
+/** Validate the per-role ceiling map: role → tier name. A ceiling naming a
+    tier absent from the stored menu is dropped (when the menu is empty the
+    names are checked against nothing — resolution ignores unknown ceilings
+    anyway, but dropping here keeps the stored config self-consistent). */
+export function parseTierCeilings(raw: unknown, rawTiers?: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const tiers = parseTiers(rawTiers);
+  const names = new Set(tiers.map((t) => t.name.toLowerCase()));
+  const out: Record<string, string> = {};
+  for (const [role, tier] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof role !== 'string' || !role.trim() || typeof tier !== 'string' || !tier.trim()) continue;
+    if (names.size > 0 && !names.has(tier.trim().toLowerCase())) continue;
+    out[role.trim()] = tier.trim();
+  }
+  return out;
 }
 
 /** Validate the per-surface backend map: keep only known surface keys
