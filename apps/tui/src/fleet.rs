@@ -563,6 +563,20 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Span::raw("")
             };
+            // Enter-route tag (owner ask 2026-06-11): what Enter will do for
+            // THIS row — ⏎ pane / ⏎ window / ⏎ resume / ⏎ menu — so a
+            // non-resumable agent is visible before the keypress, not after a
+            // silent one. Resume is the high-signal route → green; the rest
+            // stay dim chrome.
+            let hint = app.enter_hint(r);
+            let hint_span = if hint == "⏎ resume" {
+                Span::styled(
+                    format!(" {hint}"),
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Green),
+                )
+            } else {
+                Span::styled(format!(" {hint}"), Theme::dim())
+            };
             ListItem::new(Line::from(vec![
                 dot,
                 glyph_cell,
@@ -571,6 +585,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(todo, Theme::dim()),
                 wake_badge,
                 unclaimed_badge,
+                hint_span,
             ]))
         })
         .collect();

@@ -7,15 +7,20 @@
  * (Join / Fork / Install — D-005). Renders against either the live-worker row
  * shape or the aspirational HarnessListing shape via the cupboard/types helpers.
  *
- * One kind executes its action directly from here:
+ * Every non-join kind executes its action directly from here:
  *   - blueprint Fork → POST /api/cupboard/install-blueprint (clone + validate +
  *     dep-check → ~/.papercusp/blueprints/<id>/, the installed tier of the
  *     local→installed→built-in resolution —
  *     official-blueprints-cupboard-publish-2026-06-05 P-004/D-001/D-004).
  *     Declared plugin deps are NOT auto-installed from this button (consent
  *     stays explicit — the toast lists what's installable instead).
- *
- * Plugin install still hands off to the plugin-host install-consent flow.
+ *   - plugin / pack Install → POST /api/cupboard/install-plugin (clone the
+ *     listing's repo into global-plugins — EI-27). The global install only
+ *     REGISTERS the unit; the manifest's requested capabilities are surfaced in
+ *     the toast but NOT granted here — per-harness capability consent
+ *     (acceptCapabilities) stays an explicit act at enable-time (D-009). This
+ *     replaces the dead `/harness?cupboardListing=…` navigation that nothing
+ *     consumed.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -81,7 +86,10 @@ export default function CupboardDetailPage() {
       void installBlueprintFromCupboard();
       return;
     }
-    router.push(`/harness?cupboardListing=${encodeURIComponent(listing.id)}&action=${listingAction(kind)}`);
+    // plugin | pack — the remaining install kinds — clone into global-plugins
+    // directly (EI-27). Replaces the dead `/harness?cupboardListing=…`
+    // navigation no consumer ever read.
+    void installPluginFromCupboard();
   };
 
   const installBlueprintFromCupboard = async () => {
@@ -112,6 +120,57 @@ export default function CupboardDetailPage() {
         `Blueprint "${d.id}" installed${d.version ? ` v${d.version}` : ''} — usable in harness:create / blueprint:extend.` +
           (installable.length > 0
             ? ` Declares plugin deps you can install from their listings: ${installable.join(', ')}.`
+            : ''),
+      );
+    } catch (e) {
+      toast.error(`Install crashed: ${(e as Error)?.message ?? String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // plugin / pack Install: clone the listing's repo into global-plugins. We do
+  // NOT pass harness/acceptCapabilities — the global install only registers the
+  // unit; per-harness capability consent stays explicit at enable-time (D-009).
+  // The toast surfaces the manifest's requested capabilities + any installable
+  // declared deps for transparency.
+  const installPluginFromCupboard = async () => {
+    if (!listing || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/cupboard/install-plugin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ listingId: listing.id }),
+      });
+      const d = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        name?: string;
+        version?: string;
+        kind?: string;
+        capabilities?: string[];
+        installableDependencies?: { tools?: string[]; packs?: string[]; plugins?: string[] } | null;
+        error?: string;
+        detail?: string;
+      };
+      if (!r.ok || !d.ok) {
+        toast.error(`Install failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
+        return;
+      }
+      const unit = d.kind === 'pack' ? 'Pack' : 'Plugin';
+      const caps = d.capabilities ?? [];
+      const installable = [
+        ...(d.installableDependencies?.tools ?? []),
+        ...(d.installableDependencies?.packs ?? []),
+        ...(d.installableDependencies?.plugins ?? []),
+      ];
+      toast.success(
+        `${unit} "${d.name}" installed${d.version ? ` v${d.version}` : ''}.` +
+          (caps.length > 0
+            ? ` Requests capabilities (granted per-harness on enable): ${caps.join(', ')}.`
+            : '') +
+          (installable.length > 0
+            ? ` Declares installable deps: ${installable.join(', ')}.`
             : ''),
       );
     } catch (e) {
@@ -278,7 +337,7 @@ export default function CupboardDetailPage() {
             }}
           >
             {busy ? (
-              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing blueprint…</>
+              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing {kind}…</>
             ) : (
               <><ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : action === 'fork' ? ` ${kind}` : ' harness'}</>
             )}

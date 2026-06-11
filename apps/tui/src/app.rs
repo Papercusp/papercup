@@ -2696,28 +2696,71 @@ impl App {
         ))
     }
 
+    /// The Enter-route tag for a roster row (owner ask 2026-06-11): what WILL
+    /// Enter do for this agent? Rendered as a trailing hint on every Fleet
+    /// roster row so the route is visible BEFORE the keypress — previously a
+    /// dead-but-unresumable agent's row looked identical to a resumable one's
+    /// until Enter (visibly) did nothing. One source of truth: the exact
+    /// resolve_agent_route the keypress takes.
+    pub fn enter_hint(&self, entry: &RosterEntry) -> &'static str {
+        match self.resolve_agent_route(entry) {
+            AgentRoute::LocalPane { .. } => "⏎ pane",
+            AgentRoute::FocusWindow { .. } => "⏎ window",
+            AgentRoute::Resume { .. } => "⏎ resume",
+            AgentRoute::Menu(_) => "⏎ menu",
+        }
+    }
+
     /// Enter on a Fleet-roster agent (D-001/D-002). Resolves the agent's location
     /// and acts: focus a local pane, focus an external window, resume an ended
     /// session, or open the `[r]/[n]/[f]` menu. With no agent selected (empty
     /// roster) Enter is a no-op render — the empty-work-area hint already tells
     /// the user to press `n`.
+    ///
+    /// Every direct route raises an immediate toast (owner ask 2026-06-11):
+    /// pane-focus can silently no-op on a stale pane id and window-focus
+    /// resolves asynchronously, so without it a failed Enter was
+    /// indistinguishable from a dead key. The menu route needs none — the
+    /// modal IS the feedback.
     fn fleet_enter(&mut self) -> Action {
         let Some(entry) = self.selected_session().cloned() else {
             return Action::Render;
         };
         match self.resolve_agent_route(&entry) {
-            AgentRoute::LocalPane { pane_id } => Action::FocusLocalPane { pane_id },
+            AgentRoute::LocalPane { pane_id } => {
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!("⏎ focusing workbench pane · {}", entry.label),
+                    harness: None,
+                    ts: None,
+                });
+                Action::FocusLocalPane { pane_id }
+            }
             AgentRoute::FocusWindow {
                 adv_session_id,
                 pid,
                 window_id,
-            } => Action::FocusWindow {
-                adv_session_id,
-                pid,
-                window_id,
-                label: entry.label.clone(),
-            },
+            } => {
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!("⏎ focusing window · {} …", entry.label),
+                    harness: None,
+                    ts: None,
+                });
+                Action::FocusWindow {
+                    adv_session_id,
+                    pid,
+                    window_id,
+                    label: entry.label.clone(),
+                }
+            }
             AgentRoute::Resume { spec } => {
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!("⏎ resuming {} · {}", entry.label, spec.argv.join(" ")),
+                    harness: None,
+                    ts: None,
+                });
                 self.record_launch(&spec);
                 Action::Launch(spec)
             }
@@ -5634,6 +5677,87 @@ mod tests {
         let mut b = App::new();
         b.set_roster(vec![roster_entry("codex")]);
         assert!(b.launch_spec().argv.contains(&"--agent=codex".to_string()));
+    }
+
+    // ── Enter-route hints + always-visible Enter feedback (owner ask 2026-06-11) ──
+
+    /// Dead session WITH an adv launch record → Enter resumes, and the row
+    /// says so beforehand.
+    #[test]
+    fn enter_hint_resume_for_dead_recorded_session() {
+        let a = App::new();
+        let mut e = roster_entry("claude");
+        e.stale = true;
+        e.liveness = "stale".into();
+        e.adv_session_id = Some(1054);
+        assert_eq!(a.enter_hint(&e), "⏎ resume");
+    }
+
+    /// Dead session WITHOUT an adv launch record (the "Enter did nothing"
+    /// class) → the hint says menu before the keypress.
+    #[test]
+    fn enter_hint_menu_for_dead_unrecorded_session() {
+        let a = App::new();
+        let mut e = roster_entry("claude");
+        e.stale = true;
+        e.liveness = "stale".into();
+        e.adv_session_id = None;
+        assert_eq!(a.enter_hint(&e), "⏎ menu");
+    }
+
+    /// Live agent with a same-host pid → Enter focuses its window.
+    #[test]
+    fn enter_hint_window_for_live_same_host_pid() {
+        let a = App::new();
+        let mut e = roster_entry("claude");
+        e.pid = Some(4242);
+        assert_eq!(a.enter_hint(&e), "⏎ window");
+    }
+
+    /// Live but unreachable (no pane, no window handle) → menu.
+    #[test]
+    fn enter_hint_menu_for_live_unreachable() {
+        let a = App::new();
+        let mut e = roster_entry("claude");
+        e.host = "some-other-host".into();
+        assert_eq!(a.enter_hint(&e), "⏎ menu");
+    }
+
+    /// Enter on a resumable row launches AND toasts — a failed/slow launch is
+    /// no longer indistinguishable from a dead key.
+    #[test]
+    fn fleet_enter_resume_toasts_and_launches() {
+        let mut a = App::new();
+        let mut e = roster_entry("claude");
+        e.stale = true;
+        e.liveness = "stale".into();
+        e.adv_session_id = Some(1054);
+        a.set_roster(vec![e]);
+        let act = a.fleet_enter();
+        match act {
+            Action::Launch(spec) => {
+                assert!(spec.argv.contains(&"--resume".to_string()));
+                assert!(spec.argv.contains(&"1054".to_string()));
+            }
+            other => panic!("expected Launch, got {other:?}"),
+        }
+        let toast = a.toast.expect("Enter must raise an immediate toast");
+        assert!(toast.message.contains("resuming"), "got: {}", toast.message);
+        assert!(toast.message.contains("--resume"), "got: {}", toast.message);
+    }
+
+    /// Enter on a dead, unrecorded row opens the modal menu (the visible
+    /// feedback for that route) instead of silently rendering.
+    #[test]
+    fn fleet_enter_unresumable_opens_menu() {
+        let mut a = App::new();
+        let mut e = roster_entry("claude");
+        e.stale = true;
+        e.liveness = "stale".into();
+        a.set_roster(vec![e]);
+        let _ = a.fleet_enter();
+        let menu = a.fleet_action_menu.expect("menu must open");
+        assert!(!menu.can_resume, "no adv record → resume not offered");
     }
 
     // ── Swarm pane → bee-dossier selection relay (pui-bee-dossier-pane-2026-06-06) ──
