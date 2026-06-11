@@ -14,7 +14,7 @@
  * Rows are transient UX, not state — capped + TTL-swept, never persisted.
  */
 
-export type FromRepoStep = 'lookup' | 'clone' | 'detect' | 'create' | 'publish';
+export type FromRepoStep = 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish';
 export type FromRepoStepStatus = 'running' | 'done' | 'error' | 'skipped';
 
 export interface FromRepoProgressRow {

@@ -45,6 +45,11 @@ import {
   type DrainableOutbox,
   type DrainOutcome,
 } from './cross-hive-outbox-drain';
+import {
+  registerCrossHiveBoundary,
+  unregisterCrossHiveBoundary,
+  __clearCrossHiveBoundaryRegistry,
+} from './cross-hive-boundary-registry';
 import type { HiveDirectoryMeta } from './hive-publish';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
@@ -155,6 +160,7 @@ async function reconcileWorkspace(
   for (const entry of [..._wired.values()]) {
     if (entry.workspaceId !== workspaceId || publishedSlugs.has(entry.hiveSlug)) continue;
     _wired.delete(key(workspaceId, entry.hiveSlug));
+    unregisterCrossHiveBoundary(workspaceId, entry.hiveSlug);
     try {
       await entry.wiring.close();
     } catch {
@@ -179,6 +185,9 @@ async function reconcileWorkspace(
         continue;
       }
       _wired.set(k, entry);
+      // The send tools (hive:ask / hive:request_work, B-04) resolve the live
+      // boundary through the shared registry — never a second transport.
+      registerCrossHiveBoundary(workspaceId, meta.hiveId, entry.wiring);
       out.wired.push(meta.hiveId);
       // eslint-disable-next-line no-console
       console.log(
@@ -283,11 +292,10 @@ async function wireOneHive(
   };
 }
 
-/** The live boot-wired boundary for a Hive, or null (private / unwired). The
- *  send-path seam for the front-door tools (hive:ask / hive:request_work). */
-export function getCrossHiveBoundary(workspaceId: string, hiveSlug: string): CrossHiveBoundaryWiring | null {
-  return _wired.get(key(workspaceId, hiveSlug))?.wiring ?? null;
-}
+// NOTE: the live-boundary RESOLVE point for send-side callers (hive:ask /
+// hive:request_work) is cross-hive-boundary-registry.ts (`getCrossHiveBoundary`)
+// — this module is the only WRITER of that registry (register on wire,
+// unregister on close).
 
 /** Snapshot of every wired boundary (the periodic drain iterates this). */
 export function listWiredCrossHiveBoundaries(): WiredCrossHiveBoundary[] {
@@ -301,6 +309,7 @@ export async function closeAllCrossHiveBoundaries(): Promise<number> {
   let closed = 0;
   await Promise.all(
     entries.map(async (e) => {
+      unregisterCrossHiveBoundary(e.workspaceId, e.hiveSlug);
       try {
         await e.wiring.close();
         closed += 1;
@@ -312,8 +321,10 @@ export async function closeAllCrossHiveBoundaries(): Promise<number> {
   return closed;
 }
 
-/** Test seam: drop the registry WITHOUT closing (when transports are fakes). */
+/** Test seam: drop the wiring state WITHOUT closing (when transports are fakes).
+ *  Also clears the shared resolve registry — this module is its only writer. */
 export function __resetCrossHiveBoundaryBootForTests(): void {
   _wired.clear();
   _inflight.clear();
+  __clearCrossHiveBoundaryRegistry();
 }

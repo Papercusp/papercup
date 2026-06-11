@@ -110,7 +110,7 @@ export function errorCodeToCopy(code: string | undefined, raw: string, hiveLower
 
 // ── Progress strip (memo design, hive step vocabulary) ─────────────────────
 
-export type StripStepId = 'resolve' | 'lookup' | 'clone' | 'detect' | 'create' | 'publish';
+export type StripStepId = 'resolve' | 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish';
 type StripStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
 const STRIP_LABELS: Record<StripStepId, string> = {
@@ -119,6 +119,7 @@ const STRIP_LABELS: Record<StripStepId, string> = {
   clone: 'Cloning repository',
   detect: 'Detecting blueprint',
   create: 'Creating',
+  seed: 'Seeding learnings',
   publish: 'Publishing',
 };
 
@@ -152,9 +153,13 @@ function statusMap(entries: [StripStepId, StripStatus][]): Partial<Record<StripS
 }
 
 function stepsForMode(mode: FormMode): StripStepId[] {
+  // Only a NEW hive seeds learnings (learning-packs P-006) — into-hive adds a
+  // member to an existing home (install packs there from the Learning tab).
   return mode === 'standalone'
     ? ['resolve', 'clone', 'detect', 'create']
-    : ['resolve', 'lookup', 'clone', 'detect', 'create', 'publish'];
+    : mode === 'into-hive'
+      ? ['resolve', 'lookup', 'clone', 'detect', 'create', 'publish']
+      : ['resolve', 'lookup', 'clone', 'detect', 'create', 'seed', 'publish'];
 }
 
 /** Rough per-step holds for the optimistic spinner (clone is the long pole). */
@@ -164,6 +169,7 @@ const OPTIMISTIC_HOLD_MS: Record<StripStepId, number> = {
   clone: 20_000,
   detect: 12_000,
   create: 8_000,
+  seed: 1_500,
   publish: 6_000,
 };
 
@@ -232,6 +238,8 @@ interface CreatedResult {
   memberPath: string;
   defaultBranch?: string;
   githubRepositoryId?: number;
+  /** learning-packs P-006: what seeded into the new hive's shared memory. */
+  seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
   duplicateOf?: { kind: 'hive' | 'legacy_shared_harness'; hivePubkey?: string; source: string };
 }
 
@@ -321,6 +329,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // Default OFF (D-002 — publishing an activity summary is an outward-facing act
   // the owner must actively consent to); the "(recommended)" framing nudges yes.
   const [beaconConsent, setBeaconConsent] = useState(false);
+  // learning-packs P-006: which pack seeds the new hive's shared memory.
+  // Default = the Papercusp pack (D-004); 'none' starts empty. Transient
+  // form draft → useState (nuqs exception).
+  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customSlug, setCustomSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
@@ -378,6 +390,19 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     advance();
   };
 
+  // learning-packs P-006: the pack catalog for the picker. Degrades to the
+  // default-only option when the query has no rows yet (fresh install, flag off).
+  const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
+    queryName: 'learningPacks.list',
+    args: {},
+    enabled: mode === 'new-hive',
+    staleTime: 60_000,
+  });
+  const availablePacks =
+    packRows && packRows.length > 0
+      ? packRows
+      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
+
   // P-008 — REAL step rows from the backend (the from-repo composition records
   // every transition; each write invalidates this query over SSE). While rows
   // exist they OVERRIDE the optimistic cursor: real data wins, and the timer
@@ -408,11 +433,21 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
     );
   };
 
-  const settleCreated = (steps: StripStepId[], publish: PublishOutcome | undefined) => {
+  const settleCreated = (
+    steps: StripStepId[],
+    publish: PublishOutcome | undefined,
+    seeded?: CreatedResult['seededLearnings'],
+  ) => {
     clearTimer();
     setStepStatuses(
       statusMap(
         steps.map((s) => {
+          if (s === 'seed') {
+            // learning-packs P-006 — settled from the real summary only:
+            // absent (flag off / pack 'none') → skipped; error → error.
+            if (!seeded) return [s, 'skipped'];
+            return [s, seeded.error ? 'error' : 'done'];
+          }
           if (s !== 'publish') return [s, 'done'];
           if (!publish || publish.skipped) return [s, 'skipped'];
           return [s, publish.announced ? 'done' : 'error'];
@@ -479,6 +514,8 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
           // B-07 / C-2: carry the beacon consent only when this hive will publish
           // (public/invite). A private hive never announces, so it has no beacon.
           ...(mode === 'new-hive' && visibility !== 'private' ? { beaconConsent } : {}),
+          // learning-packs P-006: the picker selection ('none' ⇒ null = seed nothing).
+          ...(mode === 'new-hive' ? { learningPack: learningPack === 'none' ? null : learningPack } : {}),
           ...(mode === 'into-hive' && hiveScope ? { intoHive: hiveScope } : {}),
           ...(verifyTests ? { runTests: true } : {}),
           ...(opts?.force ? { force: true } : {}),
@@ -502,7 +539,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
         return;
       }
       if (body.created) {
-        settleCreated(steps, body.publish);
+        settleCreated(steps, body.publish, body.created.seededLearnings);
         setCreated({ kind: 'hive', result: body.created, publish: body.publish, bindingUnverified: body.bindingUnverified === true });
         setPhase('created');
         return;
@@ -748,6 +785,24 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             {hiveLabel}: <code>{result.hiveSlug}</code> · member: <code>{result.memberSlug}</code>
             {result.defaultBranch ? <> · default branch <code>{result.defaultBranch}</code></> : null}
           </div>
+          {/* learning-packs P-006: the seeded-learnings line + the edit surface link. */}
+          {result.seededLearnings && !result.seededLearnings.error && (result.seededLearnings.count ?? 0) > 0 && (
+            <div style={{ marginTop: 6 }} data-testid="seeded-learnings-line">
+              Started with {result.seededLearnings.count} default learnings (pack{' '}
+              <code>{result.seededLearnings.packId}</code>
+              {result.seededLearnings.packVersion ? <> v{result.seededLearnings.packVersion}</> : null}) —{' '}
+              <a href={`/adv?tab=learning&lview=learnings&lhive=${encodeURIComponent(result.hiveSlug)}`}>
+                view &amp; edit
+              </a>
+              . Your agents treat them as starting wisdom, not gospel.
+            </div>
+          )}
+          {result.seededLearnings?.error && (
+            <div style={{ marginTop: 6, color: 'var(--warn, #f59e0b)' }} data-testid="seeded-learnings-error">
+              Learning-pack seeding didn&rsquo;t complete ({result.seededLearnings.error}) — install a pack
+              later from the Learning tab.
+            </div>
+          )}
           <div style={{ marginTop: 6 }}>
             {publish?.skipped === 'private' && <>Not published — private {hiveLower}s make zero external writes. Publish later from the {hiveLower} header.</>}
             {publish?.skipped === 'unpublished_hive' && <>The {hiveLower} isn&rsquo;t published, so the new member stays unlisted until it is.</>}
@@ -910,6 +965,32 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             </label>
           ))}
         </fieldset>
+      )}
+
+      {/* learning-packs P-006: the pack picker — a new hive starts with a
+          default set of learnings seeded into its shared memory; the user can
+          pick another pack or none, and edit the result from the Learning tab. */}
+      {mode === 'new-hive' && (
+        <label data-testid="learning-pack-picker" style={{ display: 'block', marginBottom: 14 }}>
+          <span style={{ display: 'block', fontSize: 12, color: 'var(--fg-dim)', marginBottom: 4, fontWeight: 500 }}>
+            Learning pack
+          </span>
+          <select value={learningPack} onChange={(e) => setLearningPack(e.target.value)} style={inputStyle}>
+            {availablePacks.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+                {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
+                {p.id === 'papercusp-default' ? ' (default)' : ''}
+              </option>
+            ))}
+            <option value="none">None — start with an empty memory</option>
+          </select>
+          <Hint>
+            New {hiveLower}s start with a default set of learnings — working wisdom seeded into the{' '}
+            {hiveLower}&rsquo;s shared memory. Your agents inherit them from the first wake; review, edit,
+            or remove them anytime from the Learning tab.
+          </Hint>
+        </label>
       )}
 
       {/* B-07 / C-2: the beacon-publish consent question — asked at the natural

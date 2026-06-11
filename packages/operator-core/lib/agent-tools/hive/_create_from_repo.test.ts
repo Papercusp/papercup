@@ -26,6 +26,7 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
     removedDirs: [] as string[],
     removedHomes: [] as string[],
     publishes: [] as Record<string, unknown>[],
+    beaconWrites: [] as { hive: string; consent: boolean }[],
     registry: [{ slug: 'existing', path: '/x' }] as Record<string, unknown>[],
   };
   const deps: CreateHiveFromRepoDeps = {
@@ -63,6 +64,9 @@ function fakes(over: Partial<CreateHiveFromRepoDeps> = {}) {
     },
     rmDir: async (p) => {
       calls.removedDirs.push(p);
+    },
+    setBeaconConsent: async (_ws, hive, consent) => {
+      calls.beaconWrites.push({ hive, consent });
     },
     ...over,
   };
@@ -235,6 +239,7 @@ describe('createHiveFromRepo (P-006)', () => {
       'pid-1:detect:done',
       'pid-1:create:running',
       'pid-1:create:done',
+      'pid-1:seed:skipped', // learning-packs P-005: no learnings detected in the fake repo
       'pid-1:publish:running',
       'pid-1:publish:done',
     ]);
@@ -300,6 +305,56 @@ describe('createHiveFromRepo (P-006)', () => {
     const r = await createHiveFromRepo({ githubUrl: URL, intoHive: 'plain', workspaceId: 'ws' }, deps);
     expect(r).toMatchObject({ ok: false, error: 'hive_not_found' });
     expect(calls.cloned).toEqual([]);
+  });
+
+  // ── B-07 / C-2: beacon-publish consent recorded in the publish flow ──────────
+
+  it('records beacon consent for a NEW published hive (true and false round-trip)', async () => {
+    const { deps, calls } = fakes();
+    await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
+    await createHiveFromRepo({ githubUrl: URL, slug: 'shop-x', beaconConsent: false, workspaceId: 'ws' }, deps);
+    expect(calls.beaconWrites).toEqual([
+      { hive: 'shop-hive', consent: true },
+      { hive: 'shop-x-hive', consent: false },
+    ]);
+  });
+
+  it('omitting beaconConsent writes nothing (absent = OFF, default-deny D-002)', async () => {
+    const { deps, calls } = fakes();
+    await createHiveFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(calls.beaconWrites).toEqual([]);
+  });
+
+  it('private visibility records NO beacon consent (a private hive never publishes)', async () => {
+    const { deps, calls } = fakes();
+    await createHiveFromRepo(
+      { githubUrl: URL, visibility: 'private', beaconConsent: true, workspaceId: 'ws' },
+      deps,
+    );
+    expect(calls.beaconWrites).toEqual([]);
+  });
+
+  it('into-hive mode records NO beacon consent (the existing home keeps its standing consent)', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () =>
+        ({ projects: [{ slug: 'myhive', path: '/h', harness_kind: 'hive' }] }) as never,
+      republish: (async () => ({ announced: true, cupboard: { attempted: false } })) as never,
+    });
+    await createHiveFromRepo(
+      { githubUrl: URL, intoHive: 'myhive', beaconConsent: true, workspaceId: 'ws' },
+      deps,
+    );
+    expect(calls.beaconWrites).toEqual([]);
+  });
+
+  it('a beacon-consent write failure NEVER fails the create', async () => {
+    const { deps } = fakes({
+      setBeaconConsent: async () => {
+        throw new Error('settings store down');
+      },
+    });
+    const r = await createHiveFromRepo({ githubUrl: URL, beaconConsent: true, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
   });
 
   it('into-hive member-create failure removes only the clone (the existing home is untouched)', async () => {

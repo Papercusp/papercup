@@ -17,9 +17,9 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   __resetCrossHiveBoundaryBootForTests,
   ensureCrossHiveBoundariesWired,
-  getCrossHiveBoundary,
   type EnsureCrossHiveBoundariesOpts,
 } from './cross-hive-boundary-boot';
+import { getCrossHiveBoundary } from './cross-hive-boundary-registry';
 import { wireCrossHiveBoundary } from './cross-hive-wiring';
 import { setCrossHiveGrant, loadCrossHiveGrants } from './cross-hive-grants';
 import { PgCrossHiveOutbox } from './cross-hive-outbox-pg';
@@ -153,8 +153,8 @@ describe('boot ensure → the boundary is LIVE with PG-grant sovereignty intact'
     // ── BOOT: the ensure wires the published hive; the private one stays dark.
     const res = await ensureCrossHiveBoundariesWired(WS, opts);
     expect(res.wired).toEqual([B_SLUG]);
-    expect(getCrossHiveBoundary(WS, B_SLUG)).not.toBeNull();
-    expect(getCrossHiveBoundary(WS, 'hive-private')).toBeNull();
+    expect(getCrossHiveBoundary(WS, B_SLUG)).toBeDefined();
+    expect(getCrossHiveBoundary(WS, 'hive-private')).toBeUndefined();
     expect(mesh.subs.has(B.pubkey)).toBe(true); // B is subscribed = boundary LIVE
 
     // The external peer A wires itself directly (it is not ours to boot).
@@ -173,6 +173,8 @@ describe('boot ensure → the boundary is LIVE with PG-grant sovereignty intact'
         },
       },
       loadGrants: async () => [],
+      // A's owner allows OUTBOUND traffic to B (egress default-deny, B-05).
+      loadOutboundGrants: async () => [{ peerHivePubkey: B.pubkey, allowedKinds: ['ask', 'work-request'] }],
       outbox: new InMemoryCrossHiveOutbox(),
     });
 
@@ -198,7 +200,7 @@ describe('boot ensure → the boundary is LIVE with PG-grant sovereignty intact'
     metas = [metaFor(B_SLUG, 'private')];
     const res3 = await ensureCrossHiveBoundariesWired(WS, opts);
     expect(res3.closed).toEqual([B_SLUG]);
-    expect(getCrossHiveBoundary(WS, B_SLUG)).toBeNull();
+    expect(getCrossHiveBoundary(WS, B_SLUG)).toBeUndefined();
     expect(mesh.subs.has(B.pubkey)).toBe(false); // unsubscribed — unreachable
     const r4 = await aWiring.send(B.pubkey, { id: 'ask-2', kind: 'ask', subject: 'still there?', body: '…' });
     expect(r4).toEqual({ delivered: false, queued: true }); // dark hive: peer's send store-and-forwards

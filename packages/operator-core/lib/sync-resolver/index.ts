@@ -1517,6 +1517,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learningPacks.list — the pack catalog (learning-packs-2026-06-11 P-006) ──
+  //
+  // Resolvable learning packs across the builtin + installed roots (builtin
+  // wins on id clash). Backs the creation-flow pack picker and the Learning
+  // tab's pack management. Rows flat (one per pack); a read failure degrades
+  // to [] — the picker falls back to its default-only option, never a 500.
+  // NOT table-backed (FS read); installs/uninstalls fire `learning.hive`
+  // + this name explicitly.
+  'learningPacks.list': {
+    resolve: async () => {
+      try {
+        const { listLearningPacks } = await import('../learning-packs/load-packs');
+        return await listLearningPacks();
+      } catch (err) {
+        console.warn('[learningPacks.list] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   // ── dev.* — live-ops glances for the dev admin rail ──────────────────
   //
   // (plan dev-admin-sidebar-2026-06-05, P-005..P-008). NOT table-backed, so

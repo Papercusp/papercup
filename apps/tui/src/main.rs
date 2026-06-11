@@ -631,25 +631,34 @@ async fn run<B: Backend>(
                 // B-10 SEAM: the per-hive drill-in open action (hive-network-
                 // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
                 // hive — its "drill-in" is the dock's `this hive` tab (always
-                // the FIRST tab, agreed with B-10). Tiers 2-4 open a per-hive
-                // tab named `⌕ <key>` (B-10's hive_tab_name format).
-                //
-                // PLACEHOLDER until B-10's generator lands (they emit
-                // `hive-network:b10-generator-landed`): a plain named tab via
-                // the zellij CLI. Swap-in: build layout::HiveTabSpec from
-                // `req` (watch_owners=[] in v1 — C-3 rows carry no bee owner
-                // ids), write layout::hive_tab_kdl(&spec) to a temp .kdl file,
-                // pass its path as `layout`. NOTE for B-10: the companion is
-                // never spawned in pinned panes (see Companion::spawn gating
-                // above), so this arm must stay on the `zellij action` CLI
-                // path — `Command::NewTab` over the companion won't fire here.
+                // the FIRST tab, agreed with B-10). Tiers 2-4 open B-10's
+                // generated per-hive tab (hive-pane detail; watch panes when
+                // an owner-id-bearing endpoint lands — v1 C-3 rows carry no
+                // bee owner ids, so watch_owners=[]). The KDL goes through a
+                // materialized file + the zellij CLI because the companion is
+                // NEVER spawned in pinned panes (Companion::spawn gating
+                // above) — `Command::NewTab` over the companion can't fire
+                // from the pinned network-pane.
                 if req.tier <= 1 {
                     let _ = Zellij.run_action(&MuxAction::GoToTab(1));
                 } else {
-                    let _ = Zellij.run_action(&MuxAction::NewTab {
-                        name: Some(format!("⌕ {}", req.key)),
-                        layout: None,
-                    });
+                    let spec = layout::HiveTabSpec {
+                        tier: req.tier,
+                        key: req.key.clone(),
+                        title: req.title.clone(),
+                        watch_owners: Vec::new(),
+                    };
+                    match materialize_hive_tab(&spec) {
+                        Ok(path) => {
+                            let _ = Zellij.run_action(&MuxAction::NewTab {
+                                name: Some(layout::hive_tab_name(&spec)),
+                                layout: Some(path.to_string_lossy().into_owned()),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Event::Error(format!("hive tab: {e}")));
+                        }
+                    }
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
@@ -2622,6 +2631,27 @@ async fn fetch_hives(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Error(format!("hives: {e}")));
         }
     }
+}
+
+/// Write a per-hive drill-in tab's KDL (`layout::hive_tab_kdl`, B-10) to
+/// `~/.papercusp/pui-hive-tab-<key>.kdl` and return the path. The zellij CLI's
+/// `new-tab --layout` takes a layout FILE; the companion (which takes raw KDL
+/// text) is never spawned in pinned panes, so the network-pane's drill-in
+/// rides the file + CLI. One file per hive key — re-opening overwrites it.
+fn materialize_hive_tab(spec: &layout::HiveTabSpec) -> std::io::Result<std::path::PathBuf> {
+    let base = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?
+        .join(".papercusp");
+    std::fs::create_dir_all(&base)?;
+    // The key can be a pubkey-b64 (`/`, `+`, `=`) — slug it for the filename.
+    let slug: String = spec
+        .key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = base.join(format!("pui-hive-tab-{slug}.kdl"));
+    std::fs::write(&path, layout::hive_tab_kdl(spec))?;
+    Ok(path)
 }
 
 /// Fetch the cross-Hive network board (hive-network-surface B-09) off the UI

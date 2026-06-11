@@ -173,7 +173,7 @@ export interface CreateHiveFromRepoDeps {
   /** P-008 step recorder (default: the from-repo-progress store). */
   recordStep?: (
     progressId: string,
-    step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish',
+    step: 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish',
     status: 'running' | 'done' | 'error' | 'skipped',
   ) => void;
 }
@@ -307,14 +307,14 @@ export async function createHiveFromRepo(
   // progressId (no-op without one). A helper so call-sites stay one-liners.
   const recordStep =
     deps.recordStep ??
-    ((id: string, step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish', status: 'running' | 'done' | 'error' | 'skipped') => {
+    ((id: string, step: 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish', status: 'running' | 'done' | 'error' | 'skipped') => {
       void import('../../harness/from-repo-progress')
         .then((m) => m.recordFromRepoStep(id, step, status))
         .catch(() => {});
     });
   const pid = opts.progressId ?? '';
   const mark = (
-    step: 'lookup' | 'clone' | 'detect' | 'create' | 'publish',
+    step: 'lookup' | 'clone' | 'detect' | 'create' | 'seed' | 'publish',
     status: 'running' | 'done' | 'error' | 'skipped',
   ): void => {
     if (pid) {
@@ -461,6 +461,17 @@ export async function createHiveFromRepo(
     return fail('member_create_failed', member.error ?? 'harness:create failed');
   }
   mark('create', 'done');
+  // learning-packs P-006: the seed step settles retrospectively from the hive
+  // create's summary (seeding ran inside it) — done / error / skipped, real
+  // data only. into-hive mode never seeds (no new home) → skipped.
+  mark(
+    'seed',
+    hive?.seededLearnings
+      ? hive.seededLearnings.error
+        ? 'error'
+        : 'done'
+      : 'skipped',
+  );
 
   // 7 — stamp the upstream coords on the member entry (P-002): the fork-PR
   //     context + the member_repos announce derivation both read these.

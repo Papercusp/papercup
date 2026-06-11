@@ -6,8 +6,8 @@
  * badges, and the empty-slug guard. Lexicon is mocked to a passthrough so the
  * test asserts structure, not flag-resolved wording.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import HiveHeaderStrip from './HiveHeaderStrip';
 
@@ -15,7 +15,19 @@ vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string) => key, // passthrough: t('pot') → 'pot'
 }));
 
-afterEach(() => cleanup());
+// The kind:'hive' strip reads its beacon consent on mount via the default seam
+// (a GET) — stub fetch so the existing tests don't reach the network. Beacon
+// tests below inject the get/set seams directly and ignore this stub.
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify({ ok: true, consent: false }), { status: 200 })),
+  );
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('HiveHeaderStrip', () => {
   it('renders the hive name + member count + set-up liveness', () => {
@@ -169,5 +181,69 @@ describe('P-015 — the directory visibility flip (hive-from-github-url-2026-06-
     );
     await user.click(screen.getByRole('button', { name: 'withdraw' }));
     await screen.findByText('withdrawn');
+  });
+});
+
+describe('B-07 / C-2 — the beacon-publish consent toggle (hive-network-surface-2026-06-11)', () => {
+  const seams = (over?: {
+    get?: (slug: string) => Promise<boolean>;
+    set?: (slug: string, consent: boolean) => Promise<{ ok: boolean; consent?: boolean; error?: string }>;
+  }) => ({
+    getBeaconConsent: over?.get ?? (async () => false),
+    setBeaconConsent: over?.set ?? (async (_s: string, consent: boolean) => ({ ok: true, consent })),
+  });
+
+  it('renders the consent control only for a formal hive home, carrying the ratified question', () => {
+    render(<HiveHeaderStrip hiveSlug="plain-root" members={[]} {...seams()} />);
+    expect(screen.queryByTestId('hive-beacon-consent')).toBeNull();
+    cleanup();
+    render(<HiveHeaderStrip hiveSlug="acme-hive" hiveKind="hive" members={[]} {...seams()} />);
+    expect(screen.getByTestId('hive-beacon-consent')).toBeTruthy();
+    // The publish-flow question rides the control (D-002: never ONLY a buried toggle).
+    screen.getByText(/also publish a live status beacon\? \(recommended for/i);
+  });
+
+  it('reads the current consent on mount (absent = OFF; granted = on)', async () => {
+    render(<HiveHeaderStrip hiveSlug="acme-hive" hiveKind="hive" members={[]} {...seams({ get: async () => true })} />);
+    await waitFor(() => expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('on'));
+  });
+
+  it('toggling drives the set seam and reflects the new state', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    const calls: Array<[string, boolean]> = [];
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        {...seams({
+          get: async () => false,
+          set: async (slug, consent) => {
+            calls.push([slug, consent]);
+            return { ok: true, consent };
+          },
+        })}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('off'));
+    await user.click(screen.getByTestId('hive-beacon-toggle'));
+    await waitFor(() => expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('on'));
+    expect(calls).toEqual([['acme-hive', true]]);
+  });
+
+  it('a failed set surfaces the error inline and leaves the prior state', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup();
+    render(
+      <HiveHeaderStrip
+        hiveSlug="acme-hive"
+        hiveKind="hive"
+        members={[]}
+        {...seams({ get: async () => false, set: async () => ({ ok: false, error: 'settings store down' }) })}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('off'));
+    await user.click(screen.getByTestId('hive-beacon-toggle'));
+    await screen.findByText('failed: settings store down');
+    expect(screen.getByTestId('hive-beacon-toggle').textContent).toBe('off'); // unchanged
   });
 });

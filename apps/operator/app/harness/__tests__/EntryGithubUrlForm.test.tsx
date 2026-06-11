@@ -225,6 +225,105 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ runTests: true });
   });
 
+  it('learning pack: default selection submits papercusp-default; "none" submits null; success card shows the seeded line (learning-packs P-006)', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: {
+          ok: true,
+          created: {
+            hiveSlug: 'web-hive',
+            memberSlug: 'web',
+            memberPath: '/tmp/web',
+            seededLearnings: { packId: 'papercusp-default', packVersion: '1.0.0', count: 28 },
+          },
+          bindingUnverified: false,
+          publish: { skipped: 'private' },
+        },
+      },
+    });
+    renderForm();
+    // The picker defaults to the Papercusp pack and explains the seeding.
+    const picker = screen.getByTestId('learning-pack-picker').querySelector('select')!;
+    expect(picker.value).toBe('papercusp-default');
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: 'papercusp-default' });
+    // Success summary: the seeded-learnings line + the view & edit link.
+    const line = await screen.findByTestId('seeded-learnings-line');
+    expect(line.textContent).toContain('Started with 28 default learnings');
+    expect(line.querySelector('a')?.getAttribute('href')).toBe('/adv?tab=learning&lview=learnings&lhive=web-hive');
+
+    cleanup();
+    mockFetch.mockClear();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+      },
+    });
+    renderForm();
+    await user.selectOptions(screen.getByTestId('learning-pack-picker').querySelector('select')!, 'none');
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ learningPack: null });
+  });
+
+  it('beacon consent (B-07 / C-2): shown for public, default OFF, unchecked sends beaconConsent:false', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
+      },
+    });
+    renderForm();
+    const beacon = screen.getByTestId('beacon-consent-optin').querySelector('input')!;
+    expect(beacon.checked).toBe(false); // default OFF — publishing a beacon is opt-in (D-002)
+    screen.getByText(/Also publish a live status beacon\?/);
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ visibility: 'public', beaconConsent: false });
+  });
+
+  it('beacon consent: checking the box sends beaconConsent:true', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 } } },
+      },
+    });
+    renderForm();
+    await user.click(screen.getByTestId('beacon-consent-optin'));
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ beaconConsent: true });
+  });
+
+  it('beacon consent: a PRIVATE hive hides the question and sends no beaconConsent (no publish ⇒ no beacon)', async () => {
+    const user = userEvent.setup();
+    respondByUrl({
+      '/api/harness/hives/from-repo': {
+        status: 200,
+        body: { ok: true, created: { hiveSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+      },
+    });
+    renderForm();
+    await user.click(screen.getByRole('radio', { name: /Private/ }));
+    expect(screen.queryByTestId('beacon-consent-optin')).toBeNull();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/hives/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).not.toHaveProperty('beaconConsent');
+    expect(postedBodies('/api/harness/hives/from-repo')[0]).toMatchObject({ visibility: 'private' });
+  });
+
   it('shows the invite secret for an invite hive', async () => {
     const user = userEvent.setup();
     respondByUrl({

@@ -413,7 +413,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployFrames as AnyRoute),
   ...flatten(discoveryHives as AnyRoute),
   ...flatten(discoverySetHive as AnyRoute),
-  ...flatten(discoveryBeaconConsent as AnyRoute),
+  ...flatten(discoveryBeaconConsent as AnyRoute[]),
   ...flatten(discoveryJoinInvite as AnyRoute),
   ...flatten(discoveryJoinHive as AnyRoute),
   ...flatten(deployVncSession as AnyRoute),

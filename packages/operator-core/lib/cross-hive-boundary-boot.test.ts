@@ -9,10 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetCrossHiveBoundaryBootForTests,
   ensureCrossHiveBoundariesWired,
-  getCrossHiveBoundary,
   listWiredCrossHiveBoundaries,
   type EnsureCrossHiveBoundariesOpts,
 } from './cross-hive-boundary-boot';
+import { getCrossHiveBoundary } from './cross-hive-boundary-registry';
 import type { CrossHiveOutbox, CrossHiveTransport, CrossHiveWireEnvelope } from './cross-hive-transport';
 import type { DrainableOutbox } from './cross-hive-outbox-drain';
 import type { DetailedPendingEnvelope } from './cross-hive-outbox-pg';
@@ -122,9 +122,9 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
     const res = await ensureCrossHiveBoundariesWired(WS, f.opts);
     expect(res.wired.sort()).toEqual(['inv', 'pub']);
     expect(res.closed).toEqual([]);
-    expect(getCrossHiveBoundary(WS, 'pub')).not.toBeNull();
-    expect(getCrossHiveBoundary(WS, 'inv')).not.toBeNull();
-    expect(getCrossHiveBoundary(WS, 'priv')).toBeNull();
+    expect(getCrossHiveBoundary(WS, 'pub')).toBeDefined();
+    expect(getCrossHiveBoundary(WS, 'inv')).toBeDefined();
+    expect(getCrossHiveBoundary(WS, 'priv')).toBeUndefined();
     expect(f.transports.has('priv')).toBe(false); // never even constructed a transport
     expect(listWiredCrossHiveBoundaries().map((b) => b.hivePubkey).sort()).toEqual(['pk-inv', 'pk-pub']);
   });
@@ -142,14 +142,14 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
   it('a visibility flip converges: newly-private closes, newly-public wires', async () => {
     const f = fixture([meta('a', 'public'), meta('b', 'private')]);
     await ensureCrossHiveBoundariesWired(WS, f.opts);
-    expect(getCrossHiveBoundary(WS, 'a')).not.toBeNull();
+    expect(getCrossHiveBoundary(WS, 'a')).toBeDefined();
 
     f.setHives([meta('a', 'private'), meta('b', 'public')]);
     const res = await ensureCrossHiveBoundariesWired(WS, f.opts);
     expect(res).toMatchObject({ wired: ['b'], closed: ['a'] });
-    expect(getCrossHiveBoundary(WS, 'a')).toBeNull();
+    expect(getCrossHiveBoundary(WS, 'a')).toBeUndefined();
     expect(f.transports.get('a')!.closed).toBe(true); // the boundary went dark for real
-    expect(getCrossHiveBoundary(WS, 'b')).not.toBeNull();
+    expect(getCrossHiveBoundary(WS, 'b')).toBeDefined();
   });
 
   it('an unpublished (removed) hive closes on the next ensure', async () => {
@@ -167,7 +167,7 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
     const res = await ensureCrossHiveBoundariesWired(WS, f.opts);
     expect(res.skipped).toEqual(['no-key']);
     expect(res.wired).toEqual(['ok']);
-    expect(getCrossHiveBoundary(WS, 'no-key')).toBeNull();
+    expect(getCrossHiveBoundary(WS, 'no-key')).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no Hive identity pubkey'));
     warn.mockRestore();
   });
@@ -183,7 +183,7 @@ describe('ensureCrossHiveBoundariesWired — publish-gated wiring', () => {
       },
     });
     expect(res).toMatchObject({ wired: [], closed: [], skipped: [] });
-    expect(getCrossHiveBoundary(WS, 'a')).not.toBeNull();
+    expect(getCrossHiveBoundary(WS, 'a')).toBeDefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('owned-hive listing failed'));
     warn.mockRestore();
   });

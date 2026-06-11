@@ -39,6 +39,7 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { activeWorkspaceId } from './workspace-registry';
+import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
@@ -836,6 +837,24 @@ export async function setWorkItemPriority(
      WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
     RETURNING feature_order`;
   if (!rows[0]) return null;
+  // B-12 steering-churn tripwire (hive-network-surface-2026-06-11 P-010 / D-004):
+  // the AFTER trigger (mig 232) has just recorded this steer into the ledger;
+  // check whether the SAME item has been re-steered by a DIFFERENT writer (another
+  // Queen) within the window and raise a debounced owner escalation above
+  // threshold. Best-effort — a telemetry/escalation failure must NEVER break the
+  // steer, and the ledger table is absent in isolated unit fixtures (42P01 →
+  // silently skip; the periodic sweep is the catch-all when it exists).
+  if (wi.harness) {
+    // Swallow ALL errors silently: the steer is the contract here, telemetry is
+    // not, and the periodic sweep (dbos/periodic-workflows.ts) is the backstop for
+    // anything this check misses (incl. the ledger table being absent in isolated
+    // unit fixtures — 42P01).
+    await checkAndEscalateSteeringChurn({
+      workspaceId: activeWorkspaceId(),
+      harnessSlug: wi.harness,
+      featureId: id,
+    }).catch(() => undefined);
+  }
   return { id, harness: wi.harness, priority: rows[0].feature_order, applicable: true };
 }
 

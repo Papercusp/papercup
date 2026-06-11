@@ -245,3 +245,24 @@ const testRunsPruneWorkflow = DBOS.registerWorkflow(testRunsPruneTick, {
   name: 'testRunsPrune', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: '0 17 4 * * *' });
+
+// Every 5min: the multi-Queen steering-churn tripwire sweep (hive-network-surface
+// P-010 / Brief B-12; D-004). Across all workspaces, find backlog items whose
+// feature_order (the Queen's steer lever) was re-steered by >= 2 distinct writers
+// in the recent window and raise a debounced owner coord:escalate above the flip
+// threshold. The catch-all for interleavings the synchronous post-steer check in
+// setWorkItemPriority misses (e.g. two REMOTE Swarms ping-ponging an item this box
+// never locally steered). At N=1 every steer is local → one writer → no churn.
+async function steeringChurnSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { sweepSteeringChurn } = await import('../steering-churn');
+    const r = await sweepSteeringChurn();
+    if (r.escalated > 0) {
+      console.warn(`[steering-churn] swept ${r.checked} churned item(s); escalated ${r.escalated} to the owner`);
+    }
+  }, { name: 'steering-churn-sweep' });
+}
+const steeringChurnSweepWorkflow = DBOS.registerWorkflow(steeringChurnSweepTick, {
+  name: 'steeringChurnSweep', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(steeringChurnSweepWorkflow, { name: 'steeringChurnSweep', crontab: '0 */5 * * * *' });

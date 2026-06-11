@@ -425,7 +425,7 @@ const createHive = defineTool({
   path: '/harness/hives',
   auth: 'loopback',
   async handler(req) {
-    let body: { slug?: string; parentDir?: string; wakeInSeconds?: number } = {};
+    let body: { slug?: string; parentDir?: string; wakeInSeconds?: number; learningPack?: string | null } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const slug = String(body.slug ?? '').trim();
     if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) {
@@ -438,6 +438,10 @@ const createHive = defineTool({
       workspaceId: activeWorkspaceId(),
       parentDir: typeof body.parentDir === 'string' && body.parentDir.trim() ? body.parentDir.trim() : undefined,
       wakeInSeconds: typeof body.wakeInSeconds === 'number' ? body.wakeInSeconds : undefined,
+      // learning-packs P-005/P-006: '' and null ⇒ seed nothing; absent ⇒ default pack.
+      ...(body.learningPack === null || typeof body.learningPack === 'string'
+        ? { learningPack: body.learningPack === '' ? null : body.learningPack }
+        : {}),
     });
     if (!res.ok) {
       const status = res.error === 'slug_exists' || res.error === 'dest_exists' ? 409 : 400;
@@ -446,7 +450,13 @@ const createHive = defineTool({
     // Bust the registry caches so the new Hive home appears in the selector + grouping.
     bustProjectsLiteCache();
     __projectsCache.expires = 0;
-    return Response.json({ ok: true, project: { slug: res.slug, path: res.path }, hive: true, waked: res.waked });
+    return Response.json({
+      ok: true,
+      project: { slug: res.slug, path: res.path },
+      hive: true,
+      waked: res.waked,
+      ...(res.seededLearnings ? { seededLearnings: res.seededLearnings } : {}),
+    });
   },
 });
 
@@ -475,6 +485,7 @@ const createHiveFromRepoRoute = defineTool({
       intoHive?: string;
       beaconConsent?: boolean;
       progressId?: string;
+      learningPack?: string | null;
     } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
     const githubUrl = String(body.githubUrl ?? '').trim();
@@ -500,6 +511,11 @@ const createHiveFromRepoRoute = defineTool({
         : {}),
       // B-07 / C-2: the publish-flow beacon-publish consent (new public/invite hives).
       ...(typeof body.beaconConsent === 'boolean' ? { beaconConsent: body.beaconConsent } : {}),
+      // learning-packs P-005/P-006: pack picker selection — string pack id,
+      // null = seed nothing, absent = default pack.
+      ...(body.learningPack === null || typeof body.learningPack === 'string'
+        ? { learningPack: body.learningPack === '' ? null : body.learningPack }
+        : {}),
       // P-008: real step progress over the sync channel (client-minted id).
       ...(typeof body.progressId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.progressId)
         ? { progressId: body.progressId }

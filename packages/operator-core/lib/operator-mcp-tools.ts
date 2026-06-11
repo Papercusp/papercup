@@ -156,6 +156,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__discovery:hives',
   'mcp__agentmcp__hive:cross_grant',
 
+  // hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board:
+  // one row per other-hive context across the capability-tier ladder (this Swarm,
+  // own other hives, federated peer Swarms, foreign directory hives + beacon +
+  // our grants/asks). The Queen's "what is every other hive doing" read.
+  'mcp__agentmcp__network:board',
+
   // hive-network-surface-2026-06-11 P-003 (B-04) — the INITIATING side of the
   // cross-Hive boundary: hive:ask / hive:request_work send a signed request to a
   // peer Hive (by pubkey, from discovery:hives) and record it in this Hive's ask

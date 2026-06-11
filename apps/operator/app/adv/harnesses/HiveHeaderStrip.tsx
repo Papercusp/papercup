@@ -432,6 +432,14 @@ function HeaderStyles() {
         font-weight: 500;
         color: var(--fg-mute, #7f9bb4);
       }
+      /* B-07: the beacon consent control carries the full question, so it wraps
+         gracefully in the compact header rather than overflowing the row. */
+      .pc-hive-header__beacon { flex-wrap: wrap; max-width: 420px; }
+      .pc-hive-header__beacon .pc-hive-header__viz-label {
+        max-width: 320px;
+        white-space: normal;
+        line-height: 1.35;
+      }
       .pc-hive-header__viz-btn {
         padding: 1px 8px;
         font-size: 10.5px;

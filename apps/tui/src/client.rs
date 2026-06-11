@@ -931,13 +931,17 @@ impl OperatorClient {
     }
 
     /// The cross-Hive network board (hive-network-surface-2026-06-11 P-006):
-    /// one pinned-C-3 row per hive-context over the capability ladder, composed
-    /// server-side by B-08's data endpoint. Path is the agreed provisional route
-    /// (coord 2026-06-11) — if B-08's announce names a different one, this line
-    /// is the only edit. Freshness rides the refetch loop (SSE invalidate +
-    /// 60s safety net), the standard pui convention.
+    /// one pinned-C-3 row per hive-context over the capability ladder. The
+    /// live surface is B-08's NAMED SYNC QUERY `network.board` over the
+    /// zero-harness rest-query route (announced coord 2026-06-11 — there is
+    /// deliberately no raw route); its invalidations ride the same
+    /// `/api/zero-harness/sse` stream the refetch loop already subscribes, so
+    /// freshness is the standard pui convention (SSE invalidate + 60s safety
+    /// net). Response: `{ rows: NetworkBoardRow[], version }`.
     pub async fn network_board(&self) -> Result<Vec<crate::models::NetworkBoardRow>> {
-        let v = self.get_json("/api/network/board").await?;
+        let v = self
+            .get_json("/api/zero-harness/rest-query?name=network.board&args=%7B%7D")
+            .await?;
         let resp: crate::models::NetworkBoardResponse =
             serde_json::from_value(v).context("parse network-board response")?;
         Ok(resp.rows)

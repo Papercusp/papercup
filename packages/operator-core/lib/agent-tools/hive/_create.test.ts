@@ -59,6 +59,32 @@ beforeEach(() => {
       return true;
     },
   }));
+  // learning-packs P-005: the seed step is mocked (its own behavior is pinned in
+  // lib/learning-packs/seed.test.ts); the flag gate resolves ON deterministically.
+  vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true }));
+  vi.doMock('../../learning-packs/load-packs', () => ({
+    loadLearningPack: async () => ({
+      pack: {
+        manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
+        items: [{ id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' }],
+      },
+      source: 'builtin',
+      warnings: [],
+    }),
+  }));
+  vi.doMock('../../learning-packs/seed', () => ({
+    shapesFromDetection: () => undefined,
+    seedPackIntoHive: async () => ({
+      ok: true,
+      packId: 'papercusp-default',
+      packVersion: '1.0.0',
+      seeded: 1,
+      ids: ['mem-1'],
+      skippedByShape: 0,
+      failed: 0,
+      undo: async () => {},
+    }),
+  }));
 });
 
 afterEach(() => {
@@ -68,6 +94,9 @@ afterEach(() => {
   vi.doUnmock('../blueprint/_resolve');
   vi.doUnmock('../../hive-identity');
   vi.doUnmock('../../hive-store');
+  vi.doUnmock('@papercusp/flags/server');
+  vi.doUnmock('../../learning-packs/load-packs');
+  vi.doUnmock('../../learning-packs/seed');
   try {
     rmSync(tmpParent, { recursive: true, force: true });
   } catch {
@@ -88,6 +117,20 @@ describe('createHiveHarness', () => {
     // The Hive's first-class identity (Ed25519 keypair + entity row) is minted as
     // part of create (shared-hive-federation P-002).
     expect(ensureCalls).toEqual([['default', 'test-hive']]);
+    // learning-packs P-005: the default pack seeded into the new hive's pool.
+    expect(res.seededLearnings).toEqual({ packId: 'papercusp-default', packVersion: '1.0.0', count: 1 });
+  });
+
+  it('learningPack: null skips seeding entirely', async () => {
+    const { createHiveHarness } = await import('./_create');
+    const res = await createHiveHarness({
+      slug: 'no-seed-hive',
+      workspaceId: 'default',
+      parentDir: tmpParent,
+      learningPack: null,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.seededLearnings).toBeUndefined();
   });
 
   it('rolls back fully when schema provisioning fails — no orphan entry or dir', async () => {

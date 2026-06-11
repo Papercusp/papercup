@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 // Pure parser leaf — SPA-bundle-safe (the harness-link-types rule).
 import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
+import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { EntryGithubUrlForm } from './EntryGithubUrlForm';
@@ -315,7 +316,19 @@ function ExistingLocalForm({ onBack, onSuccess, hive }: { onBack: () => void; on
 function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hiveLabel: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // learning-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  const [learningPack, setLearningPack] = useState<string>('papercusp-default');
   const slugRef = useRef<HTMLInputElement>(null);
+
+  const { data: packRows } = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
+    queryName: 'learningPacks.list',
+    args: {},
+    staleTime: 60_000,
+  });
+  const availablePacks =
+    packRows && packRows.length > 0
+      ? packRows
+      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -330,7 +343,7 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
       const res = await fetch('/api/harness/hives', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify({ slug, learningPack: learningPack === 'none' ? null : learningPack }),
       });
       if (!res.ok) {
         const body: ApiError = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -338,8 +351,19 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
         setBusy(false);
         return;
       }
-      const data = (await res.json()) as { ok: boolean; project: { slug: string } };
-      toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`);
+      const data = (await res.json()) as {
+        ok: boolean;
+        project: { slug: string };
+        seededLearnings?: { packId: string; packVersion?: string; count?: number; error?: string };
+      };
+      toast.success(`${hiveLabel} '${data.project.slug}' created — the Queen is provisioning its fleet.`, {
+        // learning-packs P-006: tell the user the hive starts with default
+        // learnings + where to edit them (the Learning tab's Learnings view).
+        description:
+          data.seededLearnings && !data.seededLearnings.error && (data.seededLearnings.count ?? 0) > 0
+            ? `Started with ${data.seededLearnings.count} default learnings (${data.seededLearnings.packId}) — review & edit them in the Learning tab.`
+            : undefined,
+      });
       onSuccess(data.project.slug);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Network error');
@@ -372,6 +396,31 @@ function NewHiveForm({ onBack, onSuccess, hiveLabel }: { onBack: () => void; onS
         <FieldLabel>{hiveLabel} slug</FieldLabel>
         <input ref={slugRef} type="text" placeholder="my-hive" style={inputStyle} autoFocus pattern="[a-z0-9][a-z0-9-]*" title="lowercase alphanumeric, hyphens OK" />
         <HintText>Lowercase, hyphens OK. The home harness slug for the new {hiveLabel.toLowerCase()}.</HintText>
+      </Label>
+      {/* learning-packs P-006: the pack picker — the new hive starts with a
+          default set of learnings; selectable away, editable afterward. */}
+      <Label>
+        <FieldLabel>Learning pack</FieldLabel>
+        <select
+          data-testid="learning-pack-picker"
+          value={learningPack}
+          onChange={(e) => setLearningPack(e.target.value)}
+          style={inputStyle}
+        >
+          {availablePacks.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.title}
+              {p.itemCount ? ` — ${p.itemCount} learnings` : ''}
+              {p.id === 'papercusp-default' ? ' (default)' : ''}
+            </option>
+          ))}
+          <option value="none">None — start with an empty memory</option>
+        </select>
+        <HintText>
+          New {hiveLabel.toLowerCase()}s start with a default set of learnings — working wisdom seeded
+          into the {hiveLabel.toLowerCase()}&rsquo;s shared memory. Review, edit, or remove them anytime
+          from the Learning tab.
+        </HintText>
       </Label>
       <SubmitRow busy={busy} label={`Create ${hiveLabel.toLowerCase()}`} onBack={onBack} />
     </form>

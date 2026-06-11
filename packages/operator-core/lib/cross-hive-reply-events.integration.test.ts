@@ -11,7 +11,7 @@
  * PG store lands (the receive side only sees the CrossHiveAskLedger port either
  * way). Follows the org-fixture mock pattern (test/_org-test-db.ts).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -97,8 +97,18 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     h.sql = db.adminSql;
   }, 120_000);
 
+  // The REAL emit kicks the wake pump (setImmediate), whose executor rightly warns
+  // "dead waiter" for our fake Queen subscriber — expected background noise, async
+  // enough to land inside any test. vitest-fail-on-console re-patches console.warn
+  // per test, so the spy must be re-installed AFTER its patch — beforeEach, not
+  // beforeAll (a beforeAll spy gets wrapped and the warn still counts as a failure).
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
   afterAll(async () => {
     await db?.cleanup();
+    vi.restoreAllMocks();
   });
 
   const ports = { async openAsk() { return { ref: 'x' }; }, async createWorkRequest() { return { ref: 'x' }; } };
