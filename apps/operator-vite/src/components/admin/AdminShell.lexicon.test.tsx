@@ -45,7 +45,7 @@ describe('AdminShell lexicon (P-006)', () => {
     expect(screen.getByText('Cupboard')).toBeTruthy();
     expect(screen.queryByText('Comb')).toBeNull();
     // A non-lexicon tab is unaffected by the brand pack.
-    expect(screen.getByText('Coordination')).toBeTruthy();
+    expect(screen.getByText('DBOS')).toBeTruthy();
   });
 
   it('the-hive: Cupboard tab reads "Comb"', () => {
@@ -57,7 +57,7 @@ describe('AdminShell lexicon (P-006)', () => {
     );
     expect(screen.getByText('Comb')).toBeTruthy();
     expect(screen.queryByText('Cupboard')).toBeNull();
-    expect(screen.getByText('Coordination')).toBeTruthy();
+    expect(screen.getByText('DBOS')).toBeTruthy();
   });
 
   it('flips live when the flag changes', () => {
