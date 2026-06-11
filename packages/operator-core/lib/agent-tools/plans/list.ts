@@ -12,12 +12,25 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { readAllPlans, resolveHarnessPlansDir } from './source';
+import {
+  listPlanIndexRows,
+  getPlanContentsBySlugs,
+  resolveHarnessPlansDir,
+  type PlanIndexRow,
+} from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { resolveEffectiveStatus } from './effective-status';
+import { resolveEffectiveStatusForItems } from './effective-status';
 import { getAllBlockedPlanItems, applyPlanItemBlocks, planItemRef } from '../../issue-blocks-merge';
-import { IMPORTANCE_LEVELS, ITEM_STATUSES, PLAN_STATUSES, type Importance } from './parser';
+import {
+  IMPORTANCE_LEVELS,
+  ITEM_STATUSES,
+  PLAN_STATUSES,
+  parsePlan,
+  type Importance,
+  type ItemStatus,
+  type PlanItem,
+} from './parser';
 import { reconcileStartStatus } from './plan-start-state';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
@@ -164,20 +177,56 @@ export default defineTool({
     }
 
     for (const harnessSlug of perHarness) {
-      // One SQL read per harness: the canonical blob + op_* status + frontmatter
-      // index all arrive in the same harness_plans row (op_status replaces the
-      // old separate harness_plan_status join).
-      const plans = await readAllPlans({ harnessSlug, includeArchived });
-      for (const { parsed, archived, row } of plans) {
-        if (parsed.isLegacy && !includeLegacy) continue;
+      // Index-only read (audit P-042 — EI-98/EI-174/EI-175): every field this
+      // row needs lives in the harness_plans projection columns, so the
+      // content blobs never leave PG and nothing is parsed per request. The
+      // archived filter runs in SQL.
+      const rows = await listPlanIndexRows({ harnessSlug, includeArchived });
 
-        const slug = parsed.frontmatter.slug ?? parsed.slug;
+      // Targeted fallback for projection-gap rows (non-legacy with an empty
+      // Stage-3 items index — e.g. a federated remote row whose projection
+      // didn't fill): ONE batched content fetch for just those slugs, parsed
+      // below. Best-effort — on failure their counts degrade to {}.
+      const gapSlugs = rows
+        .filter((r) => !r.isLegacy && r.items.length === 0)
+        .map((r) => r.planSlug);
+      let gapContents = new Map<string, string>();
+      if (gapSlugs.length > 0) {
+        try {
+          gapContents = await getPlanContentsBySlugs(gapSlugs, { harnessSlug });
+        } catch {
+          /* counts for gap rows degrade to {} */
+        }
+      }
+
+      const itemsForRow = (row: PlanIndexRow): PlanItem[] => {
+        if (row.items.length > 0) {
+          return row.items.map((i) => ({
+            id: i.id,
+            text: i.text,
+            storedStatus: i.status as ItemStatus,
+            importance: i.importance as Importance,
+            blockedBy: i.blockedBy,
+            decisionRefs: i.decisionRefs,
+            phase: i.phase,
+            lineNumber: 0,
+            rawLine: '',
+          }));
+        }
+        const content = gapContents.get(row.planSlug);
+        return content ? parsePlan(content).items : [];
+      };
+
+      for (const row of rows) {
+        if (row.isLegacy && !includeLegacy) continue;
+
+        const slug = row.planSlug;
 
         let itemCounts: ListRow['itemCounts'] = null;
         let maxImportance: Importance | null = null;
-        if (!parsed.isLegacy) {
+        if (!row.isLegacy) {
           const { items } = applyPlanItemBlocks(
-            resolveEffectiveStatus(parsed).items,
+            resolveEffectiveStatusForItems(itemsForRow(row)).items,
             (id) => allBlocked.get(planItemRef(slug, id)),
           );
           const counts: Record<string, number> = {};
@@ -195,8 +244,8 @@ export default defineTool({
           itemCounts = counts;
         }
 
-        // No frontmatter status (incl. legacy/unparseable plans) → 'draft'.
-        const status = parsed.frontmatter.status ?? 'draft';
+        // No projected status (incl. legacy/unparseable plans) → 'draft'.
+        const status = row.status ?? 'draft';
         if (args.status && status !== args.status) continue;
 
         const dedupKey = `${harnessSlug}:${slug}`;
@@ -205,15 +254,15 @@ export default defineTool({
 
         augmentedRows.push({
           slug,
-          title: parsed.frontmatter.title ?? null,
+          title: row.title,
           status,
-          updated: isoOrNull(row.updatedAt) ?? parsed.frontmatter.updated ?? null,
-          created: parsed.frontmatter.created ?? null,
-          owner: parsed.frontmatter.owner ?? null,
-          archived,
-          isLegacy: parsed.isLegacy,
+          updated: isoOrNull(row.updatedAt) ?? row.updated ?? null,
+          created: row.created,
+          owner: row.owner,
+          archived: row.archived,
+          isLegacy: row.isLegacy,
           itemCounts,
-          nextAction: parsed.now?.next ?? null,
+          nextAction: row.nowNext,
           harness: harnessSlug,
           // Self-heal the started/terminal invariant on read: a terminal plan
           // (shipped/superseded) can never be operationally started/paused.

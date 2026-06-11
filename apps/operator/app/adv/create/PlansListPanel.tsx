@@ -181,7 +181,6 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           searchHitSlugs={searchHitSlugs}
           onSelect={onSelectPlan}
           onStartToggle={() => maps.planList.refresh()}
-          harnessSlug={harnessFilter ?? scope.advActiveSlug}
         />
       </div>
     </div>

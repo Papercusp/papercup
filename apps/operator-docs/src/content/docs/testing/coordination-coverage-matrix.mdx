@@ -163,6 +163,20 @@ File: `sync/hyperbee/__tests__/federation-adversarial.integration.test.ts` (6 te
 | no duplication (one op merged twice → one row) | 🟢 | ✅ |
 | **3-peer partition/rejoin** (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 `three-peer-partition-rejoin.test.ts` |
 
+### Coord verb lifecycle ACROSS instances (C2/C3)
+
+File: `shared-hive-loop/coord-verb-lifecycle-two-cell.integration.test.ts` (4 tests, plan `coord-system-e2e-testing-2026-06-10` P-005 — the brief-11 composition rig + the real coord_event_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).
+
+| Cell | Before | Now |
+|---|---|---|
+| **send → handoff/ACCEPT → escalate/RESOLVE federate BOTH directions** between two cells of one Hive (LINE + EVENT surfaces, origin='remote' on arrival, body intact) | ❌ nothing ran verbs across instances | 🔴 |
+| EVENT immutability across the wire: replays mint no second record on the peer | 🟢 single-PG only | 🔴 cross-cell |
+| per-surface order of remote-fed rows preserved (send order = arrival order) | ❌ | 🔴 |
+| partition (convergence withheld) → heal: every message exactly once, batch order kept; a re-converge is a FIXED POINT (EI-117 no-double-application class) | ❌ | 🔴 |
+| watermark commit on REMOTE-fed rows survives a store restart; resume strictly past the cursor sees exactly the new traffic | ❌ | 🔴 |
+| workspace isolation across the wire (another workspace's rows never surface in WS reads on the peer) | ❌ | 🔴 |
+| cross-instance deliver-and-WAKE (remote-origin message fires the recipient's local inbox-wake) | ❌ | ⚪ accepted gap — EI-279 (logged below) |
+
 ### Swarm-path chaos — real Hyperswarm under churn (C2)
 
 File: `sync/hyperbee/__tests__/swarm-chaos.test.ts` (plan `coord-system-e2e-testing-2026-06-10` P-004; ~2.6s, seeded LCG kill schedule, offline testnet DHT). Chaos = repeated mid-replication CONNECTION KILLS + reconnect churn — the only failure shape a reliable UDX transport can surface to the substrate (loss/reorder are absorbed below the byte stream; injecting them in-stream would fabricate impossible corruption). History: landed red and held the gate (EI-272) — root causes were rig-level (the IP-keyed DoS conn-rate ceiling cross-bans one-box peers sharing 127.0.0.1; in-process testnet RELAY streams take unguarded resets when `forceRelaying` engages); both documented in-file.
@@ -238,6 +252,15 @@ Both legs verified green on this box (claude 2.1.169, codex).
 ## Accepted gaps (logged — not silent)
 
 <Aside type="note" title="Accepted gaps">
+- **Cross-instance deliver-and-wake (EI-279).** Coord messages federate
+  correctly (the P-005 two-cell suite), and same-instance `coord:send
+  {wake:true}` wakes through the real engine (`wake-on-message.integration.test.ts`)
+  — but NOTHING fires the recipient's inbox-wake when a REMOTE-origin
+  message projects into its PG (no `emitAwaitedEvent` reference anywhere in
+  `lib/sync/**`). An idle agent on instance B sleeps through a directed
+  wake-send from instance A. Filed as EI-279 with the suggested fix
+  (projection afterWrite emits the local inbox-wake key); the two-cell rig is
+  the regression home once it lands.
 - **Production peer ADDRESSING for the authority remote leg.** The HTTP
   transport is boot-registered and the whole file-lock chain is proven over a
   real wire, but `shared_presence` carries identity, not a network address — so

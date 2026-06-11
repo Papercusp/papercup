@@ -109,10 +109,13 @@ export async function storeMcpResult(args: {
 
 export async function sweepExpiredMcpResults(now = Date.now()): Promise<number> {
   const { sql } = getOrgPg();
+  // ISO-string param, not a Date — this pool's serializer config rejects
+  // Date instances (same constraint as the jsonb ::text::jsonb binding).
+  const cutoff = new Date(now - REPLAY_TTL_MS).toISOString();
   const rows = await sql<Array<{ n: number }>>`
     WITH del AS (
       DELETE FROM harness_shared.mcp_tool_results
-       WHERE created_at < ${new Date(now - REPLAY_TTL_MS)}
+       WHERE created_at < ${cutoff}::timestamptz
       RETURNING 1
     )
     SELECT count(*)::int AS n FROM del

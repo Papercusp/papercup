@@ -85,20 +85,49 @@ describe('P-001 — hermetic 2-swarm composition happy path (steer → claim →
       expect(bOrder.get('F-004'), 'Queen steering (feature_order) did not federate to swarm B').toBe(0);
       expect(bOrder.get('F-003')).toBe(30);
 
-      // ── 3+4. Both swarms claim_next CONCURRENTLY; pipelines execute; repeat. ──
-      const firstRound: Array<{ cell: string; picked: string; leased: boolean; via: string }> = [];
+      // ── 3. ROUND 1 — pure CONTENTION on the steered head: both swarms pick
+      //    F-004 off their own PGs (steering drove BOTH dispatch decisions)
+      //    and the Hive authority grants exactly ONE. ──
       const executedBy: Record<'a' | 'b', string[]> = { a: [], b: [] };
-      for (let round = 0; round < BACKLOG.length + 2; round++) {
-        const [ca, cb] = await Promise.all([rig.claimNext(a), rig.claimNext(b)]);
-        if (!ca && !cb) break;
-        if (round === 0) {
-          for (const [cell, c] of [['a', ca], ['b', cb]] as const) {
-            if (c) firstRound.push({ cell, picked: c.item.id, leased: c.leased, via: c.via });
-          }
-        }
+      const [ca, cb] = await Promise.all([rig.claimNext(a), rig.claimNext(b)]);
+      expect(ca?.item.id).toBe('F-004');
+      expect(cb?.item.id).toBe('F-004');
+      expect([ca!.leased, cb!.leased].filter(Boolean)).toHaveLength(1);
+      // The remote-authority leg was genuinely exercised: cell b routes its
+      // lease through A's HTTP endpoint (cell a grants locally).
+      expect(cb!.via).toBe('remote-authority');
+      const winner = ca!.leased ? a : b;
+      await rig.runFakePipeline(winner, 'F-004');
+      executedBy[winner.name].push('F-004');
+      expect((await rig.converge()).fixedPoint).toBe(true);
+
+      // ── 4. The Queen PINS the remainder (swarm_affinity — the real
+      //    co-location lever) and the swarms self-select DISJOINT work
+      //    concurrently. Without affinity this is a pure race the authority
+      //    cell systematically wins (its lease leg skips the HTTP hop) —
+      //    affinity is the production mechanism that distributes it. ──
+      await rig.queenPinAffinity(a, [
+        { id: 'F-001', swarmPubkey: a.electionPubkey },
+        { id: 'F-002', swarmPubkey: b.electionPubkey },
+        { id: 'F-003', swarmPubkey: b.electionPubkey },
+      ]);
+      expect((await rig.converge()).fixedPoint).toBe(true);
+      // Dispatch-columns tripwire #3: the pins must reach swarm B's PG.
+      const bPins = new Map(
+        (
+          await b.sql<Array<{ feature_id: string; swarm_affinity: string | null }>>`
+            SELECT feature_id, swarm_affinity FROM harness_shared.harness_features_consolidated
+             WHERE harness_slug = ${rig.harnessSlug}`
+        ).map((r) => [r.feature_id, r.swarm_affinity]),
+      );
+      expect(bPins.get('F-002'), 'swarm_affinity did not federate to swarm B').toBe(b.electionPubkey);
+
+      for (let round = 0; round < BACKLOG.length; round++) {
+        const [pa, pb] = await Promise.all([rig.claimNext(a), rig.claimNext(b)]);
+        if (!pa && !pb) break;
         await Promise.all([
-          ca?.leased ? rig.runFakePipeline(a, ca.item.id).then(() => executedBy.a.push(ca.item.id)) : null,
-          cb?.leased ? rig.runFakePipeline(b, cb.item.id).then(() => executedBy.b.push(cb.item.id)) : null,
+          pa?.leased ? rig.runFakePipeline(a, pa.item.id).then(() => executedBy.a.push(pa.item.id)) : null,
+          pb?.leased ? rig.runFakePipeline(b, pb.item.id).then(() => executedBy.b.push(pb.item.id)) : null,
         ]);
         // Convergence between rounds — the loop's own cadence (completions and
         // claims federate before the next wave of claims).
@@ -106,19 +135,10 @@ describe('P-001 — hermetic 2-swarm composition happy path (steer → claim →
         expect(c.fixedPoint, `round ${round}: merge+drain never settled`).toBe(true);
       }
 
-      // Steering drove BOTH swarms' first dispatch decision: each picked the
-      // steered head F-004 off its own PG, and the Hive authority granted
-      // exactly ONE of them (the loser released + work-stole the next item).
-      expect(firstRound.map((f) => f.picked)).toEqual(['F-004', 'F-004']);
-      expect(firstRound.filter((f) => f.leased)).toHaveLength(1);
-      // The remote-authority leg was genuinely exercised: cell b routes its
-      // lease through A's HTTP endpoint (cell a grants locally).
-      const bFirst = firstRound.find((f) => f.cell === 'b')!;
-      expect(bFirst.via).toBe('remote-authority');
-
-      // Both swarms did real work — the backlog was genuinely distributed.
-      expect(executedBy.a.length).toBeGreaterThan(0);
-      expect(executedBy.b.length).toBeGreaterThan(0);
+      // Affinity made the distribution deterministic AND disjoint: each swarm
+      // executed exactly its pinned work (B in the Queen's priority order).
+      expect(executedBy.a.filter((id) => id !== 'F-004')).toEqual(['F-001']);
+      expect(executedBy.b.filter((id) => id !== 'F-004')).toEqual(['F-002', 'F-003']);
       expect([...executedBy.a, ...executedBy.b].sort()).toEqual(BACKLOG);
 
       // ── 5. Final convergence + the Queen's NEXT turn on A. ──

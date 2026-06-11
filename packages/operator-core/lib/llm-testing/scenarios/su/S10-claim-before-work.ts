@@ -19,6 +19,7 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolMatch } from './_asserts';
+import { WIDGET_EXPORT_PLAN } from './_overrides';
 
 function canonical(name: string): string {
   return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
@@ -33,6 +34,10 @@ export const SU_S10_CLAIM_BEFORE_WORK: Scenario = {
     'A developer asks the engineer to pick up and implement items P-002 and P-003 of the plan "widget-export-2026-06-01" (papercup harness) — concrete, already-scoped plan items; they want the work started now and visible to the rest of the fleet.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+  // Canned plan payload + claim confirmations: without them the SUT is starved
+  // by benign stubs and the judge red is stub-coping, not the discipline
+  // under test (EI-133 class — seen verbatim in the 2026-06-10 matrix run).
+  toolOverride: WIDGET_EXPORT_PLAN,
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [

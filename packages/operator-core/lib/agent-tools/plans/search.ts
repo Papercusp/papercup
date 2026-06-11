@@ -15,9 +15,18 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { readAllPlans } from './source';
+import { listPlanRowsMatchingAnyToken, syntheticPlanPath } from './source';
+import { parsePlan } from './parser';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+
+/**
+ * SQL candidate cap (audit P-042). Scoring needs ≥1 exact-token hit and
+ * every scope is a substring of the content blob, so the ILIKE prefilter
+ * returns a candidate SUPERSET — only candidates get fetched + parsed.
+ * When the cap bites, the response says so (`truncatedCandidates`).
+ */
+const CANDIDATE_LIMIT = 200;
 
 const SCOPES = ['title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
@@ -115,7 +124,19 @@ export default defineTool({
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
-    const parsedPlans = await readAllPlans({ includeArchived, ...opts });
+    // SQL candidate prefilter (audit P-042 — EI-98/EI-174/EI-175): only
+    // plans containing ≥1 query token leave PG; everything else used to be
+    // fetched + parsed per request just to score 0.
+    const { rows: candidates, truncated } = await listPlanRowsMatchingAnyToken(queryTokens, {
+      includeArchived,
+      ...opts,
+      limit: CANDIDATE_LIMIT,
+    });
+    const parsedPlans = candidates.map((row) => ({
+      parsed: parsePlan(row.content, {
+        filePath: syntheticPlanPath(row.harnessSlug, row.planSlug),
+      }),
+    }));
     const hits: Hit[] = [];
 
     for (const { parsed } of parsedPlans) {
@@ -189,10 +210,24 @@ export default defineTool({
     hits.sort((a, b) => b.score - a.score);
     const trimmed = hits.slice(0, limit);
 
-    ctxAny.metadata?.({ query: args.query, scopes, count: trimmed.length });
+    ctxAny.metadata?.({
+      query: args.query,
+      scopes,
+      count: trimmed.length,
+      ...(truncated ? { truncatedCandidates: true } : {}),
+    });
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ hits: trimmed }) }],
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          hits: trimmed,
+          // No silent caps: the candidate prefilter hit its ceiling — ranking
+          // covered the first CANDIDATE_LIMIT matching plans only. Narrow the
+          // query (or scope by harness) for exhaustive coverage.
+          ...(truncated ? { truncatedCandidates: true } : {}),
+        }),
+      }],
     };
   },
 });

@@ -86,7 +86,21 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
     body: JSON.stringify({ kickoff }),
   })
     .then(
-      (r) => recordFire(installSlug, role, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
+      async (r) => {
+        if (r.ok) return recordFire(installSlug, role, 'ok', 'ok');
+        // EI-212: keep a snippet of the error body — a bare "HTTP 400" left the
+        // root cause unidentifiable (the gym E2E chased it for a day).
+        const body = await r
+          .text()
+          .then((t) => t.replace(/\s+/g, ' ').slice(0, 160))
+          .catch(() => '');
+        return recordFire(
+          installSlug,
+          role,
+          `error: HTTP ${r.status}${body ? ` — ${body}` : ''}`,
+          'error',
+        );
+      },
       (e) => {
         const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
         console.warn(`[blueprint-run] decider fire failed (${installSlug}/${role}): ${detail}`);

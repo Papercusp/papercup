@@ -155,6 +155,30 @@ async function dispatchActionsBlockFromOutput(
 }
 
 /**
+ * Per-launch child timeout. A kind:'hive' launch is a full Queen duty cycle
+ * (survey → place → record), not a short single-role call — the old 90s
+ * default SIGTERM'd every Queen wake ~mid-survey (local-hive P-071 smoke,
+ * 2026-06-10: two consecutive wakes exited 143 at ~91s with the kickoff
+ * unread). Hive launches default to the route's ceiling; an explicit
+ * `body.timeoutMs` still wins for both kinds.
+ */
+function resolveInvokeTimeoutMs(bodyTimeoutMs: unknown, isHiveLaunch: boolean): number {
+  const fallback = isHiveLaunch ? 1_200_000 : 90_000;
+  return Math.max(5_000, Math.min(1_200_000, Number(bodyTimeoutMs ?? fallback)));
+}
+
+/**
+ * The launcher's kickoff ("why this wake fired") — fireLaunchBlueprint sends
+ * it, but this route used to silently DROP it, so the Queen woke with no idea
+ * why (P-071 smoke). It is threaded to the child the same way fleet:spawn
+ * threads its Queen brief: via QUEEN_BRIEF, which invoke.ts hands to
+ * buildPrompt as the situational-overlay `brief` section.
+ */
+function extractKickoff(bodyKickoff: unknown): string {
+  return typeof bodyKickoff === 'string' ? bodyKickoff.slice(0, 4_000).trim() : '';
+}
+
+/**
  * Single-role invocation — used by NEXT_HARNESS dispatch from a parent
  * harness's coordinator. Synchronously runs the TS orchestrator's
  * `invoke-once` (`invoke <role>`) in the child harness's project dir and
@@ -183,10 +207,12 @@ const invoke = defineTool({
       return Response.json({ error: 'invalid role name' }, { status: 400 });
     }
     const body = await req.json().catch(() => ({} as any));
-    const timeoutMs = Math.max(5_000, Math.min(1_200_000, Number((body as any)?.timeoutMs ?? 90_000)));
+    const isHiveLaunch = url.searchParams.get('bpkind') === 'hive';
+    const timeoutMs = resolveInvokeTimeoutMs((body as any)?.timeoutMs, isHiveLaunch);
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];
+    const kickoff = extractKickoff((body as any)?.kickoff);
 
     // Tracked, resumable session for kind:'hive' blueprint launches (D-010).
     // fireLaunchBlueprint marks them with `?bpkind=hive` — this route only ever
@@ -199,7 +225,7 @@ const invoke = defineTool({
     let nativeSessionId: string | null = null;
     let hiveSpawnId: string | null = null;
     let advSessionRowId: number | null = null;
-    if (url.searchParams.get('bpkind') === 'hive') {
+    if (isHiveLaunch) {
       nativeSessionId = randomUUID();
       hiveSpawnId = `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
       advSessionRowId = await recordAdvSession({
@@ -276,6 +302,7 @@ const invoke = defineTool({
       env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
     }
+    if (kickoff) env.QUEEN_BRIEF = kickoff;
     const r = await spawnInvokeOnce(
       project.path,
       role,
@@ -300,7 +327,7 @@ const invoke = defineTool({
     // turn just ended — if the hive is started and she left NO wake armed, arm
     // the fallback sleep (never an immediate re-invoke, D-004). Fire-and-forget
     // off the response path; the module is fail-soft by contract.
-    if (url.searchParams.get('bpkind') === 'hive') {
+    if (isHiveLaunch) {
       void import('../../../hive/watchdog')
         .then(({ hiveTurnEndCheck }) =>
           hiveTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
@@ -361,3 +388,6 @@ const resume = defineTool({
 });
 
 export default [launch, invoke, resume];
+
+// Exported for unit tests (pure helpers; the spawn path is live-exercised).
+export const __test = { resolveInvokeTimeoutMs, extractKickoff };

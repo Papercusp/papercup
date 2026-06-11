@@ -102,7 +102,13 @@ import {
 import { setPeerRpcTransport, __resetPeerRpcTransportForTests } from '../authority/peer-rpc-transport';
 import { HttpPeerRpcTransport } from '../authority/http-peer-rpc-transport';
 import { __resetRemotePeersCacheForTests } from '../authority/remote-peers-cache';
-import { claimNextWorkItem, releaseWorkItem, setWorkItemPriority, type WorkItem } from '../work-items';
+import {
+  claimNextWorkItem,
+  releaseWorkItem,
+  setWorkItemPriority,
+  setWorkItemSwarmAffinity,
+  type WorkItem,
+} from '../work-items';
 import { runWithCellSql } from './cell-scope';
 import type { BacklogRow, SideEffectRow } from './composition-oracles';
 
@@ -846,6 +852,22 @@ export class CompositionRig {
       }
     });
     return { view, steered };
+  }
+
+  /**
+   * The Queen's CO-LOCATION lever (hive-coordination-model P-002): pin items
+   * to swarms with the REAL `setWorkItemSwarmAffinity`. Under the lease flag,
+   * claim_next SKIPS work affined to another swarm and PREFERS work affined
+   * to the claimant — the production mechanism that makes concurrent
+   * cross-swarm dispatch deterministic instead of a pure race.
+   */
+  async queenPinAffinity(cell: SwarmCell, pins: Array<{ id: string; swarmPubkey: string | null }>): Promise<void> {
+    await this.runAsCell(cell, async () => {
+      for (const p of pins) {
+        const r = await setWorkItemSwarmAffinity(p.id, p.swarmPubkey, { harness: this.harnessSlug });
+        if (!r) throw new Error(`queenPinAffinity: pinning ${p.id} failed`);
+      }
+    });
   }
 
   /**

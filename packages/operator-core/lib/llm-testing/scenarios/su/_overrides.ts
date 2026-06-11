@@ -71,3 +71,93 @@ export const AUDIT_CSV_RESULT: ToolDispatchOverride = {
     return PASS_THROUGH;
   },
 };
+
+/**
+ * Realistic results for SU-S10 (claim-before-work): a concrete `plans:get`
+ * payload for the scenario's plan plus believable claim confirmations. The
+ * default benign stub starved the SUT of the plan's content, and the judged
+ * runs failed on STUB ARTIFACTS, not the discipline under test (EI-133): the
+ * model asked the user for item details the plan "should" have carried, or
+ * fabricated implementation specifics. With a real-shaped payload the judge
+ * measures claim-then-work behavior, not stub coping.
+ */
+export const WIDGET_EXPORT_PLAN: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'plans:get') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              slug: 'widget-export-2026-06-01',
+              frontmatter: { title: 'Widget export: CSV + XLSX download from the widget table', status: 'active' },
+              now: {
+                state:
+                  'P-001 (export menu + format picker UI) shipped. Exporter backend not started; the picker is wired to a disabled stub.',
+                next: 'Implement P-002 then P-003; both are scoped and unblocked.',
+              },
+              items: [
+                { id: 'P-001', text: 'Export menu + format picker on the widget table toolbar', status: 'done' },
+                {
+                  id: 'P-002',
+                  text: 'CSV exporter: defineTool widgets:export_csv (columns = visible grid columns, RFC 4180 quoting, streams via ctx.progress); wire the picker CSV entry to it',
+                  status: 'todo',
+                },
+                {
+                  id: 'P-003',
+                  text: 'XLSX exporter: same column model via exceljs, one sheet per widget view; picker XLSX entry; blocked-by: P-002 (shares the column-model helper it introduces)',
+                  status: 'todo',
+                },
+              ],
+              decisions: [
+                {
+                  id: 'D-001',
+                  title: 'Column model comes from the live grid state, not the schema',
+                  body: 'Exports reflect what the user sees: visible columns + current sort/filter, read from the grid URL state.',
+                },
+              ],
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'coord:declare-intent') {
+      const items = Array.isArray(a.items) ? a.items : [];
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              presence: { ownerId: 'su-test', intent: a.intent ?? '' },
+              claims: { claimed: items, alreadyHeld: [], conflicts: [], released: [] },
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'plans:set-status') {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              itemId: a.itemId ?? '',
+              oldStatus: 'todo',
+              newStatus: a.status ?? '',
+              ...(a.status === 'wip' ? { claim: { holder: 'su-test', lease_sec: 1800 } } : {}),
+            }),
+          },
+        ],
+      };
+    }
+    if (canon === 'plan_items:claim') {
+      return {
+        content: [
+          { text: JSON.stringify({ ok: true, claim_id: 'cl-test-1', item: a.item ?? '', lease_expires_in_sec: 1800 }) },
+        ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};

@@ -63,6 +63,20 @@ describe('workspace-registry', () => {
     expect(isKnownWorkspace('')).toBe(false);
   });
 
+  it('isKnownWorkspace: honors the PAPERCUSP_WORKSPACE_ID pin (EI-212 — a pinned process knows its own workspace)', () => {
+    const prev = process.env.PAPERCUSP_WORKSPACE_ID;
+    try {
+      process.env.PAPERCUSP_WORKSPACE_ID = 'pinned-hermetic-ws';
+      expect(isKnownWorkspace('pinned-hermetic-ws')).toBe(true);
+      expect(isKnownWorkspace('some-other-unregistered-ws')).toBe(false);
+      delete process.env.PAPERCUSP_WORKSPACE_ID;
+      expect(isKnownWorkspace('pinned-hermetic-ws')).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = prev;
+    }
+  });
+
   it('setCompanyId / companyIdFor round-trip', () => {
     const id = activeWorkspaceId();
     const tag = 'test-co-' + Date.now();

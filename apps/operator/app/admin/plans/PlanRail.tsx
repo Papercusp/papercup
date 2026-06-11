@@ -77,12 +77,10 @@ interface Props {
   onSelect: (slug: string) => void;
   /** Called after a start/pause action so the parent can re-fetch. */
   onStartToggle?: () => void;
-  /** Current harness slug — used to auto-launch the harness when starting a plan. */
-  harnessSlug?: string | null;
 }
 
 const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
-  { list, selectedSlugs, query, searchHitSlugs, onSelect, onStartToggle, harnessSlug }: Props,
+  { list, selectedSlugs, query, searchHitSlugs, onSelect, onStartToggle }: Props,
   ref,
 ) {
   const selectedKey = selectedSlugs.join('|');
@@ -327,7 +325,6 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
               active={selectedSlugs.includes(p.slug)}
               onSelect={() => onSelect(p.slug)}
               onStartToggle={onStartToggle}
-              harnessSlug={harnessSlug}
               showDragHandle={canReorder}
               isDragging={dragSlug === p.slug}
               isDragOver={dragOverSlug === p.slug}
@@ -349,7 +346,6 @@ function PlanRow({
   active,
   onSelect,
   onStartToggle,
-  harnessSlug,
   showDragHandle = false,
   isDragging = false,
   isDragOver = false,
@@ -361,7 +357,6 @@ function PlanRow({
   active: boolean;
   onSelect: () => void;
   onStartToggle?: () => void;
-  harnessSlug?: string | null;
   showDragHandle?: boolean;
   isDragging?: boolean;
   isDragOver?: boolean;
@@ -381,26 +376,17 @@ function PlanRow({
         if (plan.startStatus === 'started') {
           await pausePlan(plan.slug);
         } else {
+          // plans:start emits the demand event that wakes the Queen
+          // (start-hive-wake-orchestration D-001) — no harness launch kick
+          // needed (the legacy /harness/:slug/launch run-loop is retired).
           await startPlan(plan.slug);
-          // Auto-launch the harness process if not already running.
-          if (harnessSlug) {
-            try {
-              await fetch(`/api/harness/${encodeURIComponent(harnessSlug)}/launch?phase=staging`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({}),
-              });
-            } catch {
-              // Non-fatal — harness may already be running.
-            }
-          }
         }
         onStartToggle?.();
       } finally {
         setBusy(false);
       }
     },
-    [plan.slug, plan.startStatus, onStartToggle, harnessSlug],
+    [plan.slug, plan.startStatus, onStartToggle],
   );
 
   const isStarted = plan.startStatus === 'started';

@@ -166,10 +166,21 @@ export function backgroundWorkspaceIds(): string[] {
  * *present-but-unknown* one (→ hard error, D-007). The literal default
  * workspace is always known (the desktop guarantees it exists), even if a
  * sparse registry hasn't listed it.
+ *
+ * A process PINNED to a workspace via PAPERCUSP_WORKSPACE_ID (the P-020
+ * single-workspace model — orchestrator agents, hermetic gym operators) knows
+ * its own pin even when the desktop-owned FILE registry doesn't list it:
+ * the gym boots a synthetic workspace that exists only in its isolated PG, so
+ * every `?ws=` request inside the rig — including the scheduled blueprint-run
+ * decider fire — was rejected unknown_workspace/400 (EI-212). The pin is set
+ * by the process's own launcher, so honoring it cannot widen what a CALLER
+ * can claim.
  */
 export function isKnownWorkspace(id: string): boolean {
   if (!id || !id.trim()) return false;
   if (id === DEFAULT_WORKSPACE_ID) return true;
+  const pinned = process.env.PAPERCUSP_WORKSPACE_ID?.trim();
+  if (pinned && id === pinned) return true;
   return !!workspaceById(id);
 }
 

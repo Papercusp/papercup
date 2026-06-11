@@ -18,6 +18,7 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
+import { listPlanIndexRows } from './source';
 import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -41,6 +42,12 @@ const argsSchema = z.object({
     .optional()
     .describe(
       "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
+    ),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation.',
     ),
 });
 
@@ -102,6 +109,66 @@ heading with a date line and a body paragraph.)
  *  argument, not inferred from a union-returning mutator. */
 type NewPlanValue = { ok: true; slug: string } | { ok: false; code: 'slug_exists' };
 
+/** Stopwords + boilerplate that would over-match between any two plans. */
+const DEDUP_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'into', 'over', 'under',
+  'plan', 'plans', 'fix', 'fixes', 'new', 'add', 'update', 'phase',
+]);
+
+/** Meaningful topic tokens from a slug + title (date suffix dropped). */
+export function dedupTokens(slug: string, title: string): string[] {
+  const text = `${slug.replace(/-\d{4}-\d{2}-\d{2}$/, '')} ${title}`.toLowerCase();
+  return [
+    ...new Set(
+      text
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length > 2 && !DEDUP_STOPWORDS.has(t)),
+    ),
+  ];
+}
+
+export interface SimilarPlan {
+  slug: string;
+  title: string | null;
+  status: string | null;
+  archived: boolean;
+  /** Topic tokens shared with the proposed plan. */
+  sharedTokens: string[];
+}
+
+/**
+ * Search-first dedup for plans:new (audit P-049 / EI-134) — like
+ * improvements:capture, surface overlapping existing plans BEFORE a
+ * duplicate splits the project history. Pure scoring over the index
+ * rows' slug+title (no content): a candidate matches when it shares ≥2
+ * topic tokens (or the single token, for one-token proposals). Top 5 by
+ * overlap, ties to non-archived.
+ */
+export function findSimilarPlans(
+  tokens: string[],
+  rows: Array<{ planSlug: string; title: string | null; status: string | null; archived: boolean }>,
+): SimilarPlan[] {
+  if (tokens.length === 0) return [];
+  const threshold = Math.min(2, tokens.length);
+  const scored: Array<SimilarPlan & { n: number }> = [];
+  for (const r of rows) {
+    const hay = `${r.planSlug} ${r.title ?? ''}`.toLowerCase();
+    const shared = tokens.filter((t) => hay.includes(t));
+    if (shared.length >= threshold) {
+      scored.push({
+        slug: r.planSlug,
+        title: r.title,
+        status: r.status,
+        archived: r.archived,
+        sharedTokens: shared,
+        n: shared.length,
+      });
+    }
+  }
+  scored.sort((a, b) => b.n - a.n || Number(a.archived) - Number(b.archived));
+  return scored.slice(0, 5).map(({ n: _n, ...rest }) => rest);
+}
+
 export default defineTool({
   name: 'plans:new',
   description:
@@ -127,6 +194,41 @@ export default defineTool({
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
+
+    // Search-first dedup (audit P-049 / EI-134): surface overlapping plans
+    // before creating. Index-only read (slug/title columns — no blobs);
+    // archived plans count as candidates (a superseded plan on the same
+    // topic is exactly the "this exists, continue it instead" signal).
+    // Best-effort: an index-read failure never blocks creation.
+    if (args.force !== true) {
+      try {
+        const rows = await listPlanIndexRows({
+          ...(harnessSlug ? { harnessSlug } : {}),
+          includeArchived: true,
+        });
+        const similar = findSimilarPlans(dedupTokens(slug, args.title), rows);
+        if (similar.length > 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  error: 'similar_exists',
+                  slug,
+                  similar,
+                  hint:
+                    'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item), or re-call with force: true if this is genuinely a new effort.',
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+      } catch {
+        /* dedup is advisory — never block creation on an index hiccup */
+      }
+    }
+
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       slug,

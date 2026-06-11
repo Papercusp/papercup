@@ -36,7 +36,9 @@ const buildInvokeOnce = vi.fn(() => ({
   args: ['invoke-once.js', '--role', 'worker'],
   env: { PAPERCUSP_TEST: '1' },
 }));
-vi.mock('../../harness-invoke-once', () => ({ buildInvokeOnce: () => buildInvokeOnce() }));
+vi.mock('../../harness-invoke-once', () => ({
+  buildInvokeOnce: (...a: unknown[]) => buildInvokeOnce(...(a as [])),
+}));
 
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
 vi.mock('../../plugin-host-runtime', () => ({
@@ -104,7 +106,7 @@ function makeFakeChild(exitCode: number) {
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
-import spawnRoutes from '../routes/harness/spawn';
+import spawnRoutes, { __test as spawnTest } from '../routes/harness/spawn';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 const [launch, invoke, resume] = spawnRoutes as unknown as AnyRoute[];
@@ -218,6 +220,51 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const res = await appWith(invoke).request('http://192.168.1.50:3070/harness/papercup/invoke?role=worker', post());
     expect(res.status).toBe(403);
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  // P-071 smoke regression (local-hive-orchestration, 2026-06-10): the route
+  // silently dropped fireLaunchBlueprint's `kickoff`, so the Queen woke with no
+  // idea why. It now threads to the child as QUEEN_BRIEF (the same channel
+  // fleet:spawn uses for the Queen brief → buildPrompt's situational overlay).
+  it('threads body.kickoff to the child as extraEnv.QUEEN_BRIEF', async () => {
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=worker',
+      post({ kickoff: 'Wake (manual): run the placement smoke.' }),
+    );
+    expect(res.status).toBe(200);
+    expect(buildInvokeOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraEnv: expect.objectContaining({ QUEEN_BRIEF: 'Wake (manual): run the placement smoke.' }),
+      }),
+    );
+  });
+
+  it('omits QUEEN_BRIEF when no kickoff is sent', async () => {
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({}));
+    expect(res.status).toBe(200);
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv ?? {}).not.toHaveProperty('QUEEN_BRIEF');
+  });
+});
+
+// P-071 smoke regression: both hive wakes were SIGTERM'd at ~91s because the
+// route's 90s default applied to a full Queen duty cycle. Hive launches now
+// default to the route ceiling; explicit timeoutMs still wins for both kinds.
+describe('invoke helpers (__test)', () => {
+  it('resolveInvokeTimeoutMs: 90s default for plain launches, ceiling default for hive', () => {
+    expect(spawnTest.resolveInvokeTimeoutMs(undefined, false)).toBe(90_000);
+    expect(spawnTest.resolveInvokeTimeoutMs(undefined, true)).toBe(1_200_000);
+  });
+  it('resolveInvokeTimeoutMs: explicit timeoutMs wins, clamped to [5s, 1200s]', () => {
+    expect(spawnTest.resolveInvokeTimeoutMs(300_000, true)).toBe(300_000);
+    expect(spawnTest.resolveInvokeTimeoutMs(1, false)).toBe(5_000);
+    expect(spawnTest.resolveInvokeTimeoutMs(99_999_999, false)).toBe(1_200_000);
+  });
+  it('extractKickoff: trims, caps at 4000 chars, empty for non-strings', () => {
+    expect(spawnTest.extractKickoff('  why  ')).toBe('why');
+    expect(spawnTest.extractKickoff('x'.repeat(5_000)).length).toBe(4_000);
+    expect(spawnTest.extractKickoff(42)).toBe('');
+    expect(spawnTest.extractKickoff(undefined)).toBe('');
   });
 });
 
