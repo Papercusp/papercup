@@ -68,36 +68,36 @@ afterEach(() => {
 });
 
 describe('env override (PAPERCUSP_FLAG_<KEY>)', () => {
-  // key 'papercusp-oracle' → PAPERCUSP_FLAG_PAPERCUSP_ORACLE
-  const ENV_KEY = 'PAPERCUSP_FLAG_PAPERCUSP_ORACLE';
+  // key 'papercusp-testing' → PAPERCUSP_FLAG_PAPERCUSP_TESTING
+  const ENV_KEY = 'PAPERCUSP_FLAG_PAPERCUSP_TESTING';
 
   it('"1" and "true"/"TRUE" enable; "0"/"false"/other disable', async () => {
     for (const truthy of ['1', 'true', 'TRUE', 'True']) {
       process.env[ENV_KEY] = truthy;
-      expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(true);
+      expect(await getFlag(FLAGS.TESTING, 'u')).toBe(true);
     }
     for (const falsy of ['0', 'false', 'no', 'yes', '']) {
       process.env[ENV_KEY] = falsy;
-      expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(false);
+      expect(await getFlag(FLAGS.TESTING, 'u')).toBe(false);
     }
   });
 
   it('takes precedence over an in-process test override', async () => {
-    setFlagOverridesForTest({ [FLAGS.ORACLE]: false });
+    setFlagOverridesForTest({ [FLAGS.TESTING]: false });
     process.env[ENV_KEY] = '1';
-    expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(true);
+    expect(await getFlag(FLAGS.TESTING, 'u')).toBe(true);
   });
 
   it('an unset env var leaves the normal resolution path intact', async () => {
     // no env, no backend → default
-    expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]);
+    expect(await getFlag(FLAGS.TESTING, 'u')).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
   });
 });
 
 describe('getFlag — in-process test override (no env, no backend)', () => {
   it('returns the override value resolved over defaults', async () => {
-    setFlagOverridesForTest({ [FLAGS.ORACLE]: true });
-    expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(true);
+    setFlagOverridesForTest({ [FLAGS.TESTING]: true });
+    expect(await getFlag(FLAGS.TESTING, 'u')).toBe(true);
     // un-listed flag falls through the override map to its default
     expect(await getFlag(FLAGS.DESIGN, 'u')).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]);
   });
@@ -139,7 +139,7 @@ describe('getFlag — configured (PostHog client mocked)', () => {
 
   it('falls back to the default when the client throws (fail-safe-closed)', async () => {
     ph.isFeatureEnabled.mockRejectedValue(new Error('posthog down'));
-    expect(await getFlag(FLAGS.ORACLE, 'u')).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]);
+    expect(await getFlag(FLAGS.TESTING, 'u')).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
   });
 });
 
@@ -148,11 +148,11 @@ describe('getAllFlags — configured (PostHog client mocked)', () => {
 
   it('merges evaluated values over defaults and reports source=posthog', async () => {
     ph.isFeatureEnabled.mockImplementation(async (key: string) =>
-      key === FLAGS.ORACLE ? true : undefined,
+      key === FLAGS.TESTING ? true : undefined,
     );
     const payload = await getAllFlags('u');
     expect(payload.source).toBe('posthog');
-    expect(payload.flags[FLAGS.ORACLE]).toBe(true); // evaluated
+    expect(payload.flags[FLAGS.TESTING]).toBe(true); // evaluated
     expect(payload.flags[FLAGS.DESIGN]).toBe(FLAG_DEFAULTS[FLAGS.DESIGN]); // non-boolean → default
   });
 
@@ -170,7 +170,7 @@ describe('getAllFlags — configured (PostHog client mocked)', () => {
 describe('setFlag — PostHog REST round-trip', () => {
   it('returns flag-backend-not-configured when no config is set', async () => {
     // beforeEach left the backend at null
-    const res = await setFlag(FLAGS.ORACLE, true);
+    const res = await setFlag(FLAGS.TESTING, true);
     expect(res).toEqual({ ok: false, reason: 'flag-backend-not-configured' });
   });
 
@@ -179,7 +179,7 @@ describe('setFlag — PostHog REST round-trip', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ results: [{ id: 7, key: FLAGS.ORACLE, active: false }] }), {
+        new Response(JSON.stringify({ results: [{ id: 7, key: FLAGS.TESTING, active: false }] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -187,13 +187,13 @@ describe('setFlag — PostHog REST round-trip', () => {
       .mockResolvedValueOnce(new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const res = await setFlag(FLAGS.ORACLE, true);
+    const res = await setFlag(FLAGS.TESTING, true);
     expect(res).toEqual({ ok: true });
 
     // list call: search by key
     const [listUrl, listInit] = fetchMock.mock.calls[0];
     expect(listUrl).toBe(
-      `${CFG.host}/api/projects/@current/feature_flags/?search=${encodeURIComponent(FLAGS.ORACLE)}`,
+      `${CFG.host}/api/projects/@current/feature_flags/?search=${encodeURIComponent(FLAGS.TESTING)}`,
     );
     expect((listInit as RequestInit).headers).toMatchObject({
       Authorization: `Bearer ${CFG.personalApiKey}`,
@@ -213,7 +213,7 @@ describe('setFlag — PostHog REST round-trip', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ results: [{ id: 3, key: FLAGS.ORACLE, active: true }] }), {
+        new Response(JSON.stringify({ results: [{ id: 3, key: FLAGS.TESTING, active: true }] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -221,7 +221,7 @@ describe('setFlag — PostHog REST round-trip', () => {
       .mockResolvedValueOnce(new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const res = await setFlag(FLAGS.ORACLE, false);
+    const res = await setFlag(FLAGS.TESTING, false);
     expect(res).toEqual({ ok: true });
     const body = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
     expect(body.active).toBe(false);
@@ -231,7 +231,7 @@ describe('setFlag — PostHog REST round-trip', () => {
   it('reports list:<status> when the list request is not ok', async () => {
     initFlagBackend(CFG);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response('', { status: 403 })));
-    expect(await setFlag(FLAGS.ORACLE, true)).toEqual({ ok: false, reason: 'list:403' });
+    expect(await setFlag(FLAGS.TESTING, true)).toEqual({ ok: false, reason: 'list:403' });
   });
 
   it('reports flag-not-found-in-posthog when no result matches the key', async () => {
@@ -245,7 +245,7 @@ describe('setFlag — PostHog REST round-trip', () => {
         }),
       ),
     );
-    expect(await setFlag(FLAGS.ORACLE, true)).toEqual({
+    expect(await setFlag(FLAGS.TESTING, true)).toEqual({
       ok: false,
       reason: 'flag-not-found-in-posthog',
     });
@@ -256,20 +256,20 @@ describe('setFlag — PostHog REST round-trip', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ results: [{ id: 9, key: FLAGS.ORACLE, active: false }] }), {
+        new Response(JSON.stringify({ results: [{ id: 9, key: FLAGS.TESTING, active: false }] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
       )
       .mockResolvedValueOnce(new Response('', { status: 400 }));
     vi.stubGlobal('fetch', fetchMock);
-    expect(await setFlag(FLAGS.ORACLE, true)).toEqual({ ok: false, reason: 'patch:400' });
+    expect(await setFlag(FLAGS.TESTING, true)).toEqual({ ok: false, reason: 'patch:400' });
   });
 
   it('captures a thrown fetch error as the failure reason', async () => {
     initFlagBackend(CFG);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network unreachable')));
-    expect(await setFlag(FLAGS.ORACLE, true)).toEqual({
+    expect(await setFlag(FLAGS.TESTING, true)).toEqual({
       ok: false,
       reason: 'network unreachable',
     });
@@ -279,7 +279,7 @@ describe('setFlag — PostHog REST round-trip', () => {
     initFlagBackend(CFG);
     // eslint-disable-next-line prefer-promise-reject-errors
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue('a bare string, not an Error'));
-    expect(await setFlag(FLAGS.ORACLE, true)).toEqual({ ok: false, reason: 'unknown' });
+    expect(await setFlag(FLAGS.TESTING, true)).toEqual({ ok: false, reason: 'unknown' });
   });
 });
 
@@ -287,10 +287,10 @@ describe('onFlagChange / emitFlagChange', () => {
   it('notifies a registered handler with the changed key, and null for a broad change', () => {
     const seen: (string | null)[] = [];
     const off = onFlagChange((k) => seen.push(k));
-    emitFlagChange(FLAGS.ORACLE);
+    emitFlagChange(FLAGS.TESTING);
     emitFlagChange(null);
     off();
-    expect(seen).toEqual([FLAGS.ORACLE, null]);
+    expect(seen).toEqual([FLAGS.TESTING, null]);
   });
 
   it('stops notifying after the returned unsubscribe', () => {

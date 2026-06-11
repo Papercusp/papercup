@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, type CSSProperties } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { Select } from '../../harness/Select';
+import { IssueStatusPill, SeverityPill, StatusPill } from '../../harness/primitives';
+import type { HarnessStatus } from '../../harness/theme';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 /**
@@ -39,6 +42,32 @@ export interface WorkItemRow {
   spineStatus: string | null;
   updatedAt: string;
 }
+
+// Grid-cell truncation (native title= is the approved pattern for dynamic
+// per-row truncation tooltips — see design/gotchas).
+const CELL_TRUNCATE: CSSProperties = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+// Small kind chip — same recipe as the member-rail/workspace-card kind chips.
+const KIND_CHIP: CSSProperties = {
+  fontSize: 9.5,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+  letterSpacing: '0.02em',
+  padding: '1px 5px',
+  borderRadius: 4,
+  background: 'var(--bg-3, rgba(255, 255, 255, 0.075))',
+  color: 'var(--fg-mute, #7f9bb4)',
+  whiteSpace: 'nowrap',
+};
+
+// Radix Select reserves '' for "no selection" — translate at the boundary
+// (the documented sentinel pattern from design/gotchas).
+const ALL_KINDS = '_all';
 
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
@@ -80,10 +109,46 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   }, [items, kind, search]);
 
   const columns: ColumnDef<WorkItemRow>[] = [
-    { key: 'id', header: 'ID', width: 1.4, toCopyText: (r) => r.id, render: ({ row }) => <code>{row.id}</code> },
-    { key: 'kind', header: 'Kind', width: 1.2, toCopyText: (r) => r.kind, render: ({ row }) => <>{row.kind}</> },
-    { key: 'title', header: 'Title', width: 4, toCopyText: (r) => r.title, render: ({ row }) => <>{row.title}</> },
-    { key: 'state', header: 'State', width: 1.2, toCopyText: (r) => r.state, render: ({ row }) => <>{row.state}</> },
+    {
+      key: 'id',
+      header: 'ID',
+      width: 1.4,
+      toCopyText: (r) => r.id,
+      render: ({ row }) => (
+        <code style={CELL_TRUNCATE} title={row.id}>{row.id}</code>
+      ),
+    },
+    {
+      key: 'kind',
+      header: 'Kind',
+      width: 1.2,
+      toCopyText: (r) => r.kind,
+      render: ({ row }) => <span style={KIND_CHIP}>{row.kind}</span>,
+    },
+    {
+      key: 'title',
+      header: 'Title',
+      width: 4,
+      toCopyText: (r) => r.title,
+      render: ({ row }) => (
+        <span style={CELL_TRUNCATE} title={row.title}>{row.title}</span>
+      ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      width: 1.2,
+      toCopyText: (r) => r.state,
+      // Canonical status pills (app/harness/theme.ts tables — the same coloring
+      // FeatureList/IssuesList use). Family picks the table; unknown states fall
+      // back to the tables' neutral meta, so plain text never regresses to bare.
+      render: ({ row }) =>
+        row.family === 'issue' ? (
+          <IssueStatusPill status={row.state} size="xs" />
+        ) : (
+          <StatusPill status={row.state as HarnessStatus} size="xs" />
+        ),
+    },
     {
       key: 'stage',
       header: 'Stage',
@@ -91,7 +156,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       toCopyText: (r) => (r.spineRole ? `${r.spineRole}${r.spineStatus ? ` (${r.spineStatus})` : ''}` : ''),
       render: ({ row }) =>
         row.spineRole ? (
-          <span title="latest spine role · status (spawned_agents)">
+          <span
+            style={CELL_TRUNCATE}
+            title={`latest spine role · status (spawned_agents): ${row.spineRole}${row.spineStatus ? ` (${row.spineStatus})` : ''}`}
+          >
             {row.spineRole}
             {row.spineStatus ? <span style={{ color: 'var(--fg-mute)' }}> ({row.spineStatus})</span> : null}
           </span>
@@ -105,13 +173,27 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       width: 1.8,
       toCopyText: (r) => r.assignee ?? '',
       render: ({ row }) => (
-        <span title={row.assignedBy ? `delegated by ${row.assignedBy}` : undefined}>
+        <span
+          style={CELL_TRUNCATE}
+          title={
+            row.assignee
+              ? `${row.assignee}${row.assignedBy ? ` — delegated by ${row.assignedBy}` : ''}`
+              : undefined
+          }
+        >
           {row.assignee ?? '—'}
           {row.assignedBy ? <span style={{ color: 'var(--fg-mute)' }}> ·by {row.assignedBy}</span> : null}
         </span>
       ),
     },
-    { key: 'severity', header: 'Sev', width: 0.9, toCopyText: (r) => r.severity ?? '', render: ({ row }) => <>{row.severity ?? '—'}</> },
+    {
+      key: 'severity',
+      header: 'Sev',
+      width: 0.9,
+      toCopyText: (r) => r.severity ?? '',
+      render: ({ row }) =>
+        row.severity ? <SeverityPill severity={row.severity} size="xs" /> : <>—</>,
+    },
     {
       key: 'priority',
       header: 'Prio',
@@ -131,7 +213,12 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       header: 'Plan',
       width: 1.8,
       toCopyText: (r) => r.planSlug ?? '',
-      render: ({ row }) => (row.planSlug ? <code style={{ fontSize: 11 }}>{row.planSlug}</code> : <>—</>),
+      render: ({ row }) =>
+        row.planSlug ? (
+          <code style={{ ...CELL_TRUNCATE, fontSize: 11 }} title={row.planSlug}>{row.planSlug}</code>
+        ) : (
+          <>—</>
+        ),
     },
   ];
 
@@ -147,20 +234,21 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           placeholder="Filter work items…"
           style={{ flex: 1, fontSize: 12.5, padding: '4px 8px' }}
         />
-        <select value={kind} onChange={(e) => void setKind(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px' }}>
-          <option value="">all kinds</option>
-          {kinds.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={kind || ALL_KINDS}
+          onChange={(v) => void setKind(v === ALL_KINDS ? '' : v)}
+          ariaLabel="Filter by kind"
+          options={[
+            { value: ALL_KINDS, label: 'all kinds' },
+            ...kinds.map((k) => ({ value: k, label: k })),
+          ]}
+        />
         <button type="button" onClick={() => query.invalidate()} disabled={loading} style={{ fontSize: 11.5, padding: '4px 10px' }}>
           {loading ? '…' : 'Refresh'}
         </button>
       </div>
       {error ? (
-        <div style={{ padding: 16, color: 'var(--bad, #d97757)', fontSize: 12.5 }}>Could not load work items: {error}</div>
+        <div style={{ padding: 16, color: 'var(--bad, #f87171)', fontSize: 12.5 }}>Could not load work items: {error}</div>
       ) : !items ? (
         <div style={{ padding: 16, color: 'var(--fg-mute)', fontSize: 12.5 }}>Loading work items…</div>
       ) : filtered.length === 0 ? (

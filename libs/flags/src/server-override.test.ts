@@ -19,7 +19,7 @@ import {
 import { setFlagOverridesForTest } from './test';
 import { FLAGS, FLAG_DEFAULTS, type FlagKey } from './types';
 
-const KEY = FLAGS.ORACLE; // default false — a visible flip target
+const KEY = FLAGS.TESTING; // default false — a visible flip target
 const ENV_KEY = `PAPERCUSP_FLAG_${KEY.toUpperCase().replace(/-/g, '_')}`;
 
 function makeFakeStore(initial: Partial<Record<FlagKey, boolean>> = {}) {

@@ -57,8 +57,14 @@ const warpAnimations = new Set<Animation>();
 
 function trackWarpAnimation(anim: Animation) {
   warpAnimations.add(anim);
-  const drop = () => warpAnimations.delete(anim);
-  anim.finished.then(drop, drop);
+  // Entries leave the set ONLY via cancelWarpAnimations(). Do NOT drop on
+  // `finished`: a finished fill-forwards animation still applies its effect
+  // (the page dim parked at 0.55), and clearInlineProps can't clear a WAAPI
+  // effect — dropping it here made the dim permanent whenever the route
+  // committed after the 120ms dim finished, i.e. on every warp navigation.
+  // Swallow the rejection cancel() puts on `finished` so it never surfaces
+  // as an unhandled-rejection.
+  anim.finished.catch(() => {});
   return anim;
 }
 
@@ -66,6 +72,14 @@ function cancelWarpAnimations() {
   for (const anim of warpAnimations) anim.cancel();
   warpAnimations.clear();
 }
+
+/** Test-only — the module-private warp-animation registry (see the
+ * trackWarpAnimation comment: finished animations MUST stay cancellable). */
+export const __warpAnimationsForTests = {
+  track: trackWarpAnimation,
+  cancelAll: cancelWarpAnimations,
+  registry: warpAnimations,
+};
 
 function clearInlineProps(el: HTMLElement | null, props: string[]) {
   if (!el) return;

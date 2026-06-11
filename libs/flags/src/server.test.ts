@@ -41,7 +41,7 @@ describe('flag backend in offline-only mode', () => {
       expect(await getFlag(FLAGS.VIDEO_CHANNELS, 'x')).toBe(true);
       const payload = await getAllFlags('any-distinct');
       expect(payload.flags[FLAGS.VIDEO_CHANNELS]).toBe(true); // env beats defaults
-      expect(payload.flags[FLAGS.ORACLE]).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]); // others untouched
+      expect(payload.flags[FLAGS.TESTING]).toBe(FLAG_DEFAULTS[FLAGS.TESTING]); // others untouched
       // env override also beats in-process test overrides (same precedence as getFlag)
       const allOff = Object.fromEntries(ALL_FLAG_KEYS.map((k) => [k, false]));
       setFlagOverridesForTest(allOff as Record<(typeof ALL_FLAG_KEYS)[number], boolean>);
@@ -73,22 +73,22 @@ describe('setFlagOverridesForTest', () => {
   it('overrides resolve to the supplied values, defaults fill the rest', async () => {
     setFlagOverridesForTest({
       [FLAGS.HARNESS_PHASES]: true,
-      [FLAGS.ORACLE]: true,
+      [FLAGS.TESTING]: true,
     });
     const payload = await getAllFlags('test-user');
     expect(payload.source).toBe('override');
     expect(payload.flags[FLAGS.HARNESS_PHASES]).toBe(true);
-    expect(payload.flags[FLAGS.ORACLE]).toBe(true);
+    expect(payload.flags[FLAGS.TESTING]).toBe(true);
     expect(payload.flags[FLAGS.DESIGN]).toBe(false);
   });
 
   it('null override clears back to defaults', async () => {
-    // Use ORACLE (default-false) so clearing the override is observable.
-    setFlagOverridesForTest({ [FLAGS.ORACLE]: true });
-    expect((await getAllFlags('x')).flags[FLAGS.ORACLE]).toBe(true);
+    // Use TESTING (default-false) so clearing the override is observable.
+    setFlagOverridesForTest({ [FLAGS.TESTING]: true });
+    expect((await getAllFlags('x')).flags[FLAGS.TESTING]).toBe(true);
 
     setFlagOverridesForTest(null);
-    expect((await getAllFlags('x')).flags[FLAGS.ORACLE]).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]);
+    expect((await getAllFlags('x')).flags[FLAGS.TESTING]).toBe(FLAG_DEFAULTS[FLAGS.TESTING]);
     expect((await getAllFlags('x')).source).toBe('defaults');
   });
 

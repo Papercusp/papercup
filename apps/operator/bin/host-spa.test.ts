@@ -53,7 +53,7 @@ describe('SPA shell pre-hydration globals', () => {
   });
 
   it('seeds resolved feature flags so gated UI does not flash defaults', async () => {
-    setFlagOverridesForTest({ 'papercusp-oracle': true });
+    setFlagOverridesForTest({ 'papercusp-testing': true });
     const res = await spaRoutes.request('/');
     const body = await res.text();
     // The payload is nested JSON, so slice from the assignment to the end of
@@ -63,7 +63,7 @@ describe('SPA shell pre-hydration globals', () => {
     expect(start).toBeGreaterThan(-1);
     const json = body.slice(start + marker.length, body.indexOf('</script>', start)).replace(/;$/, '');
     const payload = JSON.parse(json);
-    expect(payload.flags['papercusp-oracle']).toBe(true);
+    expect(payload.flags['papercusp-testing']).toBe(true);
     expect(payload.source).toBe('override');
   });
 
