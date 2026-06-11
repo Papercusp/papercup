@@ -203,17 +203,24 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
 /// consolidated pui-dock-consolidation-2026-06-07): the surface the
-/// desktop-docked native terminal runs. TWO panes — the **chat** column
-/// (a stack: operator chat ⇄ the brain) and the **main** pane (ONE pui
-/// restricted to the Hives · Voice · Swarm tabs, switchable via its tab
-/// strip) — and NOTHING
-/// else: no workbench HUD, no work-area agent panes, no swap presets. The old
-/// standalone apiary/voice/swarm/bee panes are TABS (or Swarm-tab sections) of
-/// the main pane now; the bee/contributor dossier renders inside the Swarm tab.
+/// desktop-docked native terminal runs. A **two-tab** zellij session
+/// (hive-network-surface-2026-06-11 P-007 / B-10):
+///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: flag-on the
+///     queen split (`psu --brain` + her data boards) over the agent stack
+///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board);
+///     flag-off the classic single stack (`pui chat-pane` ⇄ brain). No workbench
+///     HUD, no work-area agent panes, no swap presets.
+///   * tab **"network"** — `pui network-pane`, the cross-hive capability-ladder
+///     board (own hives, shared-Hive peer Swarms, foreign directory hives);
+///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
+/// The tab-bar + status-bar move into a `default_tab_template` shared by both
+/// tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
+/// always did. Both flag states get the tabs; the workbench swap presets are
+/// untouched.
 ///
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
-/// (`chat-pane`, `main-pane`) are internal identifiers and never change.
+/// (`chat-pane`, `network-pane`) are internal identifiers and never change.
 /// `brain_argv` is the brain pane's command; its first element is the command,
 /// the rest are quoted args. Pure (no I/O) so it is unit-tested.
 pub fn chat_dock_kdl(
@@ -367,9 +374,17 @@ pub fn chat_dock_kdl(
 // reactively appends one live `claude --resume` TUI per bee, and the fleet-wide
 // wake board. Alt+↑/↓ (or clicking a title bar) scrolls the stack through ALL
 // active agents. Flag-off is the classic single stack (pui chat-pane over the
-// brain). Tab-style pui surfaces (Hives · Voice · Swarm …) live in the pui
-// app's own tab strip, NOT in zellij. Pane display names route through the
-// lexicon.
+// brain). Pane display names route through the lexicon.
+//
+// Dock tabs (hive-network-surface-2026-06-11 P-007 / B-10): the dock is a
+// TWO-TAB zellij session. Tab 1 "this hive" holds the whole dock above VERBATIM
+// (the queen split / agent stack — nothing about it changed); tab 2 "network"
+// hosts `pui network-pane`, the cross-hive capability-ladder board. The tab-bar
+// + status-bar move into a `default_tab_template` so BOTH tabs carry them;
+// "this hive" is the first tab + focus=true so the dock opens exactly where it
+// always did. Selecting a row in the network board opens an on-demand per-hive
+// drill-in tab (see `hive_tab_kdl`). Both flag states get the tabs; the
+// workbench swap presets are untouched.
 //
 // Tab → fullscreen the focused pane (owner ask 2026-06-11): focus an agent
 // chat and press Tab to zoom it full (hiding its wakes pane + the rest); Tab
@@ -385,12 +400,23 @@ keybinds {{
     }}
 }}
 layout {{
-    pane size=1 borderless=true {{
-        plugin location="zellij:tab-bar"
+    default_tab_template {{
+        pane size=1 borderless=true {{
+            plugin location="zellij:tab-bar"
+        }}
+        children
+        pane size=2 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
     }}
+    tab name="this hive" focus=true {{
 {dock_body}
-    pane size=2 borderless=true {{
-        plugin location="zellij:status-bar"
+    }}
+    tab name="network" {{
+        pane name="network" {{
+            command "pui"
+            args "network-pane"
+        }}
     }}
 }}
 "#
@@ -441,6 +467,118 @@ pub fn frame_tab_kdl(tab_name: &str, agents: &[(String, String)]) -> String {
         name = esc(tab_name),
         stacked = stacked,
         panes = panes
+    )
+}
+
+/// The input to [`hive_tab_kdl`] — a selected `network`-board row reduced to
+/// what the per-hive drill-in tab needs (hive-network-surface-2026-06-11 P-008 /
+/// B-10). B-09's network-pane Enter handler maps a C-3 `NetworkBoardRow` into
+/// this and sends `Command::NewTab { name: hive_tab_name(&spec), layout: hive_tab_kdl(&spec) }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HiveTabSpec {
+    /// The C-3 capability tier (1|2|3|4). Tiers 2/3 are substrate-backed (own
+    /// hives / shared-Hive peer Swarms); tier 4 is a foreign directory hive.
+    /// Tier 1 is the local hive — the dock's own "this hive" tab — which B-09
+    /// routes to GoToTab(1), never here (treated as substrate if it ever lands).
+    pub tier: u8,
+    /// The C-3 row key — a hive slug (tiers 1–2) or a peer pubkey-b64 (tiers
+    /// 3–4). Passed to the pui detail/watch panes as-is; NOT lexicon-routed.
+    pub key: String,
+    /// The C-3 row title — the human label shown in the tab + detail-pane name.
+    pub title: String,
+    /// (owner_id, pane title) for each live bee to open a read-only watch pane
+    /// (tiers 2/3 only). Empty in v1 — C-3 rows carry no per-bee owner ids.
+    pub watch_owners: Vec<(String, String)>,
+}
+
+/// The zellij tab name for a per-hive drill-in (P-008). The ⌕ prefix marks it a
+/// drill-in (distinct from the dock's "this hive"/"network" tabs and the ☁
+/// frame tabs) and keeps it from colliding with a user-named tab. Names by the
+/// row title, falling back to the key when the title is blank. B-09 passes this
+/// as the companion `Command::NewTab { name }` so it matches the KDL's own
+/// `tab name=`. Pure.
+pub fn hive_tab_name(spec: &HiveTabSpec) -> String {
+    let label = if spec.title.trim().is_empty() {
+        spec.key.as_str()
+    } else {
+        spec.title.as_str()
+    };
+    format!("⌕ {label}")
+}
+
+/// One on-demand per-hive DRILL-IN tab (hive-network-surface-2026-06-11 P-008 /
+/// B-10), opened when a row in the `network` board (`pui network-pane`) is
+/// selected. Mirrors [`frame_tab_kdl`]: a standalone `layout {{ tab … }}` string
+/// the companion's `new_tabs_with_layout` injects into the running dock session.
+///
+/// Composition rides the capability ladder (D-001) via `spec.tier`:
+///   * tiers 2/3 (own hives / shared-Hive peer Swarms — substrate-backed): the
+///     `pui hive-pane <key>` queen-status / live-counts DETAIL pane (focused),
+///     joined by one read-only `pui watch-pane <owner>` per `spec.watch_owners`
+///     entry (stacked when present). C-3 rows carry no per-bee owner ids yet, so
+///     v1 passes `watch_owners=[]` → just the detail pane; the per-bee watch
+///     panes light up when an owner-id-bearing endpoint lands. (The per-hive
+///     WAKE board folds INTO the detail pane's header: `pui wake-pane` is
+///     owner/queen-scoped, not hive-keyable, and foreign/peer wake queues
+///     aren't local — a hive-scoped wake endpoint is a tracked v1 gap.)
+///   * tier 4 (foreign directory hives): a lone `pui hive-pane <key>` DOSSIER
+///     (tier badge, trust, beacon fields, grants in/out, ask counts from the
+///     C-3 row; full beacon history + the C-1 ask log await an endpoint).
+///
+/// Every pane is `close_on_exit=true` — the drill-in tab is never auto-opened
+/// and tears itself down when its panes exit (no EXITED husk). The detail pane
+/// invokes `pui hive-pane <key>`, rendered tier-aware by B-09. Pure — unit-tested.
+pub fn hive_tab_kdl(spec: &HiveTabSpec) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let tab = esc(&hive_tab_name(spec));
+    let key = esc(&spec.key);
+    let detail_label = esc(if spec.title.trim().is_empty() {
+        spec.key.as_str()
+    } else {
+        spec.title.as_str()
+    });
+    // tiers 2/3 are substrate-backed → the detail pane is joined by read-only
+    // per-bee watch panes. tier 4 (and any stray tier 1) → the dossier/detail
+    // pane alone.
+    let substrate = spec.tier != 4;
+    let watch: Vec<&(String, String)> = if substrate {
+        spec.watch_owners.iter().collect()
+    } else {
+        Vec::new()
+    };
+    // A stack needs ≥2 children (zellij is picky about a one-pane stack); the
+    // lead (detail) pane is the expanded one.
+    let stacked = !watch.is_empty();
+    let detail_attrs = if stacked {
+        "focus=true expanded=true"
+    } else {
+        "focus=true"
+    };
+    let mut panes = format!(
+        "\n            pane name=\"{detail_label}\" {detail_attrs} close_on_exit=true {{\n                command \"pui\"\n                args \"hive-pane\" \"{key}\"\n            }}",
+    );
+    for (owner, title) in watch {
+        panes.push_str(&format!(
+            "\n            pane name=\"{}\" close_on_exit=true {{\n                command \"pui\"\n                args \"watch-pane\" \"{}\"\n            }}",
+            esc(title),
+            esc(owner),
+        ));
+    }
+    let stacked_attr = if stacked { " stacked=true" } else { "" };
+    format!(
+        r#"layout {{
+    tab name="{tab}" {{
+        pane size=1 borderless=true {{
+            plugin location="zellij:tab-bar"
+        }}
+        pane{stacked_attr} {{{panes}
+        }}
+        pane size=2 borderless=true {{
+            plugin location="zellij:status-bar"
+        }}
+    }}
+}}
+"#,
     )
 }
 
@@ -689,9 +827,61 @@ mod tests {
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // Exactly ONE pui pane (the chat) + one psu (the brain).
-        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+        // TWO pui panes — the "this hive" tab's chat + the "network" tab's
+        // network-pane (P-007 dock tabs) — and one psu (the brain).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
         assert_eq!(kdl.matches("command \"psu\"").count(), 1);
+        assert!(kdl.contains("args \"network-pane\""));
+    }
+
+    #[test]
+    fn chat_dock_is_a_two_tab_session_this_hive_then_network() {
+        // P-007 (hive-network-surface B-10): the dock is a TWO-tab zellij
+        // session. Tab 1 "this hive" holds the dock VERBATIM; tab 2 "network"
+        // hosts `pui network-pane`. The bars live in a `default_tab_template`
+        // shared by both tabs. Present in BOTH flag states; the workbench swap
+        // presets never appear here.
+        for flag in [false, true] {
+            let kdl =
+                chat_dock_kdl(&["psu".to_string(), "--brain".to_string()], &Lexicon::default(), flag);
+            // A shared tab template carries the bars exactly once.
+            assert!(kdl.contains("default_tab_template {"), "no default_tab_template (flag={flag})");
+            assert!(kdl.contains("children"), "template has no children placeholder (flag={flag})");
+            assert_eq!(
+                kdl.matches("zellij:tab-bar").count(),
+                1,
+                "tab-bar declared once in the template (flag={flag})"
+            );
+            assert_eq!(
+                kdl.matches("zellij:status-bar").count(),
+                1,
+                "status-bar declared once in the template (flag={flag})"
+            );
+            // Both tabs, in order: "this hive" (focus) THEN "network" (C-5 names).
+            assert!(
+                kdl.contains("tab name=\"this hive\" focus=true"),
+                "missing focused this-hive tab (flag={flag})"
+            );
+            assert!(kdl.contains("tab name=\"network\""), "missing network tab (flag={flag})");
+            let th = kdl.find("tab name=\"this hive\"").unwrap();
+            let nw = kdl.find("tab name=\"network\"").unwrap();
+            assert!(
+                th < nw,
+                "this hive must be the FIRST tab so tier-1 GoToTab(1) lands on it (flag={flag})"
+            );
+            // The dock body moved VERBATIM inside the this-hive tab (the chat
+            // stack sits between the two tab headers).
+            let chat = kdl.find("name=\"chat\"").unwrap();
+            assert!(
+                th < chat && chat < nw,
+                "the dock body must live inside the this-hive tab (flag={flag})"
+            );
+            // The network tab hosts the C-5-named `pui network-pane`.
+            let net_pane = kdl.find("args \"network-pane\"").unwrap();
+            assert!(net_pane > nw, "network-pane must be inside the network tab (flag={flag})");
+            // The dock is never the workbench.
+            assert!(!kdl.contains("swap_tiled_layout"), "no swap presets in the dock (flag={flag})");
+        }
     }
 
     #[test]
@@ -760,8 +950,10 @@ mod tests {
         assert!(on.contains("args \"dock-driver\""));
         assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
-        // queen prompt/wakes/mail/work + driver + fleet-wakes
-        assert_eq!(on.matches("command \"pui\"").count(), 6);
+        // queen prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
+        // network-pane (P-007 dock tabs) = 7.
+        assert_eq!(on.matches("command \"pui\"").count(), 7);
+        assert!(on.contains("args \"network-pane\""));
         // Order: brain precedes her side column; the queen container precedes
         // the agent `chat` stack; the driver is inside the stack.
         let queen_at = on.find("name=\"♛ queen\"").expect("queen container");
@@ -779,7 +971,8 @@ mod tests {
         assert!(!off.contains("args \"dock-driver\""));
         assert!(!off.contains("args \"wake-pane\""));
         assert!(!off.contains("split_direction"), "flag-off stays the single stack");
-        assert_eq!(off.matches("command \"pui\"").count(), 1);
+        // chat-pane + the network tab's network-pane (P-007 dock tabs) = 2.
+        assert_eq!(off.matches("command \"pui\"").count(), 2);
     }
 
     #[test]
@@ -914,6 +1107,112 @@ mod tests {
         );
         assert!(kdl.contains("tab name=\"☁ q\\\"uote\""));
         assert!(kdl.contains("name=\"ti\\\"tle\""));
+    }
+
+    // ── P-008 per-hive drill-in tabs ─────────────────────────────────────────
+
+    fn hive_spec(tier: u8, key: &str, title: &str, owners: &[(&str, &str)]) -> HiveTabSpec {
+        HiveTabSpec {
+            tier,
+            key: key.to_string(),
+            title: title.to_string(),
+            watch_owners: owners
+                .iter()
+                .map(|(o, t)| (o.to_string(), t.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn hive_tab_name_prefixes_and_falls_back_to_key() {
+        // Names by the row title; the ⌕ prefix marks a drill-in. Blank title →
+        // the key (a foreign pubkey-b64 still gets a usable tab name).
+        assert_eq!(hive_tab_name(&hive_spec(4, "AbC+/d", "Acme Hive", &[])), "⌕ Acme Hive");
+        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "", &[])), "⌕ papercup");
+        assert_eq!(hive_tab_name(&hive_spec(2, "papercup", "   ", &[])), "⌕ papercup");
+    }
+
+    #[test]
+    fn hive_tab_kdl_tier4_is_a_lone_dossier_pane() {
+        // tier 4 (foreign): ONE `pui hive-pane <key>` dossier pane, no watch
+        // panes, not stacked. Carries its own bars (injected into the live
+        // session, like frame_tab_kdl).
+        let kdl = hive_tab_kdl(&hive_spec(4, "k3y+b64", "Foreign Hive", &[("ignored", "x")]));
+        assert!(kdl.contains("tab name=\"⌕ Foreign Hive\""));
+        assert_eq!(kdl.matches("args \"hive-pane\" \"k3y+b64\"").count(), 1);
+        assert!(!kdl.contains("watch-pane"), "tier 4 has no per-bee watch panes: {kdl}");
+        assert!(!kdl.contains("stacked=true"), "a lone dossier pane is not stacked");
+        assert!(kdl.contains("focus=true close_on_exit=true"));
+        assert!(kdl.contains("zellij:tab-bar"));
+        assert!(kdl.contains("zellij:status-bar"));
+        // Exactly the one detail pane runs pui.
+        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
+    fn hive_tab_kdl_tier2_3_stacks_detail_plus_watch_panes() {
+        // tiers 2/3 (substrate): the focused detail pane LEADS a stack of
+        // read-only watch panes, one per live bee. Every pane is close_on_exit.
+        for tier in [2u8, 3u8] {
+            let kdl = hive_tab_kdl(&hive_spec(
+                tier,
+                "peer-swarm",
+                "Peer Swarm",
+                &[("su-aaa", "🐝 su-aaa"), ("su-bbb", "🐝 su-bbb")],
+            ));
+            assert!(kdl.contains("stacked=true"), "tier {tier} stacks detail+watch: {kdl}");
+            // Detail pane: the queen-status/live-counts view, expanded lead.
+            assert!(kdl.contains("focus=true expanded=true close_on_exit=true"));
+            assert!(kdl.contains("args \"hive-pane\" \"peer-swarm\""));
+            // One read-only watch pane per bee.
+            assert!(kdl.contains("args \"watch-pane\" \"su-aaa\""));
+            assert!(kdl.contains("args \"watch-pane\" \"su-bbb\""));
+            assert!(kdl.contains("name=\"🐝 su-aaa\""));
+            // detail (hive-pane) leads the stack, watch panes follow.
+            let detail_at = kdl.find("args \"hive-pane\"").unwrap();
+            let watch_at = kdl.find("args \"watch-pane\"").unwrap();
+            assert!(detail_at < watch_at, "the detail pane leads the stack (tier {tier})");
+            // detail + 2 watch panes = 3 pui commands.
+            assert_eq!(kdl.matches("command \"pui\"").count(), 3);
+            // Every command pane tears down on exit (no EXITED husk).
+            assert_eq!(kdl.matches("close_on_exit=true").count(), 3);
+        }
+    }
+
+    #[test]
+    fn hive_tab_kdl_tier2_3_empty_watch_owners_is_detail_only() {
+        // The v1 reality: C-3 rows carry no per-bee owner ids → watch_owners=[],
+        // so a tier-2/3 drill-in is just the detail pane (no stack, no watches).
+        let kdl = hive_tab_kdl(&hive_spec(2, "papercup", "This Box", &[]));
+        assert!(kdl.contains("args \"hive-pane\" \"papercup\""));
+        assert!(!kdl.contains("watch-pane"));
+        assert!(!kdl.contains("stacked=true"));
+        assert!(kdl.contains("focus=true close_on_exit=true"));
+        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+    }
+
+    #[test]
+    fn hive_tab_kdl_tab_name_matches_hive_tab_name() {
+        // The KDL's `tab name=` MUST equal hive_tab_name(spec) (escaped) so the
+        // companion `Command::NewTab { name }` B-09 sends agrees with the layout
+        // — otherwise zellij would show two names / fail to de-dupe the tab.
+        let spec = hive_spec(3, "peer", "Peer Swarm", &[]);
+        let expected = format!("tab name=\"{}\"", hive_tab_name(&spec));
+        assert!(hive_tab_kdl(&spec).contains(&expected));
+    }
+
+    #[test]
+    fn hive_tab_kdl_escapes_quotes() {
+        let kdl = hive_tab_kdl(&hive_spec(
+            2,
+            "ke\"y",
+            "Ti\"tle",
+            &[("ow\"ner", "pa\"ne")],
+        ));
+        assert!(kdl.contains("tab name=\"⌕ Ti\\\"tle\""));
+        assert!(kdl.contains("args \"hive-pane\" \"ke\\\"y\""));
+        assert!(kdl.contains("args \"watch-pane\" \"ow\\\"ner\""));
+        assert!(kdl.contains("name=\"pa\\\"ne\""));
     }
 
     #[test]

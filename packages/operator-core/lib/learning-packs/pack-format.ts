@@ -203,7 +203,7 @@ export function filterByShapes(
   items: readonly LearningItem[],
   shapes?: readonly AppliesTo[],
 ): LearningItem[] {
-  const known = (shapes ?? []).filter((s) => s !== 'any');
+  const known: readonly AppliesTo[] = (shapes ?? []).filter((s) => s !== 'any');
   return items.filter(
     (it) => it.appliesTo.includes('any') || it.appliesTo.some((a) => known.includes(a)),
   );

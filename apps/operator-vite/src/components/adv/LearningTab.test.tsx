@@ -91,6 +91,16 @@ const scoutSnapshot = {
     { rail: 'plan', count: 3 },
     { rail: 'gym', count: 1 },
   ],
+  recent: [
+    {
+      ideaId: 'idea-1', lens: 'reframing', rail: 'plan', routedRef: 'plan:scout-cache-warmup',
+      title: 'Cache-warmup plan draft', routedAt: new Date(Date.now() - 10 * 60_000).toISOString(), outcome: 'pending',
+    },
+    {
+      ideaId: 'idea-2', lens: 'analogical', rail: 'gym', routedRef: 'gym:proposal-7',
+      title: 'Tighter scoper prompt', routedAt: new Date(Date.now() - 60 * 60_000).toISOString(), outcome: 'won',
+    },
+  ],
   lastTick: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: 'gated', detail: 'min-interval' },
 };
 
@@ -254,12 +264,21 @@ describe('LearningTab — Scout view', () => {
     nuqsState.lview = 'scout';
   });
 
-  it('renders the routed-ideas-by-rail scoreboard, the rail rows, and the last-tick chip', () => {
+  it('renders the scoreboard, the routed-idea ledger rows, and the last-tick chip', () => {
     render(<LearningTab />);
-    expect(screen.getByText('Routed ideas by rail')).toBeTruthy();
+    // Scoreboard: totalRouted stat + one Stat per rail (labelled via RAIL_META).
     expect(screen.getByText('4')).toBeTruthy(); // totalRouted stat
-    expect(screen.getByText('Routed into plan drafts for review')).toBeTruthy();
-    expect(screen.getByText('Routed into gym experiments')).toBeTruthy();
+    expect(screen.getAllByText('plan draft').length).toBeGreaterThanOrEqual(1); // rail stat label + ledger row rail label
+    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1); // plan-rail count (also a how-strip step number)
+    // The per-item ledger (replaced the by-rail rows): openable rows with
+    // title, producing lens, and the classified outcome (pending suppressed).
+    expect(screen.getByText('Routed ideas')).toBeTruthy();
+    expect(screen.getByText('Cache-warmup plan draft')).toBeTruthy();
+    expect(screen.getByText('Tighter scoper prompt')).toBeTruthy();
+    expect(screen.getByText('reframing')).toBeTruthy(); // lens chip
+    expect(screen.getByText('won')).toBeTruthy(); // classified outcome shown
+    expect(screen.queryByText('pending')).toBeNull(); // pending outcome suppressed
+    expect(screen.getAllByRole('button', { name: /Cache-warmup|Tighter scoper/ }).length).toBe(2); // rows are openable
     const tickChip = screen.getByLabelText('Scout tick health');
     expect(tickChip.textContent).toContain('last tick');
     expect(tickChip.textContent).toContain('5m ago');

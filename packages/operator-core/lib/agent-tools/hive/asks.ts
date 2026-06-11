@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import type { CrossHiveAsksFilter } from '../../cross-hive-asks-store-port';
+import type { ListCrossHiveAsksFilter } from '../../cross-hive-asks-store-port';
 import { productionCrossHiveAsksStore } from './_cross-hive-ask-deps';
 
 const json = (o: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(o) }] });
@@ -20,13 +20,13 @@ export default defineTool({
   name: 'hive:asks',
   profile: 'engineer',
   description:
-    "List this Hive's cross-Hive ask ledger: the requests it initiated to peer Hives (and inbound ones with direction:'in'), with each row's peer, kind, subject, correlation id, state (queued|sent|answered|declined|expired) and reply. Filter by state / direction / peer / correlation id.",
+    "List this Hive's cross-Hive ask ledger: the requests it initiated to peer Hives (and inbound ones with direction:'in'), with each row's peer, kind, subject, correlation id, state (queued|sent|answered|declined|expired) and reply. Filter by state / direction / peer / kind.",
   guidance: {
     when: 'Reviewing the status of cross-Hive asks/work-requests — what is still pending, what was answered/declined — or deduping before initiating a new ask to a peer that already owns one.',
     notWhen:
-      'Inbound admission policy (hive:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status).',
+      'Inbound admission policy (hive:cross_grant list shows who may send INTO this Hive). Within-Hive work status (work_items:* / harness:status). Blocking on one specific pending ask (events:await its answeredEvent — do not poll this list).',
     chaining:
-      'hive:ask / hive:request_work create rows here; hive:asks { hive, state: "answered" } reviews the replies. Block on a specific pending one with events:await on its answeredEvent rather than polling this list.',
+      'hive:ask / hive:request_work create rows here; hive:asks { hive, state: "answered" } reviews the replies.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -39,18 +39,20 @@ export default defineTool({
       .describe('Filter to one ask state.'),
     direction: z.enum(['out', 'in']).optional().describe("Filter by direction (default: both). 'out' = asks this Hive initiated."),
     peerHivePubkey: z.string().max(400).optional().describe('Filter to one peer Hive.'),
-    correlationId: z.string().max(200).optional().describe('Look up a single ask by its correlation id.'),
+    kind: z.enum(['ask', 'work-request']).optional().describe('Filter to asks or work-requests.'),
+    limit: z.number().int().positive().max(500).optional().describe('Cap the rows returned (most-recent-first).'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
-    const filter: CrossHiveAsksFilter = {
+    const filter: ListCrossHiveAsksFilter = {
       ...(args.state ? { state: args.state } : {}),
       ...(args.direction ? { direction: args.direction } : {}),
       ...(args.peerHivePubkey ? { peerPubkey: args.peerHivePubkey } : {}),
-      ...(args.correlationId ? { correlationId: args.correlationId } : {}),
+      ...(args.kind ? { kind: args.kind } : {}),
+      ...(args.limit ? { limit: args.limit } : {}),
     };
-    const asks = await productionCrossHiveAsksStore().listCrossHiveAsks(ws, args.hive, filter);
+    const asks = await productionCrossHiveAsksStore().list(ws, args.hive, filter);
     return json({ ok: true, hive: args.hive, count: asks.length, asks });
   },
 });

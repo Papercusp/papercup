@@ -210,8 +210,9 @@ export interface CrossHiveAskLedger {
   }): Promise<RecordReplyResult>;
 }
 
-/** A ledger that records nothing — the production default until the PG store lands,
- *  and the explicit "no ledger" choice for boundary uses that don't track asks. */
+/** A ledger that records nothing — the explicit "no ledger" choice for boundary
+ *  compositions that don't track asks (tests, ephemeral deployments). Production
+ *  defaults to the PG-backed ledger (cross-hive-wiring's pgCrossHiveAskLedger). */
 export const NULL_CROSS_HIVE_ASK_LEDGER: CrossHiveAskLedger = {
   async recordReply() {
     return { outcome: 'not-found' };

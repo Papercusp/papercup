@@ -930,6 +930,19 @@ impl OperatorClient {
         Ok(resp.rows)
     }
 
+    /// The cross-Hive network board (hive-network-surface-2026-06-11 P-006):
+    /// one pinned-C-3 row per hive-context over the capability ladder, composed
+    /// server-side by B-08's data endpoint. Path is the agreed provisional route
+    /// (coord 2026-06-11) — if B-08's announce names a different one, this line
+    /// is the only edit. Freshness rides the refetch loop (SSE invalidate +
+    /// 60s safety net), the standard pui convention.
+    pub async fn network_board(&self) -> Result<Vec<crate::models::NetworkBoardRow>> {
+        let v = self.get_json("/api/network/board").await?;
+        let resp: crate::models::NetworkBoardResponse =
+            serde_json::from_value(v).context("parse network-board response")?;
+        Ok(resp.rows)
+    }
+
     /// Join one member harness of a discovered hive (`POST /api/harness/join-link`).
     /// The joiner's GitHub identity + device keychain are resolved server-side.
     pub async fn join_hive_link(&self, slug: &str, harness_link_url: &str) -> Result<serde_json::Value> {

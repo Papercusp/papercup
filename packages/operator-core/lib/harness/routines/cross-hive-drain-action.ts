@@ -19,7 +19,7 @@
  * cross-hive-boundary-boot.ts), not this tick — this is the safety net.
  *
  * payload_template tunables: `baseBackoffMs`, `capBackoffMs` (see
- * cross-hive-outbox-drain.ts defaults).
+ * cross-hive-outbox-drain.ts defaults: 30s base doubling to a 30min cap).
  *
  * Seed: seed-cross-hive-drain-routine.ts. Registered via register-system-actions.
  */
@@ -29,7 +29,6 @@ import {
   listWiredCrossHiveBoundaries,
   type EnsureCrossHiveBoundariesOpts,
 } from '../../cross-hive-boundary-boot';
-import { drainCrossHiveOutboxOnce } from '../../cross-hive-outbox-drain';
 
 /**
  * One tick: reconcile this workspace's boundaries, then drain every wired
@@ -56,10 +55,10 @@ export async function runCrossHiveDrainTick(
   let drainedBoundaries = 0;
   for (const b of listWiredCrossHiveBoundaries()) {
     try {
-      const entry = b;
-      const out = baseMs || capMs
-        ? await drainCrossHiveOutboxOnceWithOpts(entry, baseMs, capMs)
-        : await entry.drain();
+      const out = await b.drain({
+        ...(baseMs !== undefined ? { baseMs } : {}),
+        ...(capMs !== undefined ? { capMs } : {}),
+      });
       drainedBoundaries += 1;
       delivered += out.delivered;
       pendingTotal += out.pending;
@@ -78,20 +77,6 @@ export async function runCrossHiveDrainTick(
     }
   }
   return { delivered, pendingTotal, drainedBoundaries };
-}
-
-/** Tuned-backoff variant — rebuilds the drain call with payload overrides. */
-async function drainCrossHiveOutboxOnceWithOpts(
-  b: ReturnType<typeof listWiredCrossHiveBoundaries>[number],
-  baseMs?: number,
-  capMs?: number,
-): ReturnType<typeof b.drain> {
-  // The bound drain() doesn't take backoff overrides; reach the same ports it
-  // closed over via one forced no-peer pass? No — keep it honest: the bound
-  // drain is the canonical path, the overrides ride through it.
-  return b.drain({ ...(baseMs !== undefined ? {} : {}) }) as unknown as ReturnType<typeof b.drain> extends Promise<infer T>
-    ? Promise<T>
-    : never;
 }
 
 registerSystemAction('cross-hive-outbox-drain', async (ctx: SystemActionCtx) => {

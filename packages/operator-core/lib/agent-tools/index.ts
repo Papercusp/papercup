@@ -83,6 +83,14 @@ import './hive/dissolve';
 import './hive/update';
 // cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:
 import './hive/cross_grant';
+// hive-network-surface-2026-06-11 P-003 (B-04) — front-door cross-Hive ask tools:
+import './hive/ask';
+import './hive/request_work';
+import './hive/asks';
+// hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board
+// (C-3 rows) over the capability-tier ladder; the agent twin of the
+// `network.board` named sync query that backs the dock Network tab:
+import './network/board';
 import './chat/ask_choice';
 import './search/fulltext';
 import './search/semantic';

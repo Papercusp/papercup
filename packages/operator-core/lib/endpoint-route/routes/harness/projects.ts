@@ -473,6 +473,7 @@ const createHiveFromRepoRoute = defineTool({
       runTests?: boolean;
       force?: boolean;
       intoHive?: string;
+      beaconConsent?: boolean;
       progressId?: string;
     } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
@@ -497,6 +498,8 @@ const createHiveFromRepoRoute = defineTool({
       ...(typeof body.intoHive === 'string' && body.intoHive.trim()
         ? { intoHive: body.intoHive.trim() }
         : {}),
+      // B-07 / C-2: the publish-flow beacon-publish consent (new public/invite hives).
+      ...(typeof body.beaconConsent === 'boolean' ? { beaconConsent: body.beaconConsent } : {}),
       // P-008: real step progress over the sync channel (client-minted id).
       ...(typeof body.progressId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.progressId)
         ? { progressId: body.progressId }

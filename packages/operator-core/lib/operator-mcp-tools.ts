@@ -155,6 +155,16 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // say "let Hive X send us asks" — the sovereignty boundary between Hives.
   'mcp__agentmcp__discovery:hives',
   'mcp__agentmcp__hive:cross_grant',
+
+  // hive-network-surface-2026-06-11 P-003 (B-04) — the INITIATING side of the
+  // cross-Hive boundary: hive:ask / hive:request_work send a signed request to a
+  // peer Hive (by pubkey, from discovery:hives) and record it in this Hive's ask
+  // ledger; the peer's answer arrives async (events:await the answeredEvent key).
+  // hive:asks reviews the ledger (pending / answered / declined). The owner and
+  // Queen share these verbs to ask another Hive that owns a domain.
+  'mcp__agentmcp__hive:ask',
+  'mcp__agentmcp__hive:request_work',
+  'mcp__agentmcp__hive:asks',
 ];
 
 /**

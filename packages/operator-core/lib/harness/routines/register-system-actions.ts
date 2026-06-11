@@ -59,6 +59,12 @@
  *     file deduped improvements. The ONE home for substrate monitors — the
  *     shared-hive-loop P-012/P-013 checks plug in here. Seeded ACTIVE
  *     (seed-coord-invariant-routines.ts).
+ *   - `system:cross-hive-outbox-drain` — hive-network-surface-2026-06-11 P-001
+ *     (B-01). Per tick: reconcile the boot-wired cross-Hive boundaries against
+ *     the directory-publish state (publish/visibility changes converge without
+ *     a restart), then run one backoff-aware drain pass over every wired
+ *     Hive's durable outbox. Self-gates on zero published Hives; seeded ACTIVE
+ *     (seed-cross-hive-drain-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -74,3 +80,4 @@ import '../../interactive-usage/interactive-usage-action';
 import './token-report-action';
 import './hive-canary-action';
 import './coord-invariant-actions';
+import './cross-hive-drain-action';

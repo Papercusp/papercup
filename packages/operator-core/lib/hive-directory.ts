@@ -44,6 +44,7 @@ import {
   verifyHiveUnlist,
   type SignedHiveUnlist,
 } from './sync/hyperbee/hive-unlist';
+import { sanitizeBeacon, type HiveStatusBeacon } from './hive-beacon';
 
 export { isHiveUnlistFrame, type SignedHiveUnlist } from './sync/hyperbee/hive-unlist';
 
@@ -83,6 +84,13 @@ export interface DiscoveredHive {
   lastSeenMs: number;
   /** Channel-2 GitHub attestation verified (always true for a listed hive). */
   attested: true;
+  /**
+   * The opt-in status beacon the announcing Hive published (hive-network-surface
+   * P-005 / C-2), already sanitized + clamped (sanitizeBeacon). Present only when
+   * the announce carried a well-formed beacon; absent ⇒ the Hive published none
+   * (or its beacon was unusable). A best-effort gossip signal — never a trust surface.
+   */
+  beacon?: HiveStatusBeacon;
 }
 
 /** A hive THIS peer owns + announces. */
@@ -116,6 +124,13 @@ export interface LocalHiveDescriptor {
   attestationGistId: string;
   /** Required for `invite` visibility — the secret whose topic invitees join. */
   inviteSecret?: string;
+  /**
+   * The opt-in status beacon to publish on this hive's announces (P-005 / C-2).
+   * Set fresh per announce-build by the enrich seam (hive-descriptor-enrich) only
+   * when the owner consented (BEACON_PUBLISH_CONSENT_KEY); absent ⇒ no beacon
+   * goes on the wire. Carried into the announce body by `buildAnnounceFor`.
+   */
+  beacon?: HiveStatusBeacon;
 }
 
 /** Why an inbound announce was rejected (never rendered). */
@@ -247,6 +262,10 @@ export class HiveDirectory {
     if (!attested) {
       return { accepted: false, reason: 'unattested' };
     }
+    // C-2 consume: clamp/sanitize the optional beacon. A malformed/oversize
+    // beacon yields undefined (no beacon on the record) or a clamped value —
+    // NEVER a rejected announce (the frame already passed sig + attestation).
+    const beacon = sanitizeBeacon(frame.beacon);
     this.discovered.set(frame.hive_id, {
       hiveId: frame.hive_id,
       title: frame.title,
@@ -263,6 +282,7 @@ export class HiveDirectory {
       announcedTs: frame.ts,
       lastSeenMs: nowMs,
       attested: true,
+      ...(beacon ? { beacon } : {}),
     });
     await this.persist();
     return { accepted: true };
@@ -404,6 +424,9 @@ export class HiveDirectory {
       visibility: desc.visibility,
       created_at: desc.createdAt,
       ts: this.nowMs(),
+      // C-2 publish: the consent-gated beacon the enrich seam attached (absent ⇒
+      // no beacon on the wire). Covered by the announce signature.
+      ...(desc.beacon ? { beacon: desc.beacon } : {}),
     };
     return buildHiveAnnounce(body, this.deps.sign);
   }

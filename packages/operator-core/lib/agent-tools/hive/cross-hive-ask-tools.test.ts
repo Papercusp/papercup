@@ -2,14 +2,14 @@
  * Front-door cross-Hive tools (hive-network-surface-2026-06-11 P-003, brief B-04).
  * PG-free + swarm-free: the send composition (cross-hive-ask-send) takes injected
  * ports, and the tools resolve their boundary/store through runtime registries
- * (cross-hive-boundary-registry / cross-hive-asks-store-port) — so a fake boundary
- * + fake store exercise hive:ask / hive:request_work / hive:asks end-to-end.
+ * (cross-hive-boundary-registry / a fake store) — so a fake boundary + fake store
+ * exercise hive:ask / hive:request_work / hive:asks end-to-end.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   sendCrossHiveAsk,
-  stubAllowOutboundGrant,
   type SendCrossHiveAskDeps,
+  type CheckOutboundGrant,
 } from '../../cross-hive-ask-send';
 import type { CrossHiveBoundaryWiring } from '../../cross-hive-wiring';
 import type { SendResult } from '../../cross-hive-transport';
@@ -17,19 +17,16 @@ import {
   registerCrossHiveBoundary,
   __clearCrossHiveBoundaryRegistry,
 } from '../../cross-hive-boundary-registry';
-import {
-  setCrossHiveAsksStore,
-  __resetCrossHiveAsksStore,
-  type CrossHiveAskInsert,
-  type CrossHiveAskRow,
-  type CrossHiveAsksFilter,
-  type CrossHiveAsksStore,
-} from '../../cross-hive-asks-store-port';
+import { __setCrossHiveAskTestDeps } from './_cross-hive-ask-deps';
+import type { CrossHiveAsksStore, CrossHiveAsk } from '../../cross-hive-asks-store-port';
+import type { InsertCrossHiveAskInput, ListCrossHiveAsksFilter } from '../../cross-hive-asks-pg';
 
 const ROOT_CTX = { isSuperuser: true, uiClientId: 'su-test', workspaceId: 'ws-1' } as never;
 const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content[0].text);
 type Tool = { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> };
+
+const allowGrant: CheckOutboundGrant = async () => ({ allowed: true, reason: 'granted' });
 
 /** A fake boundary recording sends; `delivered` toggles the queued/sent path. */
 function fakeBoundary(delivered: boolean): {
@@ -39,7 +36,10 @@ function fakeBoundary(delivered: boolean): {
   const sends: Array<{ to: string; kind: string; id?: string; subject: string; body: string }> = [];
   const wiring = {
     selfHivePubkey: 'self-pub',
-    async send(to: string, msg): Promise<SendResult> {
+    async send(
+      to: string,
+      msg: { kind: string; subject: string; body: string; id?: string },
+    ): Promise<SendResult> {
       sends.push({ to, kind: msg.kind, id: msg.id, subject: msg.subject, body: msg.body });
       return { delivered, queued: !delivered };
     },
@@ -54,26 +54,43 @@ function fakeBoundary(delivered: boolean): {
   return { wiring, sends };
 }
 
-/** An in-memory C-1 store. */
-function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAskRow[] } {
-  const rows: CrossHiveAskRow[] = [];
+/** An in-memory C-1 store mirroring PgCrossHiveAsks's insert-queued / mark-sent / list. */
+function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAsk[] } {
+  const rows: CrossHiveAsk[] = [];
   const store: CrossHiveAsksStore = {
-    async insertCrossHiveAsk(_ws, _slug, row: CrossHiveAskInsert) {
-      rows.push({
-        ...row,
+    async insertQueued(ws, slug, input: InsertCrossHiveAskInput) {
+      const existing = rows.find((r) => r.correlationId === input.correlationId);
+      if (existing) return existing; // idempotent on correlation_id
+      const row: CrossHiveAsk = {
+        id: input.correlationId,
+        workspaceId: ws,
+        hiveSlug: slug,
+        peerPubkey: input.peerPubkey,
+        direction: input.direction ?? 'out',
+        kind: input.kind,
+        subject: input.subject ?? '',
+        body: input.body ?? '',
+        correlationId: input.correlationId,
+        state: 'queued',
         replyBody: null,
         replyTs: null,
         createdAt: '2026-06-11T00:00:00Z',
         updatedAt: '2026-06-11T00:00:00Z',
-      });
+      };
+      rows.push(row);
+      return row;
     },
-    async listCrossHiveAsks(_ws, _slug, filter: CrossHiveAsksFilter) {
+    async markSentByCorrelationId(_ws, _slug, correlationId) {
+      const row = rows.find((r) => r.correlationId === correlationId);
+      if (row && row.state === 'queued') row.state = 'sent';
+    },
+    async list(_ws, _slug, filter: ListCrossHiveAsksFilter) {
       return rows.filter(
         (r) =>
           (!filter.state || r.state === filter.state) &&
           (!filter.direction || r.direction === filter.direction) &&
           (!filter.peerPubkey || r.peerPubkey === filter.peerPubkey) &&
-          (!filter.correlationId || r.correlationId === filter.correlationId),
+          (!filter.kind || r.kind === filter.kind),
       );
     },
   };
@@ -90,12 +107,12 @@ describe('sendCrossHiveAsk (composition)', () => {
     body: 'b',
   };
 
-  it('delivered: sends with correlationId as the envelope id, records a sent row, returns the await keys', async () => {
+  it('delivered: records queued→sent, sends with correlationId as the envelope id, returns the await keys', async () => {
     const fb = fakeBoundary(true);
     const fs = fakeStore();
     const deps: SendCrossHiveAskDeps = {
       resolveBoundary: () => fb.wiring,
-      checkOutboundGrant: stubAllowOutboundGrant,
+      checkOutboundGrant: allowGrant,
       store: fs.store,
       newId: () => 'corr-1',
     };
@@ -113,12 +130,12 @@ describe('sendCrossHiveAsk (composition)', () => {
     expect(fs.rows[0]).toMatchObject({ correlationId: 'corr-1', direction: 'out', kind: 'ask', state: 'sent' });
   });
 
-  it('peer offline: queued state recorded (durable outbox retries)', async () => {
+  it('peer offline: row stays queued (durable outbox retries)', async () => {
     const fb = fakeBoundary(false);
     const fs = fakeStore();
     const res = await sendCrossHiveAsk(baseInput, {
       resolveBoundary: () => fb.wiring,
-      checkOutboundGrant: stubAllowOutboundGrant,
+      checkOutboundGrant: allowGrant,
       store: fs.store,
       newId: () => 'corr-2',
     });
@@ -147,15 +164,17 @@ describe('sendCrossHiveAsk (composition)', () => {
 
   it('boundary not live: clear error, nothing sent or recorded', async () => {
     const fs = fakeStore();
+    const insertSpy = vi.spyOn(fs.store, 'insertQueued');
     const res = await sendCrossHiveAsk(baseInput, {
       resolveBoundary: () => undefined,
-      checkOutboundGrant: stubAllowOutboundGrant,
+      checkOutboundGrant: allowGrant,
       store: fs.store,
       newId: () => 'corr-4',
     });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toMatch(/not live/);
+    expect(insertSpy).not.toHaveBeenCalled();
     expect(fs.rows).toHaveLength(0);
   });
 
@@ -164,7 +183,7 @@ describe('sendCrossHiveAsk (composition)', () => {
     const fs = fakeStore();
     const res = await sendCrossHiveAsk(
       { ...baseInput, kind: 'work-request' },
-      { resolveBoundary: () => fb.wiring, checkOutboundGrant: stubAllowOutboundGrant, store: fs.store, newId: () => 'corr-5' },
+      { resolveBoundary: () => fb.wiring, checkOutboundGrant: allowGrant, store: fs.store, newId: () => 'corr-5' },
     );
     expect(res.ok).toBe(true);
     expect(fb.sends[0]?.kind).toBe('work-request');
@@ -172,21 +191,24 @@ describe('sendCrossHiveAsk (composition)', () => {
   });
 });
 
+/**
+ * Tool-level: register a fake boundary in the real registry (so the tool→registry
+ * path is exercised) and substitute the store/grant ports via the deps test seam.
+ */
 describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
   let fb: ReturnType<typeof fakeBoundary>;
   let fs: ReturnType<typeof fakeStore>;
 
   beforeEach(() => {
     __clearCrossHiveBoundaryRegistry();
-    __resetCrossHiveAsksStore();
     fb = fakeBoundary(true);
     fs = fakeStore();
     registerCrossHiveBoundary('ws-1', 'home', fb.wiring);
-    setCrossHiveAsksStore(fs.store);
+    __setCrossHiveAskTestDeps({ store: fs.store, checkOutboundGrant: allowGrant });
   });
   afterEach(() => {
+    __setCrossHiveAskTestDeps(null);
     __clearCrossHiveBoundaryRegistry();
-    __resetCrossHiveAsksStore();
   });
 
   it('hive:ask resolves the registered boundary + store and returns the await key', async () => {
@@ -197,7 +219,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
     expect(res.ok).toBe(true);
     expect((res.answeredEvent as string).startsWith('cross-hive:answered:')).toBe(true);
     expect(fb.sends[0]).toMatchObject({ to: 'peer-pub', kind: 'ask' });
-    expect(fs.rows[0]).toMatchObject({ kind: 'ask', direction: 'out' });
+    expect(fs.rows[0]).toMatchObject({ kind: 'ask', direction: 'out', state: 'sent' });
   });
 
   it('hive:request_work sends a work-request envelope', async () => {
@@ -231,7 +253,7 @@ describe('hive:ask / hive:request_work / hive:asks (tools)', () => {
 
     const onePeer = parse(await asksTool.handler({ hive: 'home', peerHivePubkey: 'peer-a', workspace: 'ws-1' }, ROOT_CTX));
     expect(onePeer.count).toBe(1);
-    expect((onePeer.asks as CrossHiveAskRow[])[0]?.peerPubkey).toBe('peer-a');
+    expect((onePeer.asks as CrossHiveAsk[])[0]?.peerPubkey).toBe('peer-a');
 
     const sent = parse(await asksTool.handler({ hive: 'home', state: 'sent', workspace: 'ws-1' }, ROOT_CTX));
     expect(sent.count).toBe(2);

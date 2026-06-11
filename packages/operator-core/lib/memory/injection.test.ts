@@ -175,4 +175,40 @@ describe('buildMemoryContextBlock', () => {
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
     expect(block).toBeNull();
   });
+
+  it('pulls + labels the hive pool for a member harness (learning-packs P-004)', async () => {
+    registryProjects = [
+      { slug: 'member-a', hive_slug: 'my-hive' },
+      { slug: 'my-hive', harness_kind: 'hive' },
+    ];
+    const b = mockBackend([{ id: 'h1', text: 'Tests ship with the feature', kind: 'feedback' }]);
+    useBackend(b);
+    const block = await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], queryContext: 'testing?',
+    });
+    // Second pull = harness pool, third = hive pool resolved from the registry.
+    expect(b.search.mock.calls).toEqual([
+      ['testing?', { scope: ['harness:member-a'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
+      ['testing?', { scope: ['hive:my-hive'], limit: 3, minScore: 0.45, minLexScore: 0.4 }],
+    ]);
+    expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Tests ship with the feature');
+  });
+
+  it('explicit hiveSlugs: [] suppresses the hive pull; explicit slugs skip resolution', async () => {
+    registryProjects = [{ slug: 'member-a', hive_slug: 'my-hive' }];
+    const suppressed = mockBackend([{ id: 'x', text: 'x', kind: 'project' }]);
+    useBackend(suppressed);
+    await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], hiveSlugs: [], queryContext: 'q',
+    });
+    expect(suppressed.search.mock.calls.map((c) => c[1].scope)).toEqual([['harness:member-a']]);
+
+    const pinned = mockBackend([{ id: 'y', text: 'y', kind: 'feedback' }]);
+    useBackend(pinned);
+    const block = await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws', hiveSlugs: ['other-hive'], queryContext: 'q',
+    });
+    expect(pinned.search.mock.calls.map((c) => c[1].scope)).toEqual([['hive:other-hive']]);
+    expect(block).toContain('@ hive:other-hive');
+  });
 });

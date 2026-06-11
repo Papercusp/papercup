@@ -609,6 +609,77 @@ pub struct DiscoveredHivesResponse {
     pub rows: Vec<DiscoveredHiveRow>,
 }
 
+/// One network-board row — the PINNED C-3 contract
+/// (hive-network-surface-2026-06-11, owner B-08): one hive-context over the
+/// capability ladder. An absent optional field means that TIER lacks the data
+/// (a tier-1 local hive has no beacon; a tier-4 gossip hive has no verified
+/// presence) — renderers HIDE the section, never paint empties. Do not add or
+/// rename fields without a plan edit + coord to every C-3 consumer.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct NetworkBoardRow {
+    /// Capability tier: 1 this hive · 2 own/admin · 3 shared-Hive peer swarm
+    /// (substrate-verified) · 4 foreign directory hive (self-reported beacon).
+    #[serde(default)]
+    pub tier: u8,
+    /// Stable row identity: a harness/hive slug (tiers 1-2) or the peer's
+    /// device pubkey base64 (tiers 3-4). The drill-in tab key (B-10 seam).
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: String,
+    /// Trust label: local | admin | federated | gossip. Federated (substrate-
+    /// verified) and gossip (self-reported) must render visually distinct.
+    #[serde(default)]
+    pub trust: String,
+    #[serde(rename = "liveAgents")]
+    pub live_agents: Option<u32>,
+    #[serde(rename = "queueDepth")]
+    pub queue_depth: Option<u32>,
+    /// The hive's focus one-liner (beacon / curation:state-of-hive, ≤120).
+    pub focus: Option<String>,
+    /// ISO timestamp of the freshest signal (sorts lexically).
+    #[serde(rename = "lastSeen")]
+    pub last_seen: Option<String>,
+    pub wake: Option<NetworkWake>,
+    pub grants: Option<NetworkGrants>,
+    pub asks: Option<NetworkAsks>,
+}
+
+/// C-3 `wake` section — the hive's wake/scheduling state (own hives).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct NetworkWake {
+    #[serde(default)]
+    pub active: bool,
+    #[serde(rename = "nextFireAt")]
+    pub next_fire_at: Option<String>,
+}
+
+/// C-3 `grants` section — cross-hive grant kinds by direction. `in` is a Rust
+/// keyword, hence the serde renames (no wire impact).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct NetworkGrants {
+    #[serde(rename = "in", default)]
+    pub inbound: Vec<String>,
+    #[serde(rename = "out", default)]
+    pub outbound: Vec<String>,
+}
+
+/// C-3 `asks` section — the P-002 cross-hive ask-ledger counts for this peer.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct NetworkAsks {
+    #[serde(default)]
+    pub pending: u32,
+    #[serde(default)]
+    pub answered: u32,
+}
+
+/// Network-board response envelope (B-08's data endpoint).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NetworkBoardResponse {
+    #[serde(default)]
+    pub rows: Vec<NetworkBoardRow>,
+}
+
 // NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
 // (ActivityEvent/ActivityResponse) were removed with the tab (D-004b) — the
 // Fleet tab's `ActivityRow` (agent_activity) is the live activity surface.

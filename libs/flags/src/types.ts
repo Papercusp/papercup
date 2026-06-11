@@ -128,6 +128,12 @@ export const FLAGS = {
   // instead of sleeping on phantom self-claim. force:true overrides per-call.
   // OFF = the kill-switch if the guard ever wrongly blocks a declaration.
   HIVE_WAKE_FRONTIER_GUARD: "papercusp-hive-wake-frontier-guard",
+  // learning-packs-2026-06-11 (P-005): seeding a new hive's mem0 store with the
+  // selected learning pack at hive:create, plus the learning_packs:* management
+  // verbs and the Learnings UI surfaces. OFF skips seeding + hides pack
+  // management; the hive:<slug> memory scope itself stays live (recall of an
+  // unseeded pool is harmless).
+  LEARNING_PACKS: "papercusp-learning-packs",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -206,6 +212,10 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // unplaced frontier — a genuine wedge condition — and force:true overrides.
   // OFF is the kill-switch.
   [FLAGS.HIVE_WAKE_FRONTIER_GUARD]: true,
+  // ON by default (alpha flags-default-on policy, learning-packs D-007 plan):
+  // new hives seed the selected learning pack; OFF skips seeding + hides the
+  // pack-management surfaces.
+  [FLAGS.LEARNING_PACKS]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

@@ -18,7 +18,7 @@
  * integration tests use a per-file test schema; production omits it and the
  * shared org pool is used.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { CrossHiveRequestKind, CrossHiveReplyKind } from './cross-hive-transport';
 
@@ -383,7 +383,7 @@ export class PgCrossHiveAsks {
     });
   }
 
-  private async getByIdTx(tx: Sql, id: string): Promise<CrossHiveAsk | null> {
+  private async getByIdTx(tx: Sql | TransactionSql, id: string): Promise<CrossHiveAsk | null> {
     const rows = (await tx.unsafe(
       `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
         WHERE workspace_id=$1 AND hive_slug=$2 AND id=$3 FOR UPDATE`,
@@ -392,7 +392,7 @@ export class PgCrossHiveAsks {
     return rows.length ? rowToAsk(rows[0]) : null;
   }
 
-  private async getByCorrelationTx(tx: Sql, correlationId: string): Promise<CrossHiveAsk | null> {
+  private async getByCorrelationTx(tx: Sql | TransactionSql, correlationId: string): Promise<CrossHiveAsk | null> {
     const rows = (await tx.unsafe(
       `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
         WHERE workspace_id=$1 AND hive_slug=$2 AND correlation_id=$3 FOR UPDATE`,

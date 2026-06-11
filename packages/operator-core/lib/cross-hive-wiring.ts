@@ -33,7 +33,6 @@ import {
   isRequestKind,
   crossHiveReplyEventKey,
   InMemoryCrossHiveOutbox,
-  NULL_CROSS_HIVE_ASK_LEDGER,
   type CrossHiveAskLedger,
   type CrossHiveTransport,
   type CrossHiveOutbox,
@@ -52,6 +51,7 @@ import {
 } from './cross-hive-boundary';
 import { loadCrossHiveGrants, loadOutboundCrossHiveGrants } from './cross-hive-grants';
 import { PgCrossHiveOutbox } from './cross-hive-outbox-pg';
+import { PgCrossHiveAsks } from './cross-hive-asks-pg';
 import { signWithHiveKey } from './identity/hive-keypair';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
@@ -134,16 +134,45 @@ export interface WireCrossHiveBoundaryDeps {
   onReply?: (reply: CrossHiveInboundReply) => void;
   /**
    * The C-1 ask ledger an inbound answer/decline persists into (hive-network-surface
-   * P-002). Default: NULL ledger (records nothing) until the PG store over
-   * `cross_hive_asks` lands and becomes the production default. The C-4 event fires
-   * ONLY on a real ledger transition — payload = the row — so a forged correlationId
-   * from a non-asked peer can never wake the Queen.
+   * P-002). Default: pgCrossHiveAskLedger over `cross_hive_asks` (migration 231).
+   * The C-4 event fires ONLY on a real ledger transition — payload = the row — so a
+   * forged correlationId from a non-asked peer can never wake the Queen.
    */
   askLedger?: CrossHiveAskLedger;
   /** Event emit port (production: emitAwaitedEvent). Tests inject a recorder. */
   emitEvent?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
   /** Optional test PG client threaded to grants + outbox. */
   sql?: Sql;
+}
+
+/**
+ * Adapt the PG ask store (PgCrossHiveAsks, brief B-02) to the receive side's
+ * CrossHiveAskLedger port, adding the PEER GUARD the port requires: only the asked
+ * peer may settle an OUT ask. The store's recordReply matches by correlation_id
+ * alone; peer_pubkey + direction are immutable columns, so the pre-check + transition
+ * is race-safe — a signed reply from a third-party Hive lands `not-found` and never
+ * transitions the row or wakes the asking Queen.
+ */
+export function pgCrossHiveAskLedger(workspaceId: string, hiveSlug: string, sql?: Sql): CrossHiveAskLedger {
+  const store = new PgCrossHiveAsks(workspaceId, hiveSlug, sql);
+  return {
+    async recordReply(input) {
+      const existing = await store.getByCorrelationId(input.correlationId);
+      if (!existing || existing.direction !== 'out' || existing.peerPubkey !== input.peerPubkey) {
+        return { outcome: 'not-found' };
+      }
+      const res = await store.recordReply({
+        correlationId: input.correlationId,
+        replyKind: input.replyKind,
+        replyBody: input.replyBody,
+      });
+      if (res.outcome === 'applied') return { outcome: 'transitioned', row: res.ask };
+      if (res.outcome === 'not-found') return { outcome: 'not-found' };
+      // 'duplicate' (same reply redelivered) and 'conflict' (terminal in another
+      // state) both mean the row is already settled — no re-emit.
+      return { outcome: 'already-settled', row: res.ask };
+    },
+  };
 }
 
 /**
@@ -183,7 +212,7 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
       ? new PgCrossHiveOutbox(deps.workspaceId, deps.hiveSlug, deps.sql)
       : new InMemoryCrossHiveOutbox());
 
-  const askLedger = deps.askLedger ?? NULL_CROSS_HIVE_ASK_LEDGER;
+  const askLedger = deps.askLedger ?? pgCrossHiveAskLedger(deps.workspaceId, deps.hiveSlug, deps.sql);
   const emitEvent = deps.emitEvent ?? emitAwaitedEvent;
 
   /**

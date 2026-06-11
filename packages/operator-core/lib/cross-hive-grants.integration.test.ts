@@ -1,17 +1,28 @@
 /**
  * cross-hive-grants.integration.test.ts — owner-set cross-Hive capability grants
- * persisted in hive_settings (cross-hive-boundary-2026-06-08 P-002), against real PG.
- * Proves the grant map round-trips, revoke works, empty-kinds clears, and the loaded
- * grants drive admitCrossHiveEnvelope (allow-list / default-deny).
+ * persisted in hive_settings (cross-hive-boundary-2026-06-08 P-002;
+ * hive-network-surface-2026-06-11 P-004 brief B-05 directed grants), against real PG.
+ *
+ * Proves, through the federating hive_settings store:
+ *   · INBOUND grants round-trip + drive admitCrossHiveEnvelope (allow-list / default-deny);
+ *   · OUTBOUND grants round-trip + drive assertOutboundGrant (egress default-deny);
+ *   · the two directions are independent (granting `in` never grants `out`);
+ *   · a LEGACY flat value (written before B-05) reads as INBOUND-only, and the first
+ *     directed write migrates the stored value to `{ in, out }` without losing it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   loadCrossHiveGrants,
+  loadOutboundCrossHiveGrants,
+  loadDirectedCrossHiveGrants,
   setCrossHiveGrant,
   revokeCrossHiveGrant,
+  assertOutboundGrant,
+  CROSS_HIVE_GRANTS_KEY,
 } from './cross-hive-grants';
 import { admitCrossHiveEnvelope, type CrossHiveEnvelope } from './cross-hive-boundary';
+import { getHiveSetting, setHiveSetting } from './hive-settings-store';
 
 const WS = 'default';
 const HIVE = 'my-hive'; // the home slug
@@ -54,42 +65,42 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => { await db.sql`DELETE FROM harness_shared.hive_settings`; });
 
-describe('grant persistence round-trip', () => {
+describe('inbound grant persistence round-trip', () => {
   it('starts empty', async () => {
     expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([]);
   });
 
-  it('sets, updates, and lists grants per peer-Hive', async () => {
-    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], db.sql);
+  it('sets, updates, and lists inbound grants per peer-Hive', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
     expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
 
     // widen A's grant + add a second peer
-    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask', 'work-request'], db.sql);
-    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask', 'work-request'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'in', db.sql);
     const loaded = await loadCrossHiveGrants(WS, HIVE, db.sql);
     expect(loaded).toHaveLength(2);
     expect([...(loaded.find((g) => g.peerHivePubkey === PEER_A)?.allowedKinds ?? [])].sort()).toEqual(['ask', 'work-request']);
     expect(loaded.find((g) => g.peerHivePubkey === PEER_B)?.allowedKinds).toEqual(['ask']);
   });
 
-  it('revokes a peer entirely', async () => {
-    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], db.sql);
-    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], db.sql);
-    await revokeCrossHiveGrant(WS, HIVE, PEER_A, db.sql);
+  it('revokes an inbound peer entirely', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'in', db.sql);
+    await revokeCrossHiveGrant(WS, HIVE, PEER_A, 'in', db.sql);
     const loaded = await loadCrossHiveGrants(WS, HIVE, db.sql);
     expect(loaded.map((g) => g.peerHivePubkey)).toEqual([PEER_B]);
   });
 
   it('setting empty kinds clears the grant', async () => {
-    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], db.sql);
-    await setCrossHiveGrant(WS, HIVE, PEER_A, [], db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_A, [], 'in', db.sql);
     expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([]);
   });
 });
 
-describe('loaded grants drive admission (default-deny)', () => {
+describe('loaded inbound grants drive admission (default-deny)', () => {
   it('admits a granted peer for a granted kind; denies the ungranted', async () => {
-    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
     const grants = await loadCrossHiveGrants(WS, HIVE, db.sql);
 
     expect(admitCrossHiveEnvelope(env(PEER_A, 'ask'), { selfHivePubkey: 'self', grants }).admitted).toBe(true);
@@ -97,5 +108,83 @@ describe('loaded grants drive admission (default-deny)', () => {
     expect(admitCrossHiveEnvelope(env(PEER_A, 'work-request'), { selfHivePubkey: 'self', grants }).admitted).toBe(false);
     // PEER_B has no grant at all → denied
     expect(admitCrossHiveEnvelope(env(PEER_B, 'ask'), { selfHivePubkey: 'self', grants }).admitted).toBe(false);
+  });
+});
+
+describe('outbound (egress) grants — direction is independent of inbound', () => {
+  it('round-trips outbound grants separately from inbound', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask', 'work-request'], 'out', db.sql);
+
+    expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([
+      { peerHivePubkey: PEER_B, allowedKinds: ['ask', 'work-request'] },
+    ]);
+
+    const directed = await loadDirectedCrossHiveGrants(WS, HIVE, db.sql);
+    expect(directed.in).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
+    expect(directed.out).toEqual([{ peerHivePubkey: PEER_B, allowedKinds: ['ask', 'work-request'] }]);
+  });
+
+  it('granting INBOUND never authorizes OUTBOUND for the same peer', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([]);
+    expect((await assertOutboundGrant(WS, HIVE, PEER_A, 'ask', db.sql)).admitted).toBe(false);
+  });
+
+  it('assertOutboundGrant: default-deny unknown peer; admit after grant; deny wrong kind', async () => {
+    // unknown peer — default-deny
+    const denied = await assertOutboundGrant(WS, HIVE, PEER_B, 'ask', db.sql);
+    expect(denied.admitted).toBe(false);
+    expect(denied.reason).toMatch(/no outbound grant/i);
+
+    // owner grants outbound 'ask' → admitted for ask, still denied for work-request
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'out', db.sql);
+    expect((await assertOutboundGrant(WS, HIVE, PEER_B, 'ask', db.sql)).admitted).toBe(true);
+    expect((await assertOutboundGrant(WS, HIVE, PEER_B, 'work-request', db.sql)).admitted).toBe(false);
+  });
+
+  it('revoking outbound leaves inbound intact', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'out', db.sql);
+    await revokeCrossHiveGrant(WS, HIVE, PEER_A, 'out', db.sql);
+    expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([]);
+  });
+
+  it('persists the DIRECTED { in, out } shape under the federating key', async () => {
+    await setCrossHiveGrant(WS, HIVE, PEER_A, ['ask'], 'in', db.sql);
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'out', db.sql);
+    const rec = await getHiveSetting(WS, HIVE, CROSS_HIVE_GRANTS_KEY, db.sql);
+    // The federated value is the directed envelope — the shape every Swarm enforces.
+    expect(rec?.value).toEqual({ in: { [PEER_A]: ['ask'] }, out: { [PEER_B]: ['ask'] } });
+  });
+});
+
+describe('back-compat — a legacy flat value reads as inbound-only', () => {
+  it('loads a pre-B-05 flat grant map as INBOUND grants with no outbound', async () => {
+    // Simulate a value written before directions existed: the flat { peer: kinds[] } shape.
+    await setHiveSetting(
+      { workspaceId: WS, hiveHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask', 'work-request'] } },
+      db.sql,
+    );
+    expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([
+      { peerHivePubkey: PEER_A, allowedKinds: ['ask', 'work-request'] },
+    ]);
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([]);
+  });
+
+  it('the first directed write migrates the stored value to { in, out } without losing the legacy inbound grants', async () => {
+    await setHiveSetting(
+      { workspaceId: WS, hiveHomeSlug: HIVE, settingKey: CROSS_HIVE_GRANTS_KEY, value: { [PEER_A]: ['ask'] } },
+      db.sql,
+    );
+    // Add an outbound grant for a different peer — must preserve the legacy inbound grant.
+    await setCrossHiveGrant(WS, HIVE, PEER_B, ['ask'], 'out', db.sql);
+
+    const rec = await getHiveSetting(WS, HIVE, CROSS_HIVE_GRANTS_KEY, db.sql);
+    expect(rec?.value).toEqual({ in: { [PEER_A]: ['ask'] }, out: { [PEER_B]: ['ask'] } });
+    expect(await loadCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_A, allowedKinds: ['ask'] }]);
+    expect(await loadOutboundCrossHiveGrants(WS, HIVE, db.sql)).toEqual([{ peerHivePubkey: PEER_B, allowedKinds: ['ask'] }]);
   });
 });

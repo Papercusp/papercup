@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getHiveDirectory } from '../../hive-directory-deps';
+import type { HiveStatusBeacon } from '../../hive-beacon';
 
 export interface DiscoveredHiveRow {
   hiveId: string;
@@ -35,6 +36,13 @@ export interface DiscoveredHiveRow {
   memberCount: number;
   createdAt: number;
   lastSeenMs: number;
+  /**
+   * The opt-in status beacon the hive published (P-005 / C-2), already sanitized.
+   * Present only when the hive consented to publish + the announce carried a
+   * well-formed beacon. The Network board (B-08) renders it for tier-4 foreign
+   * hives; use hive-beacon.isBeaconStale for the staleness badge.
+   */
+  beacon?: HiveStatusBeacon;
 }
 
 export default defineTool({
@@ -71,6 +79,7 @@ export default defineTool({
       memberCount: h.memberTopics.length,
       createdAt: h.createdAt,
       lastSeenMs: h.lastSeenMs,
+      ...(h.beacon ? { beacon: h.beacon } : {}),
     }));
     return {
       content: [

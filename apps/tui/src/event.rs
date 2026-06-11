@@ -167,6 +167,10 @@ pub enum Event {
     /// The P2P hive directory (p2p-hive-directory P-006) — verified hives
     /// announced on the directory topic, via `GET /api/discovery/hives`.
     HiveDirectory(Vec<crate::models::DiscoveredHiveRow>),
+    /// The cross-Hive network board (hive-network-surface-2026-06-11 B-09) —
+    /// one pinned-C-3 row per hive-context over the capability ladder, from
+    /// B-08's data endpoint. A whole snapshot; replaces the pane's rows.
+    NetworkBoard(Vec<crate::models::NetworkBoardRow>),
     /// The active Hive lexicon pack, fetched once at startup
     /// (pui-hive-lexicon-2026-06-06). The reducer stores the term→label map.
     LexiconPack(LexiconPackPayload),

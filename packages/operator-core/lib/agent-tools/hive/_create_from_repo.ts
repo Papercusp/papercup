@@ -36,7 +36,8 @@ import {
 } from '../../harness/lookup-hive-for-repo';
 import { loadHarnessRegistry, mutateHarnessRegistry } from '../../harness-registry';
 import type { HiveVisibility } from '../../sync/hyperbee/hive-announce';
-import { createHiveHarness, type CreateHiveResult } from './_create';
+import { createHiveHarness, type CreateHiveResult, type SeededLearningsSummary } from './_create';
+import { shapesFromDetection } from '../../learning-packs/seed';
 import {
   publishCreatedHive,
   republishHiveAfterMemberAdd,
@@ -86,6 +87,20 @@ export interface CreateHiveFromRepoOpts {
    * best-effort throughout.
    */
   progressId?: string;
+  /**
+   * B-07 / C-2: the owner's consent to publish a live status beacon for this
+   * new Hive, captured by the publish-flow consent question. Recorded as the
+   * `beacon-publish-consent` hive setting for a NEW published (public/invite)
+   * Hive only — into-hive re-adds never re-ask, and a private hive never
+   * publishes. Absent = OFF (default-deny, D-002).
+   */
+  beaconConsent?: boolean;
+  /**
+   * Learning pack seeded into the new hive home (learning-packs P-005).
+   * Omit ⇒ default pack; null ⇒ none. Ignored in into-hive mode (the home
+   * already exists — install packs there via learning_packs:install).
+   */
+  learningPack?: string | null;
   workspaceId: string;
 }
 
@@ -96,6 +111,9 @@ export interface CreateHiveFromRepoCreated {
   defaultBranch?: string;
   githubRepositoryId?: number;
   detection?: unknown;
+  /** learning-packs P-005: what seeded into the new hive home (absent in
+   *  into-hive mode / flag-off / pack 'none'). */
+  seededLearnings?: SeededLearningsSummary;
   /** P-008: set when `force` created past an existing hive/share — the
    *  duplicate marker the supersede flow resolves. */
   duplicateOf?: { kind: 'hive' | 'legacy_shared_harness'; hivePubkey?: string; source: string };
@@ -143,6 +161,10 @@ export interface CreateHiveFromRepoDeps {
     hive: string;
   }) => Promise<{ ok: boolean; error?: string }>;
   publish?: typeof publishCreatedHive;
+  /** B-07 / C-2: record the owner's beacon-publish consent. Default: the shared
+   *  `beacon-consent` accessor (writes the federated `beacon-publish-consent`
+   *  hive setting). Best-effort — a consent write never fails the create. */
+  setBeaconConsent?: (workspaceId: string, hiveHomeSlug: string, consent: boolean) => Promise<void>;
   loadRegistry?: typeof loadHarnessRegistry;
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** Remove a half-created hive home (reverse of createHiveHarness). Best-effort. */
@@ -266,6 +288,12 @@ export async function createHiveFromRepo(
   const createHive = deps.createHive ?? createHiveHarness;
   const createMember = deps.createMember ?? defaultCreateMember;
   const publish = deps.publish ?? publishCreatedHive;
+  const setBeaconConsent =
+    deps.setBeaconConsent ??
+    (async (workspaceId: string, hiveHomeSlug: string, consent: boolean) => {
+      const { setBeaconPublishConsent } = await import('../../beacon-consent');
+      await setBeaconPublishConsent(workspaceId, hiveHomeSlug, consent);
+    });
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
   const mutateRegistry = deps.mutateRegistry ?? mutateHarnessRegistry;
   const removeHiveHome = deps.removeHiveHome ?? defaultRemoveHiveHome;
@@ -396,10 +424,15 @@ export async function createHiveFromRepo(
   //     into-hive mode — the home already exists.
   let hive: CreateHiveResult | null = null;
   if (!intoHive) {
+    // learning-packs P-005: seed the selected pack into the new home,
+    // shape-filtered by what detection learned about the repo.
+    const projectShapes = shapesFromDetection(bp.detection);
     hive = await createHive({
       slug: hiveSlug,
       workspaceId: opts.workspaceId,
       ...(opts.parentDir ? { parentDir: opts.parentDir } : {}),
+      ...(opts.learningPack !== undefined ? { learningPack: opts.learningPack } : {}),
+      ...(projectShapes ? { projectShapes } : {}),
     });
     if (!hive.ok) {
       mark('create', 'error');
@@ -446,6 +479,15 @@ export async function createHiveFromRepo(
       ),
     };
   }, opts.workspaceId).catch(() => {});
+
+  // 7.5 — record the owner's beacon-publish consent (B-07 / C-2). NEW published
+  //       Hives only: a private hive never publishes (no beacon), and into-hive
+  //       re-adds must not clobber the existing home's standing consent. Absent =
+  //       OFF (D-002), so we only write when the publish-flow carried a choice.
+  //       Best-effort — like the publish step, never fails the create.
+  if (!intoHive && visibility !== 'private' && opts.beaconConsent !== undefined) {
+    await setBeaconConsent(opts.workspaceId, hiveSlug, opts.beaconConsent === true).catch(() => {});
+  }
 
   // 8 — publish per visibility (P-007). Best-effort: NEVER fails the create.
   //     into-hive mode (P-009) re-publishes the EXISTING listing instead — new
@@ -502,6 +544,7 @@ export async function createHiveFromRepo(
       ...(defaultBranch ? { defaultBranch } : {}),
       ...(repoId !== undefined ? { githubRepositoryId: repoId } : {}),
       ...(bp.detection !== undefined ? { detection: bp.detection } : {}),
+      ...(hive?.seededLearnings ? { seededLearnings: hive.seededLearnings } : {}),
       ...(duplicateOf ? { duplicateOf } : {}),
     },
     bindingUnverified,

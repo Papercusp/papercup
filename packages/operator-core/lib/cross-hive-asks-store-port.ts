@@ -1,107 +1,53 @@
 /**
- * cross-hive-asks-store-port — the C-1 `cross_hive_asks` ledger STORE seam
- * (hive-network-surface-2026-06-11, brief B-04 consuming brief B-02's contract).
+ * cross-hive-asks-store-port — the narrow C-1 ledger STORE port the front-door
+ * tools depend on (hive-network-surface-2026-06-11 P-003, brief B-04), plus the
+ * production adapter over brief B-02's `PgCrossHiveAsks`.
  *
- * B-02 owns the migration + the live PG store; B-04's front-door tools
- * (`hive:ask` / `hive:request_work` / `hive:asks`) CONSUME it. This module is the
- * narrow port the tools build against plus a process-level provider so the live
- * store is injected once (B-02 registers its impl) without B-04's tools holding a
- * compile-time dependency on B-02's not-yet-landed module:
- *
- *   - B-02's store module (or the index.ts wiring line added on landing) calls
- *     `setCrossHiveAsksStore(impl)` once at boot.
- *   - The tools call `getCrossHiveAsksStore()`; before B-02 lands it throws a
- *     clear "pending" error, and tests inject a fake via `setCrossHiveAsksStore`.
- *
- * The row/insert/filter shapes mirror C-1 verbatim (see the plan's Contracts
- * section). When B-02 lands, the registered impl adapts its own row type to these
- * if they differ — the contract field set is fixed.
+ * The send composition + `hive:asks` take the store as an injected port so they
+ * unit-test without PG (a fake store) and bind to the live PG store
+ * (`pgCrossHiveAsksStore`) in production. The port re-uses B-02's row / input /
+ * filter types verbatim — no parallel shapes to drift.
  */
 import type { Sql } from 'postgres';
+import {
+  PgCrossHiveAsks,
+  type CrossHiveAsk,
+  type InsertCrossHiveAskInput,
+  type ListCrossHiveAsksFilter,
+} from './cross-hive-asks-pg';
 
-/** C-1 ask states + their legal transitions: queued→sent→answered|declined; queued|sent→expired. */
-export type CrossHiveAskState = 'queued' | 'sent' | 'answered' | 'declined' | 'expired';
-export type CrossHiveAskDirection = 'out' | 'in';
-export type CrossHiveAskKind = 'ask' | 'work-request';
+export type { CrossHiveAsk, InsertCrossHiveAskInput, ListCrossHiveAsksFilter } from './cross-hive-asks-pg';
 
-/** One `cross_hive_asks` row (C-1), camelCased for the TS surface. */
-export interface CrossHiveAskRow {
-  id: string;
-  peerPubkey: string;
-  direction: CrossHiveAskDirection;
-  kind: CrossHiveAskKind;
-  subject: string;
-  body: string;
-  correlationId: string;
-  state: CrossHiveAskState;
-  replyBody: string | null;
-  replyTs: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** The fields the SEND tools supply when recording a fresh outbound ask. */
-export interface CrossHiveAskInsert {
-  id: string;
-  peerPubkey: string;
-  direction: CrossHiveAskDirection;
-  kind: CrossHiveAskKind;
-  subject: string;
-  body: string;
-  correlationId: string;
-  /** A just-created outbound ask is `sent` (delivered) or `queued` (peer offline). */
-  state: 'queued' | 'sent';
-}
-
-/** Filter for `hive:asks` — every field ANDs; omit all for the full list. */
-export interface CrossHiveAsksFilter {
-  state?: CrossHiveAskState;
-  direction?: CrossHiveAskDirection;
-  peerPubkey?: string;
-  correlationId?: string;
-}
-
-/** The narrow store surface B-04's tools depend on (a subset of B-02's full store). */
+/** The subset of the C-1 ledger the front-door tools use. */
 export interface CrossHiveAsksStore {
-  insertCrossHiveAsk(
+  /** Record a fresh request in state `queued` (idempotent on correlation_id). */
+  insertQueued(
     workspaceId: string,
     hiveSlug: string,
-    row: CrossHiveAskInsert,
+    input: InsertCrossHiveAskInput,
+    sql?: Sql,
+  ): Promise<CrossHiveAsk>;
+  /** queued → sent once the wire send delivered (keyed by correlation_id; idempotent). */
+  markSentByCorrelationId(
+    workspaceId: string,
+    hiveSlug: string,
+    correlationId: string,
     sql?: Sql,
   ): Promise<void>;
-  listCrossHiveAsks(
+  /** List rows (most-recent-first) for `hive:asks`. */
+  list(
     workspaceId: string,
     hiveSlug: string,
-    filter: CrossHiveAsksFilter,
+    filter: ListCrossHiveAsksFilter,
     sql?: Sql,
-  ): Promise<CrossHiveAskRow[]>;
+  ): Promise<CrossHiveAsk[]>;
 }
 
-let registered: CrossHiveAsksStore | null = null;
-
-/**
- * Register the live C-1 store impl (B-02). Called once at boot (or per-test).
- * Idempotent — last write wins.
- */
-export function setCrossHiveAsksStore(store: CrossHiveAsksStore): void {
-  registered = store;
-}
-
-/** TEST helper: clear the registered store so a case starts from a known state. */
-export function __resetCrossHiveAsksStore(): void {
-  registered = null;
-}
-
-/**
- * The live C-1 store. Throws a clear, actionable error when no impl is registered
- * yet (B-02's migration + store has not landed / been wired) rather than silently
- * dropping the asking-side record.
- */
-export function getCrossHiveAsksStore(): CrossHiveAsksStore {
-  if (!registered) {
-    throw new Error(
-      'cross_hive_asks store (C-1) is not registered — brief B-02 must land the migration + store and wire setCrossHiveAsksStore() at boot',
-    );
-  }
-  return registered;
-}
+/** The live PG store (B-02's `PgCrossHiveAsks`), per-(workspace, hive) per call. */
+export const pgCrossHiveAsksStore: CrossHiveAsksStore = {
+  insertQueued: (ws, slug, input, sql) => new PgCrossHiveAsks(ws, slug, sql).insert(input),
+  async markSentByCorrelationId(ws, slug, correlationId, sql) {
+    await new PgCrossHiveAsks(ws, slug, sql).markSentByCorrelationId(correlationId);
+  },
+  list: (ws, slug, filter, sql) => new PgCrossHiveAsks(ws, slug, sql).list(filter),
+};

@@ -39,6 +39,25 @@ export interface CreateHiveOpts {
    *  idle (no wake declared; wake later via hive:wake / hive:declare-wake). */
   wakeInSeconds?: number;
   kickoff?: string;
+  /**
+   * Learning pack to seed into the hive's `hive:<slug>` memory pool
+   * (learning-packs-2026-06-11 P-005). Omit ⇒ the default pack (D-004);
+   * `null` ⇒ seed nothing. Flag-gated (LEARNING_PACKS) + best-effort —
+   * a seed failure never fails the create.
+   */
+  learningPack?: string | null;
+  /** Project shapes from blueprint detection — filters `applies_to`-tagged
+   *  learnings (D-002). Omit (repo-less) ⇒ `any`-tagged items only. */
+  projectShapes?: import('../../learning-packs/pack-format').AppliesTo[];
+  /** metadata.created_by on seeded rows. Default 'system'. */
+  createdBy?: string;
+}
+
+export interface SeededLearningsSummary {
+  packId: string;
+  packVersion?: string;
+  count?: number;
+  error?: string;
 }
 
 export interface CreateHiveResult {
@@ -46,6 +65,8 @@ export interface CreateHiveResult {
   slug?: string;
   path?: string;
   waked?: boolean;
+  /** Present when seeding was attempted (learning-packs P-005). */
+  seededLearnings?: SeededLearningsSummary;
   error?: string;
   message?: string;
 }
@@ -179,6 +200,52 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       );
     }
 
+    // 6b. Seed the selected learning pack into the hive's `hive:<slug>` memory
+    //     pool (learning-packs P-005, D-001 copy-not-link). Flag-gated +
+    //     best-effort: a seed failure warns and reports, never fails the
+    //     create — but a LATER step failure rolls seeded rows back (the undo
+    //     joins the stack). Runs before the first wake so the Queen's opening
+    //     turn already recalls the pack.
+    let seededLearnings: SeededLearningsSummary | undefined;
+    if (opts.learningPack !== null) {
+      try {
+        const [{ getFlag }, { FLAGS }] = await Promise.all([
+          import('@papercusp/flags/server'),
+          import('@papercusp/flags'),
+        ]);
+        if (await getFlag(FLAGS.LEARNING_PACKS, 'system')) {
+          const { DEFAULT_LEARNING_PACK_ID } = await import('../../learning-packs/pack-format');
+          const { loadLearningPack } = await import('../../learning-packs/load-packs');
+          const { seedPackIntoHive } = await import('../../learning-packs/seed');
+          const packId = opts.learningPack ?? DEFAULT_LEARNING_PACK_ID;
+          const loaded = await loadLearningPack(packId);
+          if (!loaded) {
+            seededLearnings = { packId, error: 'pack_not_found' };
+            console.warn(`[hive:create] learning pack '${packId}' not found; seeding skipped (${opts.slug})`);
+          } else {
+            const res = await seedPackIntoHive({
+              workspaceId: ws,
+              hiveSlug: opts.slug,
+              pack: loaded.pack,
+              ...(opts.projectShapes ? { shapes: opts.projectShapes } : {}),
+              ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
+            });
+            undo.push(res.undo);
+            seededLearnings = {
+              packId: res.packId,
+              packVersion: res.packVersion,
+              count: res.seeded,
+              ...(res.error ? { error: res.error } : {}),
+            };
+          }
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[hive:create] learning-pack seed failed (${opts.slug}): ${msg}`);
+        seededLearnings = { packId: opts.learningPack ?? 'papercusp-default', error: msg.slice(0, 200) };
+      }
+    }
+
     // 7. Initial wake (optional): fire the Queen now, or declare a time wake.
     //    ROOT launch (no `parent`) — the no-nest guard passes for a parentless hive.
     let waked = false;
@@ -201,7 +268,7 @@ export async function createHiveHarness(opts: CreateHiveOpts): Promise<CreateHiv
       waked = true;
     }
 
-    return { ok: true, slug: opts.slug, path, waked };
+    return { ok: true, slug: opts.slug, path, waked, ...(seededLearnings ? { seededLearnings } : {}) };
   } catch (e) {
     await rollback();
     return { ok: false, error: 'create_failed', message: (e instanceof Error ? e.message : String(e)).slice(0, 400) };

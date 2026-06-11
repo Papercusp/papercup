@@ -17,7 +17,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { InMemoryCrossHiveOutbox, type CrossHiveTransport, type CrossHiveWireEnvelope } from './cross-hive-transport';
+import {
+  InMemoryCrossHiveOutbox,
+  NULL_CROSS_HIVE_ASK_LEDGER,
+  type CrossHiveTransport,
+  type CrossHiveWireEnvelope,
+} from './cross-hive-transport';
 import { setCrossHiveGrant, loadCrossHiveGrants } from './cross-hive-grants';
 import { wireCrossHiveBoundary, type CrossHiveInboundReply } from './cross-hive-wiring';
 import type { CrossHiveBoundaryPorts, CrossHiveEnvelope } from './cross-hive-boundary';
@@ -112,6 +117,9 @@ describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006
       // A's owner authorized OUTBOUND asks + work-requests to B (egress default-deny, B-05).
       loadOutboundGrants: async () => [{ peerHivePubkey: B.pubkey, allowedKinds: ['ask', 'work-request'] }],
       outbox: new InMemoryCrossHiveOutbox(),
+      // This test predates the ask ledger — opt out of the PG default (the durable
+      // reply path is proven in cross-hive-reply-events.integration.test.ts).
+      askLedger: NULL_CROSS_HIVE_ASK_LEDGER,
       onReply: (r) => aReplies.push(r),
     });
     const bWiring = wireCrossHiveBoundary({

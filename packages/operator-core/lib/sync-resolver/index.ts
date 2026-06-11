@@ -1739,6 +1739,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // network.board — the aggregate Network-tab board (hive-network-surface
+  // B-08 / P-006, CONTRACT C-3): one flat row per other-hive context across the
+  // capability-tier ladder (tier 1 this Swarm · tier 2 own other hives · tier 3
+  // shared-Hive peer Swarms · tier 4 foreign directory hives + beacon + grants +
+  // asks). Composes the same buildNetworkBoard the `network:board` agent tool
+  // serves — one composition, no drift. Flat-row contract (each row IS a
+  // NetworkBoardRow). SSE-primary + 60s safety-net on the consumer (pui Network
+  // pane B-09). Live: invalidated by the table→query bridge on
+  // coord_presence/feature_claims writes, and by callers that
+  // notifySyncInvalidate('network.board', {}) after a grant / ask / hive
+  // start-pause / beacon change.
+  'network.board': {
+    argsSchema: z.object({ workspace: z.string().optional() }),
+    resolve: async (args) => {
+      const { workspace } = args as { workspace?: string };
+      const { buildNetworkBoard } = await import('../network-board/build-board');
+      return buildNetworkBoard({ workspaceId: workspace });
+    },
+  },
+
   // planItems.byPlan — the parsed plan items (id, text, storedStatus,
   // effectiveStatus, blockedBy, …) for one plan, for the Create-tab kanban.
   // Reads through the SAME path as `plans:get` (parses the plan's `content`

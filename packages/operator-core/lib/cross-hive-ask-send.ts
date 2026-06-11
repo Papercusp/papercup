@@ -3,21 +3,25 @@
  * `hive:request_work` (hive-network-surface-2026-06-11 P-003, brief B-04).
  *
  * One initiating-side pipeline, shared by both tools (they differ only by
- * `kind`): outbound-grant check → resolve THIS Hive's live boundary → sign + send
- * the request envelope (store-and-forward, durable) → record the outbound ask in
- * the C-1 ledger. The returned `correlationId` is the join key the asking Queen
- * awaits — a later answer/decline from the peer comes back through the boot-wired
- * boundary (B-03), which transitions the ledger row and emits
- * `cross-hive:answered:<correlationId>` / `cross-hive:declined:<correlationId>`
- * (contract C-4). So the Queen's loop is: send → `events:await` the answered key.
+ * `kind`): outbound-grant check → resolve THIS Hive's live boundary → record the
+ * ask in the C-1 ledger (`queued`) → sign + send the request envelope (durable
+ * store-and-forward) → mark the ledger row `sent` on delivery. Insert-BEFORE-send
+ * is deliberate: a crash between the ledger write and the wire send leaves a
+ * `queued` row the outbox drain (B-01) can still deliver and mark sent — the
+ * asking-side record is never lost.
  *
- * Every collaborator is an injected PORT so this is unit-testable without a swarm,
- * PG, or the grants store, and so the not-yet-landed pieces (B-02 store, B-05
- * outbound enforcement) swap in by changing only the production deps factory.
+ * The returned `correlationId` is the join key the asking Queen awaits: a later
+ * answer/decline from the peer comes back through the boot-wired boundary (B-03),
+ * which transitions the ledger row and emits `cross-hive:answered:<correlationId>`
+ * / `cross-hive:declined:<correlationId>` (contract C-4). So the Queen's loop is
+ * send → `events:await` the answered key.
+ *
+ * Every collaborator is an injected PORT so this unit-tests without a swarm, PG,
+ * or the grants store.
  */
 import { randomUUID } from 'node:crypto';
 import type { CrossHiveBoundaryWiring } from './cross-hive-wiring';
-import type { CrossHiveRequestKind } from './cross-hive-transport';
+import { crossHiveReplyEventKey, type CrossHiveRequestKind } from './cross-hive-transport';
 import type { CrossHiveAsksStore } from './cross-hive-asks-store-port';
 
 /** Decide whether THIS Hive may send `kind` to `peerPubkey` (outbound grant — B-05). */
@@ -34,7 +38,7 @@ export interface SendCrossHiveAskDeps {
     workspaceId: string,
     hiveSlug: string,
   ) => CrossHiveBoundaryWiring | undefined | Promise<CrossHiveBoundaryWiring | undefined>;
-  /** Outbound admission policy (B-05). Default: stub-allow until B-05 lands. */
+  /** Outbound admission policy (B-05's assertOutboundGrant, adapted). */
   checkOutboundGrant: CheckOutboundGrant;
   /** The C-1 ledger store (B-02). */
   store: CrossHiveAsksStore;
@@ -70,9 +74,9 @@ export type SendCrossHiveAskResult =
     };
 
 /**
- * Compose one outbound cross-Hive request. Order matches the plan: grant → send →
- * ledger enqueue. The signed envelope's id IS the correlation id, so the peer's
- * reply (whose `correlationId` echoes it) correlates back to this ledger row.
+ * Compose one outbound cross-Hive request. The signed envelope's id IS the
+ * correlation id, so the peer's reply (whose `correlationId` echoes it)
+ * correlates back to this ledger row.
  */
 export async function sendCrossHiveAsk(
   input: SendCrossHiveAskInput,
@@ -81,7 +85,7 @@ export async function sendCrossHiveAsk(
   const { workspaceId, hiveSlug, peerPubkey, kind, subject, body } = input;
 
   // 1. Outbound admission: default-deny to peers this Hive hasn't been granted
-  //    outbound (B-05). The stub default allows; B-05 swaps in real enforcement.
+  //    outbound (B-05). An ungranted peer is rejected before any side effect.
   const grant = await deps.checkOutboundGrant(workspaceId, hiveSlug, peerPubkey, kind);
   if (!grant.allowed) {
     return { ok: false, reason: grant.reason };
@@ -97,22 +101,24 @@ export async function sendCrossHiveAsk(
     };
   }
 
-  // 3. Sign + send (durable store-and-forward). The envelope id is the correlation id.
+  // 3. Record the outbound ask FIRST (durable, state `queued`) so the asking-side
+  //    record survives a crash mid-send; the envelope id is the correlation id.
   const correlationId = (deps.newId ?? randomUUID)();
-  const sendResult = await boundary.send(peerPubkey, { id: correlationId, kind, subject, body });
-  const state: 'sent' | 'queued' = sendResult.delivered ? 'sent' : 'queued';
-
-  // 4. Record the outbound ask in the C-1 ledger (durable asking-side record).
-  await deps.store.insertCrossHiveAsk(workspaceId, hiveSlug, {
-    id: correlationId,
+  await deps.store.insertQueued(workspaceId, hiveSlug, {
     peerPubkey,
-    direction: 'out',
     kind,
+    correlationId,
     subject,
     body,
-    correlationId,
-    state,
+    direction: 'out',
   });
+
+  // 4. Sign + send (durable store-and-forward). On delivery, advance queued → sent.
+  const sendResult = await boundary.send(peerPubkey, { id: correlationId, kind, subject, body });
+  if (sendResult.delivered) {
+    await deps.store.markSentByCorrelationId(workspaceId, hiveSlug, correlationId);
+  }
+  const state: 'sent' | 'queued' = sendResult.delivered ? 'sent' : 'queued';
 
   return {
     ok: true,
@@ -121,17 +127,8 @@ export async function sendCrossHiveAsk(
     peerPubkey,
     state,
     delivered: sendResult.delivered,
-    answeredEvent: `cross-hive:answered:${correlationId}`,
-    declinedEvent: `cross-hive:declined:${correlationId}`,
+    // C-4 keys via B-03's helper — single source of truth for the key format.
+    answeredEvent: crossHiveReplyEventKey('answer', correlationId),
+    declinedEvent: crossHiveReplyEventKey('decline', correlationId),
   };
 }
-
-/**
- * The interim outbound-grant check: ALLOW everything, with a reason noting that
- * real enforcement is pending brief B-05. Swapped for B-05's direction-aware
- * `cross-hive-grants` enforcement in the production deps factory once it lands.
- */
-export const stubAllowOutboundGrant: CheckOutboundGrant = async () => ({
-  allowed: true,
-  reason: 'outbound grant enforcement pending brief B-05 (stub-allow)',
-});

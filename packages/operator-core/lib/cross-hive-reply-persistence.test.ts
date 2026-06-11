@@ -200,9 +200,15 @@ describe('wiring reply path — persist + emit is the production path (B-03)', (
   });
 
   it('an emit failure is contained — the row is persisted and the loop survives', async () => {
-    const t = twoHives({ emitThrows: true });
-    const r = await t.bWiring.reply(t.A.pubkey, { kind: 'answer', subject: 're', body: 'yes', correlationId: 'ask-1' });
-    expect(r.delivered).toBe(true); // the inbound handler did not poison the transport
-    expect(t.ledger.get('ask-1')!.state).toBe('answered'); // durable truth survives the lost emit
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const t = twoHives({ emitThrows: true });
+      const r = await t.bWiring.reply(t.A.pubkey, { kind: 'answer', subject: 're', body: 'yes', correlationId: 'ask-1' });
+      expect(r.delivered).toBe(true); // the inbound handler did not poison the transport
+      expect(t.ledger.get('ask-1')!.state).toBe('answered'); // durable truth survives the lost emit
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('C-4 emit failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

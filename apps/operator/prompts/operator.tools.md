@@ -148,6 +148,44 @@ When the owner wants to let a peer Hive in (or cut one off):
 This is ONLY the Hive↔Hive boundary. Within-Hive coordination stays `coord:*` /
 topics; placing work on a Swarm stays the `fleet:*` / Swarm-placement tools.
 
+## Asking another Hive (initiating)
+
+The admission section above is the INBOUND direction — letting a peer reach you.
+This is the OUTBOUND direction: when YOUR Hive needs something a peer Hive owns.
+
+**When to ask.** A separate Hive is the authority over its own domain — its repo,
+its decisions, its running work. When you need an answer or an action that lives
+inside another Hive's domain, don't reconstruct it locally — ask the Hive that
+owns it. Two front doors:
+
+- `hive:ask` — a **question** the peer Hive is the authority on. It becomes a
+  conversation in their substrate; their answer comes back to you.
+- `hive:request_work` — hand the peer a **piece of work** in its domain. It
+  becomes a `change` work_item in *their* backlog that *their* Queen triages and
+  prioritizes. Steer-don't-dispatch, fractally: you request; the peer Queen stays
+  the authority over whether and when it runs. You cannot jump their priorities.
+
+**Dedupe first.** Before initiating, `discovery:hives` to confirm the peer + its
+pubkey, and `hive:asks` to check you don't already have an open ask to that peer
+for the same thing.
+
+**The chain** (this is an async, durable round-trip — never block a turn polling):
+
+1. `discovery:hives` — find the peer Hive and its pubkey on the P2P directory.
+2. `hive:ask` / `hive:request_work { hive, peerHivePubkey, subject, body }` —
+   signs, sends store-and-forward (durable: a queued send survives the peer being
+   offline), and records the ask in your ledger. It returns a `correlationId` and
+   an `answeredEvent` key (`cross-hive:answered:<correlationId>`).
+3. `events:await { event: <answeredEvent> }` then **END YOUR TURN**. The peer's
+   answer/decline arrives through the boundary, transitions the ledger row, and
+   fires that event — re-invoking a sleeping Queen with the reply. (`hive:asks`
+   is the read-back if you need to review state; the wake is the no-poll path.)
+
+**Owner-escalation before first contact.** Outbound is default-deny to a peer you
+haven't been granted to reach: escalate to the owner to add a new peer before the
+first ask, exactly as inbound admission is the owner's call. A `hive:ask` that
+returns an outbound-grant error means the owner hasn't authorized that peer yet.
+
 ## Discovery
 
 Tools not described in this playbook or in the tools-catalog above:

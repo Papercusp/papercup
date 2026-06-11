@@ -55,6 +55,13 @@ export default defineTool({
       .optional()
       .describe('Wake the Queen after N seconds (0 = now). Omit ⇒ create idle; wake later with hive:wake / hive:declare-wake.'),
     kickoff: z.string().max(2000).optional().describe('Kickoff context for the first wake.'),
+    learningPack: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "Learning pack to seed into the hive's shared memory (learning-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. learning_packs:list enumerates the available packs.",
+      ),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
@@ -78,10 +85,19 @@ export default defineTool({
       deployment: args.deployment,
       wakeInSeconds: args.wakeInSeconds,
       kickoff: args.kickoff,
+      // 'none' ⇒ null (seed nothing); omit ⇒ undefined (default pack).
+      learningPack: args.learningPack === 'none' ? null : args.learningPack ?? undefined,
     });
     if (!res.ok) return text({ ...res });
 
     const hive = await resolveHive(args.slug, workspaceId);
-    return text({ ok: true, slug: res.slug, path: res.path, waked: res.waked, hive });
+    return text({
+      ok: true,
+      slug: res.slug,
+      path: res.path,
+      waked: res.waked,
+      ...(res.seededLearnings ? { seededLearnings: res.seededLearnings } : {}),
+      hive,
+    });
   },
 });

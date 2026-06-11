@@ -38,6 +38,14 @@ pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 #[derive(Debug, PartialEq)]
 pub enum Action {
     None,
+    /// Refetch the cross-Hive network board now (the network-pane's manual `g`
+    /// — the refetch loop covers the push-driven cadence, B-09).
+    FetchNetworkBoard,
+    /// Open the per-hive drill-in for the selected network-board row (B-09's
+    /// Enter seam). The run loop's `// B-10 SEAM:` arm consumes it: tier 1
+    /// switches to the dock's `this hive` tab; tiers 2-4 open B-10's generated
+    /// per-hive tab (placeholder: a plain named tab until the generator lands).
+    OpenNetworkDrillIn(crate::network::DrillInRequest),
     /// A pui docs action (harness-docs-integration P-009): POST regenerate|verify
     /// for the selected doc. The run loop fires it; the refetch loop refreshes the
     /// badges on its next tick.
@@ -819,6 +827,14 @@ pub enum Tab {
     /// key; the mode + agent scope come from the subcommand. Stacked with the
     /// wake board in the dock's per-agent side column.
     AgentCtx,
+    /// Network — the aggregate cross-Hive board (hive-network-surface-2026-06-11
+    /// B-09): one pinned-C-3 row per hive-context over the capability ladder,
+    /// tier-badged, sections conditional on data availability. PANE-ONLY like
+    /// Wake: renders solely as the dock `network` tab's pinned
+    /// `pui network-pane` (and, focused on one key, as `pui hive-pane <key>`
+    /// inside B-10's per-hive drill-in tabs). The user-facing name is
+    /// "Network" — NEVER "Apiary" (C-5: reserved by the instance gym).
+    Network,
 }
 
 impl Tab {
@@ -865,6 +881,7 @@ impl Tab {
             Tab::Hives => "Hives",
             Tab::Wake => "Wakes",
             Tab::AgentCtx => "Agent",
+            Tab::Network => "Network",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -913,6 +930,7 @@ impl Tab {
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
             Tab::AgentCtx => 'X',
+            Tab::Network => 'N',
         }
     }
     pub fn index(self) -> usize {
@@ -1085,6 +1103,14 @@ pub struct App {
     pub hive_directory: Vec<crate::models::DiscoveredHiveRow>,
     pub hive_dir_sel: usize,
     pub hive_sel: usize,
+    /// The cross-Hive network board (hive-network-surface-2026-06-11 B-09):
+    /// the pinned-C-3 rows + cursor. Fed by the refetch loop (quietly optional
+    /// until B-08's endpoint lands); rendered by the pinned `Tab::Network`.
+    pub network_rows: Vec<crate::models::NetworkBoardRow>,
+    pub network_sel: usize,
+    /// `pui hive-pane <key>` (the primary pane of B-10's per-hive drill-in
+    /// tabs): render ONLY this key's dossier, full-pane. `None` = the board.
+    pub network_focus: Option<String>,
     pub memories: Vec<crate::models::MemoryEntry>,
     pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
     pub memory_sel: usize,
@@ -1429,6 +1455,9 @@ impl App {
             hive_sel: 0,
             hive_directory: Vec::new(),
             hive_dir_sel: 0,
+            network_rows: Vec::new(),
+            network_sel: 0,
+            network_focus: None,
             memories: Vec::new(),
             memory_hits: None,
             memory_sel: 0,
@@ -3256,6 +3285,41 @@ impl App {
         }
     }
 
+    /// The pinned network-pane's keymap (hive-network-surface B-09): j/k move
+    /// the board cursor, Enter fires the drill-in seam (B-10's per-hive tab),
+    /// `g` refetches now (the refetch loop covers the push-driven cadence).
+    /// The `pui hive-pane <key>` focused mode has no list — nav keys are inert
+    /// there, only `g` acts.
+    fn network_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.network_focus.is_none()
+                    && self.network_sel + 1 < self.network_rows.len()
+                {
+                    self.network_sel += 1;
+                }
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.network_focus.is_none() {
+                    self.network_sel = self.network_sel.saturating_sub(1);
+                }
+                Action::Render
+            }
+            KeyCode::Enter => {
+                if self.network_focus.is_some() {
+                    return Action::None;
+                }
+                match self.network_rows.get(self.network_sel) {
+                    Some(row) => Action::OpenNetworkDrillIn(crate::network::drill_in(row)),
+                    None => Action::None,
+                }
+            }
+            KeyCode::Char('g') => Action::FetchNetworkBoard,
+            _ => Action::None,
+        }
+    }
+
 
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
@@ -3741,6 +3805,15 @@ impl App {
                 }
                 Action::Render
             }
+            Event::NetworkBoard(rows) => {
+                // The cross-Hive network board landed (B-09): a whole C-3
+                // snapshot — replace + clamp the cursor.
+                self.network_rows = rows;
+                if self.network_sel >= self.network_rows.len() {
+                    self.network_sel = self.network_rows.len().saturating_sub(1);
+                }
+                Action::Render
+            }
             Event::BeeOutput {
                 owner,
                 offset,
@@ -4123,6 +4196,11 @@ impl App {
         // there is no tab strip to navigate in a pinned dock pane.
         if self.tab == Tab::Wake {
             return self.wake_board_key(code);
+        }
+        // The pinned network-pane / hive-pane (hive-network-surface B-09):
+        // the board owns the whole keymap, the wake-pane convention.
+        if self.tab == Tab::Network {
+            return self.network_key(code);
         }
         // The pinned agent-context panes (dock 4-pane split): j/k scroll,
         // N opens the notifications history, everything else is swallowed
@@ -5355,8 +5433,10 @@ impl App {
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
-            // and the Wake board / agent-context pane own their own j/k.
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx => return,
+            // and the Wake board / agent-context / network panes own their own
+            // j/k (pinned dock panes own their whole keymap).
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
+            | Tab::Network => return,
         };
         if len == 0 {
             return;
@@ -5384,7 +5464,8 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx => return,
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake | Tab::AgentCtx
+            | Tab::Network => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;

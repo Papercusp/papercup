@@ -26,6 +26,7 @@ mod layout;
 mod lexicon;
 mod models;
 mod mux;
+mod network;
 mod notify;
 mod operator_voice_bus;
 mod reap;
@@ -97,8 +98,12 @@ async fn main() -> Result<()> {
         // prompt-/mail-/work-pane (dock 4-pane split, owner ask 2026-06-11): one
         // agent-context board each — the prompt the agent runs on, the coord mail, the work
         // items + plan linkage. Scope arg like wake-pane (--queen | <owner>).
+        // network-pane / hive-pane (hive-network-surface-2026-06-11 B-09): the
+        // dock `network` tab's cross-Hive board, and the per-hive drill-in
+        // tab's dossier pane (B-10's generated tabs run `pui hive-pane <key>`).
         Some("chat-pane") | Some("watch-pane") | Some("dock-driver") | Some("wake-pane")
-        | Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => {}
+        | Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
+        | Some("network-pane") | Some("hive-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -112,12 +117,28 @@ async fn main() -> Result<()> {
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
         Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => Some(app::Tab::AgentCtx),
+        // network-pane: the cross-Hive board; hive-pane: one row's dossier
+        // (same tab — `network_focus` below selects the mode).
+        Some("network-pane") | Some("hive-pane") => Some(app::Tab::Network),
         _ => None,
     };
     let agent_ctx_mode = match subcommand.as_deref() {
         Some("mail-pane") => app::AgentCtxMode::Mail,
         Some("work-pane") => app::AgentCtxMode::Work,
         _ => app::AgentCtxMode::Prompt,
+    };
+    // Hive drill-in pane (hive-network-surface B-09, the B-10 tab seam): the
+    // C-3 row key (slug or pubkey-b64) this instance renders full-pane.
+    // Required argv[2] for `hive-pane`; `network-pane` renders the board.
+    let network_focus: Option<String> = match subcommand.as_deref() {
+        Some("hive-pane") => match std::env::args().nth(2) {
+            Some(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
+            _ => {
+                eprintln!("usage: pui hive-pane <key>");
+                std::process::exit(2);
+            }
+        },
+        _ => None,
     };
     // Watch pane (pui-dock-agent-stack-2026-06-07): the owner id of the ONE
     // swarm agent this instance watches, read-only. Required argv[2].
@@ -181,7 +202,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, pinned, watch, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs).await;
+    let result = run(&mut terminal, pinned, watch, network_focus, wake_filter, agent_ctx_mode, dock_agent_panes, hive_agent_tabs).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -259,6 +280,7 @@ async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
     watch: Option<String>,
+    network_focus: Option<String>,
     wake_filter: app::WakeFilter,
     agent_ctx_mode: app::AgentCtxMode,
     dock_agent_panes: bool,
@@ -277,6 +299,8 @@ async fn run<B: Backend>(
     // the bee selection so the dossier render + refetches target it from the
     // first frame; the dock chat-pane flag arms the reactive agent stack.
     app.watch = watch.clone();
+    // hive-pane (B-09/B-10 drill-in): pin the dossier to one C-3 row key.
+    app.network_focus = network_focus;
     app.dock_agent_panes = dock_agent_panes;
     app.hive_agent_tabs = hive_agent_tabs;
     if let Some(owner) = &app.watch {
@@ -595,6 +619,38 @@ async fn run<B: Backend>(
                 // the tab populates both the live roster + the browseable hives.
                 tokio::spawn(fetch_hives(tx.clone()));
                 tokio::spawn(fetch_hive_directory(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchNetworkBoard => {
+                // B-09: the network-pane's manual `g` refresh — the refetch
+                // loop covers the push-driven cadence (SSE + 60s safety net).
+                tokio::spawn(fetch_network_board(tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::OpenNetworkDrillIn(req) => {
+                // B-10 SEAM: the per-hive drill-in open action (hive-network-
+                // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
+                // hive — its "drill-in" is the dock's `this hive` tab (always
+                // the FIRST tab, agreed with B-10). Tiers 2-4 open a per-hive
+                // tab named `⌕ <key>` (B-10's hive_tab_name format).
+                //
+                // PLACEHOLDER until B-10's generator lands (they emit
+                // `hive-network:b10-generator-landed`): a plain named tab via
+                // the zellij CLI. Swap-in: build layout::HiveTabSpec from
+                // `req` (watch_owners=[] in v1 — C-3 rows carry no bee owner
+                // ids), write layout::hive_tab_kdl(&spec) to a temp .kdl file,
+                // pass its path as `layout`. NOTE for B-10: the companion is
+                // never spawned in pinned panes (see Companion::spawn gating
+                // above), so this arm must stay on the `zellij action` CLI
+                // path — `Command::NewTab` over the companion won't fire here.
+                if req.tier <= 1 {
+                    let _ = Zellij.run_action(&MuxAction::GoToTab(1));
+                } else {
+                    let _ = Zellij.run_action(&MuxAction::NewTab {
+                        name: Some(format!("⌕ {}", req.key)),
+                        layout: None,
+                    });
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::JoinHive { slug, links } => {
@@ -2568,6 +2624,24 @@ async fn fetch_hives(tx: UnboundedSender<Event>) {
     }
 }
 
+/// Fetch the cross-Hive network board (hive-network-surface B-09) off the UI
+/// thread and emit `Event::NetworkBoard` — the network-pane's manual `g`
+/// refresh. Errors surface in the status bar (the user asked, so a failure is
+/// an answer); the refetch loop's passes stay quietly optional instead.
+async fn fetch_network_board(tx: UnboundedSender<Event>) {
+    let Ok(client) = OperatorClient::from_discovery().await else {
+        return;
+    };
+    match client.network_board().await {
+        Ok(rows) => {
+            let _ = tx.send(Event::NetworkBoard(rows));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("network board: {e}")));
+        }
+    }
+}
+
 /// Fetch the P2P hive directory (`GET /api/discovery/hives`) and emit
 /// `Event::HiveDirectory` — the Hives tab's browseable directory list
 /// (p2p-hive-directory P-006). Best-effort: a fetch failure keeps the prior list.
@@ -3376,6 +3450,13 @@ async fn refetch_all(
     // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
     if let Ok(fr) = client.deploy_frames().await {
         let _ = tx.send(Event::Frames(fr));
+    }
+    // The cross-Hive network board (hive-network-surface B-09): pinned-C-3
+    // rows from B-08's data endpoint, riding this loop's standard cadence
+    // (SSE invalidate + 60s safety net). Quietly optional: a host without the
+    // endpoint renders the pane's empty state, no status-bar toast per pass.
+    if let Ok(rows) = client.network_board().await {
+        let _ = tx.send(Event::NetworkBoard(rows));
     }
     match client.attention_typed().await {
         Ok(i) => {

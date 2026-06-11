@@ -24,6 +24,7 @@
  */
 
 import { sign as nodeSign, verify as nodeVerify, createPublicKey } from 'node:crypto';
+import { canonicalBeaconForSigning, type HiveStatusBeacon } from '../../hive-beacon';
 
 /** A hive's directory visibility (p2p-hive D-004). */
 export type HiveVisibility = 'public' | 'invite' | 'private';
@@ -93,6 +94,15 @@ export interface HiveAnnounceBody {
   ts: number;
   /** Optional random nonce for additional replay resistance. Covered by sig. */
   nonce?: string;
+  /**
+   * OPTIONAL + additive — the opt-in status beacon (hive-network-surface-2026-06-11
+   * P-005 / C-2): a compact activity summary the owner consented to publish. Carried
+   * in the canonical signing bytes (via `canonicalBeaconForSigning`) only when
+   * present, so an announce that omits it signs the exact bytes earlier versions
+   * did. The consumer clamps/sanitizes it (`sanitizeBeacon`) and never rejects the
+   * announce over a malformed beacon. See hive-beacon.ts for the frozen schema.
+   */
+  beacon?: HiveStatusBeacon;
 }
 
 /** A full hive announce as sent on the wire. */
@@ -168,13 +178,19 @@ export function hiveAnnounceSigningBytes(body: HiveAnnounceBody): Buffer {
     created_at: body.created_at,
     ts: body.ts,
   };
-  // member_links + nonce + hive_pubkey + member_repos are optional → included
-  // only when present, so an announce that omits them signs the exact bytes
-  // earlier versions did.
+  // member_links + nonce + hive_pubkey + member_repos + beacon are optional →
+  // included only when present, so an announce that omits them signs the exact
+  // bytes earlier versions did. `beacon` goes through a canonical fixed-key-order
+  // projection (canonicalBeaconForSigning) so its bytes are independent of wire
+  // key order and only the frozen v1 fields are signed.
   if (Array.isArray(body.member_links)) ordered.member_links = body.member_links;
   if (typeof body.nonce === 'string') ordered.nonce = body.nonce;
   if (typeof body.hive_pubkey === 'string') ordered.hive_pubkey = body.hive_pubkey;
   if (Array.isArray(body.member_repos)) ordered.member_repos = body.member_repos;
+  if (body.beacon && typeof body.beacon === 'object') {
+    const canon = canonicalBeaconForSigning(body.beacon);
+    if (canon) ordered.beacon = canon;
+  }
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 

@@ -23,8 +23,8 @@
  * fleet-wide presence to one hive.
  */
 
-import { useState } from 'react';
-import { Share2, Users, Cloud } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Share2, Users, Cloud, Radio } from 'lucide-react';
 // Pure formatter leaf — SPA-bundle-safe (the harness-link-types rule).
 import { formatHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-invite-link';
 import { useLexicon } from '@/lib/useLexicon';
@@ -56,6 +56,21 @@ export interface HiveHeaderStripProps {
     visibility: 'public' | 'invite' | 'private',
     inviteSecret?: string,
   ) => Promise<{ ok: boolean; announced?: boolean; withdrawn?: boolean; error?: string }>;
+  /**
+   * B-07 / C-2: read the hive's current beacon-publish consent (absent = OFF).
+   * Tests inject; default GETs /api/discovery/beacon-consent. Only invoked for a
+   * formal Hive home (kind 'hive').
+   */
+  getBeaconConsent?: (hiveSlug: string) => Promise<boolean>;
+  /**
+   * B-07 / C-2: set the hive's beacon-publish consent — the secondary surface for
+   * the publish-flow consent question. Tests inject; default POSTs
+   * /api/discovery/beacon-consent.
+   */
+  setBeaconConsent?: (
+    hiveSlug: string,
+    consent: boolean,
+  ) => Promise<{ ok: boolean; consent?: boolean; error?: string }>;
 }
 
 async function defaultSetVisibility(
@@ -86,6 +101,34 @@ async function defaultSetVisibility(
   }
 }
 
+async function defaultGetBeaconConsent(hiveSlug: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/discovery/beacon-consent?hiveId=${encodeURIComponent(hiveSlug)}`);
+    const body = (await res.json().catch(() => ({}))) as { consent?: boolean };
+    return res.ok && body.consent === true;
+  } catch {
+    return false;
+  }
+}
+
+async function defaultSetBeaconConsent(
+  hiveSlug: string,
+  consent: boolean,
+): Promise<{ ok: boolean; consent?: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/discovery/beacon-consent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hiveId: hiveSlug, consent }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { consent?: boolean; error?: string };
+    if (!res.ok) return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+    return { ok: true, consent: body.consent };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export default function HiveHeaderStrip({
   hiveSlug,
   hiveKind,
@@ -93,6 +136,8 @@ export default function HiveHeaderStrip({
   members,
   deployed,
   setVisibility = defaultSetVisibility,
+  getBeaconConsent = defaultGetBeaconConsent,
+  setBeaconConsent = defaultSetBeaconConsent,
 }: HiveHeaderStripProps) {
   const t = useLexicon();
   // P-015 flip lifecycle (busy/outcome) — transient, render-only → useState.
@@ -129,6 +174,39 @@ export default function HiveHeaderStrip({
           }
         : {}),
     });
+  }
+
+  // B-07 / C-2: beacon-publish consent — read on mount (absent = OFF), toggled
+  // here as the secondary surface for the publish-flow consent question. Only a
+  // formal Hive home (kind 'hive') can publish a beacon, so it gates the same way
+  // as the directory-visibility flip.
+  const isHiveHome = hiveKind === 'hive';
+  const [beacon, setBeacon] = useState<{ consent: boolean | null; busy: boolean; error?: string }>({
+    consent: null,
+    busy: false,
+  });
+  useEffect(() => {
+    if (!hiveSlug || !isHiveHome) return;
+    let alive = true;
+    void getBeaconConsent(hiveSlug)
+      .then((consent) => {
+        if (alive) setBeacon((b) => ({ ...b, consent }));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [hiveSlug, isHiveHome, getBeaconConsent]);
+
+  async function toggleBeacon(): Promise<void> {
+    const next = !(beacon.consent === true);
+    setBeacon((b) => ({ ...b, busy: true, error: undefined }));
+    const res = await setBeaconConsent(hiveSlug, next);
+    setBeacon(
+      res.ok
+        ? { consent: res.consent ?? next, busy: false }
+        : { consent: beacon.consent, busy: false, error: res.error ?? 'error' },
+    );
   }
 
   const hiveLabel = t('pot');
@@ -242,6 +320,39 @@ export default function HiveHeaderStrip({
                 >
                   {inviteCopied ? 'copied ✓' : 'copy link'}
                 </button>
+              </span>
+            )}
+          </span>
+        )}
+        {/* B-07 / C-2: the beacon-publish consent — the publish-flow question,
+            surfaced here as the standing toggle for an existing Hive (D-002:
+            never ONLY a buried settings toggle, so the full question rides the
+            control). Only a formal Hive home can publish a beacon. */}
+        {isHiveHome && (
+          <span
+            className="pc-hive-header__stat pc-hive-header__beacon"
+            data-testid="hive-beacon-consent"
+            role="group"
+            aria-label="Live status beacon"
+          >
+            <Radio size={12} aria-hidden />
+            <span className="pc-hive-header__viz-label">
+              also publish a live status beacon? (recommended for {hiveLabel.toLowerCase()}s you
+              want collaborators to find)
+            </span>
+            <button
+              type="button"
+              className="pc-hive-header__viz-btn"
+              data-testid="hive-beacon-toggle"
+              aria-pressed={beacon.consent === true}
+              disabled={beacon.busy}
+              onClick={() => void toggleBeacon()}
+            >
+              {beacon.busy ? '…' : beacon.consent === true ? 'on' : 'off'}
+            </button>
+            {beacon.error && (
+              <span className="pc-hive-header__stat--muted" data-testid="hive-beacon-error">
+                failed: {beacon.error}
               </span>
             )}
           </span>

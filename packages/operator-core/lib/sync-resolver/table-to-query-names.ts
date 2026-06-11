@@ -39,7 +39,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   // trigger (mig 222) is what defeats the bus's 90s source-side dedupe for
   // back-to-back registry changes (EI-206 — a create followed by a delete
   // inside the window left open harness lists stale).
-  'harness_shared.harness_registry': ['harnessProjects.lite'],
+  // network.board: a hive create/dissolve changes its tier 1–2 rows.
+  'harness_shared.harness_registry': ['harnessProjects.lite', 'network.board'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
@@ -126,8 +127,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   // fleet_assignment view = presence + plan-item claims + work-item claims.
   // coord_presence fires on heartbeats too — the 90s (name,args) dedupe window
   // bounds the refetch rate; claim flips are what actually matter.
-  'harness_shared.coord_presence': ['fleetAssignments.byHarness'],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness'],
+  // network.board reads live-agent counts off the same fleet view, so a
+  // presence/claim flip refreshes its tier 1–3 liveAgents too (90s dedupe bounds
+  // the heartbeat churn; grant/ask/beacon changes ride explicit
+  // notifySyncInvalidate('network.board', {}) from their writers + the 60s
+  // consumer safety-net).
+  'harness_shared.coord_presence': ['fleetAssignments.byHarness', 'network.board'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'network.board'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
