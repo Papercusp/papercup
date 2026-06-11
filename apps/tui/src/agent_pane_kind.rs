@@ -121,6 +121,36 @@ pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>, hive_agent_
     }
 }
 
+/// All kinds in display order — the order the legend and docs read (♛ 🐝 🛡 📋 🛠).
+pub const ALL_KINDS: [AgentPaneKind; 5] = [
+    AgentPaneKind::Queen,
+    AgentPaneKind::Bee,
+    AgentPaneKind::Sentinel,
+    AgentPaneKind::Planner,
+    AgentPaneKind::Su,
+];
+
+/// One compact legend line for the colony roster header (owner ask 2026-06-11):
+/// `♛ queen · 🐝 bee · 🛡 sentinel · 📋 planner · 🛠 su`, each entry tinted in
+/// its kind color (the same color the rows use), separators dim. Pure — the
+/// caller decides where to draw it (flag-on only; flag-off rows carry no glyphs
+/// so a legend would explain nothing).
+pub fn legend_line() -> ratatui::text::Line<'static> {
+    use ratatui::style::{Color, Style};
+    use ratatui::text::Span;
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    for (i, k) in ALL_KINDS.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            format!("{} {}", k.glyph(), k.as_wire()),
+            Style::default().fg(k.color()),
+        ));
+    }
+    ratatui::text::Line::from(spans)
+}
+
 /// Drive mode mirror: `auto` = the system auto-injects the next turn; `responsive`
 /// = waits for the owner. Mirrors `DRIVE_MODES` (backend).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +261,28 @@ mod tests {
         // Round-trip with the P-010 prefixer.
         let t = glyph_prefixed_title("worker", Some(AgentPaneKind::Bee), true);
         assert_eq!(AgentPaneKind::from_glyph_prefix(&t), Some(AgentPaneKind::Bee));
+    }
+
+    #[test]
+    fn legend_line_carries_every_kind_in_display_order_with_its_color() {
+        let line = legend_line();
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        // Every kind appears as "<glyph> <wire-name>", in ALL_KINDS order.
+        let mut last = 0usize;
+        for k in ALL_KINDS {
+            let entry = format!("{} {}", k.glyph(), k.as_wire());
+            let pos = text.find(&entry).unwrap_or_else(|| panic!("legend missing {entry:?}: {text}"));
+            assert!(pos >= last, "legend out of order at {entry:?}: {text}");
+            last = pos;
+            // The entry span is tinted with the kind's row color.
+            assert!(
+                line.spans.iter().any(|s| s.content == entry && s.style.fg == Some(k.color())),
+                "legend entry {entry:?} not tinted {:?}",
+                k.color()
+            );
+        }
+        // Dim separators between entries (4 gaps for 5 kinds).
+        assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 4);
     }
 
     #[test]

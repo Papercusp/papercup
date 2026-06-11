@@ -36,6 +36,16 @@ const KIND_GLYPH: Record<string, string> = {
   su: '🛠',
 };
 
+// Compact legend for the glyph column (owner ask 2026-06-11) — same order as
+// the pui colony roster; the tooltip carries the one-line "what is this kind".
+const KIND_LEGEND: Array<{ kind: string; hint: string }> = [
+  { kind: 'queen', hint: 'Queen — the autonomous brain session (cadence-driven)' },
+  { kind: 'bee', hint: 'Bee — Queen-spawned headless worker (invoke-once); ephemeral' },
+  { kind: 'sentinel', hint: 'Sentinel — the always-on, owner-facing operator chat persona' },
+  { kind: 'planner', hint: 'Planner — plan-authoring session from the New-plan flow' },
+  { kind: 'su', hint: 'SU — an interactive engineer (psu) session, self-claims work' },
+];
+
 // One agent row from `fleetAssignments.byHarness` (the fleet:assignments
 // AgentAssignment + the stamped pane kind — see sync-resolver/index.ts).
 interface WorkingAgent {
@@ -102,6 +112,17 @@ export default function AdvAgentsPanel({ params }: PanelComponentProps) {
           ))}
         </div>
         <span className="pc-adv-agents__bar-rest" id="pc-adv-agents-bar-slot" />
+        {view === 'working' ? (
+          <span className="pc-adv-agents__legend" aria-label="Agent kind legend">
+            {KIND_LEGEND.map(({ kind, hint }) => (
+              <Tooltip key={kind} label={hint}>
+                <span className="pc-adv-agents__legend-item">
+                  {KIND_GLYPH[kind]} {kind}
+                </span>
+              </Tooltip>
+            ))}
+          </span>
+        ) : null}
       </div>
       {view === 'working' ? <WorkingView slug={slug} /> : <RunsView slug={slug} />}
       <PanelStyles />
@@ -433,6 +454,12 @@ function PanelStyles() {
         border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 45%);
       }
       .pc-adv-agents__bar-rest { margin-left: auto; }
+      .pc-adv-agents__legend {
+        display: inline-flex; gap: 10px; flex-shrink: 1; min-width: 0;
+        overflow: hidden; white-space: nowrap;
+        font-size: 10px; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-adv-agents__legend-item { display: inline-flex; align-items: center; gap: 3px; cursor: default; }
       .pc-adv-agents__kind { font-size: 13px; line-height: 1; }
       .pc-adv-agents__kind.is-dead { opacity: 0.45; filter: grayscale(0.8); }
       .pc-adv-agents__doing {
