@@ -194,6 +194,30 @@ describe('buildMemoryContextBlock', () => {
     expect(block).toContain('- [feedback @ hive:my-hive] (id=h1) Tests ship with the feature');
   });
 
+  it('budget: hive-pack rows yield first under the cap; truncation is announced; only injected ids get watermarked (P-011)', async () => {
+    const prev = process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS;
+    process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS = '120';
+    try {
+      const organic = { id: 'org-1', text: 'this project tests via make test', kind: 'reference' };
+      const packed = {
+        id: 'pk-1',
+        text: 'Tests ship with the feature — a long seeded learning body that will not fit the tiny budget'.repeat(2),
+        kind: 'feedback',
+        metadata: { source: 'pack', pack_id: 'papercusp-default' },
+      };
+      useBackend(mockBackend([organic, packed]));
+      const block = await buildMemoryContextBlock({
+        userId: null, workspaceId: 'ws', hiveSlugs: ['h'], queryContext: 'testing?',
+      });
+      expect(block).toContain('make test'); // organic admitted first
+      expect(block).not.toContain('Tests ship with the feature'); // pack row dropped by the cap
+      expect(block).toContain('memory budget is full'); // truncation announced honestly
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS;
+      else process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS = prev;
+    }
+  });
+
   it('explicit hiveSlugs: [] suppresses the hive pull; explicit slugs skip resolution', async () => {
     registryProjects = [{ slug: 'member-a', hive_slug: 'my-hive' }];
     const suppressed = mockBackend([{ id: 'x', text: 'x', kind: 'project' }]);

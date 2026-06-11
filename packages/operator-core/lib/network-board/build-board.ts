@@ -11,12 +11,11 @@
  * fetches the four sources, then assembles), mirroring the describeHive /
  * liveAgentCountByHarness / mapSharedPresenceRow convention.
  *
- * C-1 (the `cross_hive_asks` ledger, owned by B-02) and C-2 (the status beacon
- * field on DiscoveredHive, owned by B-06) and the OUTBOUND grant direction
- * (B-05) are consumed through defensive seams that contribute nothing until those
- * land — the board is correct from day one for tiers 1–3 + the tier-4 directory /
- * inbound grants, and lights up the asks / beacon / outbound columns additively
- * the moment the upstreams ship. Integration points are marked `// UPSTREAM:`.
+ * The tier-4 enrichments all read live upstreams: C-1 asks (`cross_hive_asks`,
+ * B-02), C-2 beacon (the `DiscoveredHive.beacon` field, B-06), and BOTH grant
+ * directions (`loadDirectedCrossHiveGrants`, B-05 — `out` was a stub until B-05's
+ * direction landed). Every read is best-effort: a missing/empty source omits its
+ * field on the row (absent ⇒ the renderer hides the section), never fails the board.
  */
 
 import type { CrossHiveKind } from '../cross-hive-boundary';
@@ -27,7 +26,7 @@ import type { UnifiedPresenceRecord } from '../agent-tools/coordination/federate
 import { listFederatedPresence } from '../agent-tools/coordination/federated-presence';
 import type { DiscoveredHive } from '../hive-directory';
 import { getHiveDirectory } from '../hive-directory-deps';
-import { loadCrossHiveGrants } from '../cross-hive-grants';
+import { loadDirectedCrossHiveGrants } from '../cross-hive-grants';
 import { PgCrossHiveAsks } from '../cross-hive-asks-pg';
 import { resolveHiveHomeSlug } from '../hive/wake';
 import { activeWorkspaceId } from '../workspace-registry';

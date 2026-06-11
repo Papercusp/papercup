@@ -10,7 +10,8 @@
  * dashboard, which is where the old handler lived before it was deleted
  * with HarnessDashboard.
  *
- * Open state lives in the URL (`?palette=1`) via nuqs — per the repo's
+ * Open state lives in the URL (`?palette=true` — parseAsBoolean only parses
+ * the literal string "true"; `?palette=1` reads as closed) via nuqs — per the repo's
  * "user-meaningful state goes in the URL" rule it's deep-linkable and
  * agent-driveable (ui:dispatch can open the palette). nuqs defaults to
  * `history: 'replace'`, so toggling the palette does NOT push a history

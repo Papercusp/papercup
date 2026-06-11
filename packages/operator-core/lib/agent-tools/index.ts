@@ -97,6 +97,14 @@ import './search/semantic';
 import './memory/remember';
 import './memory/search';
 import './memory/list';
+// learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
+// (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
+import './learning_packs/list';
+import './learning_packs/install';
+import './learning_packs/uninstall';
+import './learning_packs/set_enabled';
+import './learning_packs/upgrade';
+import './learning_packs/sweep';
 import './memory/forget';
 import './memory/update';
 import './autoloop/status';

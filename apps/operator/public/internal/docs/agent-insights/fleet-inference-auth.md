@@ -1,7 +1,7 @@
 # Don't infer the fleet's inference plan from credential presence — check the wire
 URL: /internal/docs/agent-insights/fleet-inference-auth
 
-Agents repeatedly conclude "the fleet runs on the Claude Max subscription" from the presence of a `subscriptionType: max` OAuth in `~/.claude/.credentials.json`, without checking what the spawned `claude -p` bee actually presents on the wire. Credential presence ≠ the subscription serving the workload. Cost telemetry and 429s reinforce the wrong conclusion. Run `npm run check:fleet-auth` for the ground truth.
+Agents repeatedly conclude "the fleet runs on the Claude Max subscription" from the presence of a `subscriptionType: max` OAuth in `~/.claude/.credentials.json`, without checking what the spawned `claude -p` bee actually presents on the wire. Credential presence ≠ the subscription serving the workload. Cost telemetry and 429s reinforce the wrong conclusion. Run `npm run check:fleet-auth` for the ground truth — and note the 2026-06-11 addendum: bees present `~/.papercusp/claude-token` (CLAUDE_CODE_OAUTH_TOKEN), NOT the global OAuth your probe uses; A/B both credentials before declaring auth healthy.
 
 ## The recurring mistake
 
@@ -70,6 +70,43 @@ appropriate rate-limit tier — set it in the spawning host's env so `claude` pi
 throttle. The fleet's AIMD concurrency back-off + the Apiary runner's rate-limit relaunch
 (`bee-instance.ts`) mitigate the throttle but cannot fix an auth/workload mismatch.
 
+## Addendum (2026-06-11) — there are TWO credentials; probe the one the workload presents
+
+The 2026-06-08 table above is one layer stale: since the fleet-token staging landed, bees no longer
+ride the symlinked global OAuth. `fleet-claude-token.ts` (orchestrator) reads
+`~/.papercusp/claude-token` (a dedicated long-lived `claude setup-token`, staged so a psu `/login`
+can't rotate it away) and `invoke.ts` exports it as `CLAUDE_CODE_OAUTH_TOKEN` for everything the
+fleet spawns — and that env var **outranks the credentials file**. The box therefore carries TWO
+independent Claude credentials with independent usage limits:
+
+| Credential                                              | Who presents it                                                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `~/.claude/.credentials.json` (rotating OAuth family)   | interactive sessions, psu shells, bare `claude -p` probes, **`npm run check:fleet-auth` itself** |
+| `~/.papercusp/claude-token` → `CLAUDE_CODE_OAUTH_TOKEN` | every fleet bee / invoke-once child                                                              |
+
+**Failure signature when the FLEET token's Max session window is exhausted:** every bee dies in
+\~8s (rc=0 *or* 1) with empty `output_tail`, no transcript, and no `[dbos-invoke]` log line on rc=0 —
+while interactive sessions and bare probes work and the wire check passes. The bee's first turn
+returned `You've hit your session limit · resets 7:30pm (America/New_York)` and the envelope was
+swallowed (the WI-111/WI-108 observability gap).
+
+The 30-second diagnostic — A/B the two credentials:
+
+```bash
+# global (what YOU and check:fleet-auth probe with)
+echo "say OK" | env -u CLAUDE_CONFIG_DIR claude -p --model claude-haiku-4-5-20251001
+# fleet (what every bee presents)
+echo "say OK" | env -u CLAUDE_CONFIG_DIR CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.papercusp/claude-token)" \
+  claude -p --model claude-haiku-4-5-20251001
+```
+
+`check:fleet-auth` has exactly this blind spot — it probes with its own env (the global credential),
+so it can report healthy auth while every bee is dead. Until it grows a fleet-token probe, run the
+A/B above whenever bees fail fast. (Live incident: 2026-06-11, WI-111 thread — bees 8s-dead all
+afternoon while every probe and wire check passed. Related but separate: `fleet:spawn model=` with a
+raw model id reroutes via the model catalog to omp/amazon-bedrock and dies on a missing provider key
+— pass tier names or aliases, never raw ids.)
+
 ## TL;DR for the next agent
 
 * **Do not** answer "API vs subscription" from `~/.claude/.credentials.json`. Run `npm run check:fleet-auth`.
@@ -77,3 +114,7 @@ throttle. The fleet's AIMD concurrency back-off + the Apiary runner's rate-limit
 * A 429 means *authenticated-but-throttled*, not "working fine."
 * If the fleet is persistently rate-limited on subscription OAuth, that's a structural mismatch —
   recommend a real API key, don't just back off.
+* The box has **TWO credentials**: bees present `~/.papercusp/claude-token`
+  (`CLAUDE_CODE_OAUTH_TOKEN`), not the global `~/.claude` OAuth your probe uses — A/B both before
+  declaring auth healthy. Bees dying in \~8s with empty output while probes pass = the fleet token's
+  session limit, not the pipeline.

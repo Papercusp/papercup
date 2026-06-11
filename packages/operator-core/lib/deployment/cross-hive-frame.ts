@@ -23,7 +23,7 @@ import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 import Hyperswarm from 'hyperswarm';
 import { makeSwarmCrossHiveTransport } from '../cross-hive-swarm-transport';
 import { wireCrossHiveBoundary } from '../cross-hive-wiring';
-import { InMemoryCrossHiveOutbox } from '../cross-hive-transport';
+import { InMemoryCrossHiveOutbox, NULL_CROSS_HIVE_ASK_LEDGER } from '../cross-hive-transport';
 import type { CrossHiveBoundaryPorts, CrossHiveGrant } from '../cross-hive-boundary';
 import type { HyperswarmLike } from '../sync/hyperbee/swarm';
 

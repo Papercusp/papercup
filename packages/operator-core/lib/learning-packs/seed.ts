@@ -123,7 +123,6 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
 
   const items = filterByShapes(pack.items, input.shapes);
   const skippedByShape = pack.items.length - items.length;
-  const scope = hiveScopeKey(input.hiveSlug);
   const ids: string[] = [];
   let failed = 0;
 
@@ -134,20 +133,13 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
     const results = await Promise.all(
       batch.map(async (item) => {
         try {
-          const { ids: newIds } = await backend.remember(memoryTextOf(item), {
-            scope,
-            kind: item.kind,
-            verbatim: true,
-            metadata: {
-              scope: 'hive',
-              hive_slug: input.hiveSlug,
-              workspace_id: input.workspaceId,
-              created_by: input.createdBy ?? 'system',
-              applies_to: item.appliesTo,
-              ...provenanceOf(pack, item),
-            },
+          return await rememberPackItem({
+            workspaceId: input.workspaceId,
+            hiveSlug: input.hiveSlug,
+            pack,
+            item,
+            ...(input.createdBy ? { createdBy: input.createdBy } : {}),
           });
-          return newIds;
         } catch (e) {
           console.warn(
             `[learning-packs] seed write failed (${pack.manifest.id}/${item.id}): ${e instanceof Error ? e.message : e}`,

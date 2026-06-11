@@ -1,0 +1,70 @@
+/**
+ * learning_packs:list — the pack catalog + (optionally) one hive's installed
+ * state (learning-packs-2026-06-11 P-009).
+ */
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { FLAG_OFF, learningPacksEnabled, text } from './_shared';
+
+export default defineTool({
+  name: 'learning_packs:list',
+  capability: 'memory:read',
+  description:
+    "List resolvable learning packs (builtin + Comb-installed) and, when `hive` is given, that hive's installed state: per-pack rows present/edited, enabled/disabled, and whether a newer pack version is adoptable.",
+  guidance: {
+    when:
+      "Before learning_packs:install/upgrade (what's available + what's already in the hive), or when the user asks what learnings their hive carries.",
+    notWhen:
+      'To read the actual learning texts — learning.hive backs the Learnings UI, and memory:list { hive_slug } returns the rows.',
+    chaining:
+      'learning_packs:install { hive, pack } to add one; learning_packs:upgrade when updateAvailable; learning_packs:set_enabled to mute a pack without uninstalling.',
+  },
+  crossWorkspace: true,
+  args: z.object({
+    hive: z.string().max(120).optional().describe("Hive home slug — include this hive's installed state."),
+    workspace: z.string().max(120).optional(),
+  }),
+  async handler(args, ctx) {
+    if (!(await learningPacksEnabled())) return text(FLAG_OFF);
+    const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const { listLearningPacks } = await import('../../learning-packs/load-packs');
+    const packs = await listLearningPacks();
+
+    if (!args.hive) return text({ ok: true, packs });
+
+    const [{ readHiveLearnings }, { getMemoryBackend }, { loadLearningPack }, { disabledPacksFor }] =
+      await Promise.all([
+        import('../../sync-resolver/learning-hive-read'),
+        import('../../memory/backend'),
+        import('../../learning-packs/load-packs'),
+        import('../../learning-packs/manage'),
+      ]);
+    const snap = await readHiveLearnings(args.hive, {
+      listPool: async (scope) => {
+        const backend = getMemoryBackend();
+        const avail = await backend.available();
+        if (!avail.ok) throw new Error(avail.reason);
+        return backend.list({ scope });
+      },
+      loadPack: (id) => loadLearningPack(id),
+    });
+    const disabled = await disabledPacksFor(workspaceId, args.hive);
+    const installed = snap.packs.map((p) => ({
+      ...p,
+      enabled: !disabled.includes(p.packId),
+      updateAvailable:
+        !!p.packVersion &&
+        !!packs.find((a) => a.id === p.packId && a.version !== p.packVersion),
+      availableVersion: packs.find((a) => a.id === p.packId)?.version,
+    }));
+    return text({
+      ok: true,
+      packs,
+      hive: args.hive,
+      installed,
+      organicCount: snap.organicCount,
+      ...(snap.unavailable ? { unavailable: true } : {}),
+    });
+  },
+});

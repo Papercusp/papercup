@@ -430,8 +430,9 @@ describe('Scout cycle — all four rails land in real PG storage (one cycle)', (
     expect(issue.state).toBe('open');
     expect(issue.found_during).toBe('scout-loop');
     expect(issue.title).toBe(RAIL_PROPOSALS.improvement.framing);
-    // Filed as the Queen (D-010 — Scout is prompt-free; the Queen is the source role).
-    expect(issue.payload?.sourceRole).toBe('Queen');
+    // Artifact-side provenance stamp (P-010 source-tag): scout-routed EIs are
+    // filterable as improvement-source:Scout; the Queen still gates them (D-010).
+    expect(issue.payload?.sourceRole).toBe('Scout');
     // The composed body carries the mechanism, the D-006 experiment, and idea provenance.
     expect(issue.body).toContain(`**Mechanism:** ${RAIL_PROPOSALS.improvement.mechanism}`);
     expect(issue.body).toContain('Falsified if:');

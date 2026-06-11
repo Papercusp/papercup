@@ -149,6 +149,19 @@ function injectMinLexScore(): number | undefined {
   return 0.4;
 }
 
+/**
+ * Injected-block character budget (learning-packs P-011 / D-008). ~4k tokens
+ * by default (≈4 chars/token). Lines are admitted in priority order — user
+ * pool → harness pools → hive-organic → hive-pack — and assembly stops at the
+ * budget, so a hive carrying many packs can't crowd the user's own facts out
+ * of the turn. Env-tunable; `<= 0` disables the cap.
+ */
+function injectBudgetChars(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS);
+  if (Number.isFinite(raw)) return raw > 0 ? raw : Number.POSITIVE_INFINITY;
+  return 16_000;
+}
+
 export async function buildMemoryContextBlock(
   input: MemoryInjectionInput,
 ): Promise<string | null> {
@@ -248,6 +261,29 @@ export async function buildMemoryContextBlock(
 
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
+  // learning-packs P-009: a DISABLED pack's rows stay stored but stop being
+  // recalled. One settings read per hive in scope (usually 1); best-effort —
+  // a settings hiccup means no filtering, never a blocked turn.
+  if (hiveHits.length > 0) {
+    try {
+      const { disabledPacksFor } = await import('../learning-packs/manage');
+      const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
+      const disabledBySlug = new Map(
+        await Promise.all(
+          slugs.map(async (slug) => [slug, new Set(await disabledPacksFor(input.workspaceId, slug))] as const),
+        ),
+      );
+      hiveHits = hiveHits.filter(({ hit, slug }) => {
+        const m = hit.metadata ?? {};
+        const packId = m.source === 'pack' && typeof m.pack_id === 'string' ? m.pack_id : undefined;
+        return !(packId && disabledBySlug.get(slug)?.has(packId));
+      });
+    } catch {
+      /* best-effort — never load-bearing */
+    }
+  }
+  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+
   // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
   // watermark window so a stable fact is delivered ONCE, not re-injected
   // turn-over-turn. Best-effort: a query failure returns an empty set (no
@@ -286,20 +322,52 @@ export async function buildMemoryContextBlock(
   const fmtId = (h: { id?: string }): string =>
     typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '';
 
+  // Assembly under the P-011 budget, in priority order (D-008): the user's own
+  // facts → harness pools → hive-organic (recorded conventions) → hive-pack
+  // (seeded learnings). Pack rows are the most numerous and least
+  // turn-specific, so they yield first when the block would overflow.
+  const isPackHit = (hit: MemoryEntry): boolean =>
+    hit.metadata?.source === 'pack' && typeof hit.metadata?.pack_id === 'string';
+  const hiveOrganic = hiveHits.filter(({ hit }) => !isPackHit(hit));
+  const hivePack = hiveHits.filter(({ hit }) => isPackHit(hit));
+
+  const budget = injectBudgetChars();
+  let spent = 0;
   const lines: string[] = [];
-  for (const h of userResults) lines.push(`- ${fmtScope(h)}${fmtId(h)} ${h.text}`);
-  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`);
-  // Hive pool — labeled `@ hive:<slug>` so an agent can tell shared-Hive
-  // knowledge (learnings, conventions) from its harness's own pool.
-  for (const { hit, slug } of hiveHits) lines.push(`- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`);
+  const surfacedIds: string[] = [];
+  const admit = (line: string, id?: string): boolean => {
+    if (spent + line.length > budget && lines.length > 0) return false;
+    lines.push(line);
+    spent += line.length;
+    if (id) surfacedIds.push(id);
+    return true;
+  };
+  let truncated = false;
+  outer: for (const group of [
+    userResults.map((h) => ({ line: `- ${fmtScope(h)}${fmtId(h)} ${h.text}`, id: h.id })),
+    harnessHits.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
+    // Hive pool — labeled `@ hive:<slug>` so an agent can tell shared-Hive
+    // knowledge (learnings, conventions) from its harness's own pool.
+    hiveOrganic.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
+    hivePack.map(({ hit, slug }) => ({ line: `- ${fmtScope(hit, `hive:${slug}`)}${fmtId(hit)} ${hit.text}`, id: hit.id })),
+  ]) {
+    for (const { line, id } of group) {
+      if (!admit(line, id)) {
+        truncated = true;
+        break outer;
+      }
+    }
+  }
+  if (lines.length === 0) return null;
+  if (truncated) {
+    lines.push('- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)');
+  }
 
   // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
   // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql
   // is fully defensive and its outcome doesn't affect the block we return.
-  const surfacedIds: string[] = [];
-  for (const h of userResults) if (h.id) surfacedIds.push(h.id);
-  for (const { hit } of harnessHits) if (hit.id) surfacedIds.push(hit.id);
-  for (const { hit } of hiveHits) if (hit.id) surfacedIds.push(hit.id);
+  // (Only ACTUALLY-injected ids are stamped — a budget-dropped memory must not
+  // be dedup-suppressed next turn.)
   if (surfacedIds.length > 0) {
     void (async () => {
       try {
