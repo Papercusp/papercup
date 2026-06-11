@@ -51,7 +51,7 @@ export const HARNESS_SLUG = 'xpeer-coord';
 export const HIVE_SLUG = 'shared-hive';
 export const BINDING = { kind: 'local' as const, workspace_id: WORKSPACE_ID, harness_slug: HARNESS_SLUG };
 
-export export const SHARED_PRESENCE_DDL = `
+export const SHARED_PRESENCE_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.shared_presence (
     workspace_id   text DEFAULT ''::text NOT NULL,
     harness_slug   text NOT NULL,
@@ -68,7 +68,7 @@ export export const SHARED_PRESENCE_DDL = `
   )`;
 // The 000-baseline coord_event_log + the migration-150 federation columns/index,
 // exactly as the coord-message-federation suite stands them up.
-export export const COORD_EVENT_LOG_DDL = `
+export const COORD_EVENT_LOG_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
     id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
     writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
@@ -76,7 +76,7 @@ export export const COORD_EVENT_LOG_DDL = `
     fed_ts bigint);
   CREATE UNIQUE INDEX IF NOT EXISTS coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)
     WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL`;
-export export const WORK_ITEM_CLAIMS_DDL = `
+export const WORK_ITEM_CLAIMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_claims (
     workspace_id text NOT NULL, harness_slug text NOT NULL, work_item_id text NOT NULL,
     hive_slug text, claim_id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -338,7 +338,9 @@ export async function federateTwoPeerPresence() {
   return { dbA, dbB, idA, idB, peerA, peerB, federated };
 }
 
-async function startAuthorityRpcServer(): Promise<{ addr: () => string; sever: () => Promise<void>; heal: () => Promise<void> }> {
+/** Spin an in-process authority RPC endpoint over `handleAuthorityRpc`, returning a
+ *  handle a partition test can sever (close) and heal (relisten on a new port). */
+export async function startAuthorityRpcServer(): Promise<{ addr: () => string; sever: () => Promise<void>; heal: () => Promise<void> }> {
   let server: Server | undefined;
   let port = 0;
   const listen = async () => {

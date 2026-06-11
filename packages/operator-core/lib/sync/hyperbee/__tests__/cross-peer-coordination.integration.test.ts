@@ -245,8 +245,6 @@ describe('cross-peer coordination on a shared Hive — claim arbitration over th
   );
 });
 
-/** Spin an in-process authority RPC endpoint over `handleAuthorityRpc`, returning a
-
 describe('cross-peer coordination on a shared Hive — authority departure (failover by staleness, D-005)', () => {
   it(
     'the elected authority Swarm departs → its federated presence ages out and the SURVIVOR elects itself; a new claim grants locally',
@@ -738,7 +736,7 @@ describe('cross-peer coordination on a shared Hive — deliver-and-wake over the
       };
       await dbA.sql`
         INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, origin)
-        VALUES (${WORKSPACE_ID}, 'messages', 'su-A', ${MSG_ID}, ${dbA.sql.json(row.body)}, ${HARNESS_SLUG}, 'local')
+        VALUES (${WORKSPACE_ID}, 'messages', 'su-A', ${MSG_ID}, ${dbA.sql.json(row.body as never)}, ${HARNESS_SLUG}, 'local')
       `;
       await peerA.handle.append({
         type: 'put',

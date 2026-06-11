@@ -55,22 +55,14 @@ export default defineTool({
     }
     publishFlagChange(args.key);
 
-    try {
-      if (ctx?.tx) {
-        await ctx.tx`
-          INSERT INTO harness_shared.audit_log (ts, actor, action, subject, details)
-          VALUES (
-            ${Date.now()},
-            ${ctx.principal?.slug ?? 'agent'},
-            'flag:set',
-            ${args.key},
-            ${ctx.tx.json({ enabled: args.enabled, reason: args.reason })}
-          )
-        `;
-      }
-    } catch {
-      // audit log insert is best-effort; flag flip already succeeded
-    }
+    // EI-293: the prior inline INSERT omitted the NOT-NULL id + workspace_id
+    // columns, so every flag audit silently failed in its try/catch (0
+    // flag:set rows ever landed). recordFlagAudit writes the correct
+    // full-column row (shared with the HTTP /api/flags/set path).
+    const { recordFlagAudit } = await import('../../flag-audit');
+    await recordFlagAudit(args.key, args.enabled, ctx?.principal?.slug ?? 'agent', {
+      reason: args.reason,
+    });
 
     return {
       content: [

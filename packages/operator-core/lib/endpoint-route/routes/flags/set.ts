@@ -16,6 +16,7 @@ import { ALL_FLAG_KEYS, type FlagKey } from '@papercusp/flags';
 import { setFlag, setFlagOverride } from '@papercusp/flags/server';
 import { publishFlagChange } from '../../../flag-bus';
 import '../../../flag-bus';
+import { recordFlagAudit } from '../../../flag-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const Body = z.object({ key: z.string(), enabled: z.boolean() });
@@ -38,12 +39,14 @@ export default defineTool({
       // and setFlagOverride reports failure in-band rather than throwing).
       await setFlagOverride(key, null);
       publishFlagChange(key);
+      await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', { backend: 'posthog' });
       return Response.json({ ok: true, key, enabled, backend: 'posthog' });
     }
     if (result.reason === 'flag-backend-not-configured') {
       const override = await setFlagOverride(key, enabled);
       if (override.ok) {
         publishFlagChange(key);
+        await recordFlagAudit(key, enabled, ctx.principal?.slug ?? 'operator', { backend: 'pg-override' });
         return Response.json({ ok: true, key, enabled, backend: 'pg-override' });
       }
       return Response.json(

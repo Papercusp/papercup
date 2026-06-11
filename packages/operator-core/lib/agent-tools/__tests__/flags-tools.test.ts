@@ -14,6 +14,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The flag audit write goes through recordFlagAudit (getOrgPg → real PG, EI-293).
+// These are hermetic handler unit tests — stub it so they never touch a DB
+// (and don't ECONNREFUSE + console.warn in CI). The real write is covered by
+// flag-audit.integration.test.ts.
+vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn(async () => {}) }));
+
 const MAKE_CTX = (tx?: unknown) =>
   ({
     log: vi.fn(),
