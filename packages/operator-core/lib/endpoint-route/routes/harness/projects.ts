@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   loadHarnessRegistry,
   mutateHarnessRegistry,
+  type ProjectEntry,
 } from '../../../harness-registry';
 import { harnessDir } from '../../../harness-core';
 import { HIVE_KIND } from '../../../harness/hive-groups';
@@ -62,6 +63,73 @@ const __projectsCache: ProjectsCacheEntry = (() => {
   return g[__projectsCacheKey]!;
 })();
 
+export interface EnrichedProject extends ProjectEntry {
+  hasState: boolean;
+  hasSpec: boolean;
+  harnessDir: string;
+  parent_slug: string | null;
+}
+
+/**
+ * Probe which of `slugs` have any pipeline state, in ONE batched query on the
+ * shared org pool (EI-64). The previous shape opened a PER-SLUG PG pool per
+ * project (getLegacyClient(slug) → getHarnessPg) to query the now-removed
+ * harness_features relation — N pool opens that blew the 30s route budget on a
+ * cold cache (76s/HTTP 408 on :3070). work_items is the unified work surface
+ * (D-015) the old "has pipeline state" semantics map to.
+ */
+async function fetchHasStateSlugsFromOrgPg(slugs: readonly string[]): Promise<Set<string>> {
+  if (slugs.length === 0) return new Set();
+  const { sql } = getOrgPg();
+  const rows = await sql<{ harness_slug: string }[]>`
+    SELECT DISTINCT harness_slug
+      FROM harness_shared.work_items
+     WHERE harness_slug = ANY(${slugs as string[]})
+  `;
+  return new Set(rows.map((r) => r.harness_slug));
+}
+
+/**
+ * Enrich the registry projects for GET /api/harness/projects: hasState (one
+ * batched probe), hasSpec + parent_slug (per-project fs stat/read), harnessDir.
+ *
+ * The hasState probe is injected (`fetchHasStateSlugs`) so the cold-path cost
+ * model is unit-testable: the regression this guards (EI-64) was N per-slug PG
+ * pool opens, so the test pins that the fetcher is called EXACTLY ONCE with all
+ * slugs — never once per project. Exported for that test.
+ */
+export async function enrichProjects(
+  projects: readonly ProjectEntry[],
+  fetchHasStateSlugs: (slugs: readonly string[]) => Promise<Set<string>> = fetchHasStateSlugsFromOrgPg,
+): Promise<EnrichedProject[]> {
+  let hasStateSlugs: Set<string> = new Set();
+  try {
+    hasStateSlugs = await fetchHasStateSlugs(projects.map((p) => p.slug));
+  } catch {
+    /* degrade: hasState=false for all, as before */
+  }
+  return Promise.all(projects.map(async (p) => {
+    const cfgPath = join(p.path, '.papercusp', 'config.json');
+    const specPath = join(p.path, 'SPEC.md');
+    let parentSlug: string | null = null;
+    try {
+      if (existsSync(cfgPath)) {
+        const j = JSON.parse(await readFile(cfgPath, 'utf8'));
+        parentSlug = typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
+      }
+    } catch {
+      parentSlug = null;
+    }
+    return {
+      ...p,
+      hasState: hasStateSlugs.has(p.slug),
+      hasSpec: existsSync(specPath),
+      harnessDir: harnessDir(p),
+      parent_slug: parentSlug,
+    };
+  }));
+}
+
 const list = defineTool({
   method: 'GET',
   path: '/harness/projects',
@@ -86,46 +154,10 @@ const list = defineTool({
       if (!__projectsCache.inflight || __projectsCache.sig !== sig) {
         __projectsCache.sig = sig;
         __projectsCache.inflight = (async () => {
-          // ONE batched probe on the shared org pool (audit P-005, EI-64).
-          // The previous shape opened a PER-SLUG PG pool per project
-          // (getLegacyClient(slug) → getHarnessPg) to query harness_features —
-          // a relation that no longer exists (consolidated; see EI-213) — so
-          // it burned N pools per rebuild to always compute hasState=false.
-          // work_items is the unified work surface (D-015) the old probe's
-          // "has pipeline state" semantics map to.
-          let hasStateSlugs = new Set<string>();
-          try {
-            const { sql } = getOrgPg();
-            const slugs = reg.projects.map((p) => p.slug);
-            const rows = await sql<{ harness_slug: string }[]>`
-              SELECT DISTINCT harness_slug
-                FROM harness_shared.work_items
-               WHERE harness_slug = ANY(${slugs})
-            `;
-            hasStateSlugs = new Set(rows.map((r) => r.harness_slug));
-          } catch { /* degrade: hasState=false for all, as before */ }
-          const out = await Promise.all(reg.projects.map(async (p) => {
-            const hDir = harnessDir(p);
-            const cfgPath = join(p.path, '.papercusp', 'config.json');
-            const specPath = join(p.path, 'SPEC.md');
-            const parentSlug = await (async (): Promise<string | null> => {
-              try {
-                if (!existsSync(cfgPath)) return null;
-                const txt = await readFile(cfgPath, 'utf8');
-                const j = JSON.parse(txt);
-                return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
-              } catch {
-                return null;
-              }
-            })();
-            return {
-              ...p,
-              hasState: hasStateSlugs.has(p.slug),
-              hasSpec: existsSync(specPath),
-              harnessDir: hDir,
-              parent_slug: parentSlug,
-            };
-          }));
+          // ONE batched probe on the shared org pool (audit P-005, EI-64) +
+          // per-project fs stats — see enrichProjects. The previous shape opened
+          // a PER-SLUG PG pool per project, blowing the 30s route budget cold.
+          const out = await enrichProjects(reg.projects);
           __projectsCache.value = out;
           __projectsCache.expires = Date.now() + TTL_MS;
           __projectsCache.inflight = null;
