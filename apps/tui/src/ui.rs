@@ -27,14 +27,21 @@ pub fn draw(f: &mut Frame, app: &App) {
     // per-agent stack pane. No tabs, no HUD; toasts still overlay.
     if app.watch.is_some() {
         crate::bee::draw_watch(f, app, f.area());
-        if let Some(t) = &app.toast {
+        if app.show_notifs {
+            draw_notifs(f, app);
+        } else if let Some(t) = &app.toast {
             draw_toast(f, t);
         }
         return;
     }
     if let Some(pinned) = app.pinned {
         draw_tab_body(f, app, pinned, f.area());
-        if app.show_help {
+        if app.show_notifs {
+            // The history overlay must render in pinned dock panes too — the
+            // toast flashes here, and without this branch 'N' opened an
+            // overlay that never drew (owner report 2026-06-11).
+            draw_notifs(f, app);
+        } else if app.show_help {
             draw_help(f);
         } else if let Some(t) = &app.toast {
             draw_toast(f, t);
@@ -2345,7 +2352,7 @@ fn draw_toast(f: &mut Frame, n: &Notif) {
             .wrap(Wrap { trim: false })
             .style(Theme::notify())
             .block(Theme::popup_block(Line::from(format!(
-                " {} {} · Esc ",
+                " {} {} · N history · Esc ",
                 crate::glyph::header::BELL,
                 trunc(&n.level, 12)
             )))),

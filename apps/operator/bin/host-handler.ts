@@ -32,6 +32,11 @@ import { publicDocsRoutes } from './host-docs-public';
 import { pageRoutes } from './page-routes';
 import { crossAppRewrites, rustOptIn } from './host-proxies';
 import { spaRoutes } from './host-spa';
+import {
+  faultInjectionEnabled,
+  faultInjectionControl,
+  faultInjectionMiddleware,
+} from './host-fault-injection';
 
 const host = new Hono();
 
@@ -43,6 +48,15 @@ host.use('*', compress());
 // 2. Broad `/api/*` CORS (proxy.ts port). Handles OPTIONS preflight and
 //    decorates downstream responses with the standard headers.
 host.use('/api/*', apiCors);
+
+// 2.5. Fault injection (EI-297) — test-only, inert unless the host started
+//      with PAPERCUSP_FAULT_INJECTION=1. Sits in front of every API path
+//      (local, rust, cross-app) so desktop e2e can exercise server-error /
+//      timeout legs through the IPC-first /api path no HTTP proxy can reach.
+if (faultInjectionEnabled()) {
+  host.route('/', faultInjectionControl());
+  host.use('/api/*', faultInjectionMiddleware);
+}
 
 // 3. Rust opt-in proxy. Inert unless PAPERCUSP_ENABLE_RUST_REWRITES=1.
 //    Must run before the cross-app rewrites and local API so the

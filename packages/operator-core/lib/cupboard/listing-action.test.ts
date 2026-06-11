@@ -1,16 +1,17 @@
 /**
- * The listing kind→action mapping (revive-cupboard-distribution-2026-06-04
- * D-005). `types.test.ts` covers the predicates around it (isHarnessListing,
- * groupListingsByKind, listingHiveRef) but NEVER asserts `listingAction`,
- * `isListingKind`, or `listingKindOf` directly — yet these three drive the
- * storefront's per-kind action button (Join / Fork / Install) and the
- * default-to-harness fallback for pre-004 rows. This pins them.
+ * The listing→action mapping (revive-cupboard-distribution-2026-06-04 D-005,
+ * reframed by comb-retire-per-harness-sharing-2026-06-11 D-001/D-003).
+ * `types.test.ts` covers the predicates around it (isHarnessListing,
+ * groupListingsByKind, listingHiveRef) but never asserts `listingActionFor`,
+ * `isListingKind`, or `listingKindOf` directly — yet these drive the
+ * storefront's per-listing action button and the default-to-harness fallback
+ * for pre-004 rows. This pins them.
  *
- *   harness   → join
- *   blueprint → fork
- *   snapshot  → fork
- *   plugin    → install
- *   pack      → install   (migration 006 / tool-distribution-granularity D-001)
+ *   harness + hive_pubkey → view-hive   (the repo→Hive lookup row, mig 007)
+ *   harness, no hive      → null        (legacy row — per-harness join retired)
+ *   blueprint             → fork
+ *   plugin                → install
+ *   pack                  → install     (migration 006 / tool-distribution-granularity D-001)
  *
  * Pure functions, no mocks.
  */
@@ -19,7 +20,7 @@ import {
   LISTING_KINDS,
   LISTING_ACTION_LABEL,
   isListingKind,
-  listingAction,
+  listingActionFor,
   listingKindOf,
   type HarnessListing,
   type ListingKind,
@@ -51,34 +52,38 @@ function makeListing(over: Partial<HarnessListing> = {}): HarnessListing {
   };
 }
 
-describe('listingAction (kind → consumer verb, D-005)', () => {
-  it('harness → join', () => {
-    expect(listingAction('harness')).toBe('join');
+describe('listingActionFor (row → consumer verb, comb-retire D-001/D-003)', () => {
+  it('hive-bound harness row → view-hive (the repo→Hive lookup index)', () => {
+    expect(
+      listingActionFor(makeListing({ listing_kind: 'harness', hive_pubkey: 'A'.repeat(43) + '=' })),
+    ).toBe('view-hive');
+  });
+  it('legacy harness row (no hive_pubkey) → null (per-harness join is retired)', () => {
+    expect(listingActionFor(makeListing({ listing_kind: 'harness' }))).toBeNull();
+    expect(listingActionFor(makeListing({ listing_kind: 'harness', hive_pubkey: null }))).toBeNull();
   });
   it('blueprint → fork', () => {
-    expect(listingAction('blueprint')).toBe('fork');
+    expect(listingActionFor(makeListing({ listing_kind: 'blueprint' }))).toBe('fork');
   });
-  // ('snapshot → fork' removed — the snapshot kind was retired by
-  // retire-snapshots-instance-spec-2026-06-09 D-005.)
   it('plugin → install', () => {
-    expect(listingAction('plugin')).toBe('install');
+    expect(listingActionFor(makeListing({ listing_kind: 'plugin' }))).toBe('install');
   });
   it('pack → install (a runtime-less code-tool pack installs like a plugin)', () => {
-    expect(listingAction('pack')).toBe('install');
+    expect(listingActionFor(makeListing({ listing_kind: 'pack' }))).toBe('install');
   });
 
-  it('maps every declared kind to a labelled action (no kind falls through)', () => {
+  it('maps every declared kind to a labelled action or null (no kind falls through)', () => {
     for (const kind of LISTING_KINDS) {
-      const action = listingAction(kind);
-      expect(['join', 'fork', 'install']).toContain(action);
+      const action = listingActionFor(makeListing({ listing_kind: kind, hive_pubkey: 'k' }));
+      expect(['view-hive', 'fork', 'install']).toContain(action);
       // and the action has a human label for the button
-      expect(typeof LISTING_ACTION_LABEL[action]).toBe('string');
-      expect(LISTING_ACTION_LABEL[action].length).toBeGreaterThan(0);
+      expect(typeof LISTING_ACTION_LABEL[action!]).toBe('string');
+      expect(LISTING_ACTION_LABEL[action!].length).toBeGreaterThan(0);
     }
   });
 
-  it('the label map is action-complete (Join/Fork/Install)', () => {
-    expect(LISTING_ACTION_LABEL.join).toBe('Join');
+  it('the label map is action-complete (View Hive/Fork/Install)', () => {
+    expect(LISTING_ACTION_LABEL['view-hive']).toBe('View Hive');
     expect(LISTING_ACTION_LABEL.fork).toBe('Fork');
     expect(LISTING_ACTION_LABEL.install).toBe('Install');
   });
@@ -111,7 +116,6 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');
     expect(listingKindOf(makeListing({ listing_kind: 'harness' }))).toBe('harness');
-    expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
   });
 
   it('defaults an ABSENT listing_kind to harness (pre-004 / aspirational row)', () => {
@@ -123,8 +127,8 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
     expect(listingKindOf(makeListing({ listing_kind: '' as unknown as ListingKind }))).toBe('harness');
   });
 
-  it('round-trips: listingAction(listingKindOf(row)) is join for a default/legacy row', () => {
-    expect(listingAction(listingKindOf(makeListing({ listing_kind: undefined })))).toBe('join');
-    expect(listingAction(listingKindOf(makeListing({ listing_kind: 'plugin' })))).toBe('install');
+  it('round-trips: a default/legacy row resolves kind harness and has NO primary action', () => {
+    expect(listingActionFor(makeListing({ listing_kind: undefined }))).toBeNull();
+    expect(listingActionFor(makeListing({ listing_kind: 'plugin' }))).toBe('install');
   });
 });

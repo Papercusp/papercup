@@ -29,8 +29,7 @@ import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-i
 import { useFlag } from '@/lib/flag-hooks';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { EntryGithubUrlForm } from './EntryGithubUrlForm';
-import { ShareWizard } from './ShareWizard';
-import { useViewer } from '../adv/harnesses/useViewer';
+import { PublishHiveCard } from './PublishHiveCard';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -774,19 +773,20 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   // Default into-hive when a hive is selected (the common case from the tab).
   const [mode, setMode] = useState<CreateMode>(hiveScope ? 'into-hive' : 'standalone');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
-  const [shareOpen, setShareOpen] = useState(false);
+  // The hive the share-offer step can publish: the membership scope of an
+  // into-hive create, or the new hive itself for a new-hive create. Per-harness
+  // sharing is retired (comb-retire-per-harness-sharing-2026-06-11) — the
+  // share offer is hive-publish or nothing.
+  const [createdHiveSlug, setCreatedHiveSlug] = useState<string | null>(null);
   // P-012 (hive-from-github-url): the GitHub-URL entry goes live behind this
   // flag; off = the legacy coming-soon stub + the old Shared-section layout.
   const githubUrlEnabled = useFlag(FLAGS.HIVE_FROM_GITHUB_URL);
-  // Names the provisional owner in the ShareWizard's P-069d first-share
-  // explainer. Anonymous / unresolved → undefined → the explainer's 'you'.
-  const { viewer } = useViewer();
 
   const handleClose = () => {
     setStep('picker');
     setMode(hiveScope ? 'into-hive' : 'standalone');
     setCreatedSlug(null);
-    setShareOpen(false);
+    setCreatedHiveSlug(null);
     onOpenChange(false);
   };
 
@@ -801,6 +801,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
     if (createdInto) onCreated?.(slug, { hive: createdInto });
     else onCreated?.(slug);
     setCreatedSlug(slug);
+    setCreatedHiveSlug(step === 'new-hive' ? slug : (memberHive ?? null));
     setStep('share-offer');
   };
 
@@ -816,7 +817,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
   return (
     <>
       <Modal
-        open={open && !shareOpen}
+        open={open}
         onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(true); }}
         title={step === 'share-offer' && createdSlug ? 'Harness created' : 'Add a harness'}
         contentStyle={{
@@ -871,38 +872,27 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated, hiveScope =
         {showShareOffer && createdSlug && (
           <ShareOfferStep
             slug={createdSlug}
-            onShare={() => setShareOpen(true)}
+            hiveSlug={createdHiveSlug}
             onDone={handleClose}
           />
         )}
       </Modal>
-      {showShareOffer && createdSlug && shareOpen && (
-        <ShareWizard
-          open={shareOpen}
-          onClose={() => {
-            setShareOpen(false);
-            handleClose();
-          }}
-          harnessSlug={createdSlug}
-          ownerLogin={viewer?.githubLogin ?? undefined}
-          // P-016 (hive-from-github-url): a harness created INTO a hive points
-          // the wizard at the hive-level share (the pointer card).
-          hiveSlug={mode === 'into-hive' && hiveScope ? hiveScope : undefined}
-        />
-      )}
     </>
   );
 }
 
 // ── Share-offer step ───────────────────────────────────────────────────────
+// Per-harness sharing is retired (comb-retire-per-harness-sharing-2026-06-11):
+// the offer is hive-publish (when the create has a home hive) or nothing.
 
 function ShareOfferStep({
   slug,
-  onShare,
+  hiveSlug,
   onDone,
 }: {
   slug: string;
-  onShare: () => void;
+  /** The created harness's home hive (or the new hive itself); null = standalone. */
+  hiveSlug: string | null;
   onDone: () => void;
 }) {
   return (
@@ -911,8 +901,18 @@ function ShareOfferStep({
         ✓ Harness created
       </h2>
       <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)' }}>
-        <code>{slug}</code> is registered. You can share it now so other engineers can join, or share it later from the harness top bar.
+        <code>{slug}</code> is registered.
       </p>
+      {hiveSlug ? (
+        <div style={{ marginBottom: 16 }}>
+          <PublishHiveCard hiveSlug={hiveSlug} />
+        </div>
+      ) : (
+        <p data-testid="share-offer-standalone-note" style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--fg-dim)' }}>
+          Sharing happens at the hive level — to collaborate on this harness,
+          add it to a hive (or create one) and publish the hive.
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <button
           type="button"
@@ -927,23 +927,7 @@ function ShareOfferStep({
             cursor: 'pointer',
           }}
         >
-          Share later
-        </button>
-        <button
-          type="button"
-          onClick={onShare}
-          style={{
-            padding: '8px 14px',
-            background: 'var(--accent, #38bdf8)',
-            color: '#0a1424',
-            border: 0,
-            borderRadius: 5,
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-        >
-          Share this harness →
+          Done
         </button>
       </div>
     </div>

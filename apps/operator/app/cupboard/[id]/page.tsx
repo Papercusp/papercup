@@ -3,11 +3,15 @@
 /**
  * Cupboard listing detail view.
  *
- * Shows full metadata + claim status + the per-kind primary action
- * (Join / Fork / Install — D-005). Renders against either the live-worker row
- * shape or the aspirational HarnessListing shape via the cupboard/types helpers.
+ * Shows full metadata + claim status + the per-listing primary action
+ * (View Hive / Fork / Install — D-005, reframed by
+ * comb-retire-per-harness-sharing-2026-06-11: per-harness Join is RETIRED; a
+ * `kind='harness'` row is the repo→Hive lookup index, so hive-bound rows point
+ * at the owning Hive and legacy rows have no primary action). Renders against
+ * either the live-worker row shape or the aspirational HarnessListing shape
+ * via the cupboard/types helpers.
  *
- * Every non-join kind executes its action directly from here:
+ * The fork/install kinds execute their action directly from here:
  *   - blueprint Fork → POST /api/cupboard/install-blueprint (clone + validate +
  *     dep-check → ~/.papercusp/blueprints/<id>/, the installed tier of the
  *     local→installed→built-in resolution —
@@ -27,27 +31,29 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import {
   Shield, ExternalLink, Users, Clock, GitBranch,
-  ArrowLeft, Loader2, AlertTriangle, GitFork, Plug, LogIn,
+  ArrowLeft, Loader2, AlertTriangle, GitFork, Plug, Globe, Hexagon,
 } from 'lucide-react';
-import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
+import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib/cupboard/types';
 import {
-  listingAction,
+  listingActionFor,
   listingKindOf,
   listingRepoSlug,
   listingContributorCount,
   listingTopLanguage,
-  buildHarnessJoinLink,
+  listingHiveRef,
   LISTING_ACTION_LABEL,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState } from '../CupboardErrorState';
 import { toast } from 'sonner';
 
-function ActionIcon({ kind, size = 14 }: { kind: ListingKind; size?: number }) {
-  switch (listingAction(kind)) {
-    case 'join': return <LogIn size={size} />;
+/** Icon for a listing's action (null = legacy harness row — kind icon only). */
+function ActionIcon({ action, size = 14 }: { action: ListingAction | null; size?: number }) {
+  switch (action) {
+    case 'view-hive': return <Hexagon size={size} />;
     case 'fork': return <GitFork size={size} />;
     case 'install': return <Plug size={size} />;
+    default: return <Globe size={size} />;
   }
 }
 
@@ -78,9 +84,9 @@ export default function CupboardDetailPage() {
   const handleAction = () => {
     if (!listing) return;
     const kind = listingKindOf(listing);
-    if (listingAction(kind) === 'join') {
-      const link = buildHarnessJoinLink(listing);
-      if (link) router.push(`/harness?join=${encodeURIComponent(link)}`);
+    if (listingActionFor(listing) === 'view-hive') {
+      // The owning Hive's rollup in the storefront (per-harness join is retired).
+      router.push(`/cupboard?hive=${encodeURIComponent(listingHiveRef(listing))}`);
       return;
     }
     // Blueprint fork installs the listing into the local installed tier
@@ -216,7 +222,7 @@ export default function CupboardDetailPage() {
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
-  const action = listingAction(kind);
+  const action = listingActionFor(listing);
   // provides_tools (worker migration 006): JSON string[] of the MCP tool names
   // a plugin/pack unit registers — surfaced so the user sees what installing buys.
   const providesTools: string[] = (() => {
@@ -247,7 +253,7 @@ export default function CupboardDetailPage() {
               background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
               color: COLORS.textMuted,
             }} data-testid="cupboard-detail-kind" data-kind={kind}>
-              <ActionIcon kind={kind} size={12} /> {kind}
+              <ActionIcon action={action} size={12} /> {kind}
             </span>
             {listing.claim_status === 'claimed' && (
               <span className="pc-badge" style={{
@@ -330,8 +336,10 @@ export default function CupboardDetailPage() {
           )}
         </div>
 
-        {/* Per-kind primary CTA */}
+        {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
+            join is retired; nothing to act on). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
+          {action && (
           <button
             onClick={handleAction}
             disabled={busy}
@@ -349,9 +357,10 @@ export default function CupboardDetailPage() {
             {busy ? (
               <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing {kind}…</>
             ) : (
-              <><ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : action === 'fork' ? ` ${kind}` : ' harness'}</>
+              <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' || action === 'fork' ? ` ${kind}` : ''}</>
             )}
           </button>
+          )}
           {repoSlug && (
             <a
               href={`https://github.com/${repoSlug}`}
@@ -365,15 +374,27 @@ export default function CupboardDetailPage() {
         </div>
 
         {/* Trust note for code-pulling kinds (D-007/D-009). */}
-        {action !== 'join' && (
+        {(action === 'fork' || action === 'install') && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
             {action === 'fork' ? 'Forking' : 'Installing'} pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
           </p>
         )}
 
+        {/* Harness rows are the repo→Hive lookup index (comb-retire D-003). */}
+        {kind === 'harness' && action === 'view-hive' && listing.hive_title && (
+          <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
+            This repo belongs to the hive <strong>{listing.hive_title}</strong> — sharing and joining happen at the hive level.
+          </p>
+        )}
+        {kind === 'harness' && !action && (
+          <p data-testid="cupboard-detail-legacy-note" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
+            Per-harness sharing is retired — this is a legacy listing with no owning hive. Share the hive instead.
+          </p>
+        )}
+
         {listing.claim_status === 'unclaimed' && kind === 'harness' && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
-            This harness is unclaimed. If you are the maintainer, you can claim it from the harness settings after joining.
+            This listing is unclaimed — no verified maintainer of the repo has bound it to their account yet.
           </p>
         )}
       </div>

@@ -1176,6 +1176,24 @@ machine / new workspace:
 
 ## 12.7 Error states
 
+**Server-error legs on desktop — use the built-in fault injection (EI-297).**
+The Tauri webview's API traffic rides the IPC-first path, so an HTTP fault
+proxy in front of `/api` never sees it. Instead, start the operator under test
+with `PAPERCUSP_FAULT_INJECTION=1` and drive faults through the loopback-only
+control plane (inert without the env gate; rules are in-memory and vanish on
+restart):
+
+```sh
+# fault the next profile save with a 500, then auto-expire
+curl -X POST http://127.0.0.1:<port>/api/admin/fault-injection \
+  -H 'content-type: application/json' \
+  -d '{"pathPrefix":"/api/profile","method":"POST","status":500,"times":1}'
+# delay-only rule (latency testing): {"pathPrefix":"/api/...","delayMs":3000}
+# inspect / clear:  GET … | DELETE …?id=fault-1 | DELETE … (all)
+```
+
+Implementation + tests: `apps/operator/bin/host-fault-injection.ts`.
+
 Trigger each by stopping the relevant backend / passing a bad
 parameter:
 
@@ -1191,54 +1209,51 @@ parameter:
 
 ## 13. Coverage checklist (paste into report)
 
+The checklist mirrors the **live `/adv` shell** (the Vite SPA — `ADV_TABS` in
+`apps/operator-vite/src/components/adv/AdvShell.tsx` is the source of truth for
+the tab strip). Rows are deliberately coarse for tabs whose internals churn;
+the per-panel detail lives in the panels themselves, not here.
+
 ```
-[ /]                home renders, h1 wordmark, all 7+ CTA links resolve
-[ /harness]         dashboard mounts, harness picker (combobox)
-[ /harness — top]   collapse, set-up-phases, ⌘K, triage, save snapshot, start, cost
-[ /harness — actions] cf, migrations, schema, website, linear (each)
-[ /harness — tabs]  brainstorm proposals dashboard summary docs vscode consoles insights config
-[ /harness — phase] staging testing production
-[ /harness — addpl] popover empty/error/normal/templateKinds-mismatch paths
-[ /harness — left]  inbox vs git pane
-[ /harness — inbox] All Decisions Threads Pinned + search + (+ idea / + draft idea)
-[ /harness — status]All Running Stuck Blocked Todo Passed
-[ /harness — filt]  project tag search list/board +new
-[ /harness — feat]  steer chat open-in-pi edit reset (per row)
-[ /harness — ⌘K]    each Project + Control command (~17 entries) routes correctly
-[ /harness — modals]triage hooks intervene usage snapshots screenshots decisions smoke identity templates archives diff
-[ /harness — modal-internals] FeatureEditor (id/title/summary/status/attempts/save/cancel/delete), FeaturePeekPanel (open chats per role, reset, close), FeatureDiffModal, ProposalsPanel (search/filter/edit-goal/replan/dismiss/shortlist), HooksPanel, InterventionPanel (textarea+send), UsagePanel, in-harness SnapshotsPanel (save/restore/delete), DecisionsPanel, SmokeTestPanel (run/expand/re-run-failed), IdentityPanel, TemplatesModal (3-step wizard), ArchivesPanel (restore), OperatorNoteForm
-[ /harness — banners] PlanReview (approve/dismiss), Checkpoint (restore/promote per row), Escalation (ack/resolve/open chats), Promotion (promote/reject)
-[ /harness — issues]  filter, promote, ack, close, won't-fix, IssueDetail add-note
-[ /harness — tests]   run all, per-row run, expand stdout/stderr
-[ /harness — report]  promotion-report markdown view, copy/download
-[ /harness — sub-tabs] CollectionTab (file list/edit/save/delete), MemoryBrowser (tree/edit), PromptsTab (per-role override save/delete)
-[ /harness — dept]    DepartmentHarnessDashboard: Inbox Outbox Compose Decisions Charter "Director notes" Memory "Director agent"
-[ /harness — foot]  issues tests report
-[ /pi]              terminal default, dockview layout persistence, openChat event, prune, ChatPanel send/archive
-[ /pi — controls]   tab close, drag-split, resize sash, ?lane=&lt;id&gt; for feature worktree
-[ /marketplace]     overview/templates/plugins/snapshots tabs all switch
-[ /marketplace/templates] fresh project, attach existing, install (N sub-harnesses)
-[ /marketplace/plugins]   install plugin (per plugin)
-[ /marketplace/snapshots] each snapshot link, refresh, open harnesses
-[ /marketplace/&lt;slug&gt;] detail page renders name/version/license/author/description/install/versions; bad slug → 404
-[ /snapshots]       list, refresh, harnesses link, publish/delete/fork per row
-[ /settings/api-keys] anthropic openai github + Save
-[ /settings/oracle]   prompt + memory + Save
-[ /settings/profile]  email name dir + 5 model fields + Save
-[ /settings/publishing] static copy / form (verify what's there)
-[ /settings/plugin-runtime] Reset cache
-[ /support]         chat button, github link, docs link, agent panel
-[ /login]           magic link flow
-[ /signup]          redirects to /login
-[ /setup]           link guide
-[ /docs]            every section page (branding/data-sync/*, design/*, implementation/*, spec/*, testing/*); search palette; theme toggle; sidebar collapse
-[ Keyboard]         ⌘K palette, Esc closes modals/popovers/dock, ↑/↓ in palette, ⌘+Enter in proposal goal editor, drag in dockview
-[ Auth states]      logged-out vs logged-in nav + protected route redirects
-[ Empty states]     no-harnesses, no-plugins-installed, no-snapshots, empty inbox, empty issues, empty tests
-[ Error states]     malformed oracle body, plugins/global down, plugin-enable rejection, unknown marketplace slug, /pi without harness, settings 500
-[ Oracle dock]      auto-popup, fab, send, navigate, listHarnesses, getHarnessStatus, dispatchToAgent, listChats, resumeChat, persistence, new chat, settings link
-[ Header]           brand pair, Marketplace Support Settings, WorkspaceSwitcher, SessionIndicator
+[ /adv]                 shell mounts, tab strip renders all tabs, pot selector works
+[ /adv — Overview]      tab=overview mounts, workspace summary renders
+[ /adv — Brainstorm]    tab=brainstorm mounts (per-pot)
+[ /adv — Create]        tab=plans: plan list, plan editor, launch path
+[ /adv — Working]       tab=harnesses: dock mounts; Work-items grid (filter/search/row-select)
+[ /adv — Working dock]  Add panel catalog (work-items/detail/overview/agents/logs/contributors/insights/chat), layout reset, per-slug layout persistence
+[ /adv — Detail]        ?sel=WI-*/F-* drives Detail pane; Actions incl. Chat (wi-detail-chat)
+[ /adv — Chat panel]    free slot picker (adv-chat-pick/adv-chat-start) → worker chat; repeat opens FOCUS the existing chat (no duplicate agent_chats row); archive frees the slot
+[ /adv — Git]           tab=git: git-graph + PRs panels
+[ /adv — Tests]         tab=testing: domains tree, per-file status, run affordances
+[ /adv — Docs]          tab=docs (per-pot docs tree)
+[ /adv — Insights]      tab=insights mounts
+[ /adv — Conversations] tab=conversations: all 5 views (threads/deliberations/agentchats/messages/feed); threads reply/accept/promote; LIVE agent chat shows the interactive composer (advconv-live-chat), archived stays read-only
+[ /adv — Learning]      tab=learning: papercusp-improvement backlog renders
+[ /adv — Frames]        tab=frames mounts (workspace live view)
+[ /adv — Settings]      tab=settings mounts, sections save
+[ /adv — Sessions]      /adv/sessions: roster, session detail, launch controls
+[ /admin]               /admin/{plans,git,features,tables,dbos,run}: each mounts; /admin/git pipeline view renders
+[ /cupboard]            list + detail render; error state shows friendly copy + Retry
+[ /coord]               coordination view mounts
+[ Oracle dock]          fab, send, navigate, persistence, new chat
+[ Operator chat]        "Reply to Papercup…" composer present and sends
+[ Keyboard]             ⌘K palette, Esc closes modals/popovers, Mod+I → conversations
+[ Header]               brand pair, WorkspaceSwitcher, SessionIndicator
+[ Empty states]         no work items, empty conversations views, empty Tests domains
+[ Error states]         API 500 on a panel fetch → friendly error + retry (no crash); dead-origin recovery page
 ```
+
+:::note[Retired surfaces — do NOT e2e these]
+Rows the old checklist carried for surfaces that are now retired or
+transitional (EI-301): the `/harness` page's **add-plugin popover**, the
+**DepartmentHarnessDashboard** ("dept"), the **PlanReview / Checkpoint /
+Promotion / Escalation banners**, the **staging/testing/production phase
+switcher**, and everything under the **harness-snapshot system**
+(`/snapshots`, marketplace snapshots tab, in-harness SnapshotsPanel).
+§5–§8 below describe the legacy Next-era `/harness`, `/pi`, and
+`/marketplace` pages — treat them as historical reference, not coverage
+targets; the live product surface is `/adv` inside the Tauri shell.
+:::
 
 ## 14. What "PASS" means
 
@@ -1438,3 +1453,31 @@ isolated instance — find it with `tauri-agent-tools probe --pid <pid>` or the
 `PAPERCUSP_BRIDGE_PORT` env var). Prefer the
 bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and
 use this VirtualGL stack only for the pixels.
+
+### 15.5 Driving React-controlled inputs via the bridge
+
+Setting a controlled `<select>`/`<input>` value through `eval` with the classic
+native-setter + `dispatchEvent(new Event('change'))` trick **silently fails**
+on this app (React 19: there is no `_valueTracker` on the node to reset, so
+React's value tracking dedupes the event and the controlled value snaps back).
+No error, no state change — your "Start" button stays disabled and the test
+looks like an app bug.
+
+What works: call the component's own handler through the React props expando
+on the DOM node (verified live, WI-125 verification 2026-06-11):
+
+```js
+// the expando key carries a per-bundle hash — discover it, don't hardcode it
+const el = document.querySelector('[data-testid="adv-chat-pick"]');
+const propsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+el[propsKey].onChange({ target: { value: 'WI-62' } });   // updates React state
+// then drive the dependent control the same way:
+const btn = document.querySelector('[data-testid="adv-chat-start"]');
+btn[Object.keys(btn).find((k) => k.startsWith('__reactProps$'))].onClick();
+```
+
+Plain `.click()` on buttons works fine (React listens natively for clicks) —
+the expando path is only needed for **value-tracked** inputs. Also remember a
+value injected this way bypasses UI constraints: only pass values the real
+control could produce (e.g. an option that exists in the select), or you are
+testing a state the user can never reach.

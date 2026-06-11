@@ -7,9 +7,10 @@
  * Regression guard for the Cupboard browse "provisional tag" gap: an
  * `unclaimed` (provisional) listing must surface the canonical
  * ClaimStatusBadge in its `unclaimed` state rather than render unlabeled.
- * Plus the three-listing-kind action contract (D-005): the card's primary
- * action button is Join (harness) / Fork (blueprint, snapshot) / Install
- * (plugin), driven by `listingAction()`.
+ * Plus the per-listing action contract (D-005, reframed by
+ * comb-retire-per-harness-sharing-2026-06-11): View Hive (hive-bound harness
+ * row) / none (legacy harness row — per-harness join retired) / Fork
+ * (blueprint) / Install (plugin, pack), driven by `listingActionFor()`.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -107,17 +108,15 @@ describe('Cupboard ListingCard — publisher signal', () => {
   });
 });
 
-describe('Cupboard ListingCard — per-kind action (D-005)', () => {
-  const cases: Array<{ kind: ListingKind | undefined; action: string; label: string }> = [
-    { kind: 'harness', action: 'join', label: 'Join' },
+describe('Cupboard ListingCard — per-listing action (D-005 / comb-retire)', () => {
+  const cases: Array<{ kind: ListingKind; action: string; label: string }> = [
     { kind: 'blueprint', action: 'fork', label: 'Fork' },
     // ('snapshot → fork' removed — snapshot kind retired by retire-snapshots-instance-spec-2026-06-09 D-005.)
     { kind: 'plugin', action: 'install', label: 'Install' },
     { kind: 'pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (migration 006)
-    { kind: undefined, action: 'join', label: 'Join' }, // absent kind ⇒ harness
   ];
   for (const c of cases) {
-    it(`${c.kind ?? '(absent)'} → ${c.action} action`, () => {
+    it(`${c.kind} → ${c.action} action`, () => {
       render(
         <ListingCard
           listing={listing({ listing_kind: c.kind })}
@@ -130,6 +129,41 @@ describe('Cupboard ListingCard — per-kind action (D-005)', () => {
       expect(btn.textContent).toContain(c.label);
     });
   }
+
+  it('hive-bound harness row → View Hive action (the repo→Hive lookup index)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'harness', hive_pubkey: 'k'.repeat(44), hive_title: 'Demo Hive' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const btn = screen.getByTestId('cupboard-action');
+    expect(btn.getAttribute('data-action')).toBe('view-hive');
+    expect(btn.textContent).toContain('View Hive');
+  });
+
+  it('legacy harness row (no hive) → NO primary action (per-harness join retired)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'harness' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('cupboard-action')).toBeNull();
+  });
+
+  it('absent kind ⇒ harness semantics (legacy row, no primary action)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: undefined })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('cupboard-action')).toBeNull();
+  });
 
   it('renders a kind badge reflecting the listing kind', () => {
     render(

@@ -10,7 +10,7 @@
  * Ported from app/api/user/memory/reembed/route.ts. `auth: 'loopback'` (auth-tier Wave 1),
  * `timeoutSec: 600` to match the Next maxDuration.
  */
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
 import { reembedMemories } from '../../../memory/reembed';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -27,8 +27,9 @@ export default defineTool({
   auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    // Session is optional (single-user default fallback); the `loopback`
+    // auth tier is the real gate. The re-embed is not per-user.
+    await getSessionUserOrDefault(req.headers);
 
     let body: { from?: unknown; to?: unknown };
     try {

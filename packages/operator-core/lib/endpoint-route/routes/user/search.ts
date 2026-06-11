@@ -11,9 +11,11 @@
  * place (migrated off a hand-rolled duplicate per P-020, 2026-05-30).
  *
  * Ported from app/api/user/search/route.ts. `auth: 'public'` —
- * session-cookie auth via getSessionUser(req.headers), 401 if absent.
+ * session-cookie auth with the seeded-`default`-user fallback
+ * (single-user installs: the desktop webview typically carries no
+ * session cookie).
  */
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
 import { getMemoryBackend } from '../../../memory/backend';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
@@ -100,8 +102,7 @@ export default defineTool({
   path: '/user/search',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const url = new URL(req.url);
     const q = (url.searchParams.get('q') ?? '').trim();
     if (!q) return Response.json({ q: '', memories: [], prose: [] });

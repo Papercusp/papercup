@@ -80,6 +80,27 @@ edge that cost an hour:
    `taskkill` without `/F` often cannot close the app (WM\_CLOSE refused);
    use `taskkill /PID <pid>` first to exercise the graceful path, `/T /F`
    for teardown.
+10. **Never forward PATH through WSLENV** (`PATH/l`) — the translated
+    Windows PATH *replaces* the distro PATH inside the spawned process, so
+    `/usr/bin` et al vanish and every distro-binary spawn from serve
+    (kopia, locale, git) dies ENOENT — while the same binary works from a
+    fresh `wsl --exec` session, which is what makes it maddening to
+    diagnose. Forward specific dirs as their own `/p` vars
+    (`PAPERCUSP_SIDECAR_BIN`) and compose PATH on the Linux side.
+11. **Hard-killing the app orphans the entire WSL backend** — `taskkill
+    /T /F` kills the Windows tree (app + wsl.exe relay) but the Linux-side
+    node/PG keep running (and keep the redirected log handle open, so the
+    next launch's `>` redirect fails and the task silently exits 1).
+    Tolerated by design for the operator itself (next launch `--ensure`
+    reuses it), but tear down test sessions with a WSL-side
+    `kill -TERM <serve-pid>` (clean pg\_ctl stop, removes operator.json),
+    not a Windows-side kill.
+12. **Watch for peer churn on the shared tree mid-build** — the sidecar
+    SPA build snapshots whatever the canonical tree holds; an in-flight
+    peer refactor (mid-edit import/export mismatch) fails your build with
+    a MISSING\_EXPORT that has nothing to do with your change. Check
+    `coord:presence` for the file's owner and just retry once they're
+    consistent.
 
 ## Where the artifacts live
 

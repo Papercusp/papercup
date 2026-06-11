@@ -14,9 +14,12 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { createWorkItem, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, WORK_ITEM_KINDS, type WorkItemKind } from '../../work-items';
+import { findMirroredOpenItem } from './mirror-guard';
 
 export default defineTool({
   name: 'work_items:create',
@@ -71,10 +74,45 @@ export default defineTool({
       .describe(
         'URGENT enqueue: wake the brain (Pot operator) immediately instead of its slow cadence (floor-debounced — a burst coalesces to one wake). Reserve for genuinely-urgent work (a production fire), not routine filing.',
       ),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        'Override the mirror-duplicate guard (EI-316): create even when the title embeds an existing OPEN work-item id. Only set this when the reference is deliberate, not when you mean to work the referenced item.',
+      ),
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     try {
+      // EI-316 mirror-duplicate guard: a title embedding an existing OPEN
+      // work-item id ("WI-118: …") is almost always an accidental mirror — the
+      // creator should work the given id, not fork a duplicate it then completes
+      // while the original strands in `validating`. Refuse with the live id
+      // (override: force:true). Flag-gated so a misfire is instantly reversible.
+      if (!args.force && (await getFlag(FLAGS.WORK_ITEM_MIRROR_GUARD, 'system'))) {
+        const mirror = await findMirroredOpenItem(args.title, async (id) => {
+          const wi = await getWorkItem(id, args.harness);
+          return wi ? { id: wi.id, state: wi.state } : null;
+        });
+        if (mirror) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: 'duplicate_mirror',
+                  message:
+                    `title references existing OPEN work-item ${mirror.id} (state: ${mirror.state}) — ` +
+                    `work that item directly (work_items:claim ${mirror.id} / work_items:set_state), do NOT create a mirror. ` +
+                    `Pass force:true only if this reference is deliberate.`,
+                  existing: mirror,
+                }),
+              },
+            ],
+          };
+        }
+      }
       const workItem = await createWorkItem({
         kind: args.kind as WorkItemKind,
         title: args.title,

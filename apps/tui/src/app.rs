@@ -3118,6 +3118,16 @@ impl App {
                 b.sel = b.sel.saturating_sub(1);
                 Action::Render
             }
+            // Notifications history works in the pinned dock pane too (owner ask
+            // 2026-06-11): the alert toast flashes here, so its history must be
+            // openable here — the board otherwise owns the whole keymap and 'N'
+            // never reached the generic handler.
+            KeyCode::Char('N') => {
+                self.show_notifs = true;
+                self.toast = None;
+                self.unseen_notifs = 0;
+                Action::Render
+            }
             KeyCode::Char('e') => {
                 if let Some((_, pw)) = b.selected() {
                     let seed = pw.summary.clone().unwrap_or_default();
@@ -4022,6 +4032,16 @@ impl App {
         // Ctrl+C still quits (handled by the caller before on_key).
         if self.watch.is_some() {
             match code {
+                // Ctrl+N → notifications history (printable 'N' belongs to the
+                // composer here; the toast hint names this binding).
+                KeyCode::Char('n') | KeyCode::Char('N')
+                    if mods.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.show_notifs = true;
+                    self.toast = None;
+                    self.unseen_notifs = 0;
+                    return Action::Render;
+                }
                 KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
                     self.watch_input.push(c);
                     return Action::Render;

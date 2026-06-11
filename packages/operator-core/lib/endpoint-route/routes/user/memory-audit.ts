@@ -16,7 +16,7 @@
  * so the UI can degrade gracefully.
  */
 import * as path from 'node:path';
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import { audit } from '../../../memory/audit-memory-anchors';
 
@@ -26,8 +26,9 @@ export default defineTool({
   auth: 'loopback',
   timeoutSec: 120,
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    // Session is optional (single-user default fallback); the `loopback`
+    // auth tier is the real gate. The audit itself is not per-user.
+    await getSessionUserOrDefault(req.headers);
 
     let body: { full?: unknown; dryRun?: unknown } = {};
     try {

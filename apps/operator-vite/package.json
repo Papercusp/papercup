@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:nohmr": "vite build --watch --mode development",
+    "dev:nohmr": "bin/vite-watch-singleton",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run"

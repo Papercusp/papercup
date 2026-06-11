@@ -1,9 +1,9 @@
 ---
 duration_ms: 0
-last_run_ts: 1781193623784
-mtime_ms: 1781193623799
+last_run_ts: 1781207459699
+mtime_ms: 1781207459716
 name: "sync-sse bus + invalidation unit contract"
-payload: {"file":"packages/operator-core/lib/sync-sse.test.ts","kind":"contract","name":"sync-sse bus + invalidation unit contract","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781193623784,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-004"],"durationMs":0,"planItemIds":["P-004"]}
+payload: {"file":"packages/operator-core/lib/sync-sse.test.ts","kind":"contract","name":"sync-sse bus + invalidation unit contract","status":"passing","planSlug":"production-readiness-acceptance-2026-06-10","framework":"vitest","lastRunTs":1781207459699,"coversVALs":["VAL-production-readiness-acceptance-2026-06-10-004"],"durationMs":0,"planItemIds":["P-004"]}
 phase: "staging"
 status: "passing"
 test_id: "sync-sse-unit"

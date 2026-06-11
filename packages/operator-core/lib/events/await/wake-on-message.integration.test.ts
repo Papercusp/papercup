@@ -125,6 +125,44 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     expect(JSON.stringify(mine[0])).toContain(`wake-rung ping for ${idleB}`);
   });
 
+  it('remains wakeable AFTER the first wake — a second directed send still delivers (EI-313 regression)', async () => {
+    // The always-armed watch is once=false (standing): firing it must NOT
+    // consume it, so an idle agent woken once stays wakeable. This is the exact
+    // symptom EI-313 reported ("unwakeable after first wake"); pinning it
+    // end-to-end (real verb → engine → pump → socket) would catch any future
+    // regression that consumes/cancels the watch on first delivery. Arm with a
+    // zero floor so the two sends don't COALESCE (the 60s floor coalescing is
+    // correct behavior, separately covered — here we isolate watch survival).
+    const sender = uid('a3');
+    const idleB = uid('b3');
+    await armInboxWake({ ownerId: idleB, workspaceId: h.ws, minSleepSec: 0 });
+    const hostB = await tb.spawnSocketHost(idleB);
+
+    const send = async (n: number) =>
+      out(await coordSend.handler(
+        parse(coordSend, { to: [idleB], summary: `wake #${n} for ${idleB}`, body: `ping ${n}`, wake: true }),
+        { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
+      ));
+
+    // First wake → delivered.
+    const r1 = await send(1);
+    expect(r1.wake?.woken).toBe(1);
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+    expect(hostB.received).toHaveLength(1);
+
+    // Second wake to the SAME agent → still woken, still delivered. A consumed
+    // or cancelled watch would return woken:0 and never reach the socket.
+    const r2 = await send(2);
+    expect(r2.wake?.woken).toBe(1);
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+    expect(hostB.received).toHaveLength(2);
+
+    // Both deliveries are durable + delivered over B's own socket.
+    const deliveries = await store.listRecentDeliveries(idleB);
+    expect(deliveries.filter((d) => d.status === 'delivered')).toHaveLength(2);
+    expect(hostB.received.every((m) => JSON.stringify(m).includes(idleB))).toBe(true);
+  });
+
   it('wake:false (plain inject) enqueues the message but never touches the socket', async () => {
     const sender = uid('a2');
     const idleB = uid('b2');

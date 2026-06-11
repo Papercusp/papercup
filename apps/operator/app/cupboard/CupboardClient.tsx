@@ -3,21 +3,21 @@
 /**
  * CupboardClient — the storefront for the Cupboard registry.
  *
- * ONE storefront, five listing kinds (distribution plan D-005;
+ * ONE storefront, four listing kinds (distribution plan D-005;
  * tool-distribution-granularity D-001), each with its own consumer action:
- *   harness   → join     (shared-harness via the Hypercore topic)
- *   blueprint → fork     (a blueprint stream within a project)
- *   snapshot  → fork     (a captured snapshot)
- *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
- *   pack      → install  (a runtime-less code-tool pack)
+ *   harness   → view-hive (the repo→Hive lookup row, mig 007) or none (legacy —
+ *               per-harness join is RETIRED, comb-retire-per-harness-sharing)
+ *   blueprint → fork      (a blueprint stream within a project)
+ *   plugin    → install   (a distributable plugin — a pack WITH a runtime)
+ *   pack      → install   (a runtime-less code-tool pack)
  * Plus the **Tools** discovery view (`?kind=tools`) — tool-level discovery over
  * `GET /api/cupboard/tools`, where each tool resolves to its providing unit.
  *
  * - Kind filter is URL-backed (nuqs `?kind=`), forwarded to the worker via the
  *   `/api/cupboard/listings` proxy.
- * - The per-kind action button label comes from `listingAction()`. `harness`
- *   joins inline (the working join flow); `blueprint`/`snapshot`/`plugin` route
- *   to the listing detail where the fork/install is confirmed (the fork/install
+ * - The per-listing action comes from `listingActionFor()`. Hive-bound harness
+ *   rows enter the per-Hive rollup; `blueprint`/`plugin`/`pack` route to the
+ *   listing detail where the fork/install is confirmed (the fork/install
  *   EXECUTION engine is owned by E1/E2 `init --from` + the plugin-host
  *   install-consent path — the storefront surfaces the listing + routes to it).
  * - Rendering reads either the live-worker row shape or the aspirational
@@ -27,19 +27,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
-  listingAction,
+  listingActionFor,
   listingKindOf,
   listingRepoSlug,
   listingContributorCount,
   listingTopLanguage,
   listingHiveRef,
   groupListingsByKind,
-  buildHarnessJoinLink,
   LISTING_ACTION_LABEL,
+  type ListingAction,
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
@@ -73,10 +73,10 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
   }
 }
 
-/** Icon for a listing's action button (join/fork/install). */
-function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
-  switch (listingAction(kind)) {
-    case 'join': return <LogIn size={size} />;
+/** Icon for a listing's action button (view-hive/fork/install). */
+function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: number }) {
+  switch (action) {
+    case 'view-hive': return <Hexagon size={size} />;
     case 'fork': return <GitFork size={size} />;
     case 'install': return <Plug size={size} />;
   }
@@ -220,22 +220,20 @@ export default function CupboardClient() {
     gap: 14,
   };
 
-  // Per-kind primary action. harness joins inline (the working join flow);
-  // blueprint/snapshot/plugin open the listing detail where the fork/install
+  // Per-listing primary action. Hive-bound harness rows enter the per-Hive
+  // rollup (per-harness join is retired — comb-retire-per-harness-sharing);
+  // blueprint/plugin/pack open the listing detail where the fork/install
   // is confirmed + executed (the engine is E1/E2 / plugin-host — see file head).
   const handleAction = useCallback(
     (listing: HarnessListing) => {
-      const kind = listingKindOf(listing);
-      if (listingAction(kind) === 'join') {
-        const link = buildHarnessJoinLink(listing);
-        if (link) router.push(`/harness?join=${encodeURIComponent(link)}`);
-        else router.push(`/cupboard/${listing.id}`);
+      if (listingActionFor(listing) === 'view-hive') {
+        void setHive(listingHiveRef(listing));
         return;
       }
       // fork / install → the listing detail (act-on surface).
       router.push(`/cupboard/${listing.id}`);
     },
-    [router],
+    [router, setHive],
   );
 
   return (
@@ -537,6 +535,7 @@ export function ListingCard({
   onHive?: () => void;
 }) {
   const kind = listingKindOf(listing);
+  const action = listingActionFor(listing);
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
@@ -651,17 +650,20 @@ export function ListingCard({
         </button>
       )}
 
-      {/* Footer — per-kind action */}
+      {/* Footer — per-listing action. Legacy harness rows (no owning Hive)
+          have no primary action: per-harness join is retired. */}
       <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4 }}>
+        {action && (
         <button
           onClick={onAction}
           data-testid="cupboard-action"
-          data-action={listingAction(kind)}
+          data-action={action}
           className="pc-button"
           style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
         >
-          <ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[listingAction(kind)]}
+          <ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}
         </button>
+        )}
         {repoSlug && (
           <a
             href={`https://github.com/${repoSlug}`}

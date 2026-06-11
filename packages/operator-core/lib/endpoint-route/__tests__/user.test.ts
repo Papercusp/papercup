@@ -1,13 +1,22 @@
 /**
- * Smoke tests for the ported `user` family — the 401-unauthenticated
- * gate is the shared invariant (session-cookie auth via getSessionUser).
- * Validation branches covered where they exist.
+ * Smoke tests for the ported `user` family — the shared invariant is the
+ * seeded-`default`-user fallback (getSessionUserOrDefault): per-user data
+ * routes resolve the session user when a cookie is present and fall back
+ * to the default user when it isn't (single-user desktop installs — the
+ * webview typically carries no session cookie; a strict 401 here blanked
+ * the settings memory page on 2026-06-11). Validation branches covered
+ * where they exist.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const DEFAULT_USER = { id: 'default-user', username: 'default', display_name: 'User', has_password: false };
+
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
-vi.mock('../../auth', () => ({ getSessionUser: vi.fn(async () => null) }));
+vi.mock('../../auth', () => ({
+  getSessionUser: vi.fn(async () => null),
+  getSessionUserOrDefault: vi.fn(async () => ({ id: 'default-user', username: 'default', display_name: 'User', has_password: false })),
+}));
 vi.mock('../../user-preferences', () => ({
   loadUserPreferences: vi.fn(async () => ({})),
   saveUserPreferences: vi.fn(async (_id, p) => p),
@@ -62,7 +71,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../memory/claude-hygiene', () => ({ readClaudeHygiene: vi.fn(async () => null) }));
 
-import { getSessionUser } from '../../auth';
+import { getSessionUserOrDefault } from '../../auth';
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
@@ -86,44 +95,72 @@ const post = (body: object) => ({
   headers: { 'content-type': 'application/json' },
 });
 
+const fakeBackend = (entries: object[]) => ({
+  name: 'fake',
+  available: vi.fn(async () => ({ ok: true })),
+  list: vi.fn(async () => entries),
+  get: vi.fn(async () => null),
+  forget: vi.fn(async () => {}),
+  update: vi.fn(async () => {}),
+  remember: vi.fn(async () => ({ ids: ['new-1'] })),
+});
+
 afterEach(() => vi.clearAllMocks());
 
-describe('user family ports — 401 gate', () => {
-  it('GET /user/preferences returns 401 when no session', async () => {
+describe('user family ports — default-user fallback when no session', () => {
+  it('GET /user/preferences serves the default user without a session', async () => {
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect((await res.json()).payload).toEqual({});
+    const { loadUserPreferences } = await import('../../user-preferences');
+    expect(vi.mocked(loadUserPreferences)).toHaveBeenCalledWith('default-user');
   });
-  it('PATCH /user/preferences returns 401', async () => {
+  it('PATCH /user/preferences writes as the default user without a session', async () => {
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences', {
       method: 'PATCH', body: '{}', headers: { 'content-type': 'application/json' },
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
   });
-  it('GET /user/search returns 401', async () => {
-    const res = await appWith(userSearch as AnyRoute).request('/user/search?q=x');
-    expect(res.status).toBe(401);
+  it('GET /user/search resolves the default user without a session', async () => {
+    // Empty q returns the early empty envelope — past the auth gate.
+    const res = await appWith(userSearch as AnyRoute).request('/user/search');
+    expect(res.status).toBe(200);
+    expect((await res.json()).memories).toEqual([]);
+    expect(vi.mocked(getSessionUserOrDefault)).toHaveBeenCalled();
   });
-  it('GET /user/memory returns 401', async () => {
+  it('GET /user/memory lists the default user pool without a session', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend([]) as never);
     const res = await appWith(userMemory as AnyRoute[]).request('/user/memory');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect((await res.json()).results).toEqual([]);
   });
-  it('GET /user/memory/feedback returns 401', async () => {
+  it('GET /user/memory/backend reports the default userId without a session', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend([]) as never);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory/backend');
+    expect(res.status).toBe(200);
+    expect((await res.json()).userId).toBe('default-user');
+  });
+  it('GET /user/memory/feedback serves stats without a session', async () => {
     const res = await appWith(userMemoryFeedback as AnyRoute).request('/user/memory/feedback');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect((await res.json()).total_edits).toBe(0);
   });
-  it('POST /user/memory/reembed returns 401', async () => {
+  it('POST /user/memory/reembed reaches validation without a session', async () => {
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({}));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400); // invalid_mode — auth no longer blocks
   });
-  it('POST /user/memory/audit returns 401', async () => {
-    const res = await appWith(userMemoryAudit as AnyRoute).request('/user/memory/audit', post({}));
-    expect(res.status).toBe(401);
+  it('POST /user/memory/audit reaches the full-flag path without a session', async () => {
+    const res = await appWith(userMemoryAudit as AnyRoute).request('/user/memory/audit', post({ full: true }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).reason).toBe('full_audit_pending_layer_3');
   });
 });
 
-describe('POST /user/memory/audit — auth + full-flag pathways', () => {
-  it('returns full-audit estimate when authenticated and full=true', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+describe('POST /user/memory/audit — full-flag pathway', () => {
+  it('returns full-audit estimate when full=true', async () => {
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const res = await appWith(userMemoryAudit as AnyRoute).request(
       '/user/memory/audit',
       post({ full: true }),
@@ -139,39 +176,31 @@ describe('POST /user/memory/audit — auth + full-flag pathways', () => {
 });
 
 describe('user family ports — happy path / validation', () => {
-  it('GET /user/preferences returns payload when authenticated', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+  it('GET /user/preferences returns the session user payload when authenticated', async () => {
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences');
     expect(res.status).toBe(200);
     expect((await res.json()).payload).toEqual({});
+    const { loadUserPreferences } = await import('../../user-preferences');
+    expect(vi.mocked(loadUserPreferences)).toHaveBeenCalledWith('u1');
   });
   it('DELETE /user/preferences without key returns 400', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences', {
       method: 'DELETE',
     });
     expect(res.status).toBe(400);
   });
   it('POST /user/memory/reembed rejects invalid mode with 400', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({ from: 'x', to: 'y' }));
     expect(res.status).toBe(400);
   });
   it('POST /user/memory/reembed rejects same-mode noop with 400', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({ from: 'openai', to: 'openai' }));
     expect(res.status).toBe(400);
   });
-});
-
-const fakeBackend = (entries: object[]) => ({
-  name: 'fake',
-  available: vi.fn(async () => ({ ok: true })),
-  list: vi.fn(async () => entries),
-  get: vi.fn(async () => null),
-  forget: vi.fn(async () => {}),
-  update: vi.fn(async () => {}),
-  remember: vi.fn(async () => ({ ids: ['new-1'] })),
 });
 
 describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', () => {
@@ -183,7 +212,7 @@ describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', 
   ];
 
   it('passes kinds through untouched, lifts canonical dates, sorts newest-first', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const { getMemoryBackend } = await import('../../memory/backend');
     vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend(ENTRIES) as never);
     const res = await appWith(userMemory as AnyRoute[]).request('/user/memory');
@@ -201,7 +230,7 @@ describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', 
   });
 
   it('still serves the list when the canonical enrichment query throws (the uuid=text regression)', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const { getMemoryBackend } = await import('../../memory/backend');
     vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend(ENTRIES) as never);
     orgSql.mockRejectedValueOnce(new Error('operator does not exist: uuid = text'));
@@ -215,7 +244,7 @@ describe('GET /user/memory — list enrichment (memory-settings-page-refresh)', 
 
 describe('POST /user/memory — create (P-010) + invalidate (P-008)', () => {
   it('writes through the backend seam, records create feedback, fires the list invalidate', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b', display_name: 'A' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1', display_name: 'A' } as never);
     const backend = fakeBackend([]);
     const { getMemoryBackend } = await import('../../memory/backend');
     vi.mocked(getMemoryBackend).mockReturnValue(backend as never);
@@ -238,7 +267,7 @@ describe('POST /user/memory — create (P-010) + invalidate (P-008)', () => {
   });
 
   it('scopes to a harness pool when harness_slug is passed', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b', display_name: 'A' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1', display_name: 'A' } as never);
     const backend = fakeBackend([]);
     const { getMemoryBackend } = await import('../../memory/backend');
     vi.mocked(getMemoryBackend).mockReturnValue(backend as never);
@@ -254,7 +283,7 @@ describe('POST /user/memory — create (P-010) + invalidate (P-008)', () => {
   });
 
   it('400s without text', async () => {
-    vi.mocked(getSessionUser).mockResolvedValueOnce({ id: 'u1', email: 'a@b' } as never);
+    vi.mocked(getSessionUserOrDefault).mockResolvedValueOnce({ ...DEFAULT_USER, id: 'u1' } as never);
     const { getMemoryBackend } = await import('../../memory/backend');
     vi.mocked(getMemoryBackend).mockReturnValue(fakeBackend([]) as never);
     const res = await appWith(userMemory as AnyRoute[]).request('/user/memory', post({ kind: 'reference' }));

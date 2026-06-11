@@ -116,6 +116,12 @@ export const FLAGS = {
   // box where every peer runs current code; the flag is the cross-machine
   // rollout lever (sign everywhere → then enforce).
   AUTHORITY_RPC_SIGNED: "papercusp-authority-rpc-signed",
+  // EI-316 (hive completion split-brain): when ON, work_items:create refuses a
+  // title that embeds an existing OPEN work-item id (the "WI-118: …" mirror
+  // signal) — the creator must work the given id, not fork a duplicate it then
+  // completes while the original strands in `validating`. force:true overrides
+  // per-call. OFF = the kill-switch if the guard ever false-positives.
+  WORK_ITEM_MIRROR_GUARD: "papercusp-work-item-mirror-guard",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -184,6 +190,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // (deploy signing everywhere, THEN this stays/comes on) and the emergency
   // revert if a real unsigned peer must be tolerated.
   [FLAGS.AUTHORITY_RPC_SIGNED]: true,
+  // ON by default (alpha flags-default-on policy + EI-316 correctness fix): the
+  // guard fires only on a title that embeds an id resolving to a live OPEN
+  // work-item — a near-zero-false-positive signal — and force:true is the
+  // per-call escape hatch. OFF is the fleet-wide kill-switch.
+  [FLAGS.WORK_ITEM_MIRROR_GUARD]: true,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

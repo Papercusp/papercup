@@ -11,9 +11,13 @@
  * fields).
  *
  * Ported from app/api/user/memory/route.ts. `auth: 'public'` —
- * session-cookie auth via getSessionUser(req.headers).
+ * session-cookie auth with the seeded-`default`-user fallback
+ * (getSessionUserOrDefault), the same single-user-install semantics the
+ * `memory:*` MCP tools and /auth/me use. The desktop webview typically
+ * carries no session cookie, so a strict 401 here blanks the settings
+ * memory page while the store is full (regression of 2026-06-11).
  */
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
 import {
   getMemoryBackend,
   registeredMemoryBackends,
@@ -44,8 +48,7 @@ const list = defineTool({
   path: '/user/memory',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) {
@@ -79,8 +82,7 @@ const backendInfo = defineTool({
   path: '/user/memory/backend',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
     // Harness slugs for the add-memory scope select (P-010); claude-file
@@ -115,8 +117,7 @@ const create = defineTool({
   path: '/user/memory',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
@@ -167,8 +168,7 @@ const setBackend = defineTool({
   path: '/user/memory/backend',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const body = (await req.json().catch(() => null)) as { backend?: string } | null;
     const choice = body?.backend?.trim();
     if (!choice) return Response.json({ error: 'backend_required' }, { status: 400 });
@@ -199,8 +199,7 @@ const del = defineTool({
   path: '/user/memory',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
@@ -247,8 +246,7 @@ const patch = defineTool({
   path: '/user/memory',
   auth: 'loopback',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });

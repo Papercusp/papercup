@@ -8086,6 +8086,9 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 7. **WebView2 maps custom protocols onto `http://<scheme>.localhost`** — the raw `papercusp://localhost` form silently no-ops on navigate (D-008).
 8. **Stale serve lockfile + Linux pid-reuse** — after `wsl --shutdown` or a host reboot, low Linux pids recycle and can defeat a naive pid-alive check; serve’s lock liveness check matches the owner’s cmdline too.
 9. **`schtasks` tasks are session-bound**: `Logon Mode: Interactive only` — the auto-logged-in console session must exist (it does on this VM). `taskkill` without `/F` often cannot close the app (WM\_CLOSE refused); use `taskkill /PID <pid>` first to exercise the graceful path, `/T /F` for teardown.
+10. **Never forward PATH through WSLENV** (`PATH/l`) — the translated Windows PATH *replaces* the distro PATH inside the spawned process, so `/usr/bin` et al vanish and every distro-binary spawn from serve (kopia, locale, git) dies ENOENT — while the same binary works from a fresh `wsl --exec` session, which is what makes it maddening to diagnose. Forward specific dirs as their own `/p` vars (`PAPERCUSP_SIDECAR_BIN`) and compose PATH on the Linux side.
+11. **Hard-killing the app orphans the entire WSL backend** — `taskkill /T /F` kills the Windows tree (app + wsl.exe relay) but the Linux-side node/PG keep running (and keep the redirected log handle open, so the next launch’s `>` redirect fails and the task silently exits 1). Tolerated by design for the operator itself (next launch `--ensure` reuses it), but tear down test sessions with a WSL-side `kill -TERM <serve-pid>` (clean pg\_ctl stop, removes operator.json), not a Windows-side kill.
+12. **Watch for peer churn on the shared tree mid-build** — the sidecar SPA build snapshots whatever the canonical tree holds; an in-flight peer refactor (mid-edit import/export mismatch) fails your build with a MISSING\_EXPORT that has nothing to do with your change. Check `coord:presence` for the file’s owner and just retry once they’re consistent.
 
 ## Where the artifacts live
 
@@ -43442,54 +43445,40 @@ Trigger each by stopping the relevant backend / passing a bad parameter:
 
 [Section titled “13. Coverage checklist (paste into report)”](#13-coverage-checklist-paste-into-report)
 
+The checklist mirrors the **live `/adv` shell** (the Vite SPA — `ADV_TABS` in `apps/operator-vite/src/components/adv/AdvShell.tsx` is the source of truth for the tab strip). Rows are deliberately coarse for tabs whose internals churn; the per-panel detail lives in the panels themselves, not here.
+
 ```plaintext
-[ /]                home renders, h1 wordmark, all 7+ CTA links resolve
-[ /harness]         dashboard mounts, harness picker (combobox)
-[ /harness — top]   collapse, set-up-phases, ⌘K, triage, save snapshot, start, cost
-[ /harness — actions] cf, migrations, schema, website, linear (each)
-[ /harness — tabs]  brainstorm proposals dashboard summary docs vscode consoles insights config
-[ /harness — phase] staging testing production
-[ /harness — addpl] popover empty/error/normal/templateKinds-mismatch paths
-[ /harness — left]  inbox vs git pane
-[ /harness — inbox] All Decisions Threads Pinned + search + (+ idea / + draft idea)
-[ /harness — status]All Running Stuck Blocked Todo Passed
-[ /harness — filt]  project tag search list/board +new
-[ /harness — feat]  steer chat open-in-pi edit reset (per row)
-[ /harness — ⌘K]    each Project + Control command (~17 entries) routes correctly
-[ /harness — modals]triage hooks intervene usage snapshots screenshots decisions smoke identity templates archives diff
-[ /harness — modal-internals] FeatureEditor (id/title/summary/status/attempts/save/cancel/delete), FeaturePeekPanel (open chats per role, reset, close), FeatureDiffModal, ProposalsPanel (search/filter/edit-goal/replan/dismiss/shortlist), HooksPanel, InterventionPanel (textarea+send), UsagePanel, in-harness SnapshotsPanel (save/restore/delete), DecisionsPanel, SmokeTestPanel (run/expand/re-run-failed), IdentityPanel, TemplatesModal (3-step wizard), ArchivesPanel (restore), OperatorNoteForm
-[ /harness — banners] PlanReview (approve/dismiss), Checkpoint (restore/promote per row), Escalation (ack/resolve/open chats), Promotion (promote/reject)
-[ /harness — issues]  filter, promote, ack, close, won't-fix, IssueDetail add-note
-[ /harness — tests]   run all, per-row run, expand stdout/stderr
-[ /harness — report]  promotion-report markdown view, copy/download
-[ /harness — sub-tabs] CollectionTab (file list/edit/save/delete), MemoryBrowser (tree/edit), PromptsTab (per-role override save/delete)
-[ /harness — dept]    DepartmentHarnessDashboard: Inbox Outbox Compose Decisions Charter "Director notes" Memory "Director agent"
-[ /harness — foot]  issues tests report
-[ /pi]              terminal default, dockview layout persistence, openChat event, prune, ChatPanel send/archive
-[ /pi — controls]   tab close, drag-split, resize sash, ?lane=&lt;id&gt; for feature worktree
-[ /marketplace]     overview/templates/plugins/snapshots tabs all switch
-[ /marketplace/templates] fresh project, attach existing, install (N sub-harnesses)
-[ /marketplace/plugins]   install plugin (per plugin)
-[ /marketplace/snapshots] each snapshot link, refresh, open harnesses
-[ /marketplace/&lt;slug&gt;] detail page renders name/version/license/author/description/install/versions; bad slug → 404
-[ /snapshots]       list, refresh, harnesses link, publish/delete/fork per row
-[ /settings/api-keys] anthropic openai github + Save
-[ /settings/oracle]   prompt + memory + Save
-[ /settings/profile]  email name dir + 5 model fields + Save
-[ /settings/publishing] static copy / form (verify what's there)
-[ /settings/plugin-runtime] Reset cache
-[ /support]         chat button, github link, docs link, agent panel
-[ /login]           magic link flow
-[ /signup]          redirects to /login
-[ /setup]           link guide
-[ /docs]            every section page (branding/data-sync/*, design/*, implementation/*, spec/*, testing/*); search palette; theme toggle; sidebar collapse
-[ Keyboard]         ⌘K palette, Esc closes modals/popovers/dock, ↑/↓ in palette, ⌘+Enter in proposal goal editor, drag in dockview
-[ Auth states]      logged-out vs logged-in nav + protected route redirects
-[ Empty states]     no-harnesses, no-plugins-installed, no-snapshots, empty inbox, empty issues, empty tests
-[ Error states]     malformed oracle body, plugins/global down, plugin-enable rejection, unknown marketplace slug, /pi without harness, settings 500
-[ Oracle dock]      auto-popup, fab, send, navigate, listHarnesses, getHarnessStatus, dispatchToAgent, listChats, resumeChat, persistence, new chat, settings link
-[ Header]           brand pair, Marketplace Support Settings, WorkspaceSwitcher, SessionIndicator
+[ /adv]                 shell mounts, tab strip renders all tabs, pot selector works
+[ /adv — Overview]      tab=overview mounts, workspace summary renders
+[ /adv — Brainstorm]    tab=brainstorm mounts (per-pot)
+[ /adv — Create]        tab=plans: plan list, plan editor, launch path
+[ /adv — Working]       tab=harnesses: dock mounts; Work-items grid (filter/search/row-select)
+[ /adv — Working dock]  Add panel catalog (work-items/detail/overview/agents/logs/contributors/insights/chat), layout reset, per-slug layout persistence
+[ /adv — Detail]        ?sel=WI-*/F-* drives Detail pane; Actions incl. Chat (wi-detail-chat)
+[ /adv — Chat panel]    free slot picker (adv-chat-pick/adv-chat-start) → worker chat; repeat opens FOCUS the existing chat (no duplicate agent_chats row); archive frees the slot
+[ /adv — Git]           tab=git: git-graph + PRs panels
+[ /adv — Tests]         tab=testing: domains tree, per-file status, run affordances
+[ /adv — Docs]          tab=docs (per-pot docs tree)
+[ /adv — Insights]      tab=insights mounts
+[ /adv — Conversations] tab=conversations: all 5 views (threads/deliberations/agentchats/messages/feed); threads reply/accept/promote; LIVE agent chat shows the interactive composer (advconv-live-chat), archived stays read-only
+[ /adv — Learning]      tab=learning: papercusp-improvement backlog renders
+[ /adv — Frames]        tab=frames mounts (workspace live view)
+[ /adv — Settings]      tab=settings mounts, sections save
+[ /adv — Sessions]      /adv/sessions: roster, session detail, launch controls
+[ /admin]               /admin/{plans,git,features,tables,dbos,run}: each mounts; /admin/git pipeline view renders
+[ /cupboard]            list + detail render; error state shows friendly copy + Retry
+[ /coord]               coordination view mounts
+[ Oracle dock]          fab, send, navigate, persistence, new chat
+[ Operator chat]        "Reply to Papercup…" composer present and sends
+[ Keyboard]             ⌘K palette, Esc closes modals/popovers, Mod+I → conversations
+[ Header]               brand pair, WorkspaceSwitcher, SessionIndicator
+[ Empty states]         no work items, empty conversations views, empty Tests domains
+[ Error states]         API 500 on a panel fetch → friendly error + retry (no crash); dead-origin recovery page
 ```
+
+Retired surfaces — do NOT e2e these
+
+Rows the old checklist carried for surfaces that are now retired or transitional (EI-301): the `/harness` page’s **add-plugin popover**, the **DepartmentHarnessDashboard** (“dept”), the **PlanReview / Checkpoint / Promotion / Escalation banners**, the **staging/testing/production phase switcher**, and everything under the **harness-snapshot system** (`/snapshots`, marketplace snapshots tab, in-harness SnapshotsPanel). §5–§8 below describe the legacy Next-era `/harness`, `/pi`, and `/marketplace` pages — treat them as historical reference, not coverage targets; the live product surface is `/adv` inside the Tauri shell.
 
 ## 14. What “PASS” means
 
@@ -43604,6 +43593,26 @@ convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png; tesseract /tmp/band.png
 Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null`.
 
 For a **release build** (no dev bridge) screenshots are your *only* window introspection — so GPU GL via VirtualGL is **mandatory** there, or the screenshot tells you nothing. On a **debug** build the bridge is still up on the isolated instance — find it with `tauri-agent-tools probe --pid <pid>` or the `/tmp/tauri-dev-bridge-<pid>.token` file (the port is ephemeral; there is **no** `PAPERCUSP_BRIDGE_PORT` env var). Prefer the bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and use this VirtualGL stack only for the pixels.
+
+### 15.5 Driving React-controlled inputs via the bridge
+
+[Section titled “15.5 Driving React-controlled inputs via the bridge”](#155-driving-react-controlled-inputs-via-the-bridge)
+
+Setting a controlled `<select>`/`<input>` value through `eval` with the classic native-setter + `dispatchEvent(new Event('change'))` trick **silently fails** on this app (React 19: there is no `_valueTracker` on the node to reset, so React’s value tracking dedupes the event and the controlled value snaps back). No error, no state change — your “Start” button stays disabled and the test looks like an app bug.
+
+What works: call the component’s own handler through the React props expando on the DOM node (verified live, WI-125 verification 2026-06-11):
+
+```js
+// the expando key carries a per-bundle hash — discover it, don't hardcode it
+const el = document.querySelector('[data-testid="adv-chat-pick"]');
+const propsKey = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+el[propsKey].onChange({ target: { value: 'WI-62' } });   // updates React state
+// then drive the dependent control the same way:
+const btn = document.querySelector('[data-testid="adv-chat-start"]');
+btn[Object.keys(btn).find((k) => k.startsWith('__reactProps$'))].onClick();
+```
+
+Plain `.click()` on buttons works fine (React listens natively for clicks) — the expando path is only needed for **value-tracked** inputs. Also remember a value injected this way bypasses UI constraints: only pass values the real control could produce (e.g. an option that exists in the select), or you are testing a state the user can never reach.
 
 # Coordination system — adversarial test coverage matrix
 

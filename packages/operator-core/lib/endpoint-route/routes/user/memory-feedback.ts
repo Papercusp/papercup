@@ -4,9 +4,11 @@
  * "you've edited 12 / deleted 4 memories" + activity tail in
  * /settings/user/memory.
  *
- * Ported from app/api/user/memory/feedback/route.ts. `auth: 'public'`.
+ * Ported from app/api/user/memory/feedback/route.ts. `auth: 'public'`,
+ * with the seeded-`default`-user fallback (single-user installs: the
+ * desktop webview typically carries no session cookie).
  */
-import { getSessionUser } from '../../../auth';
+import { getSessionUserOrDefault } from '../../../auth';
 import { loadFeedbackStats } from '../../../memory/feedback';
 import { buildLearningInstructions } from '../../../memory/learning';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -16,8 +18,7 @@ export default defineTool({
   path: '/user/memory/feedback',
   auth: 'public',
   async handler(req) {
-    const user = await getSessionUser(req.headers);
-    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const user = await getSessionUserOrDefault(req.headers);
     const [stats, learningInstructions] = await Promise.all([
       loadFeedbackStats(user.id, 20),
       buildLearningInstructions().catch(() => null),

@@ -67,13 +67,19 @@ export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
-export type ListingAction = 'join' | 'fork' | 'install';
+export type ListingAction = 'view-hive' | 'fork' | 'install';
 
-/** The consumer action for a given listing kind (D-005). */
-export function listingAction(kind: ListingKind): ListingAction {
-  switch (kind) {
+/**
+ * The consumer action for a listing ROW (comb-retire-per-harness-sharing
+ * D-001/D-003). Per-harness sharing is retired: a `kind='harness'` row is the
+ * repo→Hive lookup index (worker mig 007), not a joinable unit — hive-bound
+ * rows point at the per-Hive rollup; legacy rows (no `hive_pubkey`) have no
+ * primary action (`null`). blueprint → fork, plugin/pack → install, unchanged.
+ */
+export function listingActionFor(l: HarnessListing): ListingAction | null {
+  switch (listingKindOf(l)) {
     case 'harness':
-      return 'join';
+      return l.hive_pubkey ? 'view-hive' : null;
     case 'blueprint':
       return 'fork';
     case 'plugin':
@@ -84,7 +90,7 @@ export function listingAction(kind: ListingKind): ListingAction {
 
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
-  join: 'Join',
+  'view-hive': 'View Hive',
   fork: 'Fork',
   install: 'Install',
 };
@@ -130,21 +136,6 @@ export function listingTopLanguage(l: HarnessListing): string | null {
     }
   }
   return null;
-}
-
-/**
- * The `papercusp://harness?…` join link for a harness listing. Uses the
- * aspirational `harness_link` if present, else builds it from the live worker
- * row's `topic_hex` + github fields. Returns '' if there's nothing to join with.
- */
-export function buildHarnessJoinLink(l: HarnessListing): string {
-  if (l.harness_link) return l.harness_link;
-  if (!l.topic_hex) return '';
-  const params = new URLSearchParams({ topic: l.topic_hex });
-  const gh = l.github_url ?? (listingRepoSlug(l) ? `https://github.com/${listingRepoSlug(l)}` : '');
-  if (gh) params.set('github', gh);
-  if (l.github_repository_id) params.set('repo_id', String(l.github_repository_id));
-  return `papercusp://harness?${params.toString()}`;
 }
 
 /**
