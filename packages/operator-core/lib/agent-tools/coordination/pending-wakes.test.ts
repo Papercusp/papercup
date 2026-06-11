@@ -6,6 +6,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   stagePendingWake,
   listPendingWakes,
+  listAllPendingWakes,
   countPendingWakes,
   releasePendingWake,
   clearPendingWakes,
@@ -60,7 +61,20 @@ function fakeStore() {
       if (i >= 0) rows.splice(i, 1);
       return Promise.resolve([]);
     }
-    return Promise.resolve(rows.filter((r) => r.owner_id === vals[0])); // SELECT list
+    // SELECT list — owner-filtered when a value is bound, the whole table
+    // (list-all, owner-then-id order) when none is.
+    if (vals.length === 0) {
+      return Promise.resolve(
+        [...rows].sort((a, b) =>
+          a.owner_id === b.owner_id
+            ? Number(a.id) - Number(b.id)
+            : String(a.owner_id) < String(b.owner_id)
+              ? -1
+              : 1,
+        ),
+      );
+    }
+    return Promise.resolve(rows.filter((r) => r.owner_id === vals[0]));
   });
   return { sql, rows };
 }
@@ -117,6 +131,19 @@ describe('pending-wakes staging coalescing (EI-312)', () => {
     expect(await countPendingWakes('s-2')).toBe(1);
     const list = await listPendingWakes('s-1');
     expect(list.every((w) => w.count === 1)).toBe(true);
+  });
+
+  it('listAllPendingWakes returns every owner, grouped owner-then-oldest (the wake board)', async () => {
+    await stagePendingWake({ ownerId: 's-2', summary: 'theirs' });
+    await stagePendingWake({ ownerId: 's-1', summary: 'a' });
+    await stagePendingWake({ ownerId: 's-1', summary: 'b' });
+
+    const all = await listAllPendingWakes();
+    expect(all.map((w) => [w.ownerId, w.summary])).toEqual([
+      ['s-1', 'a'],
+      ['s-1', 'b'],
+      ['s-2', 'theirs'],
+    ]);
   });
 
   it('clearPendingWakes drains one owner only and reports rows dropped', async () => {

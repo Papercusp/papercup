@@ -83,6 +83,32 @@ export async function listPendingWakes(ownerId: string): Promise<PendingWake[]> 
   }));
 }
 
+/**
+ * EVERY agent's staged wakes in one read, grouped by owner (owner, then
+ * oldest-first) — the fleet-wide wake board (`pui wake-pane`, EI-312). The
+ * roster only carries ACTIVE agents, so a per-agent fan-out would miss queues
+ * staged for agents that have since gone stale; this is the whole truth.
+ */
+export async function listAllPendingWakes(): Promise<PendingWake[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT id, owner_id, summary, payload, source, workspace_id, created_at, count, last_seen_at
+    FROM harness_shared.pending_wakes
+    ORDER BY owner_id ASC, id ASC
+  `;
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    id: Number(r.id),
+    ownerId: String(r.owner_id),
+    summary: (r.summary as string | null) ?? null,
+    payload: r.payload ?? null,
+    source: (r.source as string | null) ?? null,
+    workspaceId: (r.workspace_id as string | null) ?? null,
+    createdAt: String(r.created_at),
+    count: Number(r.count ?? 1),
+    lastSeenAt: String(r.last_seen_at ?? r.created_at),
+  }));
+}
+
 /** How many wakes are staged for an agent (the pane's pending-count badge). */
 export async function countPendingWakes(ownerId: string): Promise<number> {
   const { sql } = getOrgPg();

@@ -146,6 +146,12 @@ pub enum Event {
         agent: String,
         result: Result<Vec<crate::models::PendingWake>, String>,
     },
+    /// The fleet-wide staged-wake board (the `pui wake-pane` dock pane,
+    /// EI-312): per-agent groups (queen first) + the GLOBAL default wake-mode.
+    /// A whole snapshot — it replaces the pane's state each refresh.
+    WakeBoard {
+        result: Result<(Vec<crate::models::WakeGroup>, Option<String>), String>,
+    },
     /// The deployed cloud frames (hive-agent-tabs P-013) from
     /// `/api/deploy/frames` — drives the per-frame zellij tabs in the dock.
     Frames(Vec<crate::models::DeployFrameRow>),

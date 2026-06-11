@@ -21,6 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
 import {
   listPendingWakes,
+  listAllPendingWakes,
   releasePendingWake,
   clearPendingWakes,
   type PendingWake,
@@ -79,7 +80,13 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    agent: z.string().min(1).describe('The agent owner id whose staged wakes to act on.'),
+    agent: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'The agent owner id whose staged wakes to act on. Omittable ONLY for list — an agent-less list returns EVERY agent\'s staged wakes (the fleet-wide wake board).',
+      ),
     action: z
       .enum(['list', 'release', 'skip', 'release_all', 'skip_all'])
       .default('list')
@@ -98,9 +105,22 @@ export default defineTool({
   }),
   async handler(args) {
     if (args.action === 'list') {
-      const pending = await listPendingWakes(args.agent);
+      // Agent-less list = the fleet-wide board (every owner's staged wakes,
+      // grouped by owner) — the roster can't see queues staged for agents
+      // that have since gone stale, so this is the only complete read.
+      const pending = args.agent ? await listPendingWakes(args.agent) : await listAllPendingWakes();
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, pending }) }],
+      };
+    }
+    if (args.agent == null) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, reason: 'agent-required', action: args.action }),
+          },
+        ],
       };
     }
     if (args.action === 'skip_all') {

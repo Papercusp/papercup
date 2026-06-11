@@ -260,6 +260,30 @@ pub struct PendingWake {
     pub source: Option<String>,
     #[serde(default)]
     pub created_at: String,
+    /// How many identical fires coalesced into this row (EI-312, migration
+    /// 224; ≥1). Default 1 so a pre-coalescing payload still parses.
+    #[serde(default = "default_wake_count")]
+    pub count: i64,
+    /// When the newest coalesced fire was staged (== created_at until a re-fire).
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+}
+
+fn default_wake_count() -> i64 {
+    1
+}
+
+/// One agent's slice of the fleet-wide staged-wake board (the `pui wake-pane`
+/// dock pane, EI-312): the roster identity + its queue. Assembled client-side
+/// from the roster + per-agent `coord:wake-queue` lists, queen first.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WakeGroup {
+    pub agent: String,
+    pub label: String,
+    /// The roster's pane-kind tag ("queen" | "bee" | …) — drives the glyph.
+    pub kind: Option<String>,
+    pub wake_mode: Option<String>,
+    pub pending: Vec<PendingWake>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

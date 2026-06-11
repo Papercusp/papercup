@@ -220,6 +220,20 @@ pub enum Action {
         id: i64,
         edited: Option<String>,
     },
+    /// EI-312: refresh the fleet-wide staged-wake board (roster + per-agent
+    /// queue lists) → `Event::WakeBoard`. The wake-pane's manual `g` refresh;
+    /// the run loop also polls on a timer while pinned to `Tab::Wake`.
+    FetchWakeBoard,
+    /// EI-312: act on the wake board — `verb` is the coord:wake-queue action
+    /// (release / skip need `id`; release_all / skip_all drain the agent's
+    /// whole queue — release_all delivers ONE coalesced wake). The run loop
+    /// re-snapshots the board afterwards.
+    WakeBoardAct {
+        agent: String,
+        verb: &'static str,
+        id: Option<i64>,
+        edited: Option<String>,
+    },
     /// P-013: create one zellij tab per (tab_name, kdl) pair via the companion's
     /// NewTab (`new_tabs_with_layout`) — the per-frame tabs.
     CreateFrameTabs { tabs: Vec<(String, String)> },
@@ -314,6 +328,47 @@ impl WakeReview {
     /// The selected staged wake, if any.
     pub fn selected(&self) -> Option<&crate::models::PendingWake> {
         self.pending.get(self.sel)
+    }
+}
+
+/// The fleet-wide staged-wake board (the `pui wake-pane` dock pane, EI-312):
+/// every manual-mode agent's pending queue, queen first, replaced wholesale by
+/// each `Event::WakeBoard` snapshot. Same review verbs as the `W` overlay
+/// (release / edit & release / skip), plus the per-agent drains the EI-312
+/// backend added (`release_all` — ONE coalesced wake for the whole queue —
+/// and `skip_all`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WakeBoard {
+    pub groups: Vec<crate::models::WakeGroup>,
+    /// The GLOBAL default wake-mode ("manual" = the whole fleet is paused).
+    pub global_mode: Option<String>,
+    /// Flat selection index across every group's wakes, in render order.
+    pub sel: usize,
+    /// `Some` while editing the selected wake's content before release.
+    pub edit: Option<String>,
+    /// True until the first snapshot lands.
+    pub loading: bool,
+    /// True while an act is in flight (blocks double-fires).
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+impl WakeBoard {
+    /// Total staged wakes across all groups (the flat selection space).
+    pub fn total(&self) -> usize {
+        self.groups.iter().map(|g| g.pending.len()).sum()
+    }
+
+    /// The selected wake and its owning group, resolved from the flat index.
+    pub fn selected(&self) -> Option<(&crate::models::WakeGroup, &crate::models::PendingWake)> {
+        let mut i = self.sel;
+        for g in &self.groups {
+            if i < g.pending.len() {
+                return Some((g, &g.pending[i]));
+            }
+            i -= g.pending.len();
+        }
+        None
     }
 }
 
@@ -691,6 +746,11 @@ pub enum Tab {
     /// substrate (`shared_presence`), grouped by device. Replaces the Cupboard
     /// in the dock MAIN pane's tab subset; key 'i'.
     Hives,
+    /// Wakes — the fleet-wide staged-wake board (EI-312): every manual-mode
+    /// agent's pending wakes, queen first, with release / edit / skip and the
+    /// release-all/skip-all drains. PANE-ONLY: not in `ALL` (no tab-strip slot,
+    /// no switch key) — it renders solely as the dock's pinned `pui wake-pane`.
+    Wake,
 }
 
 impl Tab {
@@ -735,6 +795,7 @@ impl Tab {
             Tab::Conversations => "Convos",
             Tab::Voice => "Voice",
             Tab::Hives => "Hives",
+            Tab::Wake => "Wakes",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -779,6 +840,9 @@ impl Tab {
             Tab::Voice => 'a',
             // hIves — 'h' is Overview (home), so the mnemonic falls to 'i'.
             Tab::Hives => 'i',
+            // Pane-only (not in ALL) — unreachable from the strip; the char is
+            // never dispatched (from_switch_key scans ALL).
+            Tab::Wake => 'W',
         }
     }
     pub fn index(self) -> usize {
@@ -1036,6 +1100,9 @@ pub struct App {
     /// `Some` while the staged-wake review overlay is open (P-009): the selected
     /// agent's pending wakes + release/edit/skip state. Captures keys while open.
     pub wake_review: Option<WakeReview>,
+    /// The fleet-wide staged-wake board (the pinned `pui wake-pane`, EI-312).
+    /// Only fetched/rendered when pinned to `Tab::Wake`.
+    pub wake_board: WakeBoard,
     /// The last P-011 regroup target sent to the companion — the spam guard:
     /// the same mis-ordered topology snapshot never refires the same repair.
     pub last_regroup: Option<Vec<u32>>,
@@ -1316,6 +1383,10 @@ impl App {
             notif_seq: 0,
             fleet_action_menu: None,
             wake_review: None,
+            wake_board: WakeBoard {
+                loading: true,
+                ..WakeBoard::default()
+            },
             last_regroup: None,
             frames: Vec::new(),
             created_frame_tabs: std::collections::HashSet::new(),
@@ -2918,6 +2989,151 @@ impl App {
         }
     }
 
+    /// The wake-pane board's keymap (EI-312) — the WakeReview verbs over a
+    /// flat multi-agent selection, plus the per-agent drains:
+    /// j/k select · r/Enter release · e edit & release · s skip ·
+    /// R release-all (selected agent, ONE coalesced wake) · S skip-all ·
+    /// w toggle the selected agent's wake-mode · g refresh.
+    fn wake_board_key(&mut self, code: KeyCode) -> Action {
+        let b = &mut self.wake_board;
+        // Editing layer: the buffer owns printable keys until Enter/Esc.
+        if let Some(buf) = b.edit.as_mut() {
+            return match code {
+                KeyCode::Esc => {
+                    b.edit = None;
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    if b.busy {
+                        return Action::Render;
+                    }
+                    let edited = buf.trim().to_string();
+                    let Some((g, pw)) = b.selected() else {
+                        b.edit = None;
+                        return Action::Render;
+                    };
+                    let (agent, id) = (g.agent.clone(), pw.id);
+                    b.busy = true;
+                    b.edit = None;
+                    Action::WakeBoardAct {
+                        agent,
+                        verb: "release",
+                        id: Some(id),
+                        edited: if edited.is_empty() { None } else { Some(edited) },
+                    }
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let total = b.total();
+                if total > 0 {
+                    b.sel = (b.sel + 1).min(total - 1);
+                }
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                b.sel = b.sel.saturating_sub(1);
+                Action::Render
+            }
+            KeyCode::Char('e') => {
+                if let Some((_, pw)) = b.selected() {
+                    let seed = pw.summary.clone().unwrap_or_default();
+                    b.edit = Some(seed);
+                }
+                Action::Render
+            }
+            KeyCode::Char('r') | KeyCode::Enter => {
+                if b.busy {
+                    return Action::Render;
+                }
+                let Some((g, pw)) = b.selected() else {
+                    return Action::Render;
+                };
+                let (agent, id) = (g.agent.clone(), pw.id);
+                b.busy = true;
+                Action::WakeBoardAct {
+                    agent,
+                    verb: "release",
+                    id: Some(id),
+                    edited: None,
+                }
+            }
+            KeyCode::Char('s') => {
+                if b.busy {
+                    return Action::Render;
+                }
+                let Some((g, pw)) = b.selected() else {
+                    return Action::Render;
+                };
+                let (agent, id) = (g.agent.clone(), pw.id);
+                b.busy = true;
+                Action::WakeBoardAct {
+                    agent,
+                    verb: "skip",
+                    id: Some(id),
+                    edited: None,
+                }
+            }
+            KeyCode::Char('R') => {
+                if b.busy {
+                    return Action::Render;
+                }
+                let Some((g, _)) = b.selected() else {
+                    return Action::Render;
+                };
+                let agent = g.agent.clone();
+                b.busy = true;
+                Action::WakeBoardAct {
+                    agent,
+                    verb: "release_all",
+                    id: None,
+                    edited: None,
+                }
+            }
+            KeyCode::Char('S') => {
+                if b.busy {
+                    return Action::Render;
+                }
+                let Some((g, _)) = b.selected() else {
+                    return Action::Render;
+                };
+                let agent = g.agent.clone();
+                b.busy = true;
+                Action::WakeBoardAct {
+                    agent,
+                    verb: "skip_all",
+                    id: None,
+                    edited: None,
+                }
+            }
+            KeyCode::Char('w') => {
+                // Toggle the SELECTED agent's wake mode (the P-008 toggle, here
+                // so a paused queue can be un-paused without leaving the pane).
+                let Some((g, _)) = b.selected() else {
+                    return Action::Render;
+                };
+                let agent = g.agent.clone();
+                let mode = next_wake_mode(g.wake_mode.as_deref());
+                Action::SetWakeMode {
+                    agent,
+                    mode: mode.to_string(),
+                }
+            }
+            KeyCode::Char('g') => Action::FetchWakeBoard,
+            _ => Action::None,
+        }
+    }
+
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
     /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
@@ -3454,6 +3670,26 @@ impl App {
                 }
                 Action::Render
             }
+            Event::WakeBoard { result } => {
+                // EI-312: a fleet-wide staged-wake snapshot landed (or an act
+                // error). Whole-snapshot replace; clamp the flat selection.
+                let b = &mut self.wake_board;
+                b.loading = false;
+                b.busy = false;
+                match result {
+                    Ok((groups, global_mode)) => {
+                        b.error = None;
+                        b.groups = groups;
+                        b.global_mode = global_mode;
+                        let total = b.total();
+                        if b.sel >= total {
+                            b.sel = total.saturating_sub(1);
+                        }
+                    }
+                    Err(e) => b.error = Some(e),
+                }
+                Action::Render
+            }
             Event::LexiconPack(payload) => {
                 // The active brand pack landed (startup fetch). Store the resolved
                 // term→label map; user-facing labels route through it from now on.
@@ -3731,6 +3967,11 @@ impl App {
         // r release · e edit & release · s skip · Esc close/cancel-edit.
         if self.wake_review.is_some() {
             return self.wake_review_key(code);
+        }
+        // The pinned wake-pane (EI-312): the board owns the whole keymap —
+        // there is no tab strip to navigate in a pinned dock pane.
+        if self.tab == Tab::Wake {
+            return self.wake_board_key(code);
         }
         // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
         // the choices fire (or it closes) before any tab navigation.
@@ -4940,8 +5181,9 @@ impl App {
             Tab::Conversations => self.visible_conversations().len(),
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
-            // Config has no list, and the Voice tab owns its own j/k in voice_ui.
-            Tab::Config | Tab::Operator | Tab::Voice => return,
+            // Config has no list, the Voice tab owns its own j/k in voice_ui,
+            // and the Wake board owns its own j/k in wake_board_key.
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
         };
         if len == 0 {
             return;
@@ -4969,7 +5211,7 @@ impl App {
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
-            Tab::Config | Tab::Operator | Tab::Voice => return,
+            Tab::Config | Tab::Operator | Tab::Voice | Tab::Wake => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;

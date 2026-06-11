@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PendingWake } from '../pending-wakes';
 
 const listPendingWakes = vi.fn<(ownerId: string) => Promise<PendingWake[]>>();
+const listAllPendingWakes = vi.fn<() => Promise<PendingWake[]>>();
 const releasePendingWake = vi.fn(async () => undefined);
 const clearPendingWakes = vi.fn(async () => 0);
 const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
@@ -25,6 +26,7 @@ const emitAwaitedEvent = vi.fn(async ({ key }: { key: string }) => ({
 
 vi.mock('../pending-wakes', () => ({
   listPendingWakes: (ownerId: string) => listPendingWakes(ownerId),
+  listAllPendingWakes: () => listAllPendingWakes(),
   releasePendingWake: (id: number) => releasePendingWake(id),
   clearPendingWakes: (ownerId: string) => clearPendingWakes(ownerId),
 }));
@@ -57,9 +59,32 @@ function pw(over: Partial<PendingWake>): PendingWake {
 
 beforeEach(() => {
   listPendingWakes.mockResolvedValue([]);
+  listAllPendingWakes.mockResolvedValue([]);
   clearPendingWakes.mockResolvedValue(0);
 });
 afterEach(() => vi.clearAllMocks());
+
+describe('coord:wake-queue agent-less list (the fleet-wide wake board)', () => {
+  it('lists EVERY agent\'s staged wakes when agent is omitted', async () => {
+    listAllPendingWakes.mockResolvedValue([
+      pw({ id: 1, ownerId: 'su-a', summary: 'a' }),
+      pw({ id: 2, ownerId: 'su-b', summary: 'b' }),
+    ]);
+    const res = await wakeQueue.handler(parse({ action: 'list' }), ctx);
+    expect(listAllPendingWakes).toHaveBeenCalledTimes(1);
+    expect(listPendingWakes).not.toHaveBeenCalled();
+    expect(out(res).pending.map((p: { ownerId: string }) => p.ownerId)).toEqual(['su-a', 'su-b']);
+  });
+
+  it('non-list actions REQUIRE an agent', async () => {
+    for (const action of ['release', 'skip', 'release_all', 'skip_all']) {
+      const res = await wakeQueue.handler(parse({ action, id: 1 }), ctx);
+      expect(out(res)).toMatchObject({ ok: false, reason: 'agent-required', action });
+    }
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(clearPendingWakes).not.toHaveBeenCalled();
+  });
+});
 
 describe('coord:wake-queue release_all (EI-312 one-wake drain)', () => {
   it('drains the whole queue as ONE coalesced emit, then clears it', async () => {
