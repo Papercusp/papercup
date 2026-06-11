@@ -63,6 +63,9 @@ export interface DiscoveredHive {
   memberTopics: string[];
   /** Full join links per member harness, when the hive carries them (one-click join). */
   memberLinks?: string[];
+  /** Member upstream repos, encoded `<owner>/<repo>[#<id>]` (hive-announce.ts) —
+   *  the repo→Hive binding signal a paste-a-URL lookup matches against (P-003). */
+  memberRepos?: string[];
   visibility: HiveVisibility;
   /** Epoch-ms the hive was created (from the announce). */
   createdAt: number;
@@ -82,6 +85,9 @@ export interface LocalHiveDescriptor {
   memberTopics: string[];
   /** Full join links per member harness (one-click join), when known. */
   memberLinks?: string[];
+  /** Member upstream repos, encoded `<owner>/<repo>[#<id>]` — derived fresh at
+   *  publish time (deriveHiveMemberRepoRefs), like hivePubkey. */
+  memberRepos?: string[];
   visibility: HiveVisibility;
   createdAt: number;
   ownerGithubLogin: string;
@@ -190,6 +196,7 @@ export class HiveDirectory {
       ...(frame.hive_pubkey ? { hivePubkey: frame.hive_pubkey } : {}),
       memberTopics: [...frame.member_topics],
       ...(frame.member_links ? { memberLinks: [...frame.member_links] } : {}),
+      ...(frame.member_repos ? { memberRepos: [...frame.member_repos] } : {}),
       visibility: frame.visibility,
       createdAt: frame.created_at,
       announcedTs: frame.ts,
@@ -267,6 +274,7 @@ export class HiveDirectory {
       attestation_gist_id: desc.attestationGistId,
       member_topics: [...desc.memberTopics],
       ...(desc.memberLinks ? { member_links: [...desc.memberLinks] } : {}),
+      ...(desc.memberRepos ? { member_repos: [...desc.memberRepos] } : {}),
       visibility: desc.visibility,
       created_at: desc.createdAt,
       ts: this.nowMs(),

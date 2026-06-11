@@ -118,9 +118,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
           provides_tools,
+          hive_pubkey, hive_title,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -140,6 +141,8 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_device_pubkey ?? null,
       h.publisher_attestation_gist_id ?? null,
       h.provides_tools ?? null,
+      h.hive_pubkey ?? null,
+      h.hive_title ?? null,
       h.created_at,
       h.created_at,
     )

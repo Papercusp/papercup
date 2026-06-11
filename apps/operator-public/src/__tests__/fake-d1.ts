@@ -55,6 +55,8 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     publisher_device_pubkey: null,
     publisher_attestation_gist_id: null,
     provides_tools: null,
+    hive_pubkey: null,
+    hive_title: null,
     claim_status: 'unclaimed',
     claimant_github_user_id: null,
     claimant_github_login: null,
@@ -85,12 +87,13 @@ export class FakeStore {
   execute(sql: string, binds: unknown[]): number {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
-      // Bind order matches insertHarness() in db.ts (migrations 004/006).
+      // Bind order matches insertHarness() in db.ts (migrations 004/006/007).
       const [
         id, listing_kind, project_ref, listing_ref,
         gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
         pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
         provides_tools,
+        hive_pubkey, hive_title,
         created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push(
@@ -112,6 +115,8 @@ export class FakeStore {
           publisher_device_pubkey: device_pubkey ?? null,
           publisher_attestation_gist_id: attestation_gist_id ?? null,
           provides_tools: provides_tools ?? null,
+          hive_pubkey: hive_pubkey ?? null,
+          hive_title: hive_title ?? null,
           created_at,
           updated_at,
         }),

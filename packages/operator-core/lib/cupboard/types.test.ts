@@ -238,6 +238,51 @@ describe('isHarnessListing', () => {
   });
 });
 
+describe('repo→Hive binding fields (migration 007 / hive-from-github-url D-004 HYBRID)', () => {
+  // Raw 32-byte Ed25519 pubkey, base64 — the hive directory announce encoding.
+  const HIVE_PUBKEY = 'A'.repeat(43) + '=';
+
+  it('isHarnessListing accepts a listing WITH hive fields', () => {
+    expect(
+      isHarnessListing(makeListing({ hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive' })),
+    ).toBe(true);
+  });
+
+  it('isHarnessListing accepts hive fields as null (worker rows without a hive)', () => {
+    expect(isHarnessListing(makeListing({ hive_pubkey: null, hive_title: null }))).toBe(true);
+  });
+
+  it('isHarnessListing accepts hive fields ABSENT (pre-007 servers omit them)', () => {
+    const l = makeListing();
+    expect('hive_pubkey' in l).toBe(false);
+    expect(isHarnessListing(l)).toBe(true);
+  });
+
+  it('isHarnessListing rejects non-string hive fields', () => {
+    expect(isHarnessListing({ ...makeListing(), hive_pubkey: 42 })).toBe(false);
+    expect(isHarnessListing({ ...makeListing(), hive_title: ['x'] })).toBe(false);
+  });
+
+  it('round-trips through JSON with hive fields intact (wire shape)', () => {
+    const listing = makeListing({ hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive' });
+    const parsed = JSON.parse(JSON.stringify(listing)) as unknown;
+    expect(isHarnessListing(parsed)).toBe(true);
+    const round = parsed as HarnessListing;
+    expect(round.hive_pubkey).toBe(HIVE_PUBKEY);
+    expect(round.hive_title).toBe('Demo Hive');
+  });
+
+  it('all member-repo rows of one hive share the pubkey (one row per member repo)', () => {
+    const rows = [
+      makeListing({ id: 1, github_repository_id: 100, hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive' }),
+      makeListing({ id: 2, github_repository_id: 200, hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive' }),
+    ];
+    expect(rows.every(isHarnessListing)).toBe(true);
+    expect(new Set(rows.map((r) => r.hive_pubkey)).size).toBe(1);
+    expect(new Set(rows.map((r) => r.github_repository_id)).size).toBe(2);
+  });
+});
+
 describe('listingHiveRef (per-Hive grouping key, D-005)', () => {
   it('prefers the explicit project_ref', () => {
     expect(listingHiveRef(makeListing({ project_ref: 'papercupai/demo' }))).toBe('papercupai/demo');

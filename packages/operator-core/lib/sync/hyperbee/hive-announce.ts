@@ -73,6 +73,16 @@ export interface HiveAnnounceBody {
    * included in the canonical signing bytes only when present (like `nonce`).
    */
   member_links?: string[];
+  /**
+   * Member harness upstream repos, encoded `<owner>/<repo>` or
+   * `<owner>/<repo>#<id>` (id = GitHub's immutable numeric repository id when
+   * known) — the repo→Hive binding signal (hive-from-github-url-2026-06-11
+   * P-003): a peer pasting a GitHub URL matches it against these to offer JOIN
+   * instead of create. OPTIONAL + additive; order-significant; included in the
+   * canonical signing bytes only when present (like `member_links`), so an
+   * announce that omits it signs the exact bytes earlier versions did.
+   */
+  member_repos?: string[];
   /** Directory visibility — `public` announces to the global topic; `invite` to an
    *  invite-scoped topic only. (`private` never announces, so it never appears on
    *  the wire — included for completeness/round-trip.) */
@@ -89,6 +99,47 @@ export interface HiveAnnounceBody {
 export interface SignedHiveAnnounce extends HiveAnnounceBody {
   /** Base64 Ed25519 signature over `hiveAnnounceSigningBytes(body)`. */
   sig: string;
+}
+
+// ── member_repos ref encoding (hive-from-github-url P-003) ────────────────────
+
+/** A parsed member-repo ref — the repo→Hive binding unit. */
+export interface MemberRepoRef {
+  owner: string;
+  repo: string;
+  /** GitHub's immutable numeric repository id, when known at publish time. */
+  githubRepositoryId?: number;
+}
+
+/**
+ * Encode a member-repo ref for the `member_repos` wire field:
+ * `<owner>/<repo>` or `<owner>/<repo>#<id>`. Owner/repo segments follow
+ * GitHub's charset (no `#` or `/` inside a segment), so parsing on the LAST
+ * `#` is unambiguous.
+ */
+export function encodeMemberRepoRef(ref: MemberRepoRef): string {
+  const id = ref.githubRepositoryId;
+  return `${ref.owner}/${ref.repo}${typeof id === 'number' && Number.isFinite(id) ? `#${id}` : ''}`;
+}
+
+/** Parse a `member_repos` element. Returns null on any malformed input — never throws. */
+export function parseMemberRepoRef(encoded: string): MemberRepoRef | null {
+  if (typeof encoded !== 'string' || !encoded) return null;
+  let base = encoded;
+  let id: number | undefined;
+  const hash = encoded.lastIndexOf('#');
+  if (hash !== -1) {
+    const idPart = encoded.slice(hash + 1);
+    if (!/^\d+$/.test(idPart)) return null;
+    id = Number(idPart);
+    base = encoded.slice(0, hash);
+  }
+  const slash = base.indexOf('/');
+  if (slash <= 0 || slash === base.length - 1) return null;
+  const owner = base.slice(0, slash);
+  const repo = base.slice(slash + 1);
+  if (repo.includes('/')) return null;
+  return { owner, repo, ...(id !== undefined ? { githubRepositoryId: id } : {}) };
 }
 
 /** Fixed 12-byte Ed25519 SPKI DER prefix (matches announce.ts / attest.ts). */
@@ -117,11 +168,13 @@ export function hiveAnnounceSigningBytes(body: HiveAnnounceBody): Buffer {
     created_at: body.created_at,
     ts: body.ts,
   };
-  // member_links + nonce + hive_pubkey are optional → included only when present,
-  // so an announce that omits them signs the exact bytes earlier versions did.
+  // member_links + nonce + hive_pubkey + member_repos are optional → included
+  // only when present, so an announce that omits them signs the exact bytes
+  // earlier versions did.
   if (Array.isArray(body.member_links)) ordered.member_links = body.member_links;
   if (typeof body.nonce === 'string') ordered.nonce = body.nonce;
   if (typeof body.hive_pubkey === 'string') ordered.hive_pubkey = body.hive_pubkey;
+  if (Array.isArray(body.member_repos)) ordered.member_repos = body.member_repos;
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
@@ -169,6 +222,8 @@ export function verifyHiveAnnounce(
       frame.member_topics.some((t) => typeof t !== 'string') ||
       (frame.member_links !== undefined &&
         (!Array.isArray(frame.member_links) || frame.member_links.some((l) => typeof l !== 'string'))) ||
+      (frame.member_repos !== undefined &&
+        (!Array.isArray(frame.member_repos) || frame.member_repos.some((r) => typeof r !== 'string'))) ||
       !isHiveVisibility(frame.visibility) ||
       typeof frame.created_at !== 'number' ||
       typeof frame.sig !== 'string'

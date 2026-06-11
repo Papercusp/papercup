@@ -69,6 +69,10 @@ interface PublishBody {
   // installed; kinds plugin|pack only. Stored as a JSON TEXT column and
   // returned verbatim on GET (the operator's resolver parses it).
   provides_tools?: unknown;          // expected: string[]
+  // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
+  // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
+  hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
+  hive_title?: unknown;              // expected: string ≤200; requires hive_pubkey
 }
 
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
@@ -76,6 +80,10 @@ const PROVIDES_TOOLS_MAX_ENTRIES = 200;
 const PROVIDES_TOOLS_MAX_NAME_LEN = 128;
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
+// Standard base64 of exactly 32 raw bytes (an Ed25519 pubkey): 43 chars + '='.
+// Same encoding as the hive directory announce's hive_pubkey (migration 007).
+const HIVE_PUBKEY_RE = /^[A-Za-z0-9+/]{43}=$/;
+const HIVE_TITLE_MAX = 200;
 // Slug-ish: blueprint stream name / snapshot id / plugin slug. Permits path-y
 // refs (a/b) and dotted versions; bounded length.
 const LISTING_REF_RE = /^[A-Za-z0-9._/-]{1,200}$/;
@@ -282,6 +290,30 @@ function registerListingEndpoints(
       providesToolsJson = JSON.stringify(pt);
     }
 
+    // Repo→Hive binding fields (migration 007 / hive-from-github-url D-004
+    // HYBRID). Shape-validated only — the signed directory announce is the
+    // content authority; the Cupboard stores the publisher's claim like any
+    // other publish-body field (same trust posture as topic_hex/project_ref).
+    // hive_title is display sugar for the pubkey — meaningless without it.
+    if (
+      body.hive_pubkey != null &&
+      (typeof body.hive_pubkey !== 'string' || !HIVE_PUBKEY_RE.test(body.hive_pubkey))
+    ) {
+      return c.json({ error: 'invalid_field', field: 'hive_pubkey' }, 400);
+    }
+    if (body.hive_title != null) {
+      if (
+        typeof body.hive_title !== 'string' ||
+        body.hive_title.length < 1 ||
+        body.hive_title.length > HIVE_TITLE_MAX
+      ) {
+        return c.json({ error: 'invalid_field', field: 'hive_title' }, 400);
+      }
+      if (body.hive_pubkey == null) {
+        return c.json({ error: 'invalid_field', field: 'hive_title', reason: 'requires_hive_pubkey' }, 400);
+      }
+    }
+
     // Channel-2 attestation (item 1) — optional, but both-or-neither.
     const hasGist = body.attestation_gist_id != null;
     const hasPubkey = body.publisher_device_pubkey != null;
@@ -375,6 +407,8 @@ function registerListingEndpoints(
       publisher_device_pubkey: body.publisher_device_pubkey ?? null,
       publisher_attestation_gist_id: body.attestation_gist_id ?? null,
       provides_tools: providesToolsJson,
+      hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
+      hive_title: (body.hive_title as string | undefined) ?? null,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

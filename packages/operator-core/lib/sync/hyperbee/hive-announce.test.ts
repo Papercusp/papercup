@@ -189,3 +189,39 @@ describe('hive-announce — hive_pubkey addressability field (cross-hive-boundar
     expect(verifyHiveAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 });
+
+describe('member_repos — the repo→Hive binding signal (hive-from-github-url P-003)', () => {
+  it('round-trips an announce carrying member_repos', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey), {
+      member_repos: ['alice/shop#1234567', 'alice/shop-docs'],
+    });
+    const frame = await buildHiveAnnounce(body, signer(privateKey));
+    expect(verifyHiveAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+    expect(frame.member_repos).toEqual(['alice/shop#1234567', 'alice/shop-docs']);
+  });
+
+  it('tampering with member_repos breaks the signature', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey), { member_repos: ['alice/shop#1'] });
+    const frame = await buildHiveAnnounce(body, signer(privateKey));
+    const tampered = { ...frame, member_repos: ['mallory/evil#1'] };
+    expect(verifyHiveAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  it('an announce WITHOUT member_repos signs the exact bytes earlier versions did (additive)', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const withField = { ...body, member_repos: undefined };
+    expect(hiveAnnounceSigningBytes(withField).equals(hiveAnnounceSigningBytes(body))).toBe(true);
+    expect(hiveAnnounceSigningBytes(body).toString('utf8')).not.toContain('member_repos');
+  });
+
+  it('rejects a non-string-array member_repos shape', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const frame = await buildHiveAnnounce(body, signer(privateKey));
+    const bad = { ...frame, member_repos: [42] } as unknown as SignedHiveAnnounce;
+    expect(verifyHiveAnnounce(bad, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+});

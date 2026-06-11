@@ -37,6 +37,13 @@ export interface HiveDirectoryMeta {
   hivePubkey?: string;
   /** Full `papercusp://harness?...` join links per member harness (one-click join). */
   memberLinks?: string[];
+  /**
+   * Member upstream repos, encoded `<owner>/<repo>[#<id>]` (hive-announce.ts) —
+   * the repo→Hive binding signal (P-003). Derived FRESH at publish time via
+   * `deriveHiveMemberRepoRefs` (like `hivePubkey`); NOT persisted in the
+   * registry meta, so member additions surface on the next publish/boot.
+   */
+  memberRepos?: string[];
   /** Epoch-ms the hive was created (stable; for display + ordering). */
   createdAt: number;
   /** Required when visibility === 'invite' — the secret whose topic invitees join. */
@@ -82,6 +89,7 @@ export async function publishHiveToDirectory(
     memberTopics: [...meta.memberTopics],
     ...(meta.hivePubkey ? { hivePubkey: meta.hivePubkey } : {}),
     ...(meta.memberLinks ? { memberLinks: [...meta.memberLinks] } : {}),
+    ...(meta.memberRepos ? { memberRepos: [...meta.memberRepos] } : {}),
     visibility: meta.visibility,
     createdAt: meta.createdAt,
     ownerGithubLogin: owner.githubLogin,

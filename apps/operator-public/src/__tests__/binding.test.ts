@@ -18,6 +18,8 @@ interface HRow {
   claim_status: string;
   claimant_github_login: string | null;
   publisher_github_login: string | null;
+  hive_pubkey: string | null;
+  hive_title: string | null;
   unlisted_at: number | null;
 }
 
@@ -54,6 +56,8 @@ const row = (over: Partial<HRow> = {}): HRow => ({
   claim_status: 'claimed',
   claimant_github_login: 'alice',
   publisher_github_login: 'alice',
+  hive_pubkey: null,
+  hive_title: null,
   unlisted_at: null,
   ...over,
 });
@@ -93,6 +97,18 @@ describe('GET /binding/:github_repository_id', () => {
       claim_status: 'claimed',
       claimant_github_login: 'alice',
       publisher_github_login: 'alice',
+      hive_pubkey: null,
+      hive_title: null,
     });
+  });
+
+  it('projection carries the repo→Hive binding fields (migration 007)', async () => {
+    const pubkey = 'B'.repeat(43) + '=';
+    const { body } = await call(
+      envWith([row({ hive_pubkey: pubkey, hive_title: 'Demo Hive' })]),
+      '123',
+    );
+    expect(body.exists).toBe(true);
+    expect(body.harness).toMatchObject({ hive_pubkey: pubkey, hive_title: 'Demo Hive' });
   });
 });

@@ -74,9 +74,19 @@ export default defineTool({
       // the registry meta (it lives in hives.public_key).
       const { loadHivePubkey } = await import('../../identity/hive-keypair');
       const hivePubkey = await loadHivePubkey(activeWorkspaceId(), meta.hiveId).catch(() => null);
+      // member_repos (P-003): derived fresh from the registry's P-002 github
+      // coords at publish time, like the pubkey — the repo→Hive binding signal.
+      const { deriveHiveMemberRepoRefs } = await import('../../hive-member-repos');
+      const memberRepos = await deriveHiveMemberRepoRefs(activeWorkspaceId(), meta.hiveId).catch(
+        () => [] as string[],
+      );
       const res = await publishHiveToDirectory(
         getHiveDirectory(),
-        hivePubkey ? { ...meta, hivePubkey } : meta,
+        {
+          ...meta,
+          ...(hivePubkey ? { hivePubkey } : {}),
+          ...(memberRepos.length ? { memberRepos } : {}),
+        },
         owner,
       );
       announced = res.announced;

@@ -37,6 +37,10 @@ export function bindingRoute(): Hono<{ Bindings: Env }> {
         claim_status: row.claim_status,
         claimant_github_login: row.claimant_github_login,
         publisher_github_login: row.publisher_github_login,
+        // Repo→Hive binding (migration 007): the owning Hive's identity, so a
+        // pasted member-repo URL resolves to its hive (P-005 lookup resolver).
+        hive_pubkey: row.hive_pubkey ?? null,
+        hive_title: row.hive_title ?? null,
       },
     });
   });

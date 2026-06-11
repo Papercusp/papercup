@@ -42,6 +42,7 @@ import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
 import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
+import OfflineIndicator from '../components/OfflineIndicator';
 import VersionBadge from '../components/VersionBadge';
 import RouteErrorBoundary from '../components/RouteErrorBoundary';
 import '@/app/globals.css';
@@ -232,6 +233,9 @@ function RootComponent() {
               )}
               <DevReloadGate />
               <ChunkReloadPrompt />
+              {/* Operator-unreachable persistent toast (EI-239) — fed by the
+                  @papercusp/sync connectivity store. */}
+              <OfflineIndicator />
               {/* Bottom-right "what's running" pill + out-of-date detector:
                   polls /api/desktop/version and flips to an amber click-to-reload
                   when the server's sha changes under us (Restart-parity). */}

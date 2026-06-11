@@ -197,10 +197,20 @@ export async function wireHiveDirectoryForWorkspace(
     // holds it, and publish only runs for owned hives. Not persisted in the registry
     // meta (it lives in hives.public_key); attached fresh at publish time.
     const { loadHivePubkey } = await import('./identity/hive-keypair');
+    const { deriveHiveMemberRepoRefs } = await import('./hive-member-repos');
     const ownedHives = await Promise.all(
       ownedHivesRaw.map(async (h) => {
         const pk = await loadHivePubkey(workspaceId, h.hiveId).catch(() => null);
-        return pk ? { ...h, hivePubkey: pk } : h;
+        // member_repos: the repo→Hive binding signal (P-003) — derived fresh at
+        // publish time like the pubkey, never persisted in the registry meta.
+        const memberRepos = await deriveHiveMemberRepoRefs(workspaceId, h.hiveId).catch(
+          () => [] as string[],
+        );
+        return {
+          ...h,
+          ...(pk ? { hivePubkey: pk } : {}),
+          ...(memberRepos.length ? { memberRepos } : {}),
+        };
       }),
     );
 

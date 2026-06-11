@@ -293,3 +293,140 @@ describe('Cupboard /listings — pack kind + provides_tools (migration 006)', ()
     expect(packBody.results[0].listing_kind).toBe('pack');
   });
 });
+
+describe('Cupboard /listings — repo→Hive binding fields (migration 007 / D-004 HYBRID)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  // Raw 32-byte Ed25519 pubkey, base64 (44 chars: 43 + '=') — the hive
+  // directory announce encoding.
+  const HIVE_PUBKEY = 'A'.repeat(43) + '=';
+
+  const HARNESS_BASE = {
+    github_owner: 'papercupai',
+    github_name: 'hive-member',
+    github_url: 'https://github.com/papercupai/hive-member',
+    topic_hex: 'a'.repeat(64),
+  };
+
+  it('publish WITH hive fields → create response + GET lookup return them', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 70, private: false } });
+    const res = await publish(api, env, {
+      ...HARNESS_BASE, github_repository_id: 70,
+      hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive',
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
+    expect(j.listing.hive_pubkey).toBe(HIVE_PUBKEY);
+    expect(j.listing.hive_title).toBe('Demo Hive');
+
+    const got = await api.request(`/listings/${j.id}`, {}, env);
+    const row = await got.json() as Record<string, unknown>;
+    expect(row.hive_pubkey).toBe(HIVE_PUBKEY);
+    expect(row.hive_title).toBe('Demo Hive');
+  });
+
+  it('publish WITHOUT hive fields → lookup returns them null (pre-hive binding)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 71, private: false } });
+    const res = await publish(api, env, { ...HARNESS_BASE, github_repository_id: 71 });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { id: string; listing: Record<string, unknown> };
+    expect(j.listing.hive_pubkey).toBe(null);
+    expect(j.listing.hive_title).toBe(null);
+
+    const binding = await api.request('/binding/71', {}, env);
+    const b = await binding.json() as { exists: boolean; harness: Record<string, unknown> };
+    expect(b.exists).toBe(true);
+    expect(b.harness.hive_pubkey).toBe(null);
+    expect(b.harness.hive_title).toBe(null);
+  });
+
+  it('one row per member repo, same hive_pubkey: any member repo lookup finds the hive', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 72, private: false } });
+    await publish(api, env, {
+      ...HARNESS_BASE, github_repository_id: 72,
+      hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive',
+    });
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 73, private: false } });
+    await publish(api, env, {
+      ...HARNESS_BASE, github_name: 'hive-member-2',
+      github_url: 'https://github.com/papercupai/hive-member-2',
+      github_repository_id: 73, topic_hex: 'b'.repeat(64),
+      hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive',
+    });
+    expect(store.tables.harnesses).toHaveLength(2);
+
+    for (const repoId of [72, 73]) {
+      const res = await api.request(`/binding/${repoId}`, {}, env);
+      const b = await res.json() as { exists: boolean; harness: Record<string, unknown> };
+      expect(b.exists).toBe(true);
+      expect(b.harness.hive_pubkey).toBe(HIVE_PUBKEY);
+      expect(b.harness.hive_title).toBe('Demo Hive');
+    }
+  });
+
+  it('rejects a malformed hive_pubkey (not 32-byte base64)', async () => {
+    const { env } = makeEnv();
+    const bad = ['nope', 'a'.repeat(64), HIVE_PUBKEY + '=', 'A'.repeat(44), 42, ''];
+    let userId = 200; // fresh user per publish — stay under the 5/hr cap
+    for (const hive_pubkey of bad) {
+      stubGithub({ user: { id: userId++, login: 'pub' }, repo: { id: 74, private: false } });
+      const res = await publish(api, env, { ...HARNESS_BASE, github_repository_id: 74, hive_pubkey });
+      expect(res.status, `pubkey: ${JSON.stringify(hive_pubkey)}`).toBe(400);
+      expect((await res.json() as { field: string }).field).toBe('hive_pubkey');
+    }
+  });
+
+  it('rejects hive_title without hive_pubkey (display sugar needs an identity)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 75, private: false } });
+    const res = await publish(api, env, { ...HARNESS_BASE, github_repository_id: 75, hive_title: 'Orphan' });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('hive_title');
+    expect(j.reason).toBe('requires_hive_pubkey');
+  });
+
+  it('rejects an over-long or non-string hive_title', async () => {
+    const { env } = makeEnv();
+    let userId = 300;
+    for (const hive_title of ['x'.repeat(201), 42, '']) {
+      stubGithub({ user: { id: userId++, login: 'pub' }, repo: { id: 76, private: false } });
+      const res = await publish(api, env, {
+        ...HARNESS_BASE, github_repository_id: 76, hive_pubkey: HIVE_PUBKEY, hive_title,
+      });
+      expect(res.status, `title: ${JSON.stringify(hive_title)}`).toBe(400);
+      expect((await res.json() as { field: string }).field).toBe('hive_title');
+    }
+  });
+
+  it('hive_pubkey alone (no title) is accepted', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 77, private: false } });
+    const res = await publish(api, env, { ...HARNESS_BASE, github_repository_id: 77, hive_pubkey: HIVE_PUBKEY });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { listing: Record<string, unknown> };
+    expect(j.listing.hive_pubkey).toBe(HIVE_PUBKEY);
+    expect(j.listing.hive_title).toBe(null);
+  });
+
+  it('non-harness kinds carry hive fields too (a Hive facet listing)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 78, private: false } });
+    const res = await publish(api, env, {
+      github_owner: 'papercupai', github_name: 'hive-member',
+      github_url: 'https://github.com/papercupai/hive-member',
+      github_repository_id: 78, listing_kind: 'blueprint', listing_ref: 'web-app',
+      hive_pubkey: HIVE_PUBKEY, hive_title: 'Demo Hive',
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { listing: Record<string, unknown> };
+    expect(j.listing.listing_kind).toBe('blueprint');
+    expect(j.listing.hive_pubkey).toBe(HIVE_PUBKEY);
+  });
+});
