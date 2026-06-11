@@ -116,7 +116,7 @@ const getDiscord = defineTool({
 const putDiscord = defineTool({
   method: 'PUT',
   path: '/harness/:slug/discord',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const reg = await loadHarnessRegistry();

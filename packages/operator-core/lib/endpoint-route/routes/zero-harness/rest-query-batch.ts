@@ -14,7 +14,7 @@ interface BatchQuery { name: string; args?: unknown }
 export default defineTool({
   method: 'POST',
   path: '/zero-harness/rest-query-batch',
-  auth: 'public',
+  auth: 'loopback',
   // Pure sync-transport, polled ~every 3s — exempt from route_invocations
   // telemetry so the table doesn't flood (plan Q7: sampleRate 0 for pure
   // sync transports).

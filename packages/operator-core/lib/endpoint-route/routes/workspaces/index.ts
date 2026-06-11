@@ -56,7 +56,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/workspaces',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       let body: { name?: string };
       try {

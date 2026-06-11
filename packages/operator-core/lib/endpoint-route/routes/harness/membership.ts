@@ -41,7 +41,7 @@ const listWorkspaces = defineTool({
 const membership = defineTool({
   method: 'POST',
   path: '/harness/:slug/membership',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = String(ctx.params.slug ?? '');
     if (!SLUG_RE.test(slug)) return Response.json({ error: 'invalid slug' }, { status: 400 });

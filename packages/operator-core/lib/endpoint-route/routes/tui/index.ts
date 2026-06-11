@@ -65,7 +65,7 @@ const viewStateGet = defineTool({
 const viewStatePut = defineTool({
   method: 'PUT',
   path: '/tui/view-state',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => null)) as { owner?: string; state?: Record<string, unknown> } | null;
     const owner = body?.owner?.trim();
@@ -103,7 +103,7 @@ const layoutGet = defineTool({
 const layoutPut = defineTool({
   method: 'PUT',
   path: '/tui/layouts',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => null)) as
       | { owner?: string; name?: string; kdl?: string; description?: string | null }
@@ -123,7 +123,7 @@ const layoutPut = defineTool({
 const layoutDelete = defineTool({
   method: 'DELETE',
   path: '/tui/layouts/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const owner = ownerFromQuery(req);
     if (!owner) return ownerRequired();
@@ -160,7 +160,7 @@ const crewGet = defineTool({
 const crewPut = defineTool({
   method: 'PUT',
   path: '/tui/crews',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => null)) as
       | { owner?: string; name?: string; members?: CrewMember[]; layout_name?: string | null; description?: string | null }
@@ -178,7 +178,7 @@ const crewPut = defineTool({
 const crewDelete = defineTool({
   method: 'DELETE',
   path: '/tui/crews/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const owner = ownerFromQuery(req);
     if (!owner) return ownerRequired();

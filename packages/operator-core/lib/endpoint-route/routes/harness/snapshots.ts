@@ -130,7 +130,7 @@ const getSnapshots = defineTool({
 const recordPgState = defineTool({
   method: 'POST',
   path: '/harness/:slug/snapshots/:id/record-pg-state',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -168,7 +168,7 @@ const recordPgState = defineTool({
 const restoreSnapshot = defineTool({
   method: 'POST',
   path: '/harness/:slug/snapshots/:id/restore',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -247,7 +247,7 @@ const restoreSnapshot = defineTool({
 const deleteSnapshot = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/snapshots/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

@@ -161,7 +161,7 @@ const listPrs = defineTool({
 const reviewPr = defineTool({
   method: 'POST',
   path: '/harness/:slug/prs/:number/review',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const prNumber = parseInt(ctx.params.number as string, 10);

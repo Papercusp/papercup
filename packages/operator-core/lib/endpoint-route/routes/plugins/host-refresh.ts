@@ -24,7 +24,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/plugins/host/refresh',
-  auth: 'public',
+  auth: 'loopback',
   async handler() {
     try {
       await captureReloadStates();

@@ -23,7 +23,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/run-cancel',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });

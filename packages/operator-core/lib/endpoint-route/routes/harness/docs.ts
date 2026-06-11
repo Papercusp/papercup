@@ -46,7 +46,7 @@ const getDocs = defineTool({
 const verifyDocRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/docs/verify',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = await readJson(req);
@@ -60,7 +60,7 @@ const verifyDocRoute = defineTool({
 const regenerateDocRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/docs/regenerate',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = await readJson(req);
@@ -74,7 +74,7 @@ const regenerateDocRoute = defineTool({
 const overlayDocRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/docs/overlay',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = await readJson(req);
@@ -95,7 +95,7 @@ const overlayDocRoute = defineTool({
 const anchorDocRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/docs/anchor',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = await readJson(req);

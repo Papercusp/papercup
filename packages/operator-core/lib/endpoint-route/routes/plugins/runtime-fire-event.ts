@@ -14,7 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/plugins/runtime/fire-event',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = await req.json().catch(() => ({} as any));
     const event = typeof body?.event === 'string' ? body.event : '';

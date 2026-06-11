@@ -26,7 +26,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/omp-config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { key?: unknown; value?: unknown; unset?: unknown } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty */ }

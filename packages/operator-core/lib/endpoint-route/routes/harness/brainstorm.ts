@@ -96,7 +96,7 @@ const getBrainstorm = defineTool({
 const putBrainstorm = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -129,7 +129,7 @@ const getCanvas = defineTool({
 const putCanvas = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm-canvas',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -162,7 +162,7 @@ const getMindmap = defineTool({
 const putMindmap = defineTool({
   method: 'PUT',
   path: '/harness/:slug/brainstorm-mindmap',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -188,7 +188,7 @@ const putMindmap = defineTool({
 const promote = defineTool({
   method: 'POST',
   path: '/harness/:slug/brainstorm/promote',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

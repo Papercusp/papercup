@@ -50,7 +50,7 @@ function resolvePuiBin(): string | null {
 const launchPui = defineTool({
   method: 'POST',
   path: '/adv/sessions/launch-pui',
-  auth: 'public',
+  auth: 'loopback',
   async handler() {
     if (process.platform !== 'linux') {
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);

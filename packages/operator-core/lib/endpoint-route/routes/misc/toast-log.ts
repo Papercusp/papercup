@@ -19,7 +19,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/toast-log',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       let body: unknown;
       try {
@@ -91,7 +91,7 @@ export default [
   defineTool({
     method: 'DELETE',
     path: '/toast-log',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       const all = new URL(req.url).searchParams.get('all') === '1';
       const { db } = getOrgPg();

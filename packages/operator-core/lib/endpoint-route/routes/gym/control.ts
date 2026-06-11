@@ -138,7 +138,7 @@ const promptsGet = defineTool({
 const promptSet = defineTool({
   method: 'POST',
   path: '/gym/:slug/prompts',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const ws = activeWorkspaceId();
@@ -266,7 +266,7 @@ async function acceptRoute(req: Request, slug: string): Promise<Response> {
 const accept = defineTool({
   method: 'POST',
   path: '/gym/:slug/accept',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     return acceptRoute(req, ctx.params.slug as string);
   },
@@ -275,7 +275,7 @@ const accept = defineTool({
 const reject = defineTool({
   method: 'POST',
   path: '/gym/:slug/reject',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     return decideRoute(ctx.params.slug as string, 'rejected', readSelection(await readJson(req)));
   },
@@ -299,7 +299,7 @@ const autoloopGet = defineTool({
 const autoloopSet = defineTool({
   method: 'POST',
   path: '/gym/:slug/autoloop',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const ws = activeWorkspaceId();

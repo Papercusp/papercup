@@ -59,7 +59,7 @@ const getTelemetry = defineTool({
 const postTelemetry = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/adaptive-telemetry',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -109,7 +109,7 @@ const postTelemetry = defineTool({
 const patchTelemetry = defineTool({
   method: 'PATCH',
   path: '/harness/:slug/orchestrator/adaptive-telemetry/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

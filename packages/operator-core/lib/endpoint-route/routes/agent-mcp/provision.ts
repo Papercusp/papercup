@@ -47,7 +47,7 @@ const OPERATOR_CAPS = [
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/provision',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const { force } = (await req.json().catch(() => ({}))) as { force?: boolean };
     const workspaceId = activeWorkspaceId();

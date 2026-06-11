@@ -123,7 +123,7 @@ export async function synthesize(
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-tts',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { text?: unknown; engine?: unknown; voiceId?: unknown } = {};
     try {

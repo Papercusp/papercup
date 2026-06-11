@@ -21,7 +21,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-preferences',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { entry?: unknown } = {};
     try {
@@ -39,7 +39,7 @@ const post = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/operator-preferences',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const key = new URL(req.url).searchParams.get('key');
     if (!key) return new Response('key required', { status: 400 });

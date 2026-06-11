@@ -13,7 +13,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/test-buttons/echo',
-  auth: 'public',
+  auth: 'loopback',
   sampleRate: 0,
   timeoutSec: 60,
   async handler(req) {

@@ -283,7 +283,7 @@ function attachAuditExport(handle: ReturnType<typeof spawnPty>, sd: string | nul
 const spawn = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/spawn',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
     let body: SpawnBody;
@@ -368,7 +368,7 @@ const spawn = defineTool({
 const resolve = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
     let body: SpawnBody;
@@ -384,7 +384,7 @@ const resolve = defineTool({
 const prewarm = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/prewarm',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
     let body: SpawnBody;
@@ -476,7 +476,7 @@ const stream = defineTool({
 const input = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/input',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const id = ctx.params.id;
     let body: { data?: string };
@@ -491,7 +491,7 @@ const input = defineTool({
 const resize = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/resize',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const id = ctx.params.id;
     let body: { cols?: number; rows?: number };
@@ -507,7 +507,7 @@ const resize = defineTool({
 const kill = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/kill',
-  auth: 'public',
+  auth: 'loopback',
   handler(_req, ctx) {
     const ok = killPty(ctx.params.id);
     if (!ok) return Response.json({ error: 'unknown pty' }, { status: 404 });

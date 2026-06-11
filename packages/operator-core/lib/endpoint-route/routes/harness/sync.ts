@@ -118,7 +118,7 @@ const syncStatus = defineTool({
 const syncWithMain = defineTool({
   method: 'POST',
   path: '/harness/:slug/sync-with-main',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = (await req.json().catch(() => ({}))) as { github_user_id?: number };
@@ -176,7 +176,7 @@ const syncWithMain = defineTool({
 const abortRebase = defineTool({
   method: 'POST',
   path: '/harness/:slug/sync-with-main/abort',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const body = (await req.json().catch(() => ({}))) as { github_user_id?: number };

@@ -137,7 +137,7 @@ const getMemoryFile = defineTool({
 const putMemoryFile = defineTool({
   method: 'PUT',
   path: '/harness/:slug/memory-file',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));

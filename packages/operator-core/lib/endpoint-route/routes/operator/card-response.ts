@@ -22,7 +22,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/card-response',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) {

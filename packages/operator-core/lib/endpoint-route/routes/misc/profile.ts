@@ -33,7 +33,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/profile',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       const body = await req.json().catch(() => null);
       if (!body || typeof body !== 'object') {

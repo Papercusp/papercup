@@ -76,7 +76,7 @@ const list = defineTool({
 const create = defineTool({
   method: 'POST',
   path: '/design/sketches',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const blocked = await gateApiRoute(req, FLAGS.DESIGN);
     if (blocked) return blocked;

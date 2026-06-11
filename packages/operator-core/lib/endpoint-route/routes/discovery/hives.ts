@@ -12,16 +12,13 @@
  * grants nothing; joining runs the full admission flow).
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 import { getHiveDirectory } from '../../../hive-directory-deps';
 
 export default defineTool({
   method: 'GET',
   path: '/discovery/hives',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     // Lazy-wire the directory (fire-and-forget): a box that gh-authenticated
     // after boot starts listening on the directory topic from the first browse,
     // instead of staying dead until restart. Instant no-op when already wired.

@@ -78,7 +78,7 @@ const getReview = defineTool({
 const resolveReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/reviews/:id/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const phase = phaseFromReq(req);

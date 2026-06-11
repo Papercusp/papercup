@@ -24,7 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const rejectProposal = defineTool({
   method: 'POST',
   path: '/harness/:slug/proposals/:id/reject',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

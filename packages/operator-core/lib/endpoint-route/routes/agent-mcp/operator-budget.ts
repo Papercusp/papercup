@@ -25,7 +25,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-budget',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { dailyCapUsd?: unknown } = {};
     try {

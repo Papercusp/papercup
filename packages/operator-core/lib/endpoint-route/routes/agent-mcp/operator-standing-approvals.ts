@@ -22,7 +22,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-standing-approvals',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { capability?: unknown; targetHarness?: unknown; decision?: unknown } = {};
     try {

@@ -48,7 +48,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-credentials',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown; googleApiKey?: unknown } = {};
     try {

@@ -16,7 +16,7 @@ const BodySchema = z.object({
 export default defineTool({
   method: 'POST',
   path: '/tui/intents/:id/result',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ error: 'loopback_required' }, { status: 403 });

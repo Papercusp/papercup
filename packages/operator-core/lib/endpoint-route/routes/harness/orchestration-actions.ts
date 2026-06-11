@@ -27,7 +27,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const runSmokeTest = defineTool({
   method: 'POST',
   path: '/harness/:slug/smoke-test/run',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -50,7 +50,7 @@ const runSmokeTest = defineTool({
 const architectApply = defineTool({
   method: 'POST',
   path: '/harness/:slug/architect/apply',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const slug = ctx.params.slug as string;

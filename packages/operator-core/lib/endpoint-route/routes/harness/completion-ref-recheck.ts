@@ -26,7 +26,7 @@ import { resolveProject } from '../../../harness-core';
 const completionRefRecheck = defineTool({
   method: 'POST',
   path: '/harness/:slug/completion-ref/recheck',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolveProject(slug);

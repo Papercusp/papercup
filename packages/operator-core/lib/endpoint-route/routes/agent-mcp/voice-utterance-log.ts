@@ -8,7 +8,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/voice-utterance-log',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: VoiceUtteranceLogInput;
     try {

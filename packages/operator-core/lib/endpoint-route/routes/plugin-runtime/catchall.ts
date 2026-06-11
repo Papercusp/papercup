@@ -14,7 +14,6 @@ import { buildPluginRuntime } from '../../../plugin-host';
 import type { Capability, Plugin } from '@papercusp/plugin-sdk';
 import { papercuspRoot } from '../../../papercusp-root';
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 /**
  * Path-segment confinement (audit P-026): slug + plugin become directory
@@ -63,13 +62,11 @@ const ALLOWED_SERVICES = new Set([
 export default defineTool({
   method: 'POST',
   path: '/plugin-runtime/:slug/:plugin/*',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     // The dispatcher reaches secrets/db/fetch/storage services — loopback-only
     // (audit P-026). Legitimate callers (Tauri webview, harness agents, the
     // operator itself) are all on-box.
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
 
     const slug = ctx.params.slug as string;
     const pluginName = ctx.params.plugin as string;

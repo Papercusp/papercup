@@ -151,7 +151,7 @@ const getPhases = defineTool({
 const setupPhases = defineTool({
   method: 'POST',
   path: '/harness/:slug/phases/setup',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(

@@ -42,7 +42,7 @@ function json(body: unknown, status = 200): Response {
 const launchSu = defineTool({
   method: 'POST',
   path: '/adv/sessions/launch-su',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: {
       agent?: string;

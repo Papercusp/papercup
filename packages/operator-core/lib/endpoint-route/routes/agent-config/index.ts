@@ -35,7 +35,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/agent-config',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       const body = (await req.json().catch(() => null)) as Partial<AgentConfig> | null;
       if (!body || typeof body !== 'object') {

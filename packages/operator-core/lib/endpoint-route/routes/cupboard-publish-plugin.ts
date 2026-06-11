@@ -37,7 +37,7 @@ import {
 export default defineTool({
   method: 'POST',
   path: '/cupboard/publish-plugin',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: {
       slug?: string;

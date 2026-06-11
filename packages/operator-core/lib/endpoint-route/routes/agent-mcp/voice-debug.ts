@@ -12,7 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/voice-debug',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { event?: string; detail?: unknown; ts?: number } = {};
     try { body = await req.json(); } catch { /* empty body OK */ }
@@ -39,7 +39,7 @@ const get = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/voice-debug',
-  auth: 'public',
+  auth: 'loopback',
   handler() {
     clearVoiceDebugEvents();
     return Response.json({ ok: true, cleared: true });

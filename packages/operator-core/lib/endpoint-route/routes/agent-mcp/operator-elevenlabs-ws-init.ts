@@ -190,7 +190,7 @@ const wsInit = defineTool({
 const leaseHeartbeat = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-voice-lease/heartbeat',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let owner = '';
     try {
@@ -214,7 +214,7 @@ const leaseHeartbeat = defineTool({
 const leaseRelease = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/operator-voice-lease',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const url = new URL(req.url);
     const owner = url.searchParams.get('owner')?.trim();

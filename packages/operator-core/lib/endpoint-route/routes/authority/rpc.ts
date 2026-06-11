@@ -27,7 +27,7 @@ import { lockAuthorityFor } from '../../../authority/lock-authority';
 export default defineTool({
   method: 'POST',
   path: '/authority/rpc',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: AuthorityRpcEnvelope;
     try {

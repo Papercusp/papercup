@@ -75,9 +75,9 @@ export function routeToOpenApiFragment(
     summary: `${def.method} ${def.path}`,
     description: `${def.method} ${def.path}`,
     'x-papercusp-projection': 'route',
-    // 'public' routes opt out of principal auth (own-auth or unauthenticated);
-    // gated routes advertise the bearer scheme.
-    security: def.auth === 'public' ? [] : [{ [securitySchemeName]: [] }],
+    // 'public'/'loopback' routes opt out of principal auth (own-auth,
+    // unauthenticated, or host-gated); gated routes advertise the bearer scheme.
+    security: def.auth === 'public' || def.auth === 'loopback' ? [] : [{ [securitySchemeName]: [] }],
     // Device-reachable routes (auth admits `kind: ['device']`) are tagged
     // so an OpenAPI consumer (and the /dev → Endpoints panel) can filter
     // the paired-device surface. Phase E10 (endpoint-unification-2026-05-21).

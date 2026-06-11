@@ -26,7 +26,7 @@ const get = defineTool({
 const patch = defineTool({
   method: 'PATCH',
   path: '/user/preferences',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
@@ -42,7 +42,7 @@ const patch = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/user/preferences',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });

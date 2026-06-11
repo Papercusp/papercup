@@ -82,7 +82,7 @@ async function readJsonBody(req: Request): Promise<unknown> {
 const postSetActive = defineTool({
   method: 'POST',
   path: '/harness/:slug/working-set/:featureId/set-active',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const featureId = ctx.params.featureId as string;
@@ -104,7 +104,7 @@ const postSetActive = defineTool({
 const postClearActive = defineTool({
   method: 'POST',
   path: '/harness/:slug/working-set/:featureId/clear-active',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const featureId = ctx.params.featureId as string;

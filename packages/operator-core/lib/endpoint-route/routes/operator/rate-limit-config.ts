@@ -15,15 +15,12 @@ import {
   writeRateLimitConfig,
 } from '../../../rate-limit-config';
 import { buildFleetRateStatus } from '../../../fleet-rate-status';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const get = defineTool({
   method: 'GET',
   path: '/operator/rate-limit-config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const [config, status] = await Promise.all([readRateLimitConfig(), buildFleetRateStatus()]);
     return Response.json({ config, status });
   },
@@ -32,10 +29,8 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/operator/rate-limit-config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     let body: { maxSimultaneousAgents?: unknown; concurrencyFloor?: unknown } = {};
     try {
       body = (await req.json()) as typeof body;

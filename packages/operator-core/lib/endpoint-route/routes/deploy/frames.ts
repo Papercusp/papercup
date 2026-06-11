@@ -14,20 +14,17 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 export default defineTool({
   method: 'GET',
   path: '/deploy/frames',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     // Belt-and-braces (security review 2026-06-07): the cookie-less desktop
     // webview is why there is no session gate, but the loopback PERIMETER must
     // also be asserted in-handler — a listener-bind misconfiguration must not
     // silently de-authenticate the frame roster. Loopback callers (the desktop
     // webview, psu, agents) pass unchanged.
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const { loadHarnessRegistry } = await import('../../../harness-registry');
     const reg = await loadHarnessRegistry(activeWorkspaceId());
     const frames = reg.projects

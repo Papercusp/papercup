@@ -25,7 +25,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/workspace/company-id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const { companyId } = (await req.json()) as { companyId: string | null };
     const workspaceId = activeWorkspaceId();

@@ -310,7 +310,7 @@ const getSettings = defineTool({
 const postSettings = defineTool({
   method: 'POST',
   path: '/harness/:slug/pr-reviewer-settings',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();
@@ -363,7 +363,7 @@ const postSettings = defineTool({
 const postTrustRemove = defineTool({
   method: 'POST',
   path: '/harness/:slug/pr-reviewer-settings/trust/remove',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();

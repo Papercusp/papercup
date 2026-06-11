@@ -39,7 +39,7 @@ interface PostBody {
 const post = defineTool({
   method: 'POST',
   path: '/plugins/grants',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: PostBody;
     try {

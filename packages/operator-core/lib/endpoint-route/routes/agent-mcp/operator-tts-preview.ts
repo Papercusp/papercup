@@ -10,7 +10,7 @@ const SAMPLE_TEXT = 'This is a sample of the operator voice.';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-tts-preview',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { engine?: string; text?: string; voiceId?: string } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body OK */ }

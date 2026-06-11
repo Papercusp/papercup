@@ -20,7 +20,6 @@ import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '../../../harness-core';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 /** Max bytes returned per poll — a busy agent can't flood the pane. */
@@ -33,7 +32,7 @@ function json(body: unknown, status = 200): Response {
 export default defineTool({
   method: 'GET',
   path: '/fleet/bee-output',
-  auth: 'public',
+  auth: 'loopback',
   // Polled ~every 2s by an open watch pane — keep it out of route telemetry.
   sampleRate: 0,
   async handler(req) {
@@ -42,8 +41,6 @@ export default defineTool({
     // The ONLY consumer is the local pui watch pane, so gate like the other
     // owner-level fleet routes (harness spawn/launch) instead of serving the
     // box's agent output to any network caller who can guess an `s-…` owner id.
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const u = new URL(req.url);
     const owner = u.searchParams.get('owner')?.trim();
     if (!owner) return json({ error: 'missing owner' }, 400);

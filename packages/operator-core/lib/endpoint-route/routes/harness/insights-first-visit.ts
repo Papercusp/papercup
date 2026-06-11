@@ -64,7 +64,7 @@ const get = defineTool({
 const mark = defineTool({
   method: 'POST',
   path: '/harness/:slug/insights-first-visit',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();

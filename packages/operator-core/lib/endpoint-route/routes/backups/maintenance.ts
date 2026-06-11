@@ -13,7 +13,7 @@ const Schema = z.object({ level: z.enum(['quick', 'full']).default('quick') });
 export default defineTool({
   method: 'POST',
   path: '/backups/maintenance',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     try {
       const body = await req.json().catch(() => ({}));

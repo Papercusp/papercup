@@ -124,7 +124,7 @@ const realDeps: ResolveBindingDeps = {
 const bindingResolve = defineTool({
   method: 'POST',
   path: '/harness/binding/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => null)) as { github_remote?: unknown } | null;
     const remote = typeof body?.github_remote === 'string' ? body.github_remote : '';

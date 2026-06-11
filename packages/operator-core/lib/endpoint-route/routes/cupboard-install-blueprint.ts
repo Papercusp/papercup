@@ -77,7 +77,7 @@ async function resolveBlueprintListing(
 export default defineTool({
   method: 'POST',
   path: '/cupboard/install-blueprint',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 120,
   async handler(req) {
     let body: {

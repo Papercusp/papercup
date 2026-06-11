@@ -504,7 +504,7 @@ function inputFromBody(slug: string, body: unknown): FinalizeShareInput {
 const shareFinalize = defineTool({
   method: 'POST',
   path: '/harness/:slug/share/finalize',
-  auth: 'public',
+  auth: 'loopback',
   // Sharing publishes the binding gist + boots the substrate + announces on the
   // DHT — can exceed the default 30s route timeout (the work then finished
   // server-side while the caller saw a spurious 408).

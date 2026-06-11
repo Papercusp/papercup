@@ -67,7 +67,7 @@ const get = defineTool({
 const upsert = defineTool({
   method: 'POST',
   path: '/agent-mcp/saved-prompts',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json()) as {
       harness?: string | null;
@@ -104,7 +104,7 @@ const upsert = defineTool({
 const remove = defineTool({
   method: 'POST',
   path: '/agent-mcp/saved-prompts/remove',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => ({}))) as {
       harness?: string | null;

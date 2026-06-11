@@ -107,7 +107,7 @@ const realDeps: ClaimDeps = { claimBinding };
 const post = defineTool({
   method: 'POST',
   path: '/harness/binding/claim',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const parsed = parseClaimBody(await req.json().catch(() => null));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });

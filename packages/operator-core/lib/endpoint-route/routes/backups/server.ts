@@ -27,7 +27,7 @@ const get = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/backups/server',
-  auth: 'public',
+  auth: 'loopback',
   handler() {
     const ws = activeWorkspaceId();
     const stopped = stopKopiaServer(ws);

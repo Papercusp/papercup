@@ -107,7 +107,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/plugins/config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { harness?: string; plugin?: string; config?: unknown };
     try { body = await req.json(); } catch { return Response.json({ ok: false, error: 'invalid json' }, { status: 400 }); }

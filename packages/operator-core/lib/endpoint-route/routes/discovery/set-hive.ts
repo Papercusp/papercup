@@ -10,7 +10,6 @@
  * desktop webview is cookie-less; the loopback bind is the perimeter.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 import { isHiveVisibility } from '../../../sync/hyperbee/hive-announce';
 
 export default defineTool({
@@ -20,8 +19,6 @@ export default defineTool({
   // Cupboard rows / unlist round-trips can exceed the default route budget.
   timeoutSec: 120,
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     let body: {
       hiveId?: string;
       title?: string;

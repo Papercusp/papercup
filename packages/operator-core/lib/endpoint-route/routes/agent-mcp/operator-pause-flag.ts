@@ -20,7 +20,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-pause-flag',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) {
@@ -34,7 +34,7 @@ const post = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/operator-pause-flag',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) {

@@ -95,7 +95,7 @@ const getKnowledge = defineTool({
 const putKnowledge = defineTool({
   method: 'PUT',
   path: '/harness/:slug/knowledge',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));

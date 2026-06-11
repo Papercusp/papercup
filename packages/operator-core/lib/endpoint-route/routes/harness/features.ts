@@ -207,7 +207,7 @@ const getFeature = defineTool({
 const resetFeature = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:id/reset',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -260,7 +260,7 @@ const resetFeature = defineTool({
 const updateFeature = defineTool({
   method: 'PATCH',
   path: '/harness/:slug/features/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -372,7 +372,7 @@ const updateFeature = defineTool({
 const importFeatures = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/import',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -640,7 +640,7 @@ const importFeatures = defineTool({
 const createFeature = defineTool({
   method: 'POST',
   path: '/harness/:slug/features',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -756,7 +756,7 @@ const createFeature = defineTool({
 const deleteFeature = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/features/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -786,7 +786,7 @@ const deleteFeature = defineTool({
 const approveHumanReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:id/approve-human',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

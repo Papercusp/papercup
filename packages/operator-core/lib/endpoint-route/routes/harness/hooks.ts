@@ -53,7 +53,7 @@ const getHooks = defineTool({
 const putHook = defineTool({
   method: 'PUT',
   path: '/harness/:slug/hooks/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -79,7 +79,7 @@ const putHook = defineTool({
 const deleteHook = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/hooks/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

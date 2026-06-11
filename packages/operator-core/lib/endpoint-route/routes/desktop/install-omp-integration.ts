@@ -45,7 +45,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/desktop/install/omp-integration',
-    auth: 'public',
+    auth: 'loopback',
     async handler() {
       try {
         const result = await installOmpIntegration();
@@ -58,7 +58,7 @@ export default [
   defineTool({
     method: 'DELETE',
     path: '/desktop/install/omp-integration',
-    auth: 'public',
+    auth: 'loopback',
     async handler() {
       try {
         const result = await uninstallOmpIntegration();

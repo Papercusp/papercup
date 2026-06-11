@@ -18,7 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/harness/:slug/branch/:branch/action-run',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const branch = ctx.params.branch as string;

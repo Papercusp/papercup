@@ -20,11 +20,19 @@ vi.mock('../../auth/require-principal', async () => {
 // Telemetry writes to PG — out of scope for route-stack mechanics tests.
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
+// The loopback tier reads ENDPOINT_AUTH_TIERS server-side (dynamic import).
+// Partial mock — other transitive imports use the module's other exports.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return { ...actual, getFlag: vi.fn(async () => true) };
+});
+
 import { defineTool } from '@papercusp/agent-mcp';
 import { registerRoute } from '../define-route';
 import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
+import { getFlag } from '@papercusp/flags/server';
 
 function freshApp(): Hono {
   return new Hono();
@@ -88,6 +96,58 @@ describe('auth step', () => {
     expect(res.status).toBe(403);
     expect((await res.json()).error.message).toBe('trust denied');
     expect(handlerRan).toBe(false);
+  });
+});
+
+describe('auth step — loopback tier (auth-tier rollout Wave 1)', () => {
+  const lbRoute = () => defineTool({
+    method: 'POST', path: '/lb', auth: 'loopback',
+    handler: () => Response.json({ ok: true }),
+  });
+
+  beforeEach(() => {
+    vi.mocked(getFlag).mockResolvedValue(true);
+    delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  });
+  afterEach(() => {
+    delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  });
+
+  it('admits a loopback-host request without requirePrincipal', async () => {
+    const app = freshApp();
+    registerRoute(app, lbRoute());
+    // app.request('/lb') builds http://localhost/lb — a loopback Host.
+    const res = await app.request('/lb', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(requirePrincipal).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-loopback Host with 403 before the handler', async () => {
+    const app = freshApp();
+    let handlerRan = false;
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/lb', auth: 'loopback',
+      handler: () => { handlerRan = true; return Response.json({}); },
+    }));
+    const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(handlerRan).toBe(false);
+  });
+
+  it('flag OFF reverts to public behavior (the emergency lever)', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const app = freshApp();
+    registerRoute(app, lbRoute());
+    const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
+    expect(res.status).toBe(200);
+  });
+
+  it('PAPERCUSP_ALLOW_REMOTE_ADMIN=1 admits a remote host (deliberate opt-out)', async () => {
+    process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = '1';
+    const app = freshApp();
+    registerRoute(app, lbRoute());
+    const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
+    expect(res.status).toBe(200);
   });
 });
 

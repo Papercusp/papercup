@@ -24,7 +24,7 @@ const TEMPLATES_DIR = harnessPath('templates', 'projects');
 export default defineTool({
   method: 'POST',
   path: '/harness/:slug/bootstrap-from-template',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(

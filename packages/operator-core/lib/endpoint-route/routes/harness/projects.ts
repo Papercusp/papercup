@@ -177,7 +177,7 @@ const list = defineTool({
 const create = defineTool({
   method: 'POST',
   path: '/harness/projects',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json()) as Record<string, unknown>;
     const slug = String(body.slug ?? '').trim();
@@ -423,7 +423,7 @@ const create = defineTool({
 const createHive = defineTool({
   method: 'POST',
   path: '/harness/hives',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { slug?: string; parentDir?: string; wakeInSeconds?: number } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }
@@ -516,7 +516,7 @@ const createHiveFromRepoRoute = defineTool({
 const remove = defineTool({
   method: 'DELETE',
   path: '/harness/projects/:slug',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     // Atomic remove (audit P-006 / EI-82): the old load→filter→save raced any
@@ -549,7 +549,7 @@ const remove = defineTool({
 const scanSubharnesses = defineTool({
   method: 'POST',
   path: '/harness/projects/scan-subharnesses',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { slug?: string } = {};
     try { body = (await req.json()) as { slug?: string }; } catch { /* empty */ }
@@ -593,7 +593,7 @@ const scanSubharnesses = defineTool({
 const registerSubs = defineTool({
   method: 'POST',
   path: '/harness/projects/register-subs',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { rootSlug?: string } = {};
     try { body = (await req.json()) as { rootSlug?: string }; } catch { /* empty */ }

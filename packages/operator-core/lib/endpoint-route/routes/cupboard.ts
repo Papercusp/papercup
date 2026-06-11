@@ -260,7 +260,7 @@ const listCupboardReports = defineTool({
 const resolveCupboardReport = defineTool({
   method: 'POST',
   path: '/cupboard/admin/reports/:id/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = await req.text();
@@ -274,7 +274,7 @@ const resolveCupboardReport = defineTool({
 const unlistCupboardHarness = defineTool({
   method: 'POST',
   path: '/cupboard/admin/harnesses/:id/unlist',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = await req.text();

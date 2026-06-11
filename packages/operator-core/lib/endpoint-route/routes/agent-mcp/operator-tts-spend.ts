@@ -17,7 +17,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-tts-spend',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { perKCharRate?: number; softCapUsd?: number; hardCapUsd?: number } = {};
     try {

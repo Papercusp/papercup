@@ -20,7 +20,7 @@ async function resolveProjectPath(slug: string): Promise<string | null> {
 export default defineTool({
   method: 'POST',
   path: '/plugins/invoke',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { slug?: string; action?: string; harness?: string; params?: Record<string, unknown> };
     try { body = await req.json(); } catch { return Response.json({ ok: false, error: 'invalid json' }, { status: 400 }); }

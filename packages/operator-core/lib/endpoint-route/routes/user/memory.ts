@@ -113,7 +113,7 @@ const backendInfo = defineTool({
 const create = defineTool({
   method: 'POST',
   path: '/user/memory',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
@@ -165,7 +165,7 @@ const create = defineTool({
 const setBackend = defineTool({
   method: 'POST',
   path: '/user/memory/backend',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
@@ -197,7 +197,7 @@ const setBackend = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/user/memory',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
@@ -245,7 +245,7 @@ const del = defineTool({
 const patch = defineTool({
   method: 'PATCH',
   path: '/user/memory',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });

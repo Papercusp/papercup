@@ -21,7 +21,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const orchestratorStatus = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/status',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -89,7 +89,7 @@ const orchestratorStatus = defineTool({
 const orchestratorLane = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/lane',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -135,7 +135,7 @@ const orchestratorLane = defineTool({
 const orchestratorLanesDelete = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/orchestrator/lanes',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -153,7 +153,7 @@ const orchestratorLanesDelete = defineTool({
 const orchestratorClearRunning = defineTool({
   method: 'POST',
   path: '/harness/:slug/orchestrator/clear-running',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -167,7 +167,7 @@ const orchestratorClearRunning = defineTool({
 const checkpointRequest = defineTool({
   method: 'POST',
   path: '/harness/:slug/checkpoint/:name/request',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolveProject(slug);
@@ -197,7 +197,7 @@ ${body.message ?? ''}
 const checkpointGrant = defineTool({
   method: 'POST',
   path: '/harness/:slug/checkpoint/:name/grant',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

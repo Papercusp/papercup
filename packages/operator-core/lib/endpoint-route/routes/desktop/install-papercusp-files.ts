@@ -26,7 +26,7 @@ export default [
   defineTool({
     method: 'POST',
     path: '/desktop/install/papercusp-files',
-    auth: 'public',
+    auth: 'loopback',
     async handler() {
       try {
         const result = await installPapercuspFiles();

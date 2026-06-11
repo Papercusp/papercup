@@ -35,7 +35,7 @@ const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 const promote = defineTool({
   method: 'POST',
   path: '/harness/:slug/promote',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -129,7 +129,7 @@ const promote = defineTool({
 const confirmPromotion = defineTool({
   method: 'POST',
   path: '/harness/:slug/promote/:id/confirm',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -322,7 +322,7 @@ const confirmPromotion = defineTool({
 const rollback = defineTool({
   method: 'POST',
   path: '/harness/:slug/rollback',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(

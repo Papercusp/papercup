@@ -48,7 +48,7 @@ type WebhookEvent = TranscriptionPayload | { type: string; data?: { conversation
 export default defineTool({
   method: 'POST',
   path: '/elevenlabs/post-call',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
     const rawBody = await req.text();

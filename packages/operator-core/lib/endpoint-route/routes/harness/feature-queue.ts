@@ -91,7 +91,7 @@ async function readJsonBody(req: Request): Promise<unknown> {
 const postEnqueue = defineTool({
   method: 'POST',
   path: '/harness/:slug/feature-queue/:featureId/enqueue',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const featureId = ctx.params.featureId as string;
@@ -120,7 +120,7 @@ const postEnqueue = defineTool({
 const postDequeue = defineTool({
   method: 'POST',
   path: '/harness/:slug/feature-queue/:featureId/dequeue',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const featureId = ctx.params.featureId as string;

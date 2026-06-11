@@ -9,7 +9,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/end-pi',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const { sessionId } = (await req.json()) as { sessionId: string };
     if (!sessionId) {

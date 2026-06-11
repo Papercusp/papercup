@@ -23,7 +23,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-tool',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ ok: false, error: 'forbidden', detail: 'loopback only' }, { status: 403 });

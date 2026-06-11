@@ -20,7 +20,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-conv-voice',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { voiceId?: string; modelId?: string } = {};
     try { body = await req.json(); } catch { /* tolerate empty */ }

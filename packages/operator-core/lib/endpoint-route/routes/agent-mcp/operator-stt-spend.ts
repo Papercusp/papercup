@@ -23,7 +23,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-stt-spend',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { minutes?: unknown } = {};
     try {
@@ -47,7 +47,7 @@ const post = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-stt-spend',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: Partial<SttSpendState> = {};
     try {

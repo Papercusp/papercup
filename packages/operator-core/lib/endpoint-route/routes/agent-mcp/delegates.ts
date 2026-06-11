@@ -41,7 +41,7 @@ const get = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/agent-mcp/delegates',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const url = new URL(req.url);
     const id = url.searchParams.get('id');

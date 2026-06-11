@@ -340,7 +340,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/launch',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const origin = req.headers.get('origin') ?? '(no-origin)';
     const ua = req.headers.get('user-agent') ?? '(no-ua)';

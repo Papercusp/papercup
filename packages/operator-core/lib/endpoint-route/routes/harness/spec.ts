@@ -50,7 +50,7 @@ const getSpec = defineTool({
 const putSpec = defineTool({
   method: 'PUT',
   path: '/harness/:slug/spec',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const url = new URL(req.url);

@@ -23,7 +23,7 @@ import { audit } from '../../../memory/audit-memory-anchors';
 export default defineTool({
   method: 'POST',
   path: '/user/memory/audit',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 120,
   async handler(req) {
     const user = await getSessionUser(req.headers);

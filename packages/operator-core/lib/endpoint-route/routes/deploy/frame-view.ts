@@ -16,7 +16,6 @@
 import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 import {
   subscribeFrameView,
   type FrameThumb,
@@ -31,7 +30,7 @@ type FrameViewVocabulary = {
 export default defineTool({
   method: 'GET',
   path: '/deploy/:slug/frame-view',
-  auth: 'public',
+  auth: 'loopback',
   // Long-lived SSE — exempt from the route-stack watchdog (EI-110: the 30s
   // default 408'd healthy streams).
   timeoutSec: null,
@@ -42,8 +41,6 @@ export default defineTool({
     // agent-desktop pixels — assert the loopback perimeter in-handler so a
     // listener-bind misconfiguration can never expose it off-box. Loopback
     // callers (the desktop webview) pass unchanged.
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();
 

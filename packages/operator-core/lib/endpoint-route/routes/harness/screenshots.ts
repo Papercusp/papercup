@@ -53,7 +53,7 @@ const getScreenshot = defineTool({
 const postScreenshot = defineTool({
   method: 'POST',
   path: '/harness/:slug/screenshots',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const phase = phaseFromReq(req);
     const project = await resolvePhasedProject(ctx.params.slug as string, phase);
@@ -113,7 +113,7 @@ const postScreenshot = defineTool({
 const deleteScreenshot = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/screenshots/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const phase = phaseFromReq(req);
     const project = await resolvePhasedProject(ctx.params.slug as string, phase);

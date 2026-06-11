@@ -99,7 +99,7 @@ const getPromptByRole = defineTool({
 const putPrompt = defineTool({
   method: 'PUT',
   path: '/harness/:slug/prompts/:role',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -137,7 +137,7 @@ const putPrompt = defineTool({
 const deletePrompt = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/prompts/:role',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -153,7 +153,7 @@ const deletePrompt = defineTool({
 const resetAllPrompts = defineTool({
   method: 'POST',
   path: '/harness/:slug/prompts/reset-all',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

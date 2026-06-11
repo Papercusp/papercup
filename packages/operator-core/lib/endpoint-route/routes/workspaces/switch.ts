@@ -24,7 +24,7 @@ interface Registry {
 export default defineTool({
   method: 'POST',
   path: '/workspaces/switch',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { id?: string };
     try {

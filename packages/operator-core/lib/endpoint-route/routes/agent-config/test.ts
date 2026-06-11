@@ -20,7 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-config/test',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 45, // handler self-bounds at 30s; give the route-stack headroom
   async handler() {
     const started = Date.now();

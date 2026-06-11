@@ -22,7 +22,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 const supervisor = defineTool({
   method: 'POST',
   path: '/harness/:slug/supervisor',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -52,7 +52,7 @@ const supervisor = defineTool({
 const resolveEscalation = defineTool({
   method: 'POST',
   path: '/harness/:slug/escalation/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const slug = ctx.params.slug as string;

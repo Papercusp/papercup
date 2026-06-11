@@ -24,7 +24,7 @@ import { buildInstallPluginDeps, resolveListingCoords } from '../../cupboard/ins
 export default defineTool({
   method: 'POST',
   path: '/cupboard/install-plugin',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 120,
   async handler(req) {
     let body: {

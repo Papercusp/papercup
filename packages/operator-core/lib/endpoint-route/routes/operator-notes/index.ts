@@ -26,7 +26,7 @@ const getNotes = defineTool({
 const postNote = defineTool({
   method: 'POST',
   path: '/harness/:slug/features/:featureId/notes',
-  auth: 'public',
+  auth: 'loopback',
   input: z.object({ content: z.string().optional(), author: z.string().optional() }),
   async handler(_req, ctx) {
     const result = await appendOperatorNote({

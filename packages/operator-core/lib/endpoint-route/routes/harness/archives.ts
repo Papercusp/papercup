@@ -27,7 +27,7 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 const archiveOnly = defineTool({
   method: 'POST',
   path: '/harness/:slug/archive',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
@@ -85,7 +85,7 @@ const archiveOnly = defineTool({
 const restoreArchive = defineTool({
   method: 'POST',
   path: '/harness/:slug/archives/:id/restore',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolvePhasedProject(

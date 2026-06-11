@@ -42,7 +42,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/operator/conversations',
-  auth: 'public',
+  auth: 'loopback',
   async handler() {
     const ws = activeWorkspaceId();
     const { db } = getOrgPg();

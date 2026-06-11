@@ -21,7 +21,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-voice-prefs',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: unknown;
     try {

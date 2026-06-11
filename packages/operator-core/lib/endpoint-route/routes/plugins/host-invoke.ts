@@ -19,7 +19,7 @@ interface ReqBody {
 export default defineTool({
   method: 'POST',
   path: '/plugins/host/invoke',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: ReqBody;
     try {

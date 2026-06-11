@@ -62,7 +62,7 @@ export function parseClaimBody(
 const post = defineTool({
   method: 'POST',
   path: '/harness/:slug/claim-feature',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();

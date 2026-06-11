@@ -37,7 +37,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/backups/snapshots',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     try {
       const body = await req.json().catch(() => ({}));

@@ -31,7 +31,7 @@ const list = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/themes/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     let body: { theme?: unknown };
     try {
@@ -60,7 +60,7 @@ const put = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/themes/:id',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     await deleteCustomTheme(ctx.params.id);
     return new Response(null, { status: 204 });

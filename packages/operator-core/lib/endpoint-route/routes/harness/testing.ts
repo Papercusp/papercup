@@ -224,7 +224,7 @@ const healthStrip = defineTool({
 const run = defineTool({
   method: 'POST',
   path: '/harness/:slug/testing/run',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const url = new URL(req.url);
     const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
@@ -316,7 +316,7 @@ const listAssertions = defineTool({
 const patchAssertion = defineTool({
   method: 'POST',
   path: '/harness/:slug/testing/assertions/:valId',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const valId = ctx.params.valId as string;

@@ -7,17 +7,14 @@ import { z } from 'zod';
 import { durableRollbackPromote } from '../../../backup/durable-ops';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
-import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const Schema = z.object({ brokenPath: z.string().min(1) });
 
 export default defineTool({
   method: 'POST',
   path: '/backups/rollback',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     try {
       const body = await req.json();
       const args = Schema.parse(body);

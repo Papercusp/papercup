@@ -35,7 +35,7 @@ const Body = z.object({
 const put = defineTool({
   method: 'PUT',
   path: '/backups/destination',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     try {
       const body = await req.json();
@@ -52,7 +52,7 @@ const put = defineTool({
 const test = defineTool({
   method: 'POST',
   path: '/backups/destination/test',
-  auth: 'public',
+  auth: 'loopback',
   async handler() {
     try {
       const wb = workspaceBackupFor(activeWorkspaceId());

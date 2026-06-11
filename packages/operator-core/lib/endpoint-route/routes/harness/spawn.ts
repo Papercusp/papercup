@@ -40,10 +40,8 @@ import { operatorApiBase } from '../../../operator-api-base';
 const launch = defineTool({
   method: 'POST',
   path: '/harness/:slug/launch',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
       ctx.params.slug as string,
@@ -187,7 +185,7 @@ function extractKickoff(bodyKickoff: unknown): string {
 const invoke = defineTool({
   method: 'POST',
   path: '/harness/:slug/invoke',
-  auth: 'public',
+  auth: 'loopback',
   // A single-role agent invocation runs an LLM to completion — far longer than
   // the 30s route default. The handler caps the child at `timeoutMs` (≤1200s —
   // raised from 300s for long single-role launches: a scheduled `scan` blueprint
@@ -197,8 +195,6 @@ const invoke = defineTool({
   // (claude-code promote reads the plan + calls plans:promote, ~30-120s).
   timeoutSec: 1210,
   async handler(req, ctx) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -370,10 +366,8 @@ const invoke = defineTool({
 const resume = defineTool({
   method: 'POST',
   path: '/harness/:slug/resume',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
       ctx.params.slug as string,

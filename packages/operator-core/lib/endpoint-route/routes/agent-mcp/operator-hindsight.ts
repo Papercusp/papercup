@@ -33,7 +33,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-hindsight',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => null)) as
       | { headline?: string; kind?: string }

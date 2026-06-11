@@ -35,7 +35,7 @@ function errorResponse(
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-command',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: Body;
     try {

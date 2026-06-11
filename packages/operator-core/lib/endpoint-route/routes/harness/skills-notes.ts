@@ -77,7 +77,7 @@ const getSkill = defineTool({
 const putSkill = defineTool({
   method: 'PUT',
   path: '/harness/:slug/skills/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -95,7 +95,7 @@ const putSkill = defineTool({
 const deleteSkill = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/skills/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -109,7 +109,7 @@ const deleteSkill = defineTool({
 const putSupervisorNotes = defineTool({
   method: 'PUT',
   path: '/harness/:slug/supervisor-notes',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -125,7 +125,7 @@ const putSupervisorNotes = defineTool({
 const appendSupervisorNotes = defineTool({
   method: 'POST',
   path: '/harness/:slug/supervisor-notes/append',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));

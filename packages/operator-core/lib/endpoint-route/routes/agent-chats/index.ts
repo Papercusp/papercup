@@ -110,7 +110,7 @@ const listChatsRoute = defineTool({
 const createChatRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const { createChat } = await import('../../../agent-chats-data');
     let body: { role?: string; feature_id?: string; title?: string };
@@ -141,7 +141,7 @@ const getChatRoute = defineTool({
 const archiveChatRoute = defineTool({
   method: 'DELETE',
   path: '/harness/:slug/agent-chats/:chatId',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const { archiveChat } = await import('../../../agent-chats-data');
     const result = await archiveChat({ slug: ctx.params.slug, chatId: ctx.params.chatId });
@@ -153,7 +153,7 @@ const archiveChatRoute = defineTool({
 const messagesRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/messages',
-  auth: 'public',
+  auth: 'loopback',
   // Pure SSE transport — don't flood route_invocations per chat turn.
   sampleRate: 0,
   async handler(req, ctx) {

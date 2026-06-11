@@ -24,7 +24,7 @@ function isMode(v: unknown): v is Mode {
 export default defineTool({
   method: 'POST',
   path: '/user/memory/reembed',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
     const user = await getSessionUser(req.headers);

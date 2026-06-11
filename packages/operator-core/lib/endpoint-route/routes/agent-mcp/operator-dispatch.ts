@@ -29,7 +29,7 @@ async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-dispatch',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) {

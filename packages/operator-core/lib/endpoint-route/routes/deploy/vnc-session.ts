@@ -29,10 +29,8 @@ import {
 export default defineTool({
   method: 'POST',
   path: '/deploy/:slug/vnc-session',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     const user = await getSessionUserOrDefault(req.headers);
     const slug = ctx.params.slug as string;
     let body: { display?: unknown; mode?: unknown };

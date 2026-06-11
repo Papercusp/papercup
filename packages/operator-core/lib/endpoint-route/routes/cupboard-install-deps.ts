@@ -31,7 +31,7 @@ const asStrArray = (v: unknown): string[] =>
 export default defineTool({
   method: 'POST',
   path: '/cupboard/install-deps',
-  auth: 'public',
+  auth: 'loopback',
   timeoutSec: 180,
   // Close the install loop: resolve a blueprint's (or an explicit set of)
   // tool/pack/plugin deps to their Cupboard listings and INSTALL them — the

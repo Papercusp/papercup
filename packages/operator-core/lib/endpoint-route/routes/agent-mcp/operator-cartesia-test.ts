@@ -9,7 +9,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-cartesia-test',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { apiKey?: unknown } = {};
     try { body = await req.json(); } catch { /* fall through */ }

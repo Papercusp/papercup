@@ -19,6 +19,7 @@ import type { ZodTypeAny } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
 import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
 import type { RouteDefinition } from './define-route';
+import { requireLoopbackOr403 } from './loopback-guard';
 import { recordRouteInvocation } from './telemetry';
 
 /* ─── Step names ─────────────────────────────────────────────────────── */
@@ -94,11 +95,44 @@ function authHeaders(exec: RouteExecution): Headers {
   return exec.req.headers;
 }
 
+/**
+ * Loopback-tier enforcement (auth-tier rollout Wave 1, audit D-007/D-009,
+ * owner-approved 2026-06-10): `auth: 'loopback'` routes take no principal
+ * but reject non-loopback hosts at this chokepoint. Flag-gated so a bad
+ * rollout reverts with one flip (OFF = the route behaves as `'public'`,
+ * i.e. pre-rollout); requireLoopbackOr403's PAPERCUSP_ALLOW_REMOTE_ADMIN
+ * env opt-out stays the deliberate remote-admin lever either way.
+ */
+async function endpointAuthTiersEnabled(): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    return await getFlag(FLAGS.ENDPOINT_AUTH_TIERS, 'system');
+  } catch {
+    // Flag layer unreachable — fail CLOSED to the declared tier: a route
+    // that says loopback-only stays loopback-only.
+    return true;
+  }
+}
+
 const authStep: RouteStep = {
   name: 'auth',
   async run(exec) {
     if (exec.def.auth === 'public') {
       exec.principal = null;
+      return null;
+    }
+    if (exec.def.auth === 'loopback') {
+      exec.principal = null;
+      if (await endpointAuthTiersEnabled()) {
+        const gate = requireLoopbackOr403(exec.req);
+        if (gate) {
+          exec.status = 'forbidden';
+          return gate;
+        }
+      }
       return null;
     }
     try {

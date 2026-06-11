@@ -10,7 +10,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/backups/verify',
-  auth: 'public',
+  auth: 'loopback',
   async handler() {
     try {
       const wb = workspaceBackupFor(activeWorkspaceId());

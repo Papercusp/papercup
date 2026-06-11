@@ -120,7 +120,7 @@ const specRevision = defineTool({
 const putSpec = defineTool({
   method: 'PUT',
   path: '/harness/:slug/projects/:id/spec',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const { slug, id } = ctx.params;
     let body: { spec?: string; summary?: string; author?: string };

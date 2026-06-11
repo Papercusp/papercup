@@ -139,7 +139,7 @@ const supervisorNotes = defineTool({
 const messages = defineTool({
   method: 'POST',
   path: '/harness/:slug/messages',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const fromSlug = ctx.params.slug;
     const body = await req.json().catch(() => ({}));

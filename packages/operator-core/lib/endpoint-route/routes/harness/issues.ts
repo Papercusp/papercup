@@ -56,7 +56,7 @@ const issuesList = defineTool({
 const createIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -98,7 +98,7 @@ const createIssue = defineTool({
 const appendPendingIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/append-pending',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -159,7 +159,7 @@ const appendPendingIssue = defineTool({
 const updateIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/:id/update',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -192,7 +192,7 @@ const updateIssue = defineTool({
 const triage = defineTool({
   method: 'POST',
   path: '/harness/:slug/triage',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -275,7 +275,7 @@ const triage = defineTool({
 const promoteIssue = defineTool({
   method: 'POST',
   path: '/harness/:slug/issues/:id/promote',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

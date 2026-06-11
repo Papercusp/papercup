@@ -35,7 +35,7 @@ interface ConverseRequestBody {
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-converse',
-  auth: 'public',
+  auth: 'loopback',
   // SSE — one route-stack run per long-lived connection; a route_invocations
   // row per connect carries little signal (RFC Q7). Don't record it.
   sampleRate: 0,

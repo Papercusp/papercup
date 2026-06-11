@@ -205,7 +205,7 @@ const list = defineTool({
 const focus = defineTool({
   method: 'POST',
   path: '/adv/sessions/focus',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { id?: number; pid?: number; windowId?: string | null } = {};
     try {
@@ -411,7 +411,7 @@ const roster = defineTool({
 const markLaunched = defineTool({
   method: 'POST',
   path: '/adv/sessions/mark-launched',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { id?: number } = {};
     try {

@@ -85,7 +85,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/harness/:slug/file',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     let body: { path?: string; content?: unknown };

@@ -38,7 +38,7 @@ import {
 export default defineTool({
   method: 'POST',
   path: '/cupboard/publish-blueprint',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: {
       id?: string;

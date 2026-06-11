@@ -68,7 +68,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/security-advisories/check',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: Body;
     try {

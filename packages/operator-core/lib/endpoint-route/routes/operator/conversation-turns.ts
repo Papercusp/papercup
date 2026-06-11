@@ -46,7 +46,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/turns',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const id = ctx.params.id as string;
     const body = (await req.json()) as Body;

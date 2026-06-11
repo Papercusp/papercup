@@ -10,7 +10,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/console/resolve',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     try {
       await requirePrincipal(req.headers);

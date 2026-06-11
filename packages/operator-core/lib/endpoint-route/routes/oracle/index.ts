@@ -46,7 +46,7 @@ const configGet = defineTool({
 const configPut = defineTool({
   method: 'PUT',
   path: '/oracle/config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     if (!(await oracleEnabled())) return NOT_FOUND();
     const body = await req.json().catch(() => ({}));
@@ -63,7 +63,7 @@ const configPut = defineTool({
 const chat = defineTool({
   method: 'POST',
   path: '/oracle/chat',
-  auth: 'public',
+  auth: 'loopback',
   // Pure SSE transport — don't flood route_invocations per chat turn.
   sampleRate: 0,
   async handler(req) {

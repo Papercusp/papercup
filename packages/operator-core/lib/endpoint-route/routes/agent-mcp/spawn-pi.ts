@@ -15,7 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/spawn-pi',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json().catch(() => ({}))) as {
       sessionId?: string;

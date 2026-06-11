@@ -50,7 +50,7 @@ export function pruneRegistry(
 export default defineTool({
   method: 'POST',
   path: '/installed/prune',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: PruneOptions = {};
     try {

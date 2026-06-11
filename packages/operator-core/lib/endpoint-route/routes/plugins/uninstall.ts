@@ -28,7 +28,7 @@ function isValidSlug(s: string): boolean {
 export default defineTool({
   method: 'POST',
   path: '/plugins/uninstall',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { slug?: string; purgeGrants?: boolean };
     try { body = await req.json(); } catch { return Response.json({ ok: false, error: 'invalid json' }, { status: 400 }); }

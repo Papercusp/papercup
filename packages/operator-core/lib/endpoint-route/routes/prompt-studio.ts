@@ -81,10 +81,8 @@ function resolveSourcePath(
 const listSources = defineTool({
   method: 'GET',
   path: '/prompt-studio/sources',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     // Don't ship the prompt-source backend ahead of the flag (security review): the
     // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
     const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
@@ -102,10 +100,8 @@ const listSources = defineTool({
 const readSource = defineTool({
   method: 'GET',
   path: '/prompt-studio/source',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     // Don't ship the prompt-source backend ahead of the flag (security review): the
     // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
     const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
@@ -127,12 +123,10 @@ const readSource = defineTool({
 const writeSource = defineTool({
   method: 'PUT',
   path: '/prompt-studio/source',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     // AUTHZ: rewriting prompt SOURCES = controlling every agent's system prompt.
     // auth:'public' is the codebase norm; the loopback bind + this guard are the perimeter.
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     // Don't ship the prompt-source backend ahead of the flag (security review): the
     // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
     const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);
@@ -164,10 +158,8 @@ const writeSource = defineTool({
 const previewPrompt = defineTool({
   method: 'GET',
   path: '/prompt-studio/preview',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
-    const gate = requireLoopbackOr403(req);
-    if (gate) return gate;
     // Don't ship the prompt-source backend ahead of the flag (security review): the
     // whole surface is dark (404) until PROMPT_STUDIO is on. Closed-gate default.
     const off = await gateApiRoute(req, FLAGS.PROMPT_STUDIO);

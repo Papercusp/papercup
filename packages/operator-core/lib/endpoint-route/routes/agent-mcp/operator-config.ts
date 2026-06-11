@@ -57,7 +57,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/agent-mcp/operator-config',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const body = (await req.json()) as { prompt_user?: string; preferences?: string };
     if (typeof body.prompt_user === 'string') {

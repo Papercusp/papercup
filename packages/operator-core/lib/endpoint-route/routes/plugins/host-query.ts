@@ -17,7 +17,7 @@ const SELECT_ONLY = /^\s*select\b/i;
 export default defineTool({
   method: 'POST',
   path: '/plugins/host/query',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: ReqBody;
     try {

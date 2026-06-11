@@ -201,7 +201,7 @@ export async function resolvePublisherAttestation(
 const cupboardPublish = defineTool({
   method: 'POST',
   path: '/harness/cupboard/publish',
-  auth: 'public',                       // loopback-only via the operator's Host header gate
+  auth: 'loopback',                       // loopback-only via the operator's Host header gate
   async handler(req) {
     let body: unknown;
     try {

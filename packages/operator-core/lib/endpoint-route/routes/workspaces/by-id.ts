@@ -35,7 +35,7 @@ export default [
   defineTool({
     method: 'PATCH',
     path: '/workspaces/:id',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req, ctx) {
       const { id } = ctx.params;
       if (!validId(id)) return Response.json({ ok: false, error: 'invalid id' }, { status: 400 });
@@ -58,7 +58,7 @@ export default [
   defineTool({
     method: 'DELETE',
     path: '/workspaces/:id',
-    auth: 'public',
+    auth: 'loopback',
     async handler(_req, ctx) {
       const { id } = ctx.params;
       if (!validId(id)) return Response.json({ ok: false, error: 'invalid id' }, { status: 400 });

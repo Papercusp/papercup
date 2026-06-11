@@ -16,7 +16,7 @@ const ALLOWED_METHODS: ReadonlySet<NonNullable<ActorMethod>> = new Set(['voice',
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-audit',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { cardId?: unknown; kind?: unknown; context?: unknown; actorMethod?: unknown } = {};
     try {

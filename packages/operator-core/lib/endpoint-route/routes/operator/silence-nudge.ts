@@ -30,7 +30,7 @@ function buildFallbackText(voiceActive: boolean, wakeword: string | undefined): 
 export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/silence-nudge',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });

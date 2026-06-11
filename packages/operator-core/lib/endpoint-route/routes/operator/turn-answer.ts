@@ -20,7 +20,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/operator/conversations/:id/turn-answer',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const conversationId = ctx.params.id as string;
     const body = (await req.json().catch(() => null)) as Body | null;

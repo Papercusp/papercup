@@ -16,7 +16,7 @@ import { VOICEMODE_URL, decodeAudioBase64, normalizeAudioFormat } from './operat
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-stt',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { audioBase64?: unknown; format?: unknown } = {};
     try {

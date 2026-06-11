@@ -10,7 +10,7 @@ const ALLOWED: ReadonlySet<NudgeKind> = new Set(['budget', 'breaker', 'pause']);
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/operator-nudge',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { kind?: unknown } = {};
     try {

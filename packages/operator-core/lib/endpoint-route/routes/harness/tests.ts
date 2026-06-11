@@ -76,7 +76,7 @@ const listTests = defineTool({
 const runTest = defineTool({
   method: 'POST',
   path: '/harness/:slug/tests/:id/run',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const url = new URL(req.url);

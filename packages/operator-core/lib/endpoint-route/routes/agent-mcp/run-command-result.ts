@@ -14,7 +14,7 @@ interface Body {
 export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-command/result',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: Body;
     try {

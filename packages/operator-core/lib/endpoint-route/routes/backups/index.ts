@@ -60,7 +60,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/backups',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     try {
       const body = await req.json();

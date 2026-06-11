@@ -41,7 +41,7 @@ function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 export default defineTool({
   method: 'POST',
   path: '/plugins/enable',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     let body: { slug?: string; harnesses?: string[]; disable?: boolean };
     try { body = await req.json(); } catch { return Response.json({ ok: false, error: 'invalid json' }, { status: 400 }); }

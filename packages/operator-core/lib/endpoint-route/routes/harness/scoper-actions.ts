@@ -32,7 +32,7 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 const productReview = defineTool({
   method: 'POST',
   path: '/harness/:slug/product-review',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -46,7 +46,7 @@ const productReview = defineTool({
 const replan = defineTool({
   method: 'POST',
   path: '/harness/:slug/replan',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolveProject(slug);
@@ -140,7 +140,7 @@ const replan = defineTool({
 const cleanup = defineTool({
   method: 'POST',
   path: '/harness/:slug/cleanup',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolveProject(slug);

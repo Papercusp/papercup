@@ -55,7 +55,7 @@ const get = defineTool({
 const put = defineTool({
   method: 'PUT',
   path: '/dock-layouts/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const principal = await getUserIdForLayouts(req);
     const name = ctx.params.name;
@@ -99,7 +99,7 @@ const put = defineTool({
 const del = defineTool({
   method: 'DELETE',
   path: '/dock-layouts/:name',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const principal = await getUserIdForLayouts(req);
     await deleteLayout(principal, ctx.params.name);
@@ -121,7 +121,7 @@ const phaseGet = defineTool({
 const phasePut = defineTool({
   method: 'PUT',
   path: '/harness-phase-last-used/:slug',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const principal = await getUserIdForLayouts(req);
     let body: { phase?: string };

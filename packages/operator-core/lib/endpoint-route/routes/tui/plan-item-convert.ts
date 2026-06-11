@@ -42,7 +42,7 @@ interface ConvertBody {
 export default defineTool({
   method: 'POST',
   path: '/tui/plan-item-convert',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ error: 'loopback_required' }, { status: 403 });

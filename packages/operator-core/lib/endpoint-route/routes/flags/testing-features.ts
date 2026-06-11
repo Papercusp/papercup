@@ -32,7 +32,7 @@ const get = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/flags/testing-features',
-  auth: 'public',
+  auth: 'loopback',
   input: Body,
   async handler(_req, ctx) {
     let parsed: Record<string, unknown> = {};

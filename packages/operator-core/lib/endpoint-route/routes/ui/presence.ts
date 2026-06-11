@@ -20,7 +20,7 @@ const BodySchema = z.object({
 export default defineTool({
   method: 'POST',
   path: '/ui/presence',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ error: 'loopback_required' }, { status: 403 });
