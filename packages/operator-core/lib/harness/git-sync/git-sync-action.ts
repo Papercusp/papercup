@@ -4,20 +4,31 @@
  * one durable DBOS step per due git-sync routine.
  *
  * Wraps the pure pipeline (`run-git-sync.ts`) with the live concerns:
- *   - P-009 LOCKS: hold `git-sync` (exclusive) + `libs-papercusp-submodule`
- *     (exclusive) for the whole commit→submodule-push→pointer-bump→push sequence,
- *     so a peer agent's in-flight git work doesn't race. Held by a peer → skip this
- *     tick (back-pressure). SU-lock infra unavailable → proceed unlocked (the engine's
- *     per-routine dedup already prevents git-sync racing itself; rollout is gated).
+ *   - P-009 LOCKS (git-sync-any-hive P-006: per-slug): hold `git-sync:<slug>`
+ *     (exclusive, auto-registered on first acquire) + every name in the routine's
+ *     `trigger_config.extra_lock_resources` (exclusive, must be human-registered)
+ *     for the whole commit→submodule-push→pointer-bump→push sequence, so a peer
+ *     agent's in-flight git work doesn't race. Held by a peer → skip this tick
+ *     (back-pressure). An UNREGISTERED extra resource → skip with a loud log (a
+ *     deliberate coordination surface — never auto-registered). SU-lock infra
+ *     unavailable → proceed unlocked (the engine's per-routine dedup already
+ *     prevents git-sync racing itself; rollout is gated).
+ *   - RUNTIME GATE (git-sync-any-hive P-008, action half): before anything else,
+ *     a routine row pointing at a hive home / remote-hive view / non-local
+ *     deployment / vanished or non-git checkout NO-OPS with a logged reason and a
+ *     `last_status: 'skipped'` metadata patch instead of error-escalating.
  *   - P-010 ESCALATION: on a merge conflict, write a `git-sync-conflict` row to
  *     `harness_escalations` (the tree is already clean — the pipeline aborts the merge).
  *   - P-012 RESOLVER: spawn a `merge-resolver` role via the invoke route, deduped on
  *     the open escalation (one resolver per harness). A clean sync clears the escalation.
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
  */
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
+import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -28,9 +39,28 @@ import { appendPipelineEvent } from './pipeline-events';
 import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized } from './run-git-sync';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
-const LOCK_RESOURCES = ['git-sync', 'libs-papercusp-submodule'] as const;
 const LOCK_TTL_SEC = 600;
-const ESCALATION_PHASE = 'staging';
+/**
+ * The `harness_escalations` row key for ALL git-sync escalations is
+ * `(harness_slug, 'git-sync')` — a CONSTANT phase, deliberately NOT the lifecycle
+ * phase ('staging'/'testing'/'production') and NOT the routine's branch
+ * (git-sync-any-hive P-007, B-05 decision):
+ *   - branch-derived phases would orphan an open escalation whenever the routine's
+ *     branch changes (the clear-on-clean-pass UPDATE would target a different row),
+ *     and would collide with the lifecycle-phase namespace;
+ *   - the old constant 'staging' SHARED its row with other phase='staging' writers
+ *     (auto-rebase's rebase_conflict, brainstorm) — they clobbered each other via
+ *     ON CONFLICT DO UPDATE. A git-sync-owned phase ends that.
+ * Consumer audit (2026-06-12): every reader is phase-loose for git-sync rows —
+ * `git-pipeline-stats.ts` filters by kind='git-sync-conflict' only; the
+ * `harness:escalation` tool / `getEscalation` (harness-readers.ts — the
+ * merge-resolver's read path) selects by slug ordered by mtime_ms with no phase
+ * filter; the improvements watchdog collectors filter by workspace only. The one
+ * phase-keyed reader (`device-harnesses.ts`, joining on the harness's lifecycle
+ * status phase) reads LIFECYCLE escalations — git-sync rows moving out of it is
+ * intended. Open rows were migrated 'staging' → 'git-sync' in db migration 237.
+ */
+const ESCALATION_PHASE = 'git-sync';
 const ESCALATION_KIND = 'git-sync-conflict';
 /** EI-18: repeated push failures / oversized-file exclusions — needs a human/agent,
  *  but is NOT a merge conflict (no resolver dispatch). */
@@ -47,17 +77,81 @@ const GIT_SYNC_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
-function configFromTrigger(triggerConfig: Record<string, unknown>): GitSyncConfig {
+/** The action-level knobs parsed from the routine's `trigger_config`: the pure
+ *  pipeline config plus the lock surface (which never reaches `runGitSync`). */
+interface ActionTrigger {
+  config: GitSyncConfig;
+  /**
+   * Additional REGISTERED resource names to hold exclusively for the tick
+   * (`trigger_config.extra_lock_resources`, git-sync-any-hive P-006). papercup's
+   * row lists `['git-sync', 'libs-papercusp-submodule']` so the documented
+   * back-off protocol ("acquire exclusive(git-sync) to make git-sync back off")
+   * keeps working. Names here are a deliberate, human-registered coordination
+   * surface — an UNKNOWN name skips the tick with a log, never auto-registers.
+   */
+  extraLockResources: string[];
+}
+
+function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigger {
+  const extras = Array.isArray(triggerConfig.extra_lock_resources)
+    ? triggerConfig.extra_lock_resources.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+    : [];
   return {
-    push: triggerConfig.push !== false,
-    pushSubmodules: triggerConfig.push_submodules !== false,
-    branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
-    remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
-    maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
+    config: {
+      push: triggerConfig.push !== false,
+      pushSubmodules: triggerConfig.push_submodules !== false,
+      branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
+      remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
+      maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
+    },
+    extraLockResources: extras,
   };
 }
 
+/** The per-harness lock resource this slug's tick holds (P-006). One global name
+ *  used to serialize ALL harnesses' ticks against each other; now each harness
+ *  serializes only against itself + whatever it lists in extra_lock_resources. */
+const gitSyncResourceName = (slug: string): string => `git-sync:${slug}`;
+
+/** Minimal tagged-template seam over the txn handle (postgres-js `Sql`), so this
+ *  module needs no direct `postgres` type dependency. */
+type SqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
+
+/**
+ * Idempotently register the per-slug `git-sync:<slug>` resource (inside the SAME
+ * inWorkspaceTxn as the acquire that follows). Without this, an unregistered name
+ * makes `tryAcquireResource` return `{ ok:false, reason:'unknown_resource' }`,
+ * which used to read as "held" → a PERMANENT silent no-op on any harness whose
+ * name nobody had hand-registered. Modeled on sql/008-register-git-sync-resource.sql
+ * (no register helper is exported from @papercusp/locks). ON CONFLICT DO NOTHING:
+ * a human-edited row is never clobbered. ONLY the per-slug name is auto-registered —
+ * extra_lock_resources names must already exist in the registry.
+ */
+async function registerGitSyncResource(tx: SqlTag, slug: string): Promise<void> {
+  const resource = gitSyncResourceName(slug);
+  const description =
+    `The automated git-sync pipeline for harness "${slug}" (commit + submodule push + merge + push to origin). ` +
+    'Concurrent git-sync runs, or a run racing a peer\'s manual git work on this checkout, race the index/refs.';
+  const ruleText =
+    `The system:git-sync routine action holds exclusive(${resource}) for the whole ` +
+    'commit -> submodule-push -> pointer-bump -> push sequence. A peer doing manual whole-tree git work in this ' +
+    `harness's checkout can acquire exclusive(${resource}) to make its git-sync back off that tick.`;
+  await tx`
+    INSERT INTO agent_resource_registry (resource, description, rule_text, enforcement, match_patterns)
+    VALUES (${resource}, ${description}, ${ruleText}, 'advisory', ARRAY[]::text[])
+    ON CONFLICT (resource) DO NOTHING
+  `;
+}
+
 type AcquireState = 'acquired' | 'held' | 'error';
+interface AcquireOutcome {
+  state: AcquireState;
+  /** The resource that blocked the acquisition (state 'held'). */
+  blockedOn?: string;
+  /** The store's refusal reason (state 'held') — 'unknown_resource' means the
+   *  name isn't registered, not that a peer holds it. */
+  blockedReason?: string;
+}
 
 async function releaseAll(cd: string, acquired: string[]): Promise<void> {
   for (const resource of acquired.reverse()) {
@@ -70,13 +164,17 @@ async function releaseAll(cd: string, acquired: string[]): Promise<void> {
   }
 }
 
-/** Acquire all LOCK_RESOURCES exclusively, or signal held/error (releasing partials). */
-async function acquireLocks(cd: string, slug: string, acquired: string[]): Promise<AcquireState> {
-  for (const resource of LOCK_RESOURCES) {
+/** Acquire `git-sync:<slug>` (auto-registered) + every extra resource exclusively,
+ *  or signal held/error (releasing partials). */
+async function acquireLocks(cd: string, slug: string, resources: string[], acquired: string[]): Promise<AcquireOutcome> {
+  const perSlug = gitSyncResourceName(slug);
+  for (const resource of resources) {
     let r: { ok: boolean; reason?: string };
     try {
-      r = await inWorkspaceTxn(cd, GIT_SYNC_OWNER, (tx) =>
-        tryAcquireResource(tx, {
+      r = await inWorkspaceTxn(cd, GIT_SYNC_OWNER, async (tx) => {
+        // Auto-register ONLY the per-slug name, in the same txn as its acquire.
+        if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
+        return tryAcquireResource(tx, {
           coordinationDomain: cd,
           resource,
           mode: 'exclusive',
@@ -84,23 +182,24 @@ async function acquireLocks(cd: string, slug: string, acquired: string[]): Promi
           ownerLabel: `git-sync:${slug}`,
           reason: `auto-commit ${slug}`,
           ttlSec: LOCK_TTL_SEC,
-        }));
+        });
+      });
     } catch (e) {
       // SU-lock DB unreachable / not bootstrapped — proceed unlocked (best-effort).
       console.warn(`[git-sync] lock infra unavailable (${resource}): ${e instanceof Error ? e.message : e}`);
       await releaseAll(cd, acquired);
       acquired.length = 0;
-      return 'error';
+      return { state: 'error' };
     }
     if (!r.ok) {
-      // A peer holds it (or it's unregistered) — skip this tick, retry next.
+      // A peer holds it (or an extra name is unregistered) — skip this tick, retry next.
       await releaseAll(cd, acquired);
       acquired.length = 0;
-      return 'held';
+      return { state: 'held', blockedOn: resource, blockedReason: r.reason };
     }
     acquired.push(resource);
   }
-  return 'acquired';
+  return { state: 'acquired' };
 }
 
 /** How long a 'dispatched' resolver is presumed to still be running before we'd
@@ -228,7 +327,7 @@ async function readEscalationCounters(slug: string): Promise<{ errTicks: number;
  *      `void … .catch(console.warn)` that went to uncaptured stdout.
  * Query `metadata->'last_resolver'` on the routine to see whether the resolver ran.
  */
-async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
+async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[], superprojectBranch: string): Promise<void> {
   // unify-agent-launches-as-blueprints D-002/D-004: the launch is now DECLARATIVE.
   // The `merge-resolution` launch blueprint declares `triggers.event:
   // git-sync:conflict` + its role (decider merge-resolver); we resolve the role +
@@ -260,7 +359,9 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`staging\`, submodules = their own default). Conflicted: ${filesSummary}`,
+      // P-007: the superproject branch comes from the routine's resolved config
+      // (cfg.branch ?? 'main') — it is NOT papercup's 'staging' for other harnesses.
+      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`${superprojectBranch}\`, submodules = their own default). Conflicted: ${filesSummary}`,
       extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
       // P-010: a real multi-file merge by a higher-effort model needs well beyond the
       // route's 90s default. The invoke-route ceiling is 1200s (the old "~300s ceiling"
@@ -344,16 +445,105 @@ async function recordOutcome(slug: string, outcome: GitSyncOutcome, consecutiveE
   });
 }
 
+// ── Runtime eligibility gate (git-sync-any-hive P-008, action half) ─────────────
+
+interface GateVerdict {
+  eligible: boolean;
+  /** B-01's IneligibleReason vocabulary: 'hive_home' | 'remote_hive_view' |
+   *  'no_path' | 'non_local_deployment' | 'not_a_git_repo'. */
+  reason?: string;
+}
+
+const pathExists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
+
+/** B-01's eligibility module (`./git-sync-eligibility`), loaded lazily via a
+ *  non-literal specifier so this compiles+runs BEFORE B-01 lands (import rejects →
+ *  null → inline fallback below). Once it exists, its registry-snapshot verdict is
+ *  preferred; the on-disk checks stay ours either way (the contract fn is pure/sync). */
+type EligibilityModule = { gitSyncEligibility?: (p: ProjectEntry) => GateVerdict };
+let eligibilityModulePromise: Promise<EligibilityModule | null> | undefined;
+function loadEligibilityModule(): Promise<EligibilityModule | null> {
+  if (!eligibilityModulePromise) {
+    const spec = './git-sync-eligibility'; // non-literal: not statically resolved
+    eligibilityModulePromise = import(/* @vite-ignore */ spec).then(
+      (m) => m as EligibilityModule,
+      () => null,
+    );
+  }
+  return eligibilityModulePromise;
+}
+
+/**
+ * Belt-and-braces gate before the pipeline runs: a routine row pointing at a hive
+ * HOME (non-repo state dir), a joiner-side remote-hive VIEW, a non-local
+ * deployment, or a vanished / non-git checkout must NO-OP (logged + recorded as
+ * skipped) instead of error-escalating every 10 minutes. Registry-snapshot
+ * verdicts defer to B-01's `gitSyncEligibility` when present; the disk checks
+ * (vanished checkout, missing .git) always run here. Best-effort: an unreadable
+ * registry FAILS OPEN (the pipeline's own path resolution will surface the error).
+ */
+async function gitSyncRuntimeGate(slug: string): Promise<GateVerdict> {
+  let entry: ProjectEntry | undefined;
+  try {
+    entry = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug);
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
+    return { eligible: true };
+  }
+  if (!entry) return { eligible: false, reason: 'no_path' };
+
+  const mod = await loadEligibilityModule();
+  if (mod?.gitSyncEligibility) {
+    const verdict = mod.gitSyncEligibility(entry);
+    if (!verdict.eligible) return verdict;
+  } else {
+    // Inline fallback until B-01's module lands (same reason vocabulary).
+    if (entry.harness_kind === 'hive') {
+      return { eligible: false, reason: entry.remote_hive ? 'remote_hive_view' : 'hive_home' };
+    }
+    const target = entry.deployment?.target;
+    if (target && target !== 'local') return { eligible: false, reason: 'non_local_deployment' };
+    if (!entry.path) return { eligible: false, reason: 'no_path' };
+  }
+
+  // On-disk reality (always ours — the registry snapshot can't see a vanished
+  // checkout). `.git` may be a dir (normal clone) or a file (worktree/submodule).
+  if (!entry.path || !(await pathExists(entry.path))) return { eligible: false, reason: 'no_path' };
+  if (!(await pathExists(join(entry.path, '.git')))) return { eligible: false, reason: 'not_a_git_repo' };
+  return { eligible: true };
+}
+
 /** The registered `system:git-sync` handler. */
 async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   const { installSlug: slug, workspaceId } = ctx;
-  const cfg = configFromTrigger(ctx.triggerConfig);
+  const { config: cfg, extraLockResources } = configFromTrigger(ctx.triggerConfig);
   const cd = workspaceId || '*';
 
+  // P-008 runtime gate: ineligible rows no-op (logged + recorded), never escalate.
+  const gate = await gitSyncRuntimeGate(slug);
+  if (!gate.eligible) {
+    console.log(`[git-sync] ${slug}: ineligible (${gate.reason}) — skipping this tick`);
+    await patchRoutineMetadata(slug, {
+      last_status: 'skipped',
+      last_skip_reason: gate.reason,
+      last_skipped_at: Date.now(),
+    });
+    return;
+  }
+
+  // P-006: per-slug resource first (auto-registered), then the routine's extras
+  // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off protocol).
+  const resources = [...new Set([gitSyncResourceName(slug), ...extraLockResources])];
   const acquired: string[] = [];
-  const state = await acquireLocks(cd, slug, acquired);
-  if (state === 'held') {
-    console.log(`[git-sync] ${slug}: a peer holds git-sync/submodule locks — skipping this tick`);
+  const lock = await acquireLocks(cd, slug, resources, acquired);
+  if (lock.state === 'held') {
+    if (lock.blockedReason === 'unknown_resource') {
+      console.warn(
+        `[git-sync] ${slug}: lock resource "${lock.blockedOn}" is not registered in agent_resource_registry — ` +
+        'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.');
+    } else {
+      console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
+    }
     return;
   }
   // EI-18: previous tick's counters BEFORE this tick overwrites them.
@@ -373,7 +563,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   try {
     outcome = await runGitSync(slug, { config: cfg });
   } finally {
-    if (state === 'acquired') await releaseAll(cd, acquired);
+    if (lock.state === 'acquired') await releaseAll(cd, acquired);
   }
 
   // P-003: count any tick whose errors[] is non-empty — a sibling push failure that
@@ -412,7 +602,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     if (!(await resolverInFlight(slug))) {
       const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
-      await spawnMergeResolver(slug, workspaceId, outcome.conflicts);
+      await spawnMergeResolver(slug, workspaceId, outcome.conflicts, cfg.branch ?? 'main');
     }
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.

@@ -159,6 +159,8 @@ export interface JoinOptions {
    * LIVE registry — every test of the boot_federate path MUST inject a no-op
    * here, or each run leaks a `<slug>` row into the workspace registry (the
    * 6step/default-boot residue that fed the git-export-drain journal spam).
+   * Enforced since 2026-06-12: under vitest the default refuses the live
+   * write (console.warn + skip) instead of trusting this convention.
    */
   registerCloneFn?: (slug: string, path: string) => Promise<void>;
   /**

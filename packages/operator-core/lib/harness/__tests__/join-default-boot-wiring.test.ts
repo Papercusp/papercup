@@ -79,6 +79,9 @@ describe('joinSharedHarness — DEFAULT boot/await wiring reaches the real boot-
       awaitAdmissionTimeoutMs: 30,
       awaitAdmissionPollMs: 5,
       sleepFn: (ms: number) => new Promise((r) => setTimeout(r, ms)),
+      // EI-339: the default registerCloneFn writes the LIVE registry (PG) —
+      // this seam is NOT part of the boot-wiring under test, so inject it.
+      registerCloneFn: vi.fn(async () => undefined),
       // bootFederateFn + readAdmittedCountFn DELIBERATELY OMITTED → exercise the defaults
     });
 
@@ -121,6 +124,7 @@ describe('joinSharedHarness — DEFAULT boot/await wiring reaches the real boot-
       awaitAdmissionTimeoutMs: 0,
       awaitAdmissionPollMs: 0,
       sleepFn: vi.fn(async () => undefined),
+      registerCloneFn: vi.fn(async () => undefined), // EI-339: never the live registry
     });
 
     expect(boot.bootSingleHarness).toHaveBeenCalledTimes(1);
