@@ -221,6 +221,23 @@ describe('hive:declare-wake', () => {
     expect(declareHiveTimeWake).toHaveBeenCalledTimes(1);
   });
 
+  it('EI-309 KILL-SWITCH: flag OFF → an event-only wake is allowed despite an unplaced frontier (revert path)', async () => {
+    const [{ setFlagOverridesForTest }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/test'),
+      import('@papercusp/flags'),
+    ]);
+    listUnplacedHiveFrontier.mockResolvedValue(['WI-116', 'WI-117']); // a non-empty frontier
+    setFlagOverridesForTest({ [FLAGS.HIVE_WAKE_FRONTIER_GUARD]: false });
+    try {
+      const res = parse(await tool.handler({ events: [{ on: 'work_items:create' }], harness: 'papercup' }, ctx()));
+      expect(res.mode).toBe('event'); // guard disabled ⇒ the declaration applies
+      expect(res.eventRules).toBe(1);
+    } finally {
+      setFlagOverridesForTest(null);
+      listUnplacedHiveFrontier.mockResolvedValue([]);
+    }
+  });
+
   it('uses ctx.harnessSlug when no explicit harness is passed', async () => {
     const res = parse(await tool.handler({ at: '2026-07-01T00:00:00.000Z' }, ctx({ harnessSlug: 'ctx-slug' })));
     expect(res.ok).toBe(true);

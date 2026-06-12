@@ -194,6 +194,22 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(free.ok).toBe(true);
   });
 
+  it('mirror-guard KILL-SWITCH (EI-316): flag OFF → a mirror title is allowed (the revert path works)', async () => {
+    const [{ setFlagOverridesForTest }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/test'),
+      import('@papercusp/flags'),
+    ]);
+    const feat = await call(createTool, { kind: 'feature', title: 'API server', harness: 'papercup' });
+    const openId = (feat.workItem as Record<string, unknown>).id as string; // open WI
+    setFlagOverridesForTest({ [FLAGS.WORK_ITEM_MIRROR_GUARD]: false });
+    try {
+      const mirror = await call(createTool, { kind: 'feature', title: `${openId}: would-be mirror`, harness: 'papercup' });
+      expect(mirror.ok).toBe(true); // guard disabled ⇒ the create proceeds (no duplicate_mirror)
+    } finally {
+      setFlagOverridesForTest(null);
+    }
+  });
+
   it('get resolves a created work-item across kind-tables; missing → not-found envelope', async () => {
     const bug = await call(createTool, { kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;
