@@ -45,12 +45,17 @@ sidebar:
       "name":         "my-plugin.do_thing",          // Default: <short-name>.<tool.name>
       "streaming":    true,                          // Explicit streamability opt-in. Also implied by declared events or state.
       "largeOutput":  true                           // Hint that output may be written to scratch dir
+    },
+    "slash": {                                       // Slash-command projection via MCP prompts. DEFAULT ON for
+      "name":        "do-thing",                     //   every MCP-exposed tool; `false` opts out entirely.
+      "description": "Run the thing.",               //   See transports → "Slash exposure".
+      "args":        ["target"]                      //   Restrict which scalar inputs become prompt arguments.
     }
   }
 }
 ```
 
-If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
+If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one. (`expose.slash` defaults ON whenever the tool is MCP-exposed — it is a catalog projection, not a transport; see [Transports → Slash exposure](/internal/docs/endpoint-system/transports#slash-exposure--the-tool-catalog-as-slash-commands).)
 
 Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `libs/generic/tooldef/src/types.ts`.
 

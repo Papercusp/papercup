@@ -1104,16 +1104,25 @@ const handler = createMcpHandler(
           description?: string;
           arguments?: unknown;
         }> = [];
+        const publicStatic = () =>
+          getPromptCatalog()
+            .filter((p) => !p.capability)
+            .map((p) => ({ name: p.name, description: p.description, arguments: p.arguments }));
         if (!bearer) {
-          prompts.push(
-            ...getPromptCatalog()
-              .filter((p) => !p.capability)
-              .map((p) => ({ name: p.name, description: p.description, arguments: p.arguments })),
-          );
+          prompts.push(...publicStatic());
         } else {
           const { listPrompts } = await import('@papercusp/agent-mcp');
           const r = await listPrompts(bearer);
-          if (r.ok && r.prompts) prompts.push(...r.prompts);
+          if (r.ok && r.prompts) {
+            prompts.push(...r.prompts);
+          } else {
+            // The bearer didn't resolve to a principal — true of the
+            // ?superuser=1 token, which is not a bearer-principal (see
+            // superuser-mode docs). The pre-slash behavior returned NOTHING
+            // here; serve the public (capability-less) static set instead so
+            // superuser sessions keep agent:role etc.
+            prompts.push(...publicStatic());
+          }
         }
         if (await getFlag(FLAGS.SLASH_EXPOSURE, 'system')) {
           const vis = await resolveVisibleToolListings(extra);

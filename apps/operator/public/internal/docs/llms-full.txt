@@ -6480,6 +6480,43 @@ Token catalog: `/internal/docs/design/tokens`. Decision matrix row for the kanba
 * Even then the window matcher can pick a 10×10 helper window (or a zombie window from a killed instance — `xdotool windowkill` the leftovers). Fallback that always works: bridge-`eval` a red `el.style.outline='3px solid red'` on the element, `import -window <id>`, crop to the outline.
 * The debug shell embeds VTE terminal panes beside the webview (the webview gets only part of the window). `PAPERCUSP_DEV_WRAPPER=0` does **not** remove the terminal panes; the control-bar pane switcher (PUI / DEV / …) picks which webview is visible.
 
+# Two emitters in one prompts dir — managed markers must be mutually non-containing
+
+> Codex's flat $CODEX_HOME/prompts dir is written by BOTH the saved-prompts materializer and the slash-tool emitter. Each writer's prune deletes any .md carrying ITS marker that isn't in ITS keep-set, and ownership is a substring check — so a second emitter reusing (or containing) the first's marker gets its files deleted by the other's prune. Mint a disjoint marker and pin mutual non-containment with a test.
+
+## What
+
+[Section titled “What”](#what)
+
+Two independent launch-time emitters write managed `.md` files into the same flat directory (`$CODEX_HOME/prompts`):
+
+1. **saved-prompts** (`saved-prompts-projection.ts`) — user-authored prompts, marker `<!-- papercusp:managed -->`.
+2. **slash-tool prompts** (`slash-tool-prompts-codex.ts`, plan `slash-exposure-tool-catalog-2026-06-12`) — one file per session-visible tool, marker `<!-- papercusp-slash-tool:managed -->`.
+
+Each emitter ends with a **prune**: delete every `.md` whose basename is not in *its* keep-set **and** which it *owns*. Ownership is `readFileSync(path).includes(MARKER)` — a plain substring check.
+
+## The gotcha
+
+[Section titled “The gotcha”](#the-gotcha)
+
+If a second emitter reuses the first’s marker (the “obvious” move), or mints a marker that **contains** the first’s marker as a substring, the first emitter’s prune sees the second’s files as its own strays and deletes them all on the next launch. The failure is silent, order-dependent, and looks like “my files randomly disappear between sessions.”
+
+Hand-authored files are safe either way (no marker → never touched); the trap is strictly between managed writers.
+
+## How to apply
+
+[Section titled “How to apply”](#how-to-apply)
+
+* A new emitter into a shared managed dir mints its **own marker**, and the two strings must be **mutually non-containing** (check both directions — `includes` has no word boundaries).
+* Pin it with a test, so a future marker rewording can’t silently re-introduce the overlap:
+
+```ts
+expect(SLASH_TOOL_MARKER.includes(MANAGED_MARKER)).toBe(false);
+expect(MANAGED_MARKER.includes(SLASH_TOOL_MARKER)).toBe(false);
+```
+
+* Also pin the cross-prune behavior: run writer A’s prune with an empty keep-set over a dir populated by writer B, and assert B’s files survive (see `slash-tool-prompts-codex.test.ts` “marker independence”).
+
 # Sleep-mode shared-checkout discipline
 
 > When working overnight in a shared checkout with parallel agents, every commit must be staged file-by-file with a pre-commit diff check. Skipping this WILL bundle another agent's in-flight work into your commit.
@@ -21408,12 +21445,17 @@ The engine is provably standalone — see `libs/generic/tooldef/examples/standal
       "name":         "my-plugin.do_thing",          // Default: <short-name>.<tool.name>
       "streaming":    true,                          // Explicit streamability opt-in. Also implied by declared events or state.
       "largeOutput":  true                           // Hint that output may be written to scratch dir
+    },
+    "slash": {                                       // Slash-command projection via MCP prompts. DEFAULT ON for
+      "name":        "do-thing",                     //   every MCP-exposed tool; `false` opts out entirely.
+      "description": "Run the thing.",               //   See transports → "Slash exposure".
+      "args":        ["target"]                      //   Restrict which scalar inputs become prompt arguments.
     }
   }
 }
 ```
 
-If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
+If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one. (`expose.slash` defaults ON whenever the tool is MCP-exposed — it is a catalog projection, not a transport; see [Transports → Slash exposure](/internal/docs/endpoint-system/transports#slash-exposure--the-tool-catalog-as-slash-commands).)
 
 Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `libs/generic/tooldef/src/types.ts`.
 
@@ -22716,6 +22758,20 @@ Slightly more involved because we use `mcp-handler` as a transport library.
 4. The dispatcher returns; the MCP SDK serializes the result into the JSON-RPC envelope.
 
 Streaming on MCP works via `notifications/progress` — when the client sent a `progressToken` in `_meta`, every `ctx.progress(pct, msg)` becomes one notification. mcp-handler routes those over the open SSE connection.
+
+## Slash exposure — the tool catalog as slash commands
+
+[Section titled “Slash exposure — the tool catalog as slash commands”](#slash-exposure--the-tool-catalog-as-slash-commands)
+
+`expose.slash` is a third exposure key next to `expose.mcp` / `expose.http` — but unlike those it is **a catalog projection, not a dispatch transport** (plan `slash-exposure-tool-catalog-2026-06-12`, D-001). It projects every MCP-exposed tool onto the MCP **prompts** primitive, so agent clients that render MCP prompts as slash commands (Claude Code, OMP) surface the whole session-visible catalog as `/papercusp:tool:<name>` commands. There is no fifth framing adapter and no new `tool_invocations.transport` value: the rendered prompt *instructs the agent* to invoke the tool over the session’s existing MCP connection, so role gates, quota, audit, and result formatting are all inherited from the normal `tools/call` path.
+
+* **Default ON for every MCP-exposed tool** (owner-ratified D-003). Opt out per tool with `expose: { slash: false }`, or override naming/description/ args with an object (`{ slash: { name, description, args } }`). The `papercusp-slash-exposure` flag (default enabled) is the global lever.
+* **`prompts/list`** serves the static `definePrompt` catalog **plus** one dynamic `tool:<mcp-name>` prompt per visible tool — derived from the *same role/profile/manifest/allowlist walk `tools/list` uses* (the shared `resolveVisibleToolListings` in `_mcp-handler.ts`), so the slash surface mirrors the tool surface by construction. The `tool:` prompt-name namespace is reserved; `registerPrompt` rejects static prompts there.
+* **Arguments**: top-level scalar input fields become MCP prompt arguments (advertised `required: false` on the wire so a bare `/command` is always invokable; required-ness is annotated in the description). The rendered instruction embeds the full input JSON Schema and directs the agent to **elicit missing required fields from the user before invoking**, and to confirm first for high-tier tools.
+* **`prompts/get`** on a `tool:*` name re-checks session visibility, renders the instruction, and writes a `slash.prompt_get` row to `harness_shared.audit_log` (slash-origin telemetry; the subsequent tool call audits through normal dispatch).
+* **Codex** doesn’t render MCP prompts as slash commands, so Codex launches materialize the same projection as prompt **files** in `$CODEX_HOME/prompts/tool-<name>.md` (`packages/operator-core/lib/slash-tool-prompts-codex.ts`), with `$ARGUMENTS` in the supplied-args slot. Those files carry their own managed marker, deliberately disjoint from the saved-prompts marker, so the two emitters sharing the flat dir never prune each other’s files.
+
+Per-tool mechanics (naming, argument derivation, the instruction render) live in `libs/generic/tooldef/src/slash-projection.ts`.
 
 ## How in-process callers reach a function
 

@@ -39,6 +39,50 @@ Slightly more involved because we use `mcp-handler` as a transport library.
 
 Streaming on MCP works via `notifications/progress` — when the client sent a `progressToken` in `_meta`, every `ctx.progress(pct, msg)` becomes one notification. mcp-handler routes those over the open SSE connection.
 
+## Slash exposure — the tool catalog as slash commands
+
+`expose.slash` is a third exposure key next to `expose.mcp` / `expose.http` —
+but unlike those it is **a catalog projection, not a dispatch transport**
+(plan `slash-exposure-tool-catalog-2026-06-12`, D-001). It projects every
+MCP-exposed tool onto the MCP **prompts** primitive, so agent clients that
+render MCP prompts as slash commands (Claude Code, OMP) surface the whole
+session-visible catalog as `/papercusp:tool:<name>` commands. There is no
+fifth framing adapter and no new `tool_invocations.transport` value: the
+rendered prompt *instructs the agent* to invoke the tool over the session's
+existing MCP connection, so role gates, quota, audit, and result formatting
+are all inherited from the normal `tools/call` path.
+
+* **Default ON for every MCP-exposed tool** (owner-ratified D-003). Opt out
+  per tool with `expose: { slash: false }`, or override naming/description/
+  args with an object (`{ slash: { name, description, args } }`). The
+  `papercusp-slash-exposure` flag (default enabled) is the global lever.
+* **`prompts/list`** serves the static `definePrompt` catalog **plus** one
+  dynamic `tool:<mcp-name>` prompt per visible tool — derived from the *same
+  role/profile/manifest/allowlist walk `tools/list` uses* (the shared
+  `resolveVisibleToolListings` in `_mcp-handler.ts`), so the slash surface
+  mirrors the tool surface by construction. The `tool:` prompt-name
+  namespace is reserved; `registerPrompt` rejects static prompts there.
+* **Arguments**: top-level scalar input fields become MCP prompt arguments
+  (advertised `required: false` on the wire so a bare `/command` is always
+  invokable; required-ness is annotated in the description). The rendered
+  instruction embeds the full input JSON Schema and directs the agent to
+  **elicit missing required fields from the user before invoking**, and to
+  confirm first for high-tier tools.
+* **`prompts/get`** on a `tool:*` name re-checks session visibility, renders
+  the instruction, and writes a `slash.prompt_get` row to
+  `harness_shared.audit_log` (slash-origin telemetry; the subsequent tool
+  call audits through normal dispatch).
+* **Codex** doesn't render MCP prompts as slash commands, so Codex launches
+  materialize the same projection as prompt **files** in
+  `$CODEX_HOME/prompts/tool-<name>.md`
+  (`packages/operator-core/lib/slash-tool-prompts-codex.ts`), with
+  `$ARGUMENTS` in the supplied-args slot. Those files carry their own
+  managed marker, deliberately disjoint from the saved-prompts marker, so
+  the two emitters sharing the flat dir never prune each other's files.
+
+Per-tool mechanics (naming, argument derivation, the instruction render)
+live in `libs/generic/tooldef/src/slash-projection.ts`.
+
 ## How in-process callers reach a function
 
 The projection registry is exported. Any TypeScript module on the server can do:
