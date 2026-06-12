@@ -72,6 +72,11 @@ export interface ImprovementCandidate {
    *  template titles token-collide (nested-path red-tests, per-tool errors) —
    *  dedup/hygiene must never merge across distinct keys. */
   watchdogKey?: string;
+  /** Learning-signal provenance (frontier P-002/D-002): organic | drill | replay
+   *  | shadow. Absent = organic (legacy rows / pre-column fakes). Candidates are
+   *  already origin-filtered at the read seam (read-items.ts); this rides along
+   *  for display + downstream decisions. */
+  origin?: import('./provenance').SignalOrigin;
 }
 
 export type Tier = 'auto' | 'human';

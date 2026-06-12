@@ -20,6 +20,7 @@
 
 import { listIssues, type EngineerIssue, type ListIssuesFilter } from '../../issues-engineer';
 import type { ImprovementCandidate, WorkItemKind } from './policy';
+import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from './provenance';
 
 /** The built-in capture/triage lens topic (D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
@@ -73,6 +74,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(sourceRole ? { sourceRole } : {}),
     ...(isIdeaLifecycle(p.ideaLifecycle) ? { ideaLifecycle: p.ideaLifecycle } : {}),
     ...(typeof p.watchdogKey === 'string' && p.watchdogKey ? { watchdogKey: p.watchdogKey } : {}),
+    ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
   };
 }
 
@@ -92,6 +94,13 @@ export interface ReadImprovementOpts {
   limit?: number;
   /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
   harnessSlug?: string;
+  /**
+   * Signal-provenance allowlist (frontier P-002/D-002). DEFAULT: organic only —
+   * synthetic rows (drill/replay/shadow) never reach a learning consumer unless
+   * it explicitly opts in here (e.g. the vaccination measurement loop passes
+   * ['drill']; an all-origins inspection read passes SIGNAL_ORIGINS).
+   */
+  origins?: readonly SignalOrigin[];
 }
 
 /** Injectable dependency seam so the adapter is unit-testable without PG. */
@@ -110,19 +119,28 @@ export async function readImprovementItems(
   opts: ReadImprovementOpts = {},
   deps: ReadImprovementDeps = defaultDeps,
 ): Promise<ImprovementCandidate[]> {
+  const origins = opts.origins ?? ORGANIC_ONLY;
   const issues = await deps.listIssues({
     topic: IMPROVEMENT_TOPIC,
     state: opts.state,
     limit: opts.limit ?? 500,
+    signalOrigins: origins,
   });
+
+  // Origin gate (frontier P-002/D-002): enforced HERE as well as in the SQL
+  // filter above, so an injected/legacy listIssues that ignores signalOrigins
+  // still can't leak a synthetic row into an organic consumer. Exact-match
+  // allowlist — junk values fail closed; a row with NO origin reads organic
+  // (the migration-DEFAULT backfill semantics, see provenance.ts).
+  const originGated = issues.filter((issue) => originAllowed(issue.signalOrigin, origins));
 
   // (P-010) Filter by scope if harnessSlug is specified
   if (opts.harnessSlug) {
     const targetScope = `harness:${opts.harnessSlug}`;
-    return issues
+    return originGated
       .filter(issue => issue.scope === targetScope)
       .map(issueToCandidate);
   }
 
-  return issues.map(issueToCandidate);
+  return originGated.map(issueToCandidate);
 }

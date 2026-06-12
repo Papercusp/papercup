@@ -35,6 +35,7 @@ import {
 import { IMPROVEMENT_TOPIC, issueToCandidate } from './read-items';
 import { titleSimilarity, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
+import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
@@ -90,6 +91,16 @@ export interface CaptureImprovementInput {
    */
   sourceRole?: 'Queen' | 'bee' | 'system' | 'Scout' | 'human';
   source?: IssueSource;
+  /**
+   * Learning-signal provenance (frontier P-002/D-002): organic (default) | drill |
+   * replay | shadow. Only the frontier loops pass non-organic — a vaccination drill,
+   * a replay counterfactual, a shadow ablation. Stored as the real
+   * `engineer_issues.signal_origin` column; every learning consumer filters to
+   * organic unless explicitly opted in (read-items.ts). Dedup is origin-SCOPED:
+   * a candidate with a different origin never declines this capture (a synthetic
+   * row must never suppress a real signal, nor a real row a planted drill).
+   */
+  origin?: SignalOrigin;
 }
 
 export interface PossibleDuplicate {
@@ -139,7 +150,12 @@ export async function captureImprovement(
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
   // Search-first dedup (D-001): full-text search, then a title-similarity pass.
-  const candidates = await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
+  // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
+  // origin participate in dedup + decided-recall — a drill row deduping against an
+  // organic capture (or vice versa) would let synthetic signals suppress real ones.
+  const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
+  const searched = await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
+  const candidates = searched.filter((i) => effectiveOrigin(i.signalOrigin) === origin);
   const possibleDuplicates: PossibleDuplicate[] = candidates
     .map((i) => ({
       id: i.id,
@@ -255,6 +271,7 @@ export async function captureImprovement(
     foundDuring: input.foundDuring,
     createdBy: input.createdBy,
     source: input.source,
+    signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
   // Push the Learning tab's improvements feed (operator-learning-tab-2026-06-09 P-002).

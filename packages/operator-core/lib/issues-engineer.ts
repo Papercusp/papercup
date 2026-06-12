@@ -34,6 +34,7 @@ import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
+import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
@@ -72,6 +73,10 @@ export interface EngineerIssue {
   foundDuring: string | null;
   linkedFeatureId: string | null;
   createdBy: string | null;
+  /** Learning-signal provenance (self-learning-frontier P-002/D-002, migration 241):
+   *  organic | drill | replay | shadow. Learning consumers filter to organic unless
+   *  explicitly opted in (read-items.ts). Distinct from the federation `origin` column. */
+  signalOrigin: SignalOrigin;
   /** Position within the ASSIGNEE's ordered work-list (local-hive P-020). null = unranked. */
   assigneeRank: number | null;
   /** Who last set assigneeRank — 'bee' | 'queen' (the propose/dispose audit, D-008). */
@@ -126,6 +131,7 @@ interface IssueRowDb {
   found_during: string | null;
   linked_feature_id: string | null;
   created_by: string | null;
+  signal_origin: string | null;
   assignee_rank: number | null;
   rank_writer: string | null;
   rank_updated_at: unknown;
@@ -156,6 +162,9 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     foundDuring: r.found_during,
     linkedFeatureId: r.linked_feature_id,
     createdBy: r.created_by,
+    // NULL only on a pre-migration-241 read (the column default backfills) —
+    // legacy rows are organic by definition. Junk can't pass the CHECK constraint.
+    signalOrigin: (r.signal_origin ?? DEFAULT_SIGNAL_ORIGIN) as SignalOrigin,
     assigneeRank: r.assignee_rank,
     rankWriter: r.rank_writer === 'bee' || r.rank_writer === 'queen' ? r.rank_writer : null,
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
@@ -166,7 +175,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, payload, found_during, linked_feature_id, created_by,
-  assignee_rank, rank_writer, rank_updated_at, created_at, updated_at`;
+  signal_origin, assignee_rank, rank_writer, rank_updated_at, created_at, updated_at`;
 
 /** Allocate the next globally-unique EI-<n> id. */
 async function nextIssueId(): Promise<string> {
@@ -221,6 +230,9 @@ export interface CreateIssueInput {
   assignedBy?: string;
   /** Kind-specific data (collapse-delegate D-001): a task's resume metadata. */
   payload?: unknown;
+  /** Learning-signal provenance (frontier P-002/D-002). Default 'organic'; only
+   *  frontier loops (vaccination drills, replay, shadow ablation) pass non-organic. */
+  signalOrigin?: SignalOrigin;
   /**
    * Explicit id — used by the unified work_items:create path to mint a
    * kind-independent WI-NNN id (D-008). Omit for the legacy issues:create path,
@@ -237,12 +249,12 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const rows = await sql<IssueRowDb[]>`
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
-       assigned_by, assigned_at, payload, found_during, created_by, created_at, updated_at)
+       assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
     VALUES (${DEFAULT_COORD_WORKSPACE}, ${id}, ${input.kind ?? 'bug'}, ${input.scope ?? 'operator'}, ${input.title}, ${input.body ?? ''},
             ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
             ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
             ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
-            ${input.createdBy ?? null}, ${created}, ${created})
+            ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   const issue = toIssue(rows[0]);
 
@@ -270,6 +282,10 @@ export interface ListIssuesFilter {
    *  issue surface — `task` items never leak into issues:* unless asked for). */
   kinds?: readonly IssueStoreKind[];
   topic?: string; // issues tagged with this topic
+  /** Learning-signal provenance allowlist (frontier P-002/D-002). Omit = NO origin
+   *  filter (the generic work-item surface shows everything); the LEARNING read
+   *  seam (read-items.ts) is what defaults to organic-only. */
+  signalOrigins?: readonly SignalOrigin[];
   limit?: number;
 }
 
@@ -296,6 +312,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, 500)}`;
