@@ -76,6 +76,14 @@ export const FLAGS = {
   // passes during a budget-available window. Off = unchanged (bees use their symlinked
   // ~/.claude credential directly).
   INFERENCE_GATEWAY: "papercusp-inference-gateway",
+  // agent-liveness-heartbeat-hardening-2026-06-12 P-010 (owner decision D-006):
+  // auto-reap WEDGED bees — alive + supervisor-heartbeating but stream-silent
+  // past WEDGE_REAP_SILENT_MS (30min; bees stream thinking deltas + tool events,
+  // so true silence that long means hung-not-thinking — the generous threshold
+  // absorbs long local tool calls like full test suites). Reap rides the
+  // fleet:cancel engine (claims/locks released, coord notice). Checked per
+  // supervisor tick; flip takes effect without a restart.
+  WEDGE_AUTO_REAP: "papercusp-wedge-auto-reap",
   // claude-credential-sync-2026-06-10 (P-002): gates the operator's background
   // newest-wins reconciler that keeps the Claude OAuth bundle converged across
   // ~/.claude and every per-session CLAUDE_CONFIG_DIR fork (the fix for the
@@ -176,6 +184,8 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the service is deployed would break the whole fleet's auth. Owner flips it ON after
   // deploy + the P-015 load test passes. Surfaced loudly in the plan's Now + completion report.
   [FLAGS.INFERENCE_GATEWAY]: false,
+  // ON by default — owner decision D-006 (2026-06-11): wedge auto-reap ships live.
+  [FLAGS.WEDGE_AUTO_REAP]: true,
   // ON by default (alpha flags-default-on policy): the credential reconciler is
   // the fix for the live every-terminal-relogin cascade; it is monotonic
   // (newest-wins, never deletes) and a converged tree produces zero writes.

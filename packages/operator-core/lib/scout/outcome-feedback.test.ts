@@ -17,6 +17,7 @@ import {
   lensWeightsFromReport,
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
+  winCredit,
   SAMPLING_FLOOR_FRACTION,
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,

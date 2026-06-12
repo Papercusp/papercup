@@ -163,6 +163,90 @@ function noteSpawnOutput(spawnId: string): void {
 }
 
 /**
+ * Wedge auto-reap threshold (P-010 / D-006, owner decision 2026-06-11): a bee
+ * stream-silent this long is hung, not thinking — bees stream with
+ * --include-partial-messages, so thinking deltas + tool_use events keep the
+ * stream moving; the only legitimate long silence is awaiting a long local
+ * tool call, which 30 minutes absorbs. Override: PAPERCUSP_WEDGE_REAP_MS.
+ */
+export const WEDGE_REAP_SILENT_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_WEDGE_REAP_MS);
+  return Number.isFinite(raw) && raw >= 60_000 ? raw : 30 * 60_000;
+})();
+
+/** Spawns currently being reaped — guards double-fire across ticks while the
+ *  cancel + process death settle. */
+const wedgeReapInFlight = new Set<string>();
+
+/**
+ * Pure candidate filter for the wedge reaper (exported for tests): tracked
+ * local spawns with OBSERVED output whose stream has been silent past the
+ * threshold, minus those already mid-reap. Never-output spawns are excluded —
+ * absence of signal is not evidence of a wedge (mirrors isPossiblyWedged).
+ */
+export function selectWedgeReapCandidates(
+  output: ReadonlyMap<string, { at: number }>,
+  tracked: ReadonlySet<string>,
+  inFlight: ReadonlySet<string>,
+  now: number,
+  silentMs: number = WEDGE_REAP_SILENT_MS,
+): string[] {
+  const out: string[] = [];
+  for (const [id, e] of output) {
+    if (tracked.has(id) && !inFlight.has(id) && e.at > 0 && now - e.at > silentMs) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Reap local spawns that are wedged past the threshold (flag-gated, D-006):
+ * the durable cancel (claims + locks released, coord notice — the SAME engine
+ * as fleet:cancel) then the local process abort. Only spawns THIS host
+ * supervises are candidates — the host that holds the handle owns the verdict.
+ * Spawns with NO observed output are never reaped (absence ≠ wedge).
+ */
+async function reapWedgedLocalSpawns(now: number): Promise<void> {
+  const candidates = selectWedgeReapCandidates(
+    localSpawnOutput,
+    new Set(localSpawnAborts.keys()),
+    wedgeReapInFlight,
+    now,
+  );
+  if (candidates.length === 0) return;
+  if (!(await getFlag(FLAGS.WEDGE_AUTO_REAP, 'system'))) return;
+  const { cancelSubtree } = await import('./nursery');
+  const { sql } = getOrgPg();
+  for (const spawnId of candidates) {
+    wedgeReapInFlight.add(spawnId);
+    try {
+      const rows = await sql<{ workspace_id: string }[]>`
+        SELECT workspace_id FROM harness_shared.spawned_agents
+         WHERE spawn_id = ${spawnId} AND status IN ('running', 'restarting') LIMIT 1`;
+      const workspaceId = rows[0]?.workspace_id;
+      if (!workspaceId) continue; // already terminal — nothing to reap
+      const silentMin = Math.round((now - (localSpawnOutput.get(spawnId)?.at ?? now)) / 60_000);
+      console.warn(`[wedge-reap] ${spawnId}: stream silent ${silentMin}min with a live process — cancelling (D-006)`);
+      await cancelSubtree(sql, {
+        workspaceId,
+        rootSpawnId: spawnId,
+        reason: `wedge-reap: alive but stream-silent ${silentMin}min (> ${Math.round(WEDGE_REAP_SILENT_MS / 60_000)}min, D-006)`,
+        actor: {
+          ownerId: 'wedge-reaper',
+          ownerLabel: 'system · wedge-reaper',
+          source: 'signed-spawn',
+          workspaceId,
+          userId: null,
+        },
+      });
+      abortLocalSpawn(spawnId);
+    } catch (err) {
+      console.warn(`[wedge-reap] ${spawnId} failed (will retry next tick):`, err);
+      wedgeReapInFlight.delete(spawnId);
+    }
+  }
+}
+
+/**
  * Heartbeat loop (P-011): while this host has live spawns, bump their
  * `heartbeat_at` every SPAWN_HEARTBEAT_INTERVAL_MS so the reclaim sweep can tell
  * a live spawn from one whose host died. Lazily started on the first spawn and
@@ -192,6 +276,11 @@ function ensureSpawnHeartbeatLoop(): void {
       /* best-effort — a missed beat at worst risks an early reclaim, which is
          itself recoverable (an autonomous spawn re-runs; an interactive one is
          the human's to relaunch). */
+    });
+    // P-010/D-006: same tick, after the beat — reap local spawns wedged past
+    // the threshold (flag-gated inside; double-fire guarded).
+    void reapWedgedLocalSpawns(Date.now()).catch(() => {
+      /* best-effort — a failed reap retries next tick */
     });
   }, SPAWN_HEARTBEAT_INTERVAL_MS);
   if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();

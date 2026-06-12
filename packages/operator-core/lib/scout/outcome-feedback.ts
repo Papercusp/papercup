@@ -22,6 +22,12 @@
  * the weighting never strangles the leaps (the plan's anti-over-prune ethos +
  * the novelty-search lesson behind D-008).
  *
+ * Grading (scout-idea-grading-2026-06-12): a 1–5 owner/Queen grade on the
+ * ledger row is a faster, stronger outcome signal. When present it DOMINATES
+ * the change-feed outcome in the tally (D-002) as fractional credit
+ * ({@link winCredit}, C-5); ungraded ideas keep the change-feed path, and the
+ * feed-derived classification stays persisted for comparison.
+ *
  * Pure + side-effect-free over injected readers (the change-feed / watchdog
  * pattern): the production reader bag ({@link ScoutOutcomeReaders}) is wired to
  * the routed-idea ledger + `buildChangeFeedReaders()`, but every function here is
@@ -79,6 +85,20 @@ export interface RoutedIdeaProvenance {
    * scheduler's recordRoutedIdea persists it without a re-join.
    */
   addressesPatternRefs?: string[];
+  /**
+   * Grader's 1–5 verdict on the idea (scout-idea-grading C-1b; ledger column
+   * `human_grade`). Absent/undefined = ungraded. When present (a valid 1–5
+   * integer), the grade DOMINATES the change-feed outcome in the lens-weight
+   * tally via {@link winCredit} (D-002) — the feed-derived `outcome` stays
+   * recorded for analytics, but the weight math prefers the grade.
+   */
+  humanGrade?: number;
+  /** Grader's free-text critique (ledger `human_feedback`) — the priming channel's payload, not used by the weight math. */
+  humanFeedback?: string;
+  /** Who graded: the owner's grade is sovereign over the Queen's (D-004; enforced in the write seam). */
+  gradedBy?: 'owner' | 'Queen';
+  /** ISO timestamp of the grade (ledger `graded_at`). */
+  gradedAt?: string;
 }
 
 /** Per-lens outcome tally + the weight P-004 reads back. */
@@ -86,7 +106,13 @@ export interface LensOutcomeStat {
   lens: CreativeLens;
   /** Ideas from this lens that were routed (won + lost + pending). */
   routed: number;
+  /**
+   * Win mass. FRACTIONAL once grades exist: a graded idea contributes
+   * {@link winCredit}(grade) here and `1 − credit` to `lost` (C-5), so
+   * `won + lost + pending === routed` always holds exactly.
+   */
   won: number;
+  /** Loss mass — fractional under grading, see {@link LensOutcomeStat.won}. */
   lost: number;
   pending: number;
   /** won / (won + lost) over DECIDED ideas only; null when nothing decided yet. */
@@ -146,6 +172,11 @@ export interface LensWeightOptions {
  *
  * The gym status is read from the entry's `detail` ("Status: <status>") with a
  * title fallback ("Accepted …" / "Rejected …"), so it survives either shape.
+ *
+ * Deliberately GRADE-BLIND (D-002): this classification is what
+ * `refreshScoutOutcomes` persists to the ledger's `outcome` column — the
+ * system-derived record kept for grade-vs-outcome comparison. The grade
+ * dominates only in the weight tally ({@link computeLensOutcomes}).
  */
 export function classifyIdeaOutcome(
   prov: RoutedIdeaProvenance,
@@ -187,6 +218,27 @@ function emptyStat(lens: CreativeLens): LensOutcomeStat {
 }
 
 /**
+ * Fractional win credit of a 1–5 grade (scout-idea-grading C-5):
+ * `(grade − 1) / 4` — 5 → 1.0, 3 → 0.5 (exactly neutral under the Beta(1,1)
+ * prior), 1 → 0.0. A graded idea contributes `credit` to its lens's wins and
+ * `1 − credit` to its losses, so grade 5 weighs exactly like a change-feed win
+ * and grade 1 exactly like a loss.
+ */
+export function winCredit(grade: number): number {
+  return (grade - 1) / 4;
+}
+
+/**
+ * The provenance's grade when it is usable: an integer in 1..5 (the DB CHECK's
+ * domain). Anything else — absent, NaN, fractional, out of range — is treated
+ * as ungraded rather than poisoning the tally.
+ */
+function validGradeOf(prov: RoutedIdeaProvenance): number | null {
+  const g = prov.humanGrade;
+  return typeof g === 'number' && Number.isInteger(g) && g >= 1 && g <= 5 ? g : null;
+}
+
+/**
  * Compute the per-lens outcome report from routed-idea provenance + the change
  * feed. Pure. Every lens in {@link CREATIVE_LENSES} appears in `byLens` (so the
  * roster P-004 reads is always complete), and `weight` is the smoothed, floored,
@@ -211,10 +263,21 @@ export function computeLensOutcomes(
     const stat = byLens[prov.lens];
     if (!stat) continue; // ignore an unknown lens rather than throwing
     stat.routed += 1;
-    const outcome = classifyIdeaOutcome(prov, completionByRef);
-    if (outcome === 'won') stat.won += 1;
-    else if (outcome === 'lost') stat.lost += 1;
-    else stat.pending += 1;
+    const grade = validGradeOf(prov);
+    if (grade !== null) {
+      // C-5 / D-002: a grade DOMINATES the change-feed outcome — the graded
+      // idea is decided by the grader regardless of feed state (a graded
+      // pending idea counts decided; a grade-1 on a feed win counts as loss
+      // mass). credit + (1 − credit) = 1, so the routed invariant holds.
+      const credit = winCredit(grade);
+      stat.won += credit;
+      stat.lost += 1 - credit;
+    } else {
+      const outcome = classifyIdeaOutcome(prov, completionByRef);
+      if (outcome === 'won') stat.won += 1;
+      else if (outcome === 'lost') stat.lost += 1;
+      else stat.pending += 1;
+    }
   }
 
   for (const lens of CREATIVE_LENSES) {
@@ -343,9 +406,14 @@ export function lensWeightsFromReport(report: LensOutcomeReport): Record<Creativ
  */
 export interface LensWeightRow {
   lens: CreativeLens;
-  /** Routed ideas from this lens that won (terminal success in the Change Feed). */
+  /**
+   * Win mass from this lens (Change-Feed terminal wins + fractional grade
+   * credit, C-5). May be fractional in memory; the persisted column is int so
+   * the upsert's cast rounds it — `weight` (computed here, pre-rounding) is the
+   * value the sampling path reads back, so rounding only blurs the analytics.
+   */
   wins: number;
-  /** Routed ideas decided either way (won + lost); pending excluded. */
+  /** Decided mass either way (won + lost); pending excluded. Fractional under grading, rounded on persist like `wins`. */
   decided: number;
   /** The smoothed/floored/normalized sampling share from {@link computeLensOutcomes}. */
   weight: number;

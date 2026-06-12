@@ -18,7 +18,11 @@
  *
  * Sibling-pattern notes (harness-settings-flow.spec.ts): baseURL mirrors
  * playwright.config.ts; tests SKIP rather than fail when the SPA serves a
- * blank #root (stale HMR-disabled :3055).
+ * blank #root (stale HMR-disabled :3055). The agent config store is
+ * WORKSPACE-scoped, and a fresh Playwright profile's in-page fetches stamp
+ * `x-papercusp-workspace: default` — every request-fixture call here must
+ * stamp the SAME header or the fixture reads/writes a different workspace's
+ * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 
@@ -30,6 +34,9 @@ const SKIP_MSG_BLANK =
   '/settings/agent did not mount. Run against an HMR-enabled operator-vite ' +
   '(the playwright.config webServer) — a stale HMR-disabled :3055 serves a blank #root.';
 
+// The workspace the PAGE will use (fresh profile, no injected __PAPERCUSP_WS__).
+const WS_HEADERS = { 'x-papercusp-workspace': 'default' };
+
 // Debounce in page.tsx is 600ms — anything still unsaved after this window
 // was (correctly) never scheduled.
 const SAVE_WINDOW_MS = 1200;
@@ -39,7 +46,7 @@ const SPEC_INPUT = 'input[aria-label="Tier 4 model spec"]';
 let originalConfig: Record<string, unknown> | null = null;
 
 async function getStoredConfig(request: APIRequestContext) {
-  const r = await request.get(`${baseURL}/api/agent-config`, { timeout: 15_000 });
+  const r = await request.get(`${baseURL}/api/agent-config`, { timeout: 15_000, headers: WS_HEADERS });
   return ((await r.json()) as { config: Record<string, unknown> }).config;
 }
 
@@ -70,7 +77,7 @@ test.describe('/settings/agent auto-save validation', () => {
     // else (backend/cmd/models/surfaces) keeps the stack's real values.
     await request.post(`${baseURL}/api/agent-config`, {
       data: { ...originalConfig, tiers: [], tierCeilings: {} },
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...WS_HEADERS },
     });
   });
 
@@ -78,7 +85,7 @@ test.describe('/settings/agent auto-save validation', () => {
     if (!originalConfig) return;
     await request.post(`${baseURL}/api/agent-config`, {
       data: originalConfig,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...WS_HEADERS },
     });
   });
 
@@ -86,25 +93,12 @@ test.describe('/settings/agent auto-save validation', () => {
     test.skip(!(await openPage(page)), SKIP_MSG_BLANK);
     const input = page.locator(SPEC_INPUT);
     await input.waitFor({ state: 'visible', timeout: 10_000 });
+    await expect(input).toHaveValue('opus:xhigh'); // default-menu baseline
     await input.click();
     await input.pressSequentially('fab'); // mid-word, still focused — no blur
     await page.waitForTimeout(SAVE_WINDOW_MS);
     const cfg = await getStoredConfig(request);
     expect(cfg.tiers).toEqual([]); // still the untouched default menu
-    const probe = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input[aria-label="Tier 4 model spec"]');
-      const first = inputs[0] as HTMLInputElement | undefined;
-      return {
-        count: inputs.length,
-        value: first?.value,
-        // DraftInput wraps the input in a column-flex span — the old page's
-        // bare input has a row-flex DIV parent. Distinguishes served module.
-        parentTag: first?.parentElement?.tagName,
-        parentFlexDir: first?.parentElement ? getComputedStyle(first.parentElement).flexDirection : null,
-        statusLine: document.querySelector('h1 span')?.textContent,
-      };
-    });
-    console.log('DOM PROBE:', JSON.stringify(probe));
     await page.keyboard.press('Escape'); // revert the draft
     await expect(input).toHaveValue('opus:xhigh');
   });
