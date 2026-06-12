@@ -30,6 +30,7 @@ import {
 
 import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
+import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 
 /**
  * The event-reaction system installs its `postInvoke` handler here at startup
@@ -104,6 +105,10 @@ async function recordInvocationImpl(input: {
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
 }): Promise<void> {
+  // Turn-level presence beat (liveness-hardening P-001): every settled
+  // dispatch keeps its owner's presence warm, throttled per owner. Before the
+  // workspace guard — a beat needs an identity, not a workspace.
+  maybeBeatPresenceOnDispatch(input.ctx);
   if (!input.ctx.workspaceId) return;
   try {
     const { sql } = getOrgPg();

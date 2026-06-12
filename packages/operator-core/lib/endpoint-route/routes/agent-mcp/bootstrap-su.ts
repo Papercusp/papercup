@@ -497,4 +497,62 @@ const post = defineTool({
   },
 });
 
-export default [options, optionsForOptions, post, optionsGet, brainGet];
+/**
+ * POST /api/agent-mcp/console/bootstrap-su/heartbeat  { ownerId }
+ *
+ * The psu SUPERVISOR beat (agent-liveness-heartbeat-hardening-2026-06-12
+ * P-003): the launcher process — which stays alive as the agent's parent —
+ * POSTs this every ~60s while its child runs, so a session in a long turn
+ * with NO tool calls keeps its coord_presence row warm (process-alive
+ * semantics, the interactive analog of the fleet nursery beat).
+ *
+ * touchHeartbeat is a no-op when no presence row exists (D-003 — the beat
+ * never mints roster rows; declare-intent at session start does that).
+ *
+ * Deliberately NO audit/adv-session write: high-frequency + zero
+ * information. Trust: principal-gated like the sibling console routes;
+ * a same-UID loopback caller naming another ownerId is inside the existing
+ * console trust boundary (same model as the cc/ hook chain).
+ */
+const heartbeat = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/heartbeat',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    let ownerId = '';
+    try {
+      const body = (await req.json()) as { ownerId?: unknown };
+      if (typeof body.ownerId === 'string') ownerId = body.ownerId.trim();
+    } catch {
+      /* fall through to the 400 */
+    }
+    if (!ownerId || ownerId.length > 200) {
+      return jsonRes({ error: 'ownerId required' }, 400);
+    }
+    try {
+      const { touchHeartbeat } = await import('../../../agent-tools/coordination/presence');
+      await touchHeartbeat(ownerId);
+      return jsonRes({ ok: true });
+    } catch (err) {
+      // Best-effort contract: the launcher treats any failure as a missed
+      // beat, never an error loop.
+      return jsonRes(
+        { ok: false, error: err instanceof Error ? err.message : String(err) },
+        503,
+      );
+    }
+  },
+});
+
+const optionsForHeartbeat = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/heartbeat',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+export default [options, optionsForOptions, post, optionsGet, brainGet, heartbeat, optionsForHeartbeat];

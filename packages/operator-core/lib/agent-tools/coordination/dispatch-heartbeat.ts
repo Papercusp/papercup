@@ -1,0 +1,89 @@
+/**
+ * dispatch-heartbeat — the turn-level presence beat at the projected-tool
+ * dispatch seam (agent-liveness-heartbeat-hardening-2026-06-12 P-001).
+ *
+ * Gap: `coord_presence.heartbeat_at` bumped ONLY on coord:declare-intent and
+ * coord:inbox reads, so a session agent in a long stretch of non-coord
+ * platform calls (locks from the per-edit hook, plans:*, work_items:*) read
+ * as presence-stale to every liveness consumer — the stale-claims sweep's
+ * presence leg, the roster, fleet:assignments. This module beats presence for
+ * ANY authenticated projected dispatch, throttled per owner, so the lock
+ * traffic of an actively-editing agent is itself the heartbeat.
+ *
+ * D-003 (the plan): `touchHeartbeat` (no-op when no presence row exists) —
+ * NOT `heartbeatPresence` (ensure-row) — so one-shot HTTP callers never mint
+ * roster rows; agents that matter declare intent at session start.
+ *
+ * Placement: called from `recordInvocationImpl` (projected-tool-deps.ts),
+ * which the dispatcher's telemetry finally-block invokes on every settled
+ * dispatch (success, gate denial, error, timeout). Dispatches without a
+ * quota windowKey skip telemetry and therefore skip the beat — acceptable:
+ * the beat is breadth, not a guarantee, and the catalog tools that matter
+ * are quota-tracked.
+ *
+ * The throttle Map is module-scope deliberately: it is pure rate-limiting
+ * (losing it on restart costs at most one extra indexed UPDATE per owner),
+ * not durable state, so the storage policy's no-module-scoped-state rule
+ * does not apply.
+ */
+import { resolveAgentIdentity, type ResolveIdentityCtx } from './identity';
+import { touchHeartbeat } from './presence';
+
+/** Minimum gap between beats for one owner. Presence staleness windows are
+ *  60s (roster LIVE_MS) and 10min (claims sweep) — 45s keeps both fresh
+ *  while costing at most ~1.3 UPDATEs/min per busy agent. */
+export const DISPATCH_BEAT_INTERVAL_MS = 45_000;
+
+const lastBeat = new Map<string, number>();
+
+/** Drop throttle entries idle past this many windows (bounds the Map). */
+const GC_IDLE_WINDOWS = 10;
+const GC_SIZE_TRIGGER = 2_000;
+
+/** Test seam: reset throttle state between cases. */
+export function __resetDispatchHeartbeatThrottle(): void {
+  lastBeat.clear();
+}
+
+/**
+ * Best-effort presence beat for the dispatch's resolved owner. Never throws;
+ * never blocks the dispatch (fire-and-forget write). Anonymous/unresolvable
+ * callers are skipped — identity resolution failures are EXPECTED here (the
+ * public catch-all, malformed contexts) and must not become errors.
+ *
+ * Injectable `beat` (default touchHeartbeat) + `now` keep the unit tests
+ * pure — no PG, no fake timers fighting the fire-and-forget promise.
+ */
+export function maybeBeatPresenceOnDispatch(
+  ctx: unknown,
+  opts: { beat?: (ownerId: string) => Promise<void>; now?: () => number } = {},
+): void {
+  const beat = opts.beat ?? touchHeartbeat;
+  const nowFn = opts.now ?? Date.now;
+
+  let ownerId: string | null;
+  try {
+    ownerId = resolveAgentIdentity(ctx as ResolveIdentityCtx).ownerId;
+  } catch {
+    return;
+  }
+  if (!ownerId) return;
+
+  const now = nowFn();
+  const last = lastBeat.get(ownerId) ?? 0;
+  if (now - last < DISPATCH_BEAT_INTERVAL_MS) return;
+  lastBeat.set(ownerId, now);
+
+  if (lastBeat.size > GC_SIZE_TRIGGER) {
+    const cutoff = now - GC_IDLE_WINDOWS * DISPATCH_BEAT_INTERVAL_MS;
+    for (const [k, t] of lastBeat) {
+      if (t < cutoff) lastBeat.delete(k);
+    }
+  }
+
+  void Promise.resolve()
+    .then(() => beat(ownerId))
+    .catch(() => {
+      /* a missed beat must never surface — the next dispatch retries */
+    });
+}
