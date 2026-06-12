@@ -307,11 +307,12 @@ export async function runGen0Battery(args: Gen0Args): Promise<void> {
     process.env.AGENT_MODELS = JSON.stringify(merged);
     process.env.PAPERCUSP_AGENT_GOVERNOR = '1';
     process.env.PAPERCUSP_AGENT_GOVERNOR_PG = '1';
-    // The judge is an IN-PROCESS llmCall on THIS box, and llm-client defaults its backend to
-    // Meridian (:3456) — which is down here. Its internal retry loop then never returns and wedges
-    // the whole SEQUENTIAL battery (observed: the gen-0 baseline hung ~8min after bee 1, parked in
-    // ep_poll with no socket). Route the judge through the claude CLI on the same clean OAuth token
-    // the bees already use (CLAUDE_CODE_OAUTH_TOKEN), unless the caller explicitly set a backend.
+    // The judge is an IN-PROCESS llmCall on THIS box; llm-client's default anthropic-direct
+    // backend rides the owner's volatile ~/.claude session and shares its rate bucket. Route the
+    // judge through the claude CLI on the same clean OAuth token the bees already use
+    // (CLAUDE_CODE_OAUTH_TOKEN), unless the caller explicitly set a backend. (Originally also
+    // dodged the pre-EI-399 default that pointed at the dead :3456 router and wedged the
+    // sequential battery in an endless retry loop.)
     process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
     const { sql } = getOrgPg();

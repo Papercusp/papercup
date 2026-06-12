@@ -5,7 +5,7 @@
  * `harness_shared.agent_usage_samples` (rate-limit-layer-v2 migration 161 +
  * cross-backend attribution migration 170): per-run rows written at the two
  * capture points (subprocess JSONL terminal events for claude/codex/omp;
- * meridian headers in-process), workspace + harness scoped.
+ * stateless-call headers in-process), workspace + harness scoped.
  *
  * Replaces the original phantom `tool_invocations.cost_microcents` query (the
  * column never existed → the card always rendered $0 behind a "proxy-witness"

@@ -43,7 +43,7 @@ export interface BuildLoopDepsConfig {
   gymSql: Sql;
   /** Real runner ports (clone/register/overlay/file/start/poll) — createGymRunnerPorts(...). */
   ports: GymRunnerPorts;
-  /** The frozen Opus judge llm call (real meridian/claude-code call, or a fake in tests). */
+  /** The frozen Opus judge llm call (real anthropic-direct/claude-code call, or a fake in tests). */
   judgeCall: JudgeLlmCall;
   /** The proposer llm call (decorrelated from the judge model per D-015). */
   proposerCall: GymLlmCall;

@@ -91,6 +91,13 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // `calibration-markets`) until P-001. SQL-only zero-spend; the ranker
   // feature contributes 0 while dark.
   FLAGS.CALIBRATION_MARKETS,
+  // … and the Red Queen vaccination drills (P-031/FB-20) — triple gate: flag
+  // OFF here (gates the drill cadence AND the out-of-band engine-death
+  // sentinel), the routine seeded INACTIVE, and unbudgeted on the learning
+  // governor (loop `red-queen`) until P-001. SQL-only zero-spend, but every
+  // drill files an origin=drill capture (new capture volume, drill-lane
+  // partitioned) — the live MTTSH proof is itself a P-001 act.
+  FLAGS.RED_QUEEN,
   // … and the audit-as-sensors SLO collectors (P-047/FB-21) — single gate:
   // the flag IS the arming act (no routine of their own — they ride the
   // existing improvement-watchdog tick — and no governor budget: SQL-only,

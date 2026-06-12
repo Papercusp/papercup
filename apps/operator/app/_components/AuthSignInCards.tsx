@@ -10,9 +10,10 @@
  *
  * Providers:
  *   - claude     → Anthropic (Claude Pro/Max). Writes
- *                  `~/.claude/.credentials.json`. Meridian reads it
- *                  at runtime so omp doesn't need a separate
- *                  Anthropic login.
+ *                  `~/.claude/.credentials.json` — read at runtime by
+ *                  the stateless anthropic-direct LLM client (judges,
+ *                  sim-users, summarisers) and by Meridian for omp
+ *                  users, so neither needs a separate Anthropic login.
  *   - chatgpt    → ChatGPT (via omp's Codex provider). Spawns
  *                  `omp /login`. Writes `~/.omp/agent/auth.json`.
  *                  When set, `models['operator'] = 'openai-codex/<m>'`
@@ -40,7 +41,7 @@ const PROVIDERS: readonly Provider[] = [
     id: 'claude',
     title: 'Claude account',
     summary:
-      'Sign in with your Anthropic account (Claude Pro/Max). Meridian routes operator + judge + sim-user traffic through it — no per-token API charges. Writes ~/.claude/.credentials.json.',
+      'Sign in with your Anthropic account (Claude Pro/Max). Operator + judge + sim-user traffic rides this session directly — no per-token API charges. Writes ~/.claude/.credentials.json.',
   },
   {
     id: 'chatgpt',

@@ -8,7 +8,7 @@
  * (sim-user turns + a rubric judge over a chat Target); the Scout cycle is a
  * programmatic pipeline (`runScoutCycle` over injected ports) with no
  * conversation to simulate — forcing it into a Scenario would fake a chat
- * around a non-chat subject. What IS reused from that stack: the real meridian
+ * around a non-chat subject. What IS reused from that stack: the real stateless
  * `llmCall` transport (lib/llm-testing/llm-client — the gym JudgeLlmCall
  * pattern), the gym's frozen judge runner (`judgeGymRun`), and the
  * testing-shell's `judgeAxisScorer` for panel-axis aggregation.
@@ -32,9 +32,8 @@
  *     3-cycles-total cap on its own).
  *   - a usable credential (fresh Claude OAuth session or ANTHROPIC_API_KEY).
  *     Without one the suite SKIPS (exit-skip, not fail).
- *   - transport: AGENT_BACKEND defaults to `claude-code` so the stateless
- *     meridian path resolves anthropic-direct (EI-281: the local Meridian
- *     router is usually down on the dev box and the omp token stale).
+ *   - transport: the stateless path resolves anthropic-direct off the live
+ *     Claude OAuth session (EI-399: anthropic-direct is the only transport).
  *
  * Run:  SCOUT_LIVE_CYCLE=1 npx vitest run -c vitest.integration.config.ts \
  *         lib/scout/cycle-live.integration.test.ts
@@ -238,13 +237,7 @@ describe.skipIf(!LIVE)(
     const planDrafts: Array<{ slug: string; title: string }> = [];
     const gymSeeds: ArchiveSeedEntry[] = [];
     const captures: string[] = [];
-    const savedBackend = process.env.AGENT_BACKEND;
-
     beforeAll(async () => {
-      // EI-281 workaround: resolve the stateless meridian path anthropic-direct
-      // (the local Meridian router is usually down; the omp token stale).
-      process.env.AGENT_BACKEND ??= 'claude-code';
-
       // The REAL transport, wrapped only to record parse/cost evidence per call.
       // SCOUT_LIVE_MODEL_OVERRIDE rewrites every step's model (2026-06-11: the
       // shared credential's opus-tier ITPM 429'd three attempts through full
@@ -343,7 +336,7 @@ describe.skipIf(!LIVE)(
           cycleId: CYCLE_ID,
           harnessSlug: HARNESS,
           limits: { maxCostUsd: MAX_CYCLE_USD, maxIdeators: MAX_IDEATORS },
-          transport: `meridian-stateless via AGENT_BACKEND=${process.env.AGENT_BACKEND}`,
+          transport: 'anthropic-direct (stateless)',
           noveltyCorpusSize: corpus.length,
           inertRails: { planDrafts, gymSeeds: gymSeeds.map((s) => s.candidateId), captures },
         },
@@ -440,8 +433,6 @@ describe.skipIf(!LIVE)(
     }, 900_000);
 
     afterAll(() => {
-      if (savedBackend === undefined) delete process.env.AGENT_BACKEND;
-      else process.env.AGENT_BACKEND = savedBackend;
     });
 
     it('completes the full cycle within the owner-approved budget cap (between-steps contract)', () => {

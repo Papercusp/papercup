@@ -141,7 +141,7 @@ describe('SessionExtractionLlm.generateResponse — strict JSON (D-005)', () => 
 });
 
 describe('SessionExtractionLlm — 401-driven OAuth refresh (P-004/D-004)', () => {
-  const AUTH_ERR = 'meridian error: 401 {"type":"error","error":{"type":"authentication_error"}}';
+  const AUTH_ERR = 'anthropic-direct error: 401 {"type":"error","error":{"type":"authentication_error"}}';
 
   it('401 → invalidate cache → re-read → retry once → success', async () => {
     let attempts = 0;
@@ -180,7 +180,7 @@ describe('SessionExtractionLlm — 401-driven OAuth refresh (P-004/D-004)', () =
 
   it('non-auth failure → rethrown untouched, no cache invalidation', async () => {
     const runTurn: SessionTurnRunner = vi.fn(async () => {
-      throw new Error('meridian error: 529 overloaded, exhausted retries');
+      throw new Error('anthropic-direct error: 529 overloaded, exhausted retries');
     });
     const invalidateTokenCache = vi.fn();
     const llm = new SessionExtractionLlm({ runTurn, invalidateTokenCache, warn: vi.fn() });
@@ -266,7 +266,7 @@ describe('loudness: dead OAuth token → writes land via next rung + warning (P-
     const warn = vi.fn();
     const deadSession = new SessionExtractionLlm({
       runTurn: async () => {
-        throw new Error('meridian error: 401 authentication_error: OAuth token expired');
+        throw new Error('anthropic-direct error: 401 authentication_error: OAuth token expired');
       },
       invalidateTokenCache,
       markDead,

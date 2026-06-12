@@ -9,7 +9,7 @@
  * The blueprint port makes the gym a blueprint whose `judge` role calls THIS tool;
  * the target declares its own rubric, which the tool resolves via
  * `rubricFromBlueprintGym` (falling back to GYM_JUDGE_RUBRIC_V1 per field). The
- * real meridian `llmCall` is imported lazily so the module never pulls the LLM
+ * real `llmCall` is imported lazily so the module never pulls the LLM
  * graph at registration; the build→call→parse→composite logic lives in the testable
  * `runGymJudge(args, { llmCall })` so it's unit-tested with a fake call (no network).
  *

@@ -130,7 +130,7 @@ export interface Idea {
 
 /**
  * The injected LLM call — structurally identical to the gym's `JudgeLlmCall`
- * so the real meridian `llmCall` (lib/llm-testing/llm-client) satisfies both,
+ * so the real `llmCall` (lib/llm-testing/llm-client) satisfies both,
  * and so every Scout step (ideators, critics, recombine) is unit-tested with a
  * fake call (no network). Defined here, not imported from the gym, so the Scout
  * module stays decoupled from the (Phase-2, heavily-edited) gym package.

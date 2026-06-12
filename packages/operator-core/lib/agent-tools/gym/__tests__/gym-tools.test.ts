@@ -28,7 +28,44 @@ describe('gym:signals tool', () => {
     const byName = Object.fromEntries(out.results.map((r: any) => [r.name, r]));
     expect(byName.regressionsFromTests).toEqual({ name: 'regressionsFromTests', value: true, applicable: true });
     expect(byName.plantedBugCaught).toEqual({ name: 'plantedBugCaught', value: true, applicable: true });
-    expect(out.known.sort()).toEqual(['plantedBugCaught', 'regressionsFromTests']);
+    // The original pair + the FB-23 drill-ground-truth trio (P-048).
+    expect(out.known.sort()).toEqual([
+      'drillMttsh',
+      'drillResolveRate',
+      'drillTriageAccuracy',
+      'plantedBugCaught',
+      'regressionsFromTests',
+    ]);
+  });
+
+  it('evaluates the drill signals over drill outcomes (value = SLO verdict, metric = the raw scalar)', async () => {
+    const res = await (signalsTool as any).handler({
+      signals: ['drillResolveRate', 'drillTriageAccuracy', 'drillMttsh'],
+      drillOutcomes: [
+        {
+          drillId: 'd-1',
+          drillClass: 'smoke-fail',
+          collectorFamily: 'smoke',
+          plantedAt: '2026-06-12T00:00:00.000Z',
+          resolvedAt: '2026-06-12T00:10:00.000Z',
+          expectedWatchdogKey: 'smoke:fail',
+          expectedKind: 'bug',
+          expectedSeverity: 'high',
+          expectedDecision: 'place',
+          triagedDecision: 'place',
+          resolvedWithEvidence: true,
+          mttsh: { totalMs: 600_000 },
+          status: 'resolved',
+          origin: 'drill',
+        },
+      ],
+    });
+    const out = parse(res);
+    expect(out.ok).toBe(true);
+    const byName = Object.fromEntries(out.results.map((r: any) => [r.name, r]));
+    expect(byName.drillResolveRate).toMatchObject({ value: true, applicable: true, metric: 1 });
+    expect(byName.drillTriageAccuracy).toMatchObject({ value: true, applicable: true, metric: 1 });
+    expect(byName.drillMttsh).toMatchObject({ value: true, applicable: true, metric: 600_000 });
   });
 
   it('marks a signal inapplicable (work-item-output target: no tests) rather than false', async () => {

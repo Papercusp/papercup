@@ -7,9 +7,9 @@
  * on the `anthropic-direct` stateless transport: Claude Code's own OAuth
  * session from `~/.claude/.credentials.json`, direct to api.anthropic.com
  * — no API key, no router, no subprocess, $0 marginal on the Max
- * subscription (D-001). Rides `runAgentChat({ backend: 'meridian' })`
+ * subscription (D-001). Rides `runAgentChat({ backend: 'anthropic-direct' })`
  * exactly like `runHaiku`, so the shared retry loop, rate governor and
- * usage telemetry (`emitMeridianUsage`) come for free — but with
+ * usage telemetry (`emitStatelessUsage`) come for free — but with
  * RELIABILITY semantics, not runHaiku's best-effort-null (D-005):
  *
  *  - **Strict JSON enforcement**: when mem0 asks for `json_object`, the
@@ -71,8 +71,8 @@ export type SessionTurnRunner = (args: {
 }) => Promise<SessionTurnResult>;
 
 /** Cumulative usage telemetry for the session extraction rung. The
- *  per-call numbers also flow through the shared meridian usage sink
- *  (`emitMeridianUsage`) — these counters exist so diagnostics (and the
+ *  per-call numbers also flow through the shared stateless usage sink
+ *  (`emitStatelessUsage`) — these counters exist so diagnostics (and the
  *  P-005 telemetry test) can see the rung's own totals. */
 export interface SessionExtractionUsage {
   calls: number;
@@ -133,7 +133,7 @@ export function _resetSessionExtractionDeadForTest(): void {
 }
 
 /** Does an error message look like an auth rejection from the transport?
- *  The meridian backend surfaces SDK APIErrors as `<status> <body>`. */
+ *  The anthropic-direct backend surfaces SDK APIErrors as `<status> <body>`. */
 function isAuthRejection(message: string): boolean {
   return /\b40[13]\b|unauthorized|authentication_error|invalid bearer|oauth token|token expired|forbidden/i.test(
     message,
@@ -190,8 +190,7 @@ export function extractStrictJson(text: string): string | null {
 }
 
 /** The default turn runner: one stateless Anthropic-format round-trip via
- *  the shared meridian backend (transport auto-resolves to
- *  anthropic-direct for a claude-code user). Throws on any error event —
+ *  the shared anthropic-direct backend. Throws on any error event —
  *  reliability semantics live in the caller. */
 const defaultRunTurn: SessionTurnRunner = async ({
   systemPromptText,
@@ -208,7 +207,7 @@ const defaultRunTurn: SessionTurnRunner = async ({
   let errorMessage: string | null = null;
   try {
     for await (const ev of runAgentChat({
-      backend: 'meridian',
+      backend: 'anthropic-direct',
       promptText: '',
       messages,
       ...(systemPromptText ? { systemPromptText } : {}),
@@ -237,7 +236,7 @@ const defaultRunTurn: SessionTurnRunner = async ({
 export interface SessionExtractionLlmOptions {
   maxTokens?: number;
   timeoutMs?: number;
-  /** Injectable for tests. Defaults to the live meridian turn. */
+  /** Injectable for tests. Defaults to the live anthropic-direct turn. */
   runTurn?: SessionTurnRunner;
   /** Injectable for tests. Defaults to the chat-stream cache drop. */
   invalidateTokenCache?: () => void;

@@ -18,7 +18,7 @@ export default defineTool({
   description:
     'Snapshot the fleet rate-limit layer now: live config (maxSimultaneousAgents + AIMD floor), fleet cap vs in-flight vs AIMD-effective concurrency, per (provider, model-class) governor buckets (paused/until, in-flight vs maxConcurrent, RPM/ITPM/OTPM headroom), and recent usage telemetry (token throughput, $spend, usage% where a provider ceiling is known). Buckets are empty until a governed agent turn has run. Use to see whether the fleet/gym is currently rate-limit-paced, paused, or AIMD-throttled.',
   guidance: {
-    when: 'Diagnose whether agent spawns / meridian calls are being paced or paused by the rate-limit governor (e.g. "why are runs slow / stalled?"), or read the fleet cap / effective concurrency / usage% the top-bar shows.',
+    when: 'Diagnose whether agent spawns / stateless LLM calls are being paced or paused by the rate-limit governor (e.g. "why are runs slow / stalled?"), or read the fleet cap / effective concurrency / usage% the top-bar shows.',
     notWhen: 'Service up/down — dev:service_health. Migration drift — db:check_drift. EDITING the cap — operator:rate_limit_config.',
   },
   capability: 'intel:read',

@@ -23,7 +23,7 @@
  * GYM_LOOP_CONTROL_DSN (control plane → the LIVE operator DB; else the gym DB).
  */
 
-// The gym judge + agents use the CODE backend (the `claude` CLI), not meridian — it paces
+// The gym judge + agents use the CODE backend (the `claude` CLI), not anthropic-direct — it paces
 // against the subscription session rather than hammering api.anthropic.com (what tripped the
 // rate limit). Set before llm-client loads (TEST_BACKEND read at module init). Overridable.
 process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';

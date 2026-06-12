@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
+import { applyHumanQueueRanking, humanQueueRankerSpec } from '../../queue-ranker/human-queue';
 import { triageIdea, summarizeTriages, type IdeaType, type TriageDecision } from '../../harness/improvements/triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
 
@@ -26,9 +27,9 @@ export default defineTool({
     'Queen-turn triage: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
+      'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
-    chaining: 'improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas.',
+    chaining: "improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas. A rank breakdown showing a 'calibration' contribution → calibration:summary { predictor } to weigh the bettor's claim before deciding.",
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -51,13 +52,16 @@ export default defineTool({
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
 
-    // Read all open ideas (P-010: filter by harnessSlug if provided)
+    // Read all open ideas (P-010: filter by harnessSlug if provided), human
+    // lane ranked by the ONE queue ranker (frontier P-040/P-045, D-005) — the
+    // Queen's triage walk follows the same order the digest, the tab, and the
+    // owner inbox show, with each item carrying its rank.features breakdown.
     const items = await readImprovementItems({ state: 'open', limit: 100, harnessSlug: args.harnessSlug });
-    const digest = buildDigest(items);
+    const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs: Date.now() }), { candidates: items });
 
     // Summary mode: just show the breakdown
     if (!args.mode || args.mode === 'summary') {
-      const summary = summarizeTriages(digest.humanQueue.concat(digest.autoEligible));
+      const summary = summarizeTriages([...digest.humanQueue, ...digest.autoEligible]);
       return {
         content: [
           {
@@ -73,29 +77,42 @@ export default defineTool({
                 humanQueue: digest.humanQueue.length,
               },
               triageSummary: summary,
+              // The one ranker's registry as data (P-040/D-005) — name/weight/
+              // description per feature, the inspectable half of rank.features.
+              ranker: humanQueueRankerSpec(),
             }),
           },
         ],
       };
     }
 
-    // Triage-all: classify all open ideas and show decisions
+    // Triage-all: classify all open ideas and show decisions. The human queue
+    // leads in RANK ORDER (P-040/P-045) with each item's breakdown attached, so
+    // the Queen walks the same order every other surface shows.
     if (args.mode === 'triage-all') {
-      const decisions = digest.humanQueue
-        .concat(digest.autoEligible)
-        .map((item) => {
-          const triage = triageIdea(item);
-          return {
-            id: item.id,
-            title: item.title,
-            kind: item.kind,
-            ideaType: item.ideaType,
-            score: item.score,
-            decision: triage.decision,
-            reason: triage.reason,
-            target: triage.target,
-          };
-        });
+      const decide = (item: (typeof digest.autoEligible)[number]) => {
+        const triage = triageIdea(item);
+        return {
+          id: item.id,
+          title: item.title,
+          kind: item.kind,
+          ideaType: item.ideaType,
+          score: item.score,
+          decision: triage.decision,
+          reason: triage.reason,
+          target: triage.target,
+        };
+      };
+      const decisions = [
+        ...digest.humanQueue.map((item) => ({
+          ...decide(item),
+          rankScore: item.rank.score,
+          rankFeatures: item.rank.features
+            .filter((f) => f.contribution !== 0)
+            .map((f) => `${f.feature}: ${f.contribution.toFixed(2)}`),
+        })),
+        ...digest.autoEligible.map(decide),
+      ];
 
       return {
         content: [
@@ -118,7 +135,7 @@ export default defineTool({
     // Decisions are persisted (by='improvement-retriage'); the Queen/owner can
     // still re-take any of them via triage-one.
     if (args.mode === 'retriage-all') {
-      const all = digest.humanQueue.concat(digest.autoEligible);
+      const all = [...digest.humanQueue, ...digest.autoEligible];
       const byDecision: Record<TriageDecision, number> = { place: 0, gate: 0, gym: 0, reject: 0 };
       const byType: Record<IdeaType, number> = {
         'product': 0,

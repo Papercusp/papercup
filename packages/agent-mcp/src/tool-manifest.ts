@@ -2,7 +2,7 @@
  * Pinned tool manifest — freezes the MCP `tools/list` surface so it is
  * byte-stable across reconnects/reloads.
  *
- * WHY: the SDK consuming this server (e.g. via Meridian) inlines the tool
+ * WHY: an SDK consuming this server (e.g. a stateless Anthropic-format client) inlines the tool
  * catalog into the prompt prefix. If the exposed set changes mid-session
  * (a re-fetch after the operator hot-reloads while you're adding tools),
  * the catalog bytes change and the upstream prompt cache busts — re-creating

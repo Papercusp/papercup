@@ -3,9 +3,9 @@
  * with a PRODUCTION cycle runner (cb4b9's buildScoutCycleDeps + runScoutCycle),
  * supplying the three irreducibly-injected deps the action owns:
  *
- *   - llmCall — the real meridian client (lib/llm-testing/llm-client; it satisfies
+ *   - llmCall — the real stateless LLM client (lib/llm-testing/llm-client; it satisfies
  *     ScoutLlmCall directly via the gym:judge pattern). Lazily imported so a boot
- *     that only REGISTERS the action never loads the meridian graph (the gym's
+ *     that only REGISTERS the action never loads the llm-client graph (the gym's
  *     ab-run pattern); it loads on the first real cycle.
  *   - createPlanDraft — the system-side `plans:new` DRAFT creator (scout-plan-draft).
  *   - archive — the gym-QD ArchivePort. P-012 production wire: built per cycle from

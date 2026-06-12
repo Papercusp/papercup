@@ -21,8 +21,9 @@ with a clear architectural split between:
 * **reflexive UI control** — fast, local, low-stakes; runs in the voice layer
   via ElevenLabs Conv AI client-side tools or directly via shortcuts/palette
 * **deep reasoning** — slow, agent-backed, high-context; lives in the
-  existing `operator-scan`/`operator-chat` endpoints (default `omp -p` via
-  Meridian + Claude Max OAuth, or `claude -p` when `AGENT_BACKEND=claude-code`),
+  existing `operator-scan`/`operator-chat` endpoints (`claude -p` under
+  `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p`, which
+  routes through its own Meridian router + Claude Max OAuth),
   accessed via the `delegate_to_agent` (alias `delegate_to_claude`) tool
 
 **Non-goals:** generic DOM clicker, free-text input tools, drag/resize
@@ -31,21 +32,21 @@ the `operator-chat` endpoint, not in the registry.
 
 **Decisions made through iteration** (see §9 for the full log):
 
-| Decision                                      | Resolution                                                                                                                                               |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                               |
-| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                              |
-| Deep reasoning                                | **agent CLI per-turn** (`omp -p` default via Meridian, `claude -p` when opted-in; existing pattern from `operator-scan`); persistent subprocess rejected |
-| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                         |
-| Tool surface for voice                        | \~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get                                                     |
-| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                   |
-| Aliases for renamed tools                     | None — hard cutover with prompt update in same PR                                                                                                        |
-| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                           |
-| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                       |
-| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                             |
-| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                |
-| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                        |
-| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                             |
+| Decision                                      | Resolution                                                                                                                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice provider                                | **ElevenLabs Conversational AI** (primary) + OpenAI Realtime (manual fallback in settings)                                                                                                                 |
+| Voice underlying LLM                          | **Claude Haiku 4.5** via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)                                                                                                |
+| Deep reasoning                                | **agent CLI per-turn** (`claude -p` under `AGENT_BACKEND=claude-code` — the deployed default — or `omp -p` via its Meridian router; existing pattern from `operator-scan`); persistent subprocess rejected |
+| Conversation memory                           | `claude-sessions` table; voice picks via injected list; auto-archive at 24h idle                                                                                                                           |
+| Tool surface for voice                        | \~22 tools: 12 reflexive commands + 9 fast queries + `delegate_to_claude` + claude-sessions list/get                                                                                                       |
+| Audit                                         | Two tables: `agent_actions` (full) + `agent_queries` (sampled per-def)                                                                                                                                     |
+| Aliases for renamed tools                     | None — hard cutover with prompt update in same PR                                                                                                                                                          |
+| Browser-routing                               | Tristate `browser: 'required' \| 'optional' \| 'none'` per def                                                                                                                                             |
+| Concurrency                                   | Per-def `concurrent: 'allow' \| 'queue' \| 'deny'`                                                                                                                                                         |
+| Workspace scoping                             | `ctx.workspace`, never threaded through args                                                                                                                                                               |
+| Cross-process                                 | Leader-bridge SSE pressure-tested in PR 1                                                                                                                                                                  |
+| Auto-fallback to OpenAI on ElevenLabs failure | **Manual** for v1. Auto-fallback rejected as premature complexity                                                                                                                                          |
+| `runMany` / batch tool calls                  | Deferred until concrete need                                                                                                                                                                               |
 
 ***
 

@@ -110,7 +110,7 @@ provenance (`deriveProvenance`), supplying the `idea → lens` map only it holds
 `cycle-deps.ts` assembles the concrete `ScoutCycleDeps`. Three deps are
 irreducibly injected by the caller (a slug alone can't produce them in a pure lib):
 
-* **`llmCall`** — the real meridian LLM client (the gym `JudgeLlmCall` pattern);
+* **`llmCall`** — the real stateless LLM client (anthropic-direct; the gym `JudgeLlmCall` pattern);
 * **`createPlanDraft`** — the **ctx-bound** `plans:new` draft creator (plans:new needs
   operator ctx for the write-lock + revision + plan-event — the honest ctx seam);
 * **`archive`** — the gym QD `ArchivePort` for the testable rail.

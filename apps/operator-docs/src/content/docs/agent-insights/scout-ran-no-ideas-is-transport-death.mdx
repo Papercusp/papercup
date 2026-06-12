@@ -25,10 +25,11 @@ call ever succeeded.
 1. `SELECT * FROM harness_shared.scout_ticks ORDER BY tick_at DESC` — the
    `detail` jsonb carries `stop` + `cycleId` (the cycleId's epoch-ms suffix is
    the cycle START; the row lands at completion).
-2. The operator host's journal for `[meridian]` warn lines during the cycle
-   window. **Transient errors (429/529) log retries; non-transient failures
+2. The operator host's journal for `[anthropic-direct]` warn lines during the
+   cycle window (`[meridian]` in logs before 2026-06-12 — EI-399 renamed the
+   backend). **Transient errors (429/529) log retries; non-transient failures
    (401, transport-resolution failure) are SILENT** — a cycle window with no
-   `[meridian]` lines at all points at the auth/cache class, not rate limits.
+   such lines at all points at the auth/cache class, not rate limits.
 3. Probe the exact path the cycle uses, from a FRESH process:
    `llmCall` in `packages/operator-core/lib/llm-testing/llm-client.ts`
    (one haiku call ≈ $0.00002). Fresh-process-green + long-lived-host-dead =

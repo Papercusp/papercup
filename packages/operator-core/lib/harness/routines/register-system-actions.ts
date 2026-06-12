@@ -148,6 +148,16 @@
  *     arming gate, which also gates the capture seams), governor-preflighted
  *     (loop `calibration-markets`), AND seeded INACTIVE
  *     (lib/calibration/seed-calibration-routine.ts).
+ *   - `system:red-queen-drill` — self-learning-frontier-2026-06-12 P-031
+ *     (FB-20). The vaccination cadence: per tick, ONE drill cycle — plant a
+ *     known origin=drill friction in the SANDBOX workspace, detect it with a
+ *     real watchdog tick, triage it through the real path (drill-opted-in),
+ *     heal it with the class's known remedy; MTTSH + the zero-leak assertion
+ *     land on harness_shared.red_queen_drills (mig 255). SQL-only; flag-gated
+ *     OFF (papercusp-red-queen — the frontier D-001 arming gate, which also
+ *     gates the out-of-band engine-death sentinel), governor-preflighted
+ *     (loop `red-queen`), AND seeded INACTIVE
+ *     (lib/red-queen/seed-red-queen-routine.ts).
  *   - `system:graduation-scan` — self-learning-frontier-2026-06-12 P-045/P-046
  *     (FB-19, D-008). Daily per-class clean-pass counting over the outcome
  *     rails (resolve evidence, decay verification, dispatch ledger, gym/EKG
@@ -185,3 +195,4 @@ import './prompt-ablation-action';
 import './deferral-interest-action';
 import './calibration-action';
 import './graduation-action';
+import './red-queen-action';

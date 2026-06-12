@@ -11,11 +11,11 @@
  *
  * Three legs feed the composite:
  *   - **llm-spine** — a stateless LLM call can resolve a transport right now
- *     (live Claude session → anthropic-direct, or live omp token → meridian).
+ *     (live Claude session → anthropic-direct).
  *     The spine: the gym judge, llm-testing, and implement-lane judging all
  *     ride it. Deliberately a credential-presence probe on the SAME resolution
  *     the real calls use — never a :3456 TCP probe, which reads permanently
- *     red on a healthy box (meridian-not-running is the normal state here;
+ *     red on a healthy box (the retired router not running is the normal state here;
  *     B-01's verified topology, agent-insights/gym-boot-readiness-and-meridian-topology).
  *   - **spawn-path** — an OPEN improvement on the runner-spawn structural
  *     watchdog key means the auto-implement lane cannot dispatch workers.
@@ -121,11 +121,11 @@ export function diffLearningHealth(
 
 /**
  * The LLM spine: would a stateless LLM call resolve a transport right now?
- * Credential presence (live Claude session → anthropic-direct, live omp token
- * → meridian) on the SAME resolution the real calls use — the leg can never
+ * Credential presence (live Claude session → anthropic-direct) on the SAME
+ * resolution the real calls use — the leg can never
  * disagree with the call path. Replaced the original :3456 TCP probe, which
  * raised "learning system OFFLINE" by construction on this box where
- * meridian-not-running is the healthy state (B-01, 2026-06-12).
+ * the (since-retired, EI-399) router not running is the healthy state (B-01, 2026-06-12).
  */
 export function checkLlmSpineLeg(probe: () => StatelessTransportProbe = probeStatelessTransport): InfraLeg {
   const result = probe();

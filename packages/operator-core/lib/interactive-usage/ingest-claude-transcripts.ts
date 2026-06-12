@@ -4,7 +4,7 @@
  * The 2026-06-09 audit found interactive Claude Code / psu sessions are the DOMINANT
  * token consumer (~235 MTok cache-read + ~170 MTok cache-write per week on this box)
  * yet wrote NO telemetry — `agent_usage_samples` only saw orchestrator spawns +
- * meridian calls. This module tails the local Claude Code transcripts
+ * stateless anthropic-direct calls. This module tails the local Claude Code transcripts
  * (`~/.claude/projects`, recursive `*.jsonl`), sums each file's assistant-message `usage`
  * deltas, and persists one sample per (file-delta × model) with
  * `source='interactive'`, so the spend rollups and the weekly token report see the

@@ -5,7 +5,7 @@
 // →offline edge incl. first-seen, recover on the offline→ edge only), the
 // tick's notify-exactly-once-per-transition semantics via the injected seams,
 // and the llm-spine leg's transport-probe mapping (credential presence, NOT a
-// :3456 TCP probe — meridian-not-running is the healthy state on this box).
+// :3456 TCP probe — the retired meridian router not running is the healthy state on this box).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkLlmSpineLeg,
@@ -160,7 +160,7 @@ describe('checkLlmSpineLeg', () => {
   it('a resolvable transport reads ok, with the transport label as evidence', () => {
     const probed = checkLlmSpineLeg(() => ({ ok: true, label: 'anthropic-direct' }));
     expect(probed).toEqual({ name: 'llm-spine', status: 'ok', detail: 'stateless transport: anthropic-direct' });
-    expect(checkLlmSpineLeg(() => ({ ok: true, label: 'meridian' })).detail).toBe('stateless transport: meridian');
+    expect(checkLlmSpineLeg(() => ({ ok: true, label: 'anthropic-direct' })).detail).toBe('stateless transport: anthropic-direct');
   });
 
   it('no usable credential reads down, carrying the resolver error as evidence', () => {

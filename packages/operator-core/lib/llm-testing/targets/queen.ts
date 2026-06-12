@@ -120,17 +120,29 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'improvements:triage',
-    description: 'Triage captured improvement items (EIs): accept, reject, or defer each with a note.',
+    description:
+      "Queen-turn triage: record a routing decision per scored idea. mode 'summary' shows the breakdown; 'triage-all' lists deterministic route proposals (human queue in rank order, each with its rank breakdown); 'triage-one' PERSISTS the Queen's decision for one idea — place (backlog/implementation) | gate (human review) | gym (A/B-verify a process/prompt change) | reject (close with the decided reason).",
     input: obj({
-      id: { type: 'string', description: 'EI id, e.g. EI-352.' },
-      decision: { type: 'string', description: 'accept | reject | defer.' },
-      note: { type: 'string' },
+      mode: { type: 'string', description: "summary | triage-all | triage-one | retriage-all." },
+      ideaId: { type: 'string', description: 'For triage-one, the idea to decide (e.g. EI-352).' },
+      decision: { type: 'string', description: "For triage-one: place | gate | gym | reject." },
+      reason: { type: 'string', description: 'Required with decision — recorded on the idea lifecycle.' },
     }),
   },
   {
     name: 'improvements:digest',
-    description: 'Browse the captured-improvements digest (open EIs by kind/severity).',
+    description:
+      'The scored improvement digest. humanQueue arrives RANKED by the one queue ranker (P-040): each item carries rank { score, features: [{ feature, value, weight, contribution, reasons }] } across blocking-impact / deferral-interest / owner-preference / calibration.',
     input: obj({ harness: { type: 'string' } }),
+  },
+  {
+    name: 'calibration:summary',
+    description:
+      'Per-persona per-domain calibration from recorded bets: Brier score, base rate, sample size, and the shrunk trust weight (0.5 = unknown, →1 proven-sharp, →0 proven-noisy) — plus the open-bet rollup. Read-only.',
+    input: obj({
+      domain: { type: 'string', description: "Filter: 'fix-survival' | 'plan-ship' | 'flake-recurrence'." },
+      predictor: { type: 'string', description: 'Filter to one persona (ownerId).' },
+    }),
   },
   {
     name: 'plans:get',
@@ -183,7 +195,7 @@ export const QUEEN_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
 ];
 
-export const QUEEN_BEHAVIORS = ['grade-routed-scout-ideas', 'triage-routed-drafts'];
+export const QUEEN_BEHAVIORS = ['grade-routed-scout-ideas', 'triage-routed-drafts', 'triage-ranked-queue'];
 
 /** The `queen` target — the su in-process loop with the Queen's prompt + catalog. */
 export function makeQueenTarget(): SuTarget {

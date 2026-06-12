@@ -153,7 +153,7 @@ export async function runOneAutoloopCycle(
   slug: string,
   opts: RunOneAutoloopCycleOptions = {},
 ): Promise<AutoloopCycleOutcome> {
-  // The gym judge + agents use the CODE backend (the `claude` CLI), not meridian — it paces
+  // The gym judge + agents use the CODE backend (the `claude` CLI), not anthropic-direct — it paces
   // against the subscription session rather than hammering api.anthropic.com. Set before the
   // lazy llm-client import below (TEST_BACKEND is read at that module's init). Overridable.
   process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
@@ -257,7 +257,7 @@ export async function runOneAutoloopCycle(
     await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
     log('operator ready (DBOS launched)');
 
-    // 4. LLM calls — imported lazily so fake mode never loads the meridian graph.
+    // 4. LLM calls — imported lazily so fake mode never loads the llm-client graph.
     const judge: JudgeLlmCall = FAKE ? fakeJudge : (await import('../llm-testing/llm-client')).llmCall;
     const proposer: GymLlmCall = FAKE ? fakeProposer : ((await import('../llm-testing/llm-client')).llmCall as unknown as GymLlmCall);
 

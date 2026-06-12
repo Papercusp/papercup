@@ -8,11 +8,11 @@
  *
  *   - operator        `@/lib/agent-config`           AGENT_BACKENDS              (subprocess set)
  *   - orchestrator    `@papercusp/orchestrator`      AGENT_BACKENDS              (subprocess set)
- *   - shared brains   `@papercusp/papercup-shared/agent` AGENT_BACKENDS            (subprocess + meridian)
+ *   - shared brains   `@papercusp/papercup-shared/agent` AGENT_BACKENDS            (subprocess + anthropic-direct)
  *                                                     SUBPROCESS_AGENT_BACKENDS  (subprocess set)
  *
  * The three SUBPROCESS sets must be identical; the brains' full set is
- * exactly the subprocess set plus the brains-only `meridian`.
+ * exactly the subprocess set plus the brains-only `anthropic-direct`.
  */
 import { describe, it, expect } from 'vitest';
 import { AGENT_BACKENDS as OPERATOR_BACKENDS } from '../agent-config';
@@ -33,8 +33,8 @@ describe('AgentBackend sets stay in sync across the submodule boundary', () => {
     expect(sorted(BRAINS_SUBPROCESS)).toEqual(sorted(OPERATOR_BACKENDS));
   });
 
-  it('the brains full set is exactly the subprocess set + brains-only meridian', () => {
-    expect(sorted(BRAINS_BACKENDS)).toEqual(sorted([...BRAINS_SUBPROCESS, 'meridian']));
+  it('the brains full set is exactly the subprocess set + brains-only anthropic-direct', () => {
+    expect(sorted(BRAINS_BACKENDS)).toEqual(sorted([...BRAINS_SUBPROCESS, 'anthropic-direct']));
   });
 
   it('codex is present everywhere (the P-001 widening landed)', () => {

@@ -122,11 +122,13 @@ export interface DrillClass {
   /** Plant the synthetic friction in the sandbox workspace. */
   plant: (sql: Sql, planted: { drillId: string }) => Promise<PlantedDrill>;
   /**
-   * The sandbox-scoped collectors that should detect this friction — thin
-   * wrappers over the REAL collector functions, run against
-   * SANDBOX_WORKSPACE_ID, stamping origin='drill' + the sandbox scope.
+   * The collectors that should detect this friction — thin wrappers over the
+   * REAL collector functions, run against the GIVEN workspace. The sandbox
+   * tick passes SANDBOX_WORKSPACE_ID (signals get origin='drill' + the sandbox
+   * scope stamped); the zero-leak check passes the LIVE workspace id and
+   * asserts the same sweep comes back empty.
    */
-  collectors: (sql: Sql, planted: PlantedDrill) => WatchdogCollector[];
+  collectors: (sql: Sql, planted: PlantedDrill, workspaceId: string) => WatchdogCollector[];
   /** Fix the friction (the known remedy ground truth measures against). */
   heal: (sql: Sql, planted: PlantedDrill) => Promise<void>;
   /** Remove every planted artifact (idempotent; runs even after a failed cycle). */

@@ -15,7 +15,7 @@
  *     turn picks up the updated summary. Failures never surface to the
  *     user — the prompt degrades to exactly the old window behavior.
  *   - **Metered** (D-004): the summarizer is a one-shot haiku call on the
- *     meridian backend, which already rides the shared RateLimitGovernor
+ *     anthropic-direct backend, which already rides the shared RateLimitGovernor
  *     and reports usage telemetry; on top, compaction is gated on the
  *     operator daily budget and its cost recorded via `recordSpend`.
  *   - **Concurrency-safe**: an in-process single-flight set stops the same

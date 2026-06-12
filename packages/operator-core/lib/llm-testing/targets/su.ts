@@ -14,7 +14,7 @@
  *                   a benign stub result
  *
  * **Why a hand-rolled loop (and not `llm-client.ts` / a subprocess brain):**
- *   - The injected `LlmCallFn` (`llm-client.ts` → meridian) is a one-shot
+ *   - The injected `LlmCallFn` (`llm-client.ts` → anthropic-direct) is a one-shot
  *     completion with NO tools support — it can't tool-call.
  *   - A `claude-code` subprocess brain reaches its MCP tools over HTTP to the
  *     `:3070` host, which is exactly the operator-converse hang D-001 avoids
@@ -64,7 +64,7 @@ const BEHAVIORS = [
 ];
 
 /** Per-1M-token prices for the models the SUT might run on (USD). Mirrors the
- *  shared chat-stream MERIDIAN_PRICES rows we care about. */
+ *  shared chat-stream ANTHROPIC_PRICES rows we care about. */
 const PRICES: Record<string, { in: number; out: number }> = {
   'claude-haiku-4-5': { in: 0.8, out: 4.0 },
   'claude-sonnet-4-6': { in: 3.0, out: 15.0 },
@@ -147,10 +147,10 @@ function loadPlaybook(): string {
 
 // ---------------------------------------------------------------------------
 // Transport — resolve a tool-capable Anthropic-format client, mirroring the
-// shared chat-stream `resolveStatelessTransport` (which is not exported).
-// Tool use needs the raw Anthropic API, so we PREFER a direct-to-Anthropic
-// path (explicit api key, then the Claude-Max OAuth session) and fall back to
-// the local Meridian router.
+// shared chat-stream `resolveStatelessTransport` (which is not exported):
+// direct-to-Anthropic with an explicit api key, else the Claude-Max OAuth
+// session. (The omp-token fallback via the local Meridian router was retired
+// 2026-06-12, EI-399.)
 // ---------------------------------------------------------------------------
 
 interface Transport {
@@ -187,22 +187,10 @@ function resolveTransport(): Transport | { error: string } {
       headers: { 'anthropic-beta': 'oauth-2025-04-20' },
     };
   }
-  const meridianTok = readJson<{ anthropic?: { token?: { access?: string } } }>(
-    join(homedir(), '.omp', 'agent', 'auth.json'),
-  )?.anthropic?.token?.access;
-  if (meridianTok) {
-    return {
-      baseURL: process.env.PAPERCUSP_MERIDIAN_URL ?? 'http://127.0.0.1:3456',
-      authToken: meridianTok,
-      headers: {
-        'x-meridian-agent': `papercup-su-llmtest-${Math.floor(performance.now()).toString(36)}`,
-      },
-    };
-  }
   return {
     error:
-      'su target needs ANTHROPIC_API_KEY, a Claude session (~/.claude/.credentials.json), ' +
-      'or omp/Meridian auth (~/.omp/agent/auth.json) to drive the SUT model.',
+      'su target needs ANTHROPIC_API_KEY or a Claude session ' +
+      '(~/.claude/.credentials.json) to drive the SUT model.',
   };
 }
 
@@ -212,7 +200,7 @@ function promptCacheEnabled(): boolean {
 
 // ---------------------------------------------------------------------------
 // Anthropic message shapes (kept local so we don't type-depend on the SDK,
-// which is dynamically imported like the shared meridian path).
+// which is dynamically imported like the shared stateless path).
 // ---------------------------------------------------------------------------
 
 interface TextBlock { type: 'text'; text: string }
@@ -548,7 +536,7 @@ function errorTurn(message: string, latencyMs: number): TurnResult {
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic SDK call + transient retry (mirrors the shared meridian path).
+// Anthropic SDK call + transient retry (mirrors the shared stateless path).
 // ---------------------------------------------------------------------------
 
 interface AnthropicResponse {

@@ -21,6 +21,7 @@ import {
   setAgentConfigBootstrap,
   classifyHttpError,
   classifyTurnError,
+  probeStatelessTransport,
   type AgentBackend,
   type ChatEvent,
   type RunAgentChatOptions,
@@ -65,7 +66,8 @@ export async function* runAgentChat(
 }
 
 export type { AgentBackend, ChatEvent, RunAgentChatOptions, TurnError, TurnProvider, TurnBackend };
-// Re-export the turn-error classifiers so operator modules import the agent taxonomy through
-// this one shim (a direct `@papercusp/papercup-shared/agent` value-import from a test-loaded
-// operator module trips vitest's `@/`-alias resolution on the transitive agent-config chain).
-export { classifyHttpError, classifyTurnError };
+// Re-export the turn-error classifiers + transport probe so operator modules import the agent
+// taxonomy through this one shim (a direct `@papercusp/papercup-shared/agent` value-import from a
+// test-loaded operator module trips vitest's `@/`-alias resolution on the transitive agent-config
+// chain).
+export { classifyHttpError, classifyTurnError, probeStatelessTransport };

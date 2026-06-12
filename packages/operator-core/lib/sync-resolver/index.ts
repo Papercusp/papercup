@@ -1592,6 +1592,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.redQueen — the Benchmark view's MTTSH vital sign ──
+  //
+  // Red Queen drill vitals (self-learning-frontier-2026-06-12 P-031 / FB-20):
+  // per-class mean-time-to-self-heal medians (detect → triage → fix), resolve
+  // rate, triage accuracy vs planted ground truth, and the zero-leak record,
+  // computed over harness_shared.red_queen_drills (migration 255). PG failure
+  // OR a not-yet-applied migration degrades to the empty snapshot (the panel
+  // renders its no-drills state, never a 500). Returns a 1-element array
+  // (client reads data[0]). NOT table-backed — the drill cycle fires
+  // notifySyncInvalidate('learning.redQueen') after each run.
+  'learning.redQueen': {
+    resolve: async () => {
+      const { EMPTY_MTTSH_VITALS } = await import('../red-queen/mttsh');
+      try {
+        const { readMttshVitalsSnapshot } = await import('../red-queen/store');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        return [await readMttshVitalsSnapshot(getOrgPg().sql)];
+      } catch (err) {
+        // 42P01 (undefined table) = migration 255 not applied yet — the
+        // expected pre-boot-apply state, not worth a warn.
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.redQueen] vitals read failed:', err instanceof Error ? err.message : err);
+        }
+        return [EMPTY_MTTSH_VITALS];
+      }
+    },
+  },
+
   // ── learning.scout — the Learning tab's Scout view (learning-system-audit P-042) ──
   //
   // Routed-ideas-by-rail over scout_routed_ideas (migration 194) + the newest

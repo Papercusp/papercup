@@ -17,7 +17,7 @@ Papercusp has three first-class agent surfaces, each tuned for a different laten
 
 ## Architectural split: fast voice + deep delegation
 
-The Operator's voice layer is intentionally a **fast router**, not a deep brain. When the user asks something simple ("is the harness running?", "open the operator panel"), voice handles it directly with sub-300ms latency. When the user asks something deep ("explain how authentication works in this repo", "what should I work on next?"), voice **delegates to a coding agent** via a single tool, which spawns `omp -p` (default, via Meridian + Claude Max) or `claude -p` (when `AGENT_BACKEND=claude-code`) with the full agent-mcp tool surface — file reads, code analysis, multi-step planning.
+The Operator's voice layer is intentionally a **fast router**, not a deep brain. When the user asks something simple ("is the harness running?", "open the operator panel"), voice handles it directly with sub-300ms latency. When the user asks something deep ("explain how authentication works in this repo", "what should I work on next?"), voice **delegates to a coding agent** via a single tool, which spawns `claude -p` (under `AGENT_BACKEND=claude-code`, the deployed default) or `omp -p` (routes through its own Meridian router + Claude Max) with the full agent-mcp tool surface — file reads, code analysis, multi-step planning.
 
 The architecture is documented in detail in the [Action Registry plan](/internal/docs/agents/action-registry).
 

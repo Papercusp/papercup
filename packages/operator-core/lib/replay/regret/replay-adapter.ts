@@ -108,7 +108,7 @@ export interface GovernedRegretRunnerOptions {
 /** The replayed-continuation runner: one LLM call continuing from the cut. */
 function llmReplayRunner(model: string, maxTokens: number): ReplayRunner {
   return async ({ systemPrompt, contextText }) => {
-    // Lazy: the meridian/llm-client graph must not load at module import
+    // Lazy: the llm-client graph must not load at module import
     // (the gym's ab-run precedent).
     const { llmCall } = await import('../../llm-testing/llm-client');
     const result = await llmCall({

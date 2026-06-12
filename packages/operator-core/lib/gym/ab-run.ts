@@ -10,7 +10,7 @@
  * Two modes (env GYM_AB_FAKE):
  *   GYM_AB_FAKE=1  → fake agent (fixtures/fake-agent.mjs) + fake judge → validates the WHOLE
  *                    assembly end-to-end with ZERO LLM spend.
- *   default (real) → real AGENT_CMD (GYM_AB_AGENT_CMD, e.g. `claude -p`) + the real meridian
+ *   default (real) → real AGENT_CMD (GYM_AB_AGENT_CMD, e.g. `claude -p`) + the real
  *                    opus-4-8 judge. Run this only when the shared Claude session has capacity
  *                    (the judge + pipeline agents share its rate limit). ~$2.5/judge-call.
  *
@@ -39,9 +39,9 @@ import { estimateConvergence } from './cost';
 import type { JudgeLlmCall } from './judge';
 import { waitForOperatorReady } from './operator-ready';
 
-// The gym judge + all gym agents use the CODE backend (the `claude` CLI), NOT meridian.
+// The gym judge + all gym agents use the CODE backend (the `claude` CLI), NOT anthropic-direct.
 // The CLI drives the Anthropic subscription session (it paces/retries against the sub),
-// whereas meridian hammers api.anthropic.com directly — which is what tripped the rate
+// whereas anthropic-direct hammers api.anthropic.com directly — which is what tripped the rate
 // limit. Must be set BEFORE llm-client loads (its TEST_BACKEND is read at module init), so
 // set it at module top; ab-run imports llm-client lazily inside main(). Overridable.
 process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
@@ -59,7 +59,7 @@ const REPEATS = Math.max(1, Number(process.env.GYM_AB_REPEATS ?? 2));
 // run on Sonnet 4.6 via a global --model on AGENT_CMD; with no AGENT_MODELS overrides every
 // role inherits it. The JUDGE is a SEPARATE llmCall pinned to opus-4-8 (GYM_JUDGE_RUBRIC_V1)
 // — and it ALSO routes through the claude-code backend (the CLI subscription), because the
-// module top sets `LLM_TEST_BACKEND='claude-code'` (NOT the llm-client default of `meridian`/
+// module top sets `LLM_TEST_BACKEND='claude-code'` (NOT the llm-client default of `anthropic-direct`/
 // the Anthropic SDK). So judge + pipeline both use the claude CLI. This is gym-scoped only;
 // the standard/prod agents are configured separately via operator_agent_config and untouched.
 const REAL_AGENT_CMD = process.env.GYM_AB_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
     log('operator ready (DBOS launched)');
 
-    // 4. Real judge llmCall — imported lazily so fake mode never loads the meridian graph.
+    // 4. Real judge llmCall — imported lazily so fake mode never loads the llm-client graph.
     const judge: JudgeLlmCall = FAKE ? fakeJudge : (await import('../llm-testing/llm-client')).llmCall;
 
     // 5. Ports + deps + config.

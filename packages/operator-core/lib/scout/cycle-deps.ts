@@ -9,7 +9,7 @@
  *
  * THREE deps are irreducibly injected (a slug alone can't produce them in a pure
  * lib), so the action/scheduler supplies them:
- *  - `llmCall` — the real meridian LLM client (the gym:judge pattern);
+ *  - `llmCall` — the real stateless LLM client (the gym:judge pattern);
  *  - `createPlanDraft` — the ctx-bound `plans:new` draft creator (plans:new needs
  *    operator ctx for the write-lock + revision + plan-event — the honest seam);
  *  - `archive` — su-8075f's gym QD `ArchivePort` for the gym rail (P-010/P-012).
@@ -47,7 +47,7 @@ import type { ScoutCycleDeps, ScoutCycleLimits } from './cycle';
 export interface BuildScoutCycleDepsOptions {
   /** Harness this cycle runs for — scopes the concrete-rail improvement capture. */
   harnessSlug: string;
-  /** Real meridian LLM client (the gym:judge pattern); the action/scheduler supplies it. */
+  /** Real stateless LLM client (the gym:judge pattern); the action/scheduler supplies it. */
   llmCall: ScoutCycleDeps['llmCall'];
   /** Ctx-bound `plans:new` draft creator (the broad rail) — the action supplies it. */
   createPlanDraft: PlanDraftCreator;

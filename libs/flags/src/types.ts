@@ -262,6 +262,17 @@ export const FLAGS = {
   // (D-001 owner-ratified dark-ship rule for frontier loops); the ranker
   // feature contributes 0 while OFF or while no bets are scored.
   CALIBRATION_MARKETS: "papercusp-calibration-markets",
+  // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
+  // `system:red-queen-drill` plants origin=drill synthetic frictions in the
+  // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog
+  // tick, routes them through the real triage path (drill-opted-in), heals
+  // them with the class's known remedy, and records MTTSH + a per-run
+  // zero-leak assertion (lib/red-queen). SQL-only, zero LLM spend. The same
+  // flag gates the out-of-band routine-engine-death sentinel (a plain
+  // interval in host-bootstrap — the 06-12 DBOS incident class). OFF until
+  // the plan's P-001 arming gate closes (D-001 owner-ratified dark-ship rule
+  // for frontier loops).
+  RED_QUEEN: "papercusp-red-queen",
   // self-learning-frontier-2026-06-12 (P-047 / FB-21): audit-as-sensors — five
   // learning-system SLO collectors riding the existing improvement-watchdog
   // tick (triage-distribution entropy, capture-vs-consume flow imbalance,
@@ -434,6 +445,14 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // owner-set per-cycle governor budget on loop `calibration-markets` +
   // activating the seeded-inactive routine are the P-001 arming acts.
   [FLAGS.CALIBRATION_MARKETS]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the Red
+  // Queen plants synthetic frictions and files origin=drill captures (new
+  // capture volume, even though the drill lane never reaches organic
+  // learners); the flag flip + an owner-set per-cycle governor budget on
+  // loop `red-queen` + activating the seeded-inactive routine are the P-001
+  // arming acts. The flag also arms the out-of-band engine-death sentinel
+  // (checked per pass — no restart needed).
+  [FLAGS.RED_QUEEN]: false,
   // OFF by default — same D-001 dark-ship rule as the loops above: the SLO
   // sensors are new CAPTURE SOURCES (a breach files into the improvements
   // queue) even though they ride the existing watchdog routine and spend

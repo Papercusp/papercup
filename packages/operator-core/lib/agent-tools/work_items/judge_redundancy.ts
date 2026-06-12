@@ -5,7 +5,7 @@
  * (deterministic tie-break), the item is settled to `passed`, and the winner's row is the
  * durable record of which replica was adopted. Needs ≥2 complete replicas.
  *
- * The real meridian `llmCall` is imported lazily (mirrors gym/judge.ts) so registration never
+ * The real `llmCall` is imported lazily (mirrors gym/judge.ts) so registration never
  * pulls the LLM graph; the build→judge→adopt logic lives in the testable judgeRedundancyGroup.
  */
 import { z } from 'zod';

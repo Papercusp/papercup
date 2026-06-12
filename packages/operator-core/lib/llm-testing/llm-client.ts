@@ -3,15 +3,13 @@
  * the generic `@papercusp/testing-shell/llm` runner is injected with via
  * `RunnerDeps` (Phase 7 P-073).
  *
- * Routes through the shared `runAgentChat` with `backend: 'meridian'` — a
- * stateless Anthropic-format round-trip whose transport auto-resolves: a
- * claude-code user goes DIRECT to Anthropic with their Claude session; an
- * omp user routes via the local Meridian router at :3456 (per-call
- * `x-meridian-agent` keeps each judge / sim-user call in an isolated
- * context — no cross-contamination).
+ * Routes through the shared `runAgentChat` with `backend: 'anthropic-direct'`
+ * — a stateless Anthropic-format round-trip DIRECT to api.anthropic.com with
+ * the Claude OAuth session (~/.claude/.credentials.json). (The omp-era leg
+ * via the local Meridian router at :3456 was retired 2026-06-12, EI-399.)
  *
  * Pricing + retry + auth + temperature-incompat all live in
- * `libs/papercup-shared/src/agent/chat-stream.ts`'s `meridian` branch
+ * `libs/papercup-shared/src/agent/chat-stream.ts`'s `anthropic-direct` branch
  * so every consumer of the shared lib gets the same hardened path.
  *
  * The host-agnostic pieces — `MODEL_PRICES` / `estimateCost`, `tryParseJson`,
@@ -20,10 +18,6 @@
  * transport (`llmCall`, which imports the operator's agent-chat-stream) and the
  * operator-credentials availability check (`isLlmAvailable`).
  */
-
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 import {
   LlmCallError,
@@ -35,6 +29,7 @@ import {
 import {
   runAgentChat,
   classifyHttpError,
+  probeStatelessTransport,
   type AgentBackend,
   type TurnError,
   type TurnProvider,
@@ -48,18 +43,18 @@ function providerForBackend(backend: AgentBackend): TurnProvider {
 }
 
 /**
- * Backend for the sim-user + judge calls. Defaults to `meridian` (Claude Max
- * via the local router) but is overridable to any agent backend — set
- * `LLM_TEST_BACKEND=claude-code` to route through the claude CLI instead (e.g.
- * to dodge a Meridian rate-limit window, paired with a lighter model via
- * LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
+ * Backend for the sim-user + judge calls. Defaults to `anthropic-direct`
+ * (Claude Max OAuth session, stateless HTTP) but is overridable to any agent
+ * backend — set `LLM_TEST_BACKEND=claude-code` to route through the claude
+ * CLI instead (e.g. to draw from the CLI's separate rate bucket, paired with
+ * a lighter model via LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
  */
 const TEST_BACKEND: AgentBackend =
-  (process.env.LLM_TEST_BACKEND as AgentBackend | undefined) ?? 'meridian';
+  (process.env.LLM_TEST_BACKEND as AgentBackend | undefined) ?? 'anthropic-direct';
 
 /**
- * One-shot completion via the `meridian` backend — the operator's concrete
- * implementation of the lib's injected `LlmCallFn` seam.
+ * One-shot completion via the `anthropic-direct` backend — the operator's
+ * concrete implementation of the lib's injected `LlmCallFn` seam.
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let finalText = '';
@@ -71,7 +66,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let sawResult = false;
 
   // Subprocess backends (claude-code / omp / codex) ignore `messages` and use
-  // ONLY `promptText` as the user turn, whereas `meridian` uses `messages`. To
+  // ONLY `promptText` as the user turn, whereas `anthropic-direct` uses `messages`. To
   // work under either, flatten the (usually single-user) message list into a
   // promptText too — a lone user message passes through verbatim; a multi-turn
   // list is role-labelled.
@@ -92,7 +87,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     temperature: opts.temperature,
     thinkingBudgetTokens: opts.thinkingBudgetTokens,
     // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
-    // the host ~/.claude. No-op for the default `meridian` backend (HTTP, no
+    // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
     // subprocess). Without this, each sim-user/judge `claude` spawn does a
     // 13-server MCP init (context7/github/cloudflare plugins via npx +
     // papercusp-su + connectors) and runs the host SessionStart/PreToolUse
@@ -103,7 +98,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     isolateConfig: true,
   })) {
     if (ev.type === 'delta') {
-      // The meridian backend yields a single delta with the full final
+      // The anthropic-direct backend yields a single delta with the full final
       // text (non-streaming round-trip). Don't accumulate twice with
       // the `result` event below — overwrite, don't append.
       finalText = ev.text;
@@ -128,7 +123,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(TEST_BACKEND));
     throw new LlmCallError(turn);
   }
-  if (!sawResult) throw new Error('llmCall: meridian backend produced no result event');
+  if (!sawResult) throw new Error(`llmCall: ${TEST_BACKEND} backend produced no result event`);
 
   let json: unknown;
   if (opts.responseFormat === 'json') {
@@ -139,19 +134,16 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
 }
 
 /**
- * True when the framework can make LLM calls — checks for the
- * Meridian OAuth token. Keeps the legacy ANTHROPIC_API_KEY / PG
- * credentials check as a fall-through so older deploys still work.
+ * True when the framework can make LLM calls — rides the SAME transport
+ * resolution the stateless call path uses (`probeStatelessTransport`: a live
+ * Claude OAuth session → anthropic-direct), so availability can never
+ * disagree with an actual call. Keeps the legacy ANTHROPIC_API_KEY / PG
+ * credentials check as a fall-through so older deploys still work. (The
+ * omp-token check this replaced probed a credential the stateless path no
+ * longer uses — EI-399.)
  */
 export async function isLlmAvailable(): Promise<boolean> {
-  // Preferred: Meridian OAuth token at ~/.omp/agent/auth.json
-  try {
-    const raw = readFileSync(join(homedir(), '.omp', 'agent', 'auth.json'), 'utf8');
-    const parsed = JSON.parse(raw) as { anthropic?: { token?: { access?: string } } };
-    if (parsed.anthropic?.token?.access) return true;
-  } catch {
-    /* fall through */
-  }
+  if (probeStatelessTransport().ok) return true;
   // Legacy: direct ANTHROPIC_API_KEY env / PG-stored credential
   const env = process.env.ANTHROPIC_API_KEY;
   if (env && env.trim()) return true;

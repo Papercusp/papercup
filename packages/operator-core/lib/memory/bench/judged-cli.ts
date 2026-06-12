@@ -6,7 +6,7 @@
  *     [--double-score 5] [--keep]
  *
  * Needs: PG reachable (the mem0 leg's bench schema) + a working
- * embedder key, AND a judge LLM transport (meridian OAuth or
+ * embedder key, AND a judge LLM transport (a Claude OAuth session or
  * ANTHROPIC_API_KEY) — the judge is an LLM call per sampled query per
  * backend (~25 × 3 by default + the agreement probe). Artifacts land
  * under .papercusp/bench-reports/.

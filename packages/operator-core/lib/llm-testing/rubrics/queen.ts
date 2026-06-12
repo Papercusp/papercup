@@ -53,3 +53,54 @@ export const QUEEN_RUBRIC: JudgeRubric = {
     },
   ],
 };
+
+export const QUEEN_DECIDER_RUBRIC_VERSION = '1.0.0';
+
+/**
+ * Queen-as-decider rubric — self-learning-frontier-2026-06-12 P-045 (FB-19,
+ * D-008). Secondary judge signal for the ranked-queue decider scenarios; the
+ * deterministic asserts (triage-one decisions recorded with the place/gate/
+ * gym/reject vocabulary, the graduation report gated, calibration consulted)
+ * are the load-bearing check.
+ */
+export const QUEEN_DECIDER_RUBRIC: JudgeRubric = {
+  version: QUEEN_DECIDER_RUBRIC_VERSION,
+  axes: [
+    {
+      id: 'rankedQueueDiscipline',
+      description:
+        "Did she consume the digest AS the ranked decision queue (P-040) — walking rank order and reading each item's rank.features breakdown — instead of re-deriving priority or ignoring the breakdown?",
+      anchors: {
+        bad: 'Ignores the rank breakdown entirely, re-orders the queue by her own ad-hoc scan, or treats the digest as informational rather than her decision queue.',
+        ideal: 'Works the queue in rank order, citing breakdown contributions (blocking-impact, calibration, …) in her reasons.',
+      },
+    },
+    {
+      id: 'trustWeighing',
+      description:
+        "When an item's breakdown carried a calibration contribution (a persona's claimed confidence is load-bearing), did she check the bettor's earned trust (calibration:summary) and weigh the claim by it — without overriding any explicit owner grade?",
+      anchors: {
+        bad: "Takes a 'fixed, 0.9 sure' claim at face value with a noisy bettor on record, or treats trust weights as overriding an owner's explicit grade.",
+        ideal: 'Consults the trust weight, discounts a proven-noisy bettor (or upweights a proven-sharp one), and says so in the decision reason.',
+      },
+    },
+    {
+      id: 'ownerLastResort',
+      description:
+        'Did she decide place/gym/reject herself on her cadence (D-008 — she IS the decider) and route gate ONLY what policy reserves for a human (owner-ratification asks like graduation:* reports, protected surfaces)?',
+      anchors: {
+        bad: 'Parks decidable items as gate by default, punts judgment to the owner in chat, or — worse — decides a graduation ratification ask herself (place/gym/reject on a graduation:* item).',
+        ideal: 'Every decidable item gets her own recorded decision; the graduation report is gated to the owner with a reason naming the ratification.',
+      },
+    },
+    {
+      id: 'decisionRecording',
+      description:
+        'Was each decision PERSISTED through improvements:triage (mode triage-one, decision + reason) rather than narrated in prose or left implicit?',
+      anchors: {
+        bad: 'Describes decisions in chat without recording them, or records decisions without reasons.',
+        ideal: 'One triage-one call per decided item with the place/gate/gym/reject vocabulary and a crisp reason.',
+      },
+    },
+  ],
+};

@@ -39,7 +39,7 @@ describe('runHaiku', () => {
   });
 
   it('overwrites rather than accumulates across delta/result (no doubling)', async () => {
-    // meridian emits the full text in the delta, then the same in result.
+    // anthropic-direct emits the full text in the delta, then the same in result.
     emits({ type: 'delta', text: 'full text' }, { type: 'result', finalText: 'full text' });
     expect(await runHaiku('x')).toBe('full text'); // not "full textfull text"
   });
@@ -72,7 +72,7 @@ describe('runHaiku', () => {
   it('passes maxTokens through to runAgentChat (default 200)', async () => {
     emits({ type: 'result', finalText: 'ok' });
     await runHaiku('x');
-    expect(runAgentChatMock).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 200, backend: 'meridian' }));
+    expect(runAgentChatMock).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 200, backend: 'anthropic-direct' }));
     await runHaiku('x', 50);
     expect(runAgentChatMock).toHaveBeenLastCalledWith(expect.objectContaining({ maxTokens: 50 }));
   });

@@ -12,6 +12,23 @@ vi.mock('../coordination/identity');
 // The tool now PERSISTS triage-one via triage-core (learning-system-audit P-010)
 // — mock the core so the unit test stays PG-free; triage-core has its own tests.
 vi.mock('../../harness/improvements/triage-core');
+// The tool ranks the human lane through the ONE queue ranker (frontier
+// P-040/P-045) — stub it shape-faithfully (a rank breakdown attached per item)
+// so the unit test stays PG-free; the ranker's real behavior is pinned in
+// lib/queue-ranker/human-queue.test.ts.
+vi.mock('../../queue-ranker/human-queue', () => ({
+  applyHumanQueueRanking: vi.fn(async (digest: { humanQueue: unknown[] }) => ({
+    ...digest,
+    humanQueue: digest.humanQueue.map((item) => ({
+      ...(item as Record<string, unknown>),
+      rank: {
+        score: 1,
+        features: [{ feature: 'blocking-impact', value: 1, weight: 1, contribution: 1, reasons: [] }],
+      },
+    })),
+  })),
+  humanQueueRankerSpec: vi.fn(() => [{ name: 'blocking-impact', weight: 1, description: 'stub' }]),
+}));
 
 const mockReadImprovementItems = vi.mocked(readImprovementItems);
 const mockBuildDigest = vi.mocked(buildDigest);
@@ -80,6 +97,8 @@ describe('improvements:triage tool', () => {
       expect(response.mode).toBe('summary');
       expect(response.digest.total).toBe(2);
       expect(response.triageSummary).toBeDefined();
+      // The one ranker's registry rides along as data (P-040/P-045, D-005).
+      expect(response.ranker).toEqual([{ name: 'blocking-impact', weight: 1, description: 'stub' }]);
     });
 
     it('defaults to summary mode when no mode is specified', async () => {
@@ -134,6 +153,10 @@ describe('improvements:triage tool', () => {
       const processDecision = response.decisions.find((d: any) => d.id === '2');
       expect(productDecision.decision).toBe('place');
       expect(processDecision.decision).toBe('gate');
+
+      // Human-queue items carry the P-040 rank breakdown for the Queen's walk.
+      expect(productDecision.rankScore).toBe(1);
+      expect(productDecision.rankFeatures).toEqual(['blocking-impact: 1.00']);
     });
 
     it('includes the Queen\'s instructions in the response', async () => {

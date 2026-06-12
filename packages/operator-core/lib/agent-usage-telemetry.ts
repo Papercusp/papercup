@@ -5,7 +5,7 @@
  * `anthropic-ratelimit-*` snapshot.
  *
  * Captured at the TWO points usage is observable (D-002):
- *   1. the in-process meridian path (`recordUsageHeaders`) — real anthropic-ratelimit-* headers;
+ *   1. the in-process anthropic-direct path (`recordUsageHeaders`) — real anthropic-ratelimit-* headers;
  *   2. the subprocess `{"type":"result", …usage}` JSONL event (`recordUsageTokens`) — token
  *      counts + $cost, visible even when the CLI hides the rate-limit headers.
  *
@@ -21,7 +21,7 @@ export interface UsageSample {
   bucketKey: string;
   provider: string;
   modelClass: string;
-  /** 'headers' (in-process meridian) | 'jsonl' (subprocess result) | 'interactive'
+  /** 'headers' (in-process anthropic-direct) | 'jsonl' (subprocess result) | 'interactive'
       (local Claude Code transcript ingest — token-usage-reduction-audit P-001). */
   source: 'headers' | 'jsonl' | 'interactive';
   inputTokens?: number;
@@ -110,7 +110,7 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
   }
 }
 
-/** Capture from an in-process response's headers (the meridian path). Parses anthropic-ratelimit-*
+/** Capture from an in-process response's headers (the anthropic-direct path). Parses anthropic-ratelimit-*
     + any usage tokens the caller passes. No-op if nothing useful is present. */
 export async function recordUsageHeaders(
   bucketKey: string,

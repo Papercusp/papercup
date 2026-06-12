@@ -11,7 +11,7 @@
  * a handler per op kind that executes the matching `*Local` store function.
  *
  * The JUDGE is special: its grader (`llmCall`) cannot serialize over the wire, so
- * the authority judges with its OWN grader — the production meridian `llmCall`
+ * the authority judges with its OWN grader — the production `llmCall`
  * (lazy-imported, mirroring gym/judge.ts + the judge_redundancy tool) unless a
  * test overrides it. This is correct: the judge of record is the authority's, not
  * the caller's.
@@ -37,7 +37,7 @@ import type { JudgeLlmCall } from './gym/primitives';
 
 export interface WorkItemReplicaAuthorityOpsOpts {
   /** Override the authority-side judge grader (tests / rigs). Default: the
-   *  production meridian `llmCall`, lazy-imported so registration never pulls the
+   *  production `llmCall`, lazy-imported so registration never pulls the
    *  LLM graph (mirrors the judge_redundancy tool). */
   judgeLlmCall?: JudgeLlmCall;
 }

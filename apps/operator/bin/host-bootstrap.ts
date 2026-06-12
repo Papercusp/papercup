@@ -527,4 +527,20 @@ export function runBootstrap(): void {
       }
     })();
   }
+
+  // Red Queen engine-death sentinel (self-learning-frontier P-031 / FB-20): a
+  // PLAIN interval, deliberately outside DBOS/routines, so it survives exactly
+  // the failure it watches for — the swallowed '[dbos] boot failed' above left
+  // every routine dead for 80+ min on 2026-06-12 with nothing detecting it.
+  // Inert while the papercusp-red-queen flag is OFF (checked every pass).
+  if (backgroundWorkers) {
+    void (async () => {
+      try {
+        const { armEngineDeathSentinel } = await import('@papercusp/operator-core/lib/red-queen/engine-death');
+        armEngineDeathSentinel();
+      } catch (err) {
+        console.warn('[red-queen-sentinel] arm failed (non-fatal):', err instanceof Error ? err.message : err);
+      }
+    })();
+  }
 }

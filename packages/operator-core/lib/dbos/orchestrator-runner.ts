@@ -68,7 +68,7 @@ import {
   classifyTurnError,
   isAccountWide,
   setGovernorStore,
-  setMeridianUsageSink,
+  setStatelessUsageSink,
   modelClassOf,
 } from '@papercusp/papercup-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
@@ -151,7 +151,7 @@ export function formatInvokeStderr(role: string, exitCode: number, stderr: strin
  *
  * ── What this chokepoint does NOT own: model-turn retry (D-005) ──
  *   The model-turn rate-limit retry (`runWithRetry`/`runAgentTurn`) is a SEPARATE
- *   layer that wraps our IN-PROCESS `meridian` calls. It physically CANNOT reach
+ *   layer that wraps our IN-PROCESS `anthropic-direct` calls. It physically CANNOT reach
  *   inside a spawned `claude`/`omp`/`codex` subprocess's turns — we only see the
  *   process boundary. The CLI self-retries its own turns and the director owns
  *   turn-retries; folding subprocess-turn retry in HERE would be our-retry ×
@@ -275,7 +275,7 @@ export async function spawnInvokeOnce(
     // The back-edge EI-86 closes: classify the child's outcome and, on an account-wide stop
     // (429 / overload / usage-cap), PENALIZE the shared governor so the AIMD + the rate
     // read-model react to the DOMINANT (spawned claude-CLI) traffic class — not just the
-    // in-process meridian lane. The claude/codex CLIs print these to STDOUT, so
+    // in-process anthropic-direct lane. The claude/codex CLIs print these to STDOUT, so
     // classifyTurnError folds it in on a failed exit. This feedback is ALWAYS-ON: pacing
     // (acquire, below) is opt-in, but without the penalize back-edge the governor stays blind
     // to bee 429s, buckets read green while the account chokes, and the AIMD never engages.
@@ -1011,7 +1011,7 @@ export function wireOrchestratorInvokeRunner(): void {
   if (_wired) return;
   _wired = true;
   // RB-009: surface rate-limit-governor pauses to coord + the toast stream. Idempotent; the
-  // governor is shared by the pipeline spawn, meridian calls, and the gym, so one init here
+  // governor is shared by the pipeline spawn, stateless LLM calls, and the gym, so one init here
   // (on operator boot) covers them all.
   initAgentGovernorObserver();
   // cloud-deployment-layer Phase 7 (P-019/P-021): bridge the governor's per-account pause
@@ -1027,9 +1027,9 @@ export function wireOrchestratorInvokeRunner(): void {
   // rate-limit-layer-v2 D-004: load the user's live fleet cap (maxSimultaneousAgents) + AIMD
   // floor from PG into the governor's global gate, and subscribe to live edits (no restart).
   void initRateLimitConfig().catch((err) => console.error('[rate-limit-config] init failed:', err));
-  // rate-limit-layer-v2 D-002 (capture point 1): the meridian path reports per-call token usage
+  // rate-limit-layer-v2 D-002 (capture point 1): the stateless anthropic-direct path reports per-call token usage
   // + any anthropic-ratelimit-* headers; persist each as a usage sample for the fleet read-model.
-  setMeridianUsageSink((ev) => {
+  setStatelessUsageSink((ev) => {
     const modelClass = modelClassOf(ev.model);
     void recordUsageHeaders(`anthropic:${modelClass}`, 'anthropic', modelClass, ev.headers ?? {}, {
       inputTokens: ev.inputTokens,

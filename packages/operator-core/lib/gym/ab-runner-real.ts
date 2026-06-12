@@ -6,11 +6,11 @@
  *   runPipeline       → runGymPipeline (P-001) over real GymRunnerPorts (createGymRunnerPorts)
  *                       + pipelineUsd = Σ agent_runs_consolidated.cost_usd for the harness (P-027)
  *   collectAndDistill → collectTrace (P-002) + distillTrace (P-029) over the gym PG + clone
- *   judge             → the caller's `llmCall` (real meridian opus-4-8, or a fake for tests)
+ *   judge             → the caller's `llmCall` (real anthropic-direct opus-4-8, or a fake for tests)
  *   store             → store.ts over the gym PG (createGymStore)
  *
  * `llmCall` is a REQUIRED config field (not imported here) so this module never pulls in
- * the llm-client/meridian graph — the runnable entrypoint passes the real one; tests pass
+ * the llm-client graph — the runnable entrypoint passes the real one; tests pass
  * a fake. I/O (git diff, bundle write) uses execFile (no shell) + node:fs.
  */
 import { execFile as execFileCb } from 'node:child_process';
@@ -83,7 +83,7 @@ export interface RealAbDepsConfig {
   gymSql: Sql;
   /** Real runner ports (clone/register/overlay/file/start/poll) — createGymRunnerPorts(...). */
   ports: GymRunnerPorts;
-  /** The judge LLM call — pass the real meridian llmCall for a real run, or a fake in tests. */
+  /** The judge LLM call — pass the real llmCall for a real run, or a fake in tests. */
   llmCall: JudgeLlmCall;
   /** Hard wall-clock cap per pipeline run. */
   timeoutMs: number;

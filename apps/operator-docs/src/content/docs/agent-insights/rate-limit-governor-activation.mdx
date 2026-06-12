@@ -11,7 +11,7 @@ status: active
 The `RateLimitGovernor` is no longer dormant: `PAPERCUSP_AGENT_GOVERNOR=1` and
 `PAPERCUSP_AGENT_GOVERNOR_PG=1` are set in **both** `apps/operator/.env.local`
 (staging `:3170` + Tauri dev spawns) and the release checkout's `.env.local`
-(`:3070`). Every orchestrator spawn + meridian call now paces through the shared
+(`:3070`). Every orchestrator spawn + stateless anthropic-direct call now paces through the shared
 per-`(provider, modelClass)` buckets, the fleet-wide `maxSimultaneousAgents`
 gate (live-editable via `operator:rate_limit_config` / the `/adv` top-bar
 `<FleetRateControl>`), AIMD effective concurrency, and staggered resume. Don't
@@ -27,7 +27,7 @@ the success path (only thrown SDK errors carry `.headers`). The fix (SDK
 headers carry the live limits. `chat-stream.ts` now does exactly this and
 returns the headers in the governed `TurnOutcome`, which both activates
 header-driven pacing (`governor.recordResponse`) and feeds the usage-telemetry
-sink (`setMeridianUsageSink` → `agent_usage_samples`, migration 161).
+sink (`setStatelessUsageSink`, named `setMeridianUsageSink` pre-EI-399 → `agent_usage_samples`, migration 161).
 
 ## Gotcha 2 — AIMD must dedupe penalties per backpressure EVENT
 

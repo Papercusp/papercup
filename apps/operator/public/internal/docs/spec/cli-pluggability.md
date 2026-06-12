@@ -5,7 +5,7 @@ URL: /internal/docs/spec/cli-pluggability
 
 import { Aside } from '@astrojs/starlight/components';
 
-The substrate invokes role agents by spawning a CLI subprocess. The default is `omp -p` (routes through Meridian + Claude Max OAuth); `claude -p` is also fully supported via `AGENT_BACKEND=claude-code`. That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
+The substrate invokes role agents by spawning a CLI subprocess. The deployed default is `claude -p` via `AGENT_BACKEND=claude-code`; `omp -p` (which routes through its own Meridian router + Claude Max OAuth) is the code-level fallback and fully supported. That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
 
 ## The CLI contract
 

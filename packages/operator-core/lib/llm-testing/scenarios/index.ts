@@ -92,6 +92,10 @@ import { SU_S12_SAME_TURN_INSIGHT } from './su/S12-same-turn-insight';
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './queen/Q01-grade-routed-on-triage';
 import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './queen/Q02-owner-grade-sovereign-no-retry';
+// QUEEN-Q03: self-learning-frontier-2026-06-12 P-045 (FB-19, D-008) — the Queen
+// DECIDES the ranked improvement queue (triage-one place/gate/gym/reject),
+// weighs claimed confidence by calibration trust, gates graduation reports.
+import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './queen/Q03-ranked-queue-decider';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -168,6 +172,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,
+  // queen ranked-queue decider coverage (self-learning-frontier P-045 / FB-19)
+  QUEEN_Q03_RANKED_QUEUE_DECIDER,
 ];
 
 export function getScenario(id: string): Scenario {

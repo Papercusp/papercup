@@ -17,8 +17,15 @@ import type { BlueprintGym } from '@papercusp/orchestrator/blueprint';
  */
 
 describe('GYM_SIGNAL_REGISTRY / resolveSignals', () => {
-  it('exposes the two built-in deterministic signals by name', () => {
-    expect(knownSignals().sort()).toEqual(['plantedBugCaught', 'regressionsFromTests']);
+  it('exposes the built-in deterministic signals by name', () => {
+    // The original pair + the FB-23 drill-ground-truth trio (P-048, drill-signals.ts).
+    expect(knownSignals().sort()).toEqual([
+      'drillMttsh',
+      'drillResolveRate',
+      'drillTriageAccuracy',
+      'plantedBugCaught',
+      'regressionsFromTests',
+    ]);
     expect(typeof GYM_SIGNAL_REGISTRY.regressionsFromTests).toBe('function');
     expect(typeof GYM_SIGNAL_REGISTRY.plantedBugCaught).toBe('function');
   });

@@ -15,7 +15,7 @@
  * Pure orchestration with injected effects (`AbDeps`): the pipeline run, the
  * collect+distill, the judge LLM call, and the gym-PG store are all injected, so the
  * sequencing + analysis are unit-tested with fakes (zero LLM, no operator, no PG). The
- * REAL execution passes real adapters (createGymRunnerPorts + the real meridian `llmCall`
+ * REAL execution passes real adapters (createGymRunnerPorts + the real `llmCall`
  * + a real AGENT_CMD); see `ab-runner-real.ts`. Bounded by construction — the caller sizes
  * `variants × tasks × repeats` (D-019 bounded spend).
  */
