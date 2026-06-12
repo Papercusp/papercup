@@ -60,6 +60,17 @@ export {
   matchResource,
 } from '@papercusp/tooldef';
 export { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
+export {
+  SLASH_PROMPT_PREFIX,
+  resolveSlashExposure,
+  slashPromptNameFor,
+  isSlashPromptName,
+  slashPromptToolName,
+  deriveSlashPromptArguments,
+  slashPromptListingFor,
+  renderSlashPrompt,
+} from '@papercusp/tooldef';
+export type { SlashPromptListing } from '@papercusp/tooldef';
 export { resolveBearer } from './auth';
 export { sanitizeToolSchema } from './tool-schema-sanitize';
 export {
@@ -122,6 +133,7 @@ export {
   type ToolExposure,
   type ToolExposureHttp,
   type ToolExposureMcp,
+  type ToolExposureSlash,
   type UnifiedToolContext,
   type MinimalEventSink,
   type PapercuspBinaryEnvelope,

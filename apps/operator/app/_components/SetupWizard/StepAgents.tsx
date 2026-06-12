@@ -66,6 +66,35 @@ export function StepAgents() {
   const ompPathOk = ompOk && meridianOk;
   const allOk = claudeOk || codexOk || ompPathOk;
 
+  // Per-runtime breakdown rows. The omp path needs BOTH halves, so its
+  // not-ok state names which half is missing instead of a bare "missing".
+  const runtimeRows: { label: string; hint: string; ok: boolean; detail: string }[] = [
+    {
+      label: 'Claude Code',
+      hint: 'standalone claude CLI',
+      ok: claudeOk,
+      detail: claudeOk ? 'Installed.' : 'Not installed.',
+    },
+    {
+      label: 'Codex',
+      hint: 'standalone codex CLI (OpenAI)',
+      ok: codexOk,
+      detail: codexOk ? 'Installed.' : 'Not installed.',
+    },
+    {
+      label: 'oh-my-pi + Meridian',
+      hint: 'multi-provider path, needs both',
+      ok: ompPathOk,
+      detail: ompPathOk
+        ? 'Installed.'
+        : ompOk
+          ? 'oh-my-pi installed — Meridian missing.'
+          : meridianOk
+            ? 'Meridian installed — oh-my-pi missing.'
+            : 'Not installed.',
+    },
+  ];
+
   const startInstall = async () => {
     setLastExitCode(null);
     setStartError(null);
@@ -141,6 +170,27 @@ export function StepAgents() {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {!loading && runtime && (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {runtimeRows.map((r) => (
+            <div
+              key={r.label}
+              className="pc-step__progress"
+              data-status={r.ok ? 'ok' : 'missing'}
+              style={{ margin: 0 }}
+            >
+              <div className="pc-step__progress-dot" />
+              <div className="pc-step__progress-text">
+                <strong>{r.label}</strong>
+                <span>
+                  {r.detail} <em style={{ opacity: 0.7 }}>({r.hint})</em>
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

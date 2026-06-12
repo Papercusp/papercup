@@ -739,6 +739,9 @@ export async function registerPluginTools(
               ? { name: mcpName, streaming: undefined, largeOutput: undefined }
               : expose.mcp ?? { name: mcpName },
             http: expose.http ?? { path: httpPath },
+            // Slash exposure (MCP-prompts slash commands) defaults ON when
+            // absent; thread the manifest value so `false`/overrides survive.
+            ...(expose.slash !== undefined ? { slash: expose.slash } : {}),
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           fn: handler as any,

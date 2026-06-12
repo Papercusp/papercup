@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from './tauri-detect';
 
@@ -32,12 +32,19 @@ export function StepWorkspace() {
     setTauri(isTauri());
   }, []);
 
+  // Seed-once guard: StrictMode runs this effect twice with both fetches in
+  // flight — the late one must not setDir() over what the user already typed.
+  const seededRef = useRef(false);
+
   useEffect(() => {
     void (async () => {
       try {
         const r = await fetch('/api/profile', { cache: 'no-store' });
         const j = (await r.json()) as Profile;
-        setDir(j.default_project_dir ?? '');
+        if (!seededRef.current) {
+          seededRef.current = true;
+          setDir(j.default_project_dir ?? '');
+        }
       } finally {
         setLoaded(true);
       }

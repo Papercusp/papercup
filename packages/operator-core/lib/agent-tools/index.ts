@@ -256,6 +256,9 @@ import './coordination/tools/declare-intent';
 // behavior is in wakeRecipients (P-007, gated on HIVE_AGENT_TABS); these expose it.
 import './coordination/tools/wake-mode';
 import './coordination/tools/wake-queue';
+// One cheap combined fleet glance (wake gate + staged wakes + bees + governor +
+// contextual tips) — the high-frequency statusline/TUI read.
+import './coordination/tools/glance';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
 // Open a work-item-scoped conversation with an agent — the inbox "Message owner"

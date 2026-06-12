@@ -288,6 +288,10 @@ function VoiceKeyRow({
       } else {
         toast.error(`Save failed: HTTP ${r.status}`);
       }
+    } catch (err) {
+      // Network-level failure (no HTTP response) — without this the rejection
+      // was unhandled and the user saw nothing.
+      toast.error(`Save failed: ${(err as Error).message}`);
     } finally { setBusy(false); }
   };
 

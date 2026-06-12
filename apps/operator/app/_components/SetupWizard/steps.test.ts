@@ -19,10 +19,12 @@ describe('Setup Wizard steps', () => {
     ]);
   });
 
-  it('exactly 4 required steps (embedded-pg, workspace, agents, logins)', () => {
+  it('exactly 3 required steps (embedded-pg, workspace, agents)', () => {
     const required = SETUP_STEPS.filter((s) => s.required).map((s) => s.id);
-    // `logins` is required — "agents cannot run without it" (steps.ts).
-    expect(required).toEqual(['embedded-pg', 'workspace', 'agents', 'logins']);
+    // `logins` is deliberately OPTIONAL (owner call 2026-06-12): sign-in
+    // can happen later from Settings or a terminal, and API keys are an
+    // alternative credential path — the wizard must not gate on it.
+    expect(required).toEqual(['embedded-pg', 'workspace', 'agents']);
   });
 
   it('findStep returns the matching definition', () => {

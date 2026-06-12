@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
@@ -77,6 +77,12 @@ export default function OperatorSettingsPage() {
     setStats(statsR);
   }, []);
 
+  // Seed the prompt/preferences FORM exactly once. loadAll re-runs after
+  // saves and actions (and twice on mount under StrictMode, both fetches in
+  // flight) — a later reset() here would clobber unsaved textarea edits.
+  // Display data (cfg paths, entries, budget, candidates) re-applies freely.
+  const formSeededRef = useRef(false);
+
   const loadAll = useCallback(async (options?: { blockOnExtras?: boolean }) => {
     const [cfgR, prefsR, budgetR] = await Promise.all([
       fetch('/api/agent-mcp/operator-config').then((r) => r.json()),
@@ -84,7 +90,10 @@ export default function OperatorSettingsPage() {
       fetch('/api/agent-mcp/operator-budget').then((r) => r.json()),
     ]);
     setCfg(cfgR);
-    reset({ prompt_user: cfgR.prompt_user ?? '', preferences: cfgR.preferences ?? '' });
+    if (!formSeededRef.current) {
+      formSeededRef.current = true;
+      reset({ prompt_user: cfgR.prompt_user ?? '', preferences: cfgR.preferences ?? '' });
+    }
     setEntries(prefsR.entries ?? []);
     setBudget(budgetR);
 
@@ -95,13 +104,20 @@ export default function OperatorSettingsPage() {
   }, [loadOperatorExtras, reset]);
 
   const decideCandidate = useCallback(async (capability: string, targetHarness: string, decision: 'approve' | 'dismiss') => {
-    await fetch('/api/agent-mcp/operator-standing-approvals', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ capability, targetHarness, decision }),
-    });
-    await loadAll();
-  }, [loadAll]);
+    try {
+      const r = await fetch('/api/agent-mcp/operator-standing-approvals', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capability, targetHarness, decision }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Refresh only the candidates/stats — never the form (an unsaved
+      // prompt edit must survive approving a card on the same page).
+      await loadOperatorExtras();
+    } catch (err) {
+      toast.error(`standing-approval ${decision} failed: ${(err as Error).message}`);
+    }
+  }, [loadOperatorExtras]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,6 +146,9 @@ export default function OperatorSettingsPage() {
         body: JSON.stringify({ prompt_user: data.prompt_user, preferences: data.preferences }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      // Mark the form clean with exactly what was saved (loadAll no longer
+      // resets the form — its once-guard protects in-flight edits).
+      reset(data);
       await loadAll();
       toast.success('Saved');
     } catch (err: any) {

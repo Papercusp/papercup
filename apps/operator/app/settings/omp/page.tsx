@@ -320,24 +320,37 @@ function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: u
 function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
   const initial = setting.isUnset ? '' : String(setting.parsed ?? '');
   const [v, setV] = useState<string>(initial);
+  const [err, setErr] = useState<string | null>(null);
   const dirtyRef = useRef(false);
   useEffect(() => { if (!dirtyRef.current) setV(setting.isUnset ? '' : String(setting.parsed ?? '')); }, [setting.parsed, setting.isUnset]);
   const commit = () => {
     if (!dirtyRef.current) return;
-    dirtyRef.current = false;
     const n = Number(v);
-    if (Number.isFinite(n)) onSave(n);
-    else onSave(v);
+    // A non-numeric or empty draft must never persist (the old fall-through
+    // saved the raw string; an empty field saved 0 — Number('') === 0).
+    // Flag inline and keep the stored value; dirty stays set so the draft
+    // survives echoes and the user can fix it.
+    if (v.trim() === '' || !Number.isFinite(n)) {
+      setErr('not a number — keeping the saved value');
+      return;
+    }
+    dirtyRef.current = false;
+    setErr(null);
+    onSave(n);
   };
   return (
-    <input
-      type="number"
-      value={v}
-      onChange={(e) => { dirtyRef.current = true; setV(e.target.value); }}
-      onBlur={commit}
-      onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
-      style={S.input}
-    />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <input
+        type="number"
+        value={v}
+        aria-invalid={err ? true : undefined}
+        onChange={(e) => { dirtyRef.current = true; setV(e.target.value); if (err) setErr(null); }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+        style={{ ...S.input, ...(err ? { borderColor: 'var(--bad)' } : {}) }}
+      />
+      {err && <span role="alert" style={{ fontSize: 11, color: 'var(--bad)' }}>{err}</span>}
+    </div>
   );
 }
 
@@ -351,17 +364,20 @@ function JsonControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unk
   }, [setting.parsed, setting.isUnset]);
   const commit = () => {
     if (!dirtyRef.current) return;
-    dirtyRef.current = false;
     if (!v.trim()) {
+      dirtyRef.current = false;
       setErr(null);
       onSave(setting.type === 'array' ? [] : {});
       return;
     }
     try {
       const parsed = JSON.parse(v);
+      dirtyRef.current = false;
       setErr(null);
       onSave(parsed);
     } catch (e) {
+      // Keep dirty set on a failed parse — clearing it let the next external
+      // echo overwrite the user's draft mid-fix.
       setErr((e as Error).message);
     }
   };

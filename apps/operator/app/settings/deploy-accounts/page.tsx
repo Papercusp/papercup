@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
+import { toast } from 'sonner';
 
 /**
  * Deploy accounts settings — the pool of Claude accounts used as per-machine /
@@ -87,6 +88,9 @@ export default function DeployAccountsPage() {
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'register failed');
       resetForm();
+      // Explicit success signal — the form reset alone is ambiguous if the
+      // follow-up list refresh fails (refresh surfaces its own listError).
+      toast.success(`Deploy account "${accountId}" registered`);
       await refresh();
     } catch (e) {
       setAddError((e as Error).message);

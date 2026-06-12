@@ -142,6 +142,13 @@ export const FLAGS = {
   // management; the hive:<slug> memory scope itself stays live (recall of an
   // unseeded pool is harmless).
   LEARNING_PACKS: "papercusp-learning-packs",
+  // slash-exposure-tool-catalog-2026-06-12 (P-007): gates the DYNAMIC slash
+  // projection — every MCP-exposed tool a session can see surfaces as a
+  // `tool:*` MCP prompt (slash command) on prompts/list, with prompts/get
+  // rendering the invoke-with-elicitation instruction. Static definePrompt
+  // prompts (agent:role, …) are NOT gated by this. OFF = the kill-switch if
+  // a client chokes on the 400+-prompt catalog (plan D-003 risk lever).
+  SLASH_EXPOSURE: "papercusp-slash-exposure",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -222,6 +229,11 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // unplaced frontier — a genuine wedge condition — and force:true overrides.
   // OFF is the kill-switch.
   [FLAGS.HIVE_WAKE_FRONTIER_GUARD]: true,
+  // ON by default (alpha flags-default-on policy + owner-ratified D-003 on
+  // slash-exposure-tool-catalog-2026-06-12): the full visible tool catalog
+  // projects as slash commands; per-tool expose.slash:false and this flag are
+  // the two scale-down levers.
+  [FLAGS.SLASH_EXPOSURE]: true,
   // ON by default (alpha flags-default-on policy, learning-packs D-007 plan):
   // new hives seed the selected learning pack; OFF skips seeding + hides the
   // pack-management surfaces.

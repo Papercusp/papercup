@@ -22,7 +22,7 @@ vi.mock('../../agent-bin-detect', () => ({
 
 async function callPost(body: unknown): Promise<Response> {
   const mod = await import('../routes/agent-config');
-  const route = (mod.default as Array<{ method: string; handler: (req: Request) => Promise<Response> }>)
+  const route = (mod.default as unknown as Array<{ method: string; handler: (req: Request) => Promise<Response> }>)
     .find((r) => r.method === 'POST')!;
   const req = new Request('http://localhost:3070/api/agent-config', {
     method: 'POST',

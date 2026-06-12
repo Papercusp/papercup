@@ -28,8 +28,9 @@ export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'logins',
     title: 'Sign in to your accounts',
-    summary: 'Uses your existing Claude or OpenAI plan. Required — agents cannot run without it.',
-    required: true,
+    summary:
+      'Uses your existing Claude or OpenAI plan. Optional here — sign in later from Settings or a terminal, or use API keys instead; agents need one credential path before they can run.',
+    required: false,
   },
   {
     id: 'keys',
