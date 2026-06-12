@@ -22,9 +22,13 @@ async function tryProbe(path: string, timeoutMs = 3000): Promise<boolean> {
 export async function detectClaude(): Promise<boolean> {
   if (await tryProbe('claude')) return true;
   // Desktop bundle: claude ships under meridian-host/node_modules/.bin.
+  // ~/.local/bin is where the official claude.ai/install.sh installs —
+  // missing it left the wizard's own successful install undetected
+  // (found live on the Windows VM 2026-06-12).
   const candidates = [
     `${process.cwd()}/meridian-host/node_modules/.bin/claude`,
     `${process.cwd()}/../meridian-host/node_modules/.bin/claude`,
+    `${process.env.HOME ?? ''}/.local/bin/claude`,
     `${process.env.HOME ?? ''}/.papercusp/runtime/node_modules/.bin/claude`,
     `${process.env.HOME ?? ''}/.claude/bin/claude`,
   ].filter(Boolean);

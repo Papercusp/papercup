@@ -43,6 +43,7 @@ The library set documented here was chosen, installed, and applied across the ha
 | Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | `@papercusp/grid-core` `RichGrid` | `<RichGrid<Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId />` |
 | Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | `@papercusp/grid-core` `GridTable` | `<GridTable headers data columnTypes={{ qty: 'stepper' }} />` |
 | 5000+ rows of mostly-scalar data, performance is the constraint | `@papercusp/grid-core` `DataGridShell` (canvas) | `<DataGridShell headers data formatters />` |
+| Kanban board (drag cards between status columns) | vendored Kibo UI primitives on `@dnd-kit` | `<KanbanProvider columns data onDataChange overlay>` + `KanbanBoard`/`KanbanHeader`/`KanbanCards`/`KanbanCard` from `app/harness/Kanban.tsx` (token CSS in `Kanban.css`; consumer example: `app/admin/plans/PlanKanbanView.tsx`) |
 
 ## Hard rules
 

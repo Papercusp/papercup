@@ -189,6 +189,13 @@ export function StepAgents() {
           rows={20}
           readOnly
           onExit={handleExit}
+          onSpawnError={(msg) => {
+            // Without this the button sticks on "Installing…" forever
+            // when the pty never comes up (found live 2026-06-12).
+            setInstalling(false);
+            setLastExitCode(-1);
+            setStartError(`Installer terminal failed to start: ${msg}. Use the manual commands below.`);
+          }}
         />
       )}
 
@@ -222,10 +229,11 @@ iwr https://claude.ai/install.ps1 | iex          # Windows PowerShell
 # Codex (OpenAI)
 npm install -g @openai/codex
 
-# Meridian + oh-my-pi (per-workspace install root)
+# Meridian (per-workspace install root; oh-my-pi ships bundled
+# with the desktop app — it has no npm package)
 mkdir -p ~/.papercusp/runtime
 cd ~/.papercusp/runtime && npm init -y
-npm install @rynfar/meridian @oh-my-pi/cli
+npm install @rynfar/meridian
 `}
           </pre>
           <p className="pc-agent-card__link">

@@ -261,6 +261,7 @@ export function StepGit() {
             env={spec.env}
             rows={14}
             onExit={handleExit}
+            onSpawnError={handleExit}
           />
           {exited && (
             <div className="pc-step__actions" style={{ marginTop: 8 }}>

@@ -188,6 +188,7 @@ export function AuthSignInCards({ intro }: AuthSignInCardsProps) {
                     env={specFor(p.id)!.env}
                     rows={14}
                     onExit={handleExit}
+                    onSpawnError={handleExit}
                   />
                   {isExited && (
                     <div className="pc-step__actions" style={{ marginTop: 8 }}>

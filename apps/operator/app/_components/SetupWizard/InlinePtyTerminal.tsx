@@ -42,6 +42,13 @@ export interface InlinePtyTerminalProps {
    * NOT respawn the pty.
    */
   readonly onExit?: (code: number) => void;
+  /**
+   * Fired when the pty could not be spawned at all (or its event
+   * channel failed to attach). Without this the parent's "running"
+   * state sticks forever — the wizard sat on "Installing…" with a
+   * dead pane (found live 2026-06-12). Captured in a ref like onExit.
+   */
+  readonly onSpawnError?: (message: string) => void;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -62,14 +69,16 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
-  const { command, args, cwd, env, readOnly = false, rows = 20, cols = 100, onExit } = props;
+  const { command, args, cwd, env, readOnly = false, rows = 20, cols = 100, onExit, onSpawnError } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onExitRef = useRef(onExit);
+  const onSpawnErrorRef = useRef(onSpawnError);
   const [error, setError] = useState<string | null>(null);
   const [exitedCode, setExitedCode] = useState<number | null>(null);
 
-  // Keep latest onExit accessible without making useEffect respawn.
+  // Keep latest callbacks accessible without making useEffect respawn.
   useEffect(() => { onExitRef.current = onExit; }, [onExit]);
+  useEffect(() => { onSpawnErrorRef.current = onSpawnError; }, [onSpawnError]);
 
   useEffect(() => {
     if (!isTauriNative() || !containerRef.current) return;
@@ -121,6 +130,7 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
       if (spawnRes.status === 'error') {
         setError(spawnRes.error);
         term.writeln(`\r\n\x1b[31mspawn error: ${spawnRes.error}\x1b[0m`);
+        onSpawnErrorRef.current?.(spawnRes.error);
         return;
       }
       const id = spawnRes.data.id;
@@ -137,6 +147,7 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
         setError('Tauri event.listen unavailable');
         void commands.ptyKill(id);
         liveId = null;
+        onSpawnErrorRef.current?.('Tauri event.listen unavailable');
         return;
       }
       unlistenData = await listen<{ id: string; data: string }>('pty-data', (ev) => {
@@ -178,7 +189,11 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
         } catch { /* ignore */ }
       });
       ro.observe(container);
-    })().catch((e) => setError(String(e?.message ?? e)));
+    })().catch((e) => {
+      const msg = String(e?.message ?? e);
+      setError(msg);
+      onSpawnErrorRef.current?.(msg);
+    });
 
     return () => {
       cancelled = true;

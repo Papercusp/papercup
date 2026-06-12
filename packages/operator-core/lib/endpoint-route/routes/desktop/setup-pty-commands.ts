@@ -9,7 +9,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { detectBinaries } from '../../../agent-bin-detect';
 
 const MERIDIAN_VERSION = '1.42.1';
-const OMP_PACKAGE = '@oh-my-pi/cli';
+// oh-my-pi has NO live npm package (`oh-my-pi` was unpublished 2026-05-21;
+// `@oh-my-pi/cli` never existed — a dead ref here 404s and aborts the whole
+// npm step, taking the codex install down with it; found live on the Windows
+// VM 2026-06-12). The omp binary ships bundled in the desktop sidecar on the
+// platforms that support it (D-006 @ windows-desktop-release-readiness:
+// Windows v1 has no omp) — it is not installable from here.
 const CODEX_PACKAGE = '@openai/codex';
 
 export interface SpawnSpec {
@@ -34,9 +39,9 @@ $runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 @'
 { "name":"papercusp-runtime","version":"0.0.0","private":true,
-  "dependencies":{"@rynfar/meridian":"${MERIDIAN_VERSION}","${OMP_PACKAGE}":"latest","${CODEX_PACKAGE}":"latest"} }
+  "dependencies":{"@rynfar/meridian":"${MERIDIAN_VERSION}","${CODEX_PACKAGE}":"latest"} }
 '@ | Set-Content -Path (Join-Path $runtime 'package.json') -Encoding UTF8
-Write-Host '==> installing meridian + omp + codex'
+Write-Host '==> installing meridian + codex'
 npm install --prefix $runtime --no-audit --no-fund
 Write-Host '==> done'
 `;
@@ -59,12 +64,11 @@ cat > ~/.papercusp/runtime/package.json <<JSON
   "private": true,
   "dependencies": {
     "@rynfar/meridian": "${MERIDIAN_VERSION}",
-    "${OMP_PACKAGE}": "latest",
     "${CODEX_PACKAGE}": "latest"
   }
 }
 JSON
-echo '==> installing meridian + omp + codex'
+echo '==> installing meridian + codex'
 npm install --prefix ~/.papercusp/runtime --no-audit --no-fund
 echo '==> done'
 `;
