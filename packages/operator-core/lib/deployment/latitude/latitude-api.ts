@@ -80,8 +80,12 @@ export interface LatitudeVmAttributes {
   /** Plan ID (`plan_…`). Resolve a human name via `listVmPlans()`. */
   plan: string;
   project: string;
+  /** Site slug (`DAL`, …). Honored on VM creates (live 2026-06-12); omitted = API's pick. */
+  site?: string;
   ssh_keys?: string[];
-  /** OS slug; the API defaults to ubuntu-24-04 for CPU plans. */
+  /** OS slug; as of 2026-06-12 an OS-less create is ACCEPTED but yields a
+   *  Running-but-empty VM with no image and no ssh — always pass one
+   *  (`ubuntu_24_04_x64_lts` is the plain vm.*-provisionable image). */
   operating_system?: string;
 }
 

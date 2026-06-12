@@ -169,6 +169,10 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
           name: (provider.hostname as string | undefined) ?? `papercusp-${ctx.harnessSlug}`,
           plan: planId,
           project,
+          // VM creates honor `site` (verified live 2026-06-12) — without it the
+          // API places the VM wherever it likes (an ASH request landed in DAL),
+          // which silently breaks co-located fleet runs.
+          ...(config.region ? { site: config.region } : {}),
           ssh_keys: provider.sshKeys as string[] | undefined,
           operating_system: (provider.operatingSystem as string | undefined) ?? DEFAULT_VM_OS,
         });

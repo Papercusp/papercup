@@ -221,7 +221,10 @@ describe('ShareHiveDialog (P-004)', () => {
       <ShareHiveDialog hiveSlug="acme" hiveLabel="pot" open onOpenChange={() => {}} {...s.props} />,
     );
     await screen.findByTestId('share-hive-form');
-    expect(screen.getByRole('heading', { name: /Share pot/ })).toBeTruthy();
+    // The visible heading carries the lexicon label + the slug (the Modal's
+    // sr-only Dialog.Title is also an h2, so match on the slug-bearing one).
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings.some((h) => /Share pot/.test(h.textContent ?? '') && /acme/.test(h.textContent ?? ''))).toBe(true);
   });
 
   it('renders nothing when closed', () => {
