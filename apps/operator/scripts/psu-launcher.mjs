@@ -713,6 +713,53 @@ export function usePtyHost({ env = process.env, stdin = process.stdin, stdout = 
   return !!(stdin.isTTY && stdout.isTTY);
 }
 
+/**
+ * Supervisor presence beat (agent-liveness-heartbeat-hardening-2026-06-12
+ * P-004): while psu is the live PARENT of the agent child — which it is in
+ * BOTH launch paths (spawnInherit waits + forwards exit; the pty host owns
+ * the pty for the session's lifetime) — keep the session's coord_presence
+ * row warm via the bootstrap-su heartbeat endpoint. Process-alive semantics,
+ * the interactive analog of the fleet nursery beat (operator-spawn.ts
+ * ensureSpawnHeartbeatLoop): an agent in an hour-long turn making NO tool
+ * calls stays live; the beat dies with this process (child exit →
+ * process.exit kills the timer; the timer is unref'd so it never holds psu
+ * open on its own).
+ *
+ * Quiet + fail-soft by design: a down/wedged operator means missed beats,
+ * never terminal spam or an error loop. touchHeartbeat server-side is a
+ * no-op when no presence row exists (D-003) — declare-intent at session
+ * start mints the row, this only keeps it warm.
+ *
+ * Exported with injectables for tests (scripts/__tests__).
+ */
+export const SUPERVISOR_BEAT_MS = 60_000;
+export function startSupervisorBeat(
+  ownerId,
+  { fetchImpl = fetch, intervalMs = SUPERVISOR_BEAT_MS, operatorUrl = OPERATOR_URL, token = null, setIntervalImpl = setInterval } = {},
+) {
+  if (!ownerId) return null;
+  const beat = async () => {
+    try {
+      const tok = token ?? readToken();
+      await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/heartbeat', {
+        method: 'POST',
+        signal: AbortSignal.timeout(5_000),
+        headers: {
+          'content-type': 'application/json',
+          ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+        },
+        body: JSON.stringify({ ownerId }),
+      });
+    } catch {
+      /* missed beat — the next tick retries; never surface */
+    }
+  };
+  const timer = setIntervalImpl(() => { void beat(); }, intervalMs);
+  if (typeof timer?.unref === 'function') timer.unref();
+  void beat(); // immediate first beat so a fresh session is warm at once
+  return timer;
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -737,6 +784,8 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // it. The discovery key is the coord ownerId (PAPERCUSP_SID); without one the
   // operator can't find the socket, so we keep the plain launch.
   const ownerId = env.PAPERCUSP_SID || null;
+  // liveness-hardening P-004: supervisor beat covers BOTH launch paths below.
+  startSupervisorBeat(ownerId);
   if (ownerId && usePtyHost({ env })) {
     try {
       hostThroughPty({

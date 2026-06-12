@@ -181,6 +181,41 @@ export function makeIdleGate({ idleMs = DEFAULT_IDLE_MS, capMs = DEFAULT_IDLE_WA
 }
 
 /**
+ * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
+ * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
+ * mid-turn signal — a generating agent repaints its TUI constantly — so
+ * `lastOutputAt` distinguishes *generating* from *idle-at-prompt*, which
+ * process-aliveness alone cannot. ANNOTATE-ONLY by design (plan D-002):
+ * this feeds the discovery file / roster display, never the claim-release
+ * rule — an attended-but-quiet session keeps its claims.
+ * Pure (injectable clock); exported for tests.
+ */
+export function makeActivityTracker({ now = Date.now } = {}) {
+  let lastInputAt = 0;
+  let lastOutputAt = 0;
+  return {
+    touchInput() {
+      lastInputAt = now();
+    },
+    touchOutput() {
+      lastOutputAt = now();
+    },
+    snapshot() {
+      return {
+        lastInputAt: lastInputAt || null,
+        lastOutputAt: lastOutputAt || null,
+        lastActivityAt: Math.max(lastInputAt, lastOutputAt) || null,
+      };
+    },
+  };
+}
+
+/** How often the discovery file's activity fields are refreshed. Coarse on
+ *  purpose — the consumer question is "active or idle for minutes?", and a
+ *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
+export const ACTIVITY_PERSIST_MS = 15_000;
+
+/**
  * Control-socket wire protocol (v1). A connector writes ONE UTF-8 payload then
  * half-closes. If it parses as a `{ v:1, mode, data }` envelope we act on the
  * mode; otherwise the whole payload is treated as a legacy idle-gated turn (so
@@ -326,19 +361,37 @@ export function hostThroughPty(o) {
     throw e;
   }
 
-  writeFileSync(
-    metaPath,
-    JSON.stringify({
-      ownerId,
-      advSessionId: advSessionId != null ? String(advSessionId) : null,
-      pid: process.pid,
-      ptyPid: child.pid,
-      sock,
-      command,
-      args,
-      startedAt: Date.now(),
-    }),
-  );
+  // P-006: activity annotation rides the SAME discovery file — additive
+  // fields only (the read-side contract in operator-core psu-pty-discovery.ts
+  // tolerates their absence for files written by older hosts).
+  const activity = makeActivityTracker();
+  const baseMeta = {
+    ownerId,
+    advSessionId: advSessionId != null ? String(advSessionId) : null,
+    pid: process.pid,
+    ptyPid: child.pid,
+    sock,
+    command,
+    args,
+    startedAt: Date.now(),
+  };
+  const writeMeta = () => {
+    try {
+      writeFileSync(metaPath, JSON.stringify({ ...baseMeta, ...activity.snapshot() }));
+    } catch {
+      /* best-effort — discovery degrades to the base contract */
+    }
+  };
+  writeMeta();
+  let lastPersisted = 0;
+  const activityTimer = setInterval(() => {
+    const snap = activity.snapshot();
+    if ((snap.lastActivityAt ?? 0) > lastPersisted) {
+      lastPersisted = snap.lastActivityAt ?? 0;
+      writeMeta();
+    }
+  }, ACTIVITY_PERSIST_MS);
+  if (typeof activityTimer.unref === 'function') activityTimer.unref();
 
   const idleGate = makeIdleGate();
 
@@ -387,8 +440,11 @@ export function hostThroughPty(o) {
     }
   });
 
-  // pty -> stdout
-  child.onData((d) => stdout.write(d));
+  // pty -> stdout (output bytes = the mid-turn signal, P-006)
+  child.onData((d) => {
+    activity.touchOutput();
+    stdout.write(d);
+  });
 
   // stdin (raw) -> pty, tracking activity for the idle gate
   if (bridgeTty) {
@@ -401,6 +457,7 @@ export function hostThroughPty(o) {
   if (typeof stdin.resume === 'function') stdin.resume();
   const onStdin = (d) => {
     idleGate.touch();
+    activity.touchInput();
     try {
       child.write(d.toString('utf8'));
     } catch {
@@ -443,6 +500,11 @@ export function hostThroughPty(o) {
       }
       try {
         stdout.off?.('resize', onResize);
+      } catch {
+        /* ignore */
+      }
+      try {
+        clearInterval(activityTimer);
       } catch {
         /* ignore */
       }

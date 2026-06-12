@@ -30,6 +30,18 @@
 
 PRAGMA foreign_keys=OFF;
 
+-- Legacy 'snapshot' rows: the kind was RETIRED (retire-snapshots-instance-spec
+-- 2026-06-09 D-005) — no current worker code can serve it and no client can
+-- act on it, so carrying it forward in the new CHECK would preserve a zombie.
+-- Removed here (the pre-008 `wrangler d1 export` backup preserves the bytes);
+-- their reports rows (if any) go with them to keep the FK valid.
+DELETE FROM reports WHERE harness_id IN (SELECT id FROM harnesses WHERE listing_kind = 'snapshot');
+DELETE FROM harnesses WHERE listing_kind = 'snapshot';
+
+-- Defensive: a previously-failed partial application may have left the
+-- staging table behind.
+DROP TABLE IF EXISTS harnesses_new;
+
 CREATE TABLE harnesses_new (
   id TEXT PRIMARY KEY NOT NULL,                      -- uuid v4 (unchanged)
 

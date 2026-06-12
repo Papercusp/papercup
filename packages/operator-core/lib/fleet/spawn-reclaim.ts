@@ -70,14 +70,44 @@ export function isSpawnProcessAlive(pid: number): boolean {
  */
 export const RECLAIM_STALE_MS = 5 * 60_000;
 
-/** Bump `heartbeat_at` for the given live spawnIds (only while still active). */
-export async function heartbeatSpawns(sql: Db, spawnIds: string[]): Promise<void> {
+/**
+ * Bump `heartbeat_at` for the given live spawnIds (only while still active).
+ *
+ * `outputAtMs` (liveness-hardening P-008): epoch-ms of the latest stdout/
+ * stderr chunk the supervising host observed per spawn — stamped onto
+ * `last_output_at` in the SAME tick, so stream activity costs zero extra
+ * write cadence. Monotonic guard (GREATEST) tolerates ticks racing.
+ */
+export async function heartbeatSpawns(
+  sql: Db,
+  spawnIds: string[],
+  outputAtMs?: ReadonlyMap<string, number>,
+): Promise<void> {
   if (spawnIds.length === 0) return;
-  await sql`
-    UPDATE harness_shared.spawned_agents
-       SET heartbeat_at = now()
-     WHERE spawn_id = ANY(${spawnIds}::text[])
-       AND status IN ('running', 'restarting')`;
+  const withOutput = outputAtMs
+    ? spawnIds.filter((id) => outputAtMs.has(id))
+    : [];
+  const plain = withOutput.length === 0
+    ? spawnIds
+    : spawnIds.filter((id) => !outputAtMs!.has(id));
+  if (plain.length > 0) {
+    await sql`
+      UPDATE harness_shared.spawned_agents
+         SET heartbeat_at = now()
+       WHERE spawn_id = ANY(${plain}::text[])
+         AND status IN ('running', 'restarting')`;
+  }
+  if (withOutput.length > 0) {
+    const ids = withOutput;
+    const stamps = withOutput.map((id) => new Date(outputAtMs!.get(id)!).toISOString());
+    await sql`
+      UPDATE harness_shared.spawned_agents AS a
+         SET heartbeat_at = now(),
+             last_output_at = GREATEST(coalesce(a.last_output_at, 'epoch'::timestamptz), u.output_at)
+        FROM unnest(${ids}::text[], ${stamps}::timestamptz[]) AS u(spawn_id, output_at)
+       WHERE a.spawn_id = u.spawn_id
+         AND a.status IN ('running', 'restarting')`;
+  }
 }
 
 export interface ReclaimResult {

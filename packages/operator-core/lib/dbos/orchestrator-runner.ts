@@ -184,6 +184,11 @@ export async function spawnInvokeOnce(
     resultPath?: string;
     forceSessionId?: string;
     onChildPid?: (pid: number) => void;
+    /** Fired on EVERY stdout/stderr chunk the child emits (liveness-hardening
+     *  P-008) — the in-process mid-turn signal. The caller throttles (the
+     *  spawn engine folds it into the nursery heartbeat tick); this layer
+     *  just reports. Best-effort: a throwing callback is ignored. */
+    onOutputActivity?: () => void;
   },
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
@@ -289,7 +294,7 @@ export async function spawnInvokeOnce(
         return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
       }
       try {
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
         feedGovernor(inner);
         return inner;
       } finally {
@@ -321,6 +326,7 @@ function runChild(
   signal?: AbortSignal,
   timeoutMs?: number,
   onChildPid?: (pid: number) => void,
+  onOutputActivity?: () => void,
 ): Promise<{ output: string; exitCode: number; stderr: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     // Already-aborted before we spawn → don't launch at all.
@@ -371,8 +377,11 @@ function runChild(
       if (killGrace) clearTimeout(killGrace);
       if (signal) signal.removeEventListener('abort', onAbort);
     };
-    child.stdout?.on('data', (d) => { stdout += String(d); });
-    child.stderr?.on('data', (d) => { stderr += String(d); });
+    // P-008: every emitted chunk is the mid-turn signal — stderr counts too
+    // (some backends log progress there while stdout buffers).
+    const reportActivity = () => { try { onOutputActivity?.(); } catch { /* best-effort */ } };
+    child.stdout?.on('data', (d) => { reportActivity(); stdout += String(d); });
+    child.stderr?.on('data', (d) => { reportActivity(); stderr += String(d); });
     child.on('close', (code) => {
       cleanup();
       // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the

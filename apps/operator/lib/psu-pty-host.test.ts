@@ -14,6 +14,8 @@ import {
   controlBytes,
   controlWrites,
   makeIdleGate,
+  makeActivityTracker,
+  ACTIVITY_PERSIST_MS,
   PSU_PTY_DIR,
 } from '../scripts/psu-pty-host.mjs';
 
@@ -118,5 +120,42 @@ describe('makeIdleGate (P-013 mid-keystroke safety)', () => {
     const r = await g.waitIdle();
     expect(r.deferred).toBe(true);
     expect(r.reason).toBe('idle-cap');
+  });
+});
+
+/**
+ * makeActivityTracker (liveness-hardening P-006/P-007): the output-side
+ * sibling of makeIdleGate. lastOutputAt fresh = the agent is emitting RIGHT
+ * NOW (a generating TUI repaints constantly); lastActivityAt = max(in, out).
+ * Annotate-only (plan D-002) — display/triage, never claim release.
+ */
+describe('makeActivityTracker (P-006 mid-turn activity)', () => {
+  it('starts with null activity (never seen)', () => {
+    const a = makeActivityTracker({ now: () => 123 });
+    expect(a.snapshot()).toEqual({ lastInputAt: null, lastOutputAt: null, lastActivityAt: null });
+  });
+
+  it('tracks input and output independently; lastActivityAt is the max', () => {
+    let t = 100;
+    const a = makeActivityTracker({ now: () => t });
+    a.touchInput();
+    t = 250;
+    a.touchOutput();
+    expect(a.snapshot()).toEqual({ lastInputAt: 100, lastOutputAt: 250, lastActivityAt: 250 });
+    t = 400;
+    a.touchInput();
+    expect(a.snapshot().lastActivityAt).toBe(400);
+    expect(a.snapshot().lastOutputAt).toBe(250);
+  });
+
+  it('output alone marks the session active (the heads-down generating case)', () => {
+    let t = 7;
+    const a = makeActivityTracker({ now: () => t });
+    a.touchOutput();
+    expect(a.snapshot()).toEqual({ lastInputAt: null, lastOutputAt: 7, lastActivityAt: 7 });
+  });
+
+  it('persist cadence is coarse (≥5s) so the pty bridge never becomes an fs hot loop', () => {
+    expect(ACTIVITY_PERSIST_MS).toBeGreaterThanOrEqual(5_000);
   });
 });

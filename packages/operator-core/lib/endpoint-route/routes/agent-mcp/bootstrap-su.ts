@@ -517,7 +517,7 @@ const post = defineTool({
 const heartbeat = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su/heartbeat',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req) {
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;

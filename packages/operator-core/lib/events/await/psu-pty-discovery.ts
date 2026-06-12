@@ -34,6 +34,14 @@ export interface PsuPtyHost {
   sock: string;
   command: string;
   startedAt: number;
+  // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
+  //    files written by older hosts). The pty stream is a true mid-turn
+  //    signal: lastOutputAt fresh = the agent is emitting right now;
+  //    lastActivityAt = max(input, output). Display/triage only (D-002) —
+  //    never an input to claim release.
+  lastInputAt?: number | null;
+  lastOutputAt?: number | null;
+  lastActivityAt?: number | null;
 }
 
 /** Shared with psu-pty-host.mjs sanitizeKey — MUST match byte-for-byte. */
