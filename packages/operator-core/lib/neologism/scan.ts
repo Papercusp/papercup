@@ -108,6 +108,9 @@ export async function readCoordTextRows(
      WHERE ts > now() - make_interval(days => ${windowDays})
        AND workspace_id = ANY(${scopes}::text[])
        AND body->>'kind' IN ('message', 'handoff', 'escalation', 'escalation_resolved')
+       -- ambient machine broadcasts (service-health, agent-governor, …) are
+       -- templated prose, not coinage — same default exclusion as coord:inbox
+       AND body->>'category' IS NULL
      ORDER BY ts DESC
      LIMIT ${READ_LIMIT}`;
   return rows
@@ -190,7 +193,11 @@ export function neologismCaptureInput(entry: NeologismEntry, windowDays: number)
     sourceRole: 'system',
     source: 'su',
     watchdogKey: neologismWatchdogKey(entry.term),
-    dedupScope: 'open',
+    // 'all', not FB-04's 'open': a proposal stream has decision semantics,
+    // not regression semantics — an owner-rejected abstraction stays
+    // rejected (re-open the item to revisit), it must not re-file each time
+    // the term resurges.
+    dedupScope: 'all',
     evidenceAt: entry.lastSeenAt,
     createdBy: 'system:neologism-mine',
     // FB-03/D-002 provenance, explicit: the mined signals are REAL fleet

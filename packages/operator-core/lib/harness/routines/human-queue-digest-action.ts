@@ -28,7 +28,8 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { readImprovementItems } from '../improvements/read-items';
 import { buildDigest } from '../improvements/digest';
-import { applyBlockingImpactRanking, type ImpactRankedItem } from '../improvements/blocking-impact';
+import type { ImpactRankedItem } from '../improvements/blocking-impact';
+import { applyHumanQueueRanking } from '../../queue-ranker/human-queue';
 
 /** Coord identity for the digest message (mirrors token-report / git-sync). */
 const HUMAN_DIGEST_IDENTITY: AgentIdentity = {
@@ -84,7 +85,7 @@ registerSystemAction('improvement-human-digest', async (ctx: SystemActionCtx) =>
     Number.isFinite(Number(cfg.top_n)) && Number(cfg.top_n) > 0 ? Number(cfg.top_n) : DEFAULT_TOP_N;
 
   const items = await readImprovementItems({ state: 'open' });
-  const digest = await applyBlockingImpactRanking(buildDigest(items), { candidates: items });
+  const digest = await applyHumanQueueRanking(buildDigest(items), { candidates: items });
   const composed = composeHumanQueueDigest(digest.humanQueue, { topN });
   if (!composed) {
     console.log('[human-queue-digest] human queue empty — nothing to send');

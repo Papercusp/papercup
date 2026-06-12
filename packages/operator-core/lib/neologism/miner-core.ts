@@ -89,6 +89,37 @@ const MIN_WORD_LEN = 3;
 const MAX_TERM_WORDS = 4;
 
 /**
+ * Ordinary English morphology, not coinage: a TWO-segment compound whose
+ * first segment is one of these is just a prefixed verb/adjective ("re-run",
+ * "pre-existing", "mid-flight", "per-cycle") — the 30d backtest's top noise
+ * class. Three-plus-segment compounds keep the prefix ("re-capture-flood"
+ * could be a real coinage). Deliberately EXCLUDES productive fleet prefixes
+ * like "auto"/"self"/"cross" ("auto-commit", "self-heal", "cross-machine"
+ * are genuine vocabulary).
+ */
+const GRAMMATICAL_PREFIXES = new Set([
+  're', 'co', 'de', 'un', 'pre', 'post', 'mid', 'non', 'semi', 'anti', 'sub', 'per',
+]);
+
+/**
+ * Very common English words: a bigram whose halves are BOTH in this set
+ * ("either way", "looks like", "work needing" — the backtest's other noise
+ * class, much of it templated boilerplate) is conversation, not coinage. One
+ * domain-ish half keeps the bigram ("green gate", "deploy train").
+ */
+const COMMON_WORDS = new Set(
+  (
+    'way ways like likes look looks looking either neither still well good bad real really work works working ' +
+    'worked need needs needed needing time times thing things place case cases point parts part kind sort fact ' +
+    'idea line lines side end ends back next going getting making doing done came come comes want wants wanted ' +
+    'see sees seeing say said says saying know knows known think thinks thought made make makes take takes ' +
+    'taken gets goes went left right keep keeps kept lets put puts rest others else enough sure yet far long ' +
+    'later soon today currently current existing exists exist pre non via everything anything something nothing ' +
+    'everyone anyone someone whole half lot lots bit bits stuff'
+  ).split(/\s+/),
+);
+
+/**
  * Strip the text regions that breed false terms before extraction:
  * backtick code spans, URLs, path-like tokens (anything with a slash),
  * file-extension tokens, and the fleet's id vocabulary (F-NNN / EI-NNN /
@@ -134,6 +165,7 @@ export function extractTerms(rawText: string): Set<string> {
   for (const m of text.matchAll(/\b[a-z]{2,}(?:-[a-z]{2,})+\b/g)) {
     const words = m[0].split('-');
     if (words.length > MAX_TERM_WORDS) continue;
+    if (words.length === 2 && GRAMMATICAL_PREFIXES.has(words[0])) continue;
     if (words.every((w) => !STOPWORDS.has(w))) terms.add(words.join(' '));
   }
 
@@ -145,7 +177,8 @@ export function extractTerms(rawText: string): Set<string> {
     for (let i = 0; i + 1 < words.length; i++) {
       const a = words[i];
       const b = words[i + 1];
-      if (STOPWORDS.has(a) || STOPWORDS.has(b)) continue;
+      if (a === b || STOPWORDS.has(a) || STOPWORDS.has(b)) continue;
+      if (COMMON_WORDS.has(a) && COMMON_WORDS.has(b)) continue;
       terms.add(`${a} ${b}`);
     }
   }
@@ -252,7 +285,18 @@ export function aggregateNeologisms(
   }
   const byTerm = new Map<string, Acc>();
 
+  // Collapse template re-broadcasts BEFORE counting: rows whose sanitized,
+  // digit-normalized text is identical are one utterance, not independent
+  // coinage events (the live corpus' worst offender: resource-lock drain
+  // notices — one template, dozens of synthetic senders). Keep the freshest.
+  const byText = new Map<string, CoordTextRow>();
   for (const row of rows) {
+    const key = sanitizeCoordText(row.text).toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+    const prev = byText.get(key);
+    if (!prev || row.at > prev.at) byText.set(key, row);
+  }
+
+  for (const row of byText.values()) {
     const atMs = Date.parse(row.at);
     if (!Number.isFinite(atMs) || atMs > asOfMs) continue;
     const isRecent = atMs >= recentStartMs;

@@ -69,6 +69,19 @@ describe('extractTerms', () => {
     for (const t of terms) expect(t).toMatch(/^[a-z]+( [a-z]+){0,3}$/);
     expect([...terms].some((t) => t.split(' ').some((w) => w.length < 3))).toBe(false);
   });
+
+  it('drops prefix morphology (re-run) but keeps productive fleet prefixes (auto-commit) and longer compounds', () => {
+    const terms = extractTerms('a re-run of the auto-commit after the re-capture-flood');
+    expect(terms).not.toContain('re run');
+    expect(terms).toContain('auto commit');
+    expect(terms).toContain('re capture flood');
+  });
+
+  it('drops both-halves-common bigrams (either way) but keeps half-domain ones (green gate)', () => {
+    const terms = extractTerms('either way the green gate held');
+    expect(terms).not.toContain('either way');
+    expect(terms).toContain('green gate');
+  });
 });
 
 describe('namespace coverage', () => {
@@ -99,7 +112,7 @@ describe('aggregateNeologisms', () => {
     const rows = [
       row('a', 'the wake-storm again', 1),
       row('b', 'another wake-storm here', 2),
-      row('c', 'wake-storm wake-storm', 3),
+      row('c', 'wow wake-storm wake-storm', 3),
       row('a', 'early wake-storm sighting', 20),
     ];
     const [e] = aggregateNeologisms(rows, [], emptyIndex, AS_OF).filter((x) => x.term === 'wake storm');
@@ -111,10 +124,13 @@ describe('aggregateNeologisms', () => {
   });
 
   it('a burst with no prior history scores high growth; steady usage scores ≈1', () => {
-    const burst = Array.from({ length: 4 }, (_, i) => row(`s${i}`, 'a wake-storm', i + 1));
+    // Distinct prose per row — identical texts would (correctly) collapse as
+    // template re-broadcasts.
+    const vary = (i: number) => String.fromCharCode(97 + (i % 26)) + String.fromCharCode(97 + ((i / 26) | 0));
+    const burst = Array.from({ length: 4 }, (_, i) => row(`s${i}`, `a wake-storm ${vary(i)}`, i + 1));
     const steady = [
-      ...Array.from({ length: 7 }, (_, i) => row(`s${i}`, 'the deploy train', i + 0.5)),
-      ...Array.from({ length: 20 }, (_, i) => row(`s${i}`, 'the deploy train', 8 + i)),
+      ...Array.from({ length: 7 }, (_, i) => row(`s${i}`, `the deploy train ${vary(i)}`, i + 0.5)),
+      ...Array.from({ length: 20 }, (_, i) => row(`s${i}`, `the deploy train z${vary(i)}`, 8 + i)),
     ];
     const entries = aggregateNeologisms([...burst, ...steady], [], emptyIndex, AS_OF);
     const ws = entries.find((e) => e.term === 'wake storm')!;
@@ -133,6 +149,21 @@ describe('aggregateNeologisms', () => {
     );
     expect(entries.find((e) => e.term === 'wake storm')).toBeUndefined();
     expect(entries.find((e) => e.term === 'future term')).toBeUndefined();
+  });
+
+  it('collapses template re-broadcasts (identical digit-normalized text) to one utterance', () => {
+    const template = (n: number, d: number) =>
+      ({ speaker: `drain-X-${n}`, text: `"dev-server" is draining for an exclusive hold by res:${n}`, at: daysAgo(d) });
+    const entries = aggregateNeologisms(
+      [template(111, 1), template(222, 2), template(333, 3), row('human', 'a real wake-storm', 1)],
+      [],
+      emptyIndex,
+      AS_OF,
+    );
+    const drain = entries.find((e) => e.term === 'exclusive hold');
+    expect(drain?.recentMentions).toBe(1);
+    expect(drain?.distinctSpeakers).toBe(1);
+    expect(entries.find((e) => e.term === 'wake storm')).toBeDefined();
   });
 
   it('matches insight corroboration in both spaced and hyphenated spellings', () => {

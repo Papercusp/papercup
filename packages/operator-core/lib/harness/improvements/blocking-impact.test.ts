@@ -1,7 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   BLOCKING_IMPACT_WEIGHTS,
-  applyBlockingImpactRanking,
   computeBlockingImpact,
   rankHumanQueueByImpact,
   stalenessMultiplier,
@@ -134,47 +133,5 @@ describe('rankHumanQueueByImpact', () => {
     };
     const ranked = rankHumanQueueByImpact(digest);
     expect(ranked.map((r) => r.id)).toEqual(['EI-20', 'EI-21']);
-  });
-});
-
-describe('applyBlockingImpactRanking', () => {
-  it('fetches link counts through the injected reader and re-orders humanQueue only', async () => {
-    const items: ImprovementCandidate[] = [
-      cand({ id: 'EI-30', severity: 'minor', title: 'first lone topic alpha', createdAt: daysAgo(1) }),
-      cand({ id: 'EI-31', severity: 'minor', title: 'second lone topic beta', createdAt: daysAgo(1) }),
-    ];
-    const digest = buildDigest(items, { nowMs: NOW });
-    const readLinkCounts = vi.fn(async () => counts({ 'EI-31': { blocksOut: 5, inboundRefs: 0 } }));
-    const ranked = await applyBlockingImpactRanking(digest, { candidates: items }, { readLinkCounts });
-    expect(readLinkCounts).toHaveBeenCalledWith(expect.arrayContaining(['EI-30', 'EI-31']));
-    expect(ranked.humanQueue[0].id).toBe('EI-31');
-    expect(ranked.headline).toBe(digest.headline); // everything else untouched
-    expect(ranked.autoEligible).toEqual(digest.autoEligible);
-  });
-
-  it('degrades to link-free ranking when the link read fails (never throws)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const items = [cand({ id: 'EI-40', severity: 'major', title: 'lone gamma topic', createdAt: daysAgo(1) })];
-      const digest = buildDigest(items, { nowMs: NOW });
-      const ranked = await applyBlockingImpactRanking(
-        digest,
-        { candidates: items },
-        { readLinkCounts: async () => Promise.reject(new Error('pg down')) },
-      );
-      expect(ranked.humanQueue[0].id).toBe('EI-40');
-      expect(ranked.humanQueue[0].impact.blocksOut).toBe(0);
-      expect(warn).toHaveBeenCalledOnce();
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('skips the link read entirely for an empty human queue', async () => {
-    const digest = buildDigest([], { nowMs: NOW });
-    const readLinkCounts = vi.fn(async () => new Map<string, IssueLinkCounts>());
-    const ranked = await applyBlockingImpactRanking(digest, {}, { readLinkCounts });
-    expect(readLinkCounts).not.toHaveBeenCalled();
-    expect(ranked.humanQueue).toEqual([]);
   });
 });

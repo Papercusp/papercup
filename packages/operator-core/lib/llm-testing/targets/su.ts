@@ -110,8 +110,13 @@ export function resolvePlaybookPath(): string {
   );
 }
 
-function loadPlaybook(): string {
-  if (_playbookCache !== undefined) return _playbookCache;
+/**
+ * The spliced playbook BODY (no framing prefix). Exported for the FB-09
+ * shadow-ablation runner (lib/ablation), which segments + ablates THIS text —
+ * the exact body the SUT sees — and re-frames it via SU_PLAYBOOK_FRAMING.
+ * Uncached: callers are per-cycle, not per-model-call.
+ */
+export function loadPlaybookBody(): string {
   // The raw source carries generated-section MARKERS (spliced by
   // renderSuPlaybook at launch). This hermetic target reads the file directly,
   // so splice the ones that are pure/hermetic, then strip any remainder rather
@@ -122,16 +127,21 @@ function loadPlaybook(): string {
   //   - WIRE-SCHEMAS: needs the live registry + tool projections (not booted in
   //     this hermetic target), so it stays stripped — the P-013 scenarios carry
   //     the column schema in the catalog tool schemas instead.
-  const body = readFileSync(resolvePlaybookPath(), 'utf8')
+  return readFileSync(resolvePlaybookPath(), 'utf8')
     .replace(COORD_LEGEND_MARKER, renderCoordLegend())
     .replace(/<!-- PAPERCUSP-SU:[A-Z-]+ -->\n*/g, '');
-  // A thin framing line so the model treats the playbook as ITS operating
-  // system prompt (not a doc handed to it by the user). The playbook content
-  // itself carries every behavioral rule under test.
-  _playbookCache =
-    'You are a Papercusp superuser engineer-collaborator (a `psu` session). ' +
-    'The following is your operating playbook — follow it exactly.\n\n' +
-    body;
+}
+
+/** A thin framing line so the model treats the playbook as ITS operating
+ *  system prompt (not a doc handed to it by the user). The playbook content
+ *  itself carries every behavioral rule under test. */
+export const SU_PLAYBOOK_FRAMING =
+  'You are a Papercusp superuser engineer-collaborator (a `psu` session). ' +
+  'The following is your operating playbook — follow it exactly.\n\n';
+
+function loadPlaybook(): string {
+  if (_playbookCache !== undefined) return _playbookCache;
+  _playbookCache = SU_PLAYBOOK_FRAMING + loadPlaybookBody();
   return _playbookCache;
 }
 
@@ -253,9 +263,11 @@ export function buildSuSystemBlocks(
  * Anything else throws at open() — a silently-dropped knob would mislabel a
  * baseline run as the candidate.
  */
-const SU_CONFIG_DELTA_KEYS = new Set(['sutModel']);
+const SU_CONFIG_DELTA_KEYS = new Set(['sutModel', 'systemPromptText']);
 
-export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): { sutModel?: string } {
+export function parseSuConfigDelta(
+  delta: Record<string, unknown> | undefined,
+): { sutModel?: string; systemPromptText?: string } {
   if (!delta) return {};
   const unknown = Object.keys(delta).filter((k) => !SU_CONFIG_DELTA_KEYS.has(k));
   if (unknown.length > 0) {
@@ -264,12 +276,23 @@ export function parseSuConfigDelta(delta: Record<string, unknown> | undefined): 
         `supported: ${[...SU_CONFIG_DELTA_KEYS].join(', ')}`,
     );
   }
-  const out: { sutModel?: string } = {};
+  const out: { sutModel?: string; systemPromptText?: string } = {};
   if (delta.sutModel !== undefined) {
     if (typeof delta.sutModel !== 'string' || !delta.sutModel.trim()) {
       throw new Error('su target: variant configDelta.sutModel must be a non-empty string');
     }
     out.sutModel = delta.sutModel.trim();
+  }
+  if (delta.systemPromptText !== undefined) {
+    // The FB-09 shadow-ablation seam (self-learning-frontier P-023): the FULL
+    // framed system-prompt text REPLACING the target's loader for this run —
+    // the caller frames it (SU_PLAYBOOK_FRAMING + ablated body) so baseline
+    // and ablated arms differ only in the removed rule. Never trimmed: the
+    // text IS the experiment.
+    if (typeof delta.systemPromptText !== 'string' || !delta.systemPromptText.trim()) {
+      throw new Error('su target: variant configDelta.systemPromptText must be a non-empty string');
+    }
+    out.systemPromptText = delta.systemPromptText;
   }
   return out;
 }
@@ -308,7 +331,9 @@ export class SuTarget implements ChatTarget {
     return new SuSession({
       runId: opts.runId,
       catalog: this.catalog,
-      loadSystemPrompt: this.loadSystemPrompt,
+      loadSystemPrompt: delta.systemPromptText !== undefined
+        ? () => delta.systemPromptText!
+        : this.loadSystemPrompt,
       override: opts.dispatchOverride,
       ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
       ...(delta.sutModel ? { modelOverride: delta.sutModel } : {}),

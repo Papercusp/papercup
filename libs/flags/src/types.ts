@@ -205,6 +205,35 @@ export const FLAGS = {
   // capture core. OFF until the plan's P-001 arming gate closes (D-001
   // owner-ratified dark-ship rule for frontier loops).
   REGRET_MINING: "papercusp-regret-mining",
+  // self-learning-frontier-2026-06-12 (P-022 / FB-08, D-006): the transfer
+  // harness — `system:transfer-distill` distills candidate lessons from the
+  // day's transcripts, admits them FREE at memory tier 'probationary'
+  // (admission is never gated — the same-turn insight rule is untouched), and
+  // promotes a lesson to 'validated' only when a fresh student agent with it
+  // beats one without it on the source historical task (replayed via
+  // lib/replay, judged by the frozen eval-battery). Repeated failures retire
+  // (forget) the lesson; learning-pack candidate adoption inherits the bar.
+  // OFF until the plan's P-001 arming gate closes (D-001 owner-ratified
+  // dark-ship rule for frontier loops).
+  TRANSFER_HARNESS: "papercusp-transfer-harness",
+  // self-learning-frontier-2026-06-12 (P-030 / FB-10): the Fleet EKG —
+  // `system:fleet-ekg-scan` embeds agent sessions (agent_activity) into
+  // behavioral feature vectors (tool mix/bigrams, pacing, retry rhythm — no
+  // LLM), detects fleet-wide distribution shifts against the trailing
+  // baseline, attributes them to the behavior-change ledger (D-003), and
+  // alarms the attention rail on unattributable MAJOR shifts. OFF until the
+  // plan's P-001 arming gate closes (D-001 owner-ratified dark-ship rule for
+  // frontier loops); the Learning tab EKG panel reads stored shifts either way.
+  FLEET_EKG: "papercusp-fleet-ekg",
+  // self-learning-frontier-2026-06-12 (P-023 / FB-09): prompt sedimentology —
+  // `system:prompt-ablation`, the weekly SHADOW ablation of one SU-playbook
+  // governance rule via the llm-testing su target (a snapshot-baseline arm vs
+  // an ablated arm; live prompts are NEVER mutated by this lane). Dead-weight
+  // evidence accumulates in harness_shared.prompt_ablation_runs for owner
+  // review. Spends real LLM tokens per cycle, so it is governor-preflighted
+  // (loop `prompt-ablation`). OFF until the plan's P-001 arming gate closes
+  // (D-001 owner-ratified dark-ship rule for frontier loops).
+  PROMPT_ABLATION: "papercusp-prompt-ablation",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -322,6 +351,23 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // the flag flip + an owner-set governor budget on loop `regret-mining`
   // are the P-001 arming acts.
   [FLAGS.REGRET_MINING]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the
+  // transfer harness is a frontier learning loop (distillation + replay
+  // batteries spend LLM tokens); the flag flip + an owner-set governor budget
+  // on loop `frontier:transfer-harness` are the P-001 arming acts.
+  [FLAGS.TRANSFER_HARNESS]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: the Fleet
+  // EKG is a frontier loop (zero LLM spend, but its alarm side files into the
+  // attention rail); the flag flip + an owner-set governor budget on loop
+  // `fleet-ekg` are the P-001 arming acts.
+  [FLAGS.FLEET_EKG]: false,
+  // OFF by default — same D-001 dark-ship rule as the loops above: prompt
+  // sedimentology is a frontier loop spending real LLM tokens per weekly
+  // cycle (SUT + sim + judge across both arms); the flag flip + an owner-set
+  // per-cycle governor budget on loop `prompt-ablation` + activating the
+  // seeded-inactive routine are the P-001 arming acts. Shadow-only either
+  // way: this lane never mutates live prompts.
+  [FLAGS.PROMPT_ABLATION]: false,
   // ON by default — Phase 0 foundation, same call as CHANGE_LEDGER above
   // (self-learning-frontier P-003/FB-01): the governor SPENDS nothing and
   // FILES nothing — it is the refusal gate D-004 wants live, and ON starts

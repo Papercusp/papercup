@@ -1389,14 +1389,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
-      const { applyBlockingImpactRanking } = await import('../harness/improvements/blocking-impact');
+      const { applyHumanQueueRanking } = await import('../queue-ranker/human-queue');
       const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const nowMs = Date.now();
       const items = await readImprovementItems({ state: a.state, limit: a.limit });
-      // Human lane ordered by blocking impact (consume-edges P-022) — the owner's
-      // queue leads with what blocks the most, not just what is oldest/most severe.
-      const digest = await applyBlockingImpactRanking(buildDigest(items, { nowMs }), { candidates: items });
+      // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
+      // consume-edges P-022's blocking impact) — the owner's queue leads with
+      // what blocks the most, each item carrying its per-feature breakdown.
+      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs }), { candidates: items });
       // Watchdog ticks are best-effort: a tick-read failure degrades the flow
       // strip to "watchdog: never" rather than 500ing the whole improvements view.
       let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
@@ -1550,6 +1551,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           console.warn('[learning.demand] demand read failed:', err instanceof Error ? err.message : err);
         }
         return [EMPTY_DEMAND_SNAPSHOT];
+      }
+    },
+  },
+
+  // ── learning.ekg — the Benchmark view's Fleet EKG panel ──
+  //
+  // The Fleet EKG's shift reports + vitals (self-learning-frontier-2026-06-12
+  // P-030 / FB-10): session behavioral vectors in fleet_ekg_sessions and
+  // detected distribution shifts in fleet_ekg_shifts (migration 251), written
+  // by the system:fleet-ekg-scan cadence. PG failure OR a not-yet-applied
+  // migration degrades to the empty snapshot (the panel renders its
+  // nothing-scanned state, never a 500). Returns a 1-element array (client
+  // reads data[0]). NOT table-backed — the scan fires
+  // notifySyncInvalidate('learning.ekg') after each tick.
+  'learning.ekg': {
+    resolve: async () => {
+      const { EMPTY_EKG_SNAPSHOT, readEkgSnapshot } = await import('../fleet-ekg/ekg-read');
+      try {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        const { getOrgPg } = await import('@papercusp/db-org');
+        return [await readEkgSnapshot(getOrgPg().sql, activeWorkspaceId())];
+      } catch (err) {
+        // 42P01 (undefined table) = migration 251 not applied yet — the
+        // expected pre-boot-apply state, not worth a warn.
+        if ((err as { code?: string }).code !== '42P01') {
+          console.warn('[learning.ekg] ekg read failed:', err instanceof Error ? err.message : err);
+        }
+        return [EMPTY_EKG_SNAPSHOT];
       }
     },
   },

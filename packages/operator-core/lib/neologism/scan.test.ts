@@ -12,10 +12,12 @@ import { neologismCaptureInput, runNeologismTick, type NeologismTickDeps } from 
 const AS_OF = '2026-06-12T00:00:00.000Z';
 const daysAgo = (d: number) => new Date(Date.parse(AS_OF) - d * 86_400_000).toISOString();
 
-/** Four speakers bursting an unnamed term in the recent window. */
+/** Four speakers bursting an unnamed term in the recent window — distinct
+ *  prose per row (identical texts would collapse as template re-broadcasts). */
+const VARY = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
 const burstRows: CoordTextRow[] = Array.from({ length: 5 }, (_, i) => ({
   speaker: `agent-${i % 4}`,
-  text: 'heads up: another wake-storm in the fleet',
+  text: `heads up ${VARY[i]}: another wake-storm in the fleet`,
   at: daysAgo(i + 1),
 }));
 
@@ -60,7 +62,7 @@ describe('runNeologismTick', () => {
       sourceRole: 'system',
       source: 'su',
       watchdogKey: 'neologism:wake-storm',
-      dedupScope: 'open',
+      dedupScope: 'all',
       evidenceAt: daysAgo(1),
       createdBy: 'system:neologism-mine',
       origin: 'organic',
@@ -99,7 +101,7 @@ describe('runNeologismTick', () => {
       ...burstRows,
       ...Array.from({ length: 5 }, (_, i) => ({
         speaker: `agent-${i % 4}`,
-        text: 'the deploy-train derailed again',
+        text: `the deploy-train derailed again ${VARY[i]}`,
         at: daysAgo(i + 1),
       })),
     ];

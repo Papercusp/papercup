@@ -94,6 +94,41 @@
  *     (papercusp-neologism-miner — the frontier D-001 arming gate), governor-
  *     preflighted (loop `neologism-miner`), AND seeded INACTIVE
  *     (lib/neologism/seed-neologism-routine.ts).
+ *   - `system:regret-mine` — self-learning-frontier-2026-06-12 P-021
+ *     (FB-07). Every-6h bad-session selection (burn percentile, bounces,
+ *     rescue markers) + divergence-turn detection over persisted transcripts
+ *     (regret_findings, mig 248); the counterfactual replay + report-filing
+ *     legs activate when FB-06's lib/replay runner is wired. Flag-gated OFF
+ *     (papercusp-regret-mining — the frontier D-001 arming gate), governor-
+ *     preflighted (loop `regret-mining`, per-cycle replay budget), AND
+ *     seeded INACTIVE (lib/replay/regret/seed-regret-routine.ts).
+ *   - `system:transfer-distill` — self-learning-frontier-2026-06-12 P-022
+ *     (FB-08, D-006). Nightly lesson distillation from the day's transcripts
+ *     (admitted FREE at memory tier 'probationary') + student-transfer tests
+ *     (with-lesson vs baseline on the source historical task via lib/replay)
+ *     that promote/demote/retire via the pure gate; learning-pack candidate
+ *     adoption inherits the bar. LLM spend; flag-gated OFF
+ *     (papercusp-transfer-harness — the frontier D-001 arming gate),
+ *     governor-preflighted (loop `frontier:transfer-harness`, lifetime
+ *     budget), AND seeded INACTIVE (lib/transfer/seed-transfer-routine.ts).
+ *     The testing leg self-skips until frontier:replay-landed is wired.
+ *   - `system:fleet-ekg-scan` — self-learning-frontier-2026-06-12 P-030
+ *     (FB-10). Every-6h behavioral-embedding pass over agent sessions
+ *     (agent_activity → fleet_ekg_sessions) + distribution-shift detection
+ *     vs the trailing baseline, attributed against the behavior-change
+ *     ledger (D-003); unattributable MAJOR shifts alarm the attention rail.
+ *     SQL-only; flag-gated OFF (papercusp-fleet-ekg — the frontier D-001
+ *     arming gate), governor-preflighted (loop `fleet-ekg`), AND seeded
+ *     INACTIVE (lib/fleet-ekg/seed-fleet-ekg-routine.ts).
+ *   - `system:prompt-ablation` — self-learning-frontier-2026-06-12 P-023
+ *     (FB-09). Weekly prompt sedimentology: SHADOW-ablate ONE SU-playbook
+ *     governance rule and replay the llm-testing `su` suite baseline-vs-
+ *     ablated (lib/ablation); dead-weight evidence rows land in
+ *     harness_shared.prompt_ablation_runs for owner review. NEVER mutates a
+ *     live prompt. Real LLM spend — flag-gated OFF (papercusp-prompt-ablation
+ *     — the frontier D-001 arming gate), governor-preflighted with the
+ *     per-cycle budget as the hard cycle cap (loop `prompt-ablation`), AND
+ *     seeded INACTIVE (lib/ablation/seed-prompt-ablation-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -115,3 +150,7 @@ import './human-queue-digest-action';
 import './change-ledger-scan-action';
 import './negative-space-action';
 import './neologism-action';
+import './regret-action';
+import './transfer-distill-action';
+import './fleet-ekg-action';
+import './prompt-ablation-action';

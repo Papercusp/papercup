@@ -368,17 +368,31 @@ export interface DecideCandidateInput {
   workspaceId?: string;
   /** Test override of the installed packs root. */
   packsRoot?: string;
+  /** Test override of the transfer bar (lib/transfer/pack-bar). */
+  transferBar?: (q: {
+    workspaceId: string;
+    candidateId: string;
+    signature: string;
+  }) => Promise<{ blocked: boolean; detail?: string }>;
 }
 
 export type DecideCandidateResult =
   | { ok: true; action: 'dismiss'; id: string }
   | { ok: true; action: 'adopt'; id: string; packId: string; packItemId: string; packVersion: string }
-  | { ok: false; reason: 'not_found' | 'not_pending' | 'pack_write_failed'; error?: string };
+  | { ok: false; reason: 'not_found' | 'not_pending' | 'pack_write_failed' | 'transfer_bar'; error?: string };
 
 /**
  * The owner's decision on one pending candidate. Adoption writes the pack
  * item FIRST, then flips the row — a failed pack write leaves the candidate
  * pending (retryable), never a half-adopted ghost.
+ *
+ * Adoption also consults the TRANSFER BAR (self-learning-frontier P-022 /
+ * D-006: "learning-pack candidates inherit the passing-transfer-test bar"):
+ * with the papercusp-transfer-harness flag armed, a candidate whose matched
+ * transfer lesson FAILED its student-transfer test (or was retired) refuses
+ * with reason 'transfer_bar' — the candidate stays pending, so the owner can
+ * re-decide after a fix or dismiss. Flag dark (today) ⇒ byte-identical
+ * behavior; the bar itself fails open on IO trouble.
  */
 export async function decideLearningPackCandidate(
   input: DecideCandidateInput,
@@ -402,6 +416,18 @@ export async function decideLearningPackCandidate(
       WHERE workspace_id = ${ws} AND id = ${input.id} AND status = 'pending'`;
     invalidate(['learningPacks.candidates']);
     return { ok: true, action: 'dismiss', id: input.id };
+  }
+
+  // D-006 transfer bar — proven-failed lessons don't enter the fleet pack.
+  // Lazy import keeps the candidates module loadable in flags/PG-free tests
+  // that never adopt; the bar itself is flag-gated + fail-open.
+  const bar =
+    input.transferBar ??
+    (async (q: { workspaceId: string; candidateId: string; signature: string }) =>
+      (await import('../transfer/pack-bar')).packCandidateTransferBar(q));
+  const barVerdict = await bar({ workspaceId: ws, candidateId: input.id, signature: candidate.signature });
+  if (barVerdict.blocked) {
+    return { ok: false, reason: 'transfer_bar', ...(barVerdict.detail ? { error: barVerdict.detail } : {}) };
   }
 
   let written: { packId: string; packItemId: string; packVersion: string };

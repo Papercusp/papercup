@@ -43,6 +43,7 @@ import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/li
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend } from './BenchmarkTrend';
+import { EkgPanel } from './EkgPanel';
 import { DemandPanel } from './DemandPanel';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
 import MemoryHealthCard from './MemoryHealthCard';
@@ -747,6 +748,8 @@ function ApiaryView() {
       </div>
 
       <BenchmarkTrend instances={instances} />
+
+      <EkgPanel />
 
       <div className="pc-learning__sectionhead">
         <h2>Benchmark generations</h2>

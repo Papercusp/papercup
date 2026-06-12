@@ -62,6 +62,18 @@ const KNOWN_DARK_FLAGS: ReadonlySet<FlagKey> = new Set<FlagKey>([
   // … and regret mining (P-021/FB-07) — same double gate: flag OFF here AND
   // unbudgeted on the learning governor (loop `regret-mining`) until P-001.
   FLAGS.REGRET_MINING,
+  // … and the transfer harness (P-022/FB-08) — same double gate: flag OFF
+  // here AND unbudgeted on the learning governor (loop
+  // `frontier:transfer-harness`) until P-001.
+  FLAGS.TRANSFER_HARNESS,
+  // … and the Fleet EKG (P-030/FB-10) — same double gate: flag OFF here AND
+  // unbudgeted on the learning governor (loop `fleet-ekg`) until P-001.
+  FLAGS.FLEET_EKG,
+  // … and prompt sedimentology (P-023/FB-09) — triple gate: flag OFF here,
+  // unbudgeted on the learning governor (loop `prompt-ablation`), AND the
+  // weekly routine seeded inactive, until P-001. Real LLM spend per cycle;
+  // shadow-only (never mutates live prompts) even when armed.
+  FLAGS.PROMPT_ABLATION,
 ]);
 
 describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {

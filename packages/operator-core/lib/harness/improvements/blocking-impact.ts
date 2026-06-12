@@ -26,16 +26,20 @@
  * `log(staleness+1)` bid shape): an unattended high-impact item self-promotes
  * as it ages, a fresh one doesn't spike the queue.
  *
- * Pure + deterministic given inputs; the async wrapper fetches link counts
- * defensively (a link-read failure degrades to link-free ranking — the
- * Learning tab must never 500 because the edge store hiccuped).
+ * Pure + deterministic given inputs. Weights are EXPORTED TUNABLES — adjust
+ * from evidence, not by redesign.
  *
- * Weights are EXPORTED TUNABLES — adjust from evidence, not by redesign.
+ * PRODUCTION RANKING PATH: since self-learning-frontier P-040 (FB-12) the
+ * human-lane read path ranks through lib/queue-ranker/, where this module is
+ * feature #1 (blocking-impact-feature.ts) — the defensive link fetch lives
+ * there. This file stays the sole owner of the impact semantics;
+ * `rankHumanQueueByImpact` is the pure reference ordering the ranker's
+ * equivalence test pins against.
  */
 
 import type { ImprovementDigest, ScoredItem, SignatureRecurrence } from './digest';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
-import { issueLinkCounts, type IssueLinkCounts } from '../../issues-engineer';
+import type { IssueLinkCounts } from '../../issues-engineer';
 
 /** Tunable weights (P-022). One unit ≈ "one minor thing waiting on this". */
 export const BLOCKING_IMPACT_WEIGHTS = {
@@ -158,66 +162,48 @@ export function computeBlockingImpact(
 }
 
 /**
+ * Map the digest's recurrence + likely-duplicate clusters into per-item
+ * context. The single owner of that join — the queue-ranker feature and the
+ * pure reference ranking below both consume it.
+ */
+export function buildImpactItemContext(
+  digest: Pick<ImprovementDigest, 'recurringSignatures' | 'likelyDuplicates'>,
+): { recurrenceById: Map<string, SignatureRecurrence>; dupClusterSizeById: Map<string, number> } {
+  const recurrenceById = new Map<string, SignatureRecurrence>();
+  for (const rec of digest.recurringSignatures) {
+    for (const id of rec.ids) recurrenceById.set(id, rec);
+  }
+  const dupClusterSizeById = new Map<string, number>();
+  for (const cluster of digest.likelyDuplicates) {
+    for (const id of cluster.ids) dupClusterSizeById.set(id, cluster.ids.length);
+  }
+  return { recurrenceById, dupClusterSizeById };
+}
+
+/**
  * Rank the digest's human queue by blocking impact (descending). Pure: maps
  * recurrence + dup-cluster context out of the digest itself; ties break on the
- * existing triage score, then id (deterministic).
+ * existing triage score, then id (deterministic). The REFERENCE ordering —
+ * production ranks through lib/queue-ranker/ (one weighted feature today, so
+ * the orders are identical; the equivalence test keeps it that way until a
+ * second feature deliberately changes the order).
  */
 export function rankHumanQueueByImpact(
   digest: Pick<ImprovementDigest, 'humanQueue' | 'recurringSignatures' | 'likelyDuplicates'>,
   ctx: BlockingImpactContext = {},
 ): ImpactRankedItem[] {
-  const recById = new Map<string, SignatureRecurrence>();
-  for (const rec of digest.recurringSignatures) {
-    for (const id of rec.ids) recById.set(id, rec);
-  }
-  const dupSizeById = new Map<string, number>();
-  for (const cluster of digest.likelyDuplicates) {
-    for (const id of cluster.ids) dupSizeById.set(id, cluster.ids.length);
-  }
+  const { recurrenceById, dupClusterSizeById } = buildImpactItemContext(digest);
   return digest.humanQueue
     .map<ImpactRankedItem>((item) => ({
       ...item,
       impact: computeBlockingImpact(item, {
         ...ctx,
-        recurrence: recById.get(item.id),
-        dupClusterSize: dupSizeById.get(item.id),
+        recurrence: recurrenceById.get(item.id),
+        dupClusterSize: dupClusterSizeById.get(item.id),
       }),
     }))
     .sort(
       (a, b) =>
         b.impact.score - a.impact.score || b.score - a.score || a.id.localeCompare(b.id),
     );
-}
-
-/** Injectable deps (unit tests inject fakes; production reads coord_links). */
-export interface ApplyBlockingImpactDeps {
-  readLinkCounts: (ids: readonly string[]) => Promise<Map<string, IssueLinkCounts>>;
-}
-
-const defaultDeps: ApplyBlockingImpactDeps = { readLinkCounts: issueLinkCounts };
-
-/**
- * The digest read path's enrichment step: fetch link counts (defensively) and
- * return the digest with `humanQueue` re-ordered by blocking impact, each item
- * carrying its `impact`. Additive — every other digest field is untouched, so
- * the `improvements:digest` tool shape and the Learning tab resolver stay one
- * shape and can't drift.
- */
-export async function applyBlockingImpactRanking<D extends ImprovementDigest>(
-  digest: D,
-  ctx: BlockingImpactContext = {},
-  deps: ApplyBlockingImpactDeps = defaultDeps,
-): Promise<D & { humanQueue: ImpactRankedItem[] }> {
-  let linkCounts = ctx.linkCounts;
-  if (!linkCounts && digest.humanQueue.length > 0) {
-    try {
-      linkCounts = await deps.readLinkCounts(digest.humanQueue.map((i) => i.id));
-    } catch (err) {
-      console.warn(
-        '[blocking-impact] link-count read failed — ranking without link degree:',
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-  return { ...digest, humanQueue: rankHumanQueueByImpact(digest, { ...ctx, linkCounts }) };
 }
