@@ -48,7 +48,7 @@ describe('AgentDetail', () => {
     expect(screen.getByText('Claude (psu)')).toBeTruthy();
     expect(screen.getByText('su-ab123')).toBeTruthy();
     expect(screen.getByText('Greening the Tests tab')).toBeTruthy();
-    // The kind chip renders the canonical SU label (header + field row).
+    // The kind chip renders the canonical SU label (header meta line).
     expect(screen.getAllByText('SU').length).toBeGreaterThan(0);
     // 30s-old heartbeat → live.
     expect(screen.getByText('live')).toBeTruthy();

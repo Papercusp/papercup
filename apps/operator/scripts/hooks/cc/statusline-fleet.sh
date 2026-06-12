@@ -45,7 +45,7 @@ else
 fi
 
 python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_STATUSLINE_FIXTURE:-}" <<'PYEOF' 2>/dev/null || exit 0
-import json, os, sys, urllib.request, urllib.parse
+import json, os, sys, textwrap, urllib.request, urllib.parse
 
 operator_url, token, me, fixture = sys.argv[1:5]
 HTTP_TIMEOUT = 1.5
@@ -183,6 +183,11 @@ if tips:
     text = (tip.get('text') or '').strip()
     cmd = (tip.get('command') or '').strip()
     if text:
-        lines.append(('💡 ' + text + (f' {cmd}' if cmd else '')).rstrip())
+        # WRAP the tip across rows rather than truncating — the statusline has
+        # no expand affordance, so a clipped tip is a lost tip. Long unbroken
+        # tokens (the slash command) split rather than vanish. Capped so a
+        # pathological tip can't swallow the pane.
+        full = ('💡 ' + text + (f' {cmd}' if cmd else '')).rstrip()
+        lines.extend(textwrap.wrap(full, width=cols, subsequent_indent='  ')[:4])
 emit(lines, cols)
 PYEOF

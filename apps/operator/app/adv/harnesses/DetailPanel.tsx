@@ -291,33 +291,29 @@ export function AgentDetail({
   onBack?: () => void;
 }) {
   const liveness = livenessFromHeartbeat(agent.heartbeatAt ?? '');
-  const fields: Array<[string, React.ReactNode]> = [
-    ['Kind', <AgentKindPill key="kind" kind={agent.agentPaneKind} size="xs" />],
-    [
-      'Liveness',
-      <span key="live" className="pc-adv-detail__liveness">
-        <LivenessDot liveness={liveness} title="" />
-        {liveness}
-        {agent.heartbeatAt ? (
-          <span className="pc-adv-detail__muted"> · heartbeat {fmtAgo(agent.heartbeatAt)}</span>
-        ) : null}
-      </span>,
-    ],
-    ['Drive', agent.driveMode || '—'],
-    ['Load', agent.load > 0 ? agent.load : '—'],
-  ];
   // Work-item-shaped ids cross-link into their own detail; anything else
   // (plan items, lock paths…) renders as plain text.
   const linkable = (id: string | null): id is string =>
     !!id && (id.startsWith('F-') || id.startsWith('I-') || id.startsWith('WI-'));
   return (
-    <div className="pc-adv-detail">
+    <div className="pc-adv-detail pc-adv-detail--compact">
       <header className="pc-adv-detail__header">
         <BackChip onBack={onBack} />
         <div className="pc-adv-detail__id">{agent.agentId}</div>
         <div className="pc-adv-detail__title">{agent.name ?? agent.label ?? agent.agentId}</div>
+        {/* Presence/drive/load live on the meta line — the kind pill was
+            already here, so the old field-row section only duplicated it. */}
         <div className="pc-adv-detail__meta">
           <AgentKindPill kind={agent.agentPaneKind} size="xs" />
+          <span className="pc-adv-detail__liveness">
+            <LivenessDot liveness={liveness} title="" />
+            {liveness}
+            {agent.heartbeatAt ? (
+              <span className="pc-adv-detail__muted"> · heartbeat {fmtAgo(agent.heartbeatAt)}</span>
+            ) : null}
+          </span>
+          {agent.driveMode ? <span className="pc-adv-detail__stat">drive: {agent.driveMode}</span> : null}
+          {agent.load > 0 ? <span className="pc-adv-detail__stat">load: {agent.load}</span> : null}
           {agent.orphaned && (
             <Tooltip label="This agent holds claims but is no longer present — its work may need re-placing.">
               <span className="pc-adv-detail__warn-chip">orphaned claims</span>
@@ -331,14 +327,6 @@ export function AgentDetail({
         </div>
       </header>
       <section className="pc-adv-detail__body">
-        <div className="pc-adv-detail__section">
-          {fields.map(([label, value]) => (
-            <div key={label as string} className="pc-adv-detail__field-row">
-              <span className="pc-adv-detail__field-label">{label}</span>
-              <span>{value}</span>
-            </div>
-          ))}
-        </div>
         {agent.intent ? (
           <div className="pc-adv-detail__section">
             <h3>Intent</h3>
@@ -485,17 +473,26 @@ export function WorkItemDetail({
       'Stage',
       workItem.spineRole ? `${workItem.spineRole}${workItem.spineStatus ? ` (${workItem.spineStatus})` : ''}` : '—',
     ],
-    ['Updated', workItem.updatedAt ? new Date(workItem.updatedAt).toLocaleString() : '—'],
+    [
+      'Updated',
+      workItem.updatedAt ? (
+        // Relative age keeps the row short; the full timestamp rides title=
+        // (static text, not an action element — the grid-cell carve-out).
+        <span title={new Date(workItem.updatedAt).toLocaleString()}>{fmtAgo(workItem.updatedAt)}</span>
+      ) : (
+        '—'
+      ),
+    ],
   ];
   return (
-    <div className="pc-adv-detail">
+    <div className="pc-adv-detail pc-adv-detail--compact">
       <header className="pc-adv-detail__header">
         <BackChip onBack={onBack} />
         <div className="pc-adv-detail__id">{workItem.id}</div>
         <div className="pc-adv-detail__title">{workItem.title}</div>
       </header>
       <div className="pc-adv-detail__body">
-        <div className="pc-adv-detail__section">
+        <div className="pc-adv-detail__section pc-adv-detail__fields">
           {fields.map(([label, value]) => (
             <div key={label} className="pc-adv-detail__field-row">
               <span className="pc-adv-detail__field-label">{label}</span>
@@ -521,7 +518,7 @@ export function WorkItemDetail({
           </button>
         ) : null}
         <div className="pc-adv-detail__section">
-          <h3>Actions</h3>
+          {/* No "Actions" heading — a lone Chat button explains itself. */}
           <div className="pc-adv-detail__actions">
             <button type="button" data-testid="wi-detail-chat" disabled={openingChat} onClick={() => void openChat()}>
               <MessageCircle size={13} aria-hidden /> Chat
@@ -1568,6 +1565,65 @@ function DetailStyles() {
       .pc-adv-detail__actions button:disabled {
         opacity: 0.45;
         cursor: default;
+      }
+      /* Inline header stats (AgentDetail meta line: drive / load). */
+      .pc-adv-detail__stat {
+        font-size: 11px;
+        color: var(--fg-mute, #7f9bb4);
+        white-space: nowrap;
+      }
+      /* Compact density variant — the working tab's agent:* / WI-* details.
+         Same vocabulary, tighter rhythm: id+title share a line, the field
+         rows flow 2-up when the pane is wide enough, smaller paddings. */
+      .pc-adv-detail--compact .pc-adv-detail__header {
+        padding: 8px 12px 7px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__back {
+        margin-bottom: 4px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__id {
+        display: inline;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__title {
+        display: inline;
+        margin: 0 0 0 7px;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__meta {
+        margin-top: 5px;
+        gap: 6px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__body {
+        padding: 10px 12px;
+        gap: 10px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__section + .pc-adv-detail__section {
+        padding-top: 9px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__section h3 {
+        margin-bottom: 4px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__fields {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        column-gap: 18px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__field-row {
+        grid-template-columns: 64px 1fr;
+        gap: 8px;
+        padding: 1.5px 0;
+        font-size: 12px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__prose {
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__related-row {
+        padding: 3px 6px;
+      }
+      .pc-adv-detail--compact .pc-adv-detail__actions button {
+        padding: 4px 10px;
       }
     `}</style>
   );
