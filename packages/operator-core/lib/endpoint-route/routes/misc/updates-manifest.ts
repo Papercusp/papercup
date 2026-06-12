@@ -66,10 +66,19 @@ export function pickAssetUrl(release: GhRelease, target: string, arch: string): 
     // exist. Without this the endpoint 404'd on every real Windows
     // release (windows-desktop-release-readiness-2026-06-11 P-013).
     const winV2 = name.endsWith('-setup.exe') || name.endsWith('.msi');
-    if (!name.endsWith('.tar.gz') && !name.endsWith('.zip') && !(target === 'windows' && winV2))
+    // Same v1→v2 shape on Linux (EI-333): the updater artifact is the bare
+    // `.AppImage` (+ .sig) — the `.appimage.tar.gz` wrapper no longer exists.
+    const linuxV2 = name.endsWith('.appimage');
+    if (
+      !name.endsWith('.tar.gz') &&
+      !name.endsWith('.zip') &&
+      !(target === 'windows' && winV2) &&
+      !(target === 'linux' && linuxV2)
+    )
       return false;
     if (target === 'darwin' && !name.includes('darwin') && !name.endsWith('.app.tar.gz')) return false;
-    if (target === 'linux' && !name.includes('linux') && !name.endsWith('.appimage.tar.gz')) return false;
+    if (target === 'linux' && !name.includes('linux') && !name.endsWith('.appimage.tar.gz') && !linuxV2)
+      return false;
     if (
       target === 'windows' &&
       !name.includes('windows') &&

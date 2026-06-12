@@ -22,10 +22,17 @@ type RouteAuth = 'public' | 'loopback' | { trust?: readonly string[] };
 const VT = { trust: ['verified', 'trusted'] } as const;
 // VT + bare loopback. The D3 rationale above assumed the desktop webview
 // holds a verified session from /api/auth/me's auto-login — in practice the
-// webview never persists the cookie (EI-338), so every chrome fetch resolves
-// as `unverified-loopback` and a VT gate silently 403-blanks the settings UI
-// (api-keys / deploy-accounts / publishing, found 2026-06-11). These families
-// admit unverified-loopback until EI-338 lands; re-tighten to VT after.
+// webview's /api traffic rides the sys:http IPC bridge where cookies don't
+// exist (EI-338). On the bridge the injected loopback-superuser bearer
+// resolves `trusted` (live-verified 2026-06-12: VT route 200 via socket,
+// 403 via bare HTTP) — but during the documented HTTP-FALLBACK windows
+// (dev no-sidecar, prod pre-IPC-handshake, IPC down) the webview fetches
+// natively with no bearer, resolves `unverified-loopback`, and a VT gate
+// silently 403-blanks the settings UI (found 2026-06-11). These families
+// admit unverified-loopback for that fallback path, backstopped by the
+// requireAllowedOriginOr403 CSRF guard on every mutating handler.
+// Re-tighten to VT only when the native-HTTP fallback path is retired —
+// NOT on cookie persistence, which can never apply to IPC traffic.
 const VTL = { trust: ['verified', 'trusted', 'unverified-loopback'] } as const;
 const T_ONLY = { trust: ['trusted'] } as const;
 
@@ -97,7 +104,7 @@ const RULES: ReadonlyArray<{
       // (not verified) — a deliberate stricter gate, like spawn-signing.
       { method: 'POST', path: '/admin/dbos/pipeline/start', auth: T_ONLY },
       // Deploy-accounts powers the settings UI from the cookie-less desktop
-      // webview — admits unverified-loopback until EI-338 lands (see VTL).
+      // webview's HTTP-fallback path — admits unverified-loopback (see VTL).
       { method: 'GET',  path: '/admin/deploy-accounts', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/register', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/remove', auth: VTL },

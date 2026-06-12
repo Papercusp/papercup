@@ -154,6 +154,14 @@ export interface JoinOptions {
    */
   bootFederateFn?: (workspaceId: string, harnessSlug: string) => Promise<unknown>;
   /**
+   * Injectable pre-boot clone registration (tests). Defaults to an atomic
+   * registry upsert via mutateHarnessRegistry. EI-339: this default hits the
+   * LIVE registry — every test of the boot_federate path MUST inject a no-op
+   * here, or each run leaks a `<slug>` row into the workspace registry (the
+   * 6step/default-boot residue that fed the git-export-drain journal spam).
+   */
+  registerCloneFn?: (slug: string, path: string) => Promise<void>;
+  /**
    * Injectable admitted-peer count reader for await_admission_merge (tests).
    * Returns the number of admitted REMOTE logs (0 = no peers yet).
    * Defaults to reading the booted handle's admitted map size - 1 (own log).
@@ -590,11 +598,18 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
       // skips an already-present slug.
       if (state.cloneDir) {
         try {
-          const { loadHarnessRegistry, saveHarnessRegistry } = await import('../harness-registry');
-          const reg = await loadHarnessRegistry();
-          if (!reg.projects.some((p) => p.slug === opts.slug)) {
-            reg.projects.push({ slug: opts.slug, path: state.cloneDir });
-            await saveHarnessRegistry(reg);
+          if (opts.registerCloneFn) {
+            await opts.registerCloneFn(opts.slug, state.cloneDir);
+          } else {
+            // Atomic upsert (P-006/EI-82): load→push→save races a concurrent
+            // registry write and silently reverts it.
+            const { mutateHarnessRegistry } = await import('../harness-registry');
+            const cloneDir = state.cloneDir;
+            await mutateHarnessRegistry((reg) =>
+              reg.projects.some((p) => p.slug === opts.slug)
+                ? reg
+                : { ...reg, projects: [...reg.projects, { slug: opts.slug, path: cloneDir }] },
+            );
           }
         } catch {
           // Best-effort — an unregistered harness boots local-only, exactly

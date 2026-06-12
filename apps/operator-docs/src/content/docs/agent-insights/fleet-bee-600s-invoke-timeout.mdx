@@ -1,0 +1,52 @@
+---
+title: Fleet bee dies at exactly 10 minutes — the DBOS 600s invoke timeout
+description: A fleet:spawn'd bee that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration of exactly 600s was killed by PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS (default 600_000, orchestrator-runner.ts). Three bees died this way on 2026-06-11 mid-edit, one leaving the shared tree red. Don't re-dispatch a >10-minute task into the same guillotine — do it inline or raise the timeout.
+discovered: 2026-06-12
+tags: [fleet, spawn, dbos, timeout, nursery, bee]
+status: active
+---
+
+## Symptom
+
+A `fleet:spawn`'d agent shows `failed` in the nursery
+(`harness_shared.spawned_agents`) with:
+
+- `exit_code` **143** (SIGTERM)
+- `error_message` **empty** — nothing distinguishes it from a crash
+- `finished_at - started_at` = **exactly 600 seconds** (the tell — measure it)
+- `output_tail` cut off mid-sentence, mid-work
+- no respawn, even with `restart_strategy = one_for_one`
+
+Three bees died this way on 2026-06-11 (20:06, 20:19, 22:34). The 22:34 one was
+mid-way through hive-network-surface P-014: its half-landed edits left the
+shared tree with a tsc +1 over baseline and a 20/21-failing integration suite
+that other agents then tripped over for hours.
+
+## Root cause
+
+The DBOS invoke path wraps every spawned run in a hard timeout:
+
+```ts
+// packages/operator-core/lib/dbos/orchestrator-runner.ts:83
+Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
+```
+
+600 000 ms = 10 minutes. A coding bee with a real brief routinely needs more.
+`operator-spawn.ts` supports a per-spawn `timeoutMs` override (threaded to the
+DBOS step), but **`fleet:spawn` does not expose it** — so a dispatcher cannot
+grant a longer window. Filed as **EI-361** (with the empty-`error_message` and
+dead `one_for_one` legs).
+
+## What to do
+
+- **Diagnose**: `SELECT status, exit_code, finished_at - started_at FROM
+  harness_shared.spawned_agents WHERE spawn_id = '…'` — `143` + exactly
+  `00:10:00` ⇒ timeout kill, not a crash. Check `output_tail` for where it died.
+- **Don't blind-retry**: a retry of a >10-minute brief dies the same death and
+  may leave MORE half-landed edits. Either do the work inline (an interactive
+  session has no invoke timeout), split the brief into chunks each under 10
+  minutes, or raise `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS` on the spawning host
+  until EI-361 lands a per-spawn override.
+- **Always sweep for partial work** after such a kill: the bee's edits are in
+  the shared tree (git-sync swept them) — `git log` the kill window and check
+  `lint:tsc` / the touched suites before assuming "nothing landed".

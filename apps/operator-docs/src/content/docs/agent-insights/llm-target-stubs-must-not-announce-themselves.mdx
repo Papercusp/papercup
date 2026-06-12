@@ -61,6 +61,24 @@ fix the executor before touching the scenario asserts or the playbook — the
 deterministic asserts may still be valid (S12's all passed on that run), but
 every judge axis is contaminated.
 
+## Sibling stub-world artifact: static stubs + chat-shaped turn caps make agents "repeat" work
+
+Second flavor of the same class (queen-Q01, 2026-06-12): the override's queue
+read returned the SAME ungraded EI on every call, and the scenario allowed 4
+chat turns — so after grading in turn 1, the Queen re-listed the queue in turn
+2, saw the (stale-stub) item still ungraded, and honestly graded it again. The
+judge read that as "duplicate grading" — a stub-world artifact, not an agent
+defect; in production the row carries her grade after the write.
+
+Fixes, in preference order: (1) **match `caps.maxTurns` to the SUT's
+production turn shape** — a spawned-turn agent (Queen) does one pass, so brief
++ one turn (`maxTurns: 2`); the in-process loop already allows 6 tool rounds
+INSIDE the turn, which is where multi-step work belongs. (2) Make the stub
+world reflect the agent's own writes — but beware: a module-level stateful
+`toolOverride` leaks state across matrix repeats in one process. (3) Make the
+rubric anchor distinguish the benign case (idempotent self-regrade on a stale
+read) from the real harm (regrading after a sovereignty refusal).
+
 Related: EI-336 (judge is catalog-blind — the complementary judge-side noise
 source), EI-345 (su-suite baseline reds), agent policies §19 (the rule S12
 probes).

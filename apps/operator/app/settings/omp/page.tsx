@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsArrayOf } from 'nuqs';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
+import { DraftNumberInput } from '@/lib/forms';
 
 interface OmpSetting {
   key: string;
@@ -318,39 +319,18 @@ function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: u
 }
 
 function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
-  const initial = setting.isUnset ? '' : String(setting.parsed ?? '');
-  const [v, setV] = useState<string>(initial);
-  const [err, setErr] = useState<string | null>(null);
-  const dirtyRef = useRef(false);
-  useEffect(() => { if (!dirtyRef.current) setV(setting.isUnset ? '' : String(setting.parsed ?? '')); }, [setting.parsed, setting.isUnset]);
-  const commit = () => {
-    if (!dirtyRef.current) return;
-    const n = Number(v);
-    // A non-numeric or empty draft must never persist (the old fall-through
-    // saved the raw string; an empty field saved 0 — Number('') === 0).
-    // Flag inline and keep the stored value; dirty stays set so the draft
-    // survives echoes and the user can fix it.
-    if (v.trim() === '' || !Number.isFinite(n)) {
-      setErr('not a number — keeping the saved value');
-      return;
-    }
-    dirtyRef.current = false;
-    setErr(null);
-    onSave(n);
-  };
+  // Commit/validation semantics live in lib/forms DraftNumberInput: a
+  // non-numeric or empty draft never persists (the old fall-through saved
+  // the raw string; an empty field saved 0 — Number('') === 0).
+  const parsedNum = typeof setting.parsed === 'number' ? setting.parsed : Number(setting.parsed);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <input
-        type="number"
-        value={v}
-        aria-invalid={err ? true : undefined}
-        onChange={(e) => { dirtyRef.current = true; setV(e.target.value); if (err) setErr(null); }}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
-        style={{ ...S.input, ...(err ? { borderColor: 'var(--bad)' } : {}) }}
-      />
-      {err && <span role="alert" style={{ fontSize: 11, color: 'var(--bad)' }}>{err}</span>}
-    </div>
+    <DraftNumberInput
+      value={setting.isUnset || !Number.isFinite(parsedNum) ? null : parsedNum}
+      min={undefined}
+      onCommit={(n) => onSave(n)}
+      placeholder={setting.isUnset ? '(not set)' : ''}
+      style={S.input}
+    />
   );
 }
 
