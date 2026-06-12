@@ -91,6 +91,13 @@ function productionDeps(): HiveDirectoryDeps {
     saveTombstones: async (tombstones) => {
       await writeOperatorState('hive_directory_tombstones', { tombstones }).catch(() => {});
     },
+    // P-014 item 2: capture beacon history for the tier-4 dossier. Lazy-import
+    // keeps this module from pulling in PG at startup; the capture itself is
+    // already best-effort (the directory wraps it in a catch).
+    onBeaconAccepted: async (hiveId, hivePubkey, beacon) => {
+      const { captureBeaconSnapshot } = await import('./network-board/beacon-history-pg');
+      await captureBeaconSnapshot(hiveId, hivePubkey, beacon);
+    },
   };
 }
 

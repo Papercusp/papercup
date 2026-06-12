@@ -21,7 +21,7 @@
 import type { CrossHiveKind } from '../cross-hive-boundary';
 import type { HiveDescriptor } from '../agent-tools/hive/_resolve';
 import { listHives, liveAgentCountByHarness } from '../agent-tools/hive/_resolve';
-import { listFleetAssignments } from '../fleet/assignments';
+import { listFleetAssignments, type FleetAssignmentRow } from '../fleet/assignments';
 import type { UnifiedPresenceRecord } from '../agent-tools/coordination/federated-presence';
 import { listFederatedPresence } from '../agent-tools/coordination/federated-presence';
 import type { DiscoveredHive } from '../hive-directory';
@@ -40,6 +40,13 @@ export interface NetworkBoardInputs {
   hives: HiveDescriptor[];
   /** Distinct live agents per hive home-slug (one batched fleet read). */
   liveAgentsBySlug: Map<string, number>;
+  /**
+   * Live bee owner IDs per hive slug, for the per-hive drill-in watch panes
+   * (hive-network-surface P-014 item 1). Populated for tiers 2/3 only;
+   * absent for tier 1 (this Swarm, no separate drill-in) and tier 4 (no roster).
+   * B-10's hive_tab_kdl already tolerates a populated list — panes appear for free.
+   */
+  watchOwnersBySlug?: Map<string, string[]>;
   /** Federated (cross-machine) presence peers — the tier-3 source. */
   federatedPeers: UnifiedPresenceRecord[];
   /** Foreign directory hives (already filtered to non-private) — the tier-4 source.
@@ -78,6 +85,12 @@ export function assembleNetworkBoard(input: NetworkBoardInputs): NetworkBoardRow
       liveAgents,
       wake: { active: hv.wake.active, nextFireAt: hv.wake.nextFireAt },
     };
+    // Tier 2 (other own hive): populate watchOwners for the per-hive drill-in.
+    // Tier 1 (home) is this Swarm — the drill-in would be a mirror, not useful.
+    if (tier === 2) {
+      const owners = input.watchOwnersBySlug?.get(hv.slug);
+      if (owners && owners.length > 0) row.watchOwners = owners;
+    }
     rows.push(row);
   }
 
@@ -109,6 +122,9 @@ export function assembleNetworkBoard(input: NetworkBoardInputs): NetworkBoardRow
     if (liveAgents > 0) row.liveAgents = liveAgents;
     if (focus) row.focus = focus;
     if (lastSeenMs > 0) row.lastSeen = new Date(lastSeenMs).toISOString();
+    // Tier 3: per-device watch owners — distinct live agent owner IDs on this device.
+    const deviceOwners = [...new Set(live.map((m) => m.ownerId).filter(Boolean))] as string[];
+    if (deviceOwners.length > 0) row.watchOwners = deviceOwners;
     rows.push(row);
   }
 
@@ -146,6 +162,27 @@ export function assembleNetworkBoard(input: NetworkBoardInputs): NetworkBoardRow
   // Tier-ascending, stable within a tier (the array's natural sort is stable in
   // V8) so the board always reads top-down 1→4 and consumers needn't re-sort.
   return rows.sort((a, b) => a.tier - b.tier);
+}
+
+/**
+ * Per-hive watch owner IDs for the per-hive drill-in watch panes
+ * (hive-network-surface P-014 item 1). Extracts distinct live-bee owner IDs
+ * from fleet assignment rows, grouped by harness_slug (own-hive tier 2 only;
+ * tier 3 comes from federatedPeers directly). Excludes presence-only rows and
+ * rows whose holder is not alive (orphaned/stale agents have no watch pane).
+ */
+export function watchOwnersByHarness(rows: FleetAssignmentRow[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    if (!r.harnessSlug || !r.agentId || !r.holderAlive) continue;
+    let owners = out.get(r.harnessSlug);
+    if (!owners) {
+      owners = [];
+      out.set(r.harnessSlug, owners);
+    }
+    if (!owners.includes(r.agentId)) owners.push(r.agentId);
+  }
+  return out;
 }
 
 /**
@@ -213,6 +250,7 @@ export async function buildNetworkBoard(
   ]);
   const discovered = readDiscovered();
   const liveAgentsBySlug = liveAgentCountByHarness(fleetRows);
+  const watchOwnersBySlug = watchOwnersByHarness(fleetRows);
 
   const grantsByPeer = new Map<string, CrossHiveKind[]>();
   const outboundGrantsByPeer = new Map<string, CrossHiveKind[]>();
@@ -231,6 +269,7 @@ export async function buildNetworkBoard(
     homeSlug,
     hives,
     liveAgentsBySlug,
+    watchOwnersBySlug,
     federatedPeers,
     discovered,
     grantsByPeer,

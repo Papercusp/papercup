@@ -1,0 +1,79 @@
+/**
+ * beacon-history-pg — PG read/write for the cross_hive_beacon_history table
+ * (hive-network-surface-2026-06-11 P-014, item 2, migration 236).
+ *
+ * Each accepted directory announce that carries a C-2 beacon appends one row,
+ * so the tier-4 dossier can show how a foreign hive's status has evolved.
+ * Write-path is best-effort (a capture failure must NEVER reject the announce).
+ * Read-path is the dossier query `network.hive.beacons`.
+ */
+import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
+import type { HiveStatusBeacon } from '../hive-beacon';
+
+function pg(sql?: Sql): Sql {
+  return sql ?? getOrgPg().sql;
+}
+
+export interface BeaconSnapshot {
+  id: string;
+  hiveId: string;
+  hivePubkey: string | null;
+  beacon: HiveStatusBeacon;
+  capturedAt: string;
+}
+
+interface BeaconRow {
+  id: string;
+  hive_id: string;
+  hive_pubkey: string | null;
+  beacon: unknown;
+  captured_at: Date | string;
+}
+
+function rowToSnapshot(r: BeaconRow): BeaconSnapshot {
+  return {
+    id: r.id,
+    hiveId: r.hive_id,
+    hivePubkey: r.hive_pubkey ?? null,
+    beacon: r.beacon as HiveStatusBeacon,
+    capturedAt: r.captured_at instanceof Date ? r.captured_at.toISOString() : new Date(r.captured_at).toISOString(),
+  };
+}
+
+/**
+ * Append a beacon snapshot when an announce is accepted. Best-effort — caller
+ * catches and warns; the announce is never rejected on a PG error here.
+ */
+export async function captureBeaconSnapshot(
+  hiveId: string,
+  hivePubkey: string | null,
+  beacon: HiveStatusBeacon,
+  sql?: Sql,
+): Promise<void> {
+  await pg(sql).unsafe(
+    `INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
+     VALUES ($1, $2, $3::jsonb)`,
+    [hiveId, hivePubkey ?? null, JSON.stringify(beacon)],
+  );
+}
+
+/**
+ * Read the most-recent beacon snapshots for a hive, newest-first.
+ * Returns [] on error (best-effort — the dossier panel renders empty).
+ */
+export async function listBeaconHistory(
+  hiveId: string,
+  limit = 50,
+  sql?: Sql,
+): Promise<BeaconSnapshot[]> {
+  const rows = (await pg(sql).unsafe(
+    `SELECT id, hive_id, hive_pubkey, beacon, captured_at
+       FROM harness_shared.cross_hive_beacon_history
+      WHERE hive_id = $1
+      ORDER BY captured_at DESC
+      LIMIT $2`,
+    [hiveId, Math.min(Math.max(1, limit), 500)],
+  )) as unknown as BeaconRow[];
+  return rows.map(rowToSnapshot);
+}

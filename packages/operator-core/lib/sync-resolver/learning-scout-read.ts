@@ -2,7 +2,7 @@
  * learning-scout-read.ts — the read behind the Learning tab's "Scout" sub-view
  * (learning-system-audit-improvements-2026-06-09 P-042).
  *
- * Two halves over the scout control-plane tables, both workspace-scoped:
+ * Three halves over the scout control-plane tables, all workspace-scoped:
  *
  *  1. **Routed ideas by rail** — `harness_shared.scout_routed_ideas` (migration
  *     194, written by recordRoutedIdea): how many ideas Scout has actually
@@ -16,6 +16,13 @@
  *     substrate, so the read is best-effort: undefined-table (42P01) silently
  *     omits the tick half, any other error warns + omits, and
  *     {@link normalizeScoutTick} maps the row into one stable shape for the UI.
+ *
+ *  3. **Lens weights** — `harness_shared.scout_lens_weights` (scout-idea-grading
+ *     C-1c): the persisted per-lens sampling weights the grades steer, surfaced
+ *     so the tab can show the steering (P-007). Best-effort like the tick half.
+ *
+ * The per-item rows also carry the grade columns (migration 234) as
+ * humanGrade / humanFeedback / gradedBy — null = ungraded (C-1c).
  *
  * Pure SQL over an injected `Sql` (mirrors iq-battery/benchmark-read) so the
  * resolver test can stub the seam. Lives next to the resolver (not lib/scout/)

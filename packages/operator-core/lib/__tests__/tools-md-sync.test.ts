@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '../../../../');
@@ -90,6 +91,56 @@ function parseToolMentions(md: string): Set<string> {
   return mentions;
 }
 
+/**
+ * Extract the TOP-LEVEL keys of a defineTool source's `byRole:` block.
+ * `byRole` values are full guidance objects (`{ when, notWhen?, chaining? }`,
+ * see ToolGuidance in libs/generic/tooldef), so a flat `[^}]*` regex harvests
+ * nested keys (`when`) and `word:` look-alikes inside the guidance strings
+ * (`plan:<slug>`). Walk the block brace-aware and string-aware instead, and
+ * collect identifiers followed by `:` at depth 0 only.
+ */
+function parseByRoleTopLevelKeys(src: string): string[] {
+  const at = src.search(/byRole:\s*\{/);
+  if (at === -1) return [];
+  const open = src.indexOf('{', at);
+  const keys: string[] = [];
+  let depth = 0;
+  let inStr: string | null = null;
+  let token = '';
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (inStr) {
+      if (ch === '\\') i++;
+      else if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      inStr = ch;
+      token = '';
+      continue;
+    }
+    if (ch === '{') {
+      depth++;
+      token = '';
+      continue;
+    }
+    if (ch === '}') {
+      depth--;
+      token = '';
+      if (depth === 0) break;
+      continue;
+    }
+    if (depth === 1) {
+      if (/[\w$-]/.test(ch)) token += ch;
+      else if (ch === ':' && token) {
+        keys.push(token);
+        token = '';
+      } else if (!/\s/.test(ch)) token = '';
+    }
+  }
+  return keys;
+}
+
 // ─── catalog ─────────────────────────────────────────────────────────
 
 interface CatalogEntry {
@@ -149,11 +200,12 @@ for (const file of TOOL_FILES) {
     : [...rolesStr.matchAll(/['"]([a-z]+)['"]/g)].map((m) => m[1]);
   const hasGuidanceBlock = /guidance:\s*\{/.test(src);
   const hasWhen = hasGuidanceBlock && /guidance:\s*\{[^}]*?when:\s*['"`]/s.test(src);
-  const byRoleMatch = src.match(/byRole:\s*\{([^}]*)\}/);
-  const byRoleKeys = byRoleMatch
-    ? [...byRoleMatch[1].matchAll(/(\w+):/g)].map((m) => m[1])
-    : [];
-  CATALOG.set(name, { roles, hasWhen, byRoleKeys, source: file.replace(REPO + '/', '') });
+  CATALOG.set(name, {
+    roles,
+    hasWhen,
+    byRoleKeys: parseByRoleTopLevelKeys(src),
+    source: file.replace(REPO + '/', ''),
+  });
 }
 
 // Pass 2 — plugin manifests
@@ -259,10 +311,15 @@ describe('tools-md-sync', () => {
 
   describe('byRole reference validation', () => {
     it('every byRole key references a known role', () => {
+      // Validate against the FULL runtime role registry (AGENT_ROLES), not
+      // this file's chat/spawn-surface subset: byRole legitimately targets
+      // roles with no apps/operator/prompts surface (queen, sentinel, …) —
+      // the EI-286 drift class (registry knows the role, a checker doesn't).
+      const validRoles = new Set<string>(AGENT_ROLES);
       const bad: string[] = [];
       for (const [name, entry] of CATALOG) {
         for (const key of entry.byRoleKeys) {
-          if (!KNOWN_ROLES.includes(key)) bad.push(`${name}: byRole.${key}`);
+          if (!validRoles.has(key)) bad.push(`${name}: byRole.${key}`);
         }
       }
       expect(bad, `invalid byRole keys: ${bad.join(', ')}`).toEqual([]);

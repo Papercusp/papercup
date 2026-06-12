@@ -47,6 +47,13 @@ export interface CrossHiveAsk {
   state: CrossHiveAskState;
   replyBody: string | null;
   replyTs: string | null;
+  /**
+   * The ownerId (coord identity) of the agent that initiated this OUT ask
+   * (hive-network-surface P-014). When present, the C-4 reply event fires
+   * with `to: [askedBy]` so a sleeping Queen is woken on the answer without
+   * polling. NULL for IN rows (we are the answerer) or pre-235 rows.
+   */
+  askedBy: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -113,6 +120,7 @@ interface AskRow {
   state: string;
   reply_body: string | null;
   reply_ts: Date | string | null;
+  asked_by: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -136,13 +144,15 @@ function rowToAsk(r: AskRow): CrossHiveAsk {
     state: r.state as CrossHiveAskState,
     replyBody: r.reply_body,
     replyTs: toIso(r.reply_ts),
+    askedBy: r.asked_by ?? null,
     createdAt: toIso(r.created_at)!,
     updatedAt: toIso(r.updated_at)!,
   };
 }
 
 const SELECT_COLS = `id, workspace_id, hive_slug, peer_pubkey, direction, kind, subject, body,
-                     correlation_id, state, reply_body, reply_ts, created_at, updated_at`;
+                     correlation_id, state, reply_body, reply_ts, asked_by,
+                     created_at, updated_at`;
 
 /* ── Store ─────────────────────────────────────────────────────────────────────── */
 
@@ -155,6 +165,10 @@ export interface InsertCrossHiveAskInput {
   body?: string;
   /** Default 'out' (a request we initiated). */
   direction?: CrossHiveAskDirection;
+  /** The ownerId of the agent initiating this ask (hive-network-surface P-014 item 4).
+   *  When set, the C-4 reply event fires with `to: [askedBy]` so the initiating
+   *  agent is woken on the answer. Optional — absent means broadcast path. */
+  askedBy?: string;
 }
 
 export interface ListCrossHiveAsksFilter {
@@ -187,8 +201,8 @@ export class PgCrossHiveAsks {
     const s = pg(this.sql);
     const rows = (await s.unsafe(
       `INSERT INTO harness_shared.cross_hive_asks
-         (workspace_id, hive_slug, peer_pubkey, direction, kind, subject, body, correlation_id, state)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued')
+         (workspace_id, hive_slug, peer_pubkey, direction, kind, subject, body, correlation_id, state, asked_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9)
        ON CONFLICT (workspace_id, hive_slug, correlation_id) DO NOTHING
        RETURNING ${SELECT_COLS}`,
       [
@@ -200,6 +214,7 @@ export class PgCrossHiveAsks {
         input.subject ?? '',
         input.body ?? '',
         input.correlationId,
+        input.askedBy ?? null,
       ],
     )) as unknown as AskRow[];
     if (rows.length > 0) return rowToAsk(rows[0]);

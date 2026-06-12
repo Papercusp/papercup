@@ -341,6 +341,14 @@ here persists every keystroke — mid-typed values ("fab", "opus:") go live, and
 a transiently invalid value can clobber the stored setting. Atomic controls
 (selects, radios, checkboxes, buttons) keep committing immediately.
 
+**Hydrate ONCE.** The SPA root is `<StrictMode>`, so a settings page's
+`load()` effect runs twice with both fetches in flight — and any remount does
+the same. A late-resolving hydration that re-applies server state **clobbers
+fields the user is already editing** (caught by e2e on /settings/agent: a
+committed edit was silently discarded, so its auto-save became a no-op). Guard
+with a `hydrationAppliedRef` — apply the fetched snapshot to form state only
+once per page instance.
+
 **Validation must HOLD, never DROP.** When a cross-field check fails at
 save-assembly time (duplicate name, incomplete row), substitute that section's
 **last server-acknowledged value** and flag the problem inline — never exclude

@@ -180,6 +180,13 @@ export interface HiveDirectoryDeps {
    * Prod: hive-descriptor-enrich.enrichLocalHiveDescriptor.
    */
   enrichDescriptor?(desc: LocalHiveDescriptor): Promise<LocalHiveDescriptor>;
+  /**
+   * Capture a beacon snapshot when an accepted announce carries a C-2 beacon
+   * (hive-network-surface P-014, item 2 — tier-4 dossier history).
+   * Best-effort: a throw/reject is caught + warned, never rejecting the announce.
+   * Prod: captureBeaconSnapshot from network-board/beacon-history-pg.ts.
+   */
+  onBeaconAccepted?(hiveId: string, hivePubkey: string | null, beacon: HiveStatusBeacon): Promise<void>;
   /** Clock seam for deterministic tests. */
   now?(): number;
 }
@@ -285,6 +292,12 @@ export class HiveDirectory {
       ...(beacon ? { beacon } : {}),
     });
     await this.persist();
+    // P-014: capture the beacon snapshot (best-effort — never rejects the announce).
+    if (beacon && this.deps.onBeaconAccepted) {
+      this.deps.onBeaconAccepted(frame.hive_id, frame.hive_pubkey ?? null, beacon).catch((e) => {
+        console.warn(`[hive-directory] beacon capture failed for ${frame.hive_id}: ${e instanceof Error ? e.message : e}`);
+      });
+    }
     return { accepted: true };
   }
 

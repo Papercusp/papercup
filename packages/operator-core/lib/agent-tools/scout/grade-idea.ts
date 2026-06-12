@@ -217,21 +217,15 @@ export function toToolResult(out: GradeIdeaOutcome): {
 export default defineTool({
   name: 'scout:grade-idea',
   description:
-    "Grade a routed Scout idea 1–5 with optional free-text feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the per-lens weights, and the critique is primed into next cycles' ideator prompts. Attribution is derived from the caller (Queen vs owner); owner grades are sovereign — a Queen write never overwrites one. Key by ideaId or by the routed artifact's change-feed ref (routedRef).",
+    "Grade a routed Scout idea 1–5 with optional feedback (≤2000 chars). Grades steer Scout's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
   capability: 'harness:write',
   guidance: {
     when:
-      "A grader wants to score a routed Scout idea 1–5 (optional one-line critique) so Scout learns which lenses and idea shapes to favor: the grade becomes fractional win credit in the lens weights and the feedback reaches the next cycles' ideator prompts. Key by ideaId (Scout view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId.",
+      "You want to score a routed Scout idea 1–5 (optional one-line critique) so Scout learns which lenses to favor. Key by ideaId (Scout view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Queen's triage path: grade each ungraded routed draft).",
     notWhen:
-      'Not an accept/reject of the routed artifact — a grade is a pure learning signal (D-005); the draft plan / EI proceeds through normal triage regardless of grades. Never pass grader attribution: gradedBy is derived from the caller role and is not an input.',
+      'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Queen vs owner surface).',
     chaining:
-      "After grading there is nothing to chain: lens weights pick the grade up on the next refreshScoutOutcomes pass and the critique enters ideator priming automatically. applied:false with reason:'owner-grade-sovereign' (Queen regrading an owner-graded row) is expected behavior, not an error; the returned idea summary carries the standing owner grade.",
-    byRole: {
-      queen: {
-        when:
-          "Grade each ungraded routed Scout idea 1–5 with a one-line critique as part of triaging routed drafts — use the draft's own ref as routedRef (\"plan:<slug>\" | \"wi:<id>\" | \"gym:<id>\"). You can never overwrite an owner grade: that call is a designed no-op returning owner-grade-sovereign.",
-      },
-    },
+      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Queen regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

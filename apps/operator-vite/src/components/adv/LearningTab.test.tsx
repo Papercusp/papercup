@@ -98,10 +98,13 @@ const scoutSnapshot = {
     {
       ideaId: 'idea-1', lens: 'reframing', rail: 'plan', routedRef: 'plan:scout-cache-warmup',
       title: 'Cache-warmup plan draft', routedAt: new Date(Date.now() - 10 * 60_000).toISOString(), outcome: 'pending',
+      humanGrade: null, humanFeedback: null, gradedBy: null,
     },
     {
       ideaId: 'idea-2', lens: 'analogical', rail: 'gym', routedRef: 'gym:proposal-7',
       title: 'Tighter scoper prompt', routedAt: new Date(Date.now() - 60 * 60_000).toISOString(), outcome: 'won',
+      // Queen auto-graded (C-1c) — the row shows the attribution chip; owner regrade stays open.
+      humanGrade: 4, humanFeedback: 'Sharp framing — ship it', gradedBy: 'Queen',
     },
   ],
   lastTick: { at: new Date(Date.now() - 5 * 60_000).toISOString(), outcome: 'gated', detail: 'min-interval' },
@@ -132,6 +135,7 @@ beforeEach(() => {
   nuqsState.lane = 'all';
   nuqsState.how = true;
   nuqsState.tab = null;
+  nuqsState.grade = null;
   improvementsResult = { data: [improvementsDigest], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   gymResult = { data: [gymSnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
   apiaryResult = { data: [apiarySnapshot], loading: false, fetching: false, error: null, invalidate: vi.fn() };
@@ -270,7 +274,7 @@ describe('LearningTab — Scout view', () => {
   it('renders the scoreboard, the routed-idea ledger rows, and the last-tick chip', () => {
     render(<LearningTab />);
     // Scoreboard: totalRouted stat + one Stat per rail (labelled via RAIL_META).
-    expect(screen.getByText('4')).toBeTruthy(); // totalRouted stat
+    expect(screen.getAllByText('4').length).toBeGreaterThanOrEqual(1); // totalRouted stat (also the Grade how-strip step number)
     expect(screen.getAllByText('plan draft').length).toBeGreaterThanOrEqual(1); // rail stat label + ledger row rail label
     expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1); // plan-rail count (also a how-strip step number)
     // The per-item ledger (replaced the by-rail rows): openable rows with
@@ -288,11 +292,12 @@ describe('LearningTab — Scout view', () => {
     expect(tickChip.textContent).toContain('gated · min-interval'); // status + the self-gate that withheld the cycle
   });
 
-  it('renders the scout how-this-works strip (watch → gate → route)', () => {
+  it('renders the scout how-this-works strip (watch → gate → route → grade)', () => {
     render(<LearningTab />);
     expect(screen.getByText('Watch')).toBeTruthy();
     expect(screen.getByText('Gate')).toBeTruthy();
     expect(screen.getByText('Route')).toBeTruthy();
+    expect(screen.getByText('Grade')).toBeTruthy(); // P-007 steering-visibility sentence
   });
 
   it('renders the graceful empty state when nothing has been routed and no tick exists', () => {
@@ -300,6 +305,83 @@ describe('LearningTab — Scout view', () => {
     render(<LearningTab />);
     expect(screen.getByText('Scout has not routed ideas yet')).toBeTruthy();
     expect(screen.getByLabelText('Scout tick health').textContent).toContain('none yet');
+  });
+});
+
+describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', () => {
+  beforeEach(() => {
+    nuqsState.lview = 'scout';
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('renders the star control on every routed row and the attribution chip on graded rows', () => {
+    render(<LearningTab />);
+    // 5 stars per row × 2 rows — each star is a radio named "Grade N of 5".
+    expect(screen.getAllByRole('radio', { name: 'Grade 3 of 5' }).length).toBe(2);
+    // idea-2 is Queen-graded ★4 in the fixture → the attribution chip (D-004 wording).
+    expect(screen.getByText('★4 · Queen')).toBeTruthy();
+    // idea-1 is ungraded → no chip; its note button reads "grade with a note".
+    expect(screen.getByRole('button', { name: 'Grade with a note' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Edit the grading note' })).toBeTruthy();
+  });
+
+  it('writes a star click through the scout:grade-idea proxy optimistically and invalidates', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LearningTab />);
+    fireEvent.click(screen.getAllByRole('radio', { name: 'Grade 5 of 5' })[0]); // idea-1's row
+    // Optimistic: the owner chip appears before any refetch.
+    expect(screen.getByText('★5 · Owner')).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/agent-tools/scout/grade-idea');
+    expect(JSON.parse(String(init.body))).toEqual({ ideaId: 'idea-1', grade: 5 });
+    await waitFor(() => expect(scoutResult.invalidate).toHaveBeenCalled());
+  });
+
+  it('rolls back the optimistic grade and surfaces the error when the write fails', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LearningTab />);
+    fireEvent.click(screen.getAllByRole('radio', { name: 'Grade 5 of 5' })[0]);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('HTTP 404'));
+    expect(screen.queryByText('★5 · Owner')).toBeNull(); // rolled back to ungraded
+  });
+
+  it('opens the note popover from ?grade=<ideaId>, gates save on a grade, and saves grade + note together', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied: true }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    nuqsState.grade = 'idea-1';
+    render(<LearningTab />);
+    const panel = screen.getByLabelText('Grading note').closest('.pc-learning__gradepanel') as HTMLElement;
+    expect(panel).toBeTruthy();
+    const save = within(panel).getByRole('button', { name: 'save grade' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true); // idea-1 is ungraded — a grade must be picked first
+    fireEvent.click(within(panel).getByRole('radio', { name: 'Grade 2 of 5' }));
+    fireEvent.change(within(panel).getByLabelText('Grading note'), { target: { value: 'Too speculative' } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ ideaId: 'idea-1', grade: 2, feedback: 'Too speculative' });
+  });
+
+  it('renders the lens-weight strip as shares sorted descending, hidden when absent', () => {
+    // Default fixture carries no lensWeights → no strip.
+    render(<LearningTab />);
+    expect(screen.queryByLabelText('Lens sampling weights')).toBeNull();
+    cleanup();
+    scoutResult = {
+      data: [{ ...scoutSnapshot, lensWeights: { reframing: 3, analogical: 1 } }],
+      loading: false, fetching: false, error: null, invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    const strip = screen.getByLabelText('Lens sampling weights');
+    expect(strip.textContent).toContain('lens weights');
+    expect(strip.textContent).toContain('75%');
+    expect(strip.textContent).toContain('25%');
+    // Sorted descending: reframing (75%) before analogical (25%).
+    expect(strip.textContent!.indexOf('reframing')).toBeLessThan(strip.textContent!.indexOf('analogical'));
   });
 });
 

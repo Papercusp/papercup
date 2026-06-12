@@ -55,6 +55,10 @@ export interface SendCrossHiveAskInput {
   kind: CrossHiveRequestKind;
   subject: string;
   body: string;
+  /** The coord ownerId of the initiating agent (hive-network-surface P-014 item 4).
+   *  Stored on the C-1 row; the receive-side reply path fires the C-4 event with
+   *  `to: [askedBy]` so a sleeping initiator is woken on the answer. Optional. */
+  askedBy?: string;
 }
 
 export type SendCrossHiveAskResult =
@@ -82,7 +86,7 @@ export async function sendCrossHiveAsk(
   input: SendCrossHiveAskInput,
   deps: SendCrossHiveAskDeps,
 ): Promise<SendCrossHiveAskResult> {
-  const { workspaceId, hiveSlug, peerPubkey, kind, subject, body } = input;
+  const { workspaceId, hiveSlug, peerPubkey, kind, subject, body, askedBy } = input;
 
   // 1. Outbound admission: default-deny to peers this Hive hasn't been granted
   //    outbound (B-05). An ungranted peer is rejected before any side effect.
@@ -111,6 +115,7 @@ export async function sendCrossHiveAsk(
     subject,
     body,
     direction: 'out',
+    ...(askedBy ? { askedBy } : {}),
   });
 
   // 4. Sign + send (durable store-and-forward). On delivery, advance queued → sent.

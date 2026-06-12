@@ -775,21 +775,6 @@ const RAIL_META: Record<string, { label: string; desc: string; color: string }> 
   instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
 };
 
-/** C-1c (plan scout-idea-grading-2026-06-12): the grade + lens-weight fields the
-    `learning.scout` snapshot gains with brief B-02. Mirrored locally as OPTIONAL
-    overlays so this file typechecks both before and after that brief lands — once
-    the resolver types carry the fields, these intersections collapse onto them. */
-type GradedRoutedItem = ScoutRoutedItem & {
-  humanGrade?: number | null;
-  humanFeedback?: string | null;
-  gradedBy?: string | null;
-};
-type ScoutSnapshotWithGrades = Omit<ScoutSnapshot, 'recent'> & {
-  recent: GradedRoutedItem[];
-  /** Current persisted lens sampling weights; null/absent when none recorded. */
-  lensWeights?: Record<string, number> | null;
-};
-
 /** The grade a row should display: an in-flight optimistic owner write wins,
     then the snapshot's stored grade, else null (ungraded). */
 interface EffectiveGrade {
@@ -915,7 +900,7 @@ function GradePanel({
 }
 
 function ScoutView() {
-  const sync = useSyncQuery<ScoutSnapshotWithGrades>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
   const recent = snap?.recent ?? [];
@@ -932,14 +917,14 @@ function ScoutView() {
   const [savingId, setSavingId] = useState('');
   const [gradeError, setGradeError] = useState('');
 
-  const effectiveGrade = (item: GradedRoutedItem): EffectiveGrade | null => {
+  const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
     const opt = optimistic[item.ideaId];
     if (opt) return opt;
     if (item.humanGrade == null) return null;
     return { grade: item.humanGrade, feedback: item.humanFeedback ?? null, gradedBy: item.gradedBy ?? 'owner' };
   };
 
-  const submitGrade = async (item: GradedRoutedItem, grade: number, feedback: string | null) => {
+  const submitGrade = async (item: ScoutRoutedItem, grade: number, feedback: string | null) => {
     setGradeError('');
     setSavingId(item.ideaId);
     const prevEntry = optimistic[item.ideaId] ?? null;

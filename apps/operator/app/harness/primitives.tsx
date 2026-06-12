@@ -22,8 +22,8 @@ import {
 } from 'lucide-react';
 import {
   COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, getRoleStyle,
-  SEVERITY, ISSUE_STATUS, WORK_ITEM_KIND,
-  type IssueSeverityKey, type IssueStatusKey, type StatusMeta, type WorkItemKindKey,
+  SEVERITY, ISSUE_STATUS, WORK_ITEM_KIND, AGENT_KIND,
+  type AgentKindKey, type IssueSeverityKey, type IssueStatusKey, type StatusMeta, type WorkItemKindKey,
 } from './theme';
 import { Tooltip } from './Tooltip';
 
@@ -37,12 +37,15 @@ import { Tooltip } from './Tooltip';
 function ChipPill({
   meta,
   Icon,
+  glyph,
   size,
   showLabel,
   labelOverride,
 }: {
   meta: StatusMeta;
-  Icon: LucideIcon;
+  Icon?: LucideIcon;
+  /** Text glyph rendered in place of a Lucide icon (e.g. the colony ♛/🐝 vocabulary). */
+  glyph?: string;
   size: 'xs' | 'sm';
   showLabel: boolean;
   labelOverride?: string;
@@ -56,7 +59,11 @@ function ChipPill({
       fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
       color: meta.text, background: meta.bg, whiteSpace: 'nowrap',
     }}>
-      <Icon size={iconSize} aria-hidden />
+      {Icon ? (
+        <Icon size={iconSize} aria-hidden />
+      ) : (
+        <span aria-hidden style={{ fontSize: iconSize + 1, lineHeight: 1 }}>{glyph}</span>
+      )}
       {showLabel && <span>{labelOverride ?? meta.label}</span>}
     </span>
   );
@@ -214,6 +221,42 @@ export function KindPill({
   const Icon = KIND_ICON[kind as WorkItemKindKey] ?? Circle;
   const labelOverride = kind in WORK_ITEM_KIND ? undefined : kind;
   return <ChipPill meta={s} Icon={Icon} size={size} showLabel={showLabel} labelOverride={labelOverride} />;
+}
+
+// Agent pane kind → glyph — the colony tab's vocabulary (apps/tui
+// agent_pane_kind.rs), shared so the desktop and zellij read the same at a
+// glance.
+export const AGENT_KIND_GLYPH: Record<string, string> = {
+  queen: '♛',
+  bee: '🐝',
+  sentinel: '🛡',
+  planner: '📋',
+  su: '🛠',
+};
+
+/** Agent kind badge — colony glyph + label chip, colored from the canonical
+ * AGENT_KIND table (same recipe as KindPill). An unknown kind keeps its raw
+ * name on the neutral grey fallback chip. */
+export function AgentKindPill({
+  kind,
+  size = 'sm',
+  showLabel = true,
+}: {
+  kind: string;
+  size?: 'xs' | 'sm';
+  showLabel?: boolean;
+}) {
+  const s = AGENT_KIND[kind as AgentKindKey];
+  const labelOverride = kind in AGENT_KIND ? undefined : kind;
+  return (
+    <ChipPill
+      meta={s}
+      glyph={AGENT_KIND_GLYPH[kind] ?? '·'}
+      size={size}
+      showLabel={showLabel}
+      labelOverride={labelOverride}
+    />
+  );
 }
 
 /** Short monospace ID pill — copyable. */

@@ -42,11 +42,12 @@ export default defineTool({
     subject: z.string().min(1).max(200).describe('A short title for the requested work.'),
     body: z.string().min(1).max(8000).describe('What is being requested (becomes the peer work_item\'s summary).'),
     workspace: z.string().max(120).optional(),
+    askedBy: z.string().max(200).optional().describe('Your coord ownerId (su-…). When supplied, the C-4 reply event fires with `to:[askedBy]` so you are woken on the answer rather than polling.'),
   }),
   async handler(args) {
     const ws = args.workspace ?? activeWorkspaceId();
     const result = await sendCrossHiveAsk(
-      { workspaceId: ws, hiveSlug: args.hive, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body },
+      { workspaceId: ws, hiveSlug: args.hive, peerPubkey: args.peerHivePubkey, kind: 'work-request', subject: args.subject, body: args.body, askedBy: args.askedBy },
       productionSendCrossHiveAskDeps(),
     );
     return json(result);

@@ -12,10 +12,14 @@
 //   - runs: the original run-history grid (`agentRunsConsolidated.bySlug` via
 //     useHarnessAgents) — "what executed here", kept as history, not deleted.
 //
-// Role colours come from the canonical getRoleStyle() in app/harness/theme.ts
-// so a role renders the same hue on every surface.
+// Visual language: WorkItemsPanel is the reference design for the whole dock
+// (adv-panel-chrome.css) — same bar furniture (filter input · kind Select ·
+// refresh), same chip pills (<AgentKindPill> joins the KindPill family), same
+// grid conventions (proportional widths, <code> ids, native title= truncation,
+// `?sel` row highlight). Role colours come from the canonical getRoleStyle()
+// in app/harness/theme.ts so a role renders the same hue on every surface.
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
@@ -24,21 +28,13 @@ import { RichGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/g
 import { LIVE_MS, STALE_MS } from '@papercusp/operator-core/lib/liveness';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { getRoleStyle } from '../../harness/theme';
+import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
+import { AgentKindPill, AGENT_KIND_GLYPH } from '../../harness/primitives';
 import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessAgents, type HarnessAgentRun } from './useHarnessData';
 
-// The colony tab's kind vocabulary (apps/tui agent_pane_kind.rs glyphs) —
-// shared so the desktop and zellij read the same at a glance.
-const KIND_GLYPH: Record<string, string> = {
-  queen: '♛',
-  bee: '🐝',
-  sentinel: '🛡',
-  planner: '📋',
-  su: '🛠',
-};
-
-// Compact legend for the glyph column (owner ask 2026-06-11) — same order as
+// Compact legend for the kind pills (owner ask 2026-06-11) — same order as
 // the pui colony roster; the tooltip carries the one-line "what is this kind".
 const KIND_LEGEND: Array<{ kind: string; hint: string }> = [
   { kind: 'queen', hint: 'Queen — the autonomous brain session (cadence-driven)' },
@@ -90,6 +86,22 @@ interface WorkingAgent {
   driveMode: string;
 }
 
+// Grid-cell truncation (native title= is the approved pattern for dynamic
+// per-row truncation tooltips — see design/gotchas).
+const CELL_TRUNCATE: CSSProperties = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+// Selected-row tint — the same recipe WorkItemsPanel uses for `?sel`.
+const SELECTED_ROW_BG = 'color-mix(in oklab, var(--accent), transparent 80%)';
+
+// Radix Select reserves '' for "no selection" — translate at the boundary
+// (the documented sentinel pattern from design/gotchas).
+const ALL_KINDS = '_all';
+
 function fmtAge(ms: number | undefined): string {
   if (!ms) return '—';
   const age = Math.max(0, Date.now() - ms);
@@ -106,7 +118,7 @@ function fmtBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export default function AdvAgentsPanel({ params }: PanelComponentProps) {
+export default function AdvAgentsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   // Sub-view: who's working (presence/claims) vs what executed (run history).
   const [view, setView] = useQueryState(
@@ -118,126 +130,153 @@ export default function AdvAgentsPanel({ params }: PanelComponentProps) {
     return <div className="pc-advpanel__empty">No harness slug in params.</div>;
   }
 
+  // Sub-view tabs lead the (single) toolbar, Work-items style — each view
+  // renders the rest of its own bar so its controls sit beside the tabs
+  // instead of stacking a second bar.
+  const viewTabs = (
+    <div className="pc-adv-agents__views" role="tablist" aria-label="Agents sub-view">
+      {(['working', 'runs'] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          role="tab"
+          aria-selected={view === v}
+          className="pc-advpanel__chip"
+          onClick={() => void setView(v)}
+        >
+          {v === 'working' ? 'Working' : 'Runs'}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="pc-advpanel pc-adv-agents">
-      <div className="pc-advpanel__bar">
-        <div className="pc-adv-agents__views" role="tablist" aria-label="Agents sub-view">
-          {(['working', 'runs'] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              role="tab"
-              aria-selected={view === v}
-              className="pc-advpanel__chip"
-              onClick={() => void setView(v)}
-            >
-              {v === 'working' ? 'Working' : 'Runs'}
-            </button>
-          ))}
-        </div>
-        <span className="pc-adv-agents__bar-rest" id="pc-adv-agents-bar-slot" />
-        {view === 'working' ? (
-          <span className="pc-adv-agents__legend" aria-label="Agent kind and liveness legend">
-            {KIND_LEGEND.map(({ kind, hint }) => (
-              <Tooltip key={kind} label={hint}>
-                <span className="pc-adv-agents__legend-item">
-                  {KIND_GLYPH[kind]} {kind}
-                </span>
-              </Tooltip>
-            ))}
-            <span className="pc-adv-agents__legend-gap" aria-hidden />
-            {LIVENESS_LEGEND.map(({ liveness, label, hint }) => (
-              <Tooltip key={liveness} label={hint}>
-                <span className="pc-adv-agents__legend-item">
-                  <LivenessDot liveness={liveness} size={7} title="" />
-                  {label}
-                </span>
-              </Tooltip>
-            ))}
-          </span>
-        ) : null}
-      </div>
-      {view === 'working' ? <WorkingView slug={slug} /> : <RunsView slug={slug} />}
+      {view === 'working' ? (
+        <WorkingView slug={slug} api={api} viewTabs={viewTabs} />
+      ) : (
+        <RunsView slug={slug} api={api} viewTabs={viewTabs} />
+      )}
       <PanelStyles />
     </div>
   );
 }
 
 /** "Who's working here" — the fleet:assignments projection (plan P-003). */
-function WorkingView({ slug }: { slug: string }) {
+function WorkingView({
+  slug,
+  api,
+  viewTabs,
+}: {
+  slug: string;
+  api: PanelComponentProps['api'];
+  viewTabs: ReactNode;
+}) {
+  // user-meaningful filters → URL (nuqs); `a`-prefixed so they don't collide
+  // with the Work-items panel's (wkind/wq) in the same dock.
+  const [kind, setKind] = useQueryState('akind', parseAsString.withDefault(''));
+  const [search, setSearch] = useQueryState('aq', parseAsString.withDefault(''));
+  // Row click jumps the Detail pane to the agent's head-of-line work item via
+  // the global `?sel` — the same contract Work items has; the highlight reads
+  // it back so the two panels light up in sync.
+  const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  // Dragged widths survive panel remounts (localStorage — render-only pref).
+  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-working');
+
   const query = useSyncQuery<WorkingAgent>({
     queryName: 'fleetAssignments.byHarness',
     args: { harnessSlug: slug },
     enabled: Boolean(slug),
   });
   const agents = query.loading ? null : query.data;
-  const [, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
-  // Dragged widths survive panel remounts (localStorage — render-only pref).
-  const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-working');
+  const loading = query.fetching;
+  const error = query.error ? query.error.message : null;
 
-  const rows = useMemo(() => {
-    // Live agents first, loaded first within liveness.
-    return [...(agents ?? [])].sort(
-      (a, b) => Number(b.alive) - Number(a.alive) || b.load - a.load,
-    );
+  useEffect(() => {
+    if (agents) api.setTitle(`Agents · ${slug} (${agents.length})`);
+  }, [agents, slug, api]);
+
+  const kinds = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of agents ?? []) set.add(a.agentPaneKind);
+    return Array.from(set).sort();
   }, [agents]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const xs = (agents ?? []).filter((a) => {
+      if (kind && a.agentPaneKind !== kind) return false;
+      if (q) {
+        const hay = `${a.agentId} ${a.name ?? ''} ${a.label ?? ''} ${a.intent} ${a.doing?.id ?? ''} ${a.doing?.title ?? ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    // Live agents first, loaded first within liveness.
+    return xs.sort((a, b) => Number(b.alive) - Number(a.alive) || b.load - a.load);
+  }, [agents, kind, search]);
 
   const columns: ColumnDef<WorkingAgent>[] = [
     {
       key: 'kind',
-      header: '',
-      headerText: '',
-      width: '30px',
+      header: 'Kind',
+      width: 1.2,
       toCopyText: (r) => r.agentPaneKind,
-      // Native title=, not <Tooltip>: per-row hints in grid cells — a Radix
-      // portal per row is the documented perf anti-pattern (design/gotchas).
+      // Canonical agent-kind chip (AGENT_KIND table) — same chip recipe as the
+      // Work-items Kind column so the dock's pill columns read as one visual
+      // language. Native title=, not <Tooltip>: per-row hints in grid cells —
+      // a Radix portal per row is the documented perf anti-pattern
+      // (design/gotchas).
       render: ({ row }) => (
         <span
-          className={`pc-adv-agents__kind${row.alive ? '' : ' is-dead'}`}
+          className={row.alive ? undefined : 'pc-adv-agents__dead'}
           title={`${row.agentPaneKind}${row.alive ? '' : ' (not live)'}`}
         >
-          {KIND_GLYPH[row.agentPaneKind] ?? '·'}
+          <AgentKindPill kind={row.agentPaneKind} size="xs" />
         </span>
       ),
     },
     {
       key: 'agent',
       header: 'Agent',
-      headerText: 'Agent',
-      width: '140px',
+      width: 1.8,
       toCopyText: (r) => r.agentId,
       render: ({ row }) => (
-        <span className="pc-adv-agents__run" title={row.intent || row.agentId}>
+        <span style={CELL_TRUNCATE} title={row.intent || row.agentId}>
           {row.name ?? row.label ?? row.agentId}
         </span>
       ),
     },
     {
+      key: 'item',
+      header: 'Item',
+      width: 1.4,
+      toCopyText: (r) => r.doing?.id ?? '',
+      render: ({ row }) =>
+        row.doing ? (
+          <code style={CELL_TRUNCATE} title={row.doing.id}>{row.doing.id}</code>
+        ) : (
+          <>—</>
+        ),
+    },
+    {
       key: 'doing',
       header: 'Doing',
-      headerText: 'Doing',
-      width: 1,
-      toCopyText: (r) => r.doing?.id ?? '',
-      render: ({ row }) => (
-        <span className="pc-adv-agents__cellrow">
-          {row.doing ? (
-            <>
-              <span className="pc-adv-agents__feat">{row.doing.id}</span>
-              <span className="pc-adv-agents__doing">{row.doing.title}</span>
-            </>
-          ) : (
-            <span className="pc-adv-agents__doing pc-adv-agents__doing--idle">
-              {row.intent || (row.declaredUnclaimed ? '⚠ declared, unclaimed' : '—')}
-            </span>
-          )}
-        </span>
-      ),
+      width: 4,
+      toCopyText: (r) => r.doing?.title ?? r.intent,
+      render: ({ row }) =>
+        row.doing ? (
+          <span style={CELL_TRUNCATE} title={row.doing.title}>{row.doing.title}</span>
+        ) : (
+          <span style={CELL_TRUNCATE} className="pc-adv-agents__idle" title={row.intent || undefined}>
+            {row.intent || (row.declaredUnclaimed ? '⚠ declared, unclaimed' : '—')}
+          </span>
+        ),
     },
     {
       key: 'load',
       header: 'Load',
-      headerText: 'Load',
-      width: '46px',
+      width: '52px',
       align: 'right',
       toCopyText: (r) => String(r.load),
       render: ({ row }) => (
@@ -270,47 +309,111 @@ function WorkingView({ slug }: { slug: string }) {
   ];
 
   return (
-    <div className="pc-adv-agents__list">
-      {query.error ? (
-        <div className="pc-advpanel__empty pc-advpanel__empty--err">
-          Failed: {query.error.message}
-        </div>
-      ) : agents === null ? (
-        <div className="pc-advpanel__empty">Loading {slug}…</div>
-      ) : (
-        <RichGrid<WorkingAgent>
-          columns={columns}
-          rows={rows}
-          resizableColumns
-          columnWidths={colWidths}
-          onColumnWidthsChange={setColWidths}
-          getRowId={(r) => r.agentId}
-          onRowClick={(r) => {
-            if (r.doing) void setSelectedId(r.doing.id);
-          }}
-          headerHeight={30}
-          rowMinHeight={30}
-          empty={
-            <div className="pc-advpanel__empty">
-              No agents working in {slug} right now — claims and spawns land here live.
-            </div>
-          }
+    <>
+      <div className="pc-advpanel__bar">
+        {viewTabs}
+        <input
+          type="text"
+          className="pc-advpanel__input"
+          value={search}
+          onChange={(e) => void setSearch(e.target.value)}
+          placeholder="Filter agents…"
+          aria-label="Filter agents"
         />
+        <Select
+          value={kind || ALL_KINDS}
+          onChange={(v) => void setKind(v === ALL_KINDS ? '' : v)}
+          ariaLabel="Filter by agent kind"
+          triggerClassName="pc-advpanel__select"
+          options={[
+            { value: ALL_KINDS, label: 'all kinds' },
+            ...kinds.map((k) => ({ value: k, label: `${AGENT_KIND_GLYPH[k] ?? '·'} ${k}` })),
+          ]}
+        />
+        <Tooltip label="Refresh agents">
+          <button
+            type="button"
+            className="pc-advpanel__iconbtn"
+            onClick={() => query.invalidate()}
+            disabled={loading}
+            aria-label="Refresh agents"
+          >
+            <RefreshCw size={13} aria-hidden className={loading ? 'pc-advpanel__spin' : undefined} />
+          </button>
+        </Tooltip>
+      </div>
+      {error ? (
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">Failed: {error}</div>
+      ) : !agents ? (
+        <div className="pc-advpanel__empty">Loading {slug}…</div>
+      ) : filtered.length === 0 ? (
+        <div className="pc-advpanel__empty">
+          {agents.length === 0
+            ? `No agents working in ${slug} right now — claims and spawns land here live.`
+            : 'No agents match the filter.'}
+        </div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <RichGrid<WorkingAgent>
+            columns={columns}
+            rows={filtered}
+            resizableColumns
+            columnWidths={colWidths}
+            onColumnWidthsChange={setColWidths}
+            getRowId={(r) => r.agentId}
+            onRowClick={(r) => {
+              if (r.doing) void setSelectedId(r.doing.id);
+            }}
+            getRowBg={(r) => (r.doing && r.doing.id === selectedId ? SELECTED_ROW_BG : undefined)}
+            headerHeight={30}
+            rowMinHeight={30}
+          />
+        </div>
       )}
-    </div>
+      <div className="pc-adv-agents__legendbar" aria-label="Agent kind and liveness legend">
+        {KIND_LEGEND.map(({ kind: k, hint }) => (
+          <Tooltip key={k} label={hint}>
+            <span className="pc-adv-agents__legend-item">
+              {AGENT_KIND_GLYPH[k]} {k}
+            </span>
+          </Tooltip>
+        ))}
+        <span className="pc-adv-agents__legend-gap" aria-hidden />
+        {LIVENESS_LEGEND.map(({ liveness, label, hint }) => (
+          <Tooltip key={liveness} label={hint}>
+            <span className="pc-adv-agents__legend-item">
+              <LivenessDot liveness={liveness} size={7} title="" />
+              {label}
+            </span>
+          </Tooltip>
+        ))}
+      </div>
+    </>
   );
 }
 
 /** The original run-history grid — "what executed here" (kept per plan D-001). */
-function RunsView({ slug }: { slug: string }) {
+function RunsView({
+  slug,
+  api,
+  viewTabs,
+}: {
+  slug: string;
+  api: PanelComponentProps['api'];
+  viewTabs: ReactNode;
+}) {
   const { agents, loading, error, refresh } = useHarnessAgents(slug);
   // showAll persists in the URL (nuqs) so it survives reload + is agent-driveable.
   const [showAll, setShowAll] = useQueryState('agentsAll', parseAsBoolean.withDefault(false));
   // Dragged widths survive panel remounts (localStorage — render-only pref).
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-runs');
   // Clicking a row with a feature jumps the Detail pane to that feature.
-  const [, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
+  const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (agents) api.setTitle(`Agents · ${slug} (${agents.length} runs)`);
+  }, [agents, slug, api]);
 
   const visible = useMemo<HarnessAgentRun[]>(() => {
     if (!agents) return [];
@@ -371,7 +474,7 @@ function RunsView({ slug }: { slug: string }) {
         toCopyText: (r) => r.runId,
         render: ({ row }) => (
           <span className="pc-adv-agents__cellrow">
-            <span className="pc-adv-agents__run" title={row.runId}>{row.runId}</span>
+            <code className="pc-adv-agents__run" title={row.runId}>{row.runId}</code>
             {row.featureId ? <span className="pc-adv-agents__feat">{row.featureId}</span> : null}
           </span>
         ),
@@ -409,6 +512,7 @@ function RunsView({ slug }: { slug: string }) {
   return (
     <>
       <div className="pc-advpanel__bar">
+        {viewTabs}
         <button
           type="button"
           className="pc-advpanel__chip"
@@ -456,6 +560,7 @@ function RunsView({ slug }: { slug: string }) {
             onRowClick={(r) => {
               if (r.featureId) void setSelectedId(r.featureId);
             }}
+            getRowBg={(r) => (r.featureId && r.featureId === selectedId ? SELECTED_ROW_BG : undefined)}
             headerHeight={30}
             rowMinHeight={30}
             empty={
@@ -473,25 +578,20 @@ function RunsView({ slug }: { slug: string }) {
 function PanelStyles() {
   return (
     <style>{`
-      .pc-adv-agents__views { display: inline-flex; gap: 4px; }
-      .pc-adv-agents__bar-rest { margin-left: auto; }
-      .pc-adv-agents__legend {
-        display: inline-flex; gap: 10px; flex-shrink: 1; min-width: 0;
-        overflow: hidden; white-space: nowrap;
-        font-size: 10px; color: var(--fg-mute, #7f9bb4);
-      }
-      .pc-adv-agents__legend-item { display: inline-flex; align-items: center; gap: 3px; cursor: default; }
-      .pc-adv-agents__legend-gap { width: 6px; border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%)); }
-      .pc-adv-agents__kind { font-size: 13px; line-height: 1; }
-      .pc-adv-agents__kind.is-dead { opacity: 0.45; filter: grayscale(0.8); }
-      .pc-adv-agents__doing {
-        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        font-size: 11.5px; color: var(--fg, #e7f7ff);
-      }
-      .pc-adv-agents__doing--idle { color: var(--fg-mute); font-style: italic; }
+      .pc-adv-agents__views { display: inline-flex; gap: 4px; flex-shrink: 0; }
+      .pc-adv-agents__dead { opacity: 0.45; filter: grayscale(0.8); }
+      .pc-adv-agents__idle { color: var(--fg-mute); font-style: italic; }
       .pc-adv-agents__count { font-variant-numeric: tabular-nums; color: var(--fg-mute); font-size: 10px; }
       .pc-adv-agents__hint { font-size: 10px; color: var(--fg-mute); }
       .pc-adv-agents__list { flex: 1; min-height: 0; overflow: auto; }
+      .pc-adv-agents__legendbar {
+        display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+        margin-top: auto; padding: 5px 10px; overflow: hidden; white-space: nowrap;
+        font-size: 10px; color: var(--fg-mute, #7f9bb4);
+        border-top: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+      }
+      .pc-adv-agents__legend-item { display: inline-flex; align-items: center; gap: 3px; cursor: default; }
+      .pc-adv-agents__legend-gap { width: 6px; border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%)); align-self: stretch; }
       .pc-adv-agents__dot {
         display: inline-block; width: 7px; height: 7px; border-radius: 50%;
         background: color-mix(in oklab, var(--fg-mute), transparent 30%);
@@ -507,7 +607,7 @@ function PanelStyles() {
       .pc-adv-agents__role-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
       .pc-adv-agents__cellrow { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; width: 100%; }
       .pc-adv-agents__run {
-        flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 10px;
+        flex: 1; min-width: 0; font-size: 11px;
         color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .pc-adv-agents__feat {
@@ -515,7 +615,7 @@ function PanelStyles() {
         color: var(--accent-strong, #7dd3fc);
       }
       .pc-adv-agents__num {
-        font-size: 10px; color: var(--fg-mute); font-variant-numeric: tabular-nums;
+        color: var(--fg-mute); font-variant-numeric: tabular-nums;
       }
     `}</style>
   );

@@ -17,14 +17,16 @@ import {
   IssueStatusPill,
   StatusPill,
   KindPill,
+  AgentKindPill,
   IdPill,
   RolePill,
   SEVERITY_ICON,
   ISSUE_STATUS_ICON,
   STATUS_ICON,
   KIND_ICON,
+  AGENT_KIND_GLYPH,
 } from './primitives';
-import { getRoleStyle, SEVERITY, ISSUE_STATUS, STATUS, WORK_ITEM_KIND } from './theme';
+import { getRoleStyle, SEVERITY, ISSUE_STATUS, STATUS, WORK_ITEM_KIND, AGENT_KIND } from './theme';
 
 afterEach(() => cleanup());
 
@@ -186,6 +188,30 @@ describe('KindPill', () => {
     const { container } = render(<KindPill kind="feature" showLabel={false} />);
     expect(screen.queryByText(WORK_ITEM_KIND.feature.label)).toBeNull();
     expect(container.querySelector('svg')).not.toBeNull();
+  });
+});
+
+describe('AgentKindPill', () => {
+  it('renders glyph + canonical label for a known agent kind', () => {
+    render(<AgentKindPill kind="queen" />);
+    expect(screen.getByText(AGENT_KIND.queen.label)).toBeTruthy();
+    expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy();
+  });
+
+  it('covers every glyph kind in the AGENT_KIND table (and vice versa)', () => {
+    expect(Object.keys(AGENT_KIND_GLYPH).sort()).toEqual(Object.keys(AGENT_KIND).sort());
+  });
+
+  it('keeps the RAW kind name (not "Unknown") for an unrecognized kind', () => {
+    expect(() => render(<AgentKindPill kind="drone" />)).not.toThrow();
+    expect(screen.getByText('drone')).toBeTruthy();
+    expect(screen.queryByText('Unknown')).toBeNull();
+  });
+
+  it('hides the label when showLabel=false but still renders the glyph', () => {
+    render(<AgentKindPill kind="bee" showLabel={false} />);
+    expect(screen.queryByText(AGENT_KIND.bee.label)).toBeNull();
+    expect(screen.getByText(AGENT_KIND_GLYPH.bee)).toBeTruthy();
   });
 });
 

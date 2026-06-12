@@ -113,6 +113,21 @@ describe('spawnInvokeOnce', () => {
     expect(r.exitCode).not.toBe(0); // terminated by signal (code null → 1)
   }, 10_000);
 
+  // WI-108: per-request opts.timeoutMs must override the module-level default
+  // (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS=600ms here). The invoke route passes the
+  // caller-supplied timeoutMs through spawnInvokeOnce → runChild, so a
+  // body.timeoutMs: 280_000 truly kills at 280s, not the 600s host default.
+  it('per-request opts.timeoutMs overrides the module-level PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS default', async () => {
+    H.cmd = node('setInterval(() => {}, 5000)'); // never exits on its own
+    const start = Date.now();
+    // Module default is 600ms (env above). A per-request 200ms must kill sooner.
+    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {}, { timeoutMs: 200 });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500); // killed at ~200ms, well before the 600ms default
+    expect(r.timedOut).toBe(true);
+    expect(r.exitCode).not.toBe(0);
+  }, 10_000);
+
   it('resolves (never rejects) with exitCode 1 on a spawn error (bad command)', async () => {
     H.cmd = { command: 'papercusp-no-such-binary-zzz', args: [], env: process.env };
     const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {});
