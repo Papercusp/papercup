@@ -223,7 +223,10 @@ textarea: typing stays in a local draft and <code dir="auto">onCommit</code> fir
 after the optional <code dir="auto">validate(draft)</code> passes. A plain <code dir="auto">&#x3C;input value onChange></code>
 here persists every keystroke — mid-typed values (“fab”, “opus:”) go live, and
 a transiently invalid value can clobber the stored setting. Atomic controls
-(selects, radios, checkboxes, buttons) keep committing immediately.</p>
+(selects, radios, checkboxes, buttons) keep committing immediately. For
+numbers, <code dir="auto">NumField</code> (<code dir="auto">app/settings/voice/NumField.tsx</code>) is the validated
+commit-on-blur sibling — it gates on finite + [min, max] and flags
+out-of-range drafts inline instead of clamp-and-saving them.</p>
 <p><strong>Hydrate ONCE.</strong> The SPA root is <code dir="auto">&#x3C;StrictMode></code>, so a settings page’s
 <code dir="auto">load()</code> effect runs twice with both fetches in flight — and any remount does
 the same. A late-resolving hydration that re-applies server state <strong>clobbers

@@ -36,6 +36,7 @@ import {
   materializeWorkspacePrompts,
   materializeHarnessPrompts,
 } from '../../../saved-prompts-materialize';
+import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
@@ -434,6 +435,14 @@ const post = defineTool({
     try {
       if (agent === 'codex' && codexHome) {
         await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+        // Slash exposure (slash-exposure-tool-catalog-2026-06-12 P-009):
+        // Codex doesn't surface MCP prompts as slash commands, so the
+        // session-visible tool catalog is materialized as prompt FILES.
+        // An su session runs the operator-role catalog.
+        const r = await emitCodexSlashToolPrompts(codexHome, 'operator' as never);
+        process.stderr.write(
+          `[bootstrap-su] slash tool prompts: ${r.written} written, ${r.pruned} pruned in ${Math.round(r.ms)}ms\n`,
+        );
       } else {
         await materializeWorkspacePrompts(workspace);
         if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);

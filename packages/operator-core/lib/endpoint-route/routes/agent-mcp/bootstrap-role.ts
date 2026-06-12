@@ -39,6 +39,7 @@ import {
   materializeWorkspacePrompts,
   materializeHarnessPrompts,
 } from '../../../saved-prompts-materialize';
+import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 
 const CORS_HEADERS: Record<string, string> = {
@@ -312,6 +313,14 @@ const post = defineTool({
     try {
       if (agent === 'codex' && codexHome) {
         if (harnessSlug) await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+        // Slash exposure (slash-exposure-tool-catalog-2026-06-12 P-009):
+        // Codex doesn't surface MCP prompts as slash commands, so the
+        // session-visible (role-filtered) tool catalog is materialized as
+        // prompt FILES — the same walk tools/list serves this role.
+        const r = await emitCodexSlashToolPrompts(codexHome, role as never);
+        process.stderr.write(
+          `[bootstrap-role] slash tool prompts: ${r.written} written, ${r.pruned} pruned in ${Math.round(r.ms)}ms\n`,
+        );
       } else {
         await materializeWorkspacePrompts(workspace);
         if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
