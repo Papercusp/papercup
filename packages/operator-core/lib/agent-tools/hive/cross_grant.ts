@@ -30,11 +30,11 @@ export default defineTool({
   description:
     "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions; every grant is quota-capped (maxPerHour / maxBodyBytes, defaults 60/hr + 64KiB) and optionally expiring (expiresInHours). Grants federate to all of this Hive's Swarms.",
   guidance: {
-    when: "Setting this Hive's cross-Hive policy. direction:'in' — allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests INTO this Hive. direction:'out' — authorize THIS Hive to send asks/work-requests TO a peer (the owner-gated step before the Queen's first hive:ask to a new peer). Or list/revoke current grants. Pass maxPerHour / maxBodyBytes to tune a peer's quota (defaults apply otherwise) and expiresInHours for a time-boxed grant.",
+    when: "Setting this Hive's cross-Hive policy: direction:'in' admits a peer Hive's asks/work-requests; direction:'out' authorizes ours to it (owner-gated before the Queen's first hive:ask to a new peer). Also list/revoke. maxPerHour/maxBodyBytes/expiresInHours tune a grant's quota/expiry (capped defaults otherwise).",
     notWhen:
       'Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.',
     chaining:
-      'Inbound: discovery:hives (find a peer Hive\'s pubkey) → hive:cross_grant { action:"grant", direction:"in", peerHivePubkey, kinds }. Outbound (before the Queen asks a peer): hive:cross_grant { action:"grant", direction:"out", peerHivePubkey, kinds } → hive:ask / hive:request_work.',
+      'discovery:hives (peer pubkey) → hive:cross_grant { action:"grant", direction, peerHivePubkey, kinds } — direction:"out" before hive:ask / hive:request_work.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

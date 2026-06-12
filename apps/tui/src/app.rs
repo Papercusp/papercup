@@ -2544,13 +2544,13 @@ impl App {
         }
     }
 
-    /// The dock agent stack's watch panes to open THIS roster refresh
-    /// (pui-dock-agent-stack-2026-06-07): one `pui watch-pane <owner>` per
-    /// running FLEET BEE (`source == "fleet-spawn"` — Queen/orchestrator
+    /// The dock agent stack's bee panes to open THIS roster refresh
+    /// (hive-agent-tabs P-004): one live `claude --resume <session_id>` Claude
+    /// TUI per running FLEET BEE (`source == "fleet-spawn"` — Queen/orchestrator
     /// spawns; engineer shells and the brain are NOT paned — owner ask) not
     /// yet paned. Prunes departed owners from the dedup set so a returning
     /// bee re-panes; interactive launch panes are excluded via `tracked_panes`.
-    fn watch_panes_to_open(&mut self) -> Vec<crate::mux::PaneSpec> {
+    fn bee_panes_to_open(&mut self) -> Vec<crate::mux::PaneSpec> {
         let is_bee = |r: &crate::models::RosterEntry| r.is_live() && r.source == "fleet-spawn";
         let live: std::collections::HashSet<&str> = self
             .roster
@@ -2558,11 +2558,11 @@ impl App {
             .filter(|r| is_bee(r))
             .map(|r| r.owner_id.as_str())
             .collect();
-        self.watched_panes.retain(|o| live.contains(o.as_str()));
+        self.paned_bees.retain(|o| live.contains(o.as_str()));
         let mut out: Vec<(u8, crate::mux::PaneSpec)> = Vec::new();
         let mut opened_owners: Vec<String> = Vec::new();
         for r in &self.roster {
-            if !is_bee(r) || self.watched_panes.contains(&r.owner_id) {
+            if !is_bee(r) || self.paned_bees.contains(&r.owner_id) {
                 continue;
             }
             // Already an interactive pane in this dock (a reactive launch).
@@ -2603,12 +2603,12 @@ impl App {
             // companion to split a live pane (a staged follow-up). Bees review
             // their staged wakes via the fleet-wide "⏸ wakes" board for now; the
             // queen gets her inline split in the dock KDL (chat_dock_kdl).
-            // Record the owner directly — the flag-on argv is `claude --resume
+            // Record the owner directly — the argv is `claude --resume
             // <session_id>` (no owner at argv[2]), so parsing argv would dedup on
             // the wrong key and re-pane the bee every refresh.
             opened_owners.push(r.owner_id.clone());
         }
-        self.watched_panes.extend(opened_owners);
+        self.paned_bees.extend(opened_owners);
         // Stable by rank: roster order survives within a type group (P-011).
         out.sort_by_key(|(rank, _)| *rank);
         out.into_iter().map(|(_, spec)| spec).collect()
@@ -4167,51 +4167,6 @@ impl App {
         if self.show_notifs {
             self.show_notifs = false;
             return Action::Render;
-        }
-        // Watch pane (pui-dock-agent-stack): the pane IS a chat-with-this-bee
-        // surface — printable keys type into the composer, Enter sends (a
-        // durable coord:message-agent thread + ping), Esc clears the draft.
-        // Ctrl+C still quits (handled by the caller before on_key).
-        if self.watch.is_some() {
-            match code {
-                // Ctrl+N → notifications history (printable 'N' belongs to the
-                // composer here; the toast hint names this binding).
-                KeyCode::Char('n') | KeyCode::Char('N')
-                    if mods.contains(KeyModifiers::CONTROL) =>
-                {
-                    self.show_notifs = true;
-                    self.toast = None;
-                    self.unseen_notifs = 0;
-                    return Action::Render;
-                }
-                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => {
-                    self.watch_input.push(c);
-                    return Action::Render;
-                }
-                KeyCode::Backspace => {
-                    self.watch_input.pop();
-                    return Action::Render;
-                }
-                KeyCode::Esc => {
-                    self.watch_input.clear();
-                    return Action::Render;
-                }
-                KeyCode::Enter => {
-                    let body = self.watch_input.trim().to_string();
-                    if body.is_empty() {
-                        return Action::Render;
-                    }
-                    // Fire-and-forget: completion rides the generic Notify/Error
-                    // events (the busy-flag reset left with BeeMessageSent —
-                    // hive-agent-tabs P-014 retirement).
-                    self.watch_input.clear();
-                    return Action::SendBeeMessage {
-                        to: self.watch.clone().expect("watch checked above"),
-                        body,
-                    };
-                }
-                _ => return Action::None,
-            }
         }
         // Staged-wake review overlay (P-009): modal while open — j/k select,
         // r release · e edit & release · s skip · Esc close/cancel-edit.

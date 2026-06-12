@@ -342,7 +342,7 @@ async fn run<B: Backend>(
     // arrive on `tx` like any other. NOT spawned in the dock modes (P-013 /
     // pui-dock-agent-stack): there is no work area to orchestrate there, and
     // loading the plugin surfaces an empty floating pane over the dock.
-    let companion = if pinned.is_some() || watch.is_some() {
+    let companion = if pinned.is_some() {
         None
     } else {
         Companion::spawn(tx.clone())
@@ -408,13 +408,6 @@ async fn run<B: Backend>(
             if app.tab != p {
                 app.tab = p;
             }
-        }
-        // Watch pane lifecycle (pui-dock-agent-stack-2026-06-07): once the
-        // watched agent has been gone from the roster for two consecutive
-        // refreshes, exit — the pane was opened `--close-on-exit`, so it
-        // disappears from the dock stack on its own.
-        if app.watch_should_exit() {
-            break;
         }
         // Per-bee wake-pane lifecycle (owner ask 2026-06-11): an Owner-scoped
         // wake-pane exits once its bee is gone AND its queue is drained — the
@@ -537,12 +530,6 @@ async fn run<B: Backend>(
                 // Whole-fleet task list for the default Swarm dossier (#2) —
                 // fetched off the UI thread → Event::FleetAssignments.
                 tokio::spawn(fetch_fleet_assignments(tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SendBeeMessage { to, body } => {
-                // Watch-pane chat: open/continue a thread with the bee + ping it
-                // (coord:message-agent). Result lands as Event::BeeMessageSent.
-                tokio::spawn(send_bee_message(to, body, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::SetWakeMode { agent, mode } => {
@@ -682,7 +669,7 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::LaunchPanes { sessions, watch } => {
+            Action::LaunchPanes { sessions, bees } => {
                 // Reactive work-area panes for new LOCAL workbench launches
                 // (pui-reactive-session-panes D-006). EI-358 CLAIM-THEN-OPEN:
                 // mark-launched is the ATOMIC claim (`launched_at IS NULL` —
@@ -716,13 +703,13 @@ async fn run<B: Backend>(
                         }
                     }
                 }
-                // Dock agent stack (pui-dock-agent-stack-2026-06-07): read-only
-                // watch panes for active swarm agents — CLI only (no companion
-                // in the dock, nothing to mark consumed).
-                let opened_watch = watch.len();
-                for spec in watch {
+                // Dock agent stack (hive-agent-tabs P-004): live `claude
+                // --resume` panes for active fleet bees — CLI only (no
+                // companion in the dock, nothing to mark consumed).
+                let opened_bees = bees.len();
+                for spec in bees {
                     if let Err(e) = Zellij.open_pane(&spec) {
-                        app.update(Event::Error(format!("watch pane: {e}")));
+                        app.update(Event::Error(format!("bee pane: {e}")));
                     }
                 }
                 // Snap focus BACK to this pane (the operator chat) after a dock
@@ -733,7 +720,7 @@ async fn run<B: Backend>(
                 // settles"). One focus-restore per batch ends the flip on the
                 // chat. Workbench (companion) launches keep their own focus
                 // semantics — this is the dock-CLI path only.
-                if app.dock_agent_panes && opened_watch > 0 {
+                if app.dock_agent_panes && opened_bees > 0 {
                     if let Some(id) = app.hud_pane_id {
                         if let Err(e) = Zellij.run_action(&crate::mux::MuxAction::FocusPaneId(id)) {
                             app.update(Event::Error(format!("focus restore: {e}")));
@@ -2290,32 +2277,6 @@ async fn lexicon_fetch(tx: UnboundedSender<Event>) {
     }
 }
 
-/// Watch-pane chat send: coord:message-agent { to, body } via the admin proxy.
-/// Completion rides the generic Notify/Error events (the dedicated
-/// BeeMessageSent event left with the hive-agent-tabs P-014 retirement).
-async fn send_bee_message(to: String, body: String, tx: UnboundedSender<Event>) {
-    let res = match OperatorClient::from_discovery().await {
-        Ok(client) => {
-            let title: String = body.chars().take(60).collect();
-            client
-                .message_agent(Some(&to), None, None, None, &title, &body)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        Err(e) => Err(e.to_string()),
-    };
-    let _ = tx.send(match res {
-        Ok(()) => Event::Notify(crate::models::Notif {
-            level: "info".into(),
-            message: "sent — the bee replies in-thread (inbox below)".into(),
-            harness: None,
-            ts: None,
-        }),
-        Err(e) => Event::Error(format!("bee message send failed: {e}")),
-    });
-}
-
 /// P-008: set an agent's wake mode via `coord:wake-mode` (the run_tool bridge).
 /// Best-effort — an error surfaces in the status bar; the next roster poll
 /// refreshes the ⏸MANUAL badge (no dedicated re-fetch event needed).
@@ -3129,7 +3090,6 @@ fn spawn_sync(
     active_harness: Arc<Mutex<String>>,
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
-    watch: Option<String>,
     network_focus: Option<String>,
 ) {
     // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
@@ -3139,7 +3099,6 @@ fn spawn_sync(
         active_harness,
         active_doc,
         active_plan,
-        watch,
         network_focus,
         sig_rx,
     ));
@@ -3218,7 +3177,6 @@ async fn refetch_loop(
     active_harness: Arc<Mutex<String>>,
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
-    watch: Option<String>,
     network_focus: Option<String>,
     mut sig_rx: UnboundedReceiver<()>,
 ) {
@@ -3232,11 +3190,6 @@ async fn refetch_loop(
 
     // Initial load.
     refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
-        if let Some(owner) = &watch {
-            // Watch pane: re-pull the watched agent's dossier (ranked work-list
-            // + coord mail) on the same push-driven cadence.
-            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
-        }
         if let Some(key) = &network_focus {
             // hive-pane: re-pull the drill-in dossier (beacon history + ask
             // log, P-014 item 2) on the same push-driven cadence — the
@@ -3280,11 +3233,6 @@ async fn refetch_loop(
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 while sig_rx.try_recv().is_ok() {}
                 refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
-        if let Some(owner) = &watch {
-            // Watch pane: re-pull the watched agent's dossier (ranked work-list
-            // + coord mail) on the same push-driven cadence.
-            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
-        }
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
@@ -3292,11 +3240,6 @@ async fn refetch_loop(
             }
             _ = safety.tick() => {
                 refetch_all(&client, &tx, &active_harness, &active_doc, &active_plan).await;
-        if let Some(owner) = &watch {
-            // Watch pane: re-pull the watched agent's dossier (ranked work-list
-            // + coord mail) on the same push-driven cadence.
-            tokio::spawn(bee_dossier_fetch(owner.clone(), tx.clone()));
-        }
         if let Some(key) = &network_focus {
             // hive-pane: drill-in dossier rides the same cadence (P-014 item 2).
             tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
