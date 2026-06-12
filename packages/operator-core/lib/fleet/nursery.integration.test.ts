@@ -50,7 +50,11 @@ const SPAWNED_AGENTS_DDL = `
     restart_count int NOT NULL DEFAULT 0,
     restart_window_start timestamptz,
     cancel_reason text,
-    cancelled_at timestamptz)`;
+    cancelled_at timestamptz,
+    pid int,
+    launcher_host text,
+    heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    last_output_at timestamptz)`;
 
 const HFC_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (

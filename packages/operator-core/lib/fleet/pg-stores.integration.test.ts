@@ -62,7 +62,11 @@ beforeAll(async () => {
             output_tail text,
             cancel_requested boolean DEFAULT false,
             cancelled_at timestamptz,
-            cancel_reason text
+            cancel_reason text,
+            pid int,
+            launcher_host text,
+            heartbeat_at timestamptz NOT NULL DEFAULT now(),
+            last_output_at timestamptz
           )`);
       } finally {
         await s.end({ timeout: 5 });
