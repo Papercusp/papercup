@@ -83,6 +83,15 @@ export const commands = {
 	 *  the sidecar through `wsl.exe`. Frontend calls this immediately
 	 *  after `wsl_bootstrap` succeeds and a follow-up `wsl_status` returns
 	 *  Ready.
+	 * 
+	 *  Windows: do NOT use `app.restart()` directly — when the app was
+	 *  launched inside a job object (the NSIS installer's "run app" checkbox,
+	 *  Task Scheduler, some corporate launchers), the job kills the relaunched
+	 *  child the moment this process exits, leaving the user on a dead app
+	 *  (found live 2026-06-11, runs 11/13: onboarding completed but the
+	 *  restarted instance vanished). Spawn the new instance with
+	 *  CREATE_BREAKAWAY_FROM_JOB first; fall back to a plain spawn, then to
+	 *  app.restart().
 	 */
 	wslFinalizeReady: () => typedError<null, string>(__TAURI_INVOKE("wsl_finalize_ready")),
 	wslUninstall: () => typedError<null, string>(__TAURI_INVOKE("wsl_uninstall")),
