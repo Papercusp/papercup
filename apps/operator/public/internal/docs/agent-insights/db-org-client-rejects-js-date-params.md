@@ -1,7 +1,7 @@
-# The live db-org postgres client rejects JS Date params — pass ISO strings
+# The live db-org postgres client rejects JS Date AND sql.json(array) params — pass ISO/JSON strings
 URL: /internal/docs/agent-insights/db-org-client-rejects-js-date-params
 
-getOrgPg()'s live client throws 'The "string" argument must be of type string… Received an instance of Date' on a Date query parameter, while the plain testcontainers clients integration tests use accept Dates fine — so the failure ships green and only surfaces live.
+getOrgPg()'s live client throws 'The "string" argument must be of type string… Received an instance of Date' on a Date query parameter — and the same class of error ('Received an instance of Array') on sql.json() of an array — while the plain testcontainers clients integration tests use accept both fine, so the failure ships green and only surfaces live.
 
 ## Symptom
 
@@ -38,8 +38,36 @@ write through the live `getOrgPg()` (a tsx one-off or the live surface) before
 calling it verified. Best-effort writers (swallow+warn, dispatch-ledger style)
 make this class of failure observable instead of silent.
 
+## The same trap, jsonb edition: `sql.json(<array>)`
+
+The identical green-then-live failure shape exists for **jsonb** parameters.
+`sql.json(someArray)` works on the testcontainers clients but the live
+`getOrgPg()` client throws:
+
+```
+The "string" argument must be of type string or an instance of Buffer or
+ArrayBuffer. Received an instance of Array
+```
+
+**Rule: pass jsonb params as JSON STRINGS with an explicit cast** — works on
+both clients:
+
+```ts
+${JSON.stringify(rows)}::text::jsonb                      // ✅
+${value == null ? null : JSON.stringify(value)}::text::jsonb  // ✅ nullable
+${sql.json(rows)}                                         // ❌ array throws live
+```
+
+FB-09's prompt-ablation store hit this: 4/4 integration tests green, then the
+first LIVE supervised cycle crashed at the row insert on a jsonb array param
+(`ledger_context`). Fixed to stringified-with-cast on 2026-06-12
+(`packages/operator-core/lib/ablation/store.ts`).
+
 ## Where it bit
 
 `packages/operator-core/lib/change-ledger/change-ledger.ts`
 (`recordBehaviorChange` `recorded_at` backfill + `readRecentChanges` `sinceMs`
 filter), fixed to `.toISOString()` on 2026-06-12 (self-learning-frontier FB-02).
+`packages/operator-core/lib/ablation/store.ts` (`insertAblationRun` jsonb
+params), fixed to `JSON.stringify(...)::text::jsonb` on 2026-06-12
+(self-learning-frontier FB-09).

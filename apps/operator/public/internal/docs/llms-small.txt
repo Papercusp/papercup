@@ -367,9 +367,9 @@ app A  ──INSERT INTO messages──►  PG
 ```
  ## Why it matters [Section titled “Why it matters”](#why-it-matters) PG-as-transport has bitten us in three concrete ways: 1. **Polling latency.** B has to choose between polling often (CPU burn) and rarely (user-visible delay). Neither is acceptable. 2. **Backpressure invisibility.** If B is slow, A keeps writing rows that pile up. There’s no flow control, no backpressure, no signal to A that B is overloaded. 3. **Coupling on schema.** A and B share table layout. Schema migrations require coordinated deploy; a column rename breaks the channel. Live HTTP/SSE/in-process calls give you backpressure, structured errors, request/response correlation, and decoupled schemas for free. The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That’s a real PG-level publish/subscribe with kernel- level wakeups, not polling. It’s fine for *event* notification (use case: “tell me when a row changed”) but not for *request/response* (use case: “send this command and tell me the result”). ## How to apply [Section titled “How to apply”](#how-to-apply) * **Cross-app communication**: HTTP (with a typed endpoint via `defineTool`, which also produces the route projection) or in-process call. SSE for streaming. * **Persist outcomes to PG** after the call returns. PG holds the authoritative state, not the message itself. * **`pg_notify` is OK** for “wake up and re-read state” patterns — e.g., a UI subscribing to row changes. Not for command dispatch. * **If you find yourself writing a polling loop**, stop and ask whether the right answer is an HTTP call or an SSE subscription. The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
-# The live db-org postgres client rejects JS Date params — pass ISO strings
+# The live db-org postgres client rejects JS Date AND sql.json(array) params — pass ISO/JSON strings
 
-> getOrgPg()'s live client throws 'The "string" argument must be of type string… Received an instance of Date' on a Date query parameter, while the plain testcontainers clients integration tests use accept Dates fine — so the failure ships green and only surfaces live.
+> getOrgPg()'s live client throws 'The "string" argument must be of type string… Received an instance of Date' on a Date query parameter — and the same class of error ('Received an instance of Array') on sql.json() of an array — while the plain testcontainers clients integration tests use accept both fine, so the failure ships green and only surfaces live.
 
 ## Symptom [Section titled “Symptom”](#symptom) A write/read through `getOrgPg()` that passes a JavaScript `Date` as a query parameter (e.g. `${new Date(ms)}` into a `timestamptz` column) fails at runtime with: 
 ```plaintext
@@ -381,7 +381,18 @@ ArrayBuffer. Received an instance of Date
 ${new Date(ms).toISOString()}          // ✅
 ${new Date(ms)}                        // ❌ throws on the live client only
 ```
- This also means a green `*.integration.test.ts` does NOT prove parameter serialization against the live client — if your write path is new, run one real write through the live `getOrgPg()` (a tsx one-off or the live surface) before calling it verified. Best-effort writers (swallow+warn, dispatch-ledger style) make this class of failure observable instead of silent. ## Where it bit [Section titled “Where it bit”](#where-it-bit) `packages/operator-core/lib/change-ledger/change-ledger.ts` (`recordBehaviorChange` `recorded_at` backfill + `readRecentChanges` `sinceMs` filter), fixed to `.toISOString()` on 2026-06-12 (self-learning-frontier FB-02).
+ This also means a green `*.integration.test.ts` does NOT prove parameter serialization against the live client — if your write path is new, run one real write through the live `getOrgPg()` (a tsx one-off or the live surface) before calling it verified. Best-effort writers (swallow+warn, dispatch-ledger style) make this class of failure observable instead of silent. ## The same trap, jsonb edition: `sql.json(<array>)` [Section titled “The same trap, jsonb edition: sql.json(\<array>)”](#the-same-trap-jsonb-edition-sqljsonarray) The identical green-then-live failure shape exists for **jsonb** parameters. `sql.json(someArray)` works on the testcontainers clients but the live `getOrgPg()` client throws: 
+```plaintext
+The "string" argument must be of type string or an instance of Buffer or
+ArrayBuffer. Received an instance of Array
+```
+ **Rule: pass jsonb params as JSON STRINGS with an explicit cast** — works on both clients: 
+```ts
+${JSON.stringify(rows)}::text::jsonb                      // ✅
+${value == null ? null : JSON.stringify(value)}::text::jsonb  // ✅ nullable
+${sql.json(rows)}                                         // ❌ array throws live
+```
+ FB-09’s prompt-ablation store hit this: 4/4 integration tests green, then the first LIVE supervised cycle crashed at the row insert on a jsonb array param (`ledger_context`). Fixed to stringified-with-cast on 2026-06-12 (`packages/operator-core/lib/ablation/store.ts`). ## Where it bit [Section titled “Where it bit”](#where-it-bit) `packages/operator-core/lib/change-ledger/change-ledger.ts` (`recordBehaviorChange` `recorded_at` backfill + `readRecentChanges` `sinceMs` filter), fixed to `.toISOString()` on 2026-06-12 (self-learning-frontier FB-02). `packages/operator-core/lib/ablation/store.ts` (`insertAblationRun` jsonb params), fixed to `JSON.stringify(...)::text::jsonb` on 2026-06-12 (self-learning-frontier FB-09).
 
 # DBOS durable execution — the eight gotchas that bite on first integration
 
