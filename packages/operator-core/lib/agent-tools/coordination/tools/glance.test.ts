@@ -76,7 +76,8 @@ describe('coord:glance', () => {
     const g = out(await glance.handler(parse({}), ctx));
     expect(g.wake).toEqual({ default: 'manual', stagedTotal: 3, stagedOwners: 2 });
     expect(g.tips[0].id).toBe('wake-mode-manual');
-    expect(g.tips[0].command).toBe('/papercusp:tool:coord:wake-mode mode=auto');
+    expect(g.tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-mode mode=auto');
+    expect(g.tips[0].invoke).toEqual({ tool: 'coord:wake-mode', args: { mode: 'auto' } });
   });
 
   it('paused governor buckets surface key + until, expired pauses are dropped', async () => {

@@ -20,7 +20,7 @@ and the `apps/papercup` reference install is retired to `_retired/papercup/`.
         <thead><tr><th>Path</th><th>Contains</th></tr></thead>
         <tbody>
           <tr><td>`libs/papercusp/packages/harness`</td><td>The substrate: `run.sh`, `prompts/`, role templates. The thing that boots an iteration loop.</td></tr>
-          <tr><td>`packages/plugin-sdk` (`@papercusp/plugin-sdk`)</td><td>TypeScript types for plugin authors. `PapercuspPlugin`, `RoleDefinition`, `UiContribution`, `Capability`, etc.</td></tr>
+          <tr><td>`packages/plugin-sdk` (`@papercusp/plugin-sdk`)</td><td>TypeScript types for plugin authors. `PapercuspPlugin`, `UiContribution`, `Capability`, etc.</td></tr>
           <tr><td>`packages/plugin-loader` (`@papercusp/plugin-loader`)</td><td>Discovers plugins, validates manifests, applies migrations, registers routines, mounts hooks/tabs/routes, enforces capabilities.</td></tr>
           <tr><td>`libs/papercusp/libs/db`</td><td>Drizzle schema for the substrate (goals, tasks, issues, pending_events, routines, audit).</td></tr>
           <tr><td>`packages/operator-core`</td><td>The live operator: agent-tools, the `endpoint-route` Hono handlers (the MCP + admin API, e.g. `/api/admin/execute-action`), auth/identity, and harness control. Served by the Hono host on `:3070`; the Vite SPA UI (`@papercusp/operator-vite`) runs on `:3055`. (Supersedes the old `libs/papercusp/apps/web` Next.js webapp, which is retired.)</td></tr>

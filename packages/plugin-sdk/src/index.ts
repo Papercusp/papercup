@@ -1,10 +1,12 @@
 /**
  * @papercusp/plugin-sdk — type definitions for Papercusp plugins.
  *
- * Plugins extend a Papercusp install with new roles, lifecycle hooks,
- * dashboard tabs, API routes, Postgres schemas, full UI panels, routines,
- * and event hooks. Capabilities (declarative permissions) gate every
- * non-trivial action.
+ * Plugins extend a Papercusp install with MCP tools, lifecycle hooks,
+ * dashboard tabs, API routes, Postgres schemas, full UI panels, and event
+ * hooks. Capabilities (declarative permissions) gate every non-trivial
+ * action. (The run-loop-era roles + routines axes were retired 2026-06-12 —
+ * plugin-system-hive-port D-004; blueprints + event-reaction rules are the
+ * successors.)
  *
  * Stability: pre-1.0. Spec at apps/papercusp-spec/ (dev: http://localhost:4324/).
  */
@@ -249,24 +251,6 @@ export interface PluginActionRegistry {
 
 
 /* ─────────────────────────────────────────────────────────────────────
- * Roles — custom agent invocations.
- * ───────────────────────────────────────────────────────────────────── */
-
-export interface RoleDefinition {
-  /** Role name; the orchestrator dispatches via `NEXT_<UPPER_NAME>`. */
-  name: string;
-  /** Path (relative to plugin root) or string content of the prompt. */
-  prompt: { path: string } | { content: string };
-  /** Default model identifier; install config can override. */
-  defaultModel?: string;
-  /** Default per-invocation timeout in seconds. */
-  defaultTimeoutSec?: number;
-  /** What inputs from the harness state should be included in the user prompt. */
-  reads?: ('features' | 'goals' | 'pending_events' | 'issues' | 'worker_log' | 'audit')[];
-}
-
-
-/* ─────────────────────────────────────────────────────────────────────
  * Lifecycle hooks — host calls these at well-known phases.
  * ───────────────────────────────────────────────────────────────────── */
 
@@ -381,33 +365,6 @@ export type PluginOperatorSuggestion =
       capability: null;
       body: string;
     };
-
-
-/* ─────────────────────────────────────────────────────────────────────
- * Routines — scheduled or triggered event sources.
- *
- * The substrate's routine ticker fires due cron routines and inserts into
- * pending_events; webhook/api routines insert on receipt. Orchestrator
- * consumes the queue on its next tick.
- * ───────────────────────────────────────────────────────────────────── */
-
-export interface RoutineDefinition {
-  /** Stable name within the plugin (used for the routine row's name column). */
-  name: string;
-  /** Trigger config. */
-  trigger:
-    | { kind: 'cron'; expr: string }                    // e.g. '0 9 * * MON'
-    | { kind: 'webhook'; tokenEnv?: string }             // value read from secrets
-    | { kind: 'api'; method?: 'POST' | 'GET' };
-  /** Which role to dispatch when this routine fires. */
-  targetRole: string;
-  /** Optional payload to include with the pending_event. */
-  payloadTemplate?: Record<string, unknown>;
-  /** What happens if the routine fires while a previous run is still in progress. */
-  concurrency?: 'queue' | 'skip' | 'cancel-prev';
-  /** What happens if the substrate was offline when a cron event was due. */
-  catchup?: 'skip-old' | 'run-all-backlog';
-}
 
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -555,7 +512,17 @@ export interface RoutinesService {
   /** Cap: routines:read */
   list(): Promise<{ id: string; name: string; triggerKind: string; targetRole: string; nextFireAt: string | null; active: boolean }[]>;
   /** Cap: routines:write */
-  upsert(definition: RoutineDefinition): Promise<{ id: string }>;
+  upsert(definition: {
+    name: string;
+    trigger:
+      | { kind: 'cron'; expr: string }
+      | { kind: 'webhook'; tokenEnv?: string }
+      | { kind: 'api'; method?: 'POST' | 'GET' };
+    targetRole: string;
+    payloadTemplate?: Record<string, unknown>;
+    concurrency?: 'queue' | 'skip' | 'cancel-prev';
+    catchup?: 'skip-old' | 'run-all-backlog';
+  }): Promise<{ id: string }>;
   /** Cap: routines:write */
   delete(name: string): Promise<void>;
   /** Cap: routines:write — manually fire (inserts a pending_event) */
@@ -823,12 +790,8 @@ export interface Plugin {
   /** Lifecycle init — runs once on plugin load. */
   init?(ctx: PapercuspContext): Promise<void>;
 
-  /** Custom role registrations. Keyed by role name. */
-  roles?: Record<string, RoleDefinition>;
   /** Lifecycle hooks. */
   hooks?: PluginHooks;
-  /** Routines — substrate-evaluated triggers. */
-  routines?: RoutineDefinition[];
 
   /** Full-route UI mounted at /harness/<slug>. */
   ui?: UiContribution;

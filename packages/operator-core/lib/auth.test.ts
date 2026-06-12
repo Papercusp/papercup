@@ -124,6 +124,57 @@ describe('auth.ts integration', () => {
     }
   });
 
+  itPg('login sweeps expired + stale never-reused sessions, keeps active ones (EI-338)', async () => {
+    const name = uname();
+    await authMod!.signup(name, 'T', 'pw');
+    const s1 = await authMod!.login(name, 'pw');
+    const { pgClientFields } = await import('./memory/mem0-connection');
+    const fields = await pgClientFields();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Client } = require('pg') as typeof import('pg');
+    const c = new Client(fields);
+    await c.connect();
+    const tok = () => randomBytes(32).toString('hex');
+    const expired = tok();
+    const orphan = tok();
+    const oldActive = tok();
+    try {
+      // expired outright
+      await c.query(
+        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at)
+         VALUES ($1, $2, now() - interval '1 hour', now() - interval '31 days')`,
+        [expired, s1.user.id],
+      );
+      // in-TTL but never re-presented since mint and past the 48h grace —
+      // the EI-338 orphan signature (cookie-less webview mints leave
+      // last_seen_at == created_at; the column is NOT NULL)
+      await c.query(
+        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
+         VALUES ($1, $2, now() + interval '29 days', now() - interval '3 days', now() - interval '3 days')`,
+        [orphan, s1.user.id],
+      );
+      // old but actively used — last_seen_at refresh must protect it
+      await c.query(
+        `INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, created_at, last_seen_at)
+         VALUES ($1, $2, now() + interval '29 days', now() - interval '3 days', now() - interval '5 minutes')`,
+        [oldActive, s1.user.id],
+      );
+      const s2 = await authMod!.login(name, 'pw'); // triggers the opportunistic sweep
+      const left = await c.query(
+        'SELECT token FROM harness_shared.user_sessions WHERE token = ANY($1)',
+        [[expired, orphan, oldActive, s1.token]],
+      );
+      const survivors = left.rows.map((r: { token: string }) => r.token).sort();
+      expect(survivors).toEqual([oldActive, s1.token].sort());
+      await authMod!.logout(s2.token);
+    } finally {
+      await c.query('DELETE FROM harness_shared.user_sessions WHERE token = ANY($1)', [
+        [expired, orphan, oldActive, s1.token],
+      ]);
+      await c.end();
+    }
+  });
+
   itPg('changePassword invalidates ALL existing sessions (the route re-issues)', async () => {
     const name = uname();
     await authMod!.signup(name, 'T', 'old');

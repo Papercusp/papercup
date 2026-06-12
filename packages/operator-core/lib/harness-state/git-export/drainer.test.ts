@@ -52,7 +52,8 @@ describe('startGitExportDrain failure backoff (EI-339)', () => {
       if (state.failing) throw new Error("EACCES: permission denied, mkdir '/fake'");
       return Promise.resolve([]);
     }) as unknown as postgres.Sql;
-    (fn as unknown as { listen: () => Promise<never> }).listen = () => new Promise<never>(() => {});
+    (fn as unknown as { listen: () => Promise<{ unlisten: () => Promise<void> }> }).listen = () =>
+      Promise.resolve({ unlisten: async () => {} });
     return fn;
   }
 

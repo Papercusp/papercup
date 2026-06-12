@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
+import { DraftNumberInput } from '@/lib/forms';
 import RouteLink from '@/app/_components/RouteLink';
 
 interface User {
@@ -348,17 +349,15 @@ function OverrideInput({ spec, value, onChange }: {
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
-  // String + number commit on blur (never one PATCH per keystroke), and a
-  // number must sit inside the spec's declared min/max to persist — the HTML
-  // min/max attributes are UI hints only, not a save gate. Out-of-range gets
-  // an inline error and the stored value stays untouched.
+  // String + number commit on blur (never one PATCH per keystroke). Numbers
+  // go through DraftNumberInput, which gates on the spec's declared min/max
+  // before persisting — the HTML min/max attributes are UI hints only.
   const [draft, setDraft] = useState<string>(value == null ? '' : String(value));
-  const [error, setError] = useState<string | null>(null);
   const focusedRef = useRef(false);
   // Adopt external value changes only while idle — a slow PATCH echo or a
   // peer field's save must not eat in-progress keystrokes.
   useEffect(() => {
-    if (!focusedRef.current) { setDraft(value == null ? '' : String(value)); setError(null); }
+    if (!focusedRef.current) setDraft(value == null ? '' : String(value));
   }, [value]);
 
   if (spec.kind === 'bool') {
@@ -387,40 +386,20 @@ function OverrideInput({ spec, value, onChange }: {
     );
   }
   if (spec.kind === 'number') {
-    const commitNumber = () => {
-      if (draft.trim() === '' || draft === String(value ?? '')) { setError(null); return; }
-      const n = Number(draft);
-      if (!Number.isFinite(n)) {
-        setError('not a number — keeping the saved value');
-        return;
-      }
-      if ((spec.min != null && n < spec.min) || (spec.max != null && n > spec.max)) {
-        setError(`out of range (${spec.min ?? '−∞'}–${spec.max ?? '∞'}) — keeping the saved value`);
-        return;
-      }
-      setError(null);
-      onChange(n);
-    };
     return (
-      <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
-        <input
-          type="number"
-          value={draft}
-          min={spec.min}
-          max={spec.max}
-          step={spec.step}
-          aria-invalid={error ? true : undefined}
-          onChange={(e) => { setDraft(e.target.value); if (error) setError(null); }}
-          onFocus={() => { focusedRef.current = true; }}
-          onBlur={() => { focusedRef.current = false; commitNumber(); }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitNumber();
-            else if (e.key === 'Escape') { setDraft(value == null ? '' : String(value)); setError(null); }
-          }}
-          style={{ padding: 6, border: `1px solid ${error ? 'var(--bad)' : 'var(--border)'}`, borderRadius: 4, width: 140 }}
-        />
-        {error && <span role="alert" style={{ fontSize: 11, color: 'var(--bad)' }}>{error}</span>}
-      </span>
+      <DraftNumberInput
+        aria-label={spec.label}
+        value={typeof value === 'number' ? value : null}
+        min={spec.min}
+        max={spec.max}
+        step={spec.step}
+        // An empty draft is "nothing entered", not an error — overrides are
+        // optional (the workspace default applies when unset).
+        emptyDraft="ignore"
+        onCommit={(n) => onChange(n)}
+        wrapperStyle={{ display: 'inline-flex' }}
+        style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4, width: 140 }}
+      />
     );
   }
   // string

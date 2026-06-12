@@ -54,9 +54,15 @@ const get = defineTool({
         console.error('[auth/me] listUsers threw (non-fatal):', err);
       }
       // Auto-establish a real session for passwordless users so endpoints
-      // that strictly require a session cookie don't 401 on first paint.
+      // that strictly require a session cookie don't 401 on first paint —
+      // but only for cookie-capable callers. A caller presenting an
+      // Authorization header (the desktop webview's sys:http bridge injects
+      // the loopback superuser bearer; agent/CLI tools present their own)
+      // has no cookie jar, so the Set-Cookie can never come back and every
+      // mint is an orphan user_sessions row (EI-338: 6.5k single-use rows
+      // from webview boots).
       const headers: Record<string, string> = {};
-      if (!user.has_password) {
+      if (!user.has_password && !req.headers.get('authorization')) {
         try {
           const result = await login(user.username, null, {
             user_agent: req.headers.get('user-agent') ?? undefined,

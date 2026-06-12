@@ -266,13 +266,6 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
   if (!Array.isArray(plugin.capabilities)) {
     return `plugin "${plugin.name}" must declare \`capabilities: Capability[]\` (can be empty array, but the field is required)`;
   }
-  // Validate that for each declared role, the plugin holds 'roles:register:<name>'.
-  for (const roleName of Object.keys(plugin.roles ?? {})) {
-    const requiredCap = `roles:register:${roleName}`;
-    if (!plugin.capabilities.includes(requiredCap as any)) {
-      return `plugin "${plugin.name}" registers role "${roleName}" but lacks capability "${requiredCap}"`;
-    }
-  }
   // Validate UI surfaces require the right cap, per entry type. react/iframe
   // panes are desktop surfaces gated by ui:harness-route; tui-pane panes are
   // pui surfaces gated by ui:tui-pane and must carry a non-empty `command`
@@ -371,8 +364,12 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     if (Array.isArray(plugin.ui) && plugin.ui.length > 0) offending.push('ui');
     if ((plugin.dashboardTabs?.length ?? 0) > 0) offending.push('dashboardTabs');
     if ((plugin.sidebarItems?.length ?? 0) > 0) offending.push('sidebarItems');
-    if (Object.keys(plugin.roles ?? {}).length > 0) offending.push('roles');
-    if ((plugin.routines?.length ?? 0) > 0) offending.push('routines');
+    // roles/routines are retired SDK axes (plugin-system-hive-port D-004) —
+    // the typed Plugin no longer carries them, but an untyped JS export can
+    // still smuggle them in, so the pack purity check stays defensive.
+    const legacy = plugin as { roles?: Record<string, unknown>; routines?: unknown[] };
+    if (Object.keys(legacy.roles ?? {}).length > 0) offending.push('roles');
+    if ((legacy.routines?.length ?? 0) > 0) offending.push('routines');
     if ((plugin.actions?.length ?? 0) > 0) offending.push('actions');
     if (plugin.hooks && Object.keys(plugin.hooks).length > 0) offending.push('hooks');
     if (offending.length > 0) {
@@ -566,47 +563,6 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
 
   const { loaded, errors } = await corePluginLoader.loadAll(roots);
   return { loaded: loaded.map(toLoadedPlugin), errors };
-}
-
-/**
- * Extract role definitions from all loaded plugins for registration with the
- * harness orchestrator. Throws if two plugins claim the same role name.
- */
-export function collectRoles(loaded: LoadedPlugin[]): Record<string, { plugin: string; role: import('@papercusp/plugin-sdk').RoleDefinition }> {
-  const roles: Record<string, { plugin: string; role: import('@papercusp/plugin-sdk').RoleDefinition }> = {};
-  for (const lp of loaded) {
-    const declared = lp.plugin.roles ?? {};
-    for (const [name, role] of Object.entries(declared)) {
-      if (roles[name]) {
-        throw new Error(`role "${name}" claimed by both plugins ${roles[name].plugin} and ${lp.plugin.name}`);
-      }
-      roles[name] = { plugin: lp.plugin.name, role };
-    }
-  }
-  return roles;
-}
-
-/**
- * Extract routine definitions from all loaded plugins for registration with
- * the substrate's routine ticker. Names are namespaced with the plugin name
- * so two plugins can ship a routine of the same name without collision.
- */
-export function collectRoutines(loaded: LoadedPlugin[]): Array<{
-  pluginName: string;
-  routineName: string;       // namespaced: "<plugin>.<routine>"
-  routine: import('@papercusp/plugin-sdk').RoutineDefinition;
-}> {
-  const out: Array<{ pluginName: string; routineName: string; routine: import('@papercusp/plugin-sdk').RoutineDefinition }> = [];
-  for (const lp of loaded) {
-    for (const r of lp.plugin.routines ?? []) {
-      out.push({
-        pluginName: lp.plugin.name,
-        routineName: `${lp.plugin.name}.${r.name}`,
-        routine: r,
-      });
-    }
-  }
-  return out;
 }
 
 /**

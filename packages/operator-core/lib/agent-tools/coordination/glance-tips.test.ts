@@ -30,7 +30,8 @@ describe('evaluateTips — default rules', () => {
     const tips = evaluateTips(ctx({ wakeDefault: 'manual', stagedTotal: 2 }));
     expect(tips.map((t) => t.id)).toEqual(['wake-mode-manual']);
     expect(tips[0].text).toContain('2 staged wakes');
-    expect(tips[0].command).toBe('/papercusp:tool:coord:wake-mode mode=auto');
+    expect(tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-mode mode=auto');
+    expect(tips[0].invoke).toEqual({ tool: 'coord:wake-mode', args: { mode: 'auto' } });
   });
 
   it('manual wake mode with nothing staged still tips (the gate itself is the news)', () => {
@@ -43,7 +44,8 @@ describe('evaluateTips — default rules', () => {
     const tips = evaluateTips(ctx({ stagedTotal: 1 }));
     expect(tips.map((t) => t.id)).toEqual(['staged-wakes-under-auto']);
     expect(tips[0].text).toContain('1 staged wake ');
-    expect(tips[0].command).toBe('/papercusp:tool:coord:wake-queue action=release_all');
+    expect(tips[0].command).toBe('/mcp__papercusp-su__tool:coord:wake-queue action=release_all');
+    expect(tips[0].invoke).toEqual({ tool: 'coord:wake-queue', args: { action: 'release_all' } });
   });
 
   it('governor pause → tip for every audience including bees', () => {
@@ -53,6 +55,7 @@ describe('evaluateTips — default rules', () => {
     ]);
     expect(evaluateTips(ctx(paused))[0].text).toContain('anthropic:opus');
     expect(evaluateTips(ctx(paused))[0].command).toBeNull();
+    expect(evaluateTips(ctx(paused))[0].invoke).toBeNull();
   });
 
   it('bees never see the wake-mode/staged-wake tips (audience scoping)', () => {

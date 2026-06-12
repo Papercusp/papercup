@@ -17,8 +17,8 @@ vi.mock('ws', () => ({
       constructedPorts.push(opts.port);
       setTimeout(() => this.emit('listening'), 0);
     }
-    close() {
-      /* no socket */
+    close(cb?: () => void) {
+      cb?.(); // no real socket — resolve the close immediately
     }
   },
 }));

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadPluginFromDir, loadPlugins, collectRoles } from './index.ts';
+import { loadPluginFromDir, loadPlugins } from './index.ts';
 
 const ROOT = join(tmpdir(), `papercusp-loader-test-${process.pid}`);
 
@@ -15,7 +15,6 @@ async function makePlugin(opts: {
   name: string;
   version?: string;
   manifestVersion?: string;
-  roles?: Record<string, { name: string; prompt: { content: string }; defaultModel?: string }>;
   noManifest?: boolean;
   noEntry?: boolean;
   manifestVersionMismatch?: boolean;
@@ -30,20 +29,12 @@ async function makePlugin(opts: {
   }
 
   if (!opts.noEntry) {
-    const rolesJs = opts.roles
-      ? `roles: ${JSON.stringify(opts.roles)},`
-      : 'roles: {},';
-    // Auto-include 'roles:register:<name>' caps for every declared role,
-    // matching the validation rule in index.ts.
-    const declaredRoleCaps = Object.keys(opts.roles ?? {}).map((n) => `'roles:register:${n}'`);
-    const capsList = declaredRoleCaps.length ? declaredRoleCaps.join(', ') : '';
     const entry = `
       export default {
         name: ${JSON.stringify(opts.name)},
         version: ${JSON.stringify(version)},
         papercusp: '^0.1.0',
-        capabilities: [${capsList}],
-        ${rolesJs}
+        capabilities: [],
         hooks: {
           afterDone: async () => {},
         },
@@ -237,41 +228,3 @@ describe('loadPlugins', () => {
   });
 });
 
-describe('collectRoles', () => {
-  it('returns roles from all loaded plugins', async () => {
-    const dir1 = await makePlugin({
-      name: 'roleful-1',
-      roles: { narrator: { name: 'narrator', prompt: { content: 'be a narrator' } } },
-    });
-    const dir2 = await makePlugin({
-      name: 'roleful-2',
-      roles: { editor: { name: 'editor', prompt: { content: 'edit things' } } },
-    });
-    const r1 = await loadPluginFromDir(dir1, 'project');
-    const r2 = await loadPluginFromDir(dir2, 'project');
-    assert.ok(!('error' in r1) && !('error' in r2));
-    if (!('error' in r1) && !('error' in r2)) {
-      const collected = collectRoles([r1, r2]);
-      assert.deepEqual(Object.keys(collected).sort(), ['editor', 'narrator']);
-      assert.equal(collected.narrator.plugin, 'roleful-1');
-      assert.equal(collected.editor.plugin, 'roleful-2');
-    }
-  });
-
-  it('throws on role-name collision', async () => {
-    const dirA = await makePlugin({
-      name: 'collide-a',
-      roles: { same: { name: 'same', prompt: { content: 'a' } } },
-    });
-    const dirB = await makePlugin({
-      name: 'collide-b',
-      roles: { same: { name: 'same', prompt: { content: 'b' } } },
-    });
-    const a = await loadPluginFromDir(dirA, 'project');
-    const b = await loadPluginFromDir(dirB, 'project');
-    assert.ok(!('error' in a) && !('error' in b));
-    if (!('error' in a) && !('error' in b)) {
-      assert.throws(() => collectRoles([a, b]), /role "same" claimed by both/);
-    }
-  });
-});

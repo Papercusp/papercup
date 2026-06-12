@@ -3,16 +3,16 @@ URL: /internal/docs/spec/plugins
 
 
 
-Plugins extend a Papercusp install along six axes:
+Plugins extend a Papercusp install along four axes:
 
 Extension pointWhat it addsPlugin SDK type
 
-RolesNew named agent invocations the orchestrator can dispatch`RoleDefinition`
-Lifecycle hooksCode that runs before/after iteration phases (e.g. `onPostValidator`)`LifecycleHooks`
+Lifecycle hooksCode that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)`PluginHooks`
 UI (full-route)A complete React panel mounted at `/harness/&lt;slug&gt;` — see §8`UiContribution`
 API routesHTTP endpoints under `/api/plugins/&lt;name&gt;/*``ApiRoute[]`
 DB schemaPostgres migrations under the plugin's own schema`SchemaMigration[]`
-RoutinesCron / webhook / API triggers that insert into `pending_events` — see §9`RoutineDefinition[]`
+
+Retired axes (2026-06-12, plugin-system-hive-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
 
 Plugins also declare capabilities (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
 

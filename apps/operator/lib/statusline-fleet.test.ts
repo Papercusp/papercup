@@ -47,7 +47,8 @@ describe('statusline-fleet render (fixture mode)', () => {
         {
           id: 'wake-mode-manual',
           text: 'Wake mode is manual — 2 staged wakes waiting; the queen won\'t self-drive. Back to auto:',
-          command: '/papercusp:tool:coord:wake-mode mode=auto',
+          command: '/mcp__papercusp-su__tool:coord:wake-mode mode=auto',
+          invoke: { tool: 'coord:wake-mode', args: { mode: 'auto' } },
         },
       ],
     });
@@ -59,7 +60,7 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(lines[0]).toContain('2 peers');
     expect(lines[0]).toContain('◆ aaaaaa ✎ catalog.ts');
     expect(lines[1]).toBe(
-      "💡 Wake mode is manual — 2 staged wakes waiting; the queen won't self-drive. Back to auto: /papercusp:tool:coord:wake-mode mode=auto",
+      "💡 Wake mode is manual — 2 staged wakes waiting; the queen won't self-drive. Back to auto: /mcp__papercusp-su__tool:coord:wake-mode mode=auto",
     );
   });
 

@@ -20,9 +20,14 @@
  * the order of DEFAULT_TIP_RULES is the display priority — the statusline
  * renders tips[0].
  *
- * Slash commands referenced in tips use the projected-tool form
- * `/papercusp:tool:<group>:<verb>` from slash-exposure-tool-catalog-2026-06-12
- * (every MCP tool projects a slash command, default-ON per its D-003).
+ * A tip that resolves via one tool call carries it in TWO forms:
+ *   - `command` — the human slash form, as Claude Code actually surfaces the
+ *     slash-exposure projection (slash-exposure-tool-catalog-2026-06-12):
+ *     `/mcp__<server>__tool:<group>:<verb>`, with `papercusp-su` as the psu
+ *     server registration on this box. For a human to type/pick.
+ *   - `invoke` — the machine form `{ tool, args }`. An agent consuming the
+ *     glance applies a tip by calling the tool directly over its own MCP
+ *     session (inheriting its gates/audit) — no slash layer, no typing.
  */
 
 export const GLANCE_AUDIENCES = ['user', 'queen', 'su', 'bee'] as const;
@@ -42,11 +47,19 @@ export interface GlanceTipContext {
   state: Record<string, string>;
 }
 
+/** The machine-executable form of a tip's resolving action. */
+export interface GlanceTipInvoke {
+  tool: string;
+  args: Record<string, string>;
+}
+
 export interface GlanceTip {
   id: string;
   text: string;
-  /** A ready-to-run slash command when one directly resolves the tip, else null. */
+  /** A ready-to-type slash command when one directly resolves the tip, else null. */
   command: string | null;
+  /** The same action as a direct tool call, for agent consumers. */
+  invoke: GlanceTipInvoke | null;
 }
 
 export interface TipRule {
@@ -54,7 +67,7 @@ export interface TipRule {
   /** Audiences this rule speaks to. */
   audiences: readonly GlanceAudience[];
   when(ctx: GlanceTipContext): boolean;
-  render(ctx: GlanceTipContext): { text: string; command?: string };
+  render(ctx: GlanceTipContext): { text: string; command?: string; invoke?: GlanceTipInvoke };
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -71,7 +84,8 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
         c.stagedTotal > 0
           ? `Wake mode is manual — ${plural(c.stagedTotal, 'staged wake')} waiting; the queen won't self-drive. Back to auto:`
           : `Wake mode is manual — the queen won't self-drive. Back to auto:`,
-      command: '/papercusp:tool:coord:wake-mode mode=auto',
+      command: '/mcp__papercusp-su__tool:coord:wake-mode mode=auto',
+      invoke: { tool: 'coord:wake-mode', args: { mode: 'auto' } },
     }),
   },
   {
@@ -82,7 +96,8 @@ export const DEFAULT_TIP_RULES: readonly TipRule[] = [
     when: (c) => c.wakeDefault === 'auto' && c.stagedTotal > 0,
     render: (c) => ({
       text: `${plural(c.stagedTotal, 'staged wake')} won't fire by themselves — release:`,
-      command: '/papercusp:tool:coord:wake-queue action=release_all',
+      command: '/mcp__papercusp-su__tool:coord:wake-queue action=release_all',
+      invoke: { tool: 'coord:wake-queue', args: { action: 'release_all' } },
     }),
   },
   {
@@ -109,7 +124,7 @@ export function evaluateTips(
     try {
       if (!rule.when(ctx)) continue;
       const r = rule.render(ctx);
-      out.push({ id: rule.id, text: r.text, command: r.command ?? null });
+      out.push({ id: rule.id, text: r.text, command: r.command ?? null, invoke: r.invoke ?? null });
     } catch {
       /* fault-isolated: a broken rule never breaks the glance */
     }

@@ -208,6 +208,23 @@ describe('GET + PATCH /auth/me', () => {
     expect(await res.json()).toMatchObject({ autoLogin: true });
   });
 
+  it('GET auto-mints a session for a passwordless cookie-capable caller', async () => {
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue({ ...USER, has_password: false });
+    const res = await app.request('/auth/me');
+    expect(res.status).toBe(200);
+    expect(login).toHaveBeenCalled();
+    expect(res.headers.get('set-cookie') ?? '').toContain('papercusp_session=tok_abc');
+  });
+
+  it('GET skips the auto-mint for bearer-presenting callers (EI-338: no cookie jar over the IPC bridge)', async () => {
+    vi.mocked(getSessionUserOrDefault).mockResolvedValue({ ...USER, has_password: false });
+    const res = await app.request('/auth/me', { headers: { authorization: 'Bearer su-token' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ autoLogin: true });
+    expect(login).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
   it('PATCH falls back to the default user when unauthenticated (cookie-less desktop)', async () => {
     const res = await app.request('/auth/me', { ...json({ display_name: 'New' }), method: 'PATCH' });
     expect(res.status).toBe(200);

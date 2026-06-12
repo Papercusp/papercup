@@ -8,6 +8,7 @@ import {
   listAdminTestSuites,
   expandAdminTestSuiteSelection,
   isAdminTestSuiteId,
+  pickBridgePid,
 } from './admin-test-suites';
 
 const suites = listAdminTestSuites();
@@ -39,5 +40,39 @@ describe('isAdminTestSuiteId', () => {
   it('accepts a registered id, rejects anything else', () => {
     expect(isAdminTestSuiteId(suites[0].id)).toBe(true);
     expect(isAdminTestSuiteId('definitely-not-a-suite')).toBe(false);
+  });
+});
+
+/**
+ * pickBridgePid — the suite runner's instance-pinning decision. On a box
+ * running several Tauri desktops (the owner's seat + agents' Xvfb instances)
+ * an unpinned run would let tauri-agent-tools' discoverBridge() pick an
+ * arbitrary window; these cases pin the contract.
+ */
+describe('pickBridgePid (suite-run bridge pinning)', () => {
+  const noAncestors = new Set<number>();
+
+  it('explicit request pin wins over everything', () => {
+    expect(pickBridgePid({ explicit: 42, envPid: 7, live: [1, 2, 3], ancestors: noAncestors })).toBe(42);
+  });
+
+  it('env pin wins when no explicit pin', () => {
+    expect(pickBridgePid({ explicit: null, envPid: 7, live: [1, 2], ancestors: noAncestors })).toBe(7);
+  });
+
+  it('no live bridge → null (checks surface the normal bridge-unreachable error)', () => {
+    expect(pickBridgePid({ explicit: null, envPid: null, live: [], ancestors: noAncestors })).toBeNull();
+  });
+
+  it('exactly one live bridge → pinned to it', () => {
+    expect(pickBridgePid({ explicit: null, envPid: null, live: [123], ancestors: noAncestors })).toBe(123);
+  });
+
+  it('multiple bridges → the one on the operator ancestry (dev-shell sidecar) wins', () => {
+    expect(pickBridgePid({ explicit: null, envPid: null, live: [10, 20, 30], ancestors: new Set([5, 20]) })).toBe(20);
+  });
+
+  it('multiple bridges, none ours → throws instead of driving an arbitrary window', () => {
+    expect(() => pickBridgePid({ explicit: null, envPid: null, live: [10, 20], ancestors: noAncestors })).toThrow(/refusing to drive/i);
   });
 });

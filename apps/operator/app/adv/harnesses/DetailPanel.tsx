@@ -277,7 +277,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
  * AgentDetail — detail for an `agent:*` selection (the Agents panel's Working
  * view rows — the fleet:assignments projection). Read-only: presence, intent,
  * load, and the agent's work, with the head-of-line item + queue + claims
- * cross-linking back into the F-*/WI-* details via the same `?sel` contract.
+ * cross-linking back into the F- / WI- details via the same `?sel` contract.
  *
  * Exported for tests.
  */

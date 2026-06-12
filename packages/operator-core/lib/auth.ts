@@ -182,6 +182,19 @@ export async function login(
     if (!check[0]?.ok) throw Object.assign(new Error('bad password'), { code: 'bad_password' });
   }
 
+  // Opportunistic sweep (EI-338): drop sessions that will never be presented
+  // again — expired rows, plus never-reused rows past a generous grace (the
+  // cookie-less desktop webview minted thousands of single-use rows before
+  // the /auth/me mint guard; stragglers still arrive via the HTTP-fallback
+  // path). last_seen_at refreshes on every cookie hit, so an actively-used
+  // session is never swept. Logged-not-swallowed so a real PG error surfaces.
+  await sql`
+    DELETE FROM harness_shared.user_sessions
+     WHERE expires_at < now()
+        OR (created_at < now() - interval '48 hours'
+            AND (last_seen_at IS NULL OR last_seen_at < created_at + interval '1 minute'))
+  `.catch((err) => console.error('[auth] session sweep failed (non-fatal):', err));
+
   const token = newToken();
   const ttl = meta?.ttl_ms ?? DEFAULT_SESSION_TTL_MS;
   const expires = new Date(Date.now() + ttl);

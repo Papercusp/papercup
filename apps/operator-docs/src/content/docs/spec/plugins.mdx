@@ -5,20 +5,22 @@ sidebar:
 ---
 
 <p>
-        Plugins extend a Papercusp install along six axes:
+        Plugins extend a Papercusp install along four axes:
       </p>
 
       <table>
         <thead><tr><th>Extension point</th><th>What it adds</th><th>Plugin SDK type</th></tr></thead>
         <tbody>
-          <tr><td><strong>Roles</strong></td><td>New named agent invocations the orchestrator can dispatch</td><td>`RoleDefinition`</td></tr>
-          <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs before/after iteration phases (e.g. `onPostValidator`)</td><td>`LifecycleHooks`</td></tr>
+          <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)</td><td>`PluginHooks`</td></tr>
           <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
           <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugins/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
           <tr><td><strong>DB schema</strong></td><td>Postgres migrations under the plugin's own schema</td><td>`SchemaMigration[]`</td></tr>
-          <tr><td><strong>Routines</strong></td><td>Cron / webhook / API triggers that insert into `pending_events` — <strong>see §9</strong></td><td>`RoutineDefinition[]`</td></tr>
         </tbody>
       </table>
+
+      <p>
+        <strong>Retired axes (2026-06-12, plugin-system-hive-port D-004):</strong> <strong>Roles</strong> (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and <strong>Routines</strong> (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
+      </p>
 
       <p>
         Plugins also declare <strong>capabilities</strong> (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
