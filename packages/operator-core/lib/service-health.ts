@@ -17,13 +17,21 @@ export interface EndpointSpec {
   url: string;
 }
 
-/** The dev services worth watching (audit themes: stale-:4321, :3070, etc.). */
+/**
+ * The dev services worth watching (audit themes: stale-:4321, :3070, etc.).
+ *
+ * NB: the standalone web app on :3001 (the retired "old Restart web app" — see
+ * `_retired/papercup`, and the docker-compose note that it "doesn't exist in
+ * this container") is deliberately NOT monitored. It never runs in this
+ * deployment, so probing it produced a perpetual phantom "web is DOWN" signal
+ * that the improvement watchdog re-captured every cycle (EI-188). Don't re-add
+ * a retired surface here.
+ */
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
   { name: 'vite', url: 'http://127.0.0.1:3055/' },
   { name: 'shop', url: 'http://127.0.0.1:4321/' },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
-  { name: 'web', url: 'http://127.0.0.1:3001/' },
   { name: 'code-server', url: 'http://127.0.0.1:8082/' },
 ];
 

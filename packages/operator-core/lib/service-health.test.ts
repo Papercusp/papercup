@@ -2,7 +2,7 @@
  * diffHealth — pure transition detector (fleet-coordination-painpoints P-017).
  */
 import { describe, it, expect } from 'vitest';
-import { diffHealth, type ProbeResult } from './service-health';
+import { diffHealth, HEALTH_ENDPOINTS, type ProbeResult } from './service-health';
 
 const r = (name: string, up: boolean): ProbeResult => ({
   name,
@@ -60,5 +60,15 @@ describe('diffHealth', () => {
     const present: ProbeResult = { name: 'desktop', up: false, present: true, status: null, latencyMs: 1 };
     const { transitions } = diffHealth({ desktop: true }, [present]);
     expect(transitions).toEqual([{ name: 'desktop', to: 'down' }]);
+  });
+});
+
+describe('HEALTH_ENDPOINTS', () => {
+  // EI-188: the retired standalone web app (:3001 — the "old Restart web app",
+  // never running in this deployment) must NOT be monitored, or the watchdog
+  // re-captures a phantom "web is DOWN" improvement every cycle.
+  it('does not monitor the retired web app (:3001)', () => {
+    expect(HEALTH_ENDPOINTS.some((e) => e.name === 'web')).toBe(false);
+    expect(HEALTH_ENDPOINTS.some((e) => e.url.includes(':3001'))).toBe(false);
   });
 });
