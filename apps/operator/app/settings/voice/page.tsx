@@ -10,6 +10,7 @@ import { Select } from '../../harness/Select';
 import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { Button } from '../../harness/Button';
+import { DraftInput } from '@/lib/forms';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import {
   initVoiceMode,
@@ -174,13 +175,15 @@ export default function VoiceSettingsPage() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       });
-      if (r.ok) {
-        const next = await r.json() as VoicePrefs;
-        setPrefs(next);
-        // Push into the module-level cache so subscribers
-        // (voice-card router, announcer, etc.) see live updates.
-        setVoicePrefsClient(next);
-      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const next = await r.json() as VoicePrefs;
+      setPrefs(next);
+      // Push into the module-level cache so subscribers
+      // (voice-card router, announcer, etc.) see live updates.
+      setVoicePrefsClient(next);
+    } catch (err) {
+      // A silent failure reads as "saved" — surface it.
+      toast.error(`voice setting not saved: ${(err as Error).message}`);
     } finally {
       setSavingPrefs(false);
     }
@@ -447,13 +450,20 @@ export default function VoiceSettingsPage() {
                 <>
                   <div style={{ marginBottom: 16 }}>
                     <label style={lbl}>ElevenLabs Agent ID</label>
-                    <input
+                    <DraftInput
                       type="text"
+                      aria-label="ElevenLabs Agent ID"
                       value={prefs?.elevenLabsAgentId ?? ''}
-                      onChange={(e) => savePrefsPatch({ elevenLabsAgentId: e.target.value.trim() })}
+                      onCommit={(v) => savePrefsPatch({ elevenLabsAgentId: v.trim() })}
+                      validate={(d) => {
+                        const s = d.trim();
+                        if (!s) return null; // empty = unset
+                        if (/\s/.test(s)) return 'agent ids have no spaces';
+                        if (!s.startsWith('agent_')) return 'ElevenLabs Conv AI agent ids start with agent_';
+                        return null;
+                      }}
                       placeholder="agent_…"
                       style={{ ...sel, fontFamily: "'SF Mono', monospace", fontSize: 12 }}
-                      disabled={savingPrefs}
                     />
                     <p style={hint}>
                       Find this in your ElevenLabs Conv AI agent's settings page —
@@ -689,170 +699,107 @@ export default function VoiceSettingsPage() {
                 <span style={hint}> — every fresh app load starts Papercup in active mode (continuous turn-taking, draws ideas out of you). Off → starts passive (Papercup only responds when spoken to). Mid-session toggling via the navbar still works either way; the toggle resets on refresh per this setting.</span>
               </span>
             </label>
-            <div>
-              <label style={lbl}>
-                Max spoken words for cached / readout content (longer → speak gist + show in panel)
-              </label>
-              <input
-                aria-label="Max spoken words for cached or readout content"
-                type="number"
-                min={20}
-                max={500}
-                value={prefs.voiceMaxSpokenWords ?? 120}
-                onChange={(e) => {
-                  const v = Math.max(20, Math.min(500, parseInt(e.target.value, 10) || 120));
-                  savePrefsPatch({ voiceMaxSpokenWords: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+            <NumField
+              label="Max spoken words for cached / readout content (longer → speak gist + show in panel)"
+              ariaLabel="Max spoken words for cached or readout content"
+              min={20}
+              max={500}
+              value={prefs.voiceMaxSpokenWords ?? 120}
+              onCommit={(v) => savePrefsPatch({ voiceMaxSpokenWords: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default 120 words ≈ 60 seconds of speech. Above this threshold,
                 voice speaks a one-sentence gist and the panel shows the full content.
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Auto-disconnect after this many minutes of <strong>user</strong> silence
-              </label>
-              <input
-                aria-label="Auto-disconnect after minutes of user silence"
-                type="number"
-                min={0}
-                max={60}
-                value={prefs.fullAgentIdleTimeoutMin ?? 2}
-                onChange={(e) => {
-                  const v = Math.max(0, Math.min(60, parseInt(e.target.value, 10) || 0));
-                  savePrefsPatch({ fullAgentIdleTimeoutMin: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label={<>Auto-disconnect after this many minutes of <strong>user</strong> silence</>}
+              ariaLabel="Auto-disconnect after minutes of user silence"
+              min={0}
+              max={60}
+              value={prefs.fullAgentIdleTimeoutMin ?? 2}
+              onCommit={(v) => savePrefsPatch({ fullAgentIdleTimeoutMin: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default <strong>2 minutes</strong>. Only counts USER silence — the agent talking
                 doesn&apos;t reset the timer (so a chatty agent can&apos;t keep the session alive
                 indefinitely). The mic streams continuously while connected; silence still costs
                 minutes (~$0.08–0.30/min on EL). 0 disables auto-disconnect (not recommended).
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Hard maximum session duration (minutes)
-              </label>
-              <input
-                aria-label="Hard maximum session duration in minutes"
-                type="number"
-                min={0}
-                max={240}
-                value={prefs.fullAgentSessionMaxMin ?? 30}
-                onChange={(e) => {
-                  const v = Math.max(0, Math.min(240, parseInt(e.target.value, 10) || 0));
-                  savePrefsPatch({ fullAgentSessionMaxMin: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label="Hard maximum session duration (minutes)"
+              ariaLabel="Hard maximum session duration in minutes"
+              min={0}
+              max={240}
+              value={prefs.fullAgentSessionMaxMin ?? 30}
+              onCommit={(v) => savePrefsPatch({ fullAgentSessionMaxMin: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default <strong>30 minutes</strong>. Backstop for edge cases — the session
                 auto-disconnects after this many minutes regardless of activity. Tap the voice
                 button to start another. 0 disables the cap.
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Silence-nudge grace before EL teardown (seconds)
-              </label>
-              <input
-                aria-label="Silence-nudge grace before teardown in seconds"
-                type="number"
-                min={0}
-                max={120}
-                value={prefs.silenceNudgeGraceSecs ?? 30}
-                onChange={(e) => {
-                  const v = Math.max(0, Math.min(120, parseInt(e.target.value, 10) || 0));
-                  savePrefsPatch({ silenceNudgeGraceSecs: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label="Silence-nudge grace before EL teardown (seconds)"
+              ariaLabel="Silence-nudge grace before teardown in seconds"
+              min={0}
+              max={120}
+              value={prefs.silenceNudgeGraceSecs ?? 30}
+              onCommit={(v) => savePrefsPatch({ silenceNudgeGraceSecs: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default <strong>30 seconds</strong>. After the silence-nudge Ready card appears,
                 tear down the active EL Conv AI session this many seconds later (saves credits
                 during silence). Wake-word listener resumes when configured. 0 disables — EL
                 stays up until its own idle timeout above. Range 5-120.
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Max `&lt;continue/&gt;` chain depth
-              </label>
-              <input
-                aria-label="Max continue chain depth"
-                type="number"
-                min={1}
-                max={20}
-                value={prefs.maxConsecutiveContinues ?? 5}
-                onChange={(e) => {
-                  const v = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 5));
-                  savePrefsPatch({ maxConsecutiveContinues: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label={<>Max `&lt;continue/&gt;` chain depth</>}
+              ariaLabel="Max continue chain depth"
+              min={1}
+              max={20}
+              value={prefs.maxConsecutiveContinues ?? 5}
+              onCommit={(v) => savePrefsPatch({ maxConsecutiveContinues: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default <strong>5</strong>. When the brain narrates user-visible multi-step work
                 (&quot;Did X, now doing Y&quot;), each `&lt;continue/&gt;` triggers another turn.
                 Capped to prevent runaway chains. After this many in a row without user input,
                 the runtime force-waits.
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Max `&lt;continue/&gt;` chain duration (seconds)
-              </label>
-              <input
-                aria-label="Max continue chain duration in seconds"
-                type="number"
-                min={30}
-                max={1800}
-                value={prefs.maxContinueChainSecs ?? 300}
-                onChange={(e) => {
-                  const v = Math.max(30, Math.min(1800, parseInt(e.target.value, 10) || 300));
-                  savePrefsPatch({ maxContinueChainSecs: v });
-                }}
-                style={{ ...sel, width: 120 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label={<>Max `&lt;continue/&gt;` chain duration (seconds)</>}
+              ariaLabel="Max continue chain duration in seconds"
+              min={30}
+              max={1800}
+              value={prefs.maxContinueChainSecs ?? 300}
+              onCommit={(v) => savePrefsPatch({ maxContinueChainSecs: v })}
+              inputStyle={{ ...sel, width: 120 }}
+              hint={<>
                 Default <strong>300</strong> (5 min). Hard wall-clock cap on a single chain.
                 Forces a wait once exceeded, regardless of how many chained turns ran. Range 30-1800.
-              </p>
-            </div>
-            <div>
-              <label style={lbl}>
-                Papercup history budget (tokens)
-              </label>
-              <input
-                aria-label="Papercup history budget in tokens"
-                type="number"
-                min={5000}
-                max={150000}
-                step={1000}
-                value={prefs.operatorHistoryTokenBudget ?? 40000}
-                onChange={(e) => {
-                  const v = Math.max(5000, Math.min(150000, parseInt(e.target.value, 10) || 40000));
-                  savePrefsPatch({ operatorHistoryTokenBudget: v });
-                }}
-                style={{ ...sel, width: 140 }}
-                disabled={savingPrefs}
-              />
-              <p style={hint}>
+              </>}
+            />
+            <NumField
+              label="Papercup history budget (tokens)"
+              ariaLabel="Papercup history budget in tokens"
+              min={5000}
+              max={150000}
+              step={1000}
+              value={prefs.operatorHistoryTokenBudget ?? 40000}
+              onCommit={(v) => savePrefsPatch({ operatorHistoryTokenBudget: v })}
+              inputStyle={{ ...sel, width: 140 }}
+              hint={<>
                 Default <strong>40000</strong>. How much chat history the operator brain sees per
                 turn. Higher = better recall on long conversations, more cost per reply.
                 Claude&apos;s full context is 200000 — we reserve the rest for the system prompt,
                 tools, and the response. Range 5000–150000.
-              </p>
-            </div>
+              </>}
+            />
             <div>
               <label style={lbl}>Privacy mode for ElevenLabs / Realtime sessions</label>
               <Select
@@ -1731,25 +1678,64 @@ function EnginePreview({ engine }: { engine: string }) {
   );
 }
 
-function NumField({ label, value, step, onCommit, hint }: { label: string; value: number; step: number; onCommit: (n: number) => void; hint?: string }) {
+/** Commit-on-blur number field with range validation — typing stays local,
+    the value persists only on blur/Enter and only when it's a finite number
+    inside [min, max]; out-of-range drafts get an inline error and the stored
+    value stays untouched (never clamp-and-save mid-edit). Escape reverts. */
+function NumField({ label, ariaLabel, value, step = 1, min = 0, max, onCommit, hint, inputStyle }: {
+  label: React.ReactNode;
+  /** Required when `label` isn't a plain string. */
+  ariaLabel?: string;
+  value: number;
+  step?: number;
+  min?: number;
+  max?: number;
+  onCommit: (n: number) => void;
+  hint?: React.ReactNode;
+  inputStyle?: React.CSSProperties;
+}) {
   const [draft, setDraft] = useState(value.toString());
-  useEffect(() => { setDraft(value.toString()); }, [value]);
+  const [error, setError] = useState<string | null>(null);
+  const focusedRef = useRef(false);
+  // Adopt external value changes (hydration, another field's save echoing the
+  // whole prefs object back) only while idle — never mid-edit.
+  useEffect(() => {
+    if (!focusedRef.current) { setDraft(value.toString()); setError(null); }
+  }, [value]);
+  const commit = () => {
+    const n = Number(draft);
+    if (!Number.isFinite(n) || draft.trim() === '') {
+      setError('not a number — keeping the saved value');
+      return;
+    }
+    if (n < min || (max != null && n > max)) {
+      setError(max != null ? `out of range (${min}–${max}) — keeping the saved value` : `must be ≥ ${min} — keeping the saved value`);
+      return;
+    }
+    setError(null);
+    if (n !== value) onCommit(n);
+  };
   return (
     <div>
       <label style={lbl}>{label}</label>
       <input
-        aria-label={label}
+        aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}
         type="number"
         step={step}
-        min={0}
+        min={min}
+        max={max}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          const n = Number(draft);
-          if (Number.isFinite(n) && n >= 0 && n !== value) onCommit(n);
+        aria-invalid={error ? true : undefined}
+        onChange={(e) => { setDraft(e.target.value); if (error) setError(null); }}
+        onFocus={() => { focusedRef.current = true; }}
+        onBlur={() => { focusedRef.current = false; commit(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+          else if (e.key === 'Escape') { setDraft(value.toString()); setError(null); }
         }}
-        style={{ padding: '6px 10px', width: '100%', fontSize: 13 }}
+        style={{ padding: '6px 10px', width: '100%', fontSize: 13, ...(error ? { borderColor: 'var(--bad)' } : {}), ...inputStyle }}
       />
+      {error && <p role="alert" style={{ marginTop: 4, fontSize: 11, color: 'var(--bad)' }}>{error}</p>}
       {hint && <p style={{ marginTop: 4, fontSize: 11, color: 'var(--fg-mute)' }}>{hint}</p>}
     </div>
   );
