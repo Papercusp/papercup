@@ -5,13 +5,14 @@ sidebar:
 ---
 
 <p>
-        Plugins extend a Papercusp install along four axes:
+        Plugins extend a Papercusp install along five axes:
       </p>
 
       <table>
         <thead><tr><th>Extension point</th><th>What it adds</th><th>Plugin SDK type</th></tr></thead>
         <tbody>
           <tr><td><strong>Lifecycle hooks</strong></td><td>Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)</td><td>`PluginHooks`</td></tr>
+          <tr><td><strong>Event-reaction rules</strong></td><td>Declarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)</td><td>`PluginReactionRule`</td></tr>
           <tr><td><strong>UI (full-route)</strong></td><td>A complete React panel mounted at `/harness/&lt;slug&gt;` — <strong>see §8</strong></td><td>`UiContribution`</td></tr>
           <tr><td><strong>API routes</strong></td><td>HTTP endpoints under `/api/plugins/&lt;name&gt;/*`</td><td>`ApiRoute[]`</td></tr>
           <tr><td><strong>DB schema</strong></td><td>Postgres migrations under the plugin's own schema</td><td>`SchemaMigration[]`</td></tr>
@@ -27,6 +28,63 @@ sidebar:
       </p>
 
       
+
+### 7.0 Hooking the pipeline — event-reaction rules
+
+      <p>
+        <strong>The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):</strong>
+        the typed <code>PluginHooks</code> fire-points that survived the run-loop retirement
+        (<code>beforeMissionStart</code>, <code>onFeaturePassed</code>, <code>afterDone</code>, …) are
+        <strong>FROZEN</strong> — they keep firing in-process for back-compat but no new typed fire-point will
+        ever be added, and their invocations bypass dispatch (no audit, no capability gate). The WordPress-style
+        hook bus (<code>addAction</code>/<code>addFilter</code>, the old <code>PluginHookBus</code>) is
+        <strong>retired</strong> (it had zero registered consumers). New pipeline fire-points are
+        <strong>event emissions only</strong>, and plugins subscribe by declaring <strong>reaction rules</strong>.
+      </p>
+
+      <p>
+        A rule is <code>{`{ id, on, when?, fire, args?, onlyOnSuccess?, capability? }`}</code> —
+        declared in the manifest (<code>reactions[]</code>, the declarative subset: <code>when</code> is a
+        data-match object, <code>args</code> a static object) or on the entry plugin's
+        <code>reactions</code> export (function forms allowed). The host registers each into the one
+        reaction registry (<code>registerReactionRule</code>) at plugin-host boot, after the tool sweep.
+      </p>
+
+      <p><strong>The capability contract</strong> (event-reaction-system D-012):</p>
+      <ul>
+        <li>each trigger in <code>on</code> requires a manifest capability <code>events:listen:&lt;trigger&gt;</code> — the consent surface for what the plugin watches;</li>
+        <li><code>fire</code> must name one of the plugin's <strong>own</strong> projected tools (<code>&lt;plugin&gt;.&lt;verb&gt;</code>) — registration refuses foreign targets;</li>
+        <li>the reaction runs through <strong>normal dispatch</strong> under a principal holding only the rule's capability (default: the fired tool's declared capability), so auth, quota, audit and the cause-chain loop guard all ride free.</li>
+      </ul>
+
+      <p>
+        <strong>What a rule can trigger on:</strong> any tool invocation observed at the dispatcher
+        (e.g. <code>work_items:complete</code>, <code>work_items:claim</code>), any plugin-emitted event
+        (the WASM event sink and <code>plugins:fire_event</code> feed the same matcher), and the
+        <strong>pipeline event vocabulary</strong> the live DBOS pipeline emits
+        (<code>lib/events/pipeline-events.ts</code>):
+      </p>
+
+      <table>
+        <thead><tr><th>Reaction trigger key</th><th>`events:await` key</th><th>Fires when</th></tr></thead>
+        <tbody>
+          <tr><td>`pipeline:launch`</td><td>`pipeline:launch:&lt;slug&gt;`</td><td>a harness run is launched</td></tr>
+          <tr><td>`pipeline:step-start`</td><td>`pipeline:step-start:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;`</td><td>a spine role dispatch is starting</td></tr>
+          <tr><td>`pipeline:step-done`</td><td>`pipeline:step-done:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;`</td><td>a spine role dispatch finished (payload: exitCode, durationMs, runId)</td></tr>
+          <tr><td>`pipeline:done`</td><td>`pipeline:done:&lt;slug&gt;:&lt;feature&gt;`</td><td>a feature pipeline finalized DONE</td></tr>
+          <tr><td>`pipeline:escalate`</td><td>`pipeline:escalate:&lt;slug&gt;:&lt;feature&gt;`</td><td>a feature pipeline finalized ESCALATE (payload: reason)</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        The work-items lifecycle additionally emits awaited events
+        (<code>work-item:claimed:&lt;id&gt;</code>, <code>work-item:blocked:&lt;id&gt;</code>,
+        <code>work-item:done:&lt;id&gt;</code>, <code>work-item:unblocked:&lt;id&gt;</code>) — reaction rules
+        trigger on the <em>tools</em> (<code>work_items:claim</code> / <code>set_state</code> /
+        <code>complete</code>), while agents sleep on the exact keys via <code>events:await</code>. One
+        emission serves reactions, awaits and UI simultaneously; registered plugin rules are inspectable via
+        <code>plugins:runtime_status</code> (<code>reactionRules</code>) and <code>events:graph</code>.
+      </p>
 
 ### 7.1 Inter-plugin dependencies
 

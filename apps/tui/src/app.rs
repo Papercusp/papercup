@@ -568,6 +568,15 @@ pub enum PaletteCommand {
     Layout {
         which: String,
     },
+    /// `:theme [name]` — flip the active palette (workbench-theme-system P1 /
+    /// D-002). Bare `:theme` lists the registry like `:themes`; an unknown
+    /// name lists it too instead of erroring silently. App-local — handled in
+    /// the palette Enter handler, never dispatched to the workbench task.
+    Theme {
+        name: Option<String>,
+    },
+    /// `:themes` — list the registered themes, marking the active one.
+    Themes,
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -584,6 +593,12 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
     match cmd {
         "layouts" => Some(PaletteCommand::ListLayouts),
         "crews" => Some(PaletteCommand::ListCrews),
+        // `:theme [name]` / `:themes` (workbench-theme-system P1 / D-002) —
+        // bare `:theme` behaves like `:themes` (list, never error silently).
+        "theme" => Some(PaletteCommand::Theme {
+            name: (!arg.is_empty()).then_some(arg),
+        }),
+        "themes" => Some(PaletteCommand::Themes),
         "save-crew" if !arg.is_empty() => Some(PaletteCommand::SaveCrew(arg)),
         "save-layout" if !arg.is_empty() => Some(PaletteCommand::SaveLayout(arg)),
         "restore-crew" if !arg.is_empty() => Some(PaletteCommand::RestoreCrew(arg)),
@@ -2167,6 +2182,24 @@ impl App {
         }
     }
 
+    /// The `:themes` registry listing with the active theme marked (P1 /
+    /// D-002) — what the palette prints on `:themes` and on an unknown
+    /// `:theme <name>`.
+    fn theme_listing() -> String {
+        let active = crate::theme::Theme::active_name();
+        crate::theme::THEMES
+            .iter()
+            .map(|t| {
+                if t.name == active {
+                    format!("{}*", t.name)
+                } else {
+                    t.name.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+
     /// Snapshot the quiet UI/nav state for persistence (P12 / D-002 —
     /// `harness_shared.tui_view_state`). Pure read; the run loop ships this to
     /// the debounced saver on each nav change.
@@ -2197,6 +2230,9 @@ impl App {
             fleet_mode: Some(self.fleet.mode.label().to_string()),
             plan_filter: self.plan_filter.iter().cloned().collect(),
             plan_filter_open: self.plan_filter_open,
+            // `:theme` selection (workbench-theme-system P1 / D-002): the
+            // active palette follows the user across launches/machines.
+            theme: Some(crate::theme::Theme::active_name().to_string()),
         }
     }
 
@@ -2244,6 +2280,12 @@ impl App {
         // Plans filter (D-009): restore the selection + rail visibility.
         self.plan_filter = vs.plan_filter.iter().cloned().collect();
         self.plan_filter_open = vs.plan_filter_open;
+        // `:theme` selection (P1 / D-002): an absent (older snapshot) or
+        // unknown (renamed/removed theme) name keeps the default — never an
+        // error at boot.
+        if let Some(name) = vs.theme.as_deref() {
+            let _ = crate::theme::Theme::set_active(name);
+        }
     }
 
     /// Apply an agent control intent (P12b / D-002 A6 — tui:dispatch). Returns the
@@ -2357,6 +2399,9 @@ impl App {
         json!({
             "tab": self.tab.title(),
             "harness": self.harness,
+            // Active palette (workbench-theme-system P1) — agent-visible like
+            // every other user-meaningful state axis.
+            "theme": crate::theme::Theme::active_name(),
             // POTS scope axis (D-003): "all" widens the global lists; "pot"
             // narrows them to `harness`.
             "scope": if self.all_pots { "all" } else { "pot" },
@@ -4383,6 +4428,42 @@ impl App {
                         return Action::Render;
                     }
                     match cmd {
+                        // `:theme <name>` / `:theme` / `:themes` (P1 / D-002) —
+                        // app-local: flip the active palette and re-render in
+                        // place; the run loop's view-state save persists the
+                        // selection. An unknown/absent name lists the registry
+                        // (active marked) instead of erroring silently.
+                        Some(PaletteCommand::Theme { name: Some(name) }) => {
+                            if crate::theme::Theme::set_active(&name) {
+                                self.push_notif(crate::models::Notif {
+                                    level: "info".to_string(),
+                                    message: format!("theme: {name}"),
+                                    harness: None,
+                                    ts: None,
+                                });
+                            } else {
+                                self.push_notif(crate::models::Notif {
+                                    level: "error".to_string(),
+                                    message: format!(
+                                        "theme: unknown `{name}` — available: {}",
+                                        Self::theme_listing()
+                                    ),
+                                    harness: None,
+                                    ts: None,
+                                });
+                            }
+                            Action::Render
+                        }
+                        Some(PaletteCommand::Theme { name: None })
+                        | Some(PaletteCommand::Themes) => {
+                            self.push_notif(crate::models::Notif {
+                                level: "info".to_string(),
+                                message: format!("themes: {}", Self::theme_listing()),
+                                harness: None,
+                                ts: None,
+                            });
+                            Action::Render
+                        }
                         // `:pickup` resolves its plan/harness from the SELECTED
                         // plan when not given explicitly (the parser is pure and
                         // can't see app state). No plan in scope → an error
@@ -7614,6 +7695,12 @@ mod tests {
         assert_eq!(vs.harness_focus.as_deref(), Some("issues"));
         assert_eq!(vs.fleet_agent_sel, 6);
         assert_eq!(vs.fleet_mode.as_deref(), Some("mirror"));
+        // `:theme` persistence (P1 / D-002): the capture carries the active
+        // registry name (apply re-selects it — a no-op here, same theme).
+        assert_eq!(
+            vs.theme.as_deref(),
+            Some(crate::theme::Theme::active_name())
+        );
 
         // Apply onto a fresh App restores every captured field.
         let mut b = App::new();
@@ -8228,6 +8315,28 @@ mod tests {
                 pane(13, "codex", Some("psu --agent=codex"), false),
             ],
         }
+    }
+
+    #[test]
+    fn parse_theme_palette_commands() {
+        // `:theme <name>` switches; bare `:theme` and `:themes` list (D-002).
+        assert_eq!(
+            parse_palette_command(":theme honeycomb"),
+            Some(PaletteCommand::Theme {
+                name: Some("honeycomb".into())
+            })
+        );
+        assert_eq!(
+            parse_palette_command("theme  papercusp-dark "),
+            Some(PaletteCommand::Theme {
+                name: Some("papercusp-dark".into())
+            })
+        );
+        assert_eq!(
+            parse_palette_command(":theme"),
+            Some(PaletteCommand::Theme { name: None })
+        );
+        assert_eq!(parse_palette_command("themes"), Some(PaletteCommand::Themes));
     }
 
     #[test]

@@ -1,0 +1,19 @@
+# N≥3 substrate peers — announce admission is per-connection; distribute swarm keys and joinPeer for a full mesh
+URL: /internal/docs/agent-insights/hyperswarm-n3-full-mesh-admission
+
+Signed announces ride per-connection channels (no gossip), so admitting a peer's log REQUIRES a direct hyperswarm connection to it. Concurrent topic joins race the DHT announce and stall pairwise connections for minutes. Fix — collect each peer's swarm noise key at ready and have every peer joinPeer() the others explicitly.
+
+## Symptom
+
+A 3-peer substrate rig (each peer `bootHarnessSubstrate` over Hyperswarm — local
+testnet or the public DHT) stalls waiting for full-mesh admission: peer 0 admits
+all three logs, but peers 1 and 2 sit at `admitted.size === 2` (own + peer 0)
+indefinitely — 90s+ gates time out. Steering/data appended by peer 1 never
+reaches peer 2.
+
+Hit live by `swarm-full-loop.integration.test.ts` (shared-hive-loop-e2e P-008):
+`runFullLoop: Swarm(s) 1,2 never reached full mesh`.
+
+## Why
+
+Two facts comp

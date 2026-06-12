@@ -119,3 +119,50 @@ describe('emitWorkItemSettledEvents', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('emitWorkItemClaimedEvent', () => {
+  it('fires work-item:claimed:<id> with the assignee in payload', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const { emitWorkItemClaimedEvent } = await import('./work-items-events');
+    emitWorkItemClaimedEvent(wi({ id: 'WI-7', title: 'claim me' }), 'su-claimant', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:claimed:WI-7',
+      source: 'work-items',
+      payload: expect.objectContaining({ id: 'WI-7', assignee: 'su-claimant' }),
+    });
+  });
+
+  it('never rejects on an emit failure (warns instead)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemClaimedEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    expect(() => emitWorkItemClaimedEvent(wi(), 'su-x', { emit: emit as never })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('claimed-event'));
+    warn.mockRestore();
+  });
+});
+
+describe('emitWorkItemBlockedEvent', () => {
+  it('fires work-item:blocked:<id> notifying the delegator', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const { emitWorkItemBlockedEvent } = await import('./work-items-events');
+    emitWorkItemBlockedEvent(wi({ id: 'WI-8', state: 'blocked' }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:blocked:WI-8',
+      to: ['su-parent'],
+    });
+  });
+
+  it('self-delegated items notify nobody', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const { emitWorkItemBlockedEvent } = await import('./work-items-events');
+    emitWorkItemBlockedEvent(wi({ assignedBy: 'su-child', assignee: 'su-child' }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit.mock.calls[0][0]).toMatchObject({ to: [] });
+  });
+});

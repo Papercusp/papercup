@@ -1819,7 +1819,9 @@ async fn execute_workbench_command(
         | P::Stack
         | P::Float { .. }
         | P::Dock { .. }
-        | P::Layout { .. } => {}
+        | P::Layout { .. }
+        | P::Theme { .. }
+        | P::Themes => {}
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {

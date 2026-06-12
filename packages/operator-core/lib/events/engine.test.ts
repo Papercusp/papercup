@@ -124,3 +124,45 @@ describe('handleToolInvoked', () => {
     });
   });
 });
+
+describe('emitSystemEvent (synthetic non-tool events)', () => {
+  it('matches rules on the synthetic key and fires with payload as args + result.data', async () => {
+    registerReactionRule({
+      id: 'sys1',
+      on: 'pipeline:step-done',
+      when: (e) => (e.result.data as { role?: string }).role === 'worker',
+      fire: 'sink:tool',
+      args: (e) => ({ role: (e.args as { role: string }).role }),
+    });
+    const { emitSystemEvent } = await import('./engine');
+    emitSystemEvent({ tool: 'pipeline:step-done', args: { role: 'worker' }, harnessSlug: 'h1' });
+    await flush();
+    expect(fired).toHaveBeenCalledOnce();
+    const call = fired.mock.calls[0][0];
+    expect(call.fire).toBe('sink:tool');
+    expect(call.args).toEqual({ role: 'worker' });
+    expect(call.parentCtx.harnessSlug).toBe('h1');
+  });
+
+  it('no rules on the key → no fire, no throw', async () => {
+    const { emitSystemEvent } = await import('./engine');
+    emitSystemEvent({ tool: 'pipeline:launch', args: {} });
+    await flush();
+    expect(fired).not.toHaveBeenCalled();
+  });
+
+  it('carries a provided cause-chain into the loop guard (cycle dropped)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerReactionRule({ id: 'sysloop', on: 'myplugin.evt', fire: 'sink:tool' });
+    const { emitSystemEvent } = await import('./engine');
+    emitSystemEvent({
+      tool: 'myplugin.evt',
+      args: {},
+      cause: { depth: 1, chain: ['sysloop'], ruleId: 'sysloop', rootRunId: 'root' },
+    });
+    await flush();
+    expect(fired).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cycle'));
+    warn.mockRestore();
+  });
+});

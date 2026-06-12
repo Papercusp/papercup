@@ -106,16 +106,16 @@ without error.
 ## Plugin hooks fire alongside
 
 User hook scripts are per-harness; **plugins** hook the same lifecycle
-globally. At the `afterDone` step the finalizer also calls `firePluginHook()`
-(`libs/papercusp/packages/orchestrator/src/plugin-hooks.ts`), which discovers
-plugins under `<projectDir>/plugins/`, `~/.papercusp/harnesses/*/plugins/` and
-`~/.papercusp/global-plugins/` and invokes the named hook on each via the
-`papercusp-fire-hook` CLI — one child process per plugin, so a misbehaving
-plugin can't crash the pipeline. Output lands in
-`<stateDir>/logs/plugins.log`; failures are logged and ignored. Plugin hooks
-fire whether or not a user hook script ran. The in-process plugin host has a
-separate lifecycle surface (`plugins:fire_event` tool /
-`firePluginLifecycle`) — see [Plugins](/internal/docs/spec/plugins).
+globally. At the `afterDone` step the finalizer fires the in-process typed
+hook `firePluginLifecycle('afterDone', …)` on every loaded plugin that
+declares a handler (one of the FROZEN legacy fire-points —
+plugin-system-hive-port D-003), then emits the `pipeline:done:<slug>:<feature>`
+event. Plugin hook failures are logged by the host and ignored; plugin hooks
+fire whether or not a user hook script ran. (The old per-plugin shell-out via
+the `papercusp-fire-hook` CLI was retired 2026-06-12 — plugin-system-hive-port
+P-006.) New pipeline integrations should not use typed hooks at all: declare
+**event-reaction rules** on the pipeline event vocabulary instead — see
+[Plugins](/internal/docs/spec/plugins).
 
 ## Managing hook scripts over the API
 

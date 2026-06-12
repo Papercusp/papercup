@@ -216,7 +216,7 @@ function findBundledPluginsParent(): string | null {
  * first, so a dev re-discovery or a removed plugin can't leave stale rules.
  * Failures land in loadErrors (visible via plugins:runtime_status).
  */
-async function registerPluginReactionRules(
+export async function registerPluginReactionRules(
   loaded: LoadedPlugin[],
   pushErr: (e: { plugin: string; rule: string; error: string }) => void,
 ): Promise<void> {

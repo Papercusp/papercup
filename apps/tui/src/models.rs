@@ -1133,6 +1133,11 @@ pub struct ViewState {
     pub plan_filter: Vec<String>,
     #[serde(default)]
     pub plan_filter_open: bool,
+    /// Active theme name (workbench-theme-system P1 / D-002) — the `:theme`
+    /// selection follows the user across launches/machines. Absent (older
+    /// snapshot) or unknown (theme renamed/removed) keeps the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// `GET /api/tui/view-state` → `{ state: {...} }`.
@@ -2390,6 +2395,7 @@ mod tests {
             plan_sel: 2,
             doc_scroll: 7,
             show_presence: true,
+            theme: Some("honeycomb".into()),
             ..Default::default()
         };
         let json = serde_json::to_string(&vs).unwrap();

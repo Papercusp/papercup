@@ -48,7 +48,9 @@ vi.mock('../../harness-invoke-once', () => ({
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
 vi.mock('../../plugin-host-runtime', () => ({
   firePluginLifecycle: vi.fn(),
-  firePluginEvent: vi.fn(),
+}));
+vi.mock('../../events/pipeline-events', () => ({
+  emitPipelineEvent: vi.fn(),
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();

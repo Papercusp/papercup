@@ -450,3 +450,172 @@ describe('_resetPluginHostForTests clears require.cache', () => {
     }
   });
 });
+
+describe('registerPluginReactionRules (P-005 — capability-scoped plugin rules)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  async function withFixtureTool(
+    run: (deps: {
+      errors: Array<{ plugin: string; rule: string; error: string }>;
+      push: (e: { plugin: string; rule: string; error: string }) => void;
+    }) => Promise<void>,
+    toolOverrides: Record<string, unknown> = {},
+  ) {
+    const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+    const { _resetReactionsForTests } = await import('./events/registry');
+    _resetReactionsForTests();
+    registerProjectedTool({
+      pluginName: 'fixture',
+      description: 'fixture sink',
+      inputSchema: { type: 'object' },
+      capabilities: ['tools:fixture:notify'],
+      expose: { mcp: { name: 'fixture.notify' } },
+      handler: async () => ({ content: [] }),
+      ...toolOverrides,
+    } as never);
+    const errors: Array<{ plugin: string; rule: string; error: string }> = [];
+    try {
+      await run({ errors, push: (e) => errors.push(e) });
+    } finally {
+      unregisterProjectedToolsForPlugin('fixture');
+      _resetReactionsForTests();
+    }
+  }
+
+  function pluginWithReactions(reactions: unknown[], over: Record<string, unknown> = {}): LoadedPlugin {
+    return makePlugin({
+      name: 'fixture',
+      capabilities: ['tools:fixture:notify', 'events:listen:pipeline:step-done'] as never,
+      reactions: reactions as never,
+      ...over,
+    });
+  }
+
+  it('registers a rule scoped to the fired tool\'s capability with plugin provenance', async () => {
+    await withFixtureTool(async ({ errors, push }) => {
+      const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+      const { listReactionRules } = await import('./events/registry');
+      const lp = pluginWithReactions([
+        { id: 'on-step', on: 'pipeline:step-done', fire: 'fixture.notify' },
+      ]);
+      await registerPluginReactionRules([lp], push);
+      expect(errors).toEqual([]);
+      const rules = listReactionRules();
+      expect(rules).toHaveLength(1);
+      expect(rules[0]).toMatchObject({
+        id: 'plugin:fixture:on-step',
+        on: 'pipeline:step-done',
+        fire: 'fixture.notify',
+        source: 'plugin:fixture',
+        capability: 'tools:fixture:notify',
+      });
+    });
+  });
+
+  it('merges manifest (declarative) rules with code rules — code wins on id collision', async () => {
+    await withFixtureTool(async ({ errors, push }) => {
+      const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+      const { listReactionRules } = await import('./events/registry');
+      const lp = pluginWithReactions([
+        { id: 'shared', on: 'pipeline:step-done', fire: 'fixture.notify', onlyOnSuccess: false },
+      ]);
+      lp.manifestReactions = [
+        { id: 'shared', on: 'pipeline:step-done', fire: 'fixture.notify' } as never,
+      ];
+      await registerPluginReactionRules([lp], push);
+      expect(errors).toEqual([]);
+      const rules = listReactionRules();
+      expect(rules).toHaveLength(1);
+      expect(rules[0].onlyOnSuccess).toBe(false); // the code rule's field survived
+    });
+  });
+
+  it('rejects a fire target owned by another plugin', async () => {
+    await withFixtureTool(async ({ errors, push }) => {
+      const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+      registerProjectedTool({
+        pluginName: 'other',
+        description: 'foreign sink',
+        inputSchema: { type: 'object' },
+        capabilities: [],
+        expose: { mcp: { name: 'other.sink' } },
+        handler: async () => ({ content: [] }),
+      } as never);
+      try {
+        const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+        const { listReactionRules } = await import('./events/registry');
+        const lp = pluginWithReactions([
+          { id: 'steal', on: 'pipeline:step-done', fire: 'other.sink' },
+        ]);
+        await registerPluginReactionRules([lp], push);
+        expect(errors).toHaveLength(1);
+        expect(errors[0].error).toMatch(/OWN tools/);
+        expect(listReactionRules()).toHaveLength(0);
+      } finally {
+        unregisterProjectedToolsForPlugin('other');
+      }
+    });
+  });
+
+  it('rejects an unknown fire target', async () => {
+    await withFixtureTool(async ({ errors, push }) => {
+      const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+      const lp = pluginWithReactions([
+        { id: 'ghost', on: 'pipeline:step-done', fire: 'fixture.nonexistent' },
+      ]);
+      await registerPluginReactionRules([lp], push);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].error).toMatch(/not a registered tool/);
+    });
+  });
+
+  it('full re-sync drops rules from plugins no longer loaded', async () => {
+    await withFixtureTool(async ({ push }) => {
+      const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+      const { listReactionRules } = await import('./events/registry');
+      const lp = pluginWithReactions([
+        { id: 'on-step', on: 'pipeline:step-done', fire: 'fixture.notify' },
+      ]);
+      await registerPluginReactionRules([lp], push);
+      expect(listReactionRules()).toHaveLength(1);
+      await registerPluginReactionRules([], push);
+      expect(listReactionRules()).toHaveLength(0);
+    });
+  });
+
+  it('a matched plugin rule fires through dispatch under the scoped capability (e2e through the engine)', async () => {
+    await withFixtureTool(async ({ errors, push }) => {
+      const { registerPluginReactionRules } = await import('./plugin-host-runtime');
+      const lp = pluginWithReactions([
+        {
+          id: 'on-step',
+          on: 'pipeline:step-done',
+          when: { 'args.role': { equals: 'worker' } },
+          fire: 'fixture.notify',
+          args: { via: 'reaction' },
+        },
+      ]);
+      await registerPluginReactionRules([lp], push);
+      expect(errors).toEqual([]);
+      const { matchReactions } = await import('./events/registry');
+      const matched = matchReactions({
+        tool: 'pipeline:step-done',
+        args: { role: 'worker' },
+        result: { ok: true, data: { role: 'worker' } },
+        ctx: { workspaceId: 'w1' } as never,
+      });
+      expect(matched).toHaveLength(1);
+      expect(matched[0].args).toEqual({ via: 'reaction' });
+      expect(matched[0].rule.capability).toBe('tools:fixture:notify');
+      // The non-matching case.
+      const unmatched = matchReactions({
+        tool: 'pipeline:step-done',
+        args: { role: 'validator' },
+        result: { ok: true, data: { role: 'validator' } },
+        ctx: { workspaceId: 'w1' } as never,
+      });
+      expect(unmatched).toHaveLength(0);
+    });
+    void flush;
+  });
+});

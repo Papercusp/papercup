@@ -31,7 +31,6 @@ vi.mock('../../harness-core', () => ({
 vi.mock('../../feature-audit', () => ({ auditFeatureChange: vi.fn() }));
 vi.mock('../../plugin-host-runtime', () => ({
   firePluginLifecycle: vi.fn(),
-  firePluginEvent: vi.fn(),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../harness-phases', () => ({ phasePhaseLabel: vi.fn((p: string) => p ?? 'staging') }));

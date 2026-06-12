@@ -17,13 +17,22 @@ import { resolve } from 'node:path';
 import { getHostPlatform } from '@papercusp/host-platform';
 import { definePrompt } from '@papercusp/tooldef';
 import type { PromptResult } from '@papercusp/tooldef';
+import { moduleDir } from '../module-dir';
 
 function findScannerMd(): { path: string; text: string } | null {
   const platform = getHostPlatform();
+  const here = moduleDir(import.meta);
   const candidates = [
-    resolve(import.meta.dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
-    resolve(import.meta.dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+    ...(here
+      ? [
+          resolve(here, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+          resolve(here, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+        ]
+      : []),
     resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts/scanner.md'),
+    // The operator hosts run with cwd apps/operator (systemd units + Tauri
+    // sidecar) — the repo root is two levels up from there.
+    resolve(process.cwd(), '../../libs/papercusp/packages/harness/prompts/scanner.md'),
   ];
   for (const path of candidates) {
     const text = platform.readTextFileSync(path);
