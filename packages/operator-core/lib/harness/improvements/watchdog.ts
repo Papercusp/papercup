@@ -34,6 +34,12 @@ import { lastServiceHealth, lastServiceHealthAt, type ProbeResult } from '../../
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
+import {
+  processKnownOpenAging,
+  agingOptionsFromTick,
+  type KnownOpenAgingOutcome,
+  type KnownOpenAgingTickTunables,
+} from './known-open-aging';
 import type { ImprovementSeverity } from './policy';
 
 export type WatchdogSource =
@@ -48,7 +54,10 @@ export type WatchdogSource =
   // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
   | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike'
   // links 5–6 flow assertion (hive-loop-e2e-testing-2026-06-10 P-011 — ship-link.ts):
-  | 'ship-link-stuck';
+  | 'ship-link-stuck'
+  // an auto-implement dispatch whose worker died without ever calling
+  // improvements:resolve (consume-edges P-011 — orphaned-dispatch.ts):
+  | 'orphaned-dispatch';
 
 export interface WatchdogSignal {
   source: WatchdogSource;
@@ -67,6 +76,12 @@ export interface WatchdogSignal {
   kind?: ImprovementKind;
   /** Repo-relative paths involved, when the signal knows them (feeds the path gate). */
   paths?: string[];
+  /**
+   * Capture scope — 'operator' (default) or 'harness:<slug>' when the signal is
+   * about one Hive. Passed through to the capture so the D-005 triage taxonomy
+   * can key off it (consume-edges P-021).
+   */
+  scope?: string;
   /**
    * Newest evidence timestamp (ISO) backing this signal (watchdog-audit P-005 /
    * D-002). Windowed/aggregate collectors set it (red-test, tool-error,
@@ -1208,6 +1223,11 @@ export interface WatchdogDeps {
   readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
   /** Tick-retention prune (audit P-009). Best-effort, never aborts the tick; tests inject. */
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
+  /**
+   * Known-open AGING (consume-edges P-020 / EI-363): turn persistent known-open
+   * firing into escalation pressure. Defaults to `processKnownOpenAging`; tests inject.
+   */
+  processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
 }
 
 /** (P-011) Default papercusp collectors: red-test, smoke-fail, repeated-tool-error, service-down. */
@@ -1252,6 +1272,13 @@ export async function defaultPapercuspCollectors(workspaceId: string, opts: Coll
     // Links 5–6 flow assertion (hive-loop-e2e P-011): unshipped staging work
     // older than the lag bar = the ship link is silently stuck (git-only; skips
     // with a note off the release host).
+    // Consume-edges P-011: auto-implement dispatches whose worker died without
+    // resolving — drives the open ledger row terminal ('orphaned') and signals
+    // per affected item. Skips with a note until migration 238 is applied.
+    {
+      name: 'papercusp-orphaned-dispatch',
+      collect: () => import('./orphaned-dispatch').then((m) => m.collectOrphanedDispatchSignals(workspaceId)),
+    },
     {
       name: 'papercusp-ship-link',
       collect: () => import('./ship-link').then((m) => m.collectShipLinkSignals()),
@@ -1521,10 +1548,16 @@ export interface WatchdogTickResult {
   collectors: CollectorStatus[];
   /** Improvement ids the watchdog filed about its OWN broken collectors (P-002). */
   selfEscalations: string[];
+  /**
+   * Issue ids escalated by known-open AGING this tick (consume-edges P-020 /
+   * EI-363). Not persisted on the tick row — the durable trace is the item's
+   * `payload.knownOpenAging` stamp + the coord escalation record + the comment.
+   */
+  agingEscalations: string[];
 }
 
 /** Options the tick accepts beyond planning/collection (P-001 install slug). */
-export interface WatchdogTickOptions extends WatchdogPlanOptions, CollectOptions {
+export interface WatchdogTickOptions extends WatchdogPlanOptions, CollectOptions, KnownOpenAgingTickTunables {
   /** The routine's install slug, recorded on the tick (observability only). */
   installSlug?: string | null;
   /** Consecutive failing ticks before a collector self-escalates (P-002). Default 3. */
@@ -1542,6 +1575,7 @@ interface ResolvedTickDeps {
   readRecentTicks: (workspaceId: string, limit: number, filter?: { status?: 'ran' | 'skipped' }) => Promise<RecentTick[]>;
   readKeyDups: (keys: string[]) => Promise<WatchdogKeyDup[]>;
   pruneTicks: (workspaceId: string, olderThanDays: number) => Promise<void>;
+  processAging: (workspaceId: string, knownOpenKeys: string[], opts: WatchdogTickOptions) => Promise<KnownOpenAgingOutcome[]>;
   collect?: () => Promise<WatchdogSignal[]>;
   collectors?: WatchdogCollector[];
 }
@@ -1590,6 +1624,23 @@ async function runWatchdogTickBody(
     }
   }
 
+  // Known-open AGING (consume-edges P-020 / EI-363): the pre-filter above is
+  // correct dedup, but it made persistence FREE — a known-open key could fire
+  // every tick for days with zero added pressure. Continuous firing past the
+  // aging threshold bumps the open item's severity once and coord:escalate's
+  // the owner (infra-class keys on the short threshold per D-002; re-escalation
+  // capped weekly). Best-effort — an aging failure never aborts the tick; a
+  // tick with no known-open signals does zero extra reads.
+  let agingEscalations: string[] = [];
+  if (partition.knownOpen.length > 0) {
+    try {
+      const outcomes = await deps.processAging(workspaceId, partition.knownOpen.map(watchdogKeyOf), opts);
+      agingEscalations = outcomes.map((o) => o.issueId);
+    } catch (e) {
+      console.warn(`[improvement-watchdog] known-open aging failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   // P-009 deferred-escalation: feed the last RAN tick's deferred keys so a signal
   // that keeps losing a slot is boosted until it lands. Reading status='ran'
   // specifically means a 'skipped' tick (cross-host lock loser, empty deferred
@@ -1613,6 +1664,8 @@ async function runWatchdogTickBody(
         body: s.body,
         severity: s.severity,
         paths: s.paths,
+        // Explicit scope (consume-edges P-021): the D-005 triage taxonomy keys off it.
+        scope: s.scope ?? 'operator',
         foundDuring: 'improvement-watchdog',
         createdBy: 'system:improvement-watchdog',
         sourceRole: 'system',
@@ -1684,6 +1737,7 @@ async function runWatchdogTickBody(
     staleResolvedKeys: partition.staleResolved.map(watchdogKeyOf),
     collectors,
     selfEscalations,
+    agingEscalations,
   };
 
   // P-001: record the tick (best-effort — a bookkeeping failure never aborts it).
@@ -1734,6 +1788,8 @@ export async function runWatchdogTick(
   const withLock = deps?.withTickLock ?? withWatchdogTickLock;
   const readKeyDups = deps?.readKeyDups ?? readWatchdogKeyDups;
   const pruneTicks = deps?.pruneTicks ?? pruneWatchdogTicks;
+  const processAging = deps?.processAging
+    ?? ((ws: string, keys: string[], o: WatchdogTickOptions) => processKnownOpenAging(ws, keys, agingOptionsFromTick(o)));
 
   const outcome = await withLock(workspaceId, () =>
     runWatchdogTickBody(workspaceId, opts, {
@@ -1742,6 +1798,7 @@ export async function runWatchdogTick(
       readRecentTicks,
       readKeyDups,
       pruneTicks,
+      processAging,
       collect: deps?.collect,
       collectors: deps?.collectors,
     }),
@@ -1761,6 +1818,7 @@ export async function runWatchdogTick(
     staleResolvedKeys: [],
     collectors: [],
     selfEscalations: [],
+    agingEscalations: [],
   };
   try {
     await recordTick({ workspaceId, installSlug: opts.installSlug ?? null, ...skipped });
@@ -1783,6 +1841,10 @@ const PAYLOAD_TUNABLE_KEYS = [
   'expiredLeaseMinCount', 'failedSpawnWindowHours', 'failedSpawnMinCount',
   // self-escalation + retention
   'failStreakToEscalate', 'maxSelfEscalationsPerTick', 'tickRetentionDays',
+  // known-open aging (consume-edges P-020 — D-004 PROPOSED defaults, tunable here
+  // so the ratified values land via the routine payload without a deploy)
+  'agingGeneralThresholdHours', 'agingInfraThresholdHours', 'agingReescalateDays',
+  'agingContinuityGapMinutes', 'maxAgingEscalationsPerTick',
 ] as const;
 
 /**

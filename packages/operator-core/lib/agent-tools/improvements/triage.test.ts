@@ -50,7 +50,7 @@ describe('improvements:triage tool', () => {
   it('has correct tool metadata', () => {
     expect(triageTool).toBeDefined();
     expect(triageTool.name).toBe('improvements:triage');
-    expect(triageTool.description).toContain('type-route');
+    expect(triageTool.description).toContain('D-005 taxonomy');
     expect(triageTool.guidance).toBeDefined();
     expect(triageTool.guidance.when).toBeDefined();
   });

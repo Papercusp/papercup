@@ -49,7 +49,7 @@ describe('planDecaySweep — pure grading of resolved+applied items', () => {
           id: 'fixed',
           state: 'resolved',
           updatedAt: daysAgo(10),
-          ideaLifecycle: applied({ ideaType: 'process' }),
+          ideaLifecycle: applied({ ideaType: 'process-prompt' }),
         }),
         // Same signature (token-set of the title), captured AFTER the fix.
         cand({ id: 'regression', title: 'errors on long queries — memory search', createdAt: daysAgo(2) }),
@@ -78,14 +78,14 @@ describe('planDecaySweep — pure grading of resolved+applied items', () => {
     expect(byId['old-dup']).toBe('init-applied');
   });
 
-  it('process class quiet ≥14 days stays silent (no decay-verify for process — D-003)', () => {
+  it('process-prompt class quiet ≥14 days stays silent (no decay-verify for the prompt class — D-003)', () => {
     const actions = planDecaySweep(
       [
         cand({
           id: 'p',
           state: 'resolved',
           updatedAt: daysAgo(20),
-          ideaLifecycle: applied({ ideaType: 'process' }),
+          ideaLifecycle: applied({ ideaType: 'process-prompt' }),
         }),
       ],
       { nowMs: NOW },

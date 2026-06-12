@@ -429,6 +429,30 @@ export class PgLinkStore implements LinkableStore {
     }
     return out;
   }
+
+  async listInMany(dsts: ObjectRef[], opts: { rel?: string } = {}): Promise<LinkRow[]> {
+    if (dsts.length === 0) return [];
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // The reverse-direction twin of listOutMany — same kind-grouped ANY() batching.
+    const byKind = new Map<string, string[]>();
+    for (const d of dsts) {
+      const arr = byKind.get(d.kind);
+      if (arr) arr.push(d.ref);
+      else byKind.set(d.kind, [d.ref]);
+    }
+    const out: LinkRow[] = [];
+    for (const [kind, refs] of byKind) {
+      const rows = await sql<LinkRowDb[]>`
+        SELECT id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at
+          FROM harness_shared.coord_links
+         WHERE workspace_id = ${this.ws} AND dst_kind = ${kind} AND dst_ref = ANY(${refs})
+           AND ${opts.rel == null ? sql`TRUE` : sql`rel = ${opts.rel}`}
+         ORDER BY created_at ASC, id ASC`;
+      out.push(...rows.map(toLinkRow));
+    }
+    return out;
+  }
 }
 
 /** Taggable over a PgLinkStore (the production wiring). */

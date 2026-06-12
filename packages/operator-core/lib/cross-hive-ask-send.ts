@@ -24,12 +24,16 @@ import type { CrossHiveBoundaryWiring } from './cross-hive-wiring';
 import { crossHiveReplyEventKey, type CrossHiveRequestKind } from './cross-hive-transport';
 import type { CrossHiveAsksStore } from './cross-hive-asks-store-port';
 
-/** Decide whether THIS Hive may send `kind` to `peerPubkey` (outbound grant — B-05). */
+/**
+ * Decide whether THIS Hive may send `kind` to `peerPubkey` (outbound grant — B-05;
+ * P-013 adds `bodyBytes` so the grant's payload size cap is enforced pre-send).
+ */
 export type CheckOutboundGrant = (
   workspaceId: string,
   hiveSlug: string,
   peerPubkey: string,
   kind: CrossHiveRequestKind,
+  bodyBytes?: number,
 ) => Promise<{ allowed: boolean; reason: string }>;
 
 export interface SendCrossHiveAskDeps {
@@ -89,8 +93,16 @@ export async function sendCrossHiveAsk(
   const { workspaceId, hiveSlug, peerPubkey, kind, subject, body, askedBy } = input;
 
   // 1. Outbound admission: default-deny to peers this Hive hasn't been granted
-  //    outbound (B-05). An ungranted peer is rejected before any side effect.
-  const grant = await deps.checkOutboundGrant(workspaceId, hiveSlug, peerPubkey, kind);
+  //    outbound (B-05), within the grant's P-013 quotas (expiry / size / rate —
+  //    bodyBytes feeds the size cap). An over-quota or ungranted request is
+  //    rejected before any side effect (no ledger row, no send).
+  const grant = await deps.checkOutboundGrant(
+    workspaceId,
+    hiveSlug,
+    peerPubkey,
+    kind,
+    Buffer.byteLength(body, 'utf8'),
+  );
   if (!grant.allowed) {
     return { ok: false, reason: grant.reason };
   }

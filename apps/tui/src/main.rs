@@ -526,7 +526,10 @@ async fn run<B: Backend>(
         }
 
         // Persist the quiet view-state on each nav change (the saver debounces).
-        if is_key && action == Action::Render {
+        // Workbench dispatches count too: `:theme` flips state the snapshot
+        // carries (P1 / D-002), and saving nav state on the other palette
+        // commands is an idempotent no-op.
+        if is_key && matches!(action, Action::Render | Action::Workbench(_)) {
             let _ = save_tx.send(app.capture_view_state());
         }
 

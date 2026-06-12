@@ -253,9 +253,14 @@ describe('LearningTab — Benchmark view', () => {
     render(<LearningTab />);
     expect(screen.getByText('Benchmark generations')).toBeTruthy();
     expect(screen.getByText('80%')).toBeTruthy(); // latest success rate (scoreboard)
-    expect(screen.getByText('bbb2222')).toBeTruthy(); // latest generation sha (trend row)
-    expect(screen.getByText('0.700')).toBeTruthy(); // older generation composite (trend row only)
+    // shas + composites appear in the generation rows AND the BenchmarkTrend line (B-12)
+    expect(screen.getAllByText('bbb2222').length).toBeGreaterThanOrEqual(1); // latest generation sha
+    expect(screen.getAllByText('0.700').length).toBeGreaterThanOrEqual(1); // older generation composite
     expect(screen.getAllByText('0.740').length).toBeGreaterThanOrEqual(1); // latest composite (scoreboard + trend)
+    // the trend line itself: one polyline + one dot per scored generation
+    const figure = document.querySelector('figure.pc-benchtrend');
+    expect(figure).not.toBeNull();
+    expect(figure!.querySelectorAll('circle')).toHaveLength(2);
   });
 
   it('renders the owner-gated empty state when there are no generations', () => {

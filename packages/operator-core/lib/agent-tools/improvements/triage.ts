@@ -16,17 +16,17 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
-import { triageIdea, summarizeTriages, type TriageDecision } from '../../harness/improvements/triage';
+import { triageIdea, summarizeTriages, type IdeaType, type TriageDecision } from '../../harness/improvements/triage';
 import { applyTriageDecision } from '../../harness/improvements/triage-core';
 
 export default defineTool({
   name: 'improvements:triage',
   profile: 'engineer',
   description:
-    'Queen-turn triage: read the scored improvements:digest and type-route each idea (product→place, process→gate/gym). Updates idea lifecycle state with the Queen\'s decision. (P-010) Supports per-Hive scope filtering. (P-012) Routes product-ideas to target project, process/prompt-ideas to papercusp gate.',
+    'Queen-turn triage: read the scored improvements:digest and route each idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new draft). The safety verdict (auto vs human) comes from the risk-tier policy — triage adds only the routing dimension (D-003: one verdict chain). Updates idea lifecycle state with the Queen\'s decision. (P-010) Supports per-Hive scope filtering.',
   guidance: {
     when:
-      'To triage captured ideas: read the digest summary, classify each by type, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug to triage a specific Hive\'s ideas. (P-012) Type-routing: product→place as work-item in target; process/prompt→papercusp gate/gym.',
+      'To triage captured ideas: read the digest summary, classify each by the D-005 taxonomy, decide (place/gate/gym/reject), and record the Queen\'s judgment. (P-010) Pass harnessSlug to triage a specific Hive\'s ideas. Routing: product→place in the target Hive; code-bug→the policy tier decides (auto place vs human gate); infra-environment→owner-escalation (D-002, never auto); process-prompt→gate or gym A/B; needs-design→plans:new draft. mode=retriage-all re-routes the whole open backlog after a taxonomy/policy change.',
     notWhen: 'You want to READ ideas — use improvements:digest. You want to CAPTURE — use improvements:capture. You want implementation status — use improvements:resolve.',
     chaining: 'improvements:triage → work_items:create/update for placed ideas, or coord:escalate for human-gate ideas.',
   },
@@ -35,10 +35,10 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     mode: z
-      .enum(['summary', 'triage-all', 'triage-one'])
+      .enum(['summary', 'triage-all', 'triage-one', 'retriage-all'])
       .optional()
       .describe(
-        'Summary: show triage breakdown without applying decisions. Triage-all: classify all open ideas. Triage-one: triage a single idea by id.',
+        'Summary: show triage breakdown without applying decisions. Triage-all: classify all open ideas. Triage-one: triage a single idea by id. Retriage-all: re-run the deterministic route over EVERY open idea (already-triaged included — triaged→triaged is valid) and PERSIST it; the backlog migration pass for a taxonomy change (consume-edges P-021).',
       ),
     ideaId: z.string().optional().describe('For triage-one mode, the idea to triage'),
     decision: z
@@ -106,6 +106,59 @@ export default defineTool({
               mode: 'triage-all',
               decisions,
               note: 'Queen, review the decisions above. Use triage-one to record each decision you choose to apply.',
+            }),
+          },
+        ],
+      };
+    }
+
+    // Retriage-all (consume-edges P-021): one deterministic pass over EVERY open
+    // idea — already-triaged included (triaged→triaged is a valid transition) — so
+    // a taxonomy change re-routes the standing backlog instead of only new items.
+    // Decisions are persisted (by='improvement-retriage'); the Queen/owner can
+    // still re-take any of them via triage-one.
+    if (args.mode === 'retriage-all') {
+      const all = digest.humanQueue.concat(digest.autoEligible);
+      const byDecision: Record<TriageDecision, number> = { place: 0, gate: 0, gym: 0, reject: 0 };
+      const byType: Record<IdeaType, number> = {
+        'product': 0,
+        'code-bug': 0,
+        'infra-environment': 0,
+        'process-prompt': 0,
+        'needs-design': 0,
+      };
+      const failures: Array<{ id: string; error: string }> = [];
+      let applied = 0;
+      for (const item of all) {
+        const triage = triageIdea(item);
+        const res = await applyTriageDecision({
+          id: item.id,
+          decision: triage.decision,
+          reason: triage.reason,
+          by: 'improvement-retriage',
+          comment: false, // batch pass — the lifecycle carries the decision, no thread spam
+        });
+        if (res.ok) {
+          applied += 1;
+          byDecision[triage.decision] += 1;
+          if (item.ideaType) byType[item.ideaType] += 1;
+        } else {
+          failures.push({ id: item.id, error: res.error ?? 'unknown' });
+        }
+      }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              mode: 'retriage-all',
+              scanned: all.length,
+              applied,
+              byDecision,
+              byType,
+              failures: failures.slice(0, 10),
+              failureCount: failures.length,
             }),
           },
         ],

@@ -77,10 +77,13 @@ export const INFRA_SIGNAL_SOURCES: readonly string[] = ['service-down', 'fire-ci
 
 /** Paths that mean the fix lives in the ENVIRONMENT, not papercusp code. PROPOSED (P-004). */
 export const INFRA_PATH_PATTERNS: readonly string[] = [
+  'Dockerfile*',
   '**/Dockerfile*',
+  'docker-compose*',
   '**/docker-compose*',
   '**/*.service',
   '**/systemd/**',
+  '.env*',
   '**/.env*',
   'infra/**',
 ];
@@ -109,6 +112,22 @@ export const PROMPT_KEYWORDS: readonly string[] = [
   '.tools.md',
   '.persona.md',
   'prompt-assembly',
+  // '<role> prompt' bigrams — how prompt-change ideas are naturally phrased.
+  // A bare 'prompt' keyword would swallow "permission prompts" etc.
+  'validator prompt',
+  'scoper prompt',
+  'architect prompt',
+  'worker prompt',
+  'reviewer prompt',
+  'documenter prompt',
+  'curator prompt',
+  'queen prompt',
+  'judge prompt',
+  'ideator prompt',
+  'proposer prompt',
+  'operator prompt',
+  'agent prompt',
+  'role prompt',
 ];
 
 /** The signal class of a watchdogKey ('<source>:<key>') — '' when absent/malformed. */

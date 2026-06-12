@@ -58,7 +58,7 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     expect(lc.state).toBe('triaged');
     expect(lc.triageDecision).toBe('gate');
     expect(lc.triageReason).toBe('touches the release gate');
-    expect(lc.ideaType).toBe('process'); // operator scope → process class
+    expect(lc.ideaType).toBe('code-bug'); // operator scope, kind=bug, no prompt/infra markers → code-bug (D-005)
     expect(res.closed).toBe(false);
   });
 

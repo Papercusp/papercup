@@ -103,11 +103,32 @@ export default defineTool({
 
     // The backend fans out per scope (limit applies per pool), merges,
     // de-dupes by id and sorts by score; we apply the global cap here.
-    const hits = await backend.search(args.query, {
+    let hits = await backend.search(args.query, {
       scope: [user.id, ...harnessSlugs.map((slug) => `harness:${slug}`)],
       limit,
     });
+
+    // memory_feedback consumer (EI-366 / consume-edges P-031): drop hits the
+    // user deleted (tombstones — the lexical projection has no per-delete
+    // reconciliation) and demote re-extractions of deleted content. Hygiene,
+    // never load-bearing — any failure skips the pass.
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { loadFeedbackSignals, applyFeedbackRerank } = await import('../../memory/feedback-rerank');
+      hits = applyFeedbackRerank(hits, await loadFeedbackSignals(getOrgPg().sql));
+    } catch { /* best-effort */ }
+
     const results = hits.slice(0, limit).map(toWireRow);
+
+    // Recall telemetry (migration 240) — zero-hit-rate + score distribution
+    // for the Learning tab memory-health card. Fire-and-forget.
+    void (async () => {
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const { recordRecallStats } = await import('../../memory/recall-stats');
+        await recordRecallStats(getOrgPg().sql, { surface: 'search', entries: hits });
+      } catch { /* swallow — telemetry never fails a recall */ }
+    })();
 
     return {
       content: [{ type: 'text', text: JSON.stringify({ ok: true, results }) }],

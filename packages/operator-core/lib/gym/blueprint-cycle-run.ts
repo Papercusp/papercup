@@ -37,6 +37,7 @@ import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
+import { waitForOperatorReady } from './operator-ready';
 
 process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
 
@@ -57,18 +58,6 @@ const FEATURE_ID = 'G-1';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (m: string) => process.stdout.write(`[gym-bp] ${m}\n`);
 const mask = (s: string) => s.replace(/(postgres(?:ql)?:\/\/[^:@\s/]+:)[^@\s/]*(@)/g, '$1***$2');
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
-      if (r.status > 0) return true;
-    } catch { /* not up yet */ }
-    await sleep(1000);
-  }
-  return false;
-}
 
 function gitInitCommit(dir: string, msg: string): void {
   execFileSync('git', ['init', '-q'], { cwd: dir });
@@ -134,9 +123,9 @@ async function main(): Promise<void> {
       stdio: ['ignore', logFd, logFd],
       detached: true,
     });
-    if (!(await waitForHttp(`http://127.0.0.1:${PORT}/llms.txt`, 120_000))) throw new Error(`gym-operator did not come up on :${PORT} (see ${opLogPath})`);
-    log('operator up; giving DBOS a moment …');
-    await sleep(4000);
+    // EI-368: readiness (DBOS launched) + fail-fast on child death, with boot-log tail.
+    await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
+    log('operator ready (DBOS launched)');
 
     // 4. Register both harnesses (the same public route the gym runner uses).
     for (const [slug, path] of [[TARGET_SLUG, targetDir], [GYM_SLUG, gymDir]] as const) {

@@ -28,9 +28,9 @@ export default defineTool({
   name: 'hive:cross_grant',
   profile: 'engineer',
   description:
-    "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions. Grants federate to all of this Hive's Swarms.",
+    "Owner cross-Hive capability grants: grant/revoke which peer-Hive pubkeys may exchange which kinds (ask | work-request) with this Hive, or list current grants. DIRECTED — direction:'in' admits a peer's asks/work-requests INTO this Hive; direction:'out' lets THIS Hive send asks/work-requests TO a peer (required before the Queen can ask another Hive). Default-deny both directions; every grant is quota-capped (maxPerHour / maxBodyBytes, defaults 60/hr + 64KiB) and optionally expiring (expiresInHours). Grants federate to all of this Hive's Swarms.",
   guidance: {
-    when: "Setting this Hive's cross-Hive policy. direction:'in' — allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests INTO this Hive. direction:'out' — authorize THIS Hive to send asks/work-requests TO a peer (the owner-gated step before the Queen's first hive:ask to a new peer). Or list/revoke current grants.",
+    when: "Setting this Hive's cross-Hive policy. direction:'in' — allow a peer Hive (by pubkey, from discovery:hives) to send asks/work-requests INTO this Hive. direction:'out' — authorize THIS Hive to send asks/work-requests TO a peer (the owner-gated step before the Queen's first hive:ask to a new peer). Or list/revoke current grants. Pass maxPerHour / maxBodyBytes to tune a peer's quota (defaults apply otherwise) and expiresInHours for a time-boxed grant.",
     notWhen:
       'Within-Hive coordination (coord:* / topics) or placing work on a Swarm (work_items:co_locate). This is ONLY the sovereignty boundary between separate Hives.',
     chaining:
@@ -51,6 +51,23 @@ export default defineTool({
       .array(z.enum(['ask', 'work-request']))
       .optional()
       .describe('Kinds to grant (grant action; default ["ask"]). An empty array clears the grant.'),
+    maxPerHour: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('P-013 quota: max requests per rolling hour with this peer (default 60). Omitted on a re-grant = keep the existing value.'),
+    maxBodyBytes: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('P-013 quota: max request body size in bytes (default 65536). Omitted on a re-grant = keep the existing value.'),
+    expiresInHours: z
+      .number()
+      .positive()
+      .optional()
+      .describe('P-013 expiry: void the grant after this many hours. Omitted on a re-grant = keep the existing expiry; revoke + re-grant to clear one.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args) {
@@ -63,7 +80,11 @@ export default defineTool({
       return json({ ok: false, error: 'peerHivePubkey is required for grant/revoke' });
     }
     if (args.action === 'grant') {
-      await setCrossHiveGrant(ws, args.hive, args.peerHivePubkey, args.kinds ?? ['ask'], direction);
+      await setCrossHiveGrant(ws, args.hive, args.peerHivePubkey, args.kinds ?? ['ask'], direction, undefined, {
+        ...(args.maxPerHour != null ? { maxPerHour: args.maxPerHour } : {}),
+        ...(args.maxBodyBytes != null ? { maxBodyBytes: args.maxBodyBytes } : {}),
+        ...(args.expiresInHours != null ? { expiresAt: Date.now() + args.expiresInHours * 3_600_000 } : {}),
+      });
     } else {
       await revokeCrossHiveGrant(ws, args.hive, args.peerHivePubkey, direction);
     }

@@ -15,12 +15,16 @@
  *   - **suggest-promotion** (P-052 lite): a signature recurring across ≥2 DISTINCT
  *     scopes (operator + a harness, or two harnesses) files one kind=change
  *     capture proposing a shared lesson (insight/memory) — cross-Hive pain is
- *     exactly what belongs in the shared knowledge layer. Identity-file/curator
- *     promotion (the full P-052) stays future work.
+ *     exactly what belongs in the shared knowledge layer — AND stages one
+ *     learning-pack item CANDIDATE (consume-edges P-032 / brief B-11): a draft
+ *     row in lib/learning-packs/candidates the OWNER reviews in the Learnings
+ *     view; adoption materializes it into the fleet-lessons pack, never a hive
+ *     pool. Identity-file/curator promotion (the full P-052) stays future work.
  *
  * Pure planner + thin glue (the standard seam split). All actions are capped and
  * idempotent: severity bumps stop at major, gym routing skips already-routed,
- * promotion captures dedup via the normal search-first capture core.
+ * promotion captures dedup via the normal search-first capture core, candidate
+ * staging dedups structurally (UNIQUE per signature) + caps the pending queue.
  */
 
 import { updateIssue, commentIssue } from '../../issues-engineer';
@@ -30,14 +34,31 @@ import { signatureRecurrence, type SignatureRecurrence } from './digest';
 import { classifyIdeaType } from './triage';
 import { applyTriageDecision, type ApplyTriageInput, type ApplyTriageResult } from './triage-core';
 import { captureImprovement, type CaptureImprovementInput, type CaptureImprovementResult } from './capture-core';
-import type { ScoredItem } from './digest';
+import {
+  stageLearningPackCandidate,
+  type StageCandidateInput,
+  type StageCandidateResult,
+} from '../../learning-packs/candidates';
 
 export const RECURRENCE_ESCALATION_THRESHOLD = 3;
+
+/** Cap on the draft-lesson body staged with a candidate (owner edits anyway). */
+export const CANDIDATE_DRAFT_MAX_CHARS = 700;
 
 export type EscalationAction =
   | { kind: 'escalate-severity'; id: string; from: ImprovementSeverity; to: 'major'; signature: string; count: number }
   | { kind: 'route-gym'; id: string; signature: string; count: number; reason: string }
-  | { kind: 'suggest-promotion'; signature: string; scopes: string[]; count: number; sampleTitle: string };
+  | {
+      kind: 'suggest-promotion';
+      signature: string;
+      scopes: string[];
+      count: number;
+      sampleTitle: string;
+      /** Member item ids, newest-first — candidate provenance (P-032). */
+      sourceItemIds: string[];
+      /** Draft lesson body for the staged candidate (newest member's body, capped). */
+      draftText: string;
+    };
 
 export interface PlanEscalationOpts {
   threshold?: number;
@@ -71,12 +92,17 @@ export function planRecurrenceEscalation(
     // P-052 lite: cross-scope recurrence → propose a shared lesson (once per sig).
     const scopes = [...new Set(members.map((m) => m.scope))];
     if (scopes.length >= 2 && members[0]) {
+      const newestBody = members.find((m) => m.body?.trim())?.body?.trim();
+      const draft = newestBody ?? members[0].title;
       actions.push({
         kind: 'suggest-promotion',
         signature: sig.signature,
         scopes,
         count: sig.count,
         sampleTitle: members[0].title,
+        sourceItemIds: members.map((m) => m.id),
+        draftText:
+          draft.length > CANDIDATE_DRAFT_MAX_CHARS ? `${draft.slice(0, CANDIDATE_DRAFT_MAX_CHARS - 1)}…` : draft,
       });
     }
 
@@ -94,12 +120,15 @@ export function planRecurrenceEscalation(
       });
     }
 
-    const ideaType = classifyIdeaType({ scope: target.scope } as ScoredItem).type;
+    // D-005 taxonomy (consume-edges P-021): the gym-A/B-able class is
+    // 'process-prompt' — the gym can A/B a prompt variant, not a code bug
+    // (chronic code-bugs get the severity escalation above instead).
+    const ideaType = classifyIdeaType(target).type;
     const alreadyGym = target.ideaLifecycle?.triageDecision === 'gym';
     const triageable =
       !target.ideaLifecycle ||
       ['open', 'triaged', 'recurred'].includes(target.ideaLifecycle.state);
-    if (ideaType === 'process' && !alreadyGym && triageable && actions.length < maxActions) {
+    if (ideaType === 'process-prompt' && !alreadyGym && triageable && actions.length < maxActions) {
       actions.push({
         kind: 'route-gym',
         id: target.id,
@@ -116,6 +145,8 @@ export interface EscalationResult {
   escalated: number;
   gymRouted: number;
   promotionsSuggested: number;
+  /** Learning-pack candidates staged for owner review (P-032 — fleet→pack edge). */
+  candidatesStaged: number;
 }
 
 /** Injectable dependency seam (unit tests run without PG). */
@@ -125,6 +156,7 @@ export interface EscalationDeps {
   commentIssue: (id: string, body: string, authorId?: string) => Promise<unknown>;
   applyTriage: (input: ApplyTriageInput) => Promise<ApplyTriageResult>;
   capture: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
+  stageCandidate: (input: StageCandidateInput) => Promise<StageCandidateResult>;
 }
 
 const defaultDeps: EscalationDeps = {
@@ -133,6 +165,7 @@ const defaultDeps: EscalationDeps = {
   commentIssue,
   applyTriage: applyTriageDecision,
   capture: captureImprovement,
+  stageCandidate: stageLearningPackCandidate,
 };
 
 export async function runRecurrenceEscalation(
@@ -141,7 +174,7 @@ export async function runRecurrenceEscalation(
 ): Promise<EscalationResult> {
   const all = await deps.readItems();
   const actions = planRecurrenceEscalation(all, opts);
-  const result: EscalationResult = { escalated: 0, gymRouted: 0, promotionsSuggested: 0 };
+  const result: EscalationResult = { escalated: 0, gymRouted: 0, promotionsSuggested: 0, candidatesStaged: 0 };
 
   for (const a of actions) {
     if (a.kind === 'escalate-severity') {
@@ -176,6 +209,28 @@ export async function runRecurrenceEscalation(
         dedupScope: 'open',
       });
       if (r.created) result.promotionsSuggested += 1;
+
+      // P-032 (B-11): the same cross-scope recurrence also stages ONE
+      // learning-pack candidate for the owner's review queue. Best-effort —
+      // a staging failure (PG blip) must never abort the escalation pass;
+      // the planner re-emits the action next tick and the structural dedup
+      // makes the retry safe.
+      try {
+        const staged = await deps.stageCandidate({
+          signature: a.signature,
+          title: a.sampleTitle,
+          draftText: a.draftText,
+          scopes: a.scopes,
+          recurrenceCount: a.count,
+          sourceItemIds: a.sourceItemIds,
+        });
+        if (staged.staged) result.candidatesStaged += 1;
+      } catch (e) {
+        console.warn(
+          '[recurrence-escalation] candidate staging failed:',
+          e instanceof Error ? e.message : e,
+        );
+      }
     }
   }
   return result;

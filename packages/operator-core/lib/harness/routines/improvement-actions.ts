@@ -37,6 +37,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import { readImprovementItems } from '../improvements/read-items';
 import { planImplementRun } from '../improvements/plan-implement';
+import { recordDispatchFired, recordFireResult } from '../improvements/dispatch-ledger';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
 import { routeExhaustedImprovementToHuman } from '../improvements/resolve-core';
 import { runWatchdogTick, watchdogOptionsFromPayload } from '../improvements/watchdog';
@@ -202,12 +203,20 @@ registerSystemAction('improvement-triage', async (_ctx: SystemActionCtx) => {
 
 // ── Phase 3: the auto-implement loop (flag-gated OFF) ────────────────────────
 
-/** The dispatch seam — injectable for tests (mirrors blueprint-run-action's fire fn). */
+/**
+ * The dispatch seam — injectable for tests (mirrors blueprint-run-action's fire fn).
+ * May return the spawn correlation (the dispatch ledger records it as
+ * spawned_run_id); a seam that returns void just leaves the column NULL.
+ */
 export type ImplementFireFn = (input: {
   runnerHarness: string;
   workspaceId: string;
   candidate: ScoredItem;
-}) => void | Promise<void>;
+}) => void | ImplementFireResult | Promise<void | ImplementFireResult>;
+
+export interface ImplementFireResult {
+  spawnedRunId?: string | null;
+}
 
 let _fire: ImplementFireFn | null = null;
 /** Override the dispatch fn (tests). Pass null to restore the default invoke fire. */
@@ -256,12 +265,13 @@ export function implementTimeoutMs(): number {
 }
 
 const defaultFire: ImplementFireFn = async ({ runnerHarness, workspaceId, candidate }) => {
-  await fireLaunchBlueprint('implement', {
+  const target = await fireLaunchBlueprint('implement', {
     installSlug: runnerHarness,
     workspaceId,
     kickoff: implementKickoff(candidate),
     timeoutMs: implementTimeoutMs(),
   });
+  return { spawnedRunId: target.spawn?.runId ?? null };
 };
 
 /**
@@ -286,6 +296,24 @@ const defaultMarkDispatched: MarkDispatchedFn = async (candidate) => {
     lastDispatchAt: new Date().toISOString(),
   });
 };
+
+/**
+ * The dispatch-ledger seam (consume-edges P-010 / B-04) — the durable
+ * dispatch → fire-result record in harness_shared.improvement_dispatches
+ * (dispatch-ledger.ts; migration 238). Injectable so the handler test observes
+ * the writes without PG. Both fns swallow + warn on PG failure — accounting
+ * never blocks the dispatch itself.
+ */
+export interface DispatchLedgerFns {
+  recordDispatchFired: typeof recordDispatchFired;
+  recordFireResult: typeof recordFireResult;
+}
+
+let _ledger: DispatchLedgerFns | null = null;
+/** Override the dispatch ledger (tests). Pass null to restore the PG-backed default. */
+export function setImprovementDispatchLedger(fns: DispatchLedgerFns | null): void {
+  _ledger = fns;
+}
 
 /**
  * The exhausted⇒needs-human flip seam (consume-edges P-012) — injectable so the
@@ -349,10 +377,33 @@ registerSystemAction('improvement-implement', async (ctx: SystemActionCtx) => {
   console.log(`[improvement-implement] ${plan.message}`);
   const fire = _fire ?? defaultFire;
   const markDispatched = _markDispatched ?? defaultMarkDispatched;
+  const ledger = _ledger ?? { recordDispatchFired, recordFireResult };
   for (const candidate of plan.candidates) {
     // Bookkeeping FIRST (claim + attempt bump) so a fire that crashes mid-loop
     // still leaves the item in-flight rather than double-dispatchable.
     await markDispatched(candidate);
-    await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate });
+    // Ledger row BEFORE the fire (P-010): a dispatcher crash between insert and
+    // fire leaves a 'pending' row — visible, not silent. The fire's success or
+    // failure then drives it: 'ok' (worker in progress, spawned_run_id recorded)
+    // or terminal 'fire-failed'. A fire failure no longer aborts the loop — the
+    // item stays claimed (stale-claim reclaim backs it off; no hot re-dispatch)
+    // and the remaining candidates still dispatch.
+    const dispatchId = await ledger.recordDispatchFired({
+      workspaceId: ctx.workspaceId,
+      itemId: candidate.id,
+      attempt: (candidate.attempts ?? 0) + 1,
+      runnerHarness,
+    });
+    try {
+      const fired = await fire({ runnerHarness: runnerHarness as string, workspaceId: ctx.workspaceId, candidate });
+      if (dispatchId) {
+        const spawnedRunId = fired && typeof fired === 'object' ? (fired.spawnedRunId ?? null) : null;
+        await ledger.recordFireResult(dispatchId, { ok: true, spawnedRunId });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[improvement-implement] fire FAILED for ${candidate.id}: ${msg}`);
+      if (dispatchId) await ledger.recordFireResult(dispatchId, { ok: false, error: msg });
+    }
   }
 });

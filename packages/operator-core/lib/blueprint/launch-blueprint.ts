@@ -229,7 +229,8 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
       const { durableSpawnFire } = await import('../dbos/durable-spawn');
       const idempotencyKey = `launch:${installSlug}:${blueprintId}:${role}:${Date.now()}`;
       if (await durableSpawnFire({ url, body, idempotencyKey, label: `${installSlug}/${role}` })) {
-        return;
+        // The workflow id IS the durable correlation for this fire.
+        return { spawnId: null, runId: idempotencyKey, durable: true };
       }
     } catch (e) {
       console.warn(
@@ -288,6 +289,7 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
         }).catch(() => {});
       }
     });
+  return { spawnId, runId, durable: false };
 };
 
 /**
@@ -295,9 +297,13 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
  * once via the invoke route. The fire-and-forget convenience over
  * `resolveLaunchTarget` — for the simple callers (release cadence, self-improvement
  * implement, the `system:blueprint-run` blueprintId path). Returns the resolved
- * target so the caller can log/record what it fired.
+ * target so the caller can log/record what it fired, plus `spawn` — the fire
+ * path's correlation (LaunchSpawnInfo), null when the fire seam didn't surface one.
  */
-export async function fireLaunchBlueprint(blueprintId: string, input: FireLaunchInput): Promise<LaunchTarget> {
+export async function fireLaunchBlueprint(
+  blueprintId: string,
+  input: FireLaunchInput,
+): Promise<LaunchTarget & { spawn: LaunchSpawnInfo | null }> {
   // No-nest guard (local-hive D-009 / swarm D-018 enforcement A): a kind:'hive'
   // blueprint fired WITH a parent context is rejected — hives are peers, launchable
   // only as a root. A root launch (the hive's parentless system:blueprint-run) omits
@@ -310,8 +316,8 @@ export async function fireLaunchBlueprint(blueprintId: string, input: FireLaunch
   }
   const target = await resolveLaunchTarget(blueprintId, input);
   const fire = _fire ?? defaultFire;
-  await fire({ ...input, ...target });
-  return target;
+  const fired = (await fire({ ...input, ...target })) as LaunchSpawnInfo | undefined;
+  return { ...target, spawn: fired ?? null };
 }
 
 /**

@@ -52,6 +52,15 @@ export class InMemoryLinkStore implements LinkableStore {
       .sort((a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id)
       .map(cloneLink);
   }
+
+  async listInMany(dsts: ObjectRef[], opts: { rel?: string } = {}): Promise<LinkRow[]> {
+    if (dsts.length === 0) return [];
+    const want = new Set(dsts.map(objectKey));
+    return this.rows
+      .filter((r) => want.has(objectKey(r.dst)) && (opts.rel == null || r.rel === opts.rel))
+      .sort((a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id)
+      .map(cloneLink);
+  }
 }
 
 function sameRef(a: ObjectRef, b: ObjectRef): boolean {

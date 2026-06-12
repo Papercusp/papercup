@@ -24244,7 +24244,7 @@ Make scripts executable (`chmod +x`) — a non-executable file is skipped withou
 
 [Section titled “Plugin hooks fire alongside”](#plugin-hooks-fire-alongside)
 
-User hook scripts are per-harness; **plugins** hook the same lifecycle globally. At the `afterDone` step the finalizer also calls `firePluginHook()` (`libs/papercusp/packages/orchestrator/src/plugin-hooks.ts`), which discovers plugins under `<projectDir>/plugins/`, `~/.papercusp/harnesses/*/plugins/` and `~/.papercusp/global-plugins/` and invokes the named hook on each via the `papercusp-fire-hook` CLI — one child process per plugin, so a misbehaving plugin can’t crash the pipeline. Output lands in `<stateDir>/logs/plugins.log`; failures are logged and ignored. Plugin hooks fire whether or not a user hook script ran. The in-process plugin host has a separate lifecycle surface (`plugins:fire_event` tool / `firePluginLifecycle`) — see [Plugins](/internal/docs/spec/plugins).
+User hook scripts are per-harness; **plugins** hook the same lifecycle globally. At the `afterDone` step the finalizer fires the in-process typed hook `firePluginLifecycle('afterDone', …)` on every loaded plugin that declares a handler (one of the FROZEN legacy fire-points — plugin-system-hive-port D-003), then emits the `pipeline:done:<slug>:<feature>` event. Plugin hook failures are logged by the host and ignored; plugin hooks fire whether or not a user hook script ran. (The old per-plugin shell-out via the `papercusp-fire-hook` CLI was retired 2026-06-12 — plugin-system-hive-port P-006.) New pipeline integrations should not use typed hooks at all: declare **event-reaction rules** on the pipeline event vocabulary instead — see [Plugins](/internal/docs/spec/plugins).
 
 ## Managing hook scripts over the API
 
@@ -35167,7 +35167,8 @@ Reserved namespaces:
 * `http:fetch:<host>` — outbound HTTP. Wildcard `*.foo.com` matches subdomains.
 * `secrets:read:<NAME>` / `secrets:write:<NAME>` — per-secret. Wildcard `MY_*` for families.
 * `compute:exec:<binary>` — `ctx.spawn(bin, args)` gate.
-* `events:emit:<name>` / `events:listen:<name>` — must be prefixed with your plugin id (`my-tool.foo`); substrate names (`mission.*`, `task.*`, `feature.*`, `proposal.*`, `worker.*`, `validator.*`, `orchestrator.*`, `pending_event.*`) are reserved.
+* `events:emit:<name>` — plugin-emitted events; must be prefixed with your plugin id (`my-tool.foo`).
+* `events:listen:<trigger>` — one per reaction-rule trigger key (`events:listen:pipeline:done`, `events:listen:work_items:complete`, or another plugin’s `events:listen:other-tool.foo`) — the consent surface for what you watch.
 * `ui:dashboard-tab` / `ui:sidebar-item` / `ui:harness-route` — UI surface claims.
 
 **Wildcards** only work in the leaf segment, and only with non-empty heads:
@@ -35245,7 +35246,7 @@ papercusp plugin doctor
 Static-analyzes your plugin source against `capabilities[]`. Reports:
 
 * **Missing** caps — `ctx.spawn('git', ...)` in source, no `compute:exec:git` in manifest. Fatal — the loader will deny it at runtime.
-* **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` declared as a manifest hook rather than via `ctx.hookBus.on`).
+* **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` consumed by a manifest `reactions[]` rule rather than a code call site).
 * **Dynamic** lookups — `ctx.spawn(varname, ...)` etc. that can’t be statically verified. Informational only.
 
 Run both `lint` and `doctor` pre-commit. Together they catch \~80% of “works in dev, breaks on first prod load” issues without an AST walker.
@@ -35265,7 +35266,7 @@ const keys = await ctx.kv?.list({ prefix: 'sync:', limit: 50 });
 
 * **Quota** — default 10 KiB per key, 1 MiB total per plugin. Override via `kvQuota: { maxBytesPerKey, maxBytesPerPlugin }` in the manifest.
 * **Isolation** — each plugin sees only its own keys; cross-plugin reads are impossible.
-* **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional: missing in `fire-hook` CLI invocations (`ctx.kv?.` guard required).
+* **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional in principle (`ctx.kv?.` guard is still good hygiene), though since the `papercusp-fire-hook` CLI was retired (2026-06-12) every hook fire is in-process and carries it.
 * **Errors** — quota violations throw `KvQuotaError` from `@papercusp/plugin-sdk`.
 
 Use `pluginDataDir` for blobs > 10 KiB, code, or anything that doesn’t need to be scanned/aggregated.
@@ -35317,6 +35318,34 @@ To run an action without the UI:
 ```bash
 papercusp plugin invoke my-tool ping --harness <your-harness-slug>
 ```
+
+## React to host events (optional)
+
+[Section titled “React to host events (optional)”](#react-to-host-events-optional)
+
+To run one of your tools when something happens in the pipeline, declare a **reaction rule** — no hook code, no subscription plumbing:
+
+papercusp.json
+
+```jsonc
+{
+  "capabilities": [
+    "tools:my-tool:notify",
+    "events:listen:pipeline:done"        // consent for what you watch
+  ],
+  "reactions": [
+    {
+      "id": "notify-on-done",
+      "on": "pipeline:done",                       // any tool name or host emission
+      "when": { "args.harness": { "equals": "my-harness" } },  // data-match, optional
+      "fire": "my-tool.notify",                    // must be YOUR tool
+      "args": { "via": "reaction" }
+    }
+  ]
+}
+```
+
+The host fires `my-tool.notify` through normal dispatch (audited, capability-scoped to the fired tool, loop-guarded). Entry-point plugins can declare the same rules in code (`reactions` on the plugin export) with function `when`/`args`. Trigger vocabulary + the full capability contract: [Plugins §7.0](/internal/docs/spec/plugins). Inspect what registered via `plugins:runtime_status` → `reactionRules`.
 
 ## 5. Publish
 
@@ -35398,18 +35427,45 @@ The Rust-port agent flagged three things to NOT do; documenting here so they don
 
 # 7. Plugin extension points & runtime
 
-Plugins extend a Papercusp install along four axes:
+Plugins extend a Papercusp install along five axes:
 
-| Extension point     | What it adds                                                                                                                                  | Plugin SDK type     |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| **Lifecycle hooks** | Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003) | `PluginHooks`       |
-| **UI (full-route)** | A complete React panel mounted at `/harness/&lt;slug&gt;` — **see §8**                                                                        | `UiContribution`    |
-| **API routes**      | HTTP endpoints under `/api/plugins/&lt;name&gt;/*`                                                                                            | `ApiRoute[]`        |
-| **DB schema**       | Postgres migrations under the plugin’s own schema                                                                                             | `SchemaMigration[]` |
+| Extension point          | What it adds                                                                                                                                  | Plugin SDK type      |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| **Lifecycle hooks**      | Code that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003) | `PluginHooks`        |
+| **Event-reaction rules** | Declarative “when X settles, fire my tool” rules over the one reaction registry — the live pipeline extension surface (§7.0)                  | `PluginReactionRule` |
+| **UI (full-route)**      | A complete React panel mounted at `/harness/&lt;slug&gt;` — **see §8**                                                                        | `UiContribution`     |
+| **API routes**           | HTTP endpoints under `/api/plugins/&lt;name&gt;/*`                                                                                            | `ApiRoute[]`         |
+| **DB schema**            | Postgres migrations under the plugin’s own schema                                                                                             | `SchemaMigration[]`  |
 
 **Retired axes (2026-06-12, plugin-system-hive-port D-004):** **Roles** (`RoleDefinition` — the old orchestrator’s plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and “a plugin contributes a blueprint role” is a future design, not this axis) and **Routines** (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
 
 Plugins also declare **capabilities** (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
+
+### 7.0 Hooking the pipeline — event-reaction rules
+
+[Section titled “7.0 Hooking the pipeline — event-reaction rules”](#70-hooking-the-pipeline--event-reaction-rules)
+
+**The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):** the typed `PluginHooks` fire-points that survived the run-loop retirement (`beforeMissionStart`, `onFeaturePassed`, `afterDone`, …) are **FROZEN** — they keep firing in-process for back-compat but no new typed fire-point will ever be added, and their invocations bypass dispatch (no audit, no capability gate). The WordPress-style hook bus (`addAction`/`addFilter`, the old `PluginHookBus`) is **retired** (it had zero registered consumers). New pipeline fire-points are **event emissions only**, and plugins subscribe by declaring **reaction rules**.
+
+A rule is `{ id, on, when?, fire, args?, onlyOnSuccess?, capability? }` — declared in the manifest (`reactions[]`, the declarative subset: `when` is a data-match object, `args` a static object) or on the entry plugin’s `reactions` export (function forms allowed). The host registers each into the one reaction registry (`registerReactionRule`) at plugin-host boot, after the tool sweep.
+
+**The capability contract** (event-reaction-system D-012):
+
+* each trigger in `on` requires a manifest capability `events:listen:<trigger>` — the consent surface for what the plugin watches;
+* `fire` must name one of the plugin’s **own** projected tools (`<plugin>.<verb>`) — registration refuses foreign targets;
+* the reaction runs through **normal dispatch** under a principal holding only the rule’s capability (default: the fired tool’s declared capability), so auth, quota, audit and the cause-chain loop guard all ride free.
+
+**What a rule can trigger on:** any tool invocation observed at the dispatcher (e.g. `work_items:complete`, `work_items:claim`), any plugin-emitted event (the WASM event sink and `plugins:fire_event` feed the same matcher), and the **pipeline event vocabulary** the live DBOS pipeline emits (`lib/events/pipeline-events.ts`):
+
+| Reaction trigger key  | `events:await` key                                              | Fires when                                                            |
+| --------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `pipeline:launch`     | `pipeline:launch:&lt;slug&gt;`                                  | a harness run is launched                                             |
+| `pipeline:step-start` | `pipeline:step-start:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;` | a spine role dispatch is starting                                     |
+| `pipeline:step-done`  | `pipeline:step-done:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;`  | a spine role dispatch finished (payload: exitCode, durationMs, runId) |
+| `pipeline:done`       | `pipeline:done:&lt;slug&gt;:&lt;feature&gt;`                    | a feature pipeline finalized DONE                                     |
+| `pipeline:escalate`   | `pipeline:escalate:&lt;slug&gt;:&lt;feature&gt;`                | a feature pipeline finalized ESCALATE (payload: reason)               |
+
+The work-items lifecycle additionally emits awaited events (`work-item:claimed:<id>`, `work-item:blocked:<id>`, `work-item:done:<id>`, `work-item:unblocked:<id>`) — reaction rules trigger on the *tools* (`work_items:claim` / `set_state` / `complete`), while agents sleep on the exact keys via `events:await`. One emission serves reactions, awaits and UI simultaneously; registered plugin rules are inspectable via `plugins:runtime_status` (`reactionRules`) and `events:graph`.
 
 ### 7.1 Inter-plugin dependencies
 
@@ -41538,7 +41594,7 @@ The orchestrator emits `DONE` when every feature in `harness_features` has statu
 
 5. **(Optional, bash only) Archive-on-done** — if `config.archiveOnDone=true`: `tar czf .papercusp/archives/<unix-ts>-done.tar.gz -C $STATE_DIR --exclude=archives .`. TS port skips this.
 
-6. **Plugin lifecycle** — `firePluginHook({hookName: 'afterDone', ...})` shells out to `papercusp-fire-hook` CLI; iterates installed plugins, invokes any with an `afterDone` hook. Plugins can also subscribe to the `mission-done` event-bus event via the `events:listen:mission-done` capability.
+6. **Plugin lifecycle** — *(updated 2026-06-12, plugin-system-hive-port P-006)* the DBOS finalizer fires the in-process typed hook `firePluginLifecycle('afterDone', …)` and emits the `pipeline:done:<slug>:<feature>` event; the old `firePluginHook` shell-out via the `papercusp-fire-hook` CLI is retired, as is the addAction/addFilter event bus — plugins subscribe via event-reaction rules (`reactions` in the manifest/SDK).
 
    Live plugin set in `libs/papercusp/plugins/` and their event subscriptions:
 
@@ -41746,21 +41802,21 @@ The split rule: **TTL when there’s a clear lease and the writer can refresh on
 
 [Section titled “Where to look for X”](#where-to-look-for-x)
 
-| If you want to understand…      | Read this                                                                                                                                                                                                                                                        |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The orchestrator decision verbs | `libs/papercusp/packages/orchestrator/src/decision-parse.ts`                                                                                                                                                                                                     |
-| The 17-branch dispatcher        | `libs/papercusp/packages/orchestrator/src/main-loop.ts:265` (the `switch (parsed.verb)`; first case at 266)                                                                                                                                                      |
-| How an agent gets spawned       | `libs/papercusp/packages/orchestrator/src/invoke.ts` and `libs/papercusp/packages/harness/run.sh:invoke()`                                                                                                                                                       |
-| Pre-loop bootstrap              | `libs/papercusp/packages/orchestrator/src/pre-loop.ts:runPreLoop`                                                                                                                                                                                                |
-| What happens on DONE            | `libs/papercusp/packages/orchestrator/src/main-loop.ts:handleDone` (line 342)                                                                                                                                                                                    |
-| Role prompts                    | `libs/papercusp/packages/harness/prompts/<role>.md` (or `staging/<role>.md` for phase-specific overrides)                                                                                                                                                        |
-| Cross-mission identities        | `libs/papercusp/packages/harness/identity/<role>.md` (file-canonical for orchestrator subprocess; PG-mirrored to `harness_shared.identity_files` via Migration 041 for operator UI reads)                                                                        |
-| All API routes                  | `apps/operator/app/api/_hono/harness.ts` (mostly), `apps/operator/app/api/agent-mcp/*` (operator-scan, delegate-chat, agent-config), `apps/operator/app/api/agent-config/*` (settings)                                                                           |
-| Chat-stream backend             | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercup-shared/src/agent/chat-stream.ts` (shared runtime)                                                                                                                                  |
-| Schema + Zero queries           | `libs/zero-harness/src/{schema,queries}.ts`                                                                                                                                                                                                                      |
-| Per-harness PG provisioning     | `bin/scaffold-harness-schema.sh` + SQL template `libs/papercusp/libs/db/sql/002-per-harness-template.sql`                                                                                                                                                        |
-| Plugin lifecycle                | `apps/operator/lib/plugin-host-runtime.ts` (operator: `firePluginLifecycle` + `ServerActionRegistry`); `libs/papercusp/packages/orchestrator/src/plugin-hooks.ts` (orchestrator-side); `packages/plugin-loader/bin/fire-hook.ts` (the `papercusp-fire-hook` CLI) |
-| Cleanup of ephemeral state      | `apps/operator/lib/expirable-registry.ts` (TTL) + `apps/operator/lib/harness-status-sweep.ts` (PID-liveness); declarative manifest at `apps/operator/lib/expirable-registrations.ts`                                                                             |
+| If you want to understand…      | Read this                                                                                                                                                                                                                                             |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The orchestrator decision verbs | `libs/papercusp/packages/orchestrator/src/decision-parse.ts`                                                                                                                                                                                          |
+| The 17-branch dispatcher        | `libs/papercusp/packages/orchestrator/src/main-loop.ts:265` (the `switch (parsed.verb)`; first case at 266)                                                                                                                                           |
+| How an agent gets spawned       | `libs/papercusp/packages/orchestrator/src/invoke.ts` and `libs/papercusp/packages/harness/run.sh:invoke()`                                                                                                                                            |
+| Pre-loop bootstrap              | `libs/papercusp/packages/orchestrator/src/pre-loop.ts:runPreLoop`                                                                                                                                                                                     |
+| What happens on DONE            | `libs/papercusp/packages/orchestrator/src/main-loop.ts:handleDone` (line 342)                                                                                                                                                                         |
+| Role prompts                    | `libs/papercusp/packages/harness/prompts/<role>.md` (or `staging/<role>.md` for phase-specific overrides)                                                                                                                                             |
+| Cross-mission identities        | `libs/papercusp/packages/harness/identity/<role>.md` (file-canonical for orchestrator subprocess; PG-mirrored to `harness_shared.identity_files` via Migration 041 for operator UI reads)                                                             |
+| All API routes                  | `apps/operator/app/api/_hono/harness.ts` (mostly), `apps/operator/app/api/agent-mcp/*` (operator-scan, delegate-chat, agent-config), `apps/operator/app/api/agent-config/*` (settings)                                                                |
+| Chat-stream backend             | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercup-shared/src/agent/chat-stream.ts` (shared runtime)                                                                                                                       |
+| Schema + Zero queries           | `libs/zero-harness/src/{schema,queries}.ts`                                                                                                                                                                                                           |
+| Per-harness PG provisioning     | `bin/scaffold-harness-schema.sh` + SQL template `libs/papercusp/libs/db/sql/002-per-harness-template.sql`                                                                                                                                             |
+| Plugin lifecycle                | `packages/operator-core/lib/plugin-host-runtime.ts` (`firePluginLifecycle` + `ServerActionRegistry` + plugin reaction-rule registration; the orchestrator-side `plugin-hooks.ts` shell-out and the `papercusp-fire-hook` CLI were retired 2026-06-12) |
+| Cleanup of ephemeral state      | `apps/operator/lib/expirable-registry.ts` (TTL) + `apps/operator/lib/harness-status-sweep.ts` (PID-liveness); declarative manifest at `apps/operator/lib/expirable-registrations.ts`                                                                  |
 
 ***
 

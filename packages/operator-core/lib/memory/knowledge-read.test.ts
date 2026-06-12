@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -55,16 +55,54 @@ describe('readInsightsSnapshot', () => {
 });
 
 describe('readMemoryHealth', () => {
-  const sqlReturning = (rows: Array<Record<string, unknown>>): Sql =>
-    ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as unknown as Sql;
+  // readMemoryHealth issues two queries: the counts row, then the
+  // recall-stats aggregate (via readRecallHealth). Respond per call.
+  const sqlSequence = (responses: Array<Array<Record<string, unknown>> | Error>): Sql => {
+    let call = 0;
+    return ((_s: TemplateStringsArray, ..._v: unknown[]) => {
+      const r = responses[Math.min(call++, responses.length - 1)];
+      return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
+    }) as unknown as Sql;
+  };
 
-  it('maps the one-roundtrip counts row', async () => {
-    const health = await readMemoryHealth(sqlReturning([{ total_memories: 168, feedback_30d: 2 }]));
-    expect(health).toEqual({ totalMemories: 168, feedback30d: 2 });
+  it('maps counts + recall aggregate, excluding entity rows from totalMemories', async () => {
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 341, entity_rows: 1829, feedback_30d: 2 }],
+      [{ recalls: 40, zero_hits: 10, p50: 0.52, p90: 0.74, fragment_hits: 0 }],
+    ]));
+    expect(health).toEqual({
+      totalMemories: 341,
+      entityRows: 1829,
+      feedback30d: 2,
+      recalls7d: 40,
+      zeroHit7d: 10,
+      zeroHitRate7d: 0.25,
+      topScoreP50: 0.52,
+      topScoreP90: 0.74,
+      fragmentHits7d: 0,
+    });
   });
 
   it('zero-fills an empty result rather than crashing', async () => {
-    const health = await readMemoryHealth(sqlReturning([]));
-    expect(health).toEqual({ totalMemories: 0, feedback30d: 0 });
+    const health = await readMemoryHealth(sqlSequence([[], []]));
+    expect(health).toMatchObject({ totalMemories: 0, entityRows: 0, feedback30d: 0, recalls7d: 0 });
+  });
+
+  it('recall-stats failure (migration 240 absent) degrades to zeros, counts survive', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 12, entity_rows: 3, feedback_30d: 1 }],
+      new Error('relation "harness_shared.memory_recall_stats" does not exist'),
+    ]));
+    warn.mockRestore();
+    expect(health).toMatchObject({
+      totalMemories: 12,
+      entityRows: 3,
+      feedback30d: 1,
+      recalls7d: 0,
+      zeroHitRate7d: 0,
+      topScoreP50: null,
+      fragmentHits7d: 0,
+    });
   });
 });

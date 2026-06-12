@@ -1389,11 +1389,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
       const { readImprovementItems } = await import('../harness/improvements/read-items');
       const { buildDigest } = await import('../harness/improvements/digest');
+      const { applyBlockingImpactRanking } = await import('../harness/improvements/blocking-impact');
       const { computeImprovementFlow, readWatchdogFlowTicks } = await import('../harness/improvements/flow-metrics');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const nowMs = Date.now();
       const items = await readImprovementItems({ state: a.state, limit: a.limit });
-      const digest = buildDigest(items, { nowMs });
+      // Human lane ordered by blocking impact (consume-edges P-022) — the owner's
+      // queue leads with what blocks the most, not just what is oldest/most severe.
+      const digest = await applyBlockingImpactRanking(buildDigest(items, { nowMs }), { candidates: items });
       // Watchdog ticks are best-effort: a tick-read failure degrades the flow
       // strip to "watchdog: never" rather than 500ing the whole improvements view.
       let ticks: Awaited<ReturnType<typeof readWatchdogFlowTicks>> = [];
@@ -1402,12 +1405,41 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       } catch (err) {
         console.warn('[learning.improvements] watchdog tick read failed:', err instanceof Error ? err.message : err);
       }
+      // Dispatch-ledger rollup (consume-edges P-010 / B-04) — same best-effort
+      // rule: a ledger read failure degrades the strip's dispatch chip to "—".
+      let dispatchStats: import('../harness/improvements/dispatch-ledger').DispatchStats | null = null;
+      try {
+        const { readRecentDispatches, computeDispatchStats } = await import('../harness/improvements/dispatch-ledger');
+        dispatchStats = computeDispatchStats(await readRecentDispatches(activeWorkspaceId()), { nowMs });
+      } catch (err) {
+        console.warn('[learning.improvements] dispatch ledger read failed:', err instanceof Error ? err.message : err);
+      }
       const flow = computeImprovementFlow(items, ticks, {
         nowMs,
         // Reuse the digest's recurrence computation (P-041) — do not re-derive.
         recurringSignatureCount: digest.recurringSignatures.length,
+        dispatchStats,
       });
       return [{ ...digest, flow }];
+    },
+  },
+
+  // ── learning.health — the composite learning-infra status chip ──
+  //
+  // (self-improvement-consume-edges-2026-06-12 P-003 / D-002). ONE
+  // offline/degraded/ok verdict over the learning system's own infra legs —
+  // meridian reachability, the runner spawn path's watchdog key, the gym fire
+  // circuit — read from the snapshot the 2-min DBOS tick maintains (a stale or
+  // missing snapshot triggers an on-demand evaluation; same transition +
+  // notification semantics either way). Returns [] when the
+  // LEARNING_INFRA_HEALTH flag is off (the chip hides). NOT table-backed —
+  // refreshes on mount + manual invalidate + the server-side
+  // notifySyncInvalidate the tick fires on every status change.
+  'learning.health': {
+    resolve: async () => {
+      const { getLearningInfraHealth } = await import('../harness/improvements/learning-infra-health');
+      const health = await getLearningInfraHealth();
+      return health ? [health] : [];
     },
   },
 

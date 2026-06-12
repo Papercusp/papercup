@@ -572,6 +572,56 @@ describe('handleHttpToolRequestStreaming', () => {
       expect(res.status).toBe(200);
       expect(fn).toHaveBeenCalledTimes(1);
     });
+
+    it('defaults a client-less admitted superuser to the stable su-http-loopback identity (EI-334)', async () => {
+      // Pre-fix: no `?client=` / x-papercusp-client ⇒ ctx.uiClientId=null ⇒
+      // resolveAgentIdentity THROWS for superuser callers, so the advertised
+      // curl-able admin triggers (fleet:spawn et al.) failed deterministically
+      // and fired the structural tool-error watchdog key.
+      const seen: Array<string | null | undefined> = [];
+      registerProjectedTool(makeTool({
+        requirePrincipal: false,
+        fn: async (_input, ctx) => {
+          seen.push(ctx.uiClientId);
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      }));
+      const res = await handleHttpToolRequest(
+        MAKE_REQ({ searchParams: new URLSearchParams('superuser=1') }),
+        MAKE_EXTRAS({ validateSuperuser: () => true }),
+      );
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['su-http-loopback']);
+    });
+
+    it('an explicit client id still wins over the superuser default', async () => {
+      const seen: Array<string | null | undefined> = [];
+      registerProjectedTool(makeTool({
+        requirePrincipal: false,
+        fn: async (_input, ctx) => {
+          seen.push(ctx.uiClientId);
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      }));
+      await handleHttpToolRequest(
+        MAKE_REQ({ searchParams: new URLSearchParams('superuser=1&client=su-real-session') }),
+        MAKE_EXTRAS({ validateSuperuser: () => true }),
+      );
+      expect(seen).toEqual(['su-real-session']);
+    });
+
+    it('a NON-superuser call gets no identity default (unattributable stays rejected downstream)', async () => {
+      const seen: Array<string | null | undefined> = [];
+      registerProjectedTool(makeTool({
+        requirePrincipal: false,
+        fn: async (_input, ctx) => {
+          seen.push(ctx.uiClientId);
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      }));
+      await handleHttpToolRequest(MAKE_REQ(), MAKE_EXTRAS());
+      expect(seen).toEqual([undefined]);
+    });
   });
 
   it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {

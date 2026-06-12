@@ -25,6 +25,7 @@ import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
+import { waitForOperatorReady } from './operator-ready';
 import { collectTrace } from './collector';
 import { distillTrace } from './distill';
 
@@ -42,20 +43,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (m: string) => process.stdout.write(`[smoke] ${m}\n`);
 /** Mask passwords in any postgres DSN so the report never leaks a secret. */
 const mask = (s: string) => s.replace(/(postgres(?:ql)?:\/\/[^:@\s/]+:)[^@\s/]*(@)/g, '$1***$2');
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
-      if (r.status > 0) return true; // any HTTP response = server listening
-    } catch {
-      /* not up yet */
-    }
-    await sleep(1000);
-  }
-  return false;
-}
 
 async function main(): Promise<void> {
   // The gym needs a PG where it can CREATE EXTENSION (superuser) — the dev box's
@@ -125,10 +112,9 @@ async function main(): Promise<void> {
       detached: true, // own process group → teardown kills the whole npx→node tree
     });
 
-    const up = await waitForHttp(`http://127.0.0.1:${PORT}/llms.txt`, 120_000);
-    if (!up) throw new Error(`gym-operator did not come up on :${PORT} within 90s (see ${opLogPath})`);
-    log('operator responding; giving DBOS a moment to launch …');
-    await sleep(4000);
+    // EI-368: readiness (DBOS launched) + fail-fast on child death, with boot-log tail.
+    await waitForOperatorReady({ baseUrl: `http://127.0.0.1:${PORT}`, child: operator, timeoutMs: 120_000, logPath: opLogPath });
+    log('operator ready (DBOS launched)');
 
     // 4. Register the harness (scaffolds harness_<slug> + registry).
     const reg = await fetch(`http://127.0.0.1:${PORT}/api/harness/projects`, {

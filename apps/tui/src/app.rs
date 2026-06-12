@@ -4429,10 +4429,12 @@ impl App {
                     }
                     match cmd {
                         // `:theme <name>` / `:theme` / `:themes` (P1 / D-002) —
-                        // app-local: flip the active palette and re-render in
+                        // the reducer flips the active palette + re-renders in
                         // place; the run loop's view-state save persists the
-                        // selection. An unknown/absent name lists the registry
-                        // (active marked) instead of erroring silently.
+                        // selection, and on success the workbench task syncs
+                        // the zellij chrome (P2 / D-003). An unknown/absent
+                        // name lists the registry (active marked) instead of
+                        // erroring silently.
                         Some(PaletteCommand::Theme { name: Some(name) }) => {
                             if crate::theme::Theme::set_active(&name) {
                                 self.push_notif(crate::models::Notif {
@@ -4441,6 +4443,9 @@ impl App {
                                     harness: None,
                                     ts: None,
                                 });
+                                Action::Workbench(PaletteCommand::Theme {
+                                    name: Some(name),
+                                })
                             } else {
                                 self.push_notif(crate::models::Notif {
                                     level: "error".to_string(),
@@ -4451,8 +4456,8 @@ impl App {
                                     harness: None,
                                     ts: None,
                                 });
+                                Action::Render
                             }
-                            Action::Render
                         }
                         Some(PaletteCommand::Theme { name: None })
                         | Some(PaletteCommand::Themes) => {

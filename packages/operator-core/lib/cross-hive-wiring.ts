@@ -46,6 +46,7 @@ import { emitAwaitedEvent, type EmitAwaitedEventOpts } from './events/await/engi
 import {
   makeLiveBoundaryPorts,
   admitOutboundCrossHive,
+  crossHiveBodyBytes,
   type CrossHiveBoundaryPorts,
   type CrossHiveGrant,
 } from './cross-hive-boundary';
@@ -141,8 +142,73 @@ export interface WireCrossHiveBoundaryDeps {
   askLedger?: CrossHiveAskLedger;
   /** Event emit port (production: emitAwaitedEvent). Tests inject a recorder. */
   emitEvent?: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
+  /**
+   * P-013 quota ledger: rolling-window counts (rate caps both directions), the
+   * `in`-row record of every ADMITTED inbound request (which is also what makes
+   * the dossier's "both directions" ask log honest — pre-P-013 only `out` rows
+   * existed), and the settle of an `in` row when WE reply. Default: the C-1
+   * `cross_hive_asks` store. Every call is best-effort at the call site.
+   */
+  quotaLedger?: CrossHiveQuotaLedger;
   /** Optional test PG client threaded to grants + outbox. */
   sql?: Sql;
+}
+
+/** P-013: the wiring's quota/traffic ledger port (default: PgCrossHiveAsks). */
+export interface CrossHiveQuotaLedger {
+  countRecentInbound(peerPubkey: string, sinceMs: number): Promise<number>;
+  countRecentOutbound(peerPubkey: string, sinceMs: number): Promise<number>;
+  recordInboundRequest(input: {
+    peerPubkey: string;
+    kind: CrossHiveRequestKind;
+    correlationId: string;
+    subject: string;
+    body: string;
+  }): Promise<void>;
+  settleInboundRequest(input: {
+    correlationId: string;
+    peerPubkey: string;
+    replyKind: CrossHiveReplyKind;
+    replyBody: string;
+  }): Promise<void>;
+}
+
+/** Rolling rate-cap window (P-013): one hour. */
+const QUOTA_WINDOW_MS = 60 * 60 * 1000;
+
+/** The default PG-backed quota ledger over the C-1 `cross_hive_asks` store. */
+export function pgCrossHiveQuotaLedger(
+  workspaceId: string,
+  hiveSlug: string,
+  sql?: Sql,
+): CrossHiveQuotaLedger {
+  const store = new PgCrossHiveAsks(workspaceId, hiveSlug, sql);
+  return {
+    countRecentInbound: (peer, sinceMs) => store.countRecentByPeer(peer, 'in', sinceMs),
+    countRecentOutbound: (peer, sinceMs) => store.countRecentByPeer(peer, 'out', sinceMs),
+    async recordInboundRequest(input) {
+      await store.insert({
+        peerPubkey: input.peerPubkey,
+        kind: input.kind,
+        correlationId: input.correlationId,
+        subject: input.subject,
+        body: input.body,
+        direction: 'in',
+      });
+    },
+    async settleInboundRequest(input) {
+      // Guarded like pgCrossHiveAskLedger, mirrored for the IN direction: only
+      // the row created by THAT peer's request settles — recordReply matches by
+      // correlation_id alone, so pre-check direction + peer.
+      const existing = await store.getByCorrelationId(input.correlationId);
+      if (!existing || existing.direction !== 'in' || existing.peerPubkey !== input.peerPubkey) return;
+      await store.recordReply({
+        correlationId: input.correlationId,
+        replyKind: input.replyKind,
+        replyBody: input.replyBody,
+      });
+    },
+  };
 }
 
 /**
@@ -214,6 +280,17 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
 
   const askLedger = deps.askLedger ?? pgCrossHiveAskLedger(deps.workspaceId, deps.hiveSlug, deps.sql);
   const emitEvent = deps.emitEvent ?? emitAwaitedEvent;
+  const quotaLedger =
+    deps.quotaLedger ?? pgCrossHiveQuotaLedger(deps.workspaceId, deps.hiveSlug, deps.sql);
+
+  const pushAskInvalidates = (): void => {
+    void import('./sync-sse')
+      .then((m) => {
+        void m.notifySyncInvalidate('network.board').catch(() => {});
+        void m.notifySyncInvalidate('network.hive.asks').catch(() => {});
+      })
+      .catch(() => {});
+  };
 
   /**
    * The durable reply path (hive-network-surface P-002, brief B-03): persist the
@@ -272,14 +349,34 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
     }
   };
 
-  // Inbound: verify → admit (per loaded grants) → translate; replies persist to the
-  // ask ledger + fire the C-4 event (onReply is a test-only observer).
+  // Inbound: verify → admit (per loaded grants, incl. the P-013 quota context) →
+  // translate; replies persist to the ask ledger + fire the C-4 event (onReply is
+  // a test-only observer). An ADMITTED request is ledgered as a C-1 `in` row —
+  // the rate-cap counter's state AND the dossier's inbound traffic record.
   transport.subscribe(async (env) => {
     const res = await receiveCrossHive(env, {
       selfHivePubkey: deps.hivePubkey,
       loadGrants,
       requestPorts,
+      countRecentFromPeer: (peer) =>
+        quotaLedger.countRecentInbound(peer, Date.now() - QUOTA_WINDOW_MS),
     });
+    if (res && 'kind' in res && res.kind === 'request' && res.route.admitted) {
+      try {
+        await quotaLedger.recordInboundRequest({
+          peerPubkey: env.fromHivePubkey,
+          kind: env.kind as CrossHiveRequestKind,
+          correlationId: env.id,
+          subject: env.subject,
+          body: env.body,
+        });
+        pushAskInvalidates();
+      } catch (e) {
+        // Best-effort: the request already routed; a ledger miss costs quota
+        // accounting + dossier visibility, never the admitted work itself.
+        console.warn(`[cross-hive] inbound ask-ledger record failed for ${env.id}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     if (res && 'kind' in res && res.kind === 'reply') {
       await persistAndEmitReply(env, res);
       deps.onReply?.({
@@ -302,12 +399,27 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
     },
   ): Promise<CrossHiveSendOutcome> => {
     // Egress default-deny: an outbound REQUEST needs an `out` grant for the destination
-    // Hive + kind. Replies (answer/decline) ride the originating request's correlation
-    // and are never grant-gated. Denial happens BEFORE any enqueue/sign/send.
+    // Hive + kind, within the grant's P-013 quotas (expiry / size cap / rolling rate
+    // cap counted against the C-1 `out` ledger). Replies (answer/decline) ride the
+    // originating request's correlation and are never grant-gated. Denial happens
+    // BEFORE any enqueue/sign/send.
     if (isRequestKind(body.kind)) {
+      let recentToPeerCount: number | undefined;
+      try {
+        recentToPeerCount = await quotaLedger.countRecentOutbound(
+          toHivePubkey,
+          Date.now() - QUOTA_WINDOW_MS,
+        );
+      } catch {
+        recentToPeerCount = undefined; // count unavailable → rate check skipped
+      }
       const admission = admitOutboundCrossHive(
-        { toHivePubkey, kind: body.kind },
-        { grants: await loadOutboundGrants() },
+        { toHivePubkey, kind: body.kind, bodyBytes: crossHiveBodyBytes(body.body) },
+        {
+          grants: await loadOutboundGrants(),
+          nowMs: Date.now(),
+          ...(recentToPeerCount != null ? { recentToPeerCount } : {}),
+        },
       );
       if (!admission.admitted) {
         return { delivered: false, queued: false, denied: true, reason: admission.reason };
@@ -338,14 +450,30 @@ export function wireCrossHiveBoundary(deps: WireCrossHiveBoundaryDeps): CrossHiv
         body: msg.body,
       });
     },
-    reply(toHivePubkey, msg) {
-      return buildAndSend(toHivePubkey, {
+    async reply(toHivePubkey, msg) {
+      const outcome = await buildAndSend(toHivePubkey, {
         id: msg.id ?? randomUUID(),
         kind: msg.kind,
         subject: msg.subject,
         body: msg.body,
         correlationId: msg.correlationId,
       });
+      // Settle the inbound C-1 row our reply answers (P-013 ledger symmetry):
+      // best-effort, after a non-denied send (delivered or durably queued).
+      if (!outcome.denied) {
+        try {
+          await quotaLedger.settleInboundRequest({
+            correlationId: msg.correlationId,
+            peerPubkey: toHivePubkey,
+            replyKind: msg.kind,
+            replyBody: msg.body,
+          });
+          pushAskInvalidates();
+        } catch (e) {
+          console.warn(`[cross-hive] inbound ask-ledger settle failed for ${msg.correlationId}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+      return outcome;
     },
     flushOutbox() {
       return flushCrossHiveOutbox({ transport, outbox });

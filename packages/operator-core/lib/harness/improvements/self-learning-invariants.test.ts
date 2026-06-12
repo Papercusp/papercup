@@ -8,7 +8,8 @@
  *   2. The matcher dedups across REPHRASINGS (stable signature, not raw title).
  *   3. Recurrence-decay REOPENS a regressed item (resolved → re-surfaced →
  *      re-filed → recurred → re-triaged).
- *   4. Type-routing: product → place; process → gym-or-gate (never auto-place).
+ *   4. Type-routing (D-005): product → place; process-prompt → gym-or-gate
+ *      (never auto-place); code-bug follows the POLICY tier (D-003).
  *   5. The never-auto set blocks graduation of a safety-gate path — even a
  *      fully-graduated autoKinds config cannot promote the safety surfaces.
  *   6. The Change Feed regenerates from completion records — a derived view,
@@ -241,9 +242,9 @@ describe('P-060.3 — recurrence-decay reopens a regressed item (the full arc)',
   });
 });
 
-// ── 4. type-routing: product → place, process → gym-or-gate ─────────────────
+// ── 4. type-routing: product → place, process-prompt → gym-or-gate (D-005) ──
 
-describe('P-060.4 — type-route: product → place, process → gym-or-gate', () => {
+describe('P-060.4 — type-route: product → place, process-prompt → gym-or-gate', () => {
   const scored = (scope: string, title: string) =>
     ({ id: 't', kind: 'change', title, scope, score: 10 }) as Parameters<typeof triageIdea>[0];
 
@@ -253,7 +254,7 @@ describe('P-060.4 — type-route: product → place, process → gym-or-gate', (
     expect(d.target).toBe('harness:sheets');
   });
 
-  it('a process idea (the system itself) routes to gym-or-gate — NEVER auto-place', () => {
+  it('a prompt-change idea (the system itself) routes to gym-or-gate — NEVER auto-place', () => {
     for (const scope of ['operator', 'harness:papercup']) {
       const d = triageIdea(scored(scope, 'rewrite the validator prompt'));
       expect(['gate', 'gym']).toContain(d.decision);
@@ -264,9 +265,10 @@ describe('P-060.4 — type-route: product → place, process → gym-or-gate', (
     }
   });
 
-  it('an unscoped idea defaults to the cautious lane (process)', () => {
+  it('an unscoped idea defaults to the cautious lane (code-bug WITHOUT a policy auto verdict → gate)', () => {
     const c = classifyIdeaType(scored(undefined as unknown as string, 'something vague'));
-    expect(c.type).toBe('process');
+    expect(c.type).toBe('code-bug');
+    // No tier on the item (the policy never ran) → never auto-place (D-003).
     expect(triageIdea(scored(undefined as unknown as string, 'something vague')).decision).not.toBe('place');
   });
 });

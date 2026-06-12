@@ -22,6 +22,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { ImprovementCandidate } from './policy';
+import type { DispatchStats } from './dispatch-ledger';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -52,6 +53,14 @@ export interface ImprovementFlow {
     /** Improvements captured by ticks in the trailing 24h. */
     captured24h: number;
   };
+  /**
+   * Auto-implement dispatch ledger rollup (consume-edges P-010 / B-04) — is the
+   * BACK edge cycling (fired vs actually fixed, in-progress vs presumed-dead)?
+   * Computed once in dispatch-ledger.ts and passed through (not re-derived
+   * here, same rule as recurringSignatureCount); null when the ledger read
+   * failed or wasn't attempted.
+   */
+  dispatch: DispatchStats | null;
 }
 
 function parseMs(ts: string | undefined): number | null {
@@ -71,6 +80,8 @@ export interface ComputeImprovementFlowOptions {
   nowMs?: number;
   /** digest.recurringSignatures.length — the digest already computed it; pass it through. */
   recurringSignatureCount?: number;
+  /** computeDispatchStats(...) over the ledger read — passed through, not re-derived. */
+  dispatchStats?: DispatchStats | null;
 }
 
 /**
@@ -128,6 +139,7 @@ export function computeImprovementFlow(
       ticks24h,
       captured24h,
     },
+    dispatch: opts.dispatchStats ?? null,
   };
 }
 

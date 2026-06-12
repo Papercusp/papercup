@@ -13,17 +13,23 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readWatchdogStatus } from '../../harness/improvements/watchdog';
+import {
+  computeDispatchStats,
+  readRecentDispatches,
+  type DispatchStats,
+  type ImprovementDispatchRow,
+} from '../../harness/improvements/dispatch-ledger';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'improvements:watchdog-status',
   profile: 'engineer',
   description:
-    'Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary. Read-only — the diagnostic surface over harness_shared.watchdog_ticks.',
+    'Inspect the improvement watchdog: the last N tick records (collector health, signals, captured ids, known-open/stale-resolved pre-filter drops, deferred keys, self-escalations) plus a rollup summary AND the auto-implement dispatch ledger (counts by state + recent dispatches). Read-only — the diagnostic surface over harness_shared.watchdog_ticks + improvement_dispatches.',
   guidance: {
-    when: 'To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for "why did/didn\'t the watchdog file X?".',
+    when: 'To check whether the improvement watchdog is running and healthy — when it last ticked, which collectors failed, what it captured vs declined vs deferred, and which standing signals the key pre-filter is dropping. The first stop for "why did/didn\'t the watchdog file X?" — and for the auto-implement lane\'s dispatch ledger ("did the dispatch fire / is a worker on it / did it die?").',
     notWhen: 'You want the captured backlog itself — improvements:digest. You want one improvement — issues:get { id }. You want to file one — improvements:capture.',
-    chaining: 'improvements:watchdog-status → issues:get on a captured/self-escalated id → improvements:digest for the full backlog triage.',
+    chaining: 'improvements:watchdog-status → issues:get on a captured/self-escalated/dispatched id → improvements:digest for the full backlog triage.',
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -37,6 +43,17 @@ export default defineTool({
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const ticks = await readWatchdogStatus(workspaceId, args.limit ?? 10);
     const lastRan = ticks.find((t) => t.status === 'ran');
+    // The auto-implement dispatch ledger (consume-edges P-010 / B-04): counts by
+    // state + the most recent rows, so "armed but never resolved" is visible
+    // here instead of needing raw psql. Best-effort — a ledger read failure
+    // (e.g. migration 238 not yet applied) degrades to null, never 500s.
+    let dispatches: { stats: DispatchStats; recent: ImprovementDispatchRow[] } | null = null;
+    try {
+      const rows = await readRecentDispatches(workspaceId);
+      dispatches = { stats: computeDispatchStats(rows), recent: rows.slice(0, 10) };
+    } catch (e) {
+      console.warn('[improvements:watchdog-status] dispatch ledger read failed:', e instanceof Error ? e.message : e);
+    }
     const summary = {
       workspaceId,
       ticks: ticks.length,
@@ -50,6 +67,6 @@ export default defineTool({
       deferred: ticks.reduce((n, t) => n + t.deferred, 0),
       selfEscalations: ticks.flatMap((t) => t.selfEscalations),
     };
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, summary, ticks }) }] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, summary, dispatches, ticks }) }] };
   },
 });

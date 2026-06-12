@@ -112,6 +112,29 @@ const serviceHealthWorkflow = DBOS.registerWorkflow(serviceHealthTick, {
 });
 DBOS.registerScheduled(serviceHealthWorkflow, { name: 'serviceHealth', crontab: '0 * * * * *' });
 
+// Every 2min: the composite learning-infra health tick (self-improvement-
+// consume-edges-2026-06-12 P-003 / D-002) — meridian reachability + runner
+// spawn path + gym circuit → ONE offline/degraded status; owner notification
+// on the transition to offline (infra failures escalate, they don't queue).
+// Flag-gated (LEARNING_INFRA_HEALTH, default ON); transition-only, never a
+// per-tick firehose. Offset 15s so it doesn't pile on the :00 stampede.
+async function learningInfraHealthTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    if (!(await getFlag(FLAGS.LEARNING_INFRA_HEALTH))) return;
+    const { runLearningInfraHealthTick } = await import('../harness/improvements/learning-infra-health');
+    const { health, transition } = await runLearningInfraHealthTick();
+    if (transition) {
+      console.warn(`[learning-infra-health] ${transition === 'offline' ? 'OFFLINE' : 'recovered'} — ${health.reason}`);
+    }
+  }, { name: 'learning-infra-health' });
+}
+const learningInfraHealthWorkflow = DBOS.registerWorkflow(learningInfraHealthTick, {
+  name: 'learningInfraHealth', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(learningInfraHealthWorkflow, { name: 'learningInfraHealth', crontab: '15 */2 * * * *' });
+
 // Every 30s: harness_status / harness_lanes PID-liveness sweep (consolidation
 // P-001). Replaces the legacy setInterval in harness-status-sweep.ts (which
 // stands down on dbosTimersActive).

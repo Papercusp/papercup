@@ -36,6 +36,7 @@ import {
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload } from './lifecycle';
+import { closeDispatchesForItem } from './dispatch-ledger';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
@@ -75,9 +76,20 @@ export interface ResolveDeps {
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   releaseIssue: (id: string) => Promise<EngineerIssue | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  /** Dispatch-ledger back-edge (consume-edges P-010 / B-04): drive the item's
+   *  open improvement_dispatches rows terminal. Optional for older callers;
+   *  default = dispatch-ledger's closeDispatchesForItem. */
+  closeDispatches?: (itemId: string, opts: { outcome: ResolveOutcome; by?: string }) => Promise<number>;
 }
 
-const defaultDeps: ResolveDeps = { getIssue, setIssueState, commentIssue, releaseIssue, mergeIssuePayload };
+const defaultDeps: ResolveDeps = {
+  getIssue,
+  setIssueState,
+  commentIssue,
+  releaseIssue,
+  mergeIssuePayload,
+  closeDispatches: closeDispatchesForItem,
+};
 
 function attemptsOf(issue: EngineerIssue): number {
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
@@ -98,13 +110,28 @@ export async function resolveImprovement(
 ): Promise<ResolveImprovementResult> {
   const issue = await deps.getIssue(input.id);
   if (!issue) return { ok: false, id: input.id, error: `issue ${input.id} not found` };
-  if (issue.state !== 'open' && input.outcome === 'fixed') {
-    // Idempotent: resolving an already-resolved item is a no-op success (a
-    // re-fired runner must not error out on the second resolve).
-    return { ok: true, id: input.id, outcome: 'fixed', state: issue.state };
-  }
 
   const by = input.by ?? 'improvement-runner';
+
+  // Drive the item's open dispatch-ledger rows terminal (P-010 / B-04) — called
+  // on every SUCCESSFUL resolve path below. Best-effort: a ledger failure must
+  // never fail the resolve itself (the orphan collector sweeps stragglers).
+  const closeLedger = async () => {
+    try {
+      await (deps.closeDispatches ?? closeDispatchesForItem)(input.id, { outcome: input.outcome, by });
+    } catch (e) {
+      console.warn(`[improvements:resolve] dispatch-ledger close failed for ${input.id}:`, e instanceof Error ? e.message : e);
+    }
+  };
+
+  if (issue.state !== 'open' && input.outcome === 'fixed') {
+    // Idempotent: resolving an already-resolved item is a no-op success (a
+    // re-fired runner must not error out on the second resolve). Still close any
+    // open ledger rows — a manually-resolved item must not strand one for the
+    // orphan collector to false-positive on.
+    await closeLedger();
+    return { ok: true, id: input.id, outcome: 'fixed', state: issue.state };
+  }
 
   if (input.outcome === 'fixed') {
     if (!input.testsRun?.trim()) {
@@ -127,6 +154,7 @@ export async function resolveImprovement(
     await deps.mergeIssuePayload(input.id, {
       ideaLifecycle: updateIdeaLifecycle(lifecycleOf(issue) ?? initializeIdeaLifecycle(), 'applied'),
     });
+    await closeLedger();
     return { ok: true, id: input.id, outcome: 'fixed', state: updated?.state ?? 'resolved' };
   }
 
@@ -134,6 +162,7 @@ export async function resolveImprovement(
     await deps.commentIssue(input.id, `⤴ Routed to a human by the implement worker:\n${input.summary}`, by);
     await deps.mergeIssuePayload(input.id, { needsHuman: true });
     await deps.releaseIssue(input.id);
+    await closeLedger();
     return { ok: true, id: input.id, outcome: 'needs-human', state: 'open', routedToHuman: true };
   }
 
@@ -149,6 +178,7 @@ export async function resolveImprovement(
   );
   if (exhausted) await deps.mergeIssuePayload(input.id, { needsHuman: true });
   await deps.releaseIssue(input.id);
+  await closeLedger();
   return { ok: true, id: input.id, outcome: 'could-not-fix', state: 'open', routedToHuman: exhausted };
 }
 

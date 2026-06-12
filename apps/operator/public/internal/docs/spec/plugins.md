@@ -3,11 +3,12 @@ URL: /internal/docs/spec/plugins
 
 
 
-Plugins extend a Papercusp install along four axes:
+Plugins extend a Papercusp install along five axes:
 
 Extension pointWhat it addsPlugin SDK type
 
 Lifecycle hooksCode that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)`PluginHooks`
+Event-reaction rulesDeclarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)`PluginReactionRule`
 UI (full-route)A complete React panel mounted at `/harness/&lt;slug&gt;` — see §8`UiContribution`
 API routesHTTP endpoints under `/api/plugins/&lt;name&gt;/*``ApiRoute[]`
 DB schemaPostgres migrations under the plugin's own schema`SchemaMigration[]`
@@ -15,6 +16,51 @@ DB schemaPostgres migrations under the plugin's own schema`SchemaMigration[]`
 Retired axes (2026-06-12, plugin-system-hive-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). A manifest-level `roles` entry remains schema-tolerated as inert declarative data.
 
 Plugins also declare capabilities (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
+
+### 7.0 Hooking the pipeline — event-reaction rules
+
+The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):
+the typed PluginHooks fire-points that survived the run-loop retirement
+(beforeMissionStart, onFeaturePassed, afterDone, …) are
+FROZEN — they keep firing in-process for back-compat but no new typed fire-point will
+ever be added, and their invocations bypass dispatch (no audit, no capability gate). The WordPress-style
+hook bus (addAction/addFilter, the old PluginHookBus) is
+retired (it had zero registered consumers). New pipeline fire-points are
+event emissions only, and plugins subscribe by declaring reaction rules.
+
+A rule is {`{ id, on, when?, fire, args?, onlyOnSuccess?, capability? }`} —
+declared in the manifest (reactions\[], the declarative subset: when is a
+data-match object, args a static object) or on the entry plugin's
+reactions export (function forms allowed). The host registers each into the one
+reaction registry (registerReactionRule) at plugin-host boot, after the tool sweep.
+
+The capability contract (event-reaction-system D-012):
+
+each trigger in on requires a manifest capability events:listen:\<trigger> — the consent surface for what the plugin watches;
+fire must name one of the plugin's own projected tools (\<plugin>.\<verb>) — registration refuses foreign targets;
+the reaction runs through normal dispatch under a principal holding only the rule's capability (default: the fired tool's declared capability), so auth, quota, audit and the cause-chain loop guard all ride free.
+
+What a rule can trigger on: any tool invocation observed at the dispatcher
+(e.g. work\_items:complete, work\_items:claim), any plugin-emitted event
+(the WASM event sink and plugins:fire\_event feed the same matcher), and the
+pipeline event vocabulary the live DBOS pipeline emits
+(lib/events/pipeline-events.ts):
+
+Reaction trigger key`events:await` keyFires when
+
+`pipeline:launch``pipeline:launch:&lt;slug&gt;`a harness run is launched
+`pipeline:step-start``pipeline:step-start:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;`a spine role dispatch is starting
+`pipeline:step-done``pipeline:step-done:&lt;slug&gt;:&lt;feature&gt;:&lt;role&gt;`a spine role dispatch finished (payload: exitCode, durationMs, runId)
+`pipeline:done``pipeline:done:&lt;slug&gt;:&lt;feature&gt;`a feature pipeline finalized DONE
+`pipeline:escalate``pipeline:escalate:&lt;slug&gt;:&lt;feature&gt;`a feature pipeline finalized ESCALATE (payload: reason)
+
+The work-items lifecycle additionally emits awaited events
+(work-item:claimed:\<id>, work-item:blocked:\<id>,
+work-item:done:\<id>, work-item:unblocked:\<id>) — reaction rules
+trigger on the tools (work\_items:claim / set\_state /
+complete), while agents sleep on the exact keys via events:await. One
+emission serves reactions, awaits and UI simultaneously; registered plugin rules are inspectable via
+plugins:runtime\_status (reactionRules) and events:graph.
 
 ### 7.1 Inter-plugin dependencies
 

@@ -68,7 +68,8 @@ Reserved namespaces:
 * `http:fetch:<host>` — outbound HTTP. Wildcard `*.foo.com` matches subdomains.
 * `secrets:read:<NAME>` / `secrets:write:<NAME>` — per-secret. Wildcard `MY_*` for families.
 * `compute:exec:<binary>` — `ctx.spawn(bin, args)` gate.
-* `events:emit:<name>` / `events:listen:<name>` — must be prefixed with your plugin id (`my-tool.foo`); substrate names (`mission.*`, `task.*`, `feature.*`, `proposal.*`, `worker.*`, `validator.*`, `orchestrator.*`, `pending_event.*`) are reserved.
+* `events:emit:<name>` — plugin-emitted events; must be prefixed with your plugin id (`my-tool.foo`).
+* `events:listen:<trigger>` — one per reaction-rule trigger key (`events:listen:pipeline:done`, `events:listen:work_items:complete`, or another plugin's `events:listen:other-tool.foo`) — the consent surface for what you watch.
 * `ui:dashboard-tab` / `ui:sidebar-item` / `ui:harness-route` — UI surface claims.
 
 **Wildcards** only work in the leaf segment, and only with non-empty heads:
@@ -137,7 +138,7 @@ papercusp plugin doctor
 Static-analyzes your plugin source against `capabilities[]`. Reports:
 
 * **Missing** caps — `ctx.spawn('git', ...)` in source, no `compute:exec:git` in manifest. Fatal — the loader will deny it at runtime.
-* **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` declared as a manifest hook rather than via `ctx.hookBus.on`).
+* **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` consumed by a manifest `reactions[]` rule rather than a code call site).
 * **Dynamic** lookups — `ctx.spawn(varname, ...)` etc. that can't be statically verified. Informational only.
 
 Run both `lint` and `doctor` pre-commit. Together they catch \~80% of "works in dev, breaks on first prod load" issues without an AST walker.
@@ -155,7 +156,7 @@ const keys = await ctx.kv?.list({ prefix: 'sync:', limit: 50 });
 
 * **Quota** — default 10 KiB per key, 1 MiB total per plugin. Override via `kvQuota: { maxBytesPerKey, maxBytesPerPlugin }` in the manifest.
 * **Isolation** — each plugin sees only its own keys; cross-plugin reads are impossible.
-* **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional: missing in `fire-hook` CLI invocations (`ctx.kv?.` guard required).
+* **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional in principle (`ctx.kv?.` guard is still good hygiene), though since the `papercusp-fire-hook` CLI was retired (2026-06-12) every hook fire is in-process and carries it.
 * **Errors** — quota violations throw `KvQuotaError` from `@papercusp/plugin-sdk`.
 
 Use `pluginDataDir` for blobs > 10 KiB, code, or anything that doesn't need to be scanned/aggregated.
@@ -203,6 +204,37 @@ To run an action without the UI:
 ```bash
 papercusp plugin invoke my-tool ping --harness <your-harness-slug>
 ```
+
+## React to host events (optional)
+
+To run one of your tools when something happens in the pipeline, declare a
+**reaction rule** — no hook code, no subscription plumbing:
+
+```jsonc
+// papercusp.json
+{
+  "capabilities": [
+    "tools:my-tool:notify",
+    "events:listen:pipeline:done"        // consent for what you watch
+  ],
+  "reactions": [
+    {
+      "id": "notify-on-done",
+      "on": "pipeline:done",                       // any tool name or host emission
+      "when": { "args.harness": { "equals": "my-harness" } },  // data-match, optional
+      "fire": "my-tool.notify",                    // must be YOUR tool
+      "args": { "via": "reaction" }
+    }
+  ]
+}
+```
+
+The host fires `my-tool.notify` through normal dispatch (audited,
+capability-scoped to the fired tool, loop-guarded). Entry-point plugins can
+declare the same rules in code (`reactions` on the plugin export) with
+function `when`/`args`. Trigger vocabulary + the full capability contract:
+[Plugins §7.0](/internal/docs/spec/plugins). Inspect what registered via
+`plugins:runtime_status` → `reactionRules`.
 
 ## 5. Publish
 

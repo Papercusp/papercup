@@ -118,9 +118,22 @@ describe('checkDecayOutcome — the recurrence-decay outcome edge (P-030, D-003)
     expect(checkDecayOutcome(applied(), { count: 1, decayDays: 5, resolvedCount: 1 })).toBeNull();
   });
 
-  it('class asymmetry (D-003): process NEVER decay-VERIFIES (earns gym A/B) but DOES mark recurred', () => {
-    const processIdea = applied({ ideaType: 'process' });
-    // Positive verification by decay is product-only — quiet 30 days is still null.
+  it('code-bug (D-005) decay-verifies like product — both are code-change classes', () => {
+    const out = checkDecayOutcome(applied({ ideaType: 'code-bug' }), { count: 1, decayDays: 21, resolvedCount: 1 });
+    expect(out).not.toBeNull();
+    expect(out!.state).toBe('verified');
+    expect(out!.decayResult).toBe('worked');
+  });
+
+  it('infra-environment and needs-design never decay-verify (decay is meaningless for those routes)', () => {
+    for (const ideaType of ['infra-environment', 'needs-design'] as const) {
+      expect(checkDecayOutcome(applied({ ideaType }), { count: 1, decayDays: 30, resolvedCount: 1 })).toBeNull();
+    }
+  });
+
+  it('class asymmetry (D-003): process-prompt NEVER decay-VERIFIES (earns gym A/B) but DOES mark recurred', () => {
+    const processIdea = applied({ ideaType: 'process-prompt' });
+    // Positive verification by decay is for the code-change classes only — quiet 30 days is still null.
     expect(checkDecayOutcome(processIdea, { count: 1, decayDays: 30, resolvedCount: 1 })).toBeNull();
     // Regression evidence is class-independent: a re-surfaced signature marks recurred.
     const out = checkDecayOutcome(processIdea, { count: 2, decayDays: 3, resolvedCount: 1 });

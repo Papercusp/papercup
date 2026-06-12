@@ -36,8 +36,11 @@ export interface IdeaLifecyclePayload {
   triageDecision?: 'place' | 'gate' | 'gym' | 'reject';
   /** Reason for the decision */
   triageReason?: string;
-  /** Product vs process (P-020) */
-  ideaType?: 'product' | 'process';
+  /** The D-005 routing taxonomy (consume-edges P-021). Rows persisted before the
+   *  taxonomy landed may carry the legacy 'product'/'process' strings — 'product'
+   *  keeps its decay behavior; 'process' is inert (never decay-verified), same as
+   *  before. The one-time retriage rewrites OPEN items to the new vocabulary. */
+  ideaType?: IdeaType;
   /** For recurrence tracking: the original idea ID (if this is a recurrence) */
   originalIdeaId?: string;
   /** Decay result (for product class, after verification) */
@@ -65,7 +68,7 @@ export function updateIdeaLifecycle(
   context?: {
     triageDecision?: 'place' | 'gate' | 'gym' | 'reject';
     triageReason?: string;
-    ideaType?: 'product' | 'process';
+    ideaType?: IdeaType;
     decayResult?: 'worked' | 'regressed';
     decayDays?: number;
   },
@@ -116,8 +119,10 @@ export function isValidTransition(
  * Class asymmetry (self-learning D-003):
  *   - `recurred` fires for ANY class — a friction signature re-surfacing after the
  *     fix is regression evidence regardless of product/process.
- *   - `verified` fires ONLY for the product class — absence-of-recurrence is too
- *     weak a positive for process/prompt ideas (those earn the gym's A/B instead).
+ *   - `verified` fires ONLY for the code-change classes ('product' + 'code-bug',
+ *     incl. legacy 'product' rows) — absence-of-recurrence is too weak a positive
+ *     for process/prompt ideas (those earn the gym's A/B instead) and meaningless
+ *     for infra-environment / needs-design routes.
  *
  * `count` is the POST-RESOLUTION recurrence count + 1 (i.e. 1 = no recurrence
  * since the fix); `decayDays` is days since the item was resolved.
@@ -142,8 +147,11 @@ export function checkDecayOutcome(
     });
   }
 
-  // Positive decay-verification: product class only (D-003).
-  if (lifecycle.ideaType === 'product' && recurrenceData.count === 1 && recurrenceData.decayDays >= 14) {
+  // Positive decay-verification: code-change classes only (D-003 / D-005) —
+  // 'product' (external Hive code, incl. legacy rows) and 'code-bug' (papercusp
+  // code), where a friction signature going quiet after the fix means it worked.
+  const decayVerifiable = lifecycle.ideaType === 'product' || lifecycle.ideaType === 'code-bug';
+  if (decayVerifiable && recurrenceData.count === 1 && recurrenceData.decayDays >= 14) {
     return updateIdeaLifecycle(lifecycle, 'verified', {
       decayResult: 'worked',
       decayDays: recurrenceData.decayDays,

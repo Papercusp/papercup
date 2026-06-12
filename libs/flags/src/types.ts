@@ -28,6 +28,11 @@ export const FLAGS = {
   // surface + the release-gate cutover have landed (the routine spawns the
   // implementer in a dedicated runner harness and lands via the release gate).
   IMPROVEMENT_AUTO_IMPLEMENT: "papercusp-improvement-auto-implement",
+  // self-improvement-consume-edges-2026-06-12 P-003 (D-002): the composite
+  // "learning system offline/degraded" status — meridian reachability + runner
+  // spawn path + gym circuit → ONE Learning-tab chip + an owner notification on
+  // the transition to offline. Infra failures escalate; they don't queue.
+  LEARNING_INFRA_HEALTH: "papercusp-learning-infra-health",
   // holepunch-video-shared-harnesses-2026-06-05: gates the desktop P2P video
   // channel (the participant-grid VideoGrid). OFF by default — ships dark until
   // the live two-instance camera E2E (P-010) passes on the real Tauri webview.
@@ -162,6 +167,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   // OFF by default — the self-improvement loop captures + triages with this off;
   // auto-implementation only begins once an owner flips it (see the flag note above).
   [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
+  // ON by default (alpha flags-default-on policy) — pure observability: a
+  // status chip + transition-only notifications; nothing else rides it.
+  [FLAGS.LEARNING_INFRA_HEALTH]: true,
   // ON by default — owner-activated 2026-06-09 (alpha flags-default-on policy);
   // the live two-instance camera E2E (holepunch-video P-010) is still outstanding
   // but the owner chose to run it live (same call as VOICE_CHANNELS below).

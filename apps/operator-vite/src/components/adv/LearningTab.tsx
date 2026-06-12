@@ -35,13 +35,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText } from 'lucide-react';
+import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
+import { BenchmarkTrend } from './BenchmarkTrend';
+import LearningInfraHealthChip from './LearningInfraHealthChip';
 
 const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'knowledge', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
@@ -155,6 +157,7 @@ export default function LearningTab() {
             through scored experiments.
           </p>
         </div>
+        <LearningInfraHealthChip />
       </header>
 
       <div className="pc-learning__controls">
@@ -502,7 +505,35 @@ function FlowStrip({ flow }: { flow: ImprovementFlow }) {
         watchdog <strong>{wd.label}</strong>
         <em>{flow.watchdog.ticks24h} ticks / {flow.watchdog.captured24h} captured · 24h</em>
       </span>
+      {flow.dispatch ? <DispatchChip d={flow.dispatch} /> : null}
     </div>
+  );
+}
+
+/**
+ * Auto-implement dispatch ledger chip (consume-edges P-010 / B-04) — the BACK
+ * edge's vitals: fired vs actually fixed, workers in progress vs presumed dead.
+ * Red when anything is dying silently (overdue / fire-failed / orphaned), green
+ * when the lane is genuinely fixing things.
+ */
+function DispatchChip({ d }: { d: NonNullable<ImprovementFlow['dispatch']> }) {
+  const dead = d.overdue + d.fireFailed + d.orphaned;
+  const tone: 'good' | 'warn' | 'bad' = dead > 0 ? 'bad' : d.fixed7d > 0 ? 'good' : 'warn';
+  return (
+    <span
+      className={`pc-learning__flowchip pc-learning__flowchip--wd-${tone}`}
+      title={
+        `Auto-implement dispatch ledger: ${d.fired7d} dispatch(es) fired in 7d, ${d.resolved.fixed} fixed / ` +
+        `${d.resolved.couldNotFix} could-not-fix / ${d.resolved.needsHuman} needs-human all-time; ` +
+        `${d.inProgress + d.firing} in progress, ${d.overdue} overdue (worker presumed dead), ` +
+        `${d.fireFailed} fire-failed, ${d.orphaned} orphaned. A dispatch that never reaches a terminal state is the EI-365 black hole this ledger exists to expose.`
+      }
+    >
+      <Send size={11} aria-hidden />
+      dispatch <strong>{d.fired7d}</strong> fired / <strong>{d.fixed7d}</strong> fixed
+      <em>7d</em>
+      {dead > 0 ? <strong>{dead} dead</strong> : <em>{d.inProgress + d.firing} live</em>}
+    </span>
   );
 }
 
@@ -704,6 +735,8 @@ function ApiaryView() {
         <Stat label="tokens / task" value={latest ? tokensLabel(latest.meanTokens) : '—'} hint="Mean tokens per solved task. Lower is cheaper." />
         <Stat label="escalations" value={latest ? pctLabel(latest.escalationRate) : '—'} tone="human" hint="Share of tasks that needed a human. Lower is better." />
       </div>
+
+      <BenchmarkTrend instances={instances} />
 
       <div className="pc-learning__sectionhead">
         <h2>Benchmark generations</h2>

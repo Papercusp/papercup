@@ -28,6 +28,7 @@ import {
   type EngineerIssue,
 } from '../../issues-engineer';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
+import type { ScoredItem } from './digest';
 import type { TriageDecision } from './triage';
 import { classifyIdeaType } from './triage';
 import { issueToCandidate } from './read-items';

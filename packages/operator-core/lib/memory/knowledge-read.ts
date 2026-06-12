@@ -22,6 +22,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Sql } from 'postgres';
 import { readInsightsDir, type InsightEntry } from './insights-index';
+import { readRecallHealth, type RecallHealth } from './recall-stats';
 import { DOCS_CONTENT_ROOT } from '../agent-tools/docs/_repo-paths';
 
 /** Canonical agent-insights MDX directory (the same tree docs:* serves). */
@@ -62,24 +63,53 @@ export async function readInsightsSnapshot(
   return { count: entries.length, recent: withMtime.slice(0, Math.max(0, recentLimit)) };
 }
 
-export interface MemoryHealth {
-  /** Rows in harness_shared.memory_canonical (the canonical mem0 store). */
+export interface MemoryHealth extends RecallHealth {
+  /**
+   * REAL memories in harness_shared.memory_canonical. Excludes mem0's
+   * entity-store rows (payload ? 'entityType'), which share the physical
+   * table — pre-EI-366 this counted them too and read 2,170 when the
+   * store held 341 actual facts.
+   */
   totalMemories: number;
+  /** Segregated mem0 entity-linking rows sharing the canonical table. */
+  entityRows: number;
   /** memory_feedback events in the trailing 30 days — the loop's pulse. */
   feedback30d: number;
 }
 
-/** One-roundtrip health read over the canonical memory tables. */
+/**
+ * Health read over the canonical memory tables + recall telemetry.
+ * The recall aggregate degrades to zeros independently (e.g. migration
+ * 240 not applied yet) so the store counts never vanish with it.
+ */
 export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
   const rows = (await sql`
     SELECT
-      (SELECT count(*)::int FROM harness_shared.memory_canonical) AS total_memories,
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE payload ? 'entityType')                             AS entity_rows,
       (SELECT count(*)::int FROM harness_shared.memory_feedback
         WHERE created_at >= now() - interval '30 days')           AS feedback_30d
   `) as Array<Record<string, unknown>>;
   const r = rows[0] ?? {};
+  let recall: RecallHealth = {
+    recalls7d: 0,
+    zeroHit7d: 0,
+    zeroHitRate7d: 0,
+    topScoreP50: null,
+    topScoreP90: null,
+    fragmentHits7d: 0,
+  };
+  try {
+    recall = await readRecallHealth(sql);
+  } catch (err) {
+    console.warn('[memory-health] recall-stats read failed (migration 240 applied?):', (err as Error).message);
+  }
   return {
+    ...recall,
     totalMemories: Number(r.total_memories ?? 0),
+    entityRows: Number(r.entity_rows ?? 0),
     feedback30d: Number(r.feedback_30d ?? 0),
   };
 }

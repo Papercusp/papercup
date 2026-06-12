@@ -15,9 +15,16 @@ import { pgCrossHiveAsksStore, type CrossHiveAsksStore } from '../../cross-hive-
 import { assertOutboundGrant } from '../../cross-hive-grants';
 import type { CheckOutboundGrant, SendCrossHiveAskDeps } from '../../cross-hive-ask-send';
 
-/** Adapt B-05's `assertOutboundGrant` ({admitted, reason}) to the port's {allowed, reason}. */
-const checkOutboundGrant: CheckOutboundGrant = async (ws, hiveSlug, peerPubkey, kind) => {
-  const verdict = await assertOutboundGrant(ws, hiveSlug, peerPubkey, kind);
+/**
+ * Adapt B-05's `assertOutboundGrant` ({admitted, reason}) to the port's
+ * {allowed, reason}. P-013: `bodyBytes` rides through so the grant's size cap
+ * (and, inside assertOutboundGrant, the expiry + C-1-counted rate cap) gates
+ * the send before any ledger row exists.
+ */
+const checkOutboundGrant: CheckOutboundGrant = async (ws, hiveSlug, peerPubkey, kind, bodyBytes) => {
+  const verdict = await assertOutboundGrant(ws, hiveSlug, peerPubkey, kind, undefined, {
+    ...(bodyBytes != null ? { bodyBytes } : {}),
+  });
   return { allowed: verdict.admitted, reason: verdict.reason };
 };
 

@@ -1,0 +1,105 @@
+/**
+ * memory_recall_stats writer + health aggregate (EI-366 / consume-edges
+ * P-031, migration 240).
+ *
+ * Records what each memory recall actually returned, so the Learning tab
+ * can tell "no relevant memory" (healthy zero) from "index degraded"
+ * (zero-hit-rate spiking, top-score distribution collapsing, fragments
+ * leaking back in). Two surfaces write here: the memory:search tool (pull)
+ * and the pre-turn injection helper (push).
+ *
+ * Writes are FIRE-AND-FORGET — recall telemetry must never slow or fail a
+ * turn. Callers invoke `recordRecallStats` without awaiting; all failures
+ * are swallowed (one warn per process).
+ */
+import type { Sql } from 'postgres';
+import type { MemoryEntry } from './backend';
+
+export type RecallSurface = 'search' | 'injection';
+
+export interface RecallStatsInput {
+  surface: RecallSurface;
+  /** The recall's result set (post score-floor, pre per-call caps). */
+  entries: readonly MemoryEntry[];
+}
+
+/** Results whose metadata carries entityType — entity-store leakage (the
+ *  EI-366 junk class). Always 0 after the canonical-store segregation fix;
+ *  non-zero is the regression canary the health card surfaces. */
+export function countFragmentHits(entries: readonly MemoryEntry[]): number {
+  let n = 0;
+  for (const e of entries) {
+    if (typeof e.metadata?.entityType === 'string') n += 1;
+  }
+  return n;
+}
+
+let _warned = false;
+
+/** Insert one stats row. Never throws; never load-bearing. Call WITHOUT awaiting. */
+export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Promise<void> {
+  try {
+    const scores = input.entries
+      .map((e) => e.score)
+      .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
+    const topScore = scores.length > 0 ? Math.max(...scores) : null;
+    await sql`
+      INSERT INTO harness_shared.memory_recall_stats
+        (surface, hit_count, top_score, scores, fragment_count)
+      VALUES (
+        ${input.surface},
+        ${input.entries.length},
+        ${topScore},
+        ${JSON.stringify(scores)}::jsonb,
+        ${countFragmentHits(input.entries)}
+      )
+    `;
+  } catch (err) {
+    if (!_warned) {
+      _warned = true;
+      console.warn('[memory-recall-stats] capture failed (suppressing further warns):', (err as Error).message);
+    }
+  }
+}
+
+export interface RecallHealth {
+  /** Recalls recorded in the trailing 7 days (both surfaces). */
+  recalls7d: number;
+  /** Of those, how many returned nothing. */
+  zeroHit7d: number;
+  /** zeroHit7d / recalls7d (0 when no recalls recorded). */
+  zeroHitRate7d: number;
+  /** Median top_score across non-empty recalls, 7d (null when none). */
+  topScoreP50: number | null;
+  /** 90th percentile top_score across non-empty recalls, 7d. */
+  topScoreP90: number | null;
+  /** Entity-fragment results that leaked into recalls, 7d — regression canary. */
+  fragmentHits7d: number;
+}
+
+/** One-roundtrip trailing-window aggregate for the memory-health card. */
+export async function readRecallHealth(sql: Sql): Promise<RecallHealth> {
+  const rows = (await sql`
+    SELECT
+      count(*)::int                                   AS recalls,
+      count(*) FILTER (WHERE hit_count = 0)::int      AS zero_hits,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE top_score IS NOT NULL)          AS p50,
+      percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE top_score IS NOT NULL)          AS p90,
+      coalesce(sum(fragment_count), 0)::int           AS fragment_hits
+    FROM harness_shared.memory_recall_stats
+    WHERE created_at >= now() - interval '7 days'
+  `) as Array<Record<string, unknown>>;
+  const r = rows[0] ?? {};
+  const recalls = Number(r.recalls ?? 0);
+  const zeroHit = Number(r.zero_hits ?? 0);
+  return {
+    recalls7d: recalls,
+    zeroHit7d: zeroHit,
+    zeroHitRate7d: recalls > 0 ? zeroHit / recalls : 0,
+    topScoreP50: r.p50 == null ? null : Number(r.p50),
+    topScoreP90: r.p90 == null ? null : Number(r.p90),
+    fragmentHits7d: Number(r.fragment_hits ?? 0),
+  };
+}

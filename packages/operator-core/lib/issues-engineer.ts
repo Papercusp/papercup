@@ -451,6 +451,40 @@ export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Prom
   await links.unlink(issueRef(id), dst, rel);
 }
 
+/** Link-degree of one issue, as the blocking-impact ranking reads it
+ *  (self-improvement-consume-edges-2026-06-12 P-022). */
+export interface IssueLinkCounts {
+  /** Outbound `blocks` edges — downstream things THIS issue blocks. */
+  blocksOut: number;
+  /** Inbound edges from other objects referencing this issue. Excludes `tagged`
+   *  (topics are not references) and inbound `blocks` (an upstream dependency —
+   *  something blocking THIS issue is not downstream impact). */
+  inboundRefs: number;
+}
+
+/** Bulk link-degree read over many issues in two batched queries (no N+1).
+ *  Every requested id gets an entry (zero counts when unlinked). */
+export async function issueLinkCounts(ids: readonly string[]): Promise<Map<string, IssueLinkCounts>> {
+  const out = new Map<string, IssueLinkCounts>();
+  if (ids.length === 0) return out;
+  for (const id of ids) out.set(id, { blocksOut: 0, inboundRefs: 0 });
+  const refs = ids.map(issueRef);
+  const [outRows, inRows] = await Promise.all([
+    links.listOutMany(refs, { rel: 'blocks' }),
+    links.listInMany(refs),
+  ]);
+  for (const r of outRows) {
+    const c = out.get(r.src.ref);
+    if (c) c.blocksOut += 1;
+  }
+  for (const r of inRows) {
+    if (r.rel === 'tagged' || r.rel === 'blocks') continue;
+    const c = out.get(r.dst.ref);
+    if (c) c.inboundRefs += 1;
+  }
+  return out;
+}
+
 export interface PromoteResult {
   issue: EngineerIssue;
   feature: { id: string; title: string };

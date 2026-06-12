@@ -70,6 +70,11 @@
  *     IQ-battery run per new code generation (skip at an already-measured
  *     SHA). REFUSES without an owner-set payload budget (gym precedent).
  *     Seeded INACTIVE (lib/iq-battery/seed-benchmark-routine.ts).
+ *   - `system:improvement-human-digest` — self-improvement-consume-edges
+ *     P-022 (B-08). Weekly owner digest: the top-5 human-lane items ranked by
+ *     blocking impact (blocks edges, references, re-captures, watchdog
+ *     persistence) via the inbox + attention rails. Read-only; seeded ACTIVE
+ *     (seed-human-digest-routine.ts).
  */
 import '../git-sync/git-sync-action';
 import '../../blueprint/blueprint-run-action';
@@ -86,3 +91,5 @@ import './token-report-action';
 import './hive-canary-action';
 import './coord-invariant-actions';
 import './cross-hive-drain-action';
+import './benchmark-actions';
+import './human-queue-digest-action';

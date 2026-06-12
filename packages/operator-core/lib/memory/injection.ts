@@ -259,6 +259,26 @@ export async function buildMemoryContextBlock(
     return null;
   }
 
+  // Recall telemetry (EI-366 / migration 240): record what the index returned
+  // for this turn — zero hits INCLUDED (the zero-hit-rate is the signal) —
+  // before any policy filtering below. Fire-and-forget.
+  {
+    const pulled = [
+      ...userResults,
+      ...harnessHits.map(({ hit }) => hit),
+      ...hiveHits.map(({ hit }) => hit),
+    ];
+    void (async () => {
+      try {
+        const { sql } = getOrgPg();
+        const { recordRecallStats } = await import('./recall-stats');
+        await recordRecallStats(sql, { surface: 'injection', entries: pulled });
+      } catch {
+        /* swallow — telemetry never blocks a turn */
+      }
+    })();
+  }
+
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
   // learning-packs P-009: a DISABLED pack's rows stay stored but stop being
@@ -281,6 +301,26 @@ export async function buildMemoryContextBlock(
     } catch {
       /* best-effort — never load-bearing */
     }
+  }
+  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+
+  // memory_feedback consumer (EI-366 / consume-edges P-031): the push path
+  // DROPS anything the user deleted — tombstoned ids (the lexical projection
+  // has no per-delete reconciliation, so deleted facts can ghost back through
+  // that leg) and re-extractions of deleted content. Injecting content the
+  // user deleted is worse than a missed recall; memory:search still finds it
+  // on demand (demoted, not hidden). Best-effort like the dedup below.
+  try {
+    const { sql } = getOrgPg();
+    const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
+    const signals = await loadFeedbackSignals(sql);
+    if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
+      userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
+      harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+      hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+    }
+  } catch {
+    /* hygiene, never load-bearing */
   }
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 

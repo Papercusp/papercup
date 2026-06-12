@@ -281,28 +281,28 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
     // UI, P-008/P-009).
     let wake_pane_block =
         "\n            pane name=\"⏸ wakes\" {\n                command \"pui\"\n                args \"wake-pane\"\n            }";
-    // The dock body between the tab-bar and status-bar. Two shapes:
+    // The dock body between the tab-bar and status-bar (hive-agent-tabs flag
+    // RETIRED 2026-06-12 — the flag-on shape is the only shape; the classic
+    // pui-chat-pane single stack is gone with it):
     //
-    // Flag ON (owner directive 2026-06-11): EVERY agent chat in the dock is a
-    // LIVE TUI — never a pui-rendered substitute. The QUEEN is the real
-    // interactive `psu --brain` session with her staged-wake board
-    // (`pui wake-pane --queen`) in a pane directly beside it (zellij owns the
-    // split). A one-pane pui-internal [chat | wakes] split (`pui agent-pane`)
-    // was tried 2026-06-11 and REVERTED: pui cannot embed the live session —
-    // it could only render a DIFFERENT conversation (the sentinel's), which
-    // both showed the wrong agent and dropped the interactive queen. Below
-    // her: the agent STACK — the sentinel (ElevenLabs voice) psu chat, the
-    // dock-driver (which reactively appends one live `claude --resume` TUI per
-    // bee), and the fleet-wide wake board (per-bee queues grouped there).
+    // EVERY agent chat in the dock is a LIVE TUI (owner directive 2026-06-11)
+    // — never a pui-rendered substitute. The QUEEN is the real interactive
+    // `psu --brain` session with her staged-wake board (`pui wake-pane
+    // --queen`) in a pane directly beside it (zellij owns the split). A
+    // one-pane pui-internal [chat | wakes] split (`pui agent-pane`) was tried
+    // 2026-06-11 and REVERTED: pui cannot embed the live session — it could
+    // only render a DIFFERENT conversation (the sentinel's), which both showed
+    // the wrong agent and dropped the interactive queen. Below her: the agent
+    // STACK — the sentinel (ElevenLabs voice) psu chat, the dock-driver (which
+    // reactively appends one live `claude --resume` TUI per bee), and the
+    // fleet-wide wake board (per-bee queues grouped there).
     //
-    // Flag OFF: the classic single stack — the pui chat-pane (operator chat +
-    // reactive driver) over the brain. Unchanged.
     // The queen's side column (dock 4-pane split, owner ask 2026-06-11): the
     // 38% column right of her chat is FOUR stacked data boards — the prompt
     // the agent runs on (brief led first), the staged-wake queue, her coord mail, and her
     // work items + plan linkage. Each is its own `pui <x>-pane --queen`
     // process (one pinned Tab each); zellij owns the vertical stack.
-    let dock_body = if hive_agent_tabs {
+    let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
         pane name="♛ queen" split_direction="vertical" size="46%" {{
@@ -335,27 +335,16 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
         }}
     }}"#
         )
-    } else {
-        format!(
-            r#"    pane name="chat" stacked=true {{
-        pane name="{operator_name}" focus=true expanded=true {{
-            {operator_cmd_block}
-        }}
-        pane name="{brain_name}" {{
-            command "{brain_cmd}"{args_line}
-        }}
-    }}"#
-        )
     };
     format!(
         r#"// Papercusp chat dock (owner directive 2026-06-11): every agent chat is a
-// LIVE TUI. Flag-on, the QUEEN is the real interactive `psu --brain` session
-// with her staged-wake board in a pane directly beside it; below her, the agent
+// LIVE TUI. The QUEEN is the real interactive `psu --brain` session with her
+// staged-wake board in a pane directly beside it; below her, the agent
 // STACK — the operator (ElevenLabs voice) sentinel chat, the dock-driver that
 // reactively appends one live `claude --resume` TUI per bee, and the fleet-wide
 // wake board. Alt+↑/↓ (or clicking a title bar) scrolls the stack through ALL
-// active agents. Flag-off is the classic single stack (pui chat-pane over the
-// brain). Pane display names route through the lexicon.
+// active agents. Pane display names route through the lexicon. (The
+// hive-agent-tabs flag is RETIRED — this shape is the only shape.)
 //
 // Dock tabs (hive-network-surface-2026-06-11 P-007 / B-10): the dock is a
 // TWO-TAB zellij session. Tab 1 "this hive" holds the whole dock above VERBATIM
@@ -364,8 +353,7 @@ pub fn chat_dock_kdl(brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> St
 // + status-bar move into a `default_tab_template` so BOTH tabs carry them;
 // "this hive" is the first tab + focus=true so the dock opens exactly where it
 // always did. Selecting a row in the network board opens an on-demand per-hive
-// drill-in tab (see `hive_tab_kdl`). Both flag states get the tabs; the
-// workbench swap presets are untouched.
+// drill-in tab (see `hive_tab_kdl`). The workbench swap presets are untouched.
 //
 // Tab → fullscreen the focused pane (owner ask 2026-06-11): focus an agent
 // chat and press Tab to zoom it full (hiding its wakes pane + the rest); Tab
@@ -623,22 +611,20 @@ fn materialize_at(base: &Path) -> std::io::Result<PathBuf> {
 pub fn materialize_chat_dock(
     brain_argv: &[String],
     lex: &crate::lexicon::Lexicon,
-    hive_agent_tabs: bool,
 ) -> std::io::Result<PathBuf> {
     let base = base_dir()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home dir"))?;
-    materialize_chat_dock_at(&base, brain_argv, lex, hive_agent_tabs)
+    materialize_chat_dock_at(&base, brain_argv, lex)
 }
 
 fn materialize_chat_dock_at(
     base: &Path,
     brain_argv: &[String],
     lex: &crate::lexicon::Lexicon,
-    hive_agent_tabs: bool,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(base)?;
     let path = base.join("pui-chat-dock.kdl");
-    std::fs::write(&path, chat_dock_kdl(brain_argv, lex, hive_agent_tabs))?;
+    std::fs::write(&path, chat_dock_kdl(brain_argv, lex))?;
     Ok(path)
 }
 

@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readImprovementItems } from '../../harness/improvements/read-items';
 import { buildDigest } from '../../harness/improvements/digest';
+import { applyBlockingImpactRanking } from '../../harness/improvements/blocking-impact';
 
 export default defineTool({
   name: 'improvements:digest',
@@ -38,7 +39,9 @@ export default defineTool({
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const items = await readImprovementItems({ state: args.state, limit: args.limit, harnessSlug: args.harnessSlug });
-    const digest = buildDigest(items, { nowMs: Date.now() });
+    // Human lane ordered by blocking impact (consume-edges P-022); same
+    // enrichment the Learning tab resolver applies, so the shapes can't drift.
+    const digest = await applyBlockingImpactRanking(buildDigest(items, { nowMs: Date.now() }), { candidates: items });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, digest }) }] };
   },
 });

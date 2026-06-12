@@ -942,6 +942,7 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
       readRecentTicks: async () => [],
       readKeyDups: async () => known.map((s) => ({ watchdogKey: watchdogKeyOf(s), state: 'open', updatedAt: '2026-06-09T00:00:00.000Z' })),
       pruneTicks: noPrune,
+      processAging: async () => [],
     });
     // OLD behavior: 3 known-open red-tests fill the cap and the fresh signal defers.
     // NEW: they are pre-filtered, the fresh signal captures, nothing is declined.
@@ -1001,6 +1002,58 @@ describe('runWatchdogTick — key pre-filter frees the capture budget (audit P-0
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-363)', () => {
+  function knownOpenTick(processAging: (ws: string, keys: string[], o: unknown) => Promise<{ issueId: string; watchdogKey: string; reescalation: boolean }[]>) {
+    const known = [sig({ key: 'shop', source: 'service-down', title: 'Service shop is down' })];
+    return runWatchdogTick('ws', {}, {
+      collect: async () => known,
+      capture: (async () => ({ ok: true, created: true, issue: { id: 'EI-X' }, possibleDuplicates: [] })) as never,
+      recordTick: async () => {},
+      readRecentTicks: async () => [],
+      readKeyDups: async () => [{ watchdogKey: 'service-down:shop', state: 'open', updatedAt: '2026-06-09T00:00:00.000Z' }],
+      pruneTicks: noPrune,
+      processAging: processAging as never,
+    });
+  }
+
+  it('passes the known-open keys to the aging seam and surfaces escalated ids in the result', async () => {
+    const seen: string[][] = [];
+    const res = await knownOpenTick(async (_ws, keys) => {
+      seen.push(keys);
+      return [{ issueId: 'EI-42', watchdogKey: keys[0], reescalation: false }];
+    });
+    expect(seen).toEqual([['service-down:shop']]);
+    expect(res.agingEscalations).toEqual(['EI-42']);
+  });
+
+  it('an aging failure is logged but never aborts the tick', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await knownOpenTick(async () => { throw new Error('pg hiccup'); });
+      expect(res.status).toBe('ran');
+      expect(res.agingEscalations).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/known-open aging failed/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a tick with NO known-open signals never invokes aging (zero extra reads when quiet)', async () => {
+    const processAging = vi.fn(async () => []);
+    const res = await runWatchdogTick('ws', {}, {
+      collect: async () => [sig({ key: 'fresh-one' })],
+      capture: (async () => ({ ok: true, created: true, issue: { id: 'EI-1' }, possibleDuplicates: [] })) as never,
+      recordTick: async () => {},
+      readRecentTicks: async () => [],
+      readKeyDups: noKeyDups,
+      pruneTicks: noPrune,
+      processAging,
+    });
+    expect(processAging).not.toHaveBeenCalled();
+    expect(res.agingEscalations).toEqual([]);
   });
 });
 
