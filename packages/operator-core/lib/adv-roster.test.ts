@@ -8,6 +8,7 @@ import {
   shouldProbePid,
   LIVE_MS,
   GLOBAL_WORKSPACE,
+  type NurseryLiveness,
 } from './adv-roster';
 import { PRESENCE_STALE_MS, type PresenceRecord } from './agent-tools/coordination/presence';
 import { STALE_MS } from './liveness';
@@ -346,5 +347,75 @@ describe('agentPaneKind stamping (hive-agent-tabs-psu-tui P-001)', () => {
     const byRole = adv({ id: 13, display: 'workbench', role: 'planner', launchArgv: ['psu'] });
     const [b] = pendingLaunchesToRosterEntries([byRole], 'box-1');
     expect(b.agentPaneKind).toBe('planner');
+  });
+});
+
+/**
+ * EI-348 (liveness-hardening P-013/P-015): the colony roster dropped LIVE
+ * working bees — presence is tool-call-coupled, so a bee heads-down in local
+ * tools went presence-stale within LIVE_MS while its process was alive and its
+ * nursery row said running. The nursery is now a first-class liveness leg.
+ * Fixture = the live 2026-06-11 repro: bee alive 413s, presence 397s stale,
+ * roster showed 18 su sessions and NO bee.
+ */
+describe('mergeRosterEntries — nursery liveness join (EI-348)', () => {
+  const BEE = 's-1781222766931-b8ad8613';
+  const beePresence = () =>
+    presence({
+      ownerId: BEE,
+      ownerLabel: `bee · ${BEE}`,
+      heartbeatAt: iso(NOW - 397_000), // presence 397s old — beyond LIVE_MS
+    });
+  const nursery = (over: Partial<NurseryLiveness> = {}): NurseryLiveness => ({
+    spawnId: BEE,
+    heartbeatAt: iso(NOW - 20_000), // supervisor beat 20s ago
+    lastOutputAt: iso(NOW - 8_000),
+    pidAlive: true,
+    ...over,
+  });
+  const withNursery = (n: NurseryLiveness | null) =>
+    mergeRosterEntries(
+      [beePresence()],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      n ? new Map([[BEE, n]]) : new Map(),
+    )[0];
+
+  it('the exact repro: stale presence + running nursery + pid-alive → LIVE bee', () => {
+    const e = withNursery(nursery());
+    expect(e.liveness).toBe('live');
+    expect(e.pidAlive).toBe(true);
+    expect(e.lastOutputAt).toBe(iso(NOW - 8_000));
+  });
+
+  it('pid-alive alone is definitive even when the nursery beat is old', () => {
+    const e = withNursery(nursery({ heartbeatAt: iso(NOW - 900_000), pidAlive: true }));
+    expect(e.liveness).toBe('live');
+  });
+
+  it('cross-host bee (pidAlive unknown) rides the nursery heartbeat', () => {
+    const e = withNursery(nursery({ pidAlive: null, heartbeatAt: iso(NOW - 20_000) }));
+    expect(e.liveness).toBe('live');
+  });
+
+  it('nursery NEVER downgrades a presence-live entry (best-of-both)', () => {
+    const e = mergeRosterEntries(
+      [presence({ ownerId: BEE, heartbeatAt: iso(NOW - 5_000) })],
+      new Map(), NOW, new Map(), new Map(), new Map(), 'auto', new Map(),
+      new Map([[BEE, nursery({ pidAlive: false, heartbeatAt: iso(NOW - 900_000) })]]),
+    )[0];
+    expect(e.liveness).toBe('live');
+  });
+
+  it('without a nursery row the pre-EI-348 presence-only behavior is unchanged (su sessions unaffected)', () => {
+    const e = withNursery(null);
+    expect(e.liveness).toBe('idle'); // 397s = between LIVE_MS and STALE_MS
+    expect(e.lastOutputAt).toBeNull();
+    expect(e.pidAlive).toBeNull();
   });
 });

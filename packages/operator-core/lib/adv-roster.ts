@@ -16,6 +16,7 @@
  */
 
 import os from 'node:os';
+import { isSpawnProcessAlive } from './fleet/spawn-reclaim';
 import { listPresence, type PresenceRecord } from './agent-tools/coordination/presence';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
@@ -90,6 +91,10 @@ export interface RosterEntry {
    * the process is gone (P-008).
    */
   pidAlive: boolean | null;
+  /** Nursery stream activity for spawned bees (P-008/P-013): ISO time of the
+   *  last observed child output chunk; null for interactive sessions / no
+   *  output yet. Fresh = generating right now, even with stale presence. */
+  lastOutputAt: string | null;
   // ── canonical assignment enrichment (fleet_assignment view, state-not-chat-
   //    fleet-state D-002): what this agent actually HOLDS — plan-item claims,
   //    work-item claims, durable assignments. The roster reads the one canonical
@@ -154,7 +159,7 @@ export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>
       FROM harness_shared.spawned_agents
       WHERE session_id IS NOT NULL
     `;
-    for (const r of rows as Array<{ spawn_id: string; session_id: string }>) {
+    for (const r of rows as unknown as Array<{ spawn_id: string; session_id: string }>) {
       if (r.spawn_id && r.session_id) out.set(r.spawn_id, r.session_id);
     }
   } catch {
@@ -162,6 +167,66 @@ export async function spawnedAgentSessionsByOwner(): Promise<Map<string, string>
   }
   return out;
 }
+
+/**
+ * Nursery liveness for spawned bees (EI-348 / liveness-hardening P-013).
+ * Presence heartbeats are tool-call-coupled, so a bee heads-down in LOCAL
+ * tools (Read/Edit/Bash) goes presence-stale within LIVE_MS while its process
+ * is alive and its supervisor keeps beating `spawned_agents.heartbeat_at`.
+ * The roster must read BOTH legs — exactly like the stale-claims sweep does.
+ */
+export interface NurseryLiveness {
+  spawnId: string;
+  /** ISO supervisor heartbeat (60s cadence while the host holds the child). */
+  heartbeatAt: string | null;
+  /** ISO last observed child stdout/stderr chunk (mig 233, P-008). */
+  lastOutputAt: string | null;
+  /** Same-host /proc check (EI-85); null = different host / no pid recorded. */
+  pidAlive: boolean | null;
+}
+
+/**
+ * Running/restarting nursery rows keyed by session_owner (== the bee's coord
+ * ownerId, the umbilical `client=` id). Same-host rows get a real pid-alive
+ * verdict via the EI-85 /proc check. Best-effort: errors yield an empty map
+ * (the roster degrades to presence-only, the pre-EI-348 behavior).
+ */
+export async function runningSpawnLivenessByOwner(
+  localHost: string,
+): Promise<Map<string, NurseryLiveness>> {
+  const out = new Map<string, NurseryLiveness>();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      SELECT spawn_id, session_owner, heartbeat_at, last_output_at, pid, launcher_host
+        FROM harness_shared.spawned_agents
+       WHERE status IN ('running', 'restarting') AND session_owner IS NOT NULL
+    `;
+    for (const r of rows as unknown as Array<{
+      spawn_id: string;
+      session_owner: string;
+      heartbeat_at: Date | null;
+      last_output_at: Date | null;
+      pid: number | null;
+      launcher_host: string | null;
+    }>) {
+      out.set(r.session_owner, {
+        spawnId: r.spawn_id,
+        heartbeatAt: r.heartbeat_at ? r.heartbeat_at.toISOString() : null,
+        lastOutputAt: r.last_output_at ? r.last_output_at.toISOString() : null,
+        pidAlive:
+          r.launcher_host === localHost && r.pid != null
+            ? isSpawnProcessAlive(Number(r.pid))
+            : null,
+      });
+    }
+  } catch {
+    /* best-effort — presence-only roster */
+  }
+  return out;
+}
+
+const LIVENESS_RANK: Record<Liveness, number> = { live: 3, idle: 2, stale: 1, pending: 0 };
 
 /**
  * Filter a presence list to a workspace's roster: rows in that workspace PLUS
@@ -205,12 +270,29 @@ export function mergeRosterEntries(
   wakeModesByOwner: Map<string, WakeMode> = new Map(),
   defaultWakeMode: WakeMode = 'auto',
   pendingWakesByOwner: Map<string, number> = new Map(),
+  nurseryByOwner: Map<string, NurseryLiveness> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
     const pane = classifyAgentPane({ role: adv?.role ?? null, ownerId: p.ownerId });
     const claims = claimsByOwner.get(p.ownerId) ?? [];
     const currentPlanSlug = p.currentPlanSlug ?? adv?.planSlug ?? null;
+    // EI-348 (P-013): for a spawned bee, the RUNNING nursery row is a first-
+    // class liveness leg — presence is tool-call-coupled and goes stale during
+    // heads-down local work while the supervisor keeps beating (and pid-alive
+    // proves the process). Take the BEST of the two legs; same-host pid-alive
+    // is definitive. Presence still owns intent/claims enrichment.
+    const nursery = nurseryByOwner.get(p.ownerId) ?? null;
+    let liveness = deriveLiveness(p.heartbeatAt, nowMs);
+    if (nursery) {
+      const nurseryLiveness: Liveness =
+        nursery.pidAlive === true
+          ? 'live'
+          : nursery.heartbeatAt
+            ? deriveLiveness(nursery.heartbeatAt, nowMs)
+            : 'stale';
+      if (LIVENESS_RANK[nurseryLiveness] > LIVENESS_RANK[liveness]) liveness = nurseryLiveness;
+    }
     return {
       ownerId: p.ownerId,
       label: p.ownerLabel,
@@ -221,12 +303,13 @@ export function mergeRosterEntries(
       pid: p.pid,
       startedAt: p.startedAt,
       heartbeatAt: p.heartbeatAt,
-      liveness: deriveLiveness(p.heartbeatAt, nowMs),
+      liveness,
       stale: p.stale,
       workspaceId: p.workspaceId,
       userId: p.userId,
       revoked: p.revoked,
-      pidAlive: null, // enriched by mergeRoster for same-host non-stale entries
+      pidAlive: nursery?.pidAlive ?? null, // sessions: enriched by mergeRoster same-host pass
+      lastOutputAt: nursery?.lastOutputAt ?? null,
       claims,
       declaredUnclaimed: Boolean(
         currentPlanSlug && !claims.some((c) => c.planSlug === currentPlanSlug),
@@ -286,6 +369,7 @@ export function pendingLaunchesToRosterEntries(
       userId: null,
       revoked: false,
       pidAlive: null,
+      lastOutputAt: null,
       claims: [],
       // A pending launch hasn't run a turn yet — nothing to have claimed.
       declaredUnclaimed: false,
@@ -391,6 +475,9 @@ export async function mergeRosterWithAssignments(
     getDefaultWakeMode().catch(() => 'auto' as WakeMode),
     countAllPendingWakes().catch(() => new Map<string, number>()),
   ]);
+  // EI-348: nursery liveness join — sequential (not in the Promise.all) only
+  // because it needs the hostname; one indexed query, still cheap.
+  const nurseryByOwner = await runningSpawnLivenessByOwner(os.hostname());
   const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
   const entries = mergeRosterEntries(
     presence,
@@ -401,6 +488,7 @@ export async function mergeRosterWithAssignments(
     wakeModesByOwner,
     defaultWakeMode,
     pendingWakesByOwner,
+    nurseryByOwner,
   );
   return {
     active: enrichPidLiveness(entries, os.hostname()),
