@@ -1060,10 +1060,30 @@ export interface ToolExposureMcp {
   largeOutput?: boolean;
 }
 
+/**
+ * Slash-exposure overrides (slash-exposure-tool-catalog-2026-06-12) —
+ * mirrors tooldef's `ToolExposureSlash`. Controls how the tool projects
+ * onto the MCP prompts surface (agent-client slash commands).
+ */
+export interface ToolExposureSlash {
+  /** Override the prompt-name suffix (full name is always `tool:<suffix>`). */
+  name?: string;
+  /** Override the slash listing's description. */
+  description?: string;
+  /** Restrict which top-level scalar input fields surface as prompt args. */
+  args?: readonly string[];
+}
+
 /** At least one of `http`/`mcp` must be set. */
 export interface ToolExposure {
   http?: ToolExposureHttp;
   mcp?: ToolExposureMcp;
+  /**
+   * Slash-command exposure via MCP prompts. DEFAULT ON for every
+   * MCP-exposed tool; `false` hides the tool from the slash surface,
+   * an object overrides naming/description/args.
+   */
+  slash?: boolean | ToolExposureSlash;
 }
 
 /**

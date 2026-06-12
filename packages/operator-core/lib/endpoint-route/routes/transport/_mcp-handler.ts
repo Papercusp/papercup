@@ -41,8 +41,18 @@ import {
   sanitizeToolSchema,
   serializeToolResponse,
   formatOptsFromCtx,
+  isSlashPromptName,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import {
+  dynamicSlashListings,
+  resolveSlashToolForPrompt,
+  slashToolVisibleTo,
+  renderSlashPromptForTool,
+  auditSlashPromptGet,
+} from './_mcp-slash-prompts';
 import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
@@ -662,6 +672,90 @@ function mcpInstructionsForServer(): string | undefined {
   return PAPERCUSP_MCP_INSTRUCTIONS;
 }
 
+/**
+ * Resolve the MCP tool listings visible to THIS session — the single walk
+ * shared by `tools/list` and the dynamic slash projection on `prompts/list`,
+ * so the slash surface mirrors the tool surface by construction
+ * (slash-exposure-tool-catalog-2026-06-12 P-004).
+ *
+ * Strict mode (default since 2026-05-11): listings mirror tools/call — a
+ * FAILED spawn context yields nothing. Returning the full catalog to an
+ * unsigned/forged URL would:
+ *   1. leak the tool surface to probing without an audit trail
+ *      (tools/list failures aren't logged); and
+ *   2. let `role=operator` in an unsigned URL surface the operator-tier
+ *      catalog without role-allowlist filtering, because
+ *      tryBuildSpawnContext returns kind=failed and role falls back to
+ *      `undefined` (no filter applied).
+ * Soft-warn behavior is preserved when kind='none' (no spawn params at
+ * all — e.g. a bare /api/mcp probe).
+ *
+ * Listing shape notes carried from the original tools/list body:
+ *   - The projected-tool registry mirrors every built-in (defineTool
+ *     auto-registers there) AND carries plugin tools — one iteration
+ *     covers both; iterating getCatalog() on top would double-emit.
+ *   - `applyToolManifest` pins the surface to the tool manifest (if
+ *     configured) so the catalog the SDK inlines is byte-stable across
+ *     reconnects/reloads; `manifestBypass=1` returns the full set so the
+ *     snapshot generator can (re)write the manifest. See tool-manifest.ts.
+ *   - `?tools=a:b,c:d` (voice-persona P-009) is an opt-in listing
+ *     allowlist — a caller naming a small working set sees ONLY those
+ *     tools. Listing hint only; tools/call is unaffected. tool-allowlist.ts.
+ */
+async function resolveVisibleToolListings(extra: unknown): Promise<
+  | { kind: 'failed' }
+  | {
+      kind: 'ok' | 'none';
+      spawnRes: TrySpawnContextResult;
+      listings: ReturnType<typeof listMcpProjections>;
+    }
+> {
+  const spawnRes = await tryBuildSpawnContext(extra);
+  if (spawnRes.kind === 'failed') return { kind: 'failed' };
+  const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
+  const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
+  const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
+  const result = applyToolManifest(listMcpProjections(role, profile), { bypass });
+  const allow = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
+  return {
+    kind: spawnRes.kind,
+    spawnRes,
+    listings: filterListingsByAllowlist(result, allow),
+  };
+}
+
+/**
+ * prompts/get for the dynamic `tool:*` namespace (slash-exposure P-005):
+ * resolve the slash-exposed tool, re-check session visibility with the SAME
+ * predicates listMcpProjections applies, render the invoke-with-elicitation
+ * instruction, and record slash-origin telemetry. Context requirements
+ * mirror tools/call: a failed spawn ctx is rejected, and a bare probe with
+ * no spawn params gets invalid_request_context. Mechanics live in
+ * `_mcp-slash-prompts.ts` (testable without an HTTP harness).
+ */
+async function getSlashPrompt(
+  promptName: string,
+  args: Record<string, string>,
+  extra: unknown,
+): Promise<{ description?: string; messages: unknown[] }> {
+  const spawnRes = await tryBuildSpawnContext(extra);
+  if (spawnRes.kind === 'failed') {
+    throw new Error(`request_rejected: ${spawnRes.reason}`);
+  }
+  if (spawnRes.kind === 'none') {
+    throw new Error(
+      'invalid_request_context: slash prompts require harness/workspace/role/run/spawn URL query params, or ?superuser=1 + bearer',
+    );
+  }
+  const tool = resolveSlashToolForPrompt(promptName);
+  if (!tool || !slashToolVisibleTo(tool, spawnRes.ctx.role, spawnRes.ctx.profile)) {
+    throw new Error(`unknown_prompt: no slash-exposed tool for "${promptName}" in this session`);
+  }
+  const rendered = renderSlashPromptForTool(tool, args);
+  void auditSlashPromptGet(spawnRes.ctx, tool.expose.mcp!.name, Object.keys(args));
+  return { description: rendered.description, messages: rendered.messages };
+}
+
 const handler = createMcpHandler(
   (server) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -670,50 +764,13 @@ const handler = createMcpHandler(
     server.server.setRequestHandler(
       sdk.ListToolsRequestSchema,
       async (_req: unknown, extra: unknown) => {
-        // The projected-tool registry mirrors every built-in (defineTool
-        // auto-registers its result there) AND carries plugin-contributed
-        // tools, so a single iteration covers both. Iterating getCatalog()
-        // on top would emit each built-in twice.
-        //
-        // Strict mode (default since 2026-05-11): tools/list mirrors
-        // tools/call — a failed spawn context returns an empty list.
-        // Returning the full catalog to an unsigned/forged URL would:
-        //   1. leak the tool surface to probing without an audit trail
-        //      (tools/list failures aren't logged); and
-        //   2. let `role=operator` in an unsigned URL surface the
-        //      operator-tier catalog without role-allowlist filtering,
-        //      because tryBuildSpawnContext returns kind=failed and
-        //      role falls back to `undefined` (no filter applied).
-        // Soft-warn behavior is preserved when kind='none' (no spawn
-        // params at all — e.g. a bare /api/mcp probe).
-        const spawnRes = await tryBuildSpawnContext(extra);
-        if (spawnRes.kind === 'failed') {
+        // Shared visibility walk — see resolveVisibleToolListings above
+        // (strict-mode + manifest + allowlist semantics documented there).
+        const vis = await resolveVisibleToolListings(extra);
+        if (vis.kind === 'failed') {
           return { tools: [] };
         }
-        const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
-        const profile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
-        // Pin the exposed surface to the tool manifest (if configured) so the
-        // catalog the SDK inlines is byte-stable across reconnects/reloads —
-        // adding tools during development no longer busts a live session's
-        // upstream prompt cache. `manifestBypass=1` returns the full set so the
-        // snapshot generator can (re)write the manifest. See tool-manifest.ts.
-        const bypass =
-          urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
-        const result = applyToolManifest(listMcpProjections(role, profile), {
-          bypass,
-        });
-        // Opt-in `?tools=a:b,c:d` allowlist (voice-persona P-009). When a
-        // caller (operator:converse) names a small working set, serve ONLY
-        // those tools — shrinking the operator's ~300-tool surface to ~50 so
-        // the spawn's `ENABLE_TOOL_SEARCH=false` (disableToolSearch) can load
-        // them DIRECTLY without flooding the prompt. Absent/empty `?tools=` →
-        // no filtering; worker/scoper/probe spawns keep their full role
-        // surface. Listing hint only — tools/call is unaffected. See
-        // tool-allowlist.ts.
-        const allow = parseToolsAllowlist(
-          urlFromExtra(extra)?.searchParams.get('tools'),
-        );
-        const filtered = filterListingsByAllowlist(result, allow);
+        const filtered = vis.listings;
         // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
         // consumers (Ollama) can parse the surface. This is THE tools/list
         // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
@@ -1031,20 +1088,40 @@ const handler = createMcpHandler(
     );
 
     // ── Prompts ─────────────────────────────────────────────────────
+    // Two prompt sources share prompts/list + prompts/get:
+    //   1. STATIC definePrompt prompts (agent:role, …) — bearer-gated via
+    //      listPrompts/getPrompt, unchanged.
+    //   2. DYNAMIC slash projection (slash-exposure-tool-catalog-2026-06-12):
+    //      every tool this session can see (the exact tools/list walk)
+    //      surfaces as a `tool:*` prompt so agent clients render the whole
+    //      catalog as slash commands. Flag-gated (SLASH_EXPOSURE, default ON).
     server.server.setRequestHandler(
       sdk.ListPromptsRequestSchema,
       async (_req: unknown, extra: unknown) => {
         const bearer = bearerFromExtra(extra);
+        const prompts: Array<{
+          name: string;
+          description?: string;
+          arguments?: unknown;
+        }> = [];
         if (!bearer) {
-          return {
-            prompts: getPromptCatalog()
+          prompts.push(
+            ...getPromptCatalog()
               .filter((p) => !p.capability)
               .map((p) => ({ name: p.name, description: p.description, arguments: p.arguments })),
-          };
+          );
+        } else {
+          const { listPrompts } = await import('@papercusp/agent-mcp');
+          const r = await listPrompts(bearer);
+          if (r.ok && r.prompts) prompts.push(...r.prompts);
         }
-        const { listPrompts } = await import('@papercusp/agent-mcp');
-        const r = await listPrompts(bearer);
-        return { prompts: r.ok ? (r.prompts ?? []) : [] };
+        if (await getFlag(FLAGS.SLASH_EXPOSURE, 'system')) {
+          const vis = await resolveVisibleToolListings(extra);
+          if (vis.kind !== 'failed') {
+            prompts.push(...dynamicSlashListings(vis.listings));
+          }
+        }
+        return { prompts };
       },
     );
     server.server.setRequestHandler(
@@ -1053,12 +1130,18 @@ const handler = createMcpHandler(
         req: { params: { name: string; arguments?: Record<string, string> } },
         extra: unknown,
       ) => {
+        const name = req.params.name;
+        const args = (req.params.arguments ?? {}) as Record<string, string>;
+        if (isSlashPromptName(name)) {
+          if (!(await getFlag(FLAGS.SLASH_EXPOSURE, 'system'))) {
+            throw new Error(
+              'slash_exposure_disabled: the papercusp-slash-exposure flag is off',
+            );
+          }
+          return await getSlashPrompt(name, args, extra);
+        }
         const bearer = bearerFromExtra(extra);
-        const r = await getPrompt({
-          name: req.params.name,
-          args: (req.params.arguments ?? {}) as Record<string, string>,
-          bearer,
-        });
+        const r = await getPrompt({ name, args, bearer });
         if (!r.ok) throw new Error(`${r.error?.code}: ${r.error?.message}`);
         return { description: r.result!.description, messages: r.result!.messages };
       },

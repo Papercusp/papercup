@@ -132,10 +132,15 @@ except Exception:
 
 if not isinstance(glance, dict) or 'wake' not in glance:
     # Operator predates coord:glance (pre-deploy window) → legacy single line.
-    try:
-        data = call_tool('activity:recent', {'limit': ACTIVITY_WINDOW}) if not fixture else None
-    except Exception:
-        data = None
+    # In fixture mode an activity-shaped payload (no 'wake' key) exercises THIS
+    # branch — the legacy render stays testable.
+    if fixture:
+        data = glance if isinstance(glance, dict) else None
+    else:
+        try:
+            data = call_tool('activity:recent', {'limit': ACTIVITY_WINDOW})
+        except Exception:
+            data = None
     rows = (data or {}).get('activity')
     if not isinstance(rows, list) or not rows:
         sys.exit(0)
