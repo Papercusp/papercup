@@ -29,6 +29,7 @@ const ASKS_DDL = `
     kind text NOT NULL, subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
     correlation_id text NOT NULL, state text NOT NULL DEFAULT 'queued',
     reply_body text, reply_ts timestamptz,
+    asked_by text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT cross_hive_asks_pkey PRIMARY KEY (id),
     CONSTRAINT cross_hive_asks_workspace_nonempty CHECK (workspace_id <> ''),
@@ -75,6 +76,19 @@ describe('insert', () => {
     expect(ask.replyTs).toBeNull();
     expect(typeof ask.createdAt).toBe('string');
     expect(ask.updatedAt).toBe(ask.createdAt);
+    expect(ask.askedBy).toBeNull(); // absent input ⇒ broadcast path (mig 235)
+  });
+
+  it('persists askedBy on insert so the C-4 reply event can target the initiator (P-014 item 4)', async () => {
+    const ask = await store.insert({
+      peerPubkey: PEER,
+      kind: 'ask',
+      correlationId: 'c-asked-by',
+      askedBy: 'su-initiator-1',
+    });
+    expect(ask.askedBy).toBe('su-initiator-1');
+    const reread = await store.getByCorrelationId('c-asked-by');
+    expect(reread?.askedBy).toBe('su-initiator-1');
   });
 
   it('is idempotent on correlation_id — re-insert returns the existing row, no duplicate', async () => {

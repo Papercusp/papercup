@@ -202,7 +202,11 @@ export const QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE: Scenario = {
     },
   },
   goal: { kind: 'tool_fired', toolName: 'scout:grade-idea' },
-  caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
+  // One wake brief + one triage pass: the Queen is a spawned-turn agent, and
+  // the in-process loop already allows 6 tool rounds INSIDE her turn. More
+  // chat turns only create stale re-reads of the static stub queue (the
+  // override world never updates, so a re-listed EI looks ungraded again).
+  caps: { maxTurns: 2, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: ROUTED_DRAFTS_TRIAGE,
   asserts: [

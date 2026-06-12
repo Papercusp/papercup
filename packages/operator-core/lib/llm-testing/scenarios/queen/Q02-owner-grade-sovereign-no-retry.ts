@@ -130,7 +130,8 @@ export const QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY: Scenario = {
     },
   },
   goal: { kind: 'tool_fired', toolName: 'scout:grade-idea' },
-  caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
+  // One wake brief + one triage pass (see Q01's cap rationale).
+  caps: { maxTurns: 2, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: SOVEREIGN_REFUSAL,
   asserts: [

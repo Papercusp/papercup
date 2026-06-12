@@ -3,26 +3,31 @@
  * Tokens: /internal/docs/design (bluefrost semantic scale). */
 
 /* upstream: grid size-full auto-cols-fr grid-flow-col gap-4
- * (+ a height cap upstream gets from its sized parent: columns must not
- *  stretch to the tallest column's full content — cards scroll instead) */
+ * Deviation: upstream forces one horizontal row (grid-flow-col) and assumes a
+ * wide, height-constrained parent. Our hosts can be very narrow (the Create
+ * dock's main region, /admin/plans behind the app sidebar + plans rail), where
+ * one row of 6×170px columns means ~1.5 visible columns and horizontal scroll.
+ * auto-fit lets column boards wrap into rows instead, so the board always
+ * fills the detail width: 6-across when wide (identical to upstream), 1–4 per
+ * row when narrow. The height cap moves to the per-row board (below). */
 .pk-kanban {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(170px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
   width: 100%;
   min-height: 220px;
-  max-height: min(72vh, 680px);
-  overflow-x: auto;
   padding: 8px 0;
 }
 
 /* upstream: flex size-full min-h-40 flex-col divide-y overflow-hidden
- *           rounded-md border bg-secondary text-xs shadow-sm ring-2 */
+ *           rounded-md border bg-secondary text-xs shadow-sm ring-2
+ * (+ the height cap: boards must not stretch to their full content height —
+ *  rows size to the tallest board in the row, capped, and cards scroll) */
 .pk-kanban__board {
   display: flex;
   flex-direction: column;
   min-height: 160px;
+  max-height: min(72vh, 680px);
   overflow: hidden;
   border-radius: 8px;
   border: 1px solid var(--border);

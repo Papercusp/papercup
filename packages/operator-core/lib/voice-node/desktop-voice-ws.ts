@@ -28,7 +28,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { startLocalVoiceSocket } from './local-audio-socket';
 import { isReservedServicePort } from '../reserved-service-ports';
 
-const BASE_PORT = Number(process.env.DESKTOP_VOICE_WS_PORT ?? 3076);
+// Read at start time (not module init) so launch wrappers/tests that set the
+// env after import still take effect.
+const basePort = () => Number(process.env.DESKTOP_VOICE_WS_PORT ?? 3076);
 const PORT_RANGE = 8;
 const WS_PATH = '/api/desktop/voice';
 
@@ -75,7 +77,7 @@ export function _stopDesktopVoiceWsForTests(): Promise<void> {
 export function startDesktopVoiceWs(): void {
   if (dvState.started) return;
   dvState.started = true;
-  void tryListen(BASE_PORT, 0);
+  void tryListen(basePort(), 0);
 }
 
 async function tryListen(port: number, attempt: number): Promise<void> {
@@ -116,7 +118,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
         return;
       }
       console.error(
-        `[desktop-voice] FATAL: ports ${BASE_PORT}..${port} all in use; ` +
+        `[desktop-voice] FATAL: ports ${basePort()}..${port} all in use; ` +
           `desktop voice WS will not start.`,
       );
       dvState.started = false;

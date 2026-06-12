@@ -193,6 +193,12 @@ diagnosis recipe + the fix set:
 <a href="/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang">wsl-inbox-conpty-pty-hang</a>.
 pty.rs now carries a 20s no-output watchdog that kills the wedge and
 prints a <code dir="auto">wsl --update</code> hint into the pane.</li>
+<li><strong>NEVER run <code dir="auto">wsl --update</code> on this VM</strong> — Store WSL (2.7.8) cannot
+create its utility VM under the nested-QEMU profile (“Nested
+virtualization is not supported”, <code dir="auto">CreateVm/0x800705b4</code>); every
+distro boot fails until you <code dir="auto">wsl --uninstall</code> to revert to the
+inbox engine (state survives the round trip; verified live
+2026-06-12). The §16 watchdog hint is for real hardware, not here.</li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-the-artifacts-live">Where the artifacts live</h2><a class="sl-anchor-link" href="#where-the-artifacts-live"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where the artifacts live”</span></a></div>
 <ul>

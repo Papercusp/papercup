@@ -68,7 +68,9 @@ const LIVENESS_LEGEND: Array<{ liveness: 'live' | 'idle' | 'stale'; label: strin
 
 // One agent row from `fleetAssignments.byHarness` (the fleet:assignments
 // AgentAssignment + the stamped pane kind — see sync-resolver/index.ts).
-interface WorkingAgent {
+// Exported: DetailPanel resolves `?sel=agent:<id>` against the same query
+// (the same shape-sharing WorkItemsPanel does with WorkItemRow).
+export interface WorkingAgent {
   agentId: string;
   label: string | null;
   name: string | null;
@@ -176,9 +178,11 @@ function WorkingView({
   // with the Work-items panel's (wkind/wq) in the same dock.
   const [kind, setKind] = useQueryState('akind', parseAsString.withDefault(''));
   const [search, setSearch] = useQueryState('aq', parseAsString.withDefault(''));
-  // Row click jumps the Detail pane to the agent's head-of-line work item via
-  // the global `?sel` — the same contract Work items has; the highlight reads
-  // it back so the two panels light up in sync.
+  // Row click selects the AGENT in the Detail pane via the global `?sel` —
+  // the same contract Work items has, namespaced `agent:<agentId>` so the
+  // prefix router in DetailPanel can tell it apart from F-*/I-*/WI-* ids.
+  // (The agent's head-of-line work item is one click away inside the agent
+  // detail's "Working on" cross-link.)
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
   // Dragged widths survive panel remounts (localStorage — render-only pref).
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-working');
@@ -361,10 +365,8 @@ function WorkingView({
             columnWidths={colWidths}
             onColumnWidthsChange={setColWidths}
             getRowId={(r) => r.agentId}
-            onRowClick={(r) => {
-              if (r.doing) void setSelectedId(r.doing.id);
-            }}
-            getRowBg={(r) => (r.doing && r.doing.id === selectedId ? SELECTED_ROW_BG : undefined)}
+            onRowClick={(r) => void setSelectedId(`agent:${r.agentId}`)}
+            getRowBg={(r) => (`agent:${r.agentId}` === selectedId ? SELECTED_ROW_BG : undefined)}
             headerHeight={30}
             rowMinHeight={30}
           />

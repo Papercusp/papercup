@@ -130,6 +130,12 @@ edge that cost an hour:
     [wsl-inbox-conpty-pty-hang](/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang).
     pty.rs now carries a 20s no-output watchdog that kills the wedge and
     prints a `wsl --update` hint into the pane.
+17. **NEVER run `wsl --update` on this VM** — Store WSL (2.7.8) cannot
+    create its utility VM under the nested-QEMU profile ("Nested
+    virtualization is not supported", `CreateVm/0x800705b4`); every
+    distro boot fails until you `wsl --uninstall` to revert to the
+    inbox engine (state survives the round trip; verified live
+    2026-06-12). The §16 watchdog hint is for real hardware, not here.
 
 ## Where the artifacts live
 

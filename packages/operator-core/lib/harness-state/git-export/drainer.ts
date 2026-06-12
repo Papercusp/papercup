@@ -77,6 +77,26 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
 const GIT_EXPORT_NOTIFY = 'git_export_outbox';
 const DEFAULT_GIT_POLL_MS = 5_000;
 
+/**
+ * EI-339: a permanently-failing drain target (e.g. a registry entry whose
+ * harnessRoot is bogus — mkdir EACCES forever) used to retry at full poll
+ * cadence and log every 5s, flooding the journal. Consecutive failures back
+ * off exponentially (doubling from the poll cadence, capped at 10 min) and
+ * log only on the first failure, on each doubling, and on recovery.
+ */
+export const DRAIN_BACKOFF_MAX_MS = 600_000;
+
+/** Pure: backoff delay after `failures` consecutive drain errors (0 → none). */
+export function drainBackoffMs(failures: number, baseMs: number, maxMs = DRAIN_BACKOFF_MAX_MS): number {
+  if (failures <= 0) return 0;
+  return Math.min(baseMs * 2 ** (failures - 1), maxMs);
+}
+
+/** Pure: log on the 1st failure and on each doubling (2, 4, 8, …) — not every retry. */
+export function shouldLogDrainFailure(failures: number): boolean {
+  return failures > 0 && (failures & (failures - 1)) === 0;
+}
+
 export interface StartGitExportDrainOpts extends DrainGitExportOpts {
   /** Poll-fallback cadence (ms). Default 5000. 0 disables the timer (tests). */
   pollMs?: number;
@@ -105,9 +125,12 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
   let stopped = false;
   let draining = false;
   let runAgain = false;
+  let consecutiveFailures = 0;
+  let backoffUntil = 0;
 
   async function drainSafely(): Promise<void> {
     if (stopped) return;
+    if (Date.now() < backoffUntil) return; // EI-339: in backoff after repeated failures
     if (draining) {
       runAgain = true;
       return;
@@ -118,12 +141,25 @@ export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDra
         runAgain = false;
         await drainGitExportOnce(opts);
       } while (runAgain && !stopped);
+      if (consecutiveFailures > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[git-export-drain] recovered for ${wantPayload} after ${consecutiveFailures} failure(s)`,
+        );
+      }
+      consecutiveFailures = 0;
+      backoffUntil = 0;
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[git-export-drain] drain failed for ${wantPayload}:`,
-        e instanceof Error ? e.message : String(e),
-      );
+      consecutiveFailures += 1;
+      const delay = drainBackoffMs(consecutiveFailures, pollMs > 0 ? pollMs : DEFAULT_GIT_POLL_MS);
+      backoffUntil = Date.now() + delay;
+      if (shouldLogDrainFailure(consecutiveFailures)) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[git-export-drain] drain failed for ${wantPayload} (failure #${consecutiveFailures}, next retry in ${Math.round(delay / 1000)}s):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     } finally {
       draining = false;
     }

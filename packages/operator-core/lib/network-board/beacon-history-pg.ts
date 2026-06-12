@@ -53,10 +53,14 @@ export async function captureBeaconSnapshot(
   beacon: HiveStatusBeacon,
   sql?: Sql,
 ): Promise<void> {
+  // The beacon param goes through as the OBJECT — postgres.js serializes it to
+  // JSON once. A pre-stringified value double-encodes (driver stringifies the
+  // string again → a jsonb STRING, not an object — the known lanes-jsonb bug
+  // class); the integration test pins jsonb_typeof = 'object'.
   await pg(sql).unsafe(
     `INSERT INTO harness_shared.cross_hive_beacon_history (hive_id, hive_pubkey, beacon)
      VALUES ($1, $2, $3::jsonb)`,
-    [hiveId, hivePubkey ?? null, JSON.stringify(beacon)],
+    [hiveId, hivePubkey ?? null, beacon as never],
   );
   void import('../sync-sse')
     .then((m) => {

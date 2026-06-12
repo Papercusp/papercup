@@ -13,16 +13,19 @@ export default defineTool({
   path: '/admin/testing/test-runs',
   auth: { trust: ['verified', 'trusted'] },
   async handler(req): Promise<Response> {
-    const body = await req.json().catch(() => null) as { suiteId?: unknown; returnHref?: unknown } | null;
+    const body = await req.json().catch(() => null) as { suiteId?: unknown; returnHref?: unknown; tauriPid?: unknown } | null;
     const rawSuiteId = typeof body?.suiteId === 'string' ? body.suiteId : '';
     const returnHref = typeof body?.returnHref === 'string' && body.returnHref.length > 0 ? body.returnHref : null;
+    // Pin the run to one Tauri instance on multi-desktop boxes (the owner's
+    // seat + agents' Xvfb instances) — unpinned discovery picks an arbitrary window.
+    const tauriPid = typeof body?.tauriPid === 'number' && Number.isInteger(body.tauriPid) && body.tauriPid > 0 ? body.tauriPid : null;
     const selection = rawSuiteId === 'all-safe' || isAdminTestSuiteId(rawSuiteId)
       ? rawSuiteId as AdminTestSuiteId | 'all-safe'
       : null;
     if (!selection) {
       return new Response('suiteId must be one of the registered suite ids or all-safe', { status: 400 });
     }
-    const snapshot = startAdminTestRun(selection, returnHref);
+    const snapshot = startAdminTestRun(selection, returnHref, tauriPid);
     return Response.json({ runId: snapshot.runId, snapshot });
   },
 });

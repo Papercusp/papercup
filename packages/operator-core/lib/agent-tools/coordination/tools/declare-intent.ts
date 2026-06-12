@@ -17,6 +17,10 @@
  * prose-lane pattern ("X holds P-001..P-005") that nothing could read.
  * Omitting `items` leaves existing claims untouched (so a bare
  * re-declare never drops a lane claimed via plans:set-status wip).
+ *
+ * Lane ids are validated against the plan's parsed items (EI-356) so the
+ * claim surface agrees with plans:items / plans:set-status — see the
+ * handler comment for the unknown-id semantics.
  */
 
 import { z } from 'zod';
@@ -24,7 +28,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { writePresence, getPresence } from '../presence';
 import { COORD_ROLES } from '../roles';
-import { resolvePlanScope } from '../../plans/source';
+import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/agent-names';
 
@@ -36,7 +40,7 @@ export default defineTool({
     when: 'Starting a distinct piece of work, so other agents see what you have taken on. When the work is plan items, pass them as `items` — that claims your lane structurally instead of describing it in prose.',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
     chaining:
-      'coord:declare-intent { intent, current_plan_slug, items: ["P-001", "P-002"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane.',
+      'coord:declare-intent { intent, current_plan_slug, items: ["P-001", "P-002"] } → work → plans:set-status done releases each as you finish. A reported conflict means a live peer holds that item — coordinate or re-lane. Items in `claims.unknown` did not parse as plan items and were NOT claimed — fix the plan format or the ids.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -92,21 +96,55 @@ export default defineTool({
     // Reconcile the declared lane → claims (claim-discipline). Per-item
     // conflicts are reported, never thrown: declaring intent must succeed even
     // when part of the lane is contested.
+    //
+    // EI-356: the lane is validated against the SAME parsed-item set that
+    // plans:items / plans:set-status see (planItemsForRow) — an id those
+    // surfaces reject with item_not_found is never claimed here either.
+    // Unknown ids come back in `claims.unknown` with `hint`; a lane that is
+    // ENTIRELY unknown (or a missing plan) skips reconcile so a typo'd
+    // declaration can't release the caller's real claims. An explicit `[]`
+    // still releases the whole lane.
     let claims = null;
     if (args.items && args.current_plan_slug) {
       const scope = await resolvePlanScope(args.harness ? { harnessSlug: args.harness } : {});
-      const ownerName = await resolveAdoptedName(scope.workspaceId, identity.ownerId).catch(() => null);
-      claims = await reconcileDeclaredClaims({
-        workspaceId: scope.workspaceId,
-        harnessSlug: scope.harnessSlug,
-        planSlug: args.current_plan_slug,
-        items: args.items,
-        owner: identity.ownerId,
-        ownerLabel: identity.ownerLabel,
-        ownerName,
-        ownerUser: bestEffortOwnerUser(ctx),
-        intent: args.intent,
-      });
+      const scopeOpts = args.harness ? { harnessSlug: args.harness } : {};
+      const row = await getPlanRow(args.current_plan_slug, scopeOpts);
+      const knownIds = row ? new Set(planItemsForRow(row).map((i) => i.id)) : new Set<string>();
+      const known = args.items.filter((i) => knownIds.has(i));
+      const unknown = args.items.filter((i) => !knownIds.has(i));
+      if (args.items.length > 0 && known.length === 0) {
+        claims = {
+          claimed: [],
+          alreadyHeld: [],
+          conflicts: [],
+          released: [],
+          unknown,
+          hint: row
+            ? 'none of the declared items parse as items of this plan (plans:items would not list them — legacy/checkbox lines are invisible); nothing was claimed or released. Fix the plan format (plans:lint) or declare real P-NNN ids.'
+            : `plan '${args.current_plan_slug}' not found in ${scope.harnessSlug} — nothing was claimed or released. Check the slug (plans:list) or pass the right harness.`,
+        };
+      } else {
+        const ownerName = await resolveAdoptedName(scope.workspaceId, identity.ownerId).catch(() => null);
+        const reconciled = await reconcileDeclaredClaims({
+          workspaceId: scope.workspaceId,
+          harnessSlug: scope.harnessSlug,
+          planSlug: args.current_plan_slug,
+          items: known,
+          owner: identity.ownerId,
+          ownerLabel: identity.ownerLabel,
+          ownerName,
+          ownerUser: bestEffortOwnerUser(ctx),
+          intent: args.intent,
+        });
+        claims =
+          unknown.length > 0
+            ? {
+                ...reconciled,
+                unknown,
+                hint: 'unknown items do not parse as items of this plan (plans:set-status would return item_not_found) and were not claimed — fix the plan format or the ids.',
+              }
+            : reconciled;
+      }
     }
 
     const record = await getPresence(identity.ownerId);

@@ -81,7 +81,7 @@ function trimStore(): void {
   }
 }
 
-export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', returnHref: string | null = null): AdminTestRunSnapshot {
+export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', returnHref: string | null = null, tauriPid: number | null = null): AdminTestRunSnapshot {
   const controller = new AbortController();
   const runId = nextRunId();
   const record: RunRecord = {
@@ -116,7 +116,7 @@ export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', retu
           appendLog(record, payload.suiteId, payload.status === 'fail' ? 'error' : payload.status === 'warn' ? 'warn' : 'info', `${payload.label} finished ${payload.status} in ${(payload.durationMs / 1000).toFixed(1)}s`);
         },
         log: (payload) => appendLog(record, payload.suiteId, payload.level, payload.line),
-      }, controller.signal, { returnHref: restoreHref });
+      }, controller.signal, { returnHref: restoreHref, tauriPid });
       if (record.snapshot.status === 'running') setRunStatus(record, 'done');
     } catch (error) {
       if (controller.signal.aborted) {

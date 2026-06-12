@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { wsLocalKey } from './browser-workspace';
 import { readdir, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
@@ -26,6 +27,8 @@ interface SuiteContext {
   spec: AdminTestSuiteSpec;
   repoRoot: string;
   desktopRoot: string;
+  /** Tauri instance every tauri-agent-tools call is pinned to (null = no live bridge found). */
+  bridgePid: number | null;
 }
 
 interface ExecResult {
@@ -110,17 +113,90 @@ export function isAdminTestSuiteId(value: string): value is AdminTestSuiteId {
   return SUITE_MAP.has(value as AdminTestSuiteId);
 }
 
+const BRIDGE_TOKEN_RE = /^tauri-dev-bridge-(\d+)\.token$/;
+
+/** Live Tauri bridge pids advertised via tmpdir token files (the tauri-agent-tools discovery contract). */
+async function listLiveBridgePids(): Promise<number[]> {
+  const entries = await readdir(tmpdir()).catch(() => [] as string[]);
+  const pids: number[] = [];
+  for (const entry of entries) {
+    const match = BRIDGE_TOKEN_RE.exec(entry);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    try {
+      process.kill(pid, 0);
+      pids.push(pid);
+    } catch {
+      /* dead instance — the CLI reaps its token lazily */
+    }
+  }
+  return pids;
+}
+
+/** Pids on this operator's own ancestry chain — the dev-shell sidecar's ancestor IS its desktop. */
+async function operatorAncestorPids(): Promise<Set<number>> {
+  const out = new Set<number>();
+  let pid = process.pid;
+  for (let hops = 0; hops < 32 && pid > 1; hops += 1) {
+    const fields = await readProcStatusFields(pid, ['PPid']);
+    const ppid = Number(fields?.PPid ?? 0);
+    if (!Number.isInteger(ppid) || ppid <= 1) break;
+    out.add(ppid);
+    pid = ppid;
+  }
+  return out;
+}
+
+/**
+ * Pure pin decision — exported for tests. Throws on an ambiguous multi-instance
+ * box rather than letting the CLI's discoverBridge() drive an arbitrary window.
+ */
+export function pickBridgePid(input: {
+  explicit: number | null;
+  envPid: number | null;
+  live: number[];
+  ancestors: Set<number>;
+}): number | null {
+  if (input.explicit !== null) return input.explicit;
+  if (input.envPid !== null) return input.envPid;
+  if (input.live.length === 0) return null; // checks fail with the normal bridge-unreachable error
+  if (input.live.length === 1) return input.live[0];
+  const own = input.live.find((pid) => input.ancestors.has(pid));
+  if (own !== undefined) return own;
+  throw new Error(
+    `${input.live.length} Tauri instances are running (pids ${input.live.join(', ')}) — refusing to drive an arbitrary one. ` +
+      'Pass tauriPid in the run request (or set PAPERCUSP_SUITE_TAURI_PID on the operator).',
+  );
+}
+
+/**
+ * Resolve the Tauri instance this run drives. Without a pin, tauri-agent-tools'
+ * discoverBridge() picks whichever live token file lists first — on a box
+ * running several desktops (the owner's seat + agents' Xvfb instances) a suite
+ * run could navigate or chaos-click someone ELSE's window.
+ */
+async function resolveBridgePid(explicit: number | null): Promise<number | null> {
+  const rawEnv = Number(process.env.PAPERCUSP_SUITE_TAURI_PID ?? '');
+  return pickBridgePid({
+    explicit,
+    envPid: Number.isInteger(rawEnv) && rawEnv > 0 ? rawEnv : null,
+    live: await listLiveBridgePids(),
+    ancestors: await operatorAncestorPids(),
+  });
+}
+
 export async function runAdminTestSuites(
   selection: AdminTestSuiteId | 'all-safe',
   sink: AdminTestEventSink,
   signal: AbortSignal,
-  opts: { returnHref?: string | null } = {},
+  opts: { returnHref?: string | null; tauriPid?: number | null } = {},
 ): Promise<void> {
   const repoRoot = resolveRepoRoot();
   const desktopRoot = resolveDesktopRoot(repoRoot);
   const suiteIds = expandAdminTestSuiteSelection(selection);
   const firstSpec = SUITE_MAP.get(suiteIds[0] ?? 'desktop-health') ?? ADMIN_TEST_SUITES[0];
-  const ctxBase = { signal, sink, repoRoot, desktopRoot };
+  const bridgePid = await resolveBridgePid(opts.tauriPid ?? null);
+  const ctxBase = { signal, sink, repoRoot, desktopRoot, bridgePid };
   const restoreCtx: SuiteContext = { ...ctxBase, spec: firstSpec };
   const returnHref = opts.returnHref ?? (await getDesktopState(restoreCtx).catch(() => null))?.href ?? null;
   try {
@@ -728,8 +804,9 @@ async function runCommand(
 
 async function runTauri(ctx: SuiteContext, args: string[], timeoutMs = 12_000): Promise<ExecResult> {
   ctx.signal.throwIfAborted();
-  ctx.sink.log({ suiteId: ctx.spec.id, level: 'info', line: `tauri-agent-tools ${args.join(' ')}` });
-  return await runCommand('tauri-agent-tools', args, { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs });
+  const pinned = ctx.bridgePid !== null ? [...args, '--pid', String(ctx.bridgePid)] : args;
+  ctx.sink.log({ suiteId: ctx.spec.id, level: 'info', line: `tauri-agent-tools ${pinned.join(' ')}` });
+  return await runCommand('tauri-agent-tools', pinned, { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs });
 }
 
 async function runTauriJson<T>(ctx: SuiteContext, args: string[], timeoutMs = 12_000): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {

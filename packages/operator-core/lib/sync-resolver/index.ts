@@ -1847,6 +1847,75 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // network.hive.beacons — the tier-4 dossier's beacon HISTORY (hive-network-
+  // surface P-014 item 2 / D-007 GAP 2, migration 236): how a foreign hive's
+  // self-reported status evolved, newest-first. `hiveKey` is the C-3 tier-4 row
+  // key — DiscoveredHive.hiveId or its pubkey-b64, whichever the drill-in holds.
+  // Live: captureBeaconSnapshot fires notifySyncInvalidate on each accepted
+  // announce; plus the consumer's standard 60s safety-net refetch.
+  'network.hive.beacons': {
+    argsSchema: z.object({
+      hiveKey: z.string(),
+      limit: z.number().int().positive().max(500).default(50),
+    }),
+    resolve: async (args) => {
+      const { hiveKey, limit } = args as { hiveKey: string; limit: number };
+      const { listBeaconHistory } = await import('../network-board/beacon-history-pg');
+      return listBeaconHistory(hiveKey, limit);
+    },
+  },
+
+  // network.hive.asks — the FULL C-1 ask log (hive-network-surface P-014
+  // item 2 / D-007 GAP 2): every ledgered request both directions, all states
+  // (the board row only carries pending/answered counts), newest-first,
+  // optionally narrowed to one tier-4 peer. Rows are CrossHiveAsk objects
+  // (incl. askedBy + reply body — the dossier's ask/answer traffic view).
+  // Live: sendCrossHiveAsk + the wiring's reply-persist fire
+  // notifySyncInvalidate after their writes; 60s safety-net on the consumer.
+  'network.hive.asks': {
+    argsSchema: z.object({
+      peerPubkey: z.string().optional(),
+      limit: z.number().int().positive().max(500).default(100),
+      workspace: z.string().optional(),
+    }),
+    resolve: async (args) => {
+      const { peerPubkey, limit, workspace } = args as {
+        peerPubkey?: string;
+        limit: number;
+        workspace?: string;
+      };
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { resolveHiveHomeSlug } = await import('../hive/wake');
+      const { PgCrossHiveAsks } = await import('../cross-hive-asks-pg');
+      const ws = workspace ?? activeWorkspaceId();
+      const homeSlug = resolveHiveHomeSlug();
+      if (!homeSlug) return [];
+      return new PgCrossHiveAsks(ws, homeSlug).list({
+        ...(peerPubkey ? { peerPubkey } : {}),
+        limit,
+      });
+    },
+  },
+
+  // network.hive.wakes — the hive-SCOPED staged-wake board (hive-network-
+  // surface P-014 item 3, closing D-007 GAP 1): the pending_wakes queue
+  // narrowed to owners attributed to one hive via fleet assignments, so the
+  // per-hive drill-in can grow a real wake board instead of the hive-pane
+  // header summary. Flat PendingWake rows (owner ASC, oldest-first — the
+  // consumer groups per owner like assemble_wake_board). Live: the
+  // pending-wakes writers fire notifySyncInvalidate; 60s safety-net.
+  'network.hive.wakes': {
+    argsSchema: z.object({
+      hive: z.string(),
+      workspace: z.string().optional(),
+    }),
+    resolve: async (args) => {
+      const { hive, workspace } = args as { hive: string; workspace?: string };
+      const { listHiveWakes } = await import('../network-board/hive-wakes');
+      return listHiveWakes(hive, { workspaceId: workspace });
+    },
+  },
+
   // planItems.byPlan — the parsed plan items (id, text, storedStatus,
   // effectiveStatus, blockedBy, …) for one plan, for the Create-tab kanban.
   // Reads through the SAME path as `plans:get` (parses the plan's `content`

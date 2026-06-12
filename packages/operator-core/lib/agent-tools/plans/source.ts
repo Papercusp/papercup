@@ -19,7 +19,7 @@
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
-import { parsePlan, type ParsedPlan, type PlanStatus } from './parser';
+import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
@@ -586,4 +586,30 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     nowState: p.now?.state ?? null,
     nowNext: p.now?.next ?? null,
   };
+}
+
+/**
+ * Resolve a plan row's items from the PG-canonical structured `items` index
+ * (plans-pg-canonical-migration Stage 3) — no content-blob parse. Falls back to
+ * parsing `content` only when the structured index is empty/absent (a federated
+ * remote row whose projection didn't fill the derived columns, or a genuinely
+ * itemless plan — the parse is cheap either way). The ONE answer to "what items
+ * does this plan have" — plans:items, set-status's flip, and declare-intent's
+ * lane validation must all agree (EI-356).
+ */
+export function planItemsForRow(row: PlanRow): PlanItem[] {
+  if (row.items.length > 0) {
+    return row.items.map((i) => ({
+      id: i.id,
+      text: i.text,
+      storedStatus: i.status as PlanItem['storedStatus'],
+      importance: i.importance as PlanItem['importance'],
+      blockedBy: i.blockedBy,
+      decisionRefs: i.decisionRefs,
+      phase: i.phase,
+      lineNumber: 0,
+      rawLine: '',
+    }));
+  }
+  return parsePlan(row.content).items;
 }

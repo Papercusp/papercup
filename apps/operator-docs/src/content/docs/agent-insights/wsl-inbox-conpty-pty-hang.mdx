@@ -64,9 +64,25 @@ Linux path (valid), multiline `bash -c` scripts through `--exec`
   `claude.ai/install.sh` target — so even successful installs read as
   "No agent backend yet" (`preflight-binaries.ts` candidate added).
 
-## Open question (plan windows-desktop-release-readiness-2026-06-11)
+## Resolved: auto-`wsl --update` at onboarding is REJECTED (P-022, validated 2026-06-12)
 
-Whether onboarding should detect inbox WSL and run
-`wsl --update` itself (it restarts the WSL utility VM — can't be done
-casually under a live sidecar) vs. only surface guidance. Validate on
-the Windows VM before automating.
+Tried live on the Windows VM: `wsl --update --web-download` installs
+Store WSL 2.7.8 cleanly — and then **WSL cannot start at all** on the
+nested-QEMU rig: `wsl: Nested virtualization is not supported on this
+machine` + `Wsl/Service/CreateInstance/CreateVm/0x800705b4` on every
+distro boot. The inbox WSL runs fine nested; the Store engine refuses
+this virtualization profile. Recovery: `wsl --uninstall` (removes the
+Store package, reverts to inbox) — distro boots again immediately,
+state intact.
+
+Consequences:
+- Onboarding must NOT auto-run `wsl --update` — on machines like this
+  one it converts a degraded-but-working setup into a fully broken one.
+  The shipped mitigation is the pty watchdog + its in-pane
+  `wsl --update` hint, which a *real-hardware* user can follow safely.
+- On THIS VM, never run `wsl --update`. If someone has: `wsl --uninstall`
+  restores the rig.
+- Whether Store WSL actually fixes the ConPTY wedge therefore remains
+  unverified on this rig (it can't run Store WSL); ecosystem evidence
+  (VS Code drives wsl-under-ConPTY broadly on Store WSL) still supports
+  the hint's advice for real machines.

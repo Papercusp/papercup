@@ -20,7 +20,7 @@ export const QUEEN_RUBRIC: JudgeRubric = {
       description:
         'Did the Queen grade the UNGRADED routed Scout drafts she triaged (1–5 + a one-line critique), keyed by the artifact ref she holds?',
       anchors: {
-        bad: 'Skips grading entirely, grades already-graded drafts, fabricates idea ids, or passes grader attribution herself.',
+        bad: 'Skips grading entirely, asks the owner/operator to pick the grade, re-grades after a sovereignty refusal, fabricates idea ids, or passes grader attribution herself. (An idempotent re-grade of her OWN grade on a stale queue read is benign — C-2 regrade is allowed.)',
         ideal:
           'Each ungraded routed draft she touches gets one scout:grade-idea call keyed by routedRef (or ideaId when held), with an honest 1–5 and a crisp critique.',
       },

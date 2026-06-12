@@ -32,7 +32,9 @@ import { verifyDeviceToken } from './device-jwt';
 import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
 import { RESERVED_SERVICE_PORTS } from './reserved-service-ports';
 
-const BASE_PORT = Number(process.env.MOBILE_VOICE_WS_PORT ?? 3068);
+// Read at start time (not module init) so launch wrappers/tests that set the
+// env after import still take effect.
+const basePort = () => Number(process.env.MOBILE_VOICE_WS_PORT ?? 3068);
 const PORT_RANGE = 8;
 // Papercusp service ports the walk must NEVER squat (EI-294: with 3068 held,
 // the staging host's walk reached :3070 during a green-host restart window
@@ -91,7 +93,7 @@ export function _stopMobileVoiceWsForTests(): Promise<void> {
 export function startMobileVoiceWs(): void {
   if (mvState.started) return;
   mvState.started = true;
-  void tryListen(BASE_PORT, 0);
+  void tryListen(basePort(), 0);
 }
 
 async function tryListen(port: number, attempt: number): Promise<void> {
@@ -143,7 +145,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
         return;
       }
       console.error(
-        `[mobile-voice] FATAL: ports ${BASE_PORT}..${port} all in use; ` +
+        `[mobile-voice] FATAL: ports ${basePort()}..${port} all in use; ` +
         `voice WS will not start. Mobile clients won't be able to connect.`,
       );
       mvState.started = false;

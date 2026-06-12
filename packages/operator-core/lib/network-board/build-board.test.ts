@@ -8,7 +8,8 @@ import type { HiveDescriptor } from '../agent-tools/hive/_resolve';
 import type { UnifiedPresenceRecord } from '../agent-tools/coordination/federated-presence';
 import type { DiscoveredHive } from '../hive-directory';
 import type { HiveStatusBeacon } from '../hive-beacon';
-import { assembleNetworkBoard, type NetworkBoardInputs } from './build-board';
+import type { FleetAssignmentRow } from '../fleet/assignments';
+import { assembleNetworkBoard, watchOwnersByHarness, type NetworkBoardInputs } from './build-board';
 
 // ── fixture factories ──────────────────────────────────────────────
 function hive(slug: string, over: Partial<HiveDescriptor> = {}): HiveDescriptor {
@@ -145,6 +146,90 @@ describe('assembleNetworkBoard — tier 3 (federated peer Swarms)', () => {
     expect(b.liveAgents).toBeUndefined(); // all stale → omitted
     expect(b.focus).toBeUndefined(); // no non-empty intent → omitted
     expect(b.lastSeen).toBe('2026-06-10T00:00:00.000Z');
+  });
+});
+
+describe('watch owners (P-014 item 1 — per-bee drill-in watch panes)', () => {
+  function assignment(over: Partial<FleetAssignmentRow> = {}): FleetAssignmentRow {
+    return {
+      source: 'presence',
+      workspaceId: 'ws',
+      agentId: 'su-bee-1',
+      agentLabel: null,
+      agentName: null,
+      harnessSlug: 'other',
+      planSlug: null,
+      itemId: null,
+      workItemId: null,
+      itemKind: null,
+      detail: '',
+      status: null,
+      claimAcquiredTs: null,
+      claimExpiresTs: null,
+      claimActive: null,
+      livenessMode: null,
+      lastActivityTs: null,
+      holderPresent: true,
+      holderAlive: true,
+      holderHeartbeatAt: null,
+      holderIntent: null,
+      holderPlanSlug: null,
+      orphaned: false,
+      declaredPlanMatches: null,
+      assigneeRank: null,
+      rankWriter: null,
+      ...over,
+    };
+  }
+
+  it('watchOwnersByHarness keeps only LIVE holders with a hive + agent id, deduped per hive', () => {
+    const owners = watchOwnersByHarness([
+      assignment({ agentId: 'su-a' }),
+      assignment({ agentId: 'su-a', source: 'plan_item_claim' }), // dup owner, second row
+      assignment({ agentId: 'su-b' }),
+      assignment({ agentId: 'su-dead', holderAlive: false }), // stale → no watch pane
+      assignment({ agentId: null }), // presence debris
+      assignment({ agentId: 'su-x', harnessSlug: null }), // no hive attribution
+    ]);
+    expect(owners.get('other')).toEqual(['su-a', 'su-b']);
+  });
+
+  it('populates watchOwners on tier-2 rows only — tier 1 (this Swarm) never carries them', () => {
+    const rows = assembleNetworkBoard({
+      ...EMPTY,
+      homeSlug: 'home',
+      hives: [hive('home'), hive('other')],
+      watchOwnersBySlug: new Map([
+        ['home', ['su-home-bee']],
+        ['other', ['su-a', 'su-b']],
+      ]),
+    });
+    expect(rows.find((r) => r.key === 'home')!.watchOwners).toBeUndefined();
+    expect(rows.find((r) => r.key === 'other')!.watchOwners).toEqual(['su-a', 'su-b']);
+  });
+
+  it('omits watchOwners (never an empty array) when a tier-2 hive has no live bees', () => {
+    const rows = assembleNetworkBoard({
+      ...EMPTY,
+      homeSlug: 'home',
+      hives: [hive('home'), hive('idle')],
+      watchOwnersBySlug: new Map([['idle', []]]),
+    });
+    expect(rows.find((r) => r.key === 'idle')!.watchOwners).toBeUndefined();
+  });
+
+  it('derives tier-3 watchOwners from the device’s LIVE members (stale-only device omits them)', () => {
+    const rows = assembleNetworkBoard({
+      ...EMPTY,
+      federatedPeers: [
+        fedPeer({ devicePubkey: 'devA', ownerId: 'fed:1@boxA' }),
+        fedPeer({ devicePubkey: 'devA', ownerId: 'fed:2@boxA' }),
+        fedPeer({ devicePubkey: 'devA', ownerId: 'fed:1@boxA' }), // dup owner
+        fedPeer({ devicePubkey: 'devB', ownerId: 'fed:9@boxB', stale: true }),
+      ],
+    });
+    expect(rows.find((r) => r.key === 'devA')!.watchOwners).toEqual(['fed:1@boxA', 'fed:2@boxA']);
+    expect(rows.find((r) => r.key === 'devB')!.watchOwners).toBeUndefined();
   });
 });
 

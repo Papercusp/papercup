@@ -8614,6 +8614,7 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 14. **You can get full DevTools into the packaged app’s webview**: launch with `set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS= --remote-debugging-port=9222`, then drive CDP from the VM’s own node (v24 has global WebSocket/fetch): `/json` lists targets; `Runtime.evaluate` reads the DOM; `Log.enable` streams console. This separates “app broken” from “paint broken” instantly. Do NOT add `--disable-gpu`/`--disable-gpu-compositing` — WebView2 creation fails outright and the app exits.
 15. **Transient white window with a healthy DOM** — observed twice on schtasks-launched windows: CDP shows the full DOM but the window paints white (WebView2 GPU/compositor init flake under QEMU qxl). It self-resolved after the onboarding-finalize restart. If you see white, check the DOM via CDP (§14) before assuming the app is dead.
 16. **Inbox (pre-Store) WSL’s `wsl.exe` wedges FOREVER under a pseudoconsole** — the wizard’s pty-routed installs/logins sit silent with zero output, zero exit, and no distro-side process; the same command via plain pipes works instantly. The VM runs inbox WSL (`wsl --version` is not even a recognized option there). Full diagnosis recipe + the fix set: [wsl-inbox-conpty-pty-hang](/internal/docs/agent-insights/wsl-inbox-conpty-pty-hang). pty.rs now carries a 20s no-output watchdog that kills the wedge and prints a `wsl --update` hint into the pane.
+17. **NEVER run `wsl --update` on this VM** — Store WSL (2.7.8) cannot create its utility VM under the nested-QEMU profile (“Nested virtualization is not supported”, `CreateVm/0x800705b4`); every distro boot fails until you `wsl --uninstall` to revert to the inbox engine (state survives the round trip; verified live 2026-06-12). The §16 watchdog hint is for real hardware, not here.
 
 ## Where the artifacts live
 
@@ -8799,11 +8800,17 @@ Things that look guilty but are NOT: the empty-env theory (`portable-pty`’s `C
 * **`InlinePtyTerminal` got `onSpawnError`** and `StepAgents` / `AuthSignInCards` / `StepGit` wire it — spawn failures reset the busy state instead of sticking on “Installing…”/“Running…”.
 * Same click-through also surfaced (separate bugs, same pane): **`@oh-my-pi/cli` is a dead npm ref** (`oh-my-pi` unpublished 2026-05-21) — it 404’d and aborted the whole runtime `npm install`, taking codex with it (removed from `buildInstallSpec`); and **`detectClaude` never probed `~/.local/bin/claude`** — the official `claude.ai/install.sh` target — so even successful installs read as “No agent backend yet” (`preflight-binaries.ts` candidate added).
 
-## Open question (plan windows-desktop-release-readiness-2026-06-11)
+## Resolved: auto-`wsl --update` at onboarding is REJECTED (P-022, validated 2026-06-12)
 
-[Section titled “Open question (plan windows-desktop-release-readiness-2026-06-11)”](#open-question-plan-windows-desktop-release-readiness-2026-06-11)
+[Section titled “Resolved: auto-wsl --update at onboarding is REJECTED (P-022, validated 2026-06-12)”](#resolved-auto-wsl---update-at-onboarding-is-rejected-p-022-validated-2026-06-12)
 
-Whether onboarding should detect inbox WSL and run `wsl --update` itself (it restarts the WSL utility VM — can’t be done casually under a live sidecar) vs. only surface guidance. Validate on the Windows VM before automating.
+Tried live on the Windows VM: `wsl --update --web-download` installs Store WSL 2.7.8 cleanly — and then **WSL cannot start at all** on the nested-QEMU rig: `wsl: Nested virtualization is not supported on this machine` + `Wsl/Service/CreateInstance/CreateVm/0x800705b4` on every distro boot. The inbox WSL runs fine nested; the Store engine refuses this virtualization profile. Recovery: `wsl --uninstall` (removes the Store package, reverts to inbox) — distro boots again immediately, state intact.
+
+Consequences:
+
+* Onboarding must NOT auto-run `wsl --update` — on machines like this one it converts a degraded-but-working setup into a fully broken one. The shipped mitigation is the pty watchdog + its in-pane `wsl --update` hint, which a *real-hardware* user can follow safely.
+* On THIS VM, never run `wsl --update`. If someone has: `wsl --uninstall` restores the rig.
+* Whether Store WSL actually fixes the ConPTY wedge therefore remains unverified on this rig (it can’t run Store WSL); ecosystem evidence (VS Code drives wsl-under-ConPTY broadly on Store WSL) still supports the hint’s advice for real machines.
 
 # Agent policies
 
@@ -44632,11 +44639,12 @@ A peer’s device key lives in the OS keychain under `<github_user_id>:<machine-
 Each instance needs its **own**: workspace root (→ its own per-harness corestore), Postgres database, `gh` identity, and Tauri bridge port. Run the second instance under its own Xvfb display so it never steals your focus (see [Agent E2E §15.4](/internal/docs/testing/agent-e2e)):
 
 ```sh
-# Instance B (Bob) — isolated display, bridge port, and gh config
+# Instance B (Bob) — isolated display and gh config (the dev bridge binds its
+# own ephemeral port per instance — discover it with
+# `tauri-agent-tools probe --pid <pid>` or /tmp/tauri-dev-bridge-<pid>.token)
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 DISPLAY=:99 openbox &
 DISPLAY=:99 \
-  PAPERCUSP_BRIDGE_PORT=9230 \
   GH_CONFIG_DIR=/tmp/gh-bob \
   PAPERCUSP_HOME=/tmp/papercusp-bob \
   bash -lc 'cd papercusp-desktop && npm run dev'

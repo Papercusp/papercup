@@ -5,7 +5,7 @@
  * migration-number allocator (`db:next-migration`).
  *
  * Plan acceptance: "two concurrent allocations never collide". The allocator
- * hands out GREATEST(max-on-disk, max-reserved) + 1 under a pg advisory lock
+ * hands out GREATEST(max-on-disk, max-reserved, max-applied) + 1 under a pg advisory lock
  * (pg_advisory_xact_lock), recorded in harness_shared.migration_reservations
  * (the `num` PK is the last-line-of-defence). This proves, against a REAL
  * Postgres (testcontainer) with migration 135 applied:
@@ -18,6 +18,10 @@
  *   3. FILESYSTEM-MAX — an UNRESERVED on-disk `NNN-*.sql` higher than any
  *      reservation is still respected (the tool folds in the fs max), so a peer
  *      who wrote a file without reserving cannot be clobbered.
+ *   4. APPLIED-MAX (EI-353) — a number recorded applied in schema_migrations is
+ *      taken even when its file is in no scanned tree and was never reserved.
+ *   5. CANONICAL-TREE (EI-353) — a file in the PAPERCUSP_INTEGRATION_ROOT tree's
+ *      sql dir is respected even when the serving checkout's dir lags it.
  *
  * Mirrors the testcontainer + vi.mock('@papercusp/db-org') setup of
  * harness-issues.integration.test.ts.
@@ -25,7 +29,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +92,18 @@ beforeAll(async () => {
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // The real migration that creates the allocator ledger.
   await rootSql.unsafe(readMigration('135-migration-reservations.sql')).simple();
+  // The applied-migrations tracker the runner creates on boot (the allocator's
+  // third GREATEST input since EI-353) — same shape as the real one.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.schema_migrations (
+      filename   text PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT now(),
+      sha256     text NOT NULL
+    )`);
+  // The canonical-tree leg reads PAPERCUSP_INTEGRATION_ROOT at call time — keep
+  // it inert (dev boxes export it) until the canonical-tree test points it at a
+  // controlled temp root, so fsMax stays deterministic.
+  vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '');
 
   // A POOLED connection (max>1) so concurrent sql.begin() calls in the handler
   // actually run on separate connections — that is what makes the advisory-lock
@@ -101,6 +117,7 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await h.sql?.end({ timeout: 5 });
   await rootSql?.end({ timeout: 5 });
 });
@@ -137,5 +154,27 @@ describe('db:next-migration allocator (§A1)', () => {
     const r = await allocate();
     expect(r.ok).toBe(true);
     expect(r.number).toBe(301); // GREATEST(fsMax 300, reserved 150) + 1
+  });
+
+  it('applied-max is respected (EI-353): a schema_migrations row with no file and no reservation still takes its number', async () => {
+    await rootSql`
+      INSERT INTO harness_shared.schema_migrations (filename, sha256)
+      VALUES ('400-applied-elsewhere.sql', 'test-sha')`;
+    const r = await allocate();
+    expect(r.ok).toBe(true);
+    expect(r.number).toBe(401); // GREATEST(fsMax 300, reserved 301, applied 400) + 1
+  });
+
+  it('canonical-tree files are respected (EI-353): PAPERCUSP_INTEGRATION_ROOT sql dir is scanned alongside the serving dir', async () => {
+    // Simulate the deployed shape: the serving checkout (h.sqlDir) lags the
+    // canonical staging tree, where a peer just wrote 500-*.sql.
+    const integrationRoot = mkdtempSync(join(tmpdir(), 'a1-nm-canon-'));
+    const canonSqlDir = join(integrationRoot, 'libs/papercusp/libs/db/sql');
+    mkdirSync(canonSqlDir, { recursive: true });
+    writeFileSync(join(canonSqlDir, '500-staging-only.sql'), '-- only in the canonical tree');
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', integrationRoot);
+    const r = await allocate();
+    expect(r.ok).toBe(true);
+    expect(r.number).toBe(501); // GREATEST(fsMax 500 via canonical, reserved 401, applied 400) + 1
   });
 });

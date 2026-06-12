@@ -16,19 +16,12 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { listPlanRows, getPlanRow, type PlanRow } from './source';
+import { listPlanRows, getPlanRow, planItemsForRow, type PlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatusForItems, type ResolvedItem } from './effective-status';
 import { getAllBlockedPlanItems, applyPlanItemBlocks, planItemRef } from '../../issue-blocks-merge';
-import {
-  ITEM_STATUSES,
-  IMPORTANCE_LEVELS,
-  parsePlan,
-  type PlanItem,
-  type ItemStatus,
-  type Importance,
-} from './parser';
+import { ITEM_STATUSES, IMPORTANCE_LEVELS, type Importance } from './parser';
 import { TERMINAL_PLAN_STATUSES } from './plan-start-state';
 
 /** Item statuses that are themselves terminal — the only item statuses worth
@@ -57,30 +50,6 @@ export function isTerminalPlanHiddenFromCrossPlan(
     planStatus != null &&
     (TERMINAL_PLAN_STATUSES as readonly string[]).includes(planStatus)
   );
-}
-
-/**
- * Resolve a plan row's items from the PG-canonical structured `items` index
- * (plans-pg-canonical-migration Stage 3) — no content-blob parse. Falls back to
- * parsing `content` only when the structured index is empty/absent (a federated
- * remote row whose projection didn't fill the derived columns, or a genuinely
- * itemless plan — the parse is cheap either way).
- */
-function planItemsForRow(row: PlanRow): PlanItem[] {
-  if (row.items.length > 0) {
-    return row.items.map((i) => ({
-      id: i.id,
-      text: i.text,
-      storedStatus: i.status as ItemStatus,
-      importance: i.importance as Importance,
-      blockedBy: i.blockedBy,
-      decisionRefs: i.decisionRefs,
-      phase: i.phase,
-      lineNumber: 0,
-      rawLine: '',
-    }));
-  }
-  return parsePlan(row.content).items;
 }
 
 const argsSchema = z.object({

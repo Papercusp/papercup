@@ -8,15 +8,17 @@ import { useSyncQuery } from '@papercusp/sync';
 import { openFeatureChat } from '@papercusp/papercup-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import { StatusPill, SeverityPill, IssueStatusPill } from '../../harness/primitives';
+import { StatusPill, SeverityPill, IssueStatusPill, AgentKindPill } from '../../harness/primitives';
 import { SEVERITY, type HarnessStatus, type IssueSeverityKey } from '../../harness/theme';
 import { Select } from '../../harness/Select';
 import { Tooltip } from '../../harness/Tooltip';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import FeatureEditor from '../../harness/FeatureEditor';
+import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 import type { WorkItemRow } from './WorkItemsPanel';
+import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 
 const FEATURE_STATUSES: FeatureStatus[] = [
@@ -150,12 +152,15 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   const onBack = !pinnedId && selHistory.length > 0 ? goBack : undefined;
 
   // Resolve the selected item. F-* → feature, I-* → issue (legacy surface),
-  // WI-* → unified work item (the WorkItemsPanel grid sets these).
-  const kind: 'feature' | 'issue' | 'workItem' | null = useMemo(() => {
+  // WI-* → unified work item (the WorkItemsPanel grid sets these), agent:* →
+  // a working agent (the Agents panel's namespaced selection — agent ids have
+  // no stable prefix of their own, so the panel stamps one on).
+  const kind: 'feature' | 'issue' | 'workItem' | 'agent' | null = useMemo(() => {
     if (!selectedId) return null;
     if (selectedId.startsWith('F-')) return 'feature';
     if (selectedId.startsWith('I-')) return 'issue';
     if (selectedId.startsWith('WI-')) return 'workItem';
+    if (selectedId.startsWith('agent:')) return 'agent';
     return null;
   }, [selectedId]);
 
@@ -180,6 +185,22 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     () => (kind === 'workItem' ? (workItemRows ?? []).find((w) => w.id === selectedId) ?? null : null),
     [kind, workItemRows, selectedId],
   );
+  // agent:* resolves against the same `fleetAssignments.byHarness` sync query
+  // the Agents panel's Working view reads (one projection, identical rows).
+  // Only subscribed while an agent is actually selected.
+  const agentsQuery = useSyncQuery<WorkingAgent>({
+    queryName: 'fleetAssignments.byHarness',
+    args: { harnessSlug: slug },
+    enabled: Boolean(slug) && kind === 'agent',
+  });
+  const agentRows = agentsQuery.loading ? null : agentsQuery.data;
+  const agent = useMemo(
+    () =>
+      kind === 'agent'
+        ? (agentRows ?? []).find((a) => `agent:${a.agentId}` === selectedId) ?? null
+        : null,
+    [kind, agentRows, selectedId],
+  );
 
   useEffect(() => {
     if (pinnedId) {
@@ -190,10 +211,12 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
       api.setTitle(`Detail · ${issue.id}`);
     } else if (workItem) {
       api.setTitle(`Detail · ${workItem.id}`);
+    } else if (agent) {
+      api.setTitle(`Detail · ${agent.name ?? agent.label ?? agent.agentId}`);
     } else {
       api.setTitle('Detail');
     }
-  }, [api, pinnedId, feature, issue, workItem]);
+  }, [api, pinnedId, feature, issue, workItem, agent]);
 
   if (!slug) {
     return <Empty>Pick a harness to inspect its work items.</Empty>;
@@ -203,11 +226,21 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     return <Empty>Pick a work item from the list to inspect.</Empty>;
   }
 
-  if (selectedId && !feature && !issue && !workItem) {
+  if (selectedId && !feature && !issue && !workItem && !agent) {
     // The id is in the URL but the lists haven't settled yet (or it's a
     // stale selection). Show a brief loading state until the lists load.
-    if (features === null || issues === null || (kind === 'workItem' && workItemRows === null)) {
+    if (
+      features === null ||
+      issues === null ||
+      (kind === 'workItem' && workItemRows === null) ||
+      (kind === 'agent' && agentRows === null)
+    ) {
       return <Empty>Loading {selectedId}…</Empty>;
+    }
+    // An agent selection goes stale the moment the session ends (the fleet
+    // projection only carries working agents) — say that, not "no item".
+    if (kind === 'agent') {
+      return <Empty>Agent {selectedId.slice('agent:'.length)} is no longer working here.</Empty>;
     }
     return <Empty tone="error">No item found for {selectedId}.</Empty>;
   }
@@ -234,7 +267,150 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   if (workItem) {
     return <WorkItemDetail slug={slug} workItem={workItem} onSelect={onSelect} onBack={onBack} />;
   }
+  if (agent) {
+    return <AgentDetail agent={agent} onSelect={onSelect} onBack={onBack} />;
+  }
   return null;
+}
+
+/**
+ * AgentDetail — detail for an `agent:*` selection (the Agents panel's Working
+ * view rows — the fleet:assignments projection). Read-only: presence, intent,
+ * load, and the agent's work, with the head-of-line item + queue + claims
+ * cross-linking back into the F-*/WI-* details via the same `?sel` contract.
+ *
+ * Exported for tests.
+ */
+export function AgentDetail({
+  agent,
+  onSelect,
+  onBack,
+}: {
+  agent: WorkingAgent;
+  onSelect: (id: string) => void;
+  onBack?: () => void;
+}) {
+  const liveness = livenessFromHeartbeat(agent.heartbeatAt ?? '');
+  const fields: Array<[string, React.ReactNode]> = [
+    ['Kind', <AgentKindPill key="kind" kind={agent.agentPaneKind} size="xs" />],
+    [
+      'Liveness',
+      <span key="live" className="pc-adv-detail__liveness">
+        <LivenessDot liveness={liveness} title="" />
+        {liveness}
+        {agent.heartbeatAt ? (
+          <span className="pc-adv-detail__muted"> · heartbeat {fmtAgo(agent.heartbeatAt)}</span>
+        ) : null}
+      </span>,
+    ],
+    ['Drive', agent.driveMode || '—'],
+    ['Load', agent.load > 0 ? agent.load : '—'],
+  ];
+  // Work-item-shaped ids cross-link into their own detail; anything else
+  // (plan items, lock paths…) renders as plain text.
+  const linkable = (id: string | null): id is string =>
+    !!id && (id.startsWith('F-') || id.startsWith('I-') || id.startsWith('WI-'));
+  return (
+    <div className="pc-adv-detail">
+      <header className="pc-adv-detail__header">
+        <BackChip onBack={onBack} />
+        <div className="pc-adv-detail__id">{agent.agentId}</div>
+        <div className="pc-adv-detail__title">{agent.name ?? agent.label ?? agent.agentId}</div>
+        <div className="pc-adv-detail__meta">
+          <AgentKindPill kind={agent.agentPaneKind} size="xs" />
+          {agent.orphaned && (
+            <Tooltip label="This agent holds claims but is no longer present — its work may need re-placing.">
+              <span className="pc-adv-detail__warn-chip">orphaned claims</span>
+            </Tooltip>
+          )}
+          {agent.declaredUnclaimed && (
+            <Tooltip label="Declared an intent without claiming items — invisible to fleet placement.">
+              <span className="pc-adv-detail__warn-chip">declared, unclaimed</span>
+            </Tooltip>
+          )}
+        </div>
+      </header>
+      <section className="pc-adv-detail__body">
+        <div className="pc-adv-detail__section">
+          {fields.map(([label, value]) => (
+            <div key={label as string} className="pc-adv-detail__field-row">
+              <span className="pc-adv-detail__field-label">{label}</span>
+              <span>{value}</span>
+            </div>
+          ))}
+        </div>
+        {agent.intent ? (
+          <div className="pc-adv-detail__section">
+            <h3>Intent</h3>
+            <p className="pc-adv-detail__prose">{agent.intent}</p>
+          </div>
+        ) : null}
+        <div className="pc-adv-detail__section">
+          <h3>Working on</h3>
+          {agent.doing ? (
+            <div className="pc-adv-detail__related">
+              <Tooltip label={agent.doing.title}>
+                <button
+                  type="button"
+                  data-testid="agent-detail-doing"
+                  className="pc-adv-detail__related-row"
+                  disabled={!linkable(agent.doing.id)}
+                  onClick={() => linkable(agent.doing!.id) && onSelect(agent.doing!.id)}
+                >
+                  <span className="pc-adv-detail__related-id">{agent.doing.id}</span>
+                  <span className="pc-adv-detail__related-title">{agent.doing.title}</span>
+                </button>
+              </Tooltip>
+              {agent.queued.length > 0 && (
+                <div className="pc-adv-detail__queue">
+                  {agent.queued.map((q, idx) => (
+                    <button
+                      key={`${q.id}-${idx}`}
+                      type="button"
+                      className="pc-adv-detail__queue-chip"
+                      disabled={!linkable(q.id)}
+                      onClick={() => linkable(q.id) && onSelect(q.id)}
+                    >
+                      {q.id}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="pc-adv-detail__muted">Nothing claimed right now.</p>
+          )}
+        </div>
+        {agent.claims.length > 0 && (
+          <div className="pc-adv-detail__section">
+            <h3>Claims ({agent.claims.length})</h3>
+            <div className="pc-adv-detail__related">
+              {agent.claims.map((c, idx) => (
+                <div key={`${c.id ?? c.detail}-${idx}`} className="pc-adv-detail__claim-row">
+                  <span className="pc-adv-detail__related-id">
+                    {linkable(c.id) ? (
+                      <button
+                        type="button"
+                        className="pc-adv-detail__link pc-adv-detail__link-btn"
+                        onClick={() => onSelect(c.id!)}
+                      >
+                        {c.id}
+                      </button>
+                    ) : (
+                      c.id ?? c.type
+                    )}
+                  </span>
+                  <span className="pc-adv-detail__claim-type">{c.type}</span>
+                  <span className="pc-adv-detail__related-title" title={c.detail}>{c.detail}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+      <DetailStyles />
+    </div>
+  );
 }
 
 /**
@@ -1097,6 +1273,61 @@ function DetailStyles() {
         flex-direction: column;
         gap: 4px;
       }
+      /* AgentDetail furniture — liveness line, warning chips, queue + claims. */
+      .pc-adv-detail__liveness {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pc-adv-detail__warn-chip {
+        font-size: 10.5px;
+        font-weight: 700;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--warn, #fbbf24), transparent 84%);
+        color: color-mix(in oklab, var(--warn, #fbbf24), white 35%);
+        white-space: nowrap;
+        cursor: default;
+      }
+      .pc-adv-detail__queue {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 4px;
+      }
+      .pc-adv-detail__queue-chip {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10.5px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--bg-2, rgba(255, 255, 255, 0.045));
+        border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
+        color: var(--fg-dim, #b9d4e8);
+        cursor: pointer;
+      }
+      .pc-adv-detail__queue-chip:hover:not(:disabled) {
+        border-color: var(--accent, #38bdf8);
+        color: var(--fg, #e7f7ff);
+      }
+      .pc-adv-detail__queue-chip:disabled {
+        cursor: default;
+        opacity: 0.7;
+      }
+      .pc-adv-detail__claim-row {
+        display: grid;
+        grid-template-columns: auto auto 1fr;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      .pc-adv-detail__claim-type {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--fg-mute, #7f9bb4);
+      }
       .pc-adv-detail__related-row {
         display: grid;
         grid-template-columns: auto auto 1fr;
@@ -1111,9 +1342,12 @@ function DetailStyles() {
         border-radius: 6px;
         cursor: pointer;
       }
-      .pc-adv-detail__related-row:hover {
+      .pc-adv-detail__related-row:hover:not(:disabled) {
         background: var(--bg-3, rgba(255, 255, 255, 0.075));
         border-color: var(--border-strong, color-mix(in srgb, var(--accent-strong), transparent 68%));
+      }
+      .pc-adv-detail__related-row:disabled {
+        cursor: default;
       }
       .pc-adv-detail__related-id {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

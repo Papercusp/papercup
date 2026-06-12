@@ -110,11 +110,12 @@ under its own Xvfb display so it never steals your focus (see
 [Agent E2E §15.4](/internal/docs/testing/agent-e2e)):
 
 ```sh
-# Instance B (Bob) — isolated display, bridge port, and gh config
+# Instance B (Bob) — isolated display and gh config (the dev bridge binds its
+# own ephemeral port per instance — discover it with
+# `tauri-agent-tools probe --pid <pid>` or /tmp/tauri-dev-bridge-<pid>.token)
 Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
 DISPLAY=:99 openbox &
 DISPLAY=:99 \
-  PAPERCUSP_BRIDGE_PORT=9230 \
   GH_CONFIG_DIR=/tmp/gh-bob \
   PAPERCUSP_HOME=/tmp/papercusp-bob \
   bash -lc 'cd papercusp-desktop && npm run dev'

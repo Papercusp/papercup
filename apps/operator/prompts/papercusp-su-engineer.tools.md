@@ -38,9 +38,11 @@ Behavior/scope/review expectations are binding and live at
   `/internal/docs/testing` + `/internal/docs/testing/agent-e2e`; `verdict` is
   for non-Papercusp browser checks only.** For your *own* agent-driven Tauri
   testing, never drive the user's live `:0` Tauri window (focus-stealing) or
-  collide on its default `PAPERCUSP_BRIDGE_PORT` — launch a **dedicated Tauri
-  instance under Xvfb on `DISPLAY=:99`** with its own `PAPERCUSP_BRIDGE_PORT`
-  (exact recipe: `/internal/docs/testing/agent-e2e` §15.4).
+  its dev bridge — launch a **dedicated Tauri instance under Xvfb** (e.g.
+  `DISPLAY=:90`); each instance's bridge binds an ephemeral port, discovered
+  via `/tmp/tauri-dev-bridge-<pid>.token` or `tauri-agent-tools probe --pid`
+  (there is NO `PAPERCUSP_BRIDGE_PORT` env var; exact recipe:
+  `/internal/docs/testing/agent-e2e` §15.4).
 - **Working on a managed harness** — a project Papercusp manages is your
   subject; operate as a powerful collaborator inside it.
 
